@@ -5221,7 +5221,22 @@ impl PhotonApp {
                         crate::log("SETTINGS: adopted fleet changes");
                     }
                 }
+                // Reconcile check BEFORE the merge consumes the pulled roster: do we hold contacts the slot lacks (added while a sibling was the last pusher, or pre-CRDT) or newer LWW stamps? Only then push back — an all-covered pull must NOT push, or the push's fstate event re-pulls every sibling in a ping-pong.
+                let our_pid = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                let slot_missing_ours = self.contacts.iter().any(|c| {
+                    if c.is_sibling || our_pid == Some(c.handle_hash) {
+                        return false;
+                    }
+                    match state.roster.iter().find(|e| e.handle_proof == c.handle_proof) {
+                        None => true,
+                        Some(e) => c.roster_updated > e.updated,
+                    }
+                });
                 self.merge_roster_entries(state.roster);
+                if slot_missing_ours {
+                    crate::log("FLEET: local roster ahead of the slot — pushing back (reconcile)");
+                    self.spawn_roster_push();
+                }
                 needs_redraw = true;
             }
             Some(Ok(Err(_e))) => {
@@ -6047,31 +6062,88 @@ impl PhotonApp {
                 name: c.petname.clone(),
                 avatar_pin: c.avatar_pin,
                 added: c.added,
-                updated: c.added,
+                updated: c.roster_updated,
                 tombstone: false,
             })
             .collect()
     }
 
-    /// Merge pulled roster entries into the live contact list — same path as a cloud-merge: add the ones we don't have as Pending stubs, register their pubkeys, then kick ONE serialized keygen (the tick loop re-CLUTCHes the rest one McEliece at a time so a multi-contact join doesn't starve the UI). v0 ignores tombstones (removal-propagation deferred).
+    /// Merge pulled roster entries into the live contact list — the local half of the roster CRDT. New entries add as Pending stubs (then ONE serialized keygen re-CLUTCHes them; the tick loop does the rest one McEliece at a time so a multi-contact join doesn't starve the UI). For contacts we already hold, a strictly NEWER entry wins last-writer: its petname/avatar_pin overwrite ours, and a newer tombstone removes the contact (state + index row; conversation content stays in rārangi — ostracism not erasure). Ties keep ours — the slot-side merge_rosters resolves exact ties deterministically, so pushing our copy converges.
     fn merge_roster_entries(&mut self, entries: Vec<crate::network::fgtw::fleet::RosterEntry>) {
         let mut added = 0usize;
+        let mut adopted = 0usize;
+        let mut removed = 0usize;
         for e in entries {
-            if e.tombstone {
-                continue;
-            }
-            // Dedup against FRIEND contacts only — sibling contacts carry OUR handle_proof and must not suppress a roster entry (nor be treated as its holder).
-            if self
+            // Match FRIEND contacts only — sibling contacts carry OUR handle_proof and must not suppress a roster entry (nor be treated as its holder).
+            if let Some(pos) = self
                 .contacts
                 .iter()
-                .any(|c| !c.is_sibling && c.handle_proof == e.handle_proof)
+                .position(|c| !c.is_sibling && c.handle_proof == e.handle_proof)
             {
+                if e.updated <= self.contacts[pos].roster_updated {
+                    continue; // ours is as new or newer — our push carries it
+                }
+                if e.tombstone {
+                    let gone = self.contacts.remove(pos);
+                    crate::logf!("FLEET: roster tombstone — removed contact {}", crate::fp(&gone.handle_proof).as_str());
+                    if let Some(storage) = self.storage.as_ref() {
+                        if let Err(err) = crate::storage::contacts::delete_contact(&gone.handle_hash, storage) {
+                            crate::logf!("FLEET: tombstoned contact state delete failed: {}", err);
+                        }
+                    }
+                    removed += 1;
+                    continue;
+                }
+                let c = &mut self.contacts[pos];
+                let pin_changed = c.avatar_pin != e.avatar_pin && e.avatar_pin != [0u8; 64];
+                if c.petname != e.name {
+                    c.petname = e.name.clone();
+                }
+                if pin_changed {
+                    c.avatar_pin = e.avatar_pin;
+                    c.avatar_pin_dirty = true; // post-drain sweep persists the index + refetches the avatar
+                }
+                c.roster_updated = e.updated;
+                if let Some(storage) = self.storage.as_ref() {
+                    if let Err(err) = crate::storage::contacts::save_contact(&self.contacts[pos], storage) {
+                        crate::logf!("FLEET: roster-adopted contact save failed: {}", err);
+                    }
+                }
+                adopted += 1;
                 continue;
             }
+            if e.tombstone {
+                continue; // removal of a contact we never held — nothing to do locally
+            }
             let device_pubkey = crate::types::DevicePubkey::from_bytes(e.public_identity);
-            let contact = crate::types::Contact::from_pin(e.name.clone(), e.avatar_pin, e.handle_proof, e.handle_hash, device_pubkey);
+            let mut contact = crate::types::Contact::from_pin(e.name.clone(), e.avatar_pin, e.handle_proof, e.handle_hash, device_pubkey);
+            contact.added = e.added;
+            contact.roster_updated = e.updated;
             self.contacts.push(contact);
             added += 1;
+        }
+        if removed > 0 {
+            // The index row must go with the contact, or the next launch resurrects it from the list.
+            if let Some(storage) = self.storage.as_ref() {
+                let index: Vec<crate::storage::contacts::ContactIdentity> = self
+                    .contacts
+                    .iter()
+                    .filter(|c| !c.is_sibling)
+                    .map(|c| crate::storage::contacts::ContactIdentity {
+                        handle_proof: c.handle_proof,
+                        party_id: c.handle_hash,
+                        name: c.petname.clone(),
+                        avatar_pin: c.avatar_pin,
+                    })
+                    .collect();
+                if let Err(e) = crate::storage::contacts::save_contact_list(&index, storage) {
+                    crate::logf!("FLEET: index rewrite after tombstone failed: {}", e);
+                }
+            }
+            self.reseed_contact_pubkeys();
+        }
+        if adopted > 0 {
+            crate::logf!("FLEET: adopted {} newer roster entr(ies) from siblings", adopted);
         }
         if added == 0 {
             return;
@@ -6099,6 +6171,8 @@ impl PhotonApp {
             }
         }
         self.spawn_next_pending_keygen();
+        // Freshly-merged contacts hold NO conversation rows yet — arm the fleet-history walk so a sibling backfills each one (fires once an online sibling exists).
+        self.kick_fleet_history_sweep("roster merge");
     }
 
     /// Spawn a background pull of the fleet roster (debounced: one in flight at a time). The result is drained in `tick` and merged. No-op without a handle_proof + fleet key.
@@ -6995,13 +7069,15 @@ impl PhotonApp {
             let mut msg =
                 ChatMessage::new_with_timestamp(text, true, vsf::eagle_time_oscillations());
             msg.delivered = true;
-            contact.insert_message_sorted(msg);
+            contact.insert_message_sorted(msg.clone());
             contact.message_scroll_offset = 0.0;
             if let Some(storage) = self.storage.as_ref() {
                 if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
                     crate::logf!("STORAGE: failed to save self-note: {}", e);
                 }
             }
+            // Live fleet propagation: a note typed here appears on our other devices now, not at the next sweep.
+            self.push_rows_to_siblings(ci, std::slice::from_ref(&msg), None);
             return true;
         }
 
@@ -7141,10 +7217,10 @@ impl PhotonApp {
         }
 
         // Append the outgoing bubble (delivered=false until the ACK lands) and persist — unless this is a suppressed send (the hidden chain-weave probe: it must ride the chain but show no UI).
-        if let Some(contact) = self.contacts.get_mut(ci) {
-            if !suppress_bubble {
-                contact
-                    .insert_message_sorted(ChatMessage::new_with_timestamp(text, true, eagle_time));
+        if !suppress_bubble && self.contacts.get(ci).is_some() {
+            let msg = ChatMessage::new_with_timestamp(text, true, eagle_time);
+            if let Some(contact) = self.contacts.get_mut(ci) {
+                contact.insert_message_sorted(msg.clone());
                 contact.message_scroll_offset = 0.0;
                 if let Some(storage) = self.storage.as_ref() {
                     if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
@@ -7152,6 +7228,8 @@ impl PhotonApp {
                     }
                 }
             }
+            // Live fleet propagation: our own outgoing message exists ONLY on this device until a sibling hears about it — push it now so the conversation follows the user across their devices.
+            self.push_rows_to_siblings(ci, std::slice::from_ref(&msg), None);
         }
         true
     }
@@ -9211,7 +9289,125 @@ impl PhotonApp {
         }
     }
 
-    /// History-recovery driver (every tick): for each contact mid-backfill, expire a lost in-flight request and fire the next page request when due. Newest-first cursor pagination — `urgent` (weave-seal kickoff / scrollback) jumps the trickle interval; otherwise pages are rate-limited to one per HIST_TRICKLE_OSC so a 10-year backfill hums along in the background without competing with live traffic. Requests are idempotent (rid-correlated, merge dedups), so an expiry + re-request after a lost page is always safe.
+    /// Resolve a conversation token to the FRIEND (or self) contact it belongs to by DERIVING each contact's token from the participant party ids — no chain needed, so a fresh device can serve/merge fleet history before any CLUTCH completes. The self notes conversation derives from [our_pid, our_pid]. Chains, when they exist, derive the identical token (same participant set), so this agrees with the chain-bound friend route.
+    fn contact_idx_for_conversation_token(&self, token: &[u8; 32]) -> Option<usize> {
+        let our_pid =
+            crate::crypto::clutch::identity_party_id(&self.session.as_ref()?.identity_seed);
+        self.contacts.iter().position(|c| {
+            !c.is_sibling
+                && crate::crypto::clutch::derive_conversation_token(&[our_pid, c.handle_hash])
+                    == *token
+        })
+    }
+
+    /// Live fleet propagation: push just-written conversation rows for the friend/self contact at `idx` to every ONLINE sibling as an unsolicited hist_page under the FLEET key. The receiving sibling merges them verbatim (an unmatched rid from a sibling IS the push signature) and re-pushes anything genuinely fresh, so a message hops the whole fleet even when only one device can reach its origin. Probe rows are filtered; a lost push self-heals via the sibling-online history sweep. `exclude_device` keeps a gossip hop from echoing straight back at its sender.
+    fn push_rows_to_siblings(
+        &self,
+        idx: usize,
+        rows: &[crate::types::ChatMessage],
+        exclude_device: Option<[u8; 32]>,
+    ) {
+        use crate::network::history_pages::{seal_history_page, HistoryPagePlain, HistoryRow};
+        let contact = &self.contacts[idx];
+        if contact.is_sibling {
+            return; // sibling↔sibling chatter stays device-pair-local
+        }
+        let (Some(fleet_key), Some(kp), Some(checker), Some(session)) = (
+            self.fleet_key_cached(),
+            self.device_keypair.as_ref(),
+            self.status_checker.as_ref(),
+            self.session.as_ref(),
+        ) else {
+            return;
+        };
+        let hist_rows: Vec<HistoryRow> = rows
+            .iter()
+            .filter(|m| m.content != crate::types::CHAIN_PROBE_MARKER)
+            .map(|m| HistoryRow {
+                timestamp: m.timestamp,
+                content: m.content.clone(),
+                sender_outgoing: m.is_outgoing,
+                delivered: m.delivered,
+            })
+            .collect();
+        if hist_rows.is_empty() {
+            return;
+        }
+        let our_pid = crate::crypto::clutch::identity_party_id(&session.identity_seed);
+        let token = crate::crypto::clutch::derive_conversation_token(&[our_pid, contact.handle_hash]);
+        let page = HistoryPagePlain {
+            oldest_osc: hist_rows.iter().map(|r| r.timestamp).min().unwrap_or(0),
+            more: false,
+            rows: hist_rows,
+        };
+        let rid: [u8; 32] = rand::random();
+        let vsf_bytes = match seal_history_page(&page, &fleet_key).and_then(|sealed| {
+            crate::network::fgtw::protocol::build_history_page_vsf(
+                &token,
+                &rid,
+                sealed,
+                kp.public.as_bytes(),
+                kp.secret.as_bytes(),
+            )
+        }) {
+            Ok(b) => b,
+            Err(e) => {
+                crate::logf!("FLEET-HIST: live push build failed: {}", e);
+                return;
+            }
+        };
+        let mut pushed = 0usize;
+        for sib in self.contacts.iter().filter(|c| c.is_sibling && c.is_online) {
+            if exclude_device.is_some_and(|d| *sib.public_identity.as_bytes() == d) {
+                continue;
+            }
+            let Some((primary, alt)) = sib.race_addrs() else {
+                continue;
+            };
+            checker.send_history(crate::network::status::HistorySendRequest {
+                peer_addr: primary,
+                alt_addr: alt,
+                recipient_pubkey: *sib.public_identity.as_bytes(),
+                vsf_bytes: vsf_bytes.clone(),
+            });
+            pushed += 1;
+        }
+        if pushed > 0 {
+            crate::logf!("FLEET-HIST: pushed {} row(s) to {} sibling device(s)", page.rows.len(), pushed);
+        }
+    }
+
+    /// Fleet history sweep: (re-)arm history recovery for every friend/self conversation so the driver walks each one from the head — served by a sibling when the friend can't. Early-stop makes a re-sweep of an already-complete conversation cost ONE page (zero new rows → complete again), so this fires freely on sibling-online edges and roster merges; conversations mid-walk are left alone.
+    fn kick_fleet_history_sweep(&mut self, reason: &str) {
+        let mut kicked = 0usize;
+        for c in self.contacts.iter_mut() {
+            if c.is_sibling {
+                continue;
+            }
+            if c.history_recovery.as_ref().is_some_and(|r| !r.complete) {
+                continue; // mid-walk — the driver is already on it
+            }
+            let was_complete_before = c
+                .history_recovery
+                .as_ref()
+                .map(|r| r.complete)
+                .unwrap_or(false);
+            c.history_recovery = Some(crate::types::HistoryRecovery {
+                oldest_recovered_osc: i64::MAX,
+                complete: false,
+                in_flight: None,
+                next_request_osc: 0,
+                urgent: false, // background catch-up rides the trickle
+                was_complete_before,
+            });
+            kicked += 1;
+        }
+        if kicked > 0 {
+            crate::logf!("HISTORY: fleet sweep armed {} conversation(s) ({})", kicked, reason);
+        }
+    }
+
+    /// History-recovery driver (every tick): for each contact mid-backfill, expire a lost in-flight request and fire the next page request when due. Newest-first cursor pagination — `urgent` (weave-seal kickoff / scrollback) jumps the trickle interval; otherwise pages are rate-limited to one per HIST_TRICKLE_OSC so a 10-year backfill hums along in the background without competing with live traffic. Requests are idempotent (rid-correlated, merge dedups), so an expiry + re-request after a lost page is always safe. Each request routes to whichever SOURCE is available right now: the friend (woven chain, history key) or a fleet sibling (fleet key) — the cursor is conversation-level, so the walk continues seamlessly across sources.
     fn drive_history_recovery(&mut self) {
         const HIST_TRICKLE_OSC: i64 = 2 * crate::OSC_PER_SEC; // one page per ~2s in background
         const HIST_INFLIGHT_TIMEOUT_OSC: i64 = 15 * crate::OSC_PER_SEC; // lost request/page
@@ -9225,26 +9421,58 @@ impl PhotonApp {
         let device_pubkey = *kp.public.as_bytes();
         let device_secret = *kp.secret.as_bytes();
 
-        // Candidate pass (read-only): eligible contacts + their conversation token/history key route.
+        // Route material computed once: any online sibling serves fleet-route requests, and the fleet key gates them (the sibling seals under it).
+        let sibling_target: Option<(std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32])> =
+            if self.fleet_key_cached().is_some() {
+                self.contacts
+                    .iter()
+                    .filter(|c| c.is_sibling && c.is_online)
+                    .find_map(|c| c.race_addrs().map(|(p, a)| (p, a, *c.public_identity.as_bytes())))
+            } else {
+                None
+            };
+        let our_pid = self
+            .session
+            .as_ref()
+            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+
+        // Candidate pass (read-only): eligible contacts + the best available route. FRIEND route (woven keyed chain, friend online) is preferred — it's the authoritative two-party copy; otherwise the FLEET route asks an online sibling under the fleet key, which needs no chain at all (a roster-merged contact backfills before its first CLUTCH, and the self notes conversation only ever has this route).
         let candidates: Vec<(usize, [u8; 32], std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32])> = self
             .contacts
             .iter()
             .enumerate()
             .filter_map(|(idx, c)| {
                 let rec = c.history_recovery.as_ref()?;
-                if rec.complete || !c.is_online || !c.chain_woven {
+                if rec.complete || c.is_sibling {
                     return None;
                 }
-                let fid = c.friendship_id?;
-                let (_, chains) = self.friendship_chains.iter().find(|(id, _)| *id == fid)?;
-                chains.history_key()?; // no key (pre-feature chains) = recovery unavailable
-                let (primary, alt) = c.race_addrs()?;
+                // Friend route: token from the chain (identical to the derived one — same participant set).
+                if c.is_online && c.chain_woven {
+                    if let Some(fid) = c.friendship_id {
+                        if let Some((_, chains)) = self.friendship_chains.iter().find(|(id, _)| *id == fid) {
+                            if chains.history_key().is_some() {
+                                if let Some((primary, alt)) = c.race_addrs() {
+                                    return Some((
+                                        idx,
+                                        chains.conversation_token,
+                                        primary,
+                                        alt,
+                                        *c.public_identity.as_bytes(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                // Fleet route: derive the token from the participant party ids.
+                let (primary, alt, sib_pk) = sibling_target?;
+                let pid = our_pid?;
                 Some((
                     idx,
-                    chains.conversation_token,
+                    crate::crypto::clutch::derive_conversation_token(&[pid, c.handle_hash]),
                     primary,
                     alt,
-                    *c.public_identity.as_bytes(),
+                    sib_pk,
                 ))
             })
             .collect();
@@ -9588,6 +9816,8 @@ impl PhotonApp {
         // Chain-weave probe deferrals — the loop holds an immutable `checker` borrow of `self`, so the `&mut self` seal/probe helpers can't run inline; collect contact indices and process them after the loop, like ceremony_completions / lan_ping_indices already do.
         let mut chain_seal_indices: Vec<usize> = Vec::new(); // seal_chain_if_ready after loop
         let mut chain_probe_indices: Vec<usize> = Vec::new(); // maybe_send_chain_probe after loop
+        // Fleet history sweep deferral: a sibling coming online means it may hold conversation rows we don't — arm the per-conversation walk after the loop (the sweep needs &mut contacts).
+        let mut fleet_sweep_due = false;
 
         // The braid / strict-ordering replay queue: when a successful decrypt fills a hash-chain gap, the now-contiguous buffered messages are pushed here as synthetic ChatMessage updates and drained BEFORE the next channel item, so a buffered N+1 is reprocessed immediately after N (and can itself cascade to N+2). FIFO front-drain.
         let mut replay_queue: std::collections::VecDeque<StatusUpdate> =
@@ -9681,6 +9911,8 @@ impl PhotonApp {
                                     crate::logf!("CONTACT: {} avatar pin adopted", crate::fp(&contact.handle_proof));
                                     contact.avatar_pin = *pin;
                                     contact.avatar_pin_dirty = true;
+                                    // Roster LWW clock: the pin is a synced identity field, so this adoption must win the merge on every sibling (the post-drain sweep pushes the roster).
+                                    contact.roster_updated = vsf::eagle_time_oscillations();
                                     changed = true;
                                 }
                             }
@@ -9696,6 +9928,10 @@ impl PhotonApp {
                                 contact.is_online = identity_online;
                                 changed = true;
                                 crate::logf!("Status: {} is now {} (device {} {})", crate::fp(&contact.handle_proof), if identity_online { "ONLINE" } else { "offline" }, hex::encode(&peer_pubkey.key[..4]), if is_online { "up" } else { "down" });
+                            }
+                            // A sibling coming online is the fleet-history catch-up trigger: it may hold conversation rows written while we were apart. Deferred — the sweep needs &mut contacts.
+                            if came_online && contact.is_sibling {
+                                fleet_sweep_due = true;
                             }
 
                             // Deadlock recovery: a queued KEM with no offer means their offer never arrived (lost in transit — their KEM landed but the larger offer transfer didn't). We can't derive ceremony_id or complete our slot without it, and there's no timeout on the queue, so this hangs Pending forever (only a restart, which forces a fresh offer exchange, recovers it). Self-heal: when we see a still-queued KEM on a pong AND we've already sent our offer (so we're genuinely stuck, not mid-initial-exchange), reset clutch_offer_sent so the offer-send block below re-fires this pong — our re-sent offer prompts them to re-send theirs (the same path a restart takes). Pong cadence rate-limits the re-request to one per pong. Only the "their offer was lost" case is recoverable here; if a peer genuinely never sends an offer, nothing we do fixes it.
@@ -9848,6 +10084,8 @@ impl PhotonApp {
                     let mut need_sync_records_update = false;
                     // Contact index to seal the chain-weave for AFTER the `chains` borrow ends.
                     let mut recv_seal_idx: Option<usize> = None;
+                    // Live fleet push deferred the same way (push_rows_to_siblings takes &self; the `chains` iter_mut borrow lives to the end of the block).
+                    let mut sibling_push: Option<(usize, ChatMessage)> = None;
                     if let Some((fid, chains)) = chains_result {
                         // Party-id seam: our participant id is the identity PARTY id (friends) or the sibling pid (siblings) — whichever the chain actually holds. (The raw seed is never a chain participant post-pin-set.)
                         let our_handle_hash = if chains.participants().contains(&our_handle_hash) {
@@ -10112,15 +10350,14 @@ impl PhotonApp {
                             // Any real received message means the chain is demonstrably working end-to-end in at least the RX direction — belt-and-suspenders toward woven.
                             contact.their_probe_seen = true;
                             // Use actual eagle_time and sorted insert for correct chronological order
-                            contact.insert_message_sorted(
-                                ChatMessage::new_with_timestamp(
-                                    message_text,
-                                    false,     // is_outgoing = false (received)
-                                    timestamp, // Use message's actual eagle_time, not current time
-                                )
-                                // Persist the ACK hash so a later duplicate (our ACK was lost) can be re-ACKed from storage — keeps the sender's chain from stalling.
-                                .with_ack_hash(plaintext_hash),
-                            );
+                            let msg = ChatMessage::new_with_timestamp(
+                                message_text,
+                                false,     // is_outgoing = false (received)
+                                timestamp, // Use message's actual eagle_time, not current time
+                            )
+                            // Persist the ACK hash so a later duplicate (our ACK was lost) can be re-ACKed from storage — keeps the sender's chain from stalling.
+                            .with_ack_hash(plaintext_hash);
+                            contact.insert_message_sorted(msg.clone());
                             contact.message_scroll_offset = 0.0; // Scroll to show new message
                             changed = true;
 
@@ -10132,6 +10369,8 @@ impl PhotonApp {
                                     crate::logf!("STORAGE: Failed to save messages: {}", e);
                                 }
                             }
+                            // Live fleet propagation: the friend only delivered this to the device in hand — our other devices hear it from us (pushed after the `chains` borrow ends, below).
+                            sibling_push = Some((contact_idx, msg));
 
                             // Per-contact notification chime: the sender's relationship digest → deterministic modal bell (chirp crate) — the SAME digest that colours their handle and messages, so ears and eyes agree. The handle TEXT never touches the session store by design; the pre-PoW hashes are the canonical identity material. Synthesis (~a second of f64 modal math) + playback run on a detached thread so the receive loop never blocks; desktop-only (Android gets platform notifications).
                             #[cfg(not(any(target_os = "redox", target_os = "android")))]
@@ -10165,6 +10404,11 @@ impl PhotonApp {
                         let _ = fid; // We looked up by token, fid is available if needed
                     } else {
                         crate::logf!("CHAT: No friendship found for conversation_token {}...", hex::encode(&conversation_token[..8]));
+                    }
+
+                    // Live fleet push, now that the `chains` borrow is gone.
+                    if let Some((idx, m)) = sibling_push {
+                        self.push_rows_to_siblings(idx, std::slice::from_ref(&m), None);
                     }
 
                     // Defer the chain-weave seal until after the loop (the outer `checker` borrow blocks `&mut self` here). No-op later unless both directions are proven.
@@ -10315,6 +10559,7 @@ impl PhotonApp {
                         }
 
                         // Mark message as delivered in UI
+                        let mut delivered_row: Option<ChatMessage> = None;
                         if let Some(contact) = self.contacts.get_mut(contact_idx) {
                             // Find message by matching eagle_time (exact i64 oscillations)
                             let mut found_msg = false;
@@ -10323,6 +10568,7 @@ impl PhotonApp {
                                     // Match by eagle_time (exact i64 match)
                                     if msg.timestamp == acked_eagle_time {
                                         msg.delivered = true;
+                                        delivered_row = Some(msg.clone());
                                         found_msg = true;
                                         changed = true;
                                         break;
@@ -10340,6 +10586,10 @@ impl PhotonApp {
                                     }
                                 }
                             }
+                        }
+                        // Live fleet propagation of the delivered tick (the sibling merge upgrades its copy monotonically).
+                        if let Some(row) = delivered_row {
+                            self.push_rows_to_siblings(contact_idx, std::slice::from_ref(&row), None);
                         }
                     } else {
                         crate::logf!("CHAT: No friendship found for ACK conversation_token {}...", hex::encode(&conversation_token[..8]));
@@ -11512,8 +11762,11 @@ impl PhotonApp {
                             entry.1.pop_front();
                         }
 
-                        // Bind token → chains (history key) → the OTHER participant → contact, and require the requesting device to belong to that exact contact + be mutual.
-                        let our_seed = self.session.as_ref().map(|s| s.identity_seed);
+                        // FRIEND route: bind token → chains (history key) → the OTHER participant → contact, and require the requesting device to belong to that exact contact + be mutual. Participants are PARTY IDS (chains key on them since the pin-set migration), so "other" resolves against OUR party id — comparing against the raw seed matched nothing and made `other` sort-order dependent.
+                        let our_pid = self
+                            .session
+                            .as_ref()
+                            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
                         let key_and_other = self
                             .friendship_chains
                             .iter()
@@ -11523,23 +11776,38 @@ impl PhotonApp {
                                 let other = c
                                     .participants()
                                     .iter()
-                                    .find(|p| Some(**p) != our_seed)
+                                    .find(|p| Some(**p) != our_pid)
                                     .copied()?;
                                 Some((key, other))
                             });
-                        let contact_idx = key_and_other.and_then(|(_, other)| {
-                            self.contacts.iter().position(|c| {
-                                // Friend chains only — a sibling chain's "other ≠ our seed" resolution is ambiguous (both participant pids differ from the seed); fleet history sync is its own later phase.
-                                !c.is_sibling
-                                    && c.handle_hash == other
-                                    && c.knows_device(&sender_pubkey.key)
-                                    && c.is_mutual()
-                            })
+                        let friend_route: Option<(usize, [u8; 32])> = key_and_other.and_then(|(key, other)| {
+                            self.contacts
+                                .iter()
+                                .position(|c| {
+                                    // Friend chains only — a sibling chain's "other ≠ our pid" resolution is ambiguous (both participant pids differ); sibling requests take the FLEET route below.
+                                    !c.is_sibling
+                                        && c.handle_hash == other
+                                        && c.knows_device(&sender_pubkey.key)
+                                        && c.is_mutual()
+                                })
+                                .map(|idx| (idx, key))
+                        });
+                        // FLEET route (fleet history sync): the requester is one of OUR OWN devices — fold-trusted sibling — asking for any conversation we hold. Serve it sealed under the FLEET key. The token resolves by DERIVATION from party ids (no chain needed), so a conversation the sibling only knows from the roster — or the self notes conversation — still serves.
+                        let route = friend_route.or_else(|| {
+                            let sender_is_sibling = self
+                                .contacts
+                                .iter()
+                                .any(|c| c.is_sibling && c.knows_device(&sender_pubkey.key));
+                            if !sender_is_sibling {
+                                return None;
+                            }
+                            let fleet_key = self.fleet_key_cached()?;
+                            let idx = self.contact_idx_for_conversation_token(&conversation_token)?;
+                            Some((idx, fleet_key))
                         });
 
-                        if let (Some((key, _)), Some(idx), Some(storage), Some(checker)) = (
-                            key_and_other,
-                            contact_idx,
+                        if let (Some((idx, key)), Some(storage), Some(checker)) = (
+                            route,
                             self.storage.as_ref(),
                             self.status_checker.as_ref(),
                         ) {
@@ -11622,83 +11890,113 @@ impl PhotonApp {
                     }
                 }
 
-                // A history page arrived for our recovery. Open it with the friendship history key, merge rows (direction flipped, friend-attested), advance the cursor, persist.
+                // A history page arrived. Route by SENDER: a page from one of our own fleet devices opens under the FLEET key and merges VERBATIM (the sibling's view IS our view — same identity, no direction flip); a page from the friend opens under the friendship history key with direction flipped to our perspective. Friend pages must match an in-flight request; sibling pages that don't are the LIVE PUSH — a conversation advancing on another of our devices.
                 StatusUpdate::HistoryPageReceived {
                     conversation_token,
                     request_id,
                     sealed,
-                    sender_pubkey: _,
+                    sender_pubkey,
                     sender_addr: _,
                 } => {
-                    let our_seed = self.session.as_ref().map(|s| s.identity_seed);
-                    let key_and_other = self
-                        .friendship_chains
+                    let from_sibling = self
+                        .contacts
                         .iter()
-                        .find(|(_, c)| c.conversation_token == conversation_token)
-                        .and_then(|(_, c)| {
-                            let key = c.history_key().copied()?;
-                            let other = c
-                                .participants()
-                                .iter()
-                                .find(|p| Some(**p) != our_seed)
-                                .copied()?;
-                            Some((key, other))
-                        });
-                    let contact_idx = key_and_other.and_then(|(_, other)| {
-                        self.contacts.iter().position(|c| c.handle_hash == other)
-                    });
+                        .any(|c| c.is_sibling && c.knows_device(&sender_pubkey.key));
+                    let (key, contact_idx) = if from_sibling {
+                        (
+                            self.fleet_key_cached(),
+                            self.contact_idx_for_conversation_token(&conversation_token),
+                        )
+                    } else {
+                        // Participants are PARTY IDS (chains key on them since the pin-set migration) — resolve "other" against OUR party id, never the raw seed.
+                        let our_pid = self
+                            .session
+                            .as_ref()
+                            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                        let key_and_other = self
+                            .friendship_chains
+                            .iter()
+                            .find(|(_, c)| c.conversation_token == conversation_token)
+                            .and_then(|(_, c)| {
+                                let key = c.history_key().copied()?;
+                                let other = c
+                                    .participants()
+                                    .iter()
+                                    .find(|p| Some(**p) != our_pid)
+                                    .copied()?;
+                                Some((key, other))
+                            });
+                        (
+                            key_and_other.map(|(k, _)| k),
+                            key_and_other.and_then(|(_, other)| {
+                                self.contacts.iter().position(|c| c.handle_hash == other)
+                            }),
+                        )
+                    };
 
-                    if let (Some((key, _)), Some(idx)) = (key_and_other, contact_idx) {
+                    if let (Some(key), Some(idx)) = (key, contact_idx) {
                         // rid must match our in-flight request — a page we didn't ask for (or asked for long ago) is dropped; merging is idempotent so a raced duplicate that DOES match is harmless.
                         let rid_matches = self.contacts[idx]
                             .history_recovery
                             .as_ref()
                             .and_then(|r| r.in_flight.as_ref())
                             .is_some_and(|(rid, _, _)| *rid == request_id);
-                        if rid_matches {
+                        // A friend page must match our in-flight request (unsolicited friend pages are dropped). A sibling page without a matching rid is the live push — merge it, but leave the cursor alone.
+                        if rid_matches || from_sibling {
                             match crate::network::history_pages::open_history_page(&sealed, &key) {
                                 Ok(page) => {
                                     let contact = &mut self.contacts[idx];
-                                    // Merge: flip direction to OUR perspective; recovered-outgoing is delivered by definition (the friend has it); dedup on (timestamp, content) against what we already hold.
+                                    // Merge to OUR perspective: friend pages flip direction (their outgoing = our incoming); sibling pages ride verbatim (same identity, their flags ARE ours). Friend-recovered outgoing is delivered by definition (the friend has it); dedup on (timestamp, content) against what we already hold.
                                     let mut fresh: Vec<crate::types::ChatMessage> = Vec::new();
                                     for row in &page.rows {
                                         if row.content == crate::types::CHAIN_PROBE_MARKER {
                                             continue;
                                         }
-                                        let is_outgoing = !row.sender_outgoing;
-                                        let already = contact
+                                        let (is_outgoing, delivered, recovered) = if from_sibling {
+                                            (row.sender_outgoing, row.delivered, false)
+                                        } else {
+                                            (!row.sender_outgoing, !row.sender_outgoing, true)
+                                        };
+                                        if let Some(existing) = contact
                                             .messages
-                                            .iter()
-                                            .any(|m| {
+                                            .iter_mut()
+                                            .find(|m| {
                                                 m.timestamp == row.timestamp
                                                     && m.content == row.content
-                                            });
-                                        if already {
+                                            })
+                                        {
+                                            // Delivered is monotonic: a copy that saw the ACK upgrades ours, so the tick shows on every device. The upgraded row rides `fresh` (persist + gossip) but is NOT re-inserted.
+                                            if delivered && !existing.delivered && existing.is_outgoing == is_outgoing {
+                                                existing.delivered = true;
+                                                fresh.push(existing.clone());
+                                            }
                                             continue;
                                         }
                                         let msg = crate::types::ChatMessage {
                                             content: row.content.clone(),
                                             timestamp: row.timestamp,
                                             is_outgoing,
-                                            delivered: is_outgoing,
+                                            delivered,
                                             ack_hash: None,
-                                            recovered: true,
+                                            recovered,
                                         };
                                         contact.insert_message_sorted(msg.clone());
                                         fresh.push(msg);
                                     }
 
-                                    // Cursor + completion. Early-stop: if history was already complete before this (re-)kickoff and the page brought nothing new, we're still complete — a routine re-key on an intact pair stops after one page instead of re-walking years.
+                                    // Cursor + completion — only for a page we ASKED for; a live push must not fast-forward a walk that never ran. Early-stop: if history was already complete before this (re-)kickoff and the page brought nothing new, we're still complete — a routine re-key on an intact pair stops after one page instead of re-walking years.
                                     let their_seed = contact.handle_hash;
-                                    if let Some(rec) = contact.history_recovery.as_mut() {
-                                        rec.in_flight = None;
-                                        if page.oldest_osc < rec.oldest_recovered_osc {
-                                            rec.oldest_recovered_osc = page.oldest_osc;
-                                        }
-                                        if !page.more
-                                            || (rec.was_complete_before && fresh.is_empty())
-                                        {
-                                            rec.complete = true;
+                                    if rid_matches {
+                                        if let Some(rec) = contact.history_recovery.as_mut() {
+                                            rec.in_flight = None;
+                                            if page.oldest_osc < rec.oldest_recovered_osc {
+                                                rec.oldest_recovered_osc = page.oldest_osc;
+                                            }
+                                            if !page.more
+                                                || (rec.was_complete_before && fresh.is_empty())
+                                            {
+                                                rec.complete = true;
+                                            }
                                         }
                                     }
                                     crate::logf!("HISTORY: merged page ({} new of {} rows, more={}, complete={})", fresh.len(), page.rows.len(), page.more, contact
@@ -11723,6 +12021,10 @@ impl PhotonApp {
                                         {
                                             crate::logf!("HISTORY: cursor persist failed: {}", e);
                                         }
+                                    }
+                                    // Gossip hop: anything genuinely fresh re-pushes to the OTHER online siblings (never back at the sender), so a message crosses the whole fleet even when only one device can reach its origin. Zero-fresh pages stop the echo.
+                                    if !fresh.is_empty() {
+                                        self.push_rows_to_siblings(idx, &fresh, Some(sender_pubkey.key));
                                     }
                                     changed = true;
                                 }
@@ -12135,6 +12437,9 @@ impl PhotonApp {
         for idx in chain_seal_indices {
             self.seal_chain_if_ready(idx);
         }
+        if fleet_sweep_due {
+            self.kick_fleet_history_sweep("sibling online");
+        }
 
         // Retransmit pending messages to contacts that just came online Use last_received_ef6 from pong to only retransmit messages they don't have
         for (fid, peer_addr, alt_addr, handle, recipient_pubkey, last_received_ef6) in retransmit_requests {
@@ -12241,6 +12546,8 @@ impl PhotonApp {
             for i in avatar_adopted {
                 self.spawn_avatar_download(i);
             }
+            // A fresh pin is roster state — push so offline-at-the-time siblings still converge (merge-idempotent, so a pin that ARRIVED via roster merge just round-trips a no-op).
+            self.spawn_roster_push();
         }
 
         changed
