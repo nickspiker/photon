@@ -2974,7 +2974,11 @@ impl FluorApp for PhotonApp {
         }
 
         // Self-update: drain check/apply results, then re-exec if a verified swap landed. The exec MUST happen here on the main thread, outside every borrow — the process image is replaced in place (unix) or handed off (windows), so nothing after it runs.
-        needs_redraw |= self.drain_update_events();
+        // Update events (progress bar, channel states, status lines) are all page CONTENT — without scene_dirty the redraw runs but the dirty-gated content pass skips the page, so the bar painted its empty track once and froze (observed live 2026-07-17).
+        if self.drain_update_events() {
+            self.scene_dirty = true;
+            needs_redraw = true;
+        }
         if let Some(exe) = self.update_reexec.take() {
             crate::log("UPDATE: re-exec into the new binary");
             #[cfg(unix)]
