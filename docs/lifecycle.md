@@ -101,16 +101,31 @@ RECOVERY (future): custodian-quorum supersession (docs/total-loss) enters at LAU
 **Should we allow it? YES — with ceremony.** Sovereignty doctrine is explicit: the subject signs their own exit, no exceptions, and total loss without custodians IS total. Blocking the last exit would make the fleet chain the user's jailer. But it must be impossible to do it *casually*:
 
 - Detect `fold().len() == 1 && members[0] == us` at Remove & shred (and at plain Depart).
-- Route thru **LAST RITES** — the red flood interstitial: whole screen red, red orb, and the truth in big letters: "This is this identity's LAST device. Removing it ends the identity forever — conversations, friendships, everything." Interstitial rules: only the re-labelled button proceeds ("End it — forever"), anything else cancels.
+- Route thru **LAST RITES** — the red flood interstitial: whole screen red, red orb, and the truth in big letters, in the ruling's own register: "This is this identity's LAST device. Removing it ends the identity FOREVER — every conversation, every friendship, everything, gone. The name goes free for anyone to claim. There is no recovery. Not custodians, not new hardware, not you." Interstitial rules: only the re-labelled button proceeds ("End it — forever"), anything else cancels.
 
-**The tombstone is an EPOCH BOUNDARY, not a burn** (decided 2026-07-17, superseding the burn-by-default above-session draft):
-- Burn-forever is a griefing primitive: attest → depart → dead name at ~1s of proof each — permanent namespace destruction for free. So a deliberately-ended name must eventually RELEASE.
-- But naive release is identity inheritance, NOT name recycling: the identity seed derives FROM the handle string, so a re-claimant derives the SAME seed / party id / pubkey — friends' pinned ids MATCH the impostor, their clients fold the new chain for the same handle_proof, and a fresh CLUTCH renders as "your friend re-keyed". (An earlier draft claimed pins protect here; they do not — same string, same keys.)
-- Resolution: the zero-member fold IS the tombstone — signed, self-authorized testimony that the identity ENDED (departure is the one op only the owner signs). A dead name may be re-claimed, but the new genesis starts the next EPOCH, and the **pin-set carries the epoch**: a friend's client that sees its pinned contact's chain superseded past a tombstone renders the successor as a STRANGER — fresh contact, zero trust inheritance, the old conversation frozen as archive. No silent re-key-as-you.
-- This UNIFIES with custodian recovery (docs/total-loss), which is already chain SUPERSESSION: deliberate release = self-authorized supersession to zero; total-loss recovery = custodian-quorum supersession. Same epoch mechanism, different authorizer — one concept, and the pin-set tracks both.
-- Defense in depth: the blind-S machinery is an identity-continuity witness — friends hold blinds of the old S and a successor epoch cannot produce it; the in-flight re-key notification work is the alarm surface.
-- Grief economics after: burning buys nothing (names recycle); denial-of-name collapses to SQUATTING (attest and hold) — the baseline already priced by the memory-hard proof, worker-rate-limitable if mass-squatting appears. The LOST fleet (devices dead, departure never signed) stays held-by-corpse forever — it must, or "release inactive names" becomes "claim anyone's dormant identity"; only custodian supersession unlocks it.
-- Build order: LastRites ships first with today's held-tombstone behaviour (chain keeps the empty fold, name stays dead); epoch-in-pin-set + worker genesis-over-tombstone land WITH the re-key/supersession work — release semantics must not ship before the epoch gate that makes them safe.
+**THE RULING (2026-07-17, supersedes both earlier drafts — burn-by-default AND hold-the-tombstone):** the identity LIVES IN the fleet. Bind a device and the identity rides with it; devices are the only key. **Member count zero = the identity is GONE — not recoverable, by anyone, ever — and the handle is FREE.**
+
+Why this is the clean design — zero is only REACHABLE deliberately, so the two recovery worlds split perfectly:
+- **Members > 0, devices lost/stolen**: nobody signed an exit; the chain still lists the corpse fleet. THIS is what custodian supersession exists for — sign new devices in over the lost ones. (docs/total-loss; its scope is now explicitly members>0 only.)
+- **Members = 0**: only the owner can produce this (departure is self-signed, no exceptions) — it is cryptographic proof of a deliberate end. Custodians are powerless BY DESIGN; the name returns to the pool. No dormancy heuristics, no held-by-corpse ambiguity for deliberate exits — the fold count IS the semantics.
+
+Grief economics: burning buys nothing (an ended name frees immediately); denial-of-name collapses to SQUATTING (attest and hold), the baseline already priced by the memory-hard proof and worker-rate-limitable.
+
+**The one load-bearing nuance — FREE must not mean INHERITABLE.** The identity seed derives FROM the handle string: a re-claimant of a freed name derives the SAME seed / party id / pubkey, so friends' pinned ids would MATCH the impostor and a fresh CLUTCH would render as "your friend re-keyed". Therefore the **pin-set carries the chain EPOCH**: a re-claim over a zero-member fold starts the next epoch, and every old friend's client renders the successor as a STRANGER — fresh contact, zero trust inheritance, the old conversation frozen as archive. "All my shit be GONE" holds precisely: the successor gets the STRING and nothing else. Defense in depth: friends hold blinds of the old S, which no successor can produce (the re-key alarm surface). **Ship free-on-zero and the epoch gate as ONE unit** — free without the epoch is the inheritance bug shipped on purpose.
+
+Custodian supersession (members>0 recovery) uses the same epoch bump — one mechanism, two authorizers (self-to-zero = release; quorum-over-corpse = recovery) — and the pin-set tracks both.
+
+**The backup tag — self-custody for a dollar.** A fleet member is a KEYPAIR in the chain, not a computer: an NFC tag flashed with a device-key seed IS a device, and it counts toward members > 0. Worried about losing your only phone? Add a tag and put it in a drawer.
+- Enrol (from any signed-in device, Panel → Fleet → "Add a backup tag"): the phone mints a fresh device keypair, signs BOTH halves of the bilateral add with it (it holds the seed at birth — no protocol change, the tag is an ordinary member whose consent was signed at mint), binds it into the chain, writes the seed to the tag, zeroizes its local copy.
+- Recover (new phone): tap the tag → load the device key → the probe reads `Member` → resume, no ceremony. Then bind the new phone properly as itself and either re-flash the tag with a fresh key or leave it.
+- It is a BEARER instrument and the UI says so plainly: whoever holds the tag holds a device of your identity — guard it like a key, because it is one. No passphrase wrap (passless is passless; physical possession is the security model, same as the phone itself).
+- Android-first (NFC read/write is native there); desktop needs a reader, later.
+
+**The redundancy ladder** (what the onboarding teaches, in order):
+1. Worried about loss? Add devices — a second phone, a laptop, a $1 tag in a drawer. Redundancy IS the recovery story.
+2. Lost some devices? Any remaining member sponsors replacements.
+3. Lost ALL of them, tag included? Custodian supersession over the corpse fleet (members > 0, nobody signed out).
+4. Deliberately walked the count to zero? That was the exit. Gone forever, name free.
 
 ## Implementation punch list (ordered)
 
