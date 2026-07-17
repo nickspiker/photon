@@ -5072,6 +5072,42 @@ impl FluorApp for PhotonApp {
 
         chrome.flatten_into(target, buf_w, buf_h, None);
 
+        // Orb press glow — the wordmark-family light in radial form: while the orb is held, a soft white halo blooms around the disk. Painted AFTER the flatten because the chrome layer is opaque there (under() early-outs on opaque pixels), so this applies under()-of-white's exact arithmetic directly: dark' = dark·(255−α)/255 per channel, α falling quadratically from the rim to one radius out. Peak α = 0xB0, the same glow grey the text halos rasterize at.
+        if ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == chrome.app_icon_btn.id() {
+            if let Some((ocx, ocy, orb_r)) = chrome.orb_geometry() {
+                let reach = orb_r;
+                let r_out = orb_r + reach;
+                let y0 = (ocy - r_out).max(0) as usize;
+                let y1 = (((ocy + r_out + 1).max(0)) as usize).min(buf_h);
+                let x0 = (ocx - r_out).max(0) as usize;
+                let x1 = (((ocx + r_out + 1).max(0)) as usize).min(buf_w);
+                let rim2 = orb_r * orb_r;
+                let out2 = r_out * r_out;
+                for y in y0..y1 {
+                    let dy = y as isize - ocy;
+                    for x in x0..x1 {
+                        let dx = x as isize - ocx;
+                        let d2 = dx * dx + dy * dy;
+                        if d2 <= rim2 || d2 >= out2 {
+                            continue; // the disk itself stays chrome's; past r_out is untouched
+                        }
+                        let t = 1.0 - ((d2 as f32).sqrt() - orb_r as f32) / reach as f32;
+                        let a = (t * t * 0xB0 as f32) as u32;
+                        if a == 0 {
+                            continue;
+                        }
+                        let idx = y * buf_w + x;
+                        let p = target[idx];
+                        let inv = 255 - a;
+                        let dr = ((p >> 16) & 0xFF) * inv / 255;
+                        let dg = ((p >> 8) & 0xFF) * inv / 255;
+                        let db = (p & 0xFF) * inv / 255;
+                        target[idx] = (p & 0xFF00_0000) | (dr << 16) | (dg << 8) | db;
+                    }
+                }
+            }
+        }
+
         // Development builds get the amber debug theme (orange bg tint / window hairline / title) via fluor's `amber` feature — pure theme-CONSTANT swaps, zero extra drawing steps. The old post-composite amber wash is gone: it wrote straight-RGB into fluor's α+darkness buffer, which inverted to blue.
 
         // Hit-mask overlay (`[]h`): replace every pixel with the opaque random colour for its hit_test_map ID. Drawn LAST over everything (including chrome + chord hint) — hit testing is per-final-pixel anyway, so the overlay shows exactly what `hit_at` would return. `.get` keeps the index lookup safe for any stale stamp at an unregistered high ID.
