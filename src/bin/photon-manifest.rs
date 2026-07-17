@@ -30,10 +30,14 @@ fn main() {
             "--out" => out = args.next(),
             "--merge" => merge = args.next(),
             "--artefact" => {
-                let (Some(platform), Some(arch), Some(version), Some(commit_hex), Some(url), Some(hash_hex)) =
-                    (args.next(), args.next(), args.next(), args.next(), args.next(), args.next())
+                let (Some(platform), Some(arch), Some(version), Some(commit_hex), Some(url), Some(hash_hex), Some(size_str)) =
+                    (args.next(), args.next(), args.next(), args.next(), args.next(), args.next(), args.next())
                 else {
-                    fail("--artefact needs 6 values: platform arch major.minor.patch commit-sha1-hex url blake3-hex");
+                    fail("--artefact needs 7 values: platform arch major.minor.patch commit-sha1-hex url blake3-hex size-bytes");
+                };
+                let size: u64 = match size_str.parse() {
+                    Ok(n) => n,
+                    Err(_) => fail("--artefact size must be the artefact's byte count"),
                 };
                 let mut v = version.split('.').map(|p| p.parse::<usize>());
                 let (Some(Ok(major)), Some(Ok(minor)), Some(Ok(patch)), None) = (v.next(), v.next(), v.next(), v.next())
@@ -49,7 +53,7 @@ fn main() {
                     Ok(h) => h,
                     Err(_) => fail("--artefact hash must be 64 hex chars (BLAKE3)"),
                 };
-                rows.push(ManifestRow { platform, arch, version: (major, minor, patch), commit, url, hash });
+                rows.push(ManifestRow { platform, arch, version: (major, minor, patch), commit, url, hash, size });
             }
             other => fail(&format!("unknown arg {other}")),
         }
@@ -127,6 +131,8 @@ fn main() {
             section.add_field_multi("patch", vec![VsfType::z(patch)]);
         }
         section.add_field_multi("commit", vec![VsfType::hs(r.commit.clone())]);
+        // Artefact byte count — the download bar's denominator when the CDN streams chunked (a cache-busted fresh binary always does). Absent on old manifests reads 0.
+        section.add_field_multi("size", vec![VsfType::z(r.size as usize)]);
         section.add_field_multi("url", vec![VsfType::nu(r.url.clone())]);
         section.add_field_multi("hash", vec![VsfType::hb(r.hash.to_vec())]);
         builder = builder.add_section_direct(section);
