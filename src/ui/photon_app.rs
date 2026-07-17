@@ -4027,7 +4027,7 @@ impl FluorApp for PhotonApp {
                 let row_style = if self.contacts[ci].has_real_name() {
                     TextStyle::new(text_size, row_colour).weight(500).font("Oxanium")
                 } else {
-                    TextStyle::new(text_size, row_colour).weight(500).font("Oxanium").skew(0.2126)
+                    TextStyle::new(text_size, row_colour).weight(500).font("Oxanium").shear(0.2126)
                 };
                 ctx.text.draw_text_left(&mut canvas, &self.contacts[ci].display_name_or_pending(), text_x, cy, &row_style, Some(rows_clip), None);
 
@@ -4230,7 +4230,7 @@ impl FluorApp for PhotonApp {
                     let header_style = if contact.has_real_name() {
                         TextStyle::new(name_size, their_colour).weight(600).font("Oxanium")
                     } else {
-                        TextStyle::new(name_size, their_colour).weight(600).font("Oxanium").skew(0.2126)
+                        TextStyle::new(name_size, their_colour).weight(600).font("Oxanium").shear(0.2126)
                     };
                     ctx.text.draw_text_center(&mut canvas, &contact.display_name_or_pending(), buf_w as f32 * 0.5, name_y, &header_style, None, None);
 
