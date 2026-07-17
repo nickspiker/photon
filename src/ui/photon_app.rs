@@ -286,6 +286,14 @@ const PRESENCE_PING_DEEP: std::time::Duration = std::time::Duration::from_secs(1
 const PRESENCE_IDLE_NEAR: std::time::Duration = std::time::Duration::from_secs(30);
 /// Idle past this → drop from idle (1min) to deep-idle (15min).
 const PRESENCE_IDLE_FAR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// Cap on the presence-sweep interval while ANY validated direct path is held. The presence
+/// ping doubles as the NAT keepalive for that path (its ack refreshes the mapping), and NAT
+/// UDP mappings — especially CGNAT — expire well under a minute, so the idle/deep taper would
+/// silently kill a live direct path mid-session (the app keeps believing it for up to PATH_TTL
+/// while the mapping is already dead). Clamping to 20s keeps held paths warm under common NAT
+/// timeouts. Only ever makes the sweep *more* frequent, never less, so presence liveness is
+/// unaffected. Supersedes the never-wired `traverse::session::keepalive_due`.
+const VALIDATED_PATH_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// One deterministic aesthetic channel in `[0, 1]` from a relationship digest: `blake3(name ‖ digest)`, first 8 bytes as u64, divided by `u64::MAX`. Same convention as chirp's `channel_unit` (the chime derivation) — duplicated here rather than imported because chirp is desktop-gated and colour must build on every target. Keep the two in lockstep.
 fn aesthetic_channel_unit(name: &str, digest: &[u8; 32]) -> f32 {
@@ -9985,13 +9993,21 @@ impl PhotonApp {
         let idle = self
             .last_interaction
             .map_or(std::time::Duration::ZERO, |last| now.duration_since(last));
-        let tier = if idle < PRESENCE_IDLE_NEAR {
+        let mut tier = if idle < PRESENCE_IDLE_NEAR {
             PRESENCE_PING_ACTIVE
         } else if idle < PRESENCE_IDLE_FAR {
             PRESENCE_PING_IDLE
         } else {
             PRESENCE_PING_DEEP
         };
+        // A held direct path is kept open only by traffic on it, and the presence sweep IS
+        // that keepalive — so while any validated path exists, don't let the idle/deep taper
+        // starve it below the NAT-safe interval, or the mapping dies mid-session.
+        if tier > VALIDATED_PATH_KEEPALIVE
+            && self.contacts.iter().any(|c| c.validated_path.is_some())
+        {
+            tier = VALIDATED_PATH_KEEPALIVE;
+        }
         crate::jitter_dur(tier)
     }
 
