@@ -78,8 +78,19 @@ pub fn encode_avatar_from_image(image_data: &[u8]) -> Result<Vec<u8>, String> {
     };
 
     // Decode image to RGB Note: image crate has default memory limits (~512MB decoded). This is fine - avatars are 256x256 output, huge sources should be resized first.
-    let img = image::load_from_memory(image_data)
+    // Decode via ImageReader (not load_from_memory) so the EXIF orientation is readable — a phone photo carries rotate-after-decode flags, and ignoring them rendered those avatars sideways.
+    use image::ImageDecoder;
+    let mut decoder = image::ImageReader::new(std::io::Cursor::new(image_data))
+        .with_guessed_format()
+        .map_err(|e| format!("Failed to sniff image format: {}", e))?
+        .into_decoder()
         .map_err(|e| format!("Failed to decode image: {}", e))?;
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder)
+        .map_err(|e| format!("Failed to decode image: {}", e))?;
+    img.apply_orientation(orientation);
 
     let orig_width = img.width() as usize;
     let orig_height = img.height() as usize;

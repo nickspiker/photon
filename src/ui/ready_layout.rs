@@ -11,7 +11,7 @@ const V_SLICES: [f32; 11] = [
     1.5,  // gap — top margin above the avatar
     5.,   // avatar
     0.5,  // gap1
-    2.,   // handle
+    0.,   // handle — COLLAPSED while the show-handle setting doesn't exist (off-by-default by design); reserving its 2 units left the search box floating far below the avatar (ticket). When the setting lands, its layout re-opens this slice conditionally.
     0.,   // gap2
     1.5,  // hint
     0.,   // gap3

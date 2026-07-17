@@ -1496,12 +1496,14 @@ impl FluorApp for PhotonApp {
         self.message_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         // Send button overlaid in the compose box. ASCII ">" (not "→" U+2192 — absent from the Android font, so it rendered blank there; the contacts "+" button proves ASCII renders). Geometry set each frame in `update_widget_layout`. Empty label — the glyph is a drawn 4-vertex up arrowhead (draw_up_arrowhead), not text.
         self.message_send_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
-        // Specific subtle hover for the two overlay-in-textbox action buttons (pre-fluor per-control hover colours), instead of the generic saturated BUTTON_HOVER.
+        // Specific subtle hover for the two overlay-in-textbox action buttons (pre-fluor per-control hover colours), instead of the generic saturated BUTTON_HOVER. Held = the SAME subtle fill: these fire on release, so a press must read as "nothing happened yet" — the default BUTTON_HELD ramp flashed a heavy fill mid-press (the "+" ticket).
         if let Some(b) = self.contacts_plus_btn.as_mut() {
             b.set_hover_fill(Some(theme::SEND_BUTTON_HOVER));
+            b.set_held_fill(Some(theme::SEND_BUTTON_HOVER));
         }
         if let Some(b) = self.message_send_btn.as_mut() {
             b.set_hover_fill(Some(theme::SEND_BUTTON_HOVER));
+            b.set_held_fill(Some(theme::SEND_BUTTON_HOVER));
         }
         // Reserve a hit-id for the Ready-screen avatar circle. Not a Widget — the avatar is just a paint primitive — so click dispatch is handled directly in `on_event`'s MouseInput::Pressed arm, not thru `widget::dispatch_click`. Incrementing the shared counter keeps the contiguous-id contract intact for the `[]h` debug overlay.
         self.hit_counter = self.hit_counter.wrapping_add(1);
@@ -2150,6 +2152,15 @@ impl FluorApp for PhotonApp {
                 }
                 // Hover only re-walks (and repaints) when the hit under the cursor actually changes — one walk over EVERY active widget, so every textbox/button on every screen inherits hover + the I-beam with no hand-list. Frozen (busy) widgets return `None` from `hover()`, so they stay inert for free.
                 if new_hit != self.hover_hit {
+                    // Contact-row hover tint is CONTENT (painted into the canvas, not an overlay delta), so entering/leaving a row needs the full frame the widget-overlay path avoids.
+                    let row_hover = |hit: HitId| {
+                        self.contact_hit_base != HIT_NONE
+                            && hit >= self.contact_hit_base
+                            && hit < self.contact_hit_base.wrapping_add(256)
+                    };
+                    if row_hover(new_hit) || row_hover(self.hover_hit) {
+                        self.scene_dirty = true;
+                    }
                     self.hover_hit = new_hit;
                     let mut is_tb = false;
                     self.visit_app_widgets(&mut |w| {
@@ -3683,17 +3694,25 @@ impl FluorApp for PhotonApp {
                 if row_top + row_h <= 0 || row_top >= buf_h as isize {
                     continue; // fully outside the visible content area (rows now scroll up to the top, not just `rows.y0`)
                 }
-                // Held: a finger/pointer is DOWN on this row and a release here opens the conversation (press-hold-release). Paint the held tint FIRST so the avatar + name land on top of it; a drag-off clears `ctx.pressed_hit` and the tint vanishes next frame.
-                if ci < 256 && ctx.pressed_hit != HIT_NONE
-                    && ctx.pressed_hit == self.contact_hit_base.wrapping_add(ci as HitId)
-                {
+                // Held (pointer DOWN on this row, release opens the conversation) or hovered — paint the tint FIRST so the avatar + name land on top of it. Held wins; hover uses the same subtle fill as the in-textbox action buttons, restoring the legacy row-hover cue. A drag-off clears `ctx.pressed_hit` and the tint vanishes next frame.
+                let row_hit_here = self.contact_hit_base.wrapping_add(ci as HitId);
+                let row_tint = if ci >= 256 {
+                    None
+                } else if ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == row_hit_here {
+                    Some(fluor::theme::BUTTON_HELD)
+                } else if ctx.pressed_hit == HIT_NONE && self.hover_hit == row_hit_here {
+                    Some(theme::SEND_BUTTON_HOVER)
+                } else {
+                    None
+                };
+                if let Some(tint) = row_tint {
                     paint::fill_rect(
                         &mut canvas,
                         rows.x0 as isize,
                         row_top.max(0),
                         (rows.x1 - rows.x0) as isize,
                         (row_top + row_h).min(buf_h as isize) - row_top.max(0),
-                        fluor::theme::BUTTON_HELD,
+                        tint,
                         Some(rows_clip),
                         None,
                     );
@@ -9682,11 +9701,11 @@ impl PhotonApp {
             let Some((primary, alt)) = contact.race_addrs() else {
                 continue;
             };
-            // Party-id seam: sibling tokens derive from the device pids (fleet weave), friend tokens from the seeds.
+            // Party-id seam: sibling tokens derive from the device pids (fleet weave), friend tokens from the identity PARTY IDS — the same inputs the peer derives with. (Was the raw seed: my {seed, their_pid} vs their {their_seed, my_pid} never agreed, so every blind put/get bounced off the peer's unknown-token gate — the exact seam class that hung chat/CLUTCH/history.)
             let our_pid = if contact.is_sibling {
                 crate::crypto::clutch::sibling_party_id(&device_pubkey)
             } else {
-                our_seed
+                crate::crypto::clutch::identity_party_id(&our_seed)
             };
             let token =
                 crate::crypto::clutch::derive_conversation_token(&[our_pid, contact.handle_hash]);
@@ -12173,6 +12192,8 @@ impl PhotonApp {
                         // A friend's device deposits its blind with us (or asks for it back) — or a FLEET SIBLING asks for S over its own token. Authorization for all: the token must resolve to a contact AND the signer must be a device we trust for it AND the relationship must be mutual (for a sibling that means the exact device + Complete ceremony).
                         BlindFrameKind::Put | BlindFrameKind::Get => {
                             let our_sibling_pid = self.our_sibling_pid();
+                            // Friend tokens derive from the identity PARTY IDS (never the raw seed — the peer derives with pids, so a seed here rejects every legitimate frame as unknown-token).
+                            let our_friend_pid = crate::crypto::clutch::identity_party_id(&our_seed);
                             let cidx = self.contacts.iter().position(|c| {
                                 let our = if c.is_sibling {
                                     match our_sibling_pid {
@@ -12180,7 +12201,7 @@ impl PhotonApp {
                                         None => return false,
                                     }
                                 } else {
-                                    our_seed
+                                    our_friend_pid
                                 };
                                 c.is_mutual()
                                     && c.knows_device(&sender_pubkey.key)
