@@ -11,15 +11,24 @@ build_sign_install() {
     source "$(dirname "${BASH_SOURCE[0]}")/vsf-gate.sh"
     vsf_gate
 
+    # Source freeze: reflink-snapshot photon + its path-dep closure THIS instant and build from the frozen copy — edits made while the build runs can't tear it. Off-btrfs (or any snapshot failure) builds the live tree exactly as before. Target stays the real ./target (see snapbuild.sh for why that's cache-coherent), so sign + install below are untouched.
+    source "$(dirname "${BASH_SOURCE[0]}")/snapbuild.sh"
+    local build_dir="."
+    if snapbuild_take; then
+        build_dir="$SNAPBUILD_ROOT/photon"
+        export CARGO_TARGET_DIR="$(pwd)/target"
+        echo "Source frozen (reflink snapshot) — edit away, this build won't see it"
+    fi
+
     if [ "$profile" = "release" ]; then
         prof_dir="release"
         export PHOTON_ALLOW_RELEASE=1
         echo "Building release binary..."
-        cargo build --release
+        (cd "$build_dir" && cargo build --release)
     else
         prof_dir="debug"
         echo "Building dev binary..."
-        cargo build --features development
+        (cd "$build_dir" && cargo build --features development)
     fi
 
     sign_binary "$prof_dir"
