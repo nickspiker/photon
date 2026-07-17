@@ -1406,6 +1406,32 @@ async fn run_checker(
                                             },
                                             &event_proxy_recv,
                                         );
+                                    } else if let Ok(crate::network::fgtw::protocol::FgtwMessage::AvatarResponse {
+                                        timestamp: _,
+                                        responder_pubkey,
+                                        provenance_hash,
+                                        signature,
+                                        avatar_vsf,
+                                    }) = crate::network::fgtw::protocol::FgtwMessage::from_vsf_bytes(&data)
+                                    {
+                                        // A P2P avatar answer big enough to ride PT (typical: ~24KB AV1) — same verify + emit as the UDP arm. This was the "PT: Received unknown 23.9KB" drop: the PT completion chain knew clutch/hist/blind but not av_resp, so large avatars silently fell thru to the FGTW fallback.
+                                        let provenance: [u8; 32] = blake3::hash(&avatar_vsf).into();
+                                        if provenance == provenance_hash
+                                            && verify_provenance_signature(&provenance_hash, &responder_pubkey, &signature)
+                                        {
+                                            crate::logf!("PT: avatar response reassembled ({} bytes)", avatar_vsf.len());
+                                            send_status_update(
+                                                &status_tx_recv,
+                                                StatusUpdate::AvatarReceived {
+                                                    responder_pubkey,
+                                                    avatar_vsf,
+                                                    sender_addr: src_addr,
+                                                },
+                                                &event_proxy_recv,
+                                            );
+                                        } else {
+                                            crate::log("PT: avatar response REJECTED (bad signature)");
+                                        }
                                     } else {
                                         // Unknown PT data - emit generic event for debugging
                                         crate::logf!("PT: Failed to parse {} bytes as CLUTCH message", data.len());
