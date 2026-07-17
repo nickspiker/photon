@@ -62,6 +62,33 @@ pub fn our_version() -> (usize, usize, usize) {
     )
 }
 
+/// The stamp-window FLOOR: eagle-time oscillations at the moment this binary was built (build.rs). Compiled in — it advances only by exec'ing into a newer build, never by mutable stored state (docs/updates.md).
+pub fn build_stamp_osc() -> i64 {
+    env!("PHOTON_BUILD_STAMP").parse().unwrap_or(0)
+}
+
+/// Stamp-window verdict for the AUTOMATIC update path (docs/updates.md, reconciled to the counter version scheme: `t` = the signed manifest's creation stamp, the floor = this binary's build stamp; forward-only ordering itself rides the version tuple).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StampVerdict {
+    /// `floor < t ≤ now` — the manifest is fresher than this build and not from the future.
+    Accept,
+    /// `t ≤ floor` — a manifest at or before this build's own moment: a replay or stale edge. Discard.
+    Stale,
+    /// `t > now` — forward-dated. Not an error: "not yet" — defer and re-evaluate on the next poll (with the honest clock consulted before concluding).
+    ForwardDated,
+}
+
+/// Evaluate the stamp window against a caller-supplied `now` (the staged clock: system eagle time on the happy path, the nunc-adjusted conservative edge when the check fails forward).
+pub fn stamp_window(manifest_stamp_osc: i64, now_osc: i64) -> StampVerdict {
+    if manifest_stamp_osc <= build_stamp_osc() {
+        StampVerdict::Stale
+    } else if manifest_stamp_osc > now_osc {
+        StampVerdict::ForwardDated
+    } else {
+        StampVerdict::Accept
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Channel {
     Release,
@@ -113,6 +140,11 @@ impl ManifestRow {
 
 /// Fetch + verify + parse a channel's manifest. Trust = the file signature verifying against the RELEASE key — never the URL, never a filename.
 pub fn fetch_manifest_blocking(channel: Channel) -> Result<Vec<ManifestRow>, String> {
+    fetch_manifest_stamped_blocking(channel).map(|(_, rows)| rows)
+}
+
+/// [`fetch_manifest_blocking`] plus the SIGNED header's creation stamp (eagle-time oscillations) — the `t` of the stamp window. 0 if the header carries no timestamp (treated as maximally stale by [`stamp_window`]).
+pub fn fetch_manifest_stamped_blocking(channel: Channel) -> Result<(i64, Vec<ManifestRow>), String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
         .build()
@@ -129,14 +161,23 @@ pub fn fetch_manifest_blocking(channel: Channel) -> Result<Vec<ManifestRow>, Str
         .bytes()
         .map_err(|e| format!("manifest read: {e}"))?
         .to_vec();
-    parse_manifest(&bytes, channel)
+    parse_manifest_stamped(&bytes, channel)
 }
 
 /// Parse + signature-gate manifest bytes: every section named `manifest.photon.<channel>` is one artefact, fields matched by NAME + TYPE (never position). Public for the manifest tool's merge path + tests.
 pub fn parse_manifest(bytes: &[u8], channel: Channel) -> Result<Vec<ManifestRow>, String> {
+    parse_manifest_stamped(bytes, channel).map(|(_, rows)| rows)
+}
+
+/// [`parse_manifest`] plus the verified header's creation stamp — `t` for the stamp window. The stamp is INSIDE the signature (the whole header is signed), so it's as trustworthy as the rows.
+pub fn parse_manifest_stamped(bytes: &[u8], channel: Channel) -> Result<(i64, Vec<ManifestRow>), String> {
     let (header, header_end) =
         vsf::verification::read_verified(bytes, Some(crate::crypto::self_verify::AUTHOR_PUBKEY))
             .map_err(|e| format!("manifest verification: {e}"))?;
+    let stamp_osc = match &header.creation_time {
+        Some(VsfType::e(vsf::types::EtType::e6(osc))) => *osc,
+        _ => 0,
+    };
     let sections = header
         .sections(bytes, header_end)
         .map_err(|e| format!("manifest sections: {e}"))?;
@@ -195,7 +236,7 @@ pub fn parse_manifest(bytes: &[u8], channel: Channel) -> Result<Vec<ManifestRow>
     if rows.is_empty() {
         return Err("manifest carried no artefact sections for this channel".to_string());
     }
-    Ok(rows)
+    Ok((stamp_osc, rows))
 }
 
 /// The section for THIS build's platform + arch, if the manifest carries one.

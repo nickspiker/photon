@@ -664,6 +664,8 @@ pub struct PhotonApp {
     clock_check_rx: std::sync::mpsc::Receiver<crate::network::ClockCheckResult>,
     /// `Some(offset_secs)` when the last consensus said the system clock is off by more than the threshold (consensus − system; positive = system behind). Drives the amber "clock off" banner. Tracks the LATEST verdict, not sticky — a corrected clock clears it on the next clean check.
     clock_off: Option<i64>,
+    /// The latest nunc consensus verdict, kept even when the clock is fine: (offset_secs = consensus − system, confidence_secs). The update stamp window's forward-fail tiebreak reads this — the "honest clock" consulted exactly when a manifest claims time travel (docs/updates.md staged clock). `None` until the first successful consensus.
+    clock_consensus: Option<(i64, i64)>,
     /// Watches the wall clock against the monotonic clock; a gross unexplained jump (NTP step, long sleep, or an adversary moving the clock after boot) triggers a fresh consensus re-check.
     clock_jump: crate::network::ClockJumpDetector,
     /// Fleet-inbox drain: a one-shot off-thread pull of this identity's pending worker-observed events (bind-attempt alerts, docs/fleet-inbox.md). `drain_fleet_inbox` reads the result and surfaces a notice. Kicked once per attest/resume.
@@ -856,6 +858,10 @@ pub struct PhotonApp {
     update_busy: bool,
     /// Desktop: a verified binary swap completed — re-exec into it on the next tick (from the main thread, outside all borrows).
     update_reexec: Option<std::path::PathBuf>,
+    /// Next automatic release-channel check, eagle time. 0 = not yet scheduled (the driver arms a short post-launch delay, then ~6–8h jittered). The AUTOMATIC path (docs/updates.md): desktop release builds self-apply thru the stamp window; dev builds and Android only surface a toast — dev updates stay manual by mandate, Android package installs belong to the OS.
+    next_update_check_osc: i64,
+    /// Session dedup for the "update available" toast — the version already announced, so a 6-hourly re-check doesn't re-toast the same release.
+    update_toasted: Option<(usize, usize, usize)>,
     /// Android: a hash-verified APK is staged — the JNI poll hands this path to Kotlin, which fires the system installer (the second click).
     #[cfg(target_os = "android")]
     pub pending_apk_install: Option<String>,
@@ -940,6 +946,7 @@ impl PhotonApp {
             },
             clock_check_rx: std::sync::mpsc::channel().1,
             clock_off: None,
+            clock_consensus: None,
             // ~1 hour of unexplained wall-vs-monotonic skew triggers a re-check (loose enough to ignore NTP steps and short sleeps, tight enough to catch a day-scale set or long sleep).
             clock_jump: crate::network::ClockJumpDetector::new(3600),
             inbox_check_tx: {
@@ -1042,6 +1049,8 @@ impl PhotonApp {
             update_status: None,
             update_busy: false,
             update_reexec: None,
+            next_update_check_osc: 0,
+            update_toasted: None,
             #[cfg(target_os = "android")]
             pending_apk_install: None,
             settings_rail_extent: 0.0,
@@ -6235,6 +6244,98 @@ impl PhotonApp {
     }
 
     /// On Updates-page open: fetch BOTH channel manifests (report-only) so each button can show its target version + colour. Idempotent per visit via `update_checked`.
+    /// Effective `updates.auto` (fleet-synced, born linked): absent = ON — the compiled default per docs/updates.md.
+    fn auto_updates_enabled(&self) -> bool {
+        self.fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("updates.auto").map(|v| v != [0]))
+            .unwrap_or(true)
+    }
+
+    /// The AUTOMATIC update path (docs/updates.md): a jittered ~6–8h RELEASE-channel poll, gated by the `updates.auto` fleet setting (default ON). What "apply" means is per-platform (see `on_auto_update_check`): a desktop release build self-applies thru the stamp window and re-execs; dev builds (manual by mandate) and Android (the OS owns package installs) surface a once-per-version toast. The DEV channel is never polled automatically.
+    fn drive_auto_update(&mut self) {
+        if !self.online || self.update_busy || !self.auto_updates_enabled() {
+            return;
+        }
+        let now = vsf::eagle_time_oscillations();
+        if self.next_update_check_osc == 0 {
+            // First check a jittered minute-or-two after launch — let attest + the network settle first.
+            self.next_update_check_osc = now + 60 * crate::OSC_PER_SEC + crate::jitter(60 * crate::OSC_PER_SEC);
+            return;
+        }
+        if now < self.next_update_check_osc {
+            return;
+        }
+        // 4h + jitter(4h) → a 6–8h cadence, de-synchronized across the fleet.
+        self.next_update_check_osc = now + (4 * 3600 + crate::jitter(4 * 3600)) * crate::OSC_PER_SEC;
+        let tx = self.update_sender();
+        std::thread::spawn(move || {
+            use crate::network::updates::{fetch_manifest_stamped_blocking, our_row, Channel};
+            match fetch_manifest_stamped_blocking(Channel::Release) {
+                Ok((stamp, rows)) => {
+                    let _ = tx.send(UpdateEvent::AutoChecked(stamp, our_row(&rows)));
+                }
+                Err(e) => crate::logf!("UPDATE: auto check failed ({}) — next cadence retries", e),
+            }
+        });
+    }
+
+    /// Policy for a finished automatic check: tuple-forward only (a downgrade is never automatic), then the stamp window `floor < t ≤ now` with the STAGED clock — system eagle time on the happy path, the nunc consensus verdict (conservative edge) consulted exactly when the check fails forward, a fresh consensus requested when none is in hand. Clearing all gates: desktop release builds self-apply + re-exec; dev builds and Android get a once-per-version toast pointing at Settings → Updates.
+    fn on_auto_update_check(&mut self, stamp_osc: i64, row: Option<crate::network::updates::ManifestRow>) {
+        use crate::network::updates::{our_version, stamp_window, StampVerdict};
+        let Some(row) = row else {
+            return; // no artefact for this platform — nothing to move to
+        };
+        let ours = our_version();
+        if row.version <= ours {
+            return; // current or ahead — automatic never moves backward
+        }
+        let now_sys = vsf::eagle_time_oscillations();
+        let verdict = match stamp_window(stamp_osc, now_sys) {
+            StampVerdict::ForwardDated => match self.clock_consensus {
+                // Honest-clock tiebreak: the LOWEST plausible now (offset minus the confidence half-width), so a lagging system clock delays an update rather than rejecting it, and a forward-dated stamp still can't slip in.
+                Some((offset, confidence)) => {
+                    stamp_window(stamp_osc, now_sys + (offset - confidence) * crate::OSC_PER_SEC)
+                }
+                None => {
+                    crate::log("UPDATE: manifest ahead of the system clock and no consensus verdict in hand — requesting one, deferring");
+                    #[cfg(not(target_os = "android"))]
+                    if let Some(proxy) = self.event_proxy.clone() {
+                        crate::network::spawn_clock_check(self.clock_check_tx.clone(), Some(proxy));
+                    }
+                    #[cfg(target_os = "android")]
+                    crate::network::spawn_clock_check(self.clock_check_tx.clone(), None);
+                    StampVerdict::ForwardDated
+                }
+            },
+            v => v,
+        };
+        match verdict {
+            StampVerdict::Stale => {
+                crate::log("UPDATE: manifest stamp at/below this build's floor — replay or stale edge, ignored");
+                return;
+            }
+            StampVerdict::ForwardDated => {
+                crate::log("UPDATE: manifest is forward-dated — not yet (re-evaluated next cadence)");
+                return;
+            }
+            StampVerdict::Accept => {}
+        }
+        // A dev build never hops channels on its own, and Android can't self-install — both announce instead.
+        let desktop_release = cfg!(not(target_os = "android")) && ours.2 == 0;
+        if desktop_release {
+            crate::logf!("UPDATE: auto-applying release {} (stamp window clear)", row.version_string());
+            self.update_release = ChannelCheck::Ready(Some(row));
+            self.spawn_update_apply(crate::network::updates::Channel::Release);
+        } else if self.update_toasted != Some(row.version) {
+            self.update_toasted = Some(row.version);
+            self.ready_toast = Some(format!(
+                "Photon {} available \u{2014} Settings \u{2192} Updates",
+                dozenal_version_tuple(row.version)
+            ));
+        }
+    }
+
     fn check_update_channels(&mut self) {
         use crate::network::updates::Channel;
         self.update_checked = true;
@@ -6305,6 +6406,8 @@ impl PhotonApp {
             return false;
         };
         let mut changed = false;
+        // Auto-check verdicts defer past the loop — the policy handler needs &mut self while `rx` borrows it.
+        let mut auto_checked: Option<(i64, Option<crate::network::updates::ManifestRow>)> = None;
         while let Ok(ev) = rx.try_recv() {
             changed = true;
             match ev {
@@ -6324,6 +6427,9 @@ impl PhotonApp {
                     }
                     crate::logf!("UPDATE: {} check settled", channel.label());
                 }
+                UpdateEvent::AutoChecked(stamp, row) => {
+                    auto_checked = Some((stamp, row));
+                }
                 UpdateEvent::Applied(exe) => {
                     self.update_busy = false;
                     self.update_status = Some("Updated \u{221a} restarting\u{2026}".to_string());
@@ -6341,6 +6447,9 @@ impl PhotonApp {
                     crate::logf!("UPDATE: apply failed: {}", e);
                 }
             }
+        }
+        if let Some((stamp, row)) = auto_checked {
+            self.on_auto_update_check(stamp, row);
         }
         changed
     }
@@ -7913,6 +8022,8 @@ impl PhotonApp {
                     sources_queried,
                 } => {
                     crate::logf!("Clock: nunc consensus offset = {}s (±{}s, {}/{} sources)", offset_secs, confidence_secs, sources_used, sources_queried);
+                    // Kept regardless of the banner threshold — the update stamp window's forward-fail tiebreak reads the raw verdict.
+                    self.clock_consensus = Some((offset_secs, confidence_secs as i64));
                     self.clock_off = if offset_secs.abs() > CLOCK_OFF_THRESHOLD_SECS {
                         crate::logf!("Clock: system clock off by {}s — raising banner (warn only, not corrected)", offset_secs);
                         Some(offset_secs)
@@ -12492,6 +12603,9 @@ impl PhotonApp {
         // Private-identity-secret S: probe/reconstitute/deposit blinds toward whichever friends need an op (no-op at steady state).
         self.drive_blind_ops();
 
+        // Automatic update poll (release channel, ~6–8h jittered, updates.auto-gated): desktop release builds self-apply thru the stamp window; dev builds + Android toast once per version.
+        self.drive_auto_update();
+
         // NOTE: Proactive CLUTCH initiation is now handled via background keygen:
         // 1. spawn_clutch_keygen() is called when contact is added (background thread)
         // 2. check_clutch_keygens() processes results, stores keypairs + ceremony_id
@@ -12997,6 +13111,8 @@ enum ChannelCheck {
 enum UpdateEvent {
     /// A manifest check finished: our platform's row (None = manifest has no row for us) or the error.
     Checked(crate::network::updates::Channel, Result<Option<crate::network::updates::ManifestRow>, String>),
+    /// The AUTOMATIC release-channel check finished: the signed manifest's creation stamp (the window's `t`) + our platform's row. Errors land as a log line in the worker, not here — the cadence just retries later.
+    AutoChecked(i64, Option<crate::network::updates::ManifestRow>),
     /// Desktop: the binary swap completed and verified — re-exec into this path.
     Applied(std::path::PathBuf),
     /// Android: the APK downloaded + hash-verified — hand to the system installer.

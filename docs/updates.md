@@ -97,13 +97,19 @@ Exists and is reused:
 - R2 distribution + the FGTW/VSF signed-document machinery — the manifest transport.
 - Durable session + vault persistence — what makes the re-exec transparent.
 
-To build:
-- The signed version manifest format + its publish step in the release scripts.
-- The client poll + verify + stamp-window check (`floor < t ≤ now`).
-- The platform-split swap (Unix rename, Windows `.old` dance) + re-exec.
+BUILT (as of 2026-07-16):
+- The signed version manifest format (one VSF section per artefact) + the publish steps (deploy.sh, scripts/publish/dev-*.sh, pinned-stamp + flock-serialized as of 58bf7ed).
+- The manual flow: Updates page auto-checks both channels on open, two channel buttons (any-difference install — explicit channel hop, downgrade by user intent), desktop swap (Unix rename / Windows `.old` dance) + re-exec, Android download → system installer.
+- The AUTOMATIC path: jittered ~6–8h release-channel poll (`drive_auto_update`), gated by the fleet-synced `updates.auto` toggle (Updates page, default ON). Tuple-forward only, then the stamp window — desktop RELEASE builds self-apply + re-exec; dev builds (manual by mandate) and Android surface a once-per-version toast.
+- **Stamp window as built — reconciled to the counter version scheme** (the "version integer IS the stamp" line above predates major.minor.patch): `t` = the signed manifest header's creation stamp (eagle e6, inside the signature), the floor = `PHOTON_BUILD_STAMP` (eagle time at build, compiled in by build.rs — advances only by exec'ing into a newer build). Accept iff `floor < t ≤ now`; forward-only ordering rides the version tuple.
+- **`now` staged, not always-nunc**: system eagle time on the happy path; the nunc consensus verdict (conservative edge, `offset − confidence`) is consulted exactly when the window fails forward, and a missing verdict spawns a consensus query + defers — the doc's "no system-clock fallback anywhere" tightened to "nunc arbitrates every forward failure", which keeps nunc off the hot path while forward-dated stamps still can't slip in.
+
+Still to build:
 - In-flight textbox hand-off across the exec.
-- The Android notification → system-installer path.
+- The Android platform NOTIFICATION (today it's the in-app toast) → `REQUEST_INSTALL_PACKAGES` → system-installer path.
 - Idle gating + the event-shown "updated" note.
+- Push trigger (release-notice doorbell via the fleet inbox / hub events) — the poll cadence stands in meanwhile.
+- Rollback (`.prev` auto-revert after N failed starts).
 
 ## Decided
 
