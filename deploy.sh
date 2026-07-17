@@ -206,9 +206,19 @@ echo "Deploying website..."
 (cd /mnt/Chiton/MEGA/holdmyoscilloscope && ./deploy.sh)
 
 # Everything succeeded — release v$SHIP_VERSION ($FULL_VERSION) is public and its commit (made up
-# top, before the builds) is now permanent: disarm the rollback and push. The tree stays at
-# X.Y.0 until the next dev publish bumps the patch or the next deploy bumps the minor.
+# top, before the builds) is now permanent: disarm the rollback.
 trap - ERR
+
+# OPEN THE DEV LINE (2026-07-17): the tree must never rest at X.Y.0 — patch 0 IS the release marker,
+# so a local dev build compiled from a .0 tree would masquerade as the release ("already on latest
+# release" on a dev build, observed live). The release artifacts above embedded .0; from this commit
+# on, every build is ≥ .1, and the next dev publish SHIPS .1 (publish-current-then-bump — see
+# scripts/lib/manifest.sh).
+DEV_OPEN="${MAJOR}.${SHIP_VERSION}.1"
+sed -i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${DEV_OPEN}\"/" Cargo.toml
+cargo update --workspace --quiet 2>/dev/null || true
+git add Cargo.toml Cargo.lock
+git commit -q -m "dev line open: v${DEV_OPEN} (release v${SHIP_VERSION} shipped at .0)"
 git push
 
 echo ""

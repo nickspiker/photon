@@ -29,14 +29,35 @@ manifest_take_publish_lock() {
     fi
 }
 
-# Dev publish preamble: take the publish lock, refuse dirty, bump the PATCH (releases stay .0), COMMIT the bump — so the
-# subsequent build embeds a clean HEAD whose commit is exactly what the manifest will claim.
-# PINS the version+commit for manifest_publish_dev_row: the row must claim what THIS run's build embeds, never whatever the tree happens to say when the row finally publishes.
-# Arg: <platform>-<arch> label for the commit message.
+# Dev publish preamble — PUBLISH-CURRENT-THEN-BUMP (2026-07-17): the tree ALREADY holds this publish's version.
+# deploy.sh opens the dev line at X.Y.1 the moment a release ships, and every dev publish pre-bumps for the
+# next one on its way out (manifest_end_dev_publish) — so the tree never rests at a version that hasn't been
+# or isn't about to be published, a dev build can NEVER carry patch 0 (patch 0 IS the release marker — the
+# one way to tell the flavours apart), and the first dev publish after a release ships exactly .1.
+# Takes the publish lock, refuses dirty, refuses a .0 tree (a half-finished deploy), and PINS the version+commit
+# for manifest_publish_dev_row so the row claims what this run's build embeds.
+# Arg: <platform>-<arch> label, carried to the end-bump's commit message.
 manifest_begin_dev_publish() {
-    local label="$1" full major minor patch next
+    local label="$1" full patch
     manifest_take_publish_lock
     manifest_refuse_dirty
+    full=$(manifest_full_version)
+    patch=$(echo "$full" | cut -d. -f3)
+    if [ "$patch" = "0" ]; then
+        echo "ERROR: tree version is ${full} — patch 0 is the RELEASE marker; a dev build must never wear it."
+        echo "       deploy.sh opens the dev line at .1 after every release; if a deploy half-finished, bump the patch and commit."
+        exit 1
+    fi
+    MANIFEST_PUBLISH_VERSION="$full"
+    MANIFEST_PUBLISH_COMMIT=$(git rev-parse HEAD)
+    MANIFEST_PUBLISH_LABEL="$label"
+    echo "dev publish: v${full} (publish-current; the post-publish bump opens the next)"
+}
+
+# Dev publish epilogue: the artefact + manifest for the PINNED version are live — bump the patch and commit,
+# opening the next dev line so every subsequent local build already wears its own (unpublished) number.
+manifest_end_dev_publish() {
+    local full major minor patch next
     full=$(manifest_full_version)
     major=$(echo "$full" | cut -d. -f1); minor=$(echo "$full" | cut -d. -f2); patch=$(echo "$full" | cut -d. -f3)
     next=$((patch + 1))
@@ -44,10 +65,8 @@ manifest_begin_dev_publish() {
     # Cargo.lock records the workspace member's version — refresh it so the tree is exactly two files changed.
     cargo update --workspace --quiet 2>/dev/null || true
     git add Cargo.toml Cargo.lock
-    git commit -q -m "dev: ${label} v${major}.${minor}.${next}"
-    MANIFEST_PUBLISH_VERSION="${major}.${minor}.${next}"
-    MANIFEST_PUBLISH_COMMIT=$(git rev-parse HEAD)
-    echo "dev patch: ${full} -> ${MANIFEST_PUBLISH_VERSION} (committed)"
+    git commit -q -m "dev: ${MANIFEST_PUBLISH_LABEL:-dev} v${full} published; next line v${major}.${minor}.${next}"
+    echo "dev line: v${full} published -> tree now v${major}.${minor}.${next} (the NEXT build's number)"
 }
 
 # Fetch the current dev manifest, merge THIS platform's fresh artefact section into it, re-sign, re-upload.

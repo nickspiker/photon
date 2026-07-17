@@ -28,3 +28,6 @@ publish_github_dev "photon-messenger-android-development.apk" "$APK_PATH"
 echo ""
 echo "Android dev published:"
 echo "  $R2_BASE_URL/photon-messenger-android-development.apk"
+
+# Publish landed — bump the patch + commit, opening the next dev line (publish-current-then-bump).
+manifest_end_dev_publish

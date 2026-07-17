@@ -36,3 +36,6 @@ echo ""
 echo "Windows dev published (SHA256 $sha):"
 echo "  $R2_BASE_URL/photon-messenger-windows-development.exe"
 echo "  Install: powershell -ExecutionPolicy Bypass -c \"irm $R2_BASE_URL/install-development.ps1 | iex\""
+
+# Publish landed — bump the patch + commit, opening the next dev line (publish-current-then-bump).
+manifest_end_dev_publish

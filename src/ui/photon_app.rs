@@ -4882,13 +4882,8 @@ impl FluorApp for PhotonApp {
                             ChannelCheck::Idle | ChannelCheck::Checking => (format!("Checking {kind}\u{2026}"), theme::PILL_GREY, false),
                             ChannelCheck::Failed => (format!("{kind} unavailable"), theme::PILL_GREY, false),
                             ChannelCheck::Ready(None) => (format!("No {kind} build for this device"), theme::PILL_GREY, false),
-                            // "Already on" needs the version AND the build FLAVOUR to match: a local dev build compiles at the just-deployed release tuple (deploy zeroes the patch; local builds don't bump it), but a development-featured binary is NOT the release artefact — it must offer the hop, not claim currency. (Live report 2026-07-17: dev build at 0.37.0 read "already on latest release".)
-                            ChannelCheck::Ready(Some(row))
-                                if row.version == ours
-                                    && (kind == "dev") == cfg!(feature = "development") =>
-                            {
-                                (format!("Already on {kind} {}", dozenal_version_tuple(row.version)), theme::PILL_GREY, false)
-                            }
+                            // Tuple equality IS the truth: patch 0 is the release marker and the version scheme guarantees a dev build never wears it (deploy.sh opens the dev line at .1; publishes are publish-current-then-bump) — so a dev build and the release can never be tuple-equal, and "already on" needs no flavour check.
+                            ChannelCheck::Ready(Some(row)) if row.version == ours => (format!("Already on {kind} {}", dozenal_version_tuple(row.version)), theme::PILL_GREY, false),
                             ChannelCheck::Ready(Some(row)) => (format!("Get {kind} {}", dozenal_version_tuple(row.version)), avail_fill, !busy),
                         };
                         draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, &label, slot, ctx.pressed_hit, enabled, Some(fill), "Oxanium");
@@ -6762,8 +6757,8 @@ impl PhotonApp {
             }
             StampVerdict::Accept => {}
         }
-        // A dev build never hops channels on its own, and Android can't self-install — both announce instead. The release-build predicate is the compile-time FLAVOUR, never patch==0 — a local dev build compiles at the release tuple right after a deploy.
-        let desktop_release = cfg!(not(target_os = "android")) && !cfg!(feature = "development");
+        // A dev build never hops channels on its own, and Android can't self-install — both announce instead. patch == 0 IS the release-build predicate: the version scheme guarantees a dev build never wears .0 (deploy opens the dev line at .1; dev publishes are publish-current-then-bump).
+        let desktop_release = cfg!(not(target_os = "android")) && ours.2 == 0;
         if desktop_release {
             crate::logf!("UPDATE: auto-applying release {} (stamp window clear)", row.version_string());
             self.update_release = ChannelCheck::Ready(Some(row));
