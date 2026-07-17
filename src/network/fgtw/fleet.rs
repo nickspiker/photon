@@ -87,6 +87,11 @@ pub fn current_members_verified(handle_proof: &[u8; 32], identity_seed: &[u8; 32
 }
 
 /// The current member set + chain-tip eagle time (monotonic freshness guard for the fold-respecting trust rule).
+/// Members + tip + generation id (genesis hash) + existed — the contact-refresh read (docs/lifecycle.md genesis pin).
+pub fn current_members_full(handle_proof: &[u8; 32]) -> Result<(Vec<[u8; 32]>, i64, [u8; 32], bool), String> {
+    fgtw::client::current_members_full(&PhotonTransport, handle_proof)
+}
+
 pub fn current_members_with_ts(handle_proof: &[u8; 32]) -> Result<(Vec<[u8; 32]>, i64), String> {
     fgtw::client::current_members_with_ts(&PhotonTransport, handle_proof)
 }

@@ -95,6 +95,9 @@ pub enum LaunchState {
     /// Permanence interstitial after the first Attest press. A claimed handle has no password, no reset, and no recovery — more permanent than any account — so the first press arms this warning and only a second deliberate press fires the query. Any edit to the handle drops back to `Fresh` (same cancel path as `Error`).
     Confirm,
 
+    /// The collision-ambiguous branch (docs/lifecycle.md D1): the probed handle has a fleet whose genesis binds to this handle's identity — which is EITHER the user's own other device OR a total stranger who typed the same name (the derivation makes them indistinguishable). The screen speaks to both readers with two affordances: pick another name (back to Fresh) / it's mine (→ pairing words). Nothing posts to the network — no bind request, no beacon — until "it's mine" is pressed. Editing the handle cancels back to `Fresh` like `Confirm`.
+    KnownHandle,
+
     /// Computing handle_proof + announcing to FGTW Show loading spinner, no button
     Attesting,
 

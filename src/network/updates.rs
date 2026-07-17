@@ -245,24 +245,38 @@ pub fn our_row(rows: &[ManifestRow]) -> Option<ManifestRow> {
     rows.iter().find(|r| r.platform == p && r.arch == a).cloned()
 }
 
-/// Download an artefact to `dest`, then gate it twice: BLAKE3 against the signed manifest's hash, and (for desktop binaries) the appended Ed25519 self-signature on disk. Nothing execs unless both pass.
-fn download_verified(row: &ManifestRow, dest: &PathBuf, check_binary_sig: bool) -> Result<(), String> {
+/// Download an artefact to `dest`, then gate it twice: BLAKE3 against the signed manifest's hash, and (for desktop binaries) the appended Ed25519 self-signature on disk. Nothing execs unless both pass. `progress(done, total)` fires as chunks stream in (total = 0 when the server sent no length) — the Updates page renders it as the download bar.
+fn download_verified(
+    row: &ManifestRow,
+    dest: &PathBuf,
+    check_binary_sig: bool,
+    progress: &dyn Fn(u64, u64),
+) -> Result<(), String> {
+    use std::io::Read;
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|e| format!("http client: {e}"))?;
     // Cache-bust by the CONTENT HASH: the artefact lives at a FIXED url per platform, so after a new build is uploaded the CDN (Cloudflare) can keep serving the stale cached binary while the freshly-fetched manifest already carries the new hash — the "hash mismatch vs signed manifest" a Windows update hit (2026-07-17). `?v=<hash>` makes the URL change exactly when the content does: a new version misses the cache (fresh fetch), an unchanged one stays cacheable. The hash is the integrity anchor either way; this only defeats stale edges.
     let url = format!("{}?v={}", row.url, hex::encode(row.hash));
-    let bytes = client
+    let mut resp = client
         .get(&url)
         .header(reqwest::header::CACHE_CONTROL, "no-cache")
         .send()
         .map_err(|e| format!("artefact fetch: {e}"))?
         .error_for_status()
-        .map_err(|e| format!("artefact fetch: {e}"))?
-        .bytes()
-        .map_err(|e| format!("artefact read: {e}"))?
-        .to_vec();
+        .map_err(|e| format!("artefact fetch: {e}"))?;
+    let total = resp.content_length().unwrap_or(0);
+    let mut bytes: Vec<u8> = Vec::with_capacity(total as usize);
+    let mut chunk = vec![0u8; 1 << 16];
+    loop {
+        let n = resp.read(&mut chunk).map_err(|e| format!("artefact read: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..n]);
+        progress(bytes.len() as u64, total);
+    }
     let got = blake3::hash(&bytes);
     if got.as_bytes() != &row.hash {
         return Err(format!(
@@ -282,10 +296,10 @@ fn download_verified(row: &ManifestRow, dest: &PathBuf, check_binary_sig: bool) 
 
 /// Desktop one-click apply: download next to the current exe, verify (hash + appended signature), swap atomically. Returns the exe path for the caller to re-exec into. Unix: rename() over the path is atomic and the running process keeps its open inode. Windows: the running exe is locked against overwrite but CAN be renamed aside — shuffle to .old (deleted on some future launch), place the new exe, done.
 #[cfg(not(target_os = "android"))]
-pub fn apply_desktop_blocking(row: &ManifestRow) -> Result<PathBuf, String> {
+pub fn apply_desktop_blocking(row: &ManifestRow, progress: &dyn Fn(u64, u64)) -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     let staged = exe.with_extension("update-staged");
-    download_verified(row, &staged, true)?;
+    download_verified(row, &staged, true, progress)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -320,11 +334,11 @@ pub fn sweep_old_binary() {
 
 /// Android: download + hash-verify the APK into the app's files dir and return its path — the caller hands it to the system installer (the second click). No appended-signature check: APKs are signed by the Android keystore and verified by the OS installer; integrity here = the BLAKE3 from the SIGNED manifest.
 #[cfg(target_os = "android")]
-pub fn download_apk_blocking(row: &ManifestRow) -> Result<PathBuf, String> {
+pub fn download_apk_blocking(row: &ManifestRow, progress: &dyn Fn(u64, u64)) -> Result<PathBuf, String> {
     let dir = kete::android_vault_dirs()
         .map(|(files, _)| files)
         .ok_or("android files dir not wired")?;
     let dest = std::path::Path::new(&dir).join("photon-update.apk");
-    download_verified(row, &dest, false)?;
+    download_verified(row, &dest, false, progress)?;
     Ok(dest)
 }

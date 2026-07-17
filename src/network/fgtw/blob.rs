@@ -334,6 +334,30 @@ pub fn put_log_blocking(
 
 /// List the submitted logs for a retrieval tag (the pull side of the capability).
 /// Sends `log_list { tag }`; the worker enumerates its `photon-logs/<tag>/` prefix and returns the object keys. Unsigned — presenting the tag (which only the seed-holder can derive) IS the capability, so no device signature is required. `tag` = [`crate::log_retrieval_tag`] of the target identity seed.
+/// `log_delete` — the LastRites sweep for submitted diagnostic logs: delete everything under this identity's retrieval tag (docs/lifecycle.md — the log keyspace is deliberately unlinkable to the handle_proof, so the fleet purge can't reach it; the departing client must). Tag = the capability, same as list/get. Idempotent.
+pub fn log_delete_blocking(tag: &[u8; 32]) -> Result<(), BlobError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
+    let vsf_bytes = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .add_section("log_delete", vec![("tag".to_string(), VsfType::v(b'r', tag.to_vec()))])
+        .build()
+        .map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
+    let response = client
+        .post(FGTW_URL)
+        .header("Content-Type", "application/octet-stream")
+        .body(vsf_bytes)
+        .send()
+        .map_err(|e| BlobError::Network(format!("log_delete request failed: {}", e)))?;
+    let bytes = response.bytes().unwrap_or_default();
+    if let Some((reason, detail)) = fgtw::client::error_frame(&bytes) {
+        return Err(BlobError::ServerError(format!("{reason}: {detail}")));
+    }
+    Ok(())
+}
+
 pub fn log_list_blocking(tag: &[u8; 32]) -> Result<Vec<String>, BlobError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))

@@ -176,6 +176,12 @@ pub struct Contact {
     pub fleet_folded_once: bool,
     /// The chain-tip eagle time of the last adopted fold — a monotonic guard so we never adopt an OLDER fold over a newer one (guards against an R2 eventual-consistency read serving a stale pre-removal member set over a fresh post-removal one). 0 means no fold adopted yet.
     pub fleet_members_ts: i64,
+    /// The GENERATION pin (docs/lifecycle.md): the genesis op hash of the chain this friendship belongs to, pinned at the first adopted fold. A later chain with a DIFFERENT genesis is a successor holding a re-claimed name — the same party id derives from the same handle string, so this pin is the ONLY thing standing between a freed name and inherited trust. Zero = not yet pinned (pre-feature contacts pin on their next fold).
+    pub pinned_genesis: [u8; 32],
+    /// The contact's chain vanished after we had folded it — their owner ended the identity (last departure, worker purge). Local state FREEZES (verify-or-withhold); rendered as "identity ended". Cleared if the same-genesis chain reappears (a worker blip, not a death).
+    pub identity_ended: bool,
+    /// A chain with a DIFFERENT genesis appeared under this contact's name — a stranger re-claimed the freed handle. Folds are refused; rendered as NOT-them. Never auto-clears (the pin is permanent testimony).
+    pub identity_superseded: bool,
     pub ip: Option<SocketAddr>, // The ACTIVE device's public IP:port (see `active_device`) — the primary TX target
     pub local_ip: Option<Ipv4Addr>, // The ACTIVE device's LAN IP (hairpin NAT workaround)
     pub local_port: Option<u16>, // The ACTIVE device's LAN port
@@ -319,6 +325,9 @@ impl Contact {
             fleet_members: Vec::new(), // Folded from the friend's chain on the first refresh
             fleet_folded_once: false,  // Armed only by a successful adopted fold
             fleet_members_ts: 0,       // No fold adopted yet (bootstrap)
+            pinned_genesis: [0u8; 32], // Pinned at the first adopted fold
+            identity_ended: false,
+            identity_superseded: false,
             ip: None,
             local_ip: None,   // Discovered via LAN broadcast
             local_port: None, // Discovered via LAN broadcast

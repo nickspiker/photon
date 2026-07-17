@@ -42,6 +42,10 @@ pub const PILL_ORANGE: (u32, u32) = (
     fluor::theme::dark(fluor::theme::fmt(0x00_48_2A_0E)),
     fluor::theme::dark(fluor::theme::fmt(0x00_A0_5E_22)),
 );
+/// JOINER SELECTED flood — the whole-surface green a just-bound device shows while its sponsor confirms (docs/lifecycle.md). Opaque takeover, like the red.
+pub const SELECTED_FLOOD: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_08_38_12));
+/// LAST RITES flood — the whole-surface deep red the final-exit interstitial paints under its text (docs/lifecycle.md D3). Opaque: this is a takeover screen, not a tint.
+pub const LASTRITES_FLOOD: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_30_06_06));
 pub const PILL_RED: (u32, u32) = (
     fluor::theme::dark(fluor::theme::fmt(0x00_4E_14_14)),
     fluor::theme::dark(fluor::theme::fmt(0x00_AC_2E_2E)),

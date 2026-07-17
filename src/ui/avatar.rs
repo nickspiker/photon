@@ -1602,6 +1602,56 @@ pub fn download_avatar(
     if let Some(cached) = load_cached_avatar(handle, storage) {
         return Some(cached);
     }
+    fetch_avatar_tail(handle, storage)
+}
+
+/// LastRites sweep: delete this identity's avatar blob from the wall (docs/lifecycle.md). The lookup — base64url(pin[32..]) — is unlinkable to the handle_proof BY DESIGN, so the fleet purge can't find it; the departing device, which holds the pin, deletes it itself, signing with the derived avatar keypair the `avatar_auth` slot expects (the signature covers the RAW 32 lookup bytes, matching the worker's verify). Best-effort: an already-absent blob is the goal state.
+pub fn delete_avatar_blocking(
+    device_secret: &SigningKey,
+    identity_seed: &[u8; 32],
+    avatar_pin: &[u8; 64],
+) -> Result<(), String> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    use ed25519_dalek::Signer;
+    if avatar_pin.iter().all(|b| *b == 0) {
+        return Ok(()); // never pinned — nothing on the wall
+    }
+    let (avatar_signing, avatar_verifying) =
+        derive_avatar_keypair_from_seed(device_secret, identity_seed);
+    let lookup = &avatar_pin[32..];
+    let key = URL_SAFE_NO_PAD.encode(lookup);
+    let sig = avatar_signing.sign(lookup);
+    let vsf_bytes = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signed_only(VsfType::ke(avatar_verifying.as_bytes().to_vec()))
+        .add_section(
+            "avatar_delete",
+            vec![
+                ("key".to_string(), VsfType::d(key)),
+                ("signature".to_string(), VsfType::ge(sig.to_bytes().to_vec())),
+            ],
+        )
+        .build()
+        .map_err(|e| format!("Build avatar_delete VSF: {}", e))?;
+    let response = crate::network::http::blocking()
+        .post(FGTW_URL)
+        .timeout(std::time::Duration::from_secs(30))
+        .header("Content-Type", "application/octet-stream")
+        .body(vsf_bytes)
+        .send()
+        .map_err(|e| format!("avatar_delete request: {}", e))?;
+    let bytes = response.bytes().unwrap_or_default();
+    if let Some((reason, detail)) = fgtw::client::error_frame(&bytes) {
+        return Err(format!("{reason}: {detail}"));
+    }
+    Ok(())
+}
+
+fn fetch_avatar_tail(
+    handle: &str,
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Option<(usize, Vec<u8>)> {
 
     // Not cached locally, fetch from FGTW
     let storage_key = avatar_storage_key(handle);
