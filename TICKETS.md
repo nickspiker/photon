@@ -12,7 +12,7 @@ Punch list from the doc, in order:
 1. Redeploy the fgtw.org worker (one-owner-per-device gate + index are in source but the live worker predates them — this is what let one device double-attest two handles). Verify with a scratch two-handle genesis.
 2. Device-binding marker + Launch DEVICE BUSY line (client-side one-handle-per-device gate, fires BEFORE the proof is spent).
 3. KnownHandle screen (the collision flow): "This name is already claimed" with both readings — pick-another-name first, it's-mine → pairing words; no bind request posted until "It's mine".
-4. LastRites red-flood interstitial: last-member detection on Depart + Remove & shred; allowed but ceremonial ("End it — forever"); name-release checkbox = future worker work.
+4. LastRites red-flood interstitial: last-member detection on Depart + Remove & shred; allowed but ceremonial ("End it — forever"). Ships WITH: the client-side cleanup sweep (avatar blob via pin, submitted logs via tag), the worker purge-on-zero-fold (all hp-keyed traces deleted, name frees first-come), and the genesis-hash pin (friends pin the genesis op hash; different genesis = stranger — the no-counter successor gate). One unit: free without the pin gate is the inheritance bug.
 5. JoinerSelected green flood + sponsor-confirm hold (same flood mechanism as 4).
 6. Collision counter + notifications toggle on Panel→Fleet (bind_attempt alerts already flow).
 
