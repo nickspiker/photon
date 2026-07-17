@@ -2350,9 +2350,10 @@ impl FluorApp for PhotonApp {
                 if new_hit != self.hover_hit {
                     // Contact-row hover tint is CONTENT (painted into the canvas, not an overlay delta), so entering/leaving a row needs the full frame the widget-overlay path avoids.
                     let row_hover = |hit: HitId| {
-                        self.contact_hit_base != HIT_NONE
+                        (self.contact_hit_base != HIT_NONE
                             && hit >= self.contact_hit_base
-                            && hit < self.contact_hit_base.wrapping_add(256)
+                            && hit < self.contact_hit_base.wrapping_add(256))
+                            || (self.back_btn_hit_id != HIT_NONE && hit == self.back_btn_hit_id)
                     };
                     if row_hover(new_hit) || row_hover(self.hover_hit) {
                         self.scene_dirty = true;
@@ -4012,8 +4013,9 @@ impl FluorApp for PhotonApp {
                     TextStyle::new(text_size, row_colour).weight(row_weight).font("Oxanium").shear(0.2126)
                 };
                 let row_name = self.contacts[ci].display_name_or_pending();
+                ctx.text.draw_text_left(&mut canvas, &row_name, text_x, cy, &row_style, Some(rows_clip), None);
                 if row_pressed {
-                    // Press = the wordmark's halo, scoped to this row: rasterize the name into a full-width band scratch, soft-blur both axes, composite as white-under light (the logo's exact pipeline — crate::ui::photon_logo). Band clamped to the buffer; the row is full-width like the wordmark, so the shared blur math holds.
+                    // Press = the wordmark's halo, scoped to this row — composited AFTER the name (under() = topmost paints first, so program-order-later lands BENEATH the glyphs; the logo calls its glow last for the same reason — glow-first blew the text out to white). Full-width band like the wordmark, so the shared blur math holds.
                     let band_top = row_top.max(0) as usize;
                     let band_h = ((row_top + row_h).min(buf_h as isize) as usize).saturating_sub(band_top);
                     if band_h >= 2 {
@@ -4036,7 +4038,6 @@ impl FluorApp for PhotonApp {
                         crate::ui::photon_logo::composite_glow_white(canvas.pixels, buf_w, band_top, &scratch);
                     }
                 }
-                ctx.text.draw_text_left(&mut canvas, &row_name, text_x, cy, &row_style, Some(rows_clip), None);
 
                 // Stamp the row into the hit map so clicks dispatch to this contact.
                 if ci < 256 {
@@ -4157,11 +4158,38 @@ impl FluorApp for PhotonApp {
                     let back_y = buf_h as f32 * 0.06 + unit;
                     let back_size = unit * 1.15;
                     let back_text = "\u{2039} Contacts";
-                    ctx.text.draw_text_left(&mut canvas, back_text, unit, back_y, &TextStyle::new(back_size, theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium"), None, None);
+                    // Same hover/press vocabulary as the contact rows: hover = weight 500 → 700, press = the wordmark's glow behind the label (composited AFTER the text — under() layers beneath).
+                    let back_pressed = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
+                    let back_hovered = back_pressed || (ctx.pressed_hit == HIT_NONE && self.hover_hit == self.back_btn_hit_id);
+                    let back_weight = if back_hovered { 700 } else { 500 };
+                    ctx.text.draw_text_left(&mut canvas, back_text, unit, back_y, &TextStyle::new(back_size, theme::CONTACT_NAME_COLOUR).weight(back_weight).font("Oxanium"), None, None);
+                    if back_pressed {
+                        let band_top = (back_y - back_size).max(0.) as usize;
+                        let band_h = (((back_y + back_size) as usize).min(buf_h)).saturating_sub(band_top);
+                        if band_h >= 2 {
+                            let mut scratch = vec![0u8; buf_w * band_h];
+                            ctx.text.draw_text_left_legacy(
+                                &mut scratch,
+                                buf_w as u32,
+                                band_h as u32,
+                                back_text,
+                                unit,
+                                back_y - band_top as f32,
+                                back_size,
+                                back_weight,
+                                vec![0xB0],
+                                0,
+                                "Oxanium",
+                            );
+                            crate::ui::photon_logo::blur_horizontal_soft(&mut scratch);
+                            crate::ui::photon_logo::blur_vertical_soft(&mut scratch, buf_w, band_h);
+                            crate::ui::photon_logo::composite_glow_white(canvas.pixels, buf_w, band_top, &scratch);
+                        }
+                    }
                     // Stamp the back button hit rect.
                     let back_w = ctx
                         .text
-                        .measure_text(back_text, &TextStyle::new(back_size, 0).weight(500).font("Oxanium"));
+                        .measure_text(back_text, &TextStyle::new(back_size, 0).weight(back_weight).font("Oxanium"));
                     restamp_hit_rect(
                         &mut chrome.hit_test_map,
                         buf_w,
