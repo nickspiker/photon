@@ -34,3 +34,6 @@ echo ""
 echo "Linux $arch dev published:"
 echo "  $R2_BASE_URL/photon-messenger-linux-$arch-development"
 echo "  Install: curl -sSfL $R2_BASE_URL/install-development.sh | sh"
+
+# Publish landed — bump the patch + commit, opening the next dev line (publish-current-then-bump).
+manifest_end_dev_publish
