@@ -35,6 +35,7 @@ Punch list from the doc, in order:
 
 ## UI / UX
 
+- **Friend avatar-change refresh (pong hash)**: a re-uploaded avatar keeps its pin, so FRIENDS never refetch until a new session — the pong should carry the avatar's provenance hash next to the pin (`ahash`, optional field, old clients ignore it) and a mismatch marks the contact for refetch. Siblings are covered (profile.avatar_ts ding, 2026-07-17); friends are the remaining half.
 - **Textbox glow on search state**: legacy tinted the search pill yellow-during / green-or-red-after a search; fluor's glow is focus-driven — recolouring per state needs a small fluor affordance (`set_glow_colour`?) + photon wiring.
 - **Party colours are placeholder**: swap to perceptual L≈50% via vsf spectral/LMS (decided; supersedes the old Fibonacci-sphere colourize sketch this file used to carry).
 - **Contacts search-box focus glow damage (parked)**: stale glow lingers/clips on deselect — bg pass dirty-gating skips the glow bbox.
