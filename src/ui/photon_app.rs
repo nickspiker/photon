@@ -9913,6 +9913,13 @@ impl PhotonApp {
     fn refresh_contact_addrs_from_peers(&mut self, peers: &[crate::network::fgtw::PeerRecord]) {
         // Addresses whose transfers must be cancelled because they went stale (collected here so the checker borrow stays out of the contact-iter loop).
         let mut stale_addrs: Vec<std::net::SocketAddr> = Vec::new();
+        // Did any contact just learn a new/changed address? If so we fire an immediate presence
+        // sweep at the end so the punch goes out the instant we know where to aim — rather than
+        // sitting on the fresh address until the next (possibly 60s / 15min) presence tick. This
+        // is the one-sided-punch fix: a peer whose FGTW fetch was late/failed learns the other's
+        // address and punches at once, instead of the other side punching into a peer that never
+        // punches back.
+        let mut any_addr_changed = false;
         for peer in peers {
             // Seed the per-device endpoint for EVERY matching device row — this is how a friend's OTHER fleet devices become individually pingable (the pong path only updates a device we already ping).
             for contact in self.contacts.iter_mut() {
@@ -9938,6 +9945,13 @@ impl PhotonApp {
                     }
                     // If the address actually moved while a CLUTCH offer was already sent, that offer is in flight to a now-dead address (the "No route to host" retries we kept hammering). Cancel the stale transfer and reset clutch_offer_sent so the contact's next online pong re-sends the offer to the fresh address, with the LAN path now raced alongside. Without this the one-shot flag blocks re-send and the ceremony stalls forever on the dead path.
                     let addr_changed = old_ip != contact.ip || old_local != contact.local_ip;
+                    if addr_changed {
+                        any_addr_changed = true;
+                        // Fresh address = fresh chance at a direct path; the prior unreachable
+                        // cycles were counted against the old (now dead) address, so don't let
+                        // them trip the premature "pending relay" threshold on the new one.
+                        contact.punch_unvalidated_cycles = 0;
+                    }
                     if addr_changed
                         && contact.clutch_offer_sent
                         && contact.clutch_state == crate::types::ClutchState::Pending
@@ -9956,6 +9970,12 @@ impl PhotonApp {
             for addr in stale_addrs {
                 checker.clear_pt_sends(addr);
             }
+        }
+        // Punch the freshly-learned address(es) right now instead of waiting for the next tick.
+        // Cheap (only when an address actually changed) and reuses the tested gather+punch path;
+        // a no-op before the status checker exists (ping_contacts guards on it).
+        if any_addr_changed {
+            self.ping_contacts();
         }
     }
 
