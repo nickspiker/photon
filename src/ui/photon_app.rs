@@ -1144,13 +1144,6 @@ impl PhotonApp {
             }
         };
         crate::logf!("avatar picker: processing {} bytes", image_bytes.len());
-        let av1_data = match crate::ui::avatar::encode_avatar_from_image(&image_bytes) {
-            Ok(d) => d,
-            Err(e) => {
-                crate::logf!("avatar picker: encode failed: {}", e);
-                return;
-            }
-        };
         let storage = match self.storage.clone() {
             Some(s) => s,
             None => {
@@ -1158,42 +1151,61 @@ impl PhotonApp {
                 return;
             }
         };
-        if let Err(e) =
-            crate::ui::avatar::save_avatar_from_seed(&av1_data, &identity_seed, &storage)
-        {
-            crate::logf!("avatar picker: save failed: {}", e);
-            return;
-        }
-        let Some((_, vsf_rgb)) = crate::ui::avatar::load_avatar_from_seed(&identity_seed, &storage)
-        else {
-            crate::log("avatar picker: post-save load failed");
-            return;
+        // INSTANT display: only the fast half runs on this thread (decode + crop + resize + mask — milliseconds). The avatar shows THIS frame; the seconds-long rav1e encode, the vault save, and the blocking upload all move off-thread (the old inline pipeline was the "considerable delay before it shows" + the mac click-again freeze).
+        let rgb_f32 = match crate::ui::avatar::image_to_avatar_rgb_f32(&image_bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                crate::logf!("avatar picker: decode failed: {}", e);
+                return;
+            }
         };
+        let vsf_rgb = crate::ui::avatar::avatar_rgb_f32_to_u8(&rgb_f32);
         self.device_avatar_pixels = Some(crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb));
         self.device_avatar_scaled = None;
         self.device_avatar_scaled_diameter = 0;
-        crate::log("avatar picker: saved + installed");
+        self.scene_dirty = true;
+        crate::log("avatar picker: installed for display — encode + save + upload continue off-thread");
+        // Pin + upload material gathered on the UI thread (ensure_avatar_pin may mint + persist), then the slow half runs detached. The pong slot updates now so friends' next ping already carries the pin.
         let proof = self
             .handle_query
             .as_ref()
             .and_then(|hq| hq.get_handle_proof());
         let avatar_pin = self.ensure_avatar_pin();
-        match (self.device_keypair.as_ref(), proof, avatar_pin) {
-            (Some(kp), Some(hp), Some(pin)) => {
-                match crate::ui::avatar::upload_avatar_from_seed(
-                    &kp.secret,
-                    &identity_seed,
-                    &pin,
-                    &hp,
-                    &storage,
-                ) {
-                    Ok(_) => crate::log("avatar picker: FGTW upload ok"),
-                    Err(e) => crate::logf!("avatar picker: FGTW upload failed: {}", e),
+        self.publish_avatar_pin();
+        // Sibling ding: bump the fleet-synced avatar stamp so the fstate event wakes the fleet and their next avatar sync pulls the fresh copy. Bumped at SET time — a sibling racing the upload just gets the old copy once and heals on the next sync (newest-wins).
+        self.settings_set("profile.avatar_ts", vsf::eagle_time_oscillations().to_le_bytes().to_vec());
+        let kp = self.device_keypair.clone();
+        std::thread::spawn(move || {
+            let av1_data = match crate::ui::avatar::encode_avatar_rgb_f32(&rgb_f32) {
+                Ok(d) => d,
+                Err(e) => {
+                    crate::logf!("avatar picker: encode failed (display keeps the picked image this session): {}", e);
+                    return;
                 }
-                self.publish_avatar_pin();
+            };
+            if let Err(e) =
+                crate::ui::avatar::save_avatar_from_seed(&av1_data, &identity_seed, &storage)
+            {
+                crate::logf!("avatar picker: save failed: {}", e);
+                return;
             }
-            _ => crate::log("avatar picker: skipping FGTW upload — keypair / proof / pin unavailable"),
-        }
+            crate::log("avatar picker: encoded + saved");
+            match (kp, proof, avatar_pin) {
+                (Some(kp), Some(hp), Some(pin)) => {
+                    match crate::ui::avatar::upload_avatar_from_seed(
+                        &kp.secret,
+                        &identity_seed,
+                        &pin,
+                        &hp,
+                        &storage,
+                    ) {
+                        Ok(_) => crate::log("avatar picker: FGTW upload ok"),
+                        Err(e) => crate::logf!("avatar picker: FGTW upload failed: {}", e),
+                    }
+                }
+                _ => crate::log("avatar picker: skipping FGTW upload — keypair / proof / pin unavailable"),
+            }
+        });
     }
 }
 
@@ -5689,6 +5701,8 @@ impl PhotonApp {
                         self.you_fields_loaded = false;
                         self.publish_profile_name();
                         self.publish_avatar_pin();
+                        // A sibling may have changed the avatar (profile.avatar_ts bump rides the same merge) — newest-wins sync pulls the fresh copy; a no-change sync is one cheap wall read.
+                        self.spawn_avatar_sync();
                         crate::log("SETTINGS: adopted fleet changes");
                     }
                 }
