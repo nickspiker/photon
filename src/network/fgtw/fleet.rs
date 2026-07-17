@@ -110,6 +110,29 @@ pub fn depart_device(device_key: &Keypair, handle_proof: &[u8; 32]) -> Result<()
     fgtw::client::depart_device(&PhotonTransport, device_key, handle_proof)
 }
 
+/// Devices the chain shows were once ours but are no longer current members — signed out, hardware brand still held (brands survive departure; identity never dies, 2026-07-17). The chain is the only truth source the client has: a brand the owner already released still lists here, and re-releasing it is an idempotent ack — so these rows are "retired" whether or not the registry claim is technically gone.
+pub fn retired_devices(handle_proof: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
+    let Some(blob) = fetch(handle_proof)? else {
+        return Ok(Vec::new());
+    };
+    let current = blob.fold().map_err(|e| format!("fleet fold: {e:?}"))?;
+    let mut out: Vec<[u8; 32]> = Vec::new();
+    for op in &blob.ops {
+        if matches!(op.kind, OpKind::Genesis | OpKind::Add)
+            && !current.contains(&op.device_pubkey)
+            && !out.contains(&op.device_pubkey)
+        {
+            out.push(op.device_pubkey);
+        }
+    }
+    Ok(out)
+}
+
+/// OWNER frees a retired device's hardware brand — the second signature of the two-signature retire (the first was the device's own departure). `member_key` must be a current fleet member; the worker refuses releasing a device still in the fold.
+pub fn release_device(member_key: &Keypair, handle_proof: &[u8; 32], released: &[u8; 32]) -> Result<(), String> {
+    fgtw::client::device_release(&PhotonTransport, member_key, handle_proof, released)
+}
+
 /// NEW device: post (or refresh) its binding request — device-signed + identity-co-signed consent to join. Returns the published `eagle_time` stamp (oscillations) so the caller can derive the proximity beacon from the exact offer the sponsor reads back.
 pub fn bindreq_put(
     device_key: &Keypair,

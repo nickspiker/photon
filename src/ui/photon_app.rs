@@ -845,9 +845,6 @@ pub struct PhotonApp {
     /// KnownHandle fork pills — pick-another-name / it's-mine (docs/lifecycle.md D1). Plain hit rects, Pressed-arm dispatch.
     known_pick_hit: HitId,
     known_mine_hit: HitId,
-    /// LAST RITES (docs/lifecycle.md D3): the red-flood final-exit interstitial is showing. Armed by Remove & shred when the fleet folds to just this device; the flood's one pill executes (sweep → depart → wipe → restart), any other press cancels.
-    lastrites_active: bool,
-    lastrites_hit: HitId,
     /// JOINER SELECTED (docs/lifecycle.md): this just-bound device floods green with "Selected!" and HOLDS until the sponsor's confirm rotation releases the fleet key — the green the far-side human is asked to verify. Cleared when sign-in proceeds.
     joiner_selected: bool,
     /// One-shot absolute-zoom restore (the persisted per-device `display.zoom`), handed to the host via `FluorApp::take_zoom_request`. Set when settings load; the host applies + clears it.
@@ -936,6 +933,10 @@ pub struct PhotonApp {
     you_fields_loaded: bool,
     /// Fleet-page device management: the device pubkey the user tapped to select (highlighted row). `None` = nothing selected. Only OUR OTHER devices (siblings) are selectable — never this device. Remove-other retired 2026-07-13 (sovereign records: self-signed departure only; eviction = withholding at the key layer, arriving with the device-trust bundle) — selection currently feeds only the future rename.
     settings_fleet_selected: Option<[u8; 32]>,
+    /// Fleet-page retired inventory (identity never dies, 2026-07-17): devices the chain shows signed OUT but whose hardware brand this identity still holds — brands survive departure; freeing one takes the owner's member-signed `device_release`. Refreshed synchronously on each Fleet-page entry; rows render "retired — still yours" with a per-row Release pill.
+    fleet_retired: Vec<[u8; 32]>,
+    /// The retired pubkey whose Release pill is two-tap armed (`None` = disarmed). Cleared on page switch like every destructive arm.
+    fleet_release_armed: Option<[u8; 32]>,
     /// Self-update state (docs/updates.md): off-thread check/apply results drain here. tx kept so both channel checks + an apply share ONE receiver.
     update_rx: Option<std::sync::mpsc::Receiver<UpdateEvent>>,
     update_tx: Option<std::sync::mpsc::Sender<UpdateEvent>>,
@@ -1103,8 +1104,6 @@ impl PhotonApp {
             avatar_hit_id: HIT_NONE,
             known_pick_hit: HIT_NONE,
             known_mine_hit: HIT_NONE,
-            lastrites_active: false,
-            lastrites_hit: HIT_NONE,
             joiner_selected: false,
             pending_zoom_restore: None,
             avatar_set_rx: None,
@@ -1149,6 +1148,8 @@ impl PhotonApp {
             you_add_textbox: None,
             you_fields_loaded: false,
             settings_fleet_selected: None,
+            fleet_retired: Vec::new(),
+            fleet_release_armed: None,
             update_rx: None,
             update_tx: None,
             update_release: ChannelCheck::Idle,
@@ -1671,9 +1672,6 @@ impl FluorApp for PhotonApp {
         self.known_pick_hit = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.known_mine_hit = self.hit_counter;
-        // LastRites "End it — forever" pill.
-        self.hit_counter = self.hit_counter.wrapping_add(1);
-        self.lastrites_hit = self.hit_counter;
         // Reserve a block of 256 hit IDs for contact rows. Row i stamps `contact_hit_base + i`.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.contact_hit_base = self.hit_counter;
@@ -2059,6 +2057,7 @@ impl FluorApp for PhotonApp {
             if matches!(self.state, AppState::AddDevice) {
                 // Cancel returns to the Fleet page the flow came from.
                 self.end_add_device_flow();
+                self.refresh_fleet_retired();
                 self.state = AppState::Settings(SettingsPage::Fleet);
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
@@ -2083,6 +2082,7 @@ impl FluorApp for PhotonApp {
                     // Leaving a page clears its selection/destructive-action arms (interaction-cleared).
                     if *p != SettingsPage::Fleet {
                         self.settings_fleet_selected = None;
+                        self.fleet_release_armed = None;
                     }
                     if *p != SettingsPage::Security {
                         self.settings_removeshred_armed = false;
@@ -2101,6 +2101,10 @@ impl FluorApp for PhotonApp {
                         self.update_dev = ChannelCheck::Idle;
                         self.check_update_channels();
                     }
+                    // Opening the Fleet page refreshes the retired-device rows (chain history minus current members minus already-released brands).
+                    if *p == SettingsPage::Fleet {
+                        self.refresh_fleet_retired();
+                    }
                     self.state = AppState::Settings(*p);
                     ctx.window.request_redraw();
                 }
@@ -2115,11 +2119,44 @@ impl FluorApp for PhotonApp {
                     if slot == 0 {
                         // "Add device" pill → the pairing-words flow.
                         self.open_add_device_flow();
+                    } else if slot >= 24 {
+                        // Retired row's "Release" pill (two-tap): the OWNER frees the departed device's hardware brand — the second signature of the two-signature retire (the first was that device signing itself out). On success the pubkey joins the fleet-synced `fleet.released` setting so the row drops off every device; the chain rows themselves are permanent testimony, untouched.
+                        let idx = (slot - 24) as usize;
+                        let devices = self.fleet_device_rows();
+                        if let Some((pk, _, _, true, name)) = devices.get(idx).cloned() {
+                            if self.fleet_release_armed == Some(pk) {
+                                self.fleet_release_armed = None;
+                                let hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
+                                if let (Some(hp), Some(kp)) = (hp, self.device_keypair.clone()) {
+                                    match crate::network::fgtw::fleet::release_device(&kp, &hp, &pk) {
+                                        Ok(()) => {
+                                            crate::logf!("FLEET: released the brand on {} — hardware free for a new identity", name);
+                                            let mut rel: Vec<u8> = self
+                                                .fleet_settings
+                                                .as_ref()
+                                                .and_then(|fs| fs.effective("fleet.released"))
+                                                .map(|b| b.to_vec())
+                                                .unwrap_or_default();
+                                            rel.extend_from_slice(&pk);
+                                            self.settings_set("fleet.released", rel);
+                                            self.fleet_retired.retain(|d| d != &pk);
+                                            self.ready_toast = Some(format!("{name} released \u{2014} it can join a new identity now."));
+                                        }
+                                        Err(e) => {
+                                            crate::logf!("FLEET: release failed ({}) — brand kept", e);
+                                            self.ready_toast = Some("Couldn't release \u{2014} check connection and retry.".to_string());
+                                        }
+                                    }
+                                }
+                            } else {
+                                self.fleet_release_armed = Some(pk);
+                            }
+                        }
                     } else if slot >= 16 {
                         // Device-row tap → copy that device's name to the clipboard.
                         let idx = (slot - 16) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((_pk, _is_self, _online, name)) = devices.get(idx) {
+                        if let Some((_pk, _is_self, _online, _retired, name)) = devices.get(idx) {
                             let name = name.clone();
                             if self.copy_to_clipboard(&name) {
                                 self.ready_toast = Some(format!("Copied {name}"));
@@ -2155,7 +2192,7 @@ impl FluorApp for PhotonApp {
                         if self.settings_removeshred_armed {
                             self.settings_removeshred_armed = false;
                             let hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
-                            // LAST-MEMBER GATE (docs/lifecycle.md D3): if this device is the fleet's final member, the second press does NOT depart — it raises LAST RITES (the red flood), and only ITS pill (press three) ends the identity. A fetch failure counts as last (fail toward the ceremony, never past it).
+                            // LAST-MEMBER GATE (identity never dies, 2026-07-17 — supersedes lifecycle D3's LastRites): the fleet's final member cannot sign out, full stop. There is no terminal op — an identity always lives somewhere (the worker refuses zero-member folds too, so this isn't just UI courtesy). Want out of this hardware? Add another device first, then retire this one. A fetch failure counts as last (fail toward refusal, never past it).
                             if let Some(ref hp_v) = hp {
                                 let last = match crate::network::fgtw::fleet::current_members(hp_v) {
                                     Ok(m) => m.len() <= 1,
@@ -2165,8 +2202,8 @@ impl FluorApp for PhotonApp {
                                     }
                                 };
                                 if last {
-                                    crate::log("SECURITY: last member — raising LAST RITES");
-                                    self.lastrites_active = true;
+                                    crate::log("SECURITY: last member — sign-out refused (an identity must live somewhere)");
+                                    self.ready_toast = Some("This is your identity's last device — it can't sign out. Add another device first, then retire this one.".to_string());
                                     self.scene_dirty = true;
                                     ctx.window.request_redraw();
                                     return EventResponse::Handled;
@@ -2547,19 +2584,6 @@ impl FluorApp for PhotonApp {
                     .map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y))
                     .unwrap_or(HIT_NONE);
 
-                // LAST RITES dispatch (docs/lifecycle.md D3): while the flood is up it owns EVERY press — the one pill executes, anything else cancels back to the Security page untouched.
-                if self.lastrites_active {
-                    if hit_id == self.lastrites_hit {
-                        self.lastrites_execute();
-                    } else {
-                        crate::log("LASTRITES: cancelled");
-                        self.lastrites_active = false;
-                    }
-                    self.scene_dirty = true;
-                    ctx.window.request_redraw();
-                    return EventResponse::Handled;
-                }
-
                 // Permanence interstitial ("Yes — forever"): a press ANYWHERE other than the attest button cancels back to the pre-proof Fresh state. Editing the handle already cancels; this makes a tap on empty space, the field, the orb — anything else — cancel too, so a stray tap can never corner the user into the forever-claim (on Android "click elsewhere" was otherwise swipe-up → home → long-press → switch away). The attest button press itself is the deliberate confirm, so it's excluded; we fall thru afterwards so the tap still does its normal thing (focus the field, start a drag, open settings, …).
                 if matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
                     let attest_hit = self.attest_btn.as_ref().map(|b| b.hit_id()).unwrap_or(HIT_NONE);
@@ -2794,6 +2818,7 @@ impl FluorApp for PhotonApp {
                         if matches!(self.state, AppState::AddDevice) {
                             // Escape cancels back to the Fleet page the flow came from.
                             self.end_add_device_flow();
+                            self.refresh_fleet_retired();
                             self.state = AppState::Settings(SettingsPage::Fleet);
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
@@ -4718,7 +4743,7 @@ impl FluorApp for PhotonApp {
                     }
                 }
                 SettingsPage::Fleet => {
-                    // Live device inventory (gathered above the chrome borrow): this device + our siblings. Rows 1..=6 hold up to 6 devices (fleets are usually ≤5; a scroll follows if this grows past the row budget). Non-self rows are tap-selectable (hit-stamped btn_base+16+index); the Remove pill acts on the selection with a two-tap confirm.
+                    // Live device inventory (gathered above the chrome borrow): this device + our siblings, then the retired rows (signed out, brand still ours — refreshed on page entry). Rows 1..=6 hold up to 6 devices (fleets are usually ≤5; a scroll follows if this grows past the row budget). Member rows are tap-to-copy (btn_base+16+index); retired rows carry a per-row Release pill instead (btn_base+24+index, two-tap).
                     let devices = &fleet_devices;
                     let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Your devices", tspan, theme::CONTACT_NAME_COLOUR, 600);
@@ -4729,11 +4754,13 @@ impl FluorApp for PhotonApp {
                         let cc_w = ctx.text.measure_text(cc, &TextStyle::new(cc_size, 0).font("Oxanium"));
                         ctx.text.draw_text_left(&mut canvas, cc, rows[0].right() - cc_w - hspan2 * 0.3, rows[0].center_y(), &TextStyle::new(cc_size, theme::LABEL_COLOUR).font("Oxanium"), None, None);
                     }
-                    for (i, (_pk, is_self, online, name)) in devices.iter().take(6).enumerate() {
+                    for (i, (pk, is_self, online, retired, name)) in devices.iter().take(6).enumerate() {
                         let row = rows[1 + i];
-                        // Status on the LEFT (this device / online / offline), device NAME right-aligned so it lines up under "click to copy" — the name is what a tap copies.
+                        // Status on the LEFT (this device / online / offline / retired), device NAME right-aligned so it lines up under "click to copy" — the name is what a tap copies.
                         let (status, status_colour) = if *is_self {
                             ("(this device)", theme::LABEL_COLOUR)
+                        } else if *retired {
+                            ("retired \u{2014} still yours", theme::LABEL_COLOUR)
                         } else if *online {
                             ("online", theme::SEARCH_FOUND_COLOUR)
                         } else {
@@ -4742,20 +4769,41 @@ impl FluorApp for PhotonApp {
                         settings_line(&mut canvas, ctx.text, row, status, hspan2 * 0.85, status_colour, 400);
                         let name_w = ctx.text.measure_text(name, &TextStyle::new(hspan2, 0).weight(500).font("Oxanium"));
                         ctx.text.draw_text_left(&mut canvas, name, row.right() - name_w - hspan2 * 0.3, row.center_y(), &TextStyle::new(hspan2, theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium"), None, None);
-                        // Every row (self included) is a tap-to-copy target for its name.
-                        restamp_hit_rect(
-                            &mut chrome.hit_test_map,
-                            buf_w,
-                            buf_h,
-                            row.x as isize,
-                            row.y as isize,
-                            (row.x + row.w) as isize,
-                            (row.y + row.h) as isize,
-                            btn_base.wrapping_add(16 + i as HitId),
-                        );
+                        // Retired rows carry the owner's Release pill (two-tap): the second signature of the two-signature retire — the departed device signed itself out, this frees its hardware for a new identity. Mid-row, between the status and the name.
+                        if *retired {
+                            let armed = self.fleet_release_armed.as_ref() == Some(pk);
+                            let label = if armed { "Release \u{2014} sure?" } else { "Release" };
+                            let pill = row.split_h([1.0, 1.0, 1.0])[1].center_h(0.8);
+                            draw_stub_pill_filled(
+                                &mut canvas,
+                                ctx.text,
+                                &mut chrome.hit_test_map,
+                                buf_w,
+                                buf_h,
+                                pill,
+                                label,
+                                btn_base.wrapping_add(24 + i as HitId),
+                                ctx.pressed_hit,
+                                true,
+                                if armed { Some(theme::PILL_RED) } else { None },
+                                "Oxanium",
+                            );
+                        } else {
+                            // Every non-retired row (self included) is a tap-to-copy target for its name.
+                            restamp_hit_rect(
+                                &mut chrome.hit_test_map,
+                                buf_w,
+                                buf_h,
+                                row.x as isize,
+                                row.y as isize,
+                                (row.x + row.w) as isize,
+                                (row.y + row.h) as isize,
+                                btn_base.wrapping_add(16 + i as HitId),
+                            );
+                        }
                     }
-                    // No Remove pill: expulsion is not a verb (sovereign records, 2026-07-13) — a device leaves by its own signed departure, and a LOST device is evicted by withholding (re-key) when the device-trust bundle lands.
-                    settings_line(&mut canvas, ctx.text, rows[6], "A device can only remove itself — a lost one gets keyed out, not erased.", hspan2, theme::LABEL_COLOUR, 400);
+                    // No Remove pill: expulsion is not a verb (sovereign records, 2026-07-13) — a device leaves by its own signed departure. And leaving never frees the hardware (2026-07-17): the brand outlives the membership until the owner releases it above.
+                    settings_line(&mut canvas, ctx.text, rows[6], "A device can only sign itself out \u{2014} and its hardware stays yours until you release it.", hspan2, theme::LABEL_COLOUR, 400);
                     let pr = rows[7].split_h([1.0, 1.0]);
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Add device", btn_base.wrapping_add(0), ctx.pressed_hit);
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Rename", btn_base.wrapping_add(1), ctx.pressed_hit);
@@ -5022,87 +5070,53 @@ impl FluorApp for PhotonApp {
             ctx.text.draw_text_center(&mut canvas, "Confirm on your other device to finish.", cx, buf_h as f32 * 0.58, &TextStyle::new(span / 24., theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium"), None, None);
         }
 
-        // LAST RITES — the red flood (docs/lifecycle.md D3): the whole surface goes deep red with the truth in big letters and ONE pill; any press anywhere else cancels (interstitial rules, dispatched in the Pressed arm). Painted over every page layer; chrome composites above it, so the window stays operable (close = another cancel path). This is the THIRD press of the exit — Remove & shred pressed twice got the user here.
-        if self.lastrites_active {
-            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
-            paint::fill_rect(
-                &mut canvas,
-                0,
-                0,
-                buf_w as isize,
-                buf_h as isize,
-                theme::LASTRITES_FLOOD,
-                None,
-                None,
-            );
-            let span = 2. * buf_w as f32 * buf_h as f32 / (buf_w + buf_h) as f32;
-            let line_h = span / 22.;
-            let cx = buf_w as f32 * 0.5;
-            let mut y = buf_h as f32 * 0.25;
-            let lines: [(&str, u32, u16); 6] = [
-                ("This is this identity's LAST device.", theme::ERROR_TEXT_COLOUR, 700),
-                ("Removing it ends the identity FOREVER.", theme::ERROR_TEXT_COLOUR, 700),
-                ("Every conversation. Every friendship. Everything. Gone.", theme::CONTACT_NAME_COLOUR, 500),
-                ("The name goes free for anyone to claim.", theme::CONTACT_NAME_COLOUR, 500),
-                ("There is no recovery. Not custodians. Not new hardware. Not you.", theme::CONTACT_NAME_COLOUR, 500),
-                ("Anywhere else cancels.", theme::LABEL_COLOUR, 400),
-            ];
-            for (line, colour, weight) in lines {
-                ctx.text.draw_text_center(&mut canvas, line, cx, y, &TextStyle::new(line_h, colour).weight(weight).font("Oxanium"), None, None);
-                y += line_h * 1.6;
-            }
-            y += line_h;
-            let pw = (buf_w as f32 * 0.6).min(span * 0.7);
-            let pill = fluor::region::Region::new(cx - pw * 0.5, y, pw, line_h * 2.2);
-            draw_stub_pill_filled(
-                &mut canvas,
-                ctx.text,
-                &mut chrome.hit_test_map,
-                buf_w,
-                buf_h,
-                pill,
-                "End it \u{2014} forever",
-                self.lastrites_hit,
-                ctx.pressed_hit,
-                true,
-                Some(theme::PILL_RED),
-                "Oxanium",
-            );
-        }
-
         chrome.flatten_into(target, buf_w, buf_h, None);
 
-        // Orb press glow — the wordmark-family light in radial form: while the orb is held, a soft white halo blooms around the disk. Painted AFTER the flatten because the chrome layer is opaque there (under() early-outs on opaque pixels), so this applies under()-of-white's exact arithmetic directly: dark' = dark·(255−α)/255 per channel, α falling quadratically from the rim to one radius out. Peak α = 0xB0, the same glow grey the text halos rasterize at.
+        // Orb press glow — the SAME pipeline as the text halos (the analytic radial ring looked wrong next to them, 2026-07-17): rasterize the disk into a full-width coverage scratch at the glow grey, run the wordmark's exact horizontal + vertical soft blurs, then composite. Two adaptations for living post-flatten: the chrome layer is opaque here so under() would no-op — the composite applies under()-of-white's per-channel arithmetic directly — and the disk INTERIOR is skipped so the halo blooms around the orb without washing the icon art (the text case hides its under-glyph glow behind the topmost glyphs; the orb is already beneath us).
         if ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == chrome.app_icon_btn.id() {
             if let Some((ocx, ocy, orb_r)) = chrome.orb_geometry() {
-                let reach = orb_r;
-                let r_out = orb_r + reach;
-                let y0 = (ocy - r_out).max(0) as usize;
-                let y1 = (((ocy + r_out + 1).max(0)) as usize).min(buf_h);
-                let x0 = (ocx - r_out).max(0) as usize;
-                let x1 = (((ocx + r_out + 1).max(0)) as usize).min(buf_w);
-                let rim2 = orb_r * orb_r;
-                let out2 = r_out * r_out;
-                for y in y0..y1 {
-                    let dy = y as isize - ocy;
-                    for x in x0..x1 {
-                        let dx = x as isize - ocx;
-                        let d2 = dx * dx + dy * dy;
-                        if d2 <= rim2 || d2 >= out2 {
-                            continue; // the disk itself stays chrome's; past r_out is untouched
+                let r_out = orb_r * 2;
+                let band_top = (ocy - r_out).max(0) as usize;
+                let band_bot = (((ocy + r_out + 1).max(0)) as usize).min(buf_h);
+                let band_h = band_bot.saturating_sub(band_top);
+                if band_h >= 2 {
+                    let mut scratch = vec![0u8; buf_w * band_h];
+                    let rim2 = orb_r * orb_r;
+                    for y in band_top..band_bot {
+                        let dy = y as isize - ocy;
+                        let row = (y - band_top) * buf_w;
+                        let x0 = (ocx - orb_r).max(0) as usize;
+                        let x1 = (((ocx + orb_r + 1).max(0)) as usize).min(buf_w);
+                        for x in x0..x1 {
+                            let dx = x as isize - ocx;
+                            if dx * dx + dy * dy <= rim2 {
+                                scratch[row + x] = 0xB0;
+                            }
                         }
-                        let t = 1.0 - ((d2 as f32).sqrt() - orb_r as f32) / reach as f32;
-                        let a = (t * t * 0xB0 as f32) as u32;
-                        if a == 0 {
-                            continue;
+                    }
+                    crate::ui::photon_logo::blur_horizontal_soft(&mut scratch);
+                    crate::ui::photon_logo::blur_vertical_soft(&mut scratch, buf_w, band_h);
+                    let inner2 = (orb_r - 1) * (orb_r - 1);
+                    for y in band_top..band_bot {
+                        let dy = y as isize - ocy;
+                        let row = (y - band_top) * buf_w;
+                        for x in 0..buf_w {
+                            let a = scratch[row + x] as u32;
+                            if a == 0 {
+                                continue;
+                            }
+                            let dx = x as isize - ocx;
+                            if dx * dx + dy * dy <= inner2 {
+                                continue; // the orb face stays the orb's
+                            }
+                            let idx = y * buf_w + x;
+                            let p = target[idx];
+                            let inv = 255 - a;
+                            let dr = ((p >> 16) & 0xFF) * inv / 255;
+                            let dg = ((p >> 8) & 0xFF) * inv / 255;
+                            let db = (p & 0xFF) * inv / 255;
+                            target[idx] = (p & 0xFF00_0000) | (dr << 16) | (dg << 8) | db;
                         }
-                        let idx = y * buf_w + x;
-                        let p = target[idx];
-                        let inv = 255 - a;
-                        let dr = ((p >> 16) & 0xFF) * inv / 255;
-                        let dg = ((p >> 8) & 0xFF) * inv / 255;
-                        let db = (p & 0xFF) * inv / 255;
-                        target[idx] = (p & 0xFF00_0000) | (dr << 16) | (dg << 8) | db;
                     }
                 }
             }
@@ -5344,6 +5358,7 @@ impl PhotonApp {
                     self.add_device_checking = false;
                     // Ceremony complete — back to the Fleet page it was launched from (the new device's row is the confirmation), instead of stranding the user on a finished words screen.
                     self.end_add_device_flow();
+                    self.refresh_fleet_retired();
                     self.state = AppState::Settings(SettingsPage::Fleet);
                     self.ready_toast = Some("Device added \u{221a}".to_string());
                     // The confirm rotated the fleet key — recover the new epoch AND re-seal the roster under it in one ordered pass, so the just-joined device's roster pull decrypts instead of failing aead::Error until a relaunch. (Was a bare key-sync that left the roster stale-sealed forever, since the periodic re-push only fires on a non-in-app attest.)
@@ -7357,7 +7372,8 @@ impl PhotonApp {
     }
 
     /// The fleet device inventory for the Fleet settings page: this device first, then our other devices (sibling contacts). Each entry is `(device_pubkey, is_self, is_online, name)`. Reuses phase-1's sibling reconcile as the live inventory (`current_members(own_hp)` is the authority; reconcile keeps the sibling set == fleet-minus-this-device) — no synchronous network fetch on render. Name = the canonical `device_name_default` (two voca words from the device PUBLIC key + our identity seed), the SAME function the pairing screen uses, so a device shows the same name here, on its own pairing screen, and on every other device in THIS fleet (a handed-off device gets a fresh name in the new owner's fleet).
-    fn fleet_device_rows(&self) -> Vec<([u8; 32], bool, bool, String)> {
+    /// Rows for the Fleet page: `(pubkey, is_self, online, retired, name)`. Current members first (self, then siblings), then the retired inventory — signed out, brand still ours (`fleet_retired`, refreshed on page entry).
+    fn fleet_device_rows(&self) -> Vec<([u8; 32], bool, bool, bool, String)> {
         use crate::network::fgtw::fleet::device_name_default;
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return Vec::new();
@@ -7365,13 +7381,47 @@ impl PhotonApp {
         let mut rows = Vec::new();
         if let Some(kp) = self.device_keypair.as_ref() {
             let me = *kp.public.as_bytes();
-            rows.push((me, true, true, device_name_default(&me, &seed)));
+            rows.push((me, true, true, false, device_name_default(&me, &seed)));
         }
         for c in self.contacts.iter().filter(|c| c.is_sibling) {
             let pk = c.public_identity.key;
-            rows.push((pk, false, c.is_online, device_name_default(&pk, &seed)));
+            rows.push((pk, false, c.is_online, false, device_name_default(&pk, &seed)));
+        }
+        for pk in &self.fleet_retired {
+            rows.push((*pk, false, false, true, device_name_default(pk, &seed)));
         }
         rows
+    }
+
+    /// Refresh the Fleet page's retired rows: chain history minus current members minus the `fleet.released` set (brands the owner already freed). Synchronous fetch, page-entry only — same style as the last-member gate. A fetch failure just hides the rows this visit (release is idempotent; nothing is lost).
+    fn refresh_fleet_retired(&mut self) {
+        self.fleet_release_armed = None;
+        self.fleet_retired.clear();
+        let Some(hp) = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()) else {
+            return;
+        };
+        match crate::network::fgtw::fleet::retired_devices(&hp) {
+            Ok(list) => {
+                let released = self.released_brands();
+                self.fleet_retired = list.into_iter().filter(|pk| !released.contains(pk)).collect();
+            }
+            Err(e) => crate::logf!("FLEET: retired fetch failed ({}) — rows hidden this visit", e),
+        }
+    }
+
+    /// The `fleet.released` setting decoded: concatenated 32-byte device pubkeys the owner has already released (binary at rest, fleet-synced so a release on one device drops the row everywhere).
+    fn released_brands(&self) -> Vec<[u8; 32]> {
+        let Some(bytes) = self.fleet_settings.as_ref().and_then(|fs| fs.effective("fleet.released")) else {
+            return Vec::new();
+        };
+        bytes
+            .chunks_exact(32)
+            .map(|c| {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(c);
+                a
+            })
+            .collect()
     }
 
     /// Off-thread submit of this device's diagnostic log to FGTW (the Diagnostics "Submit" pill).
@@ -13521,43 +13571,6 @@ impl PhotonApp {
     }
 
     /// Fully clean this device for a new owner / a fresh identity: nuke the on-disk vault (all `.vsf` — contacts, chains, keypairs, the cached fleet key) AND clear the tohu session (identity_seed + vault_seed + handle_proof), drop all in-memory state, and drop back to the attest screen. The device KEY is fingerprint-derived (not stored) so it survives — but with no identity bound and an empty vault the device is a blank slate: a new owner types their handle to attest fresh, or JOINs another fleet. This is `[]n` + `[]u` combined, exposed as a real (non-dev-chord) action for the Security page + the removed-device "start fresh" path; the `-1` broadcast signal tells the Android host to drop its sticky session too.
-    /// LAST RITES press three — end the identity (docs/lifecycle.md D3). Order matters: the client SWEEP first (submitted logs + the avatar blob — their keys are unlinkable to the hp, so the worker purge can't reach them), THEN the self-signed departure (whose zero-fold triggers the worker's total purge of every hp-keyed trace + frees the name), THEN the local wipe + process restart. The wipe stays GATED on the departure landing — a failed publish leaves everything intact and reports.
-    fn lastrites_execute(&mut self) {
-        self.lastrites_active = false;
-        let hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
-        let (Some(hp), Some(kp)) = (hp, self.device_keypair.clone()) else {
-            self.ready_toast = Some("No signed-in identity to end.".to_string());
-            return;
-        };
-        // Sweep: best-effort, logged — an unreachable store must not block the exit (the departure is the load-bearing act).
-        let pin = self.ensure_avatar_pin();
-        if let Some(session) = self.session.as_ref() {
-            let seed = session.identity_seed;
-            let tag = crate::log_retrieval_tag(&seed);
-            match crate::network::fgtw::log_delete_blocking(&tag) {
-                Ok(()) => crate::log("LASTRITES: submitted logs swept"),
-                Err(e) => crate::logf!("LASTRITES: log sweep failed (continuing): {}", e),
-            }
-            if let Some(pin) = pin {
-                let sk = ed25519_dalek::SigningKey::from_bytes(kp.secret.as_bytes());
-                match crate::ui::avatar::delete_avatar_blocking(&sk, &seed, &pin) {
-                    Ok(()) => crate::log("LASTRITES: avatar swept off the wall"),
-                    Err(e) => crate::logf!("LASTRITES: avatar sweep failed (continuing): {}", e),
-                }
-            }
-        }
-        match crate::network::fgtw::fleet::depart_device(&kp, &hp) {
-            Ok(()) => {
-                crate::log("LASTRITES: final departure published — the worker purges every trace, the name is free. Wiping.");
-                self.clean_device_for_reuse();
-            }
-            Err(e) => {
-                crate::logf!("LASTRITES: departure failed ({}) — NOTHING wiped", e);
-                self.ready_toast = Some("Couldn't publish the departure — nothing changed. Check connection and retry.".to_string());
-            }
-        }
-    }
-
     fn clean_device_for_reuse(&mut self) {
         let count = Self::dev_wipe_vault_files("clean");
         tohu::clear_session();
