@@ -4680,12 +4680,12 @@ impl FluorApp for PhotonApp {
                     let rows = layout.content_scrolled(11, settings_content_scroll).split_v([1.0; 11]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Security", tspan, CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[1], "Named by destructiveness.", hspan2, LABEL_COLOUR, 400);
-                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[2].center_h(pillf(0.55)), "Lock (re-unlock with your handle)", btn_base.wrapping_add(0), ctx.pressed_hit, true, Some(PILL_GREEN));
-                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[4].center_h(pillf(0.55)), "Remove this device from fleet", btn_base.wrapping_add(1), ctx.pressed_hit, true, Some(PILL_YELLOW));
+                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[2].center_h(pillf(0.55)), "Lock (re-unlock with your handle)", btn_base.wrapping_add(0), ctx.pressed_hit, true, Some(PILL_GREEN), "Open Sans");
+                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[4].center_h(pillf(0.55)), "Remove this device from fleet", btn_base.wrapping_add(1), ctx.pressed_hit, true, Some(PILL_YELLOW), "Open Sans");
                     let shred_label = if self.settings_shred_armed { "Shred — tap again to confirm" } else { "Shred (crypto-wipe)" };
-                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(pillf(0.55)), shred_label, btn_base.wrapping_add(2), ctx.pressed_hit, true, Some(PILL_ORANGE));
+                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(pillf(0.55)), shred_label, btn_base.wrapping_add(2), ctx.pressed_hit, true, Some(PILL_ORANGE), "Open Sans");
                     let rs_label = if self.settings_removeshred_armed { "Remove & shred — tap again to confirm" } else { "Remove & shred (sign out, then wipe)" };
-                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[8].center_h(pillf(0.55)), rs_label, btn_base.wrapping_add(3), ctx.pressed_hit, true, Some(PILL_RED));
+                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[8].center_h(pillf(0.55)), rs_label, btn_base.wrapping_add(3), ctx.pressed_hit, true, Some(PILL_RED), "Open Sans");
                     if self.settings_shred_armed {
                         settings_line(&mut canvas, ctx.text, rows[9], "Wipes the vault AND identity on this device — irreversible.", hspan2, ERROR_TEXT_COLOUR, 500);
                     } else if self.settings_removeshred_armed {
@@ -4733,7 +4733,7 @@ impl FluorApp for PhotonApp {
                     // Rows (blanks between the pills for vertical breathing room): 0 title · 1 current version · 2 blank · 3 release pill · 4 blank · 5 dev pill · 6 blank · 7 status.
                     let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Updates", tspan, CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], &format!("Photon {}", version_dozenal_glyphs()), hspan2, CONTACT_NAME_COLOUR, 500);
+                    settings_line(&mut canvas, ctx.text, rows[1], &format!("Photon {}", version_dozenal_glyphs()), hspan2, CONTACT_NAME_COLOUR, 400);
                     if let Some(cb) = self.settings_autoupdate_check.as_mut() {
                         cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
                     }
@@ -4747,7 +4747,7 @@ impl FluorApp for PhotonApp {
                             ChannelCheck::Ready(Some(row)) if row.version == ours => (format!("Already on {kind} {}", dozenal_version_tuple(row.version)), PILL_GREY, false),
                             ChannelCheck::Ready(Some(row)) => (format!("Get {kind} {}", dozenal_version_tuple(row.version)), avail_fill, !busy),
                         };
-                        draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, &label, slot, ctx.pressed_hit, enabled, Some(fill));
+                        draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, &label, slot, ctx.pressed_hit, enabled, Some(fill), "Oxanium");
                     };
                     button(&mut canvas, ctx.text, &mut chrome.hit_test_map, rows[3].center_h(pillf(0.7)), btn_base.wrapping_add(1), "release", PILL_GREEN, &self.update_release, self.update_busy);
                     button(&mut canvas, ctx.text, &mut chrome.hit_test_map, rows[5].center_h(pillf(0.7)), btn_base.wrapping_add(2), "dev", PILL_AMBER, &self.update_dev, self.update_busy);
@@ -12757,7 +12757,7 @@ fn draw_stub_pill_styled(
     pressed_hit: HitId,
     enabled: bool,
 ) {
-    draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, label, hit_id, pressed_hit, enabled, None);
+    draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, label, hit_id, pressed_hit, enabled, None, "Open Sans");
 }
 
 /// [`draw_stub_pill_styled`] with an optional custom fill pair `(idle, held)` — the Security page's destructiveness ramp (green → yellow → orange → red). `None` = the standard BUTTON_FILL/HELD navy.
@@ -12774,6 +12774,7 @@ fn draw_stub_pill_filled(
     pressed_hit: HitId,
     enabled: bool,
     fill: Option<(u32, u32)>,
+    label_font: &str,
 ) {
     if rect.w <= 0.0 || rect.h <= 0.0 {
         return;
@@ -12782,14 +12783,14 @@ fn draw_stub_pill_filled(
     let held = enabled && hit_id != HIT_NONE && hit_id == pressed_hit;
     let (fill_idle, fill_held) = fill.unwrap_or((fluor::theme::BUTTON_FILL, fluor::theme::BUTTON_HELD));
     let mut font_size = rect.h * 0.5;
-    // Label first (topmost-first): centred in the pill.
-    let mut tw = text.measure_text_width(label, font_size, 400, "Open Sans");
+    // Label first (topmost-first): centred in the pill. `label_font` is normally "Open Sans"; the version buttons pass "Oxanium" so the dozenal control-block glyphs resolve to its +glyphs face (Open Sans has no such glyphs → notdef).
+    let mut tw = text.measure_text_width(label, font_size, 400, label_font);
     // Fit order: SHRINK the font toward the slot first (pills sharing a row must not collide with their neighbours), then widen the bg only if the font hit its readability floor — so a long label on a full-width row still gets wrapped rather than truncated.
     let max_w = rect.w * 0.96;
     if tw + font_size * 1.6 > max_w {
         let scaled = font_size * max_w / (tw + font_size * 1.6);
         font_size = scaled.max(9.0).min(font_size);
-        tw = text.measure_text_width(label, font_size, 400, "Open Sans");
+        tw = text.measure_text_width(label, font_size, 400, label_font);
     }
     let need_w = tw + font_size * 1.6;
     let (px, pw) = if need_w > rect.w { (rect.center_x() - need_w * 0.5, need_w) } else { (rect.x, rect.w) };
@@ -12812,7 +12813,7 @@ fn draw_stub_pill_filled(
         font_size,
         400,
         label_colour,
-        "Open Sans",
+        label_font,
         None,
         None,
         None,
