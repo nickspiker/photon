@@ -2,9 +2,12 @@
 set -e
 
 source scripts/lib/github.sh
+source scripts/lib/manifest.sh
 
 # Version scheme (2026-07-16): major.minor.patch. THIS SCRIPT does the release increment: whatever the tree holds (X.Y.0 fresh, or X.Y.P after dev publishes), the release ships X.(Y+1).0 — minor bumped, patch zeroed (patch 0 is RESERVED for releases; dev publishes bump the patch ≥1 and reach clients via the dev manifest).
 # Ordering discipline (same as the dev publishes): refuse a dirty tree, bump, COMMIT THE BUMP FIRST — so every built binary embeds the actual release commit (no "+dirty") and the signed manifest stamps the same HEAD. A failure anywhere rolls that one commit back (trap below), leaving the tree exactly as it started.
+# The publish lock keeps a dev-*.sh from bumping the version mid-deploy (and vice versa) — the same race that mis-stamped a dev manifest row on 2026-07-16.
+manifest_take_publish_lock
 if [ -n "$(git status --porcelain)" ]; then
     echo "ERROR: working tree is dirty — a release stamps HEAD into every binary + the signed manifest."
     echo "       Commit (or stash) first."
