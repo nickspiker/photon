@@ -9435,7 +9435,19 @@ impl PhotonApp {
                     crate::logf!("CLUTCH: Sent proof to {} via status checker", contact_handle);
                 }
 
-                // Check if they already sent us their proof
+                // Check if they already sent us their proof — but only a proof from OUR round counts. An early proof stored under a different ceremony_id is echo of a superseded attempt (offer churn / an unwiped peer replaying old state): discard it and await their current-round proof instead of manufacturing a mismatch (the peer-B/a peer permanent-Pending stall).
+                let round_ok = contact.clutch_their_proof_ceremony == Some(result.ceremony_id);
+                let their_early_proof = match (their_early_proof, round_ok) {
+                    (Some(p), true) => Some(p),
+                    (Some(_), false) => {
+                        let stored_round = contact.clutch_their_proof_ceremony.map(|c| hex::encode(&c[..4])).unwrap_or_else(|| "none".to_string());
+                        crate::logf!("CLUTCH: stored early proof from {} is cross-round (theirs {}… vs ours {}…) — discarded, awaiting their current-round proof", contact_handle, stored_round, hex::encode(&result.ceremony_id[..4]));
+                        contact.clutch_their_eggs_proof = None;
+                        contact.clutch_their_proof_ceremony = None;
+                        None
+                    }
+                    (None, _) => None,
+                };
                 if let Some(their_proof) = their_early_proof {
                     if their_proof == result.eggs_proof {
                         // SUCCESS! Both parties computed same eggs
@@ -9452,14 +9464,20 @@ impl PhotonApp {
                         // We're Complete, but the peer may not have our proof yet — we got theirs first, and our single send (just above) might have dropped. Keep the proof and the resend budget so ping_contacts keeps delivering it for a few more cycles; that's exactly what stops the peer from hanging in AwaitingProof.
                         contact.clutch_their_eggs_proof = None;
                     } else {
-                        // CRYPTOGRAPHIC FAILURE!
+                        // SAME round, different eggs — the transcripts genuinely diverged (a KEM decapsulated against a superseded key silently yields a wrong secret; nothing upstream authenticates which offer generation a KEM targeted). A bare state reset CANNOT heal this: the ceremony re-runs deterministically from the same poisoned in-memory slots and re-derives the identical disagreement forever (peer-B proved it — byte-identical mismatch pairs 10.5h apart). TORCH the round: drop every ceremony input on our side (slots, provenances, round id, queued KEM, our keypairs) so keygen re-mints, a fresh-provenance offer goes out, and both sides converge on a genuinely new round.
                         let our_hex = hex::encode(&result.eggs_proof);
                         let their_hex = hex::encode(&their_proof);
-                        crate::logf!("CLUTCH: ⚠ PROOF MISMATCH with {}! ours={}... theirs={}...", contact_handle, &our_hex[..16], &their_hex[..16]);
-                        // Reset to Pending to allow re-keying
+                        crate::logf!("CLUTCH: ⚠ PROOF MISMATCH with {} (same round {}…)! ours={}... theirs={}... — torching the round, re-keying fresh", contact_handle, hex::encode(&result.ceremony_id[..4]), &our_hex[..16], &their_hex[..16]);
                         contact.clutch_state = ClutchState::Pending;
                         contact.clutch_our_eggs_proof = None;
                         contact.clutch_their_eggs_proof = None;
+                        contact.clutch_their_proof_ceremony = None;
+                        contact.clutch_slots.clear();
+                        contact.offer_provenances.clear();
+                        contact.ceremony_id = None;
+                        contact.clutch_pending_kem = None;
+                        contact.clutch_our_keypairs = None;
+                        contact.clutch_offer_sent = false;
                     }
                 } else {
                     // Set state to AwaitingProof - wait for their proof
@@ -12211,7 +12229,7 @@ impl PhotonApp {
                 // CLUTCH complete proof received (~200 bytes with eggs_proof) Both parties exchange this to verify they derived identical eggs
                 StatusUpdate::ClutchCompleteReceived {
                     conversation_token,
-                    ceremony_id: _received_ceremony_id,
+                    ceremony_id: received_ceremony_id,
                     sender_pubkey,
                     payload,
                     sender_addr: raw_sender_addr,
@@ -12301,6 +12319,14 @@ impl PhotonApp {
                                 crate::logf!("Status: {} is now ONLINE (CLUTCH complete)", crate::fp(&contact.handle_proof));
                             }
 
+                            // ROUND SCOPING (the peer-B/a peer permanent-Pending stall, 2026-07-17): a proof is only meaningful within ITS ceremony round — the wire carries ceremony_id for exactly this, but it was parsed and discarded, so a proof from a superseded round (offer churn, address change, an unwiped peer replaying old state) got compared against OUR round and manufactured "PROOF MISMATCH" out of ordinary echo. If we know our round and theirs differs, drop it here: never stored, never compared. Their CURRENT round's proof rides the resend budget and arrives on its own.
+                            if let Some(our_cid) = contact.ceremony_id {
+                                if received_ceremony_id != our_cid {
+                                    crate::logf!("CLUTCH: proof from {} is for round {}… ours is {}… — cross-round echo dropped", crate::fp(&contact.handle_proof), hex::encode(&received_ceremony_id[..4]), hex::encode(&our_cid[..4]));
+                                    break;
+                                }
+                            }
+
                             match contact.clutch_state {
                                 ClutchState::AwaitingProof => {
                                     // We have our proof - verify theirs matches
@@ -12348,17 +12374,25 @@ impl PhotonApp {
                                                 }
                                             }
                                         } else {
-                                            // Proof mismatch — NEVER panic. The common cause is a CROSSED / SUPERSEDED ceremony round: a fresh offer/KEM arrived after we computed our eggs, so their proof is from a different ceremony instance than ours. It is not an attack signal (a forged proof can't pass the read_verified signature gate that got us here). Reset to Pending so the re-key machinery re-establishes ONE agreed ceremony — identical to the mismatch handling in check_clutch_ceremonies.
-                                            crate::logf!("CLUTCH: proof mismatch with {} (likely a crossed/superseded round) — resetting to re-key. ours={}... theirs={}...", crate::fp(&contact.handle_proof), hex::encode(&our_proof[..8]), hex::encode(&payload.eggs_proof[..8]));
+                                            // Proof mismatch — NEVER panic; it's not an attack signal (a forged proof can't pass the read_verified signature gate that got us here). The cross-round case is already dropped above (ceremony_id gate), so reaching here means SAME round, diverged transcripts — and a bare state reset re-derives the identical disagreement from the same poisoned slots forever. TORCH the round (identical to the mismatch handling in check_clutch_ceremonies): fresh keypairs, fresh offer, fresh provenance, genuinely new round.
+                                            crate::logf!("CLUTCH: ⚠ PROOF MISMATCH with {} (same round)! ours={}... theirs={}... — torching the round, re-keying fresh", crate::fp(&contact.handle_proof), hex::encode(&our_proof[..8]), hex::encode(&payload.eggs_proof[..8]));
                                             contact.clutch_state = ClutchState::Pending;
                                             contact.clutch_our_eggs_proof = None;
                                             contact.clutch_their_eggs_proof = None;
+                                            contact.clutch_their_proof_ceremony = None;
+                                            contact.clutch_slots.clear();
+                                            contact.offer_provenances.clear();
+                                            contact.ceremony_id = None;
+                                            contact.clutch_pending_kem = None;
+                                            contact.clutch_our_keypairs = None;
+                                            contact.clutch_offer_sent = false;
                                             changed = true;
                                         }
                                     } else {
                                         // Race condition: proof arrived before check_clutch_ceremonies processed our ceremony result. Store theirs for when we're ready.
                                         crate::logf!("CLUTCH: Storing early proof from {} (AwaitingProof but our result not processed yet)", crate::fp(&contact.handle_proof));
                                         contact.clutch_their_eggs_proof = Some(payload.eggs_proof);
+                                        contact.clutch_their_proof_ceremony = Some(received_ceremony_id);
                                         changed = true;
                                     }
                                 }
@@ -12366,6 +12400,7 @@ impl PhotonApp {
                                     // We haven't computed our proof yet - store theirs for later
                                     crate::logf!("CLUTCH: Storing early proof from {} (we're still in Pending)", crate::fp(&contact.handle_proof));
                                     contact.clutch_their_eggs_proof = Some(payload.eggs_proof);
+                                    contact.clutch_their_proof_ceremony = Some(received_ceremony_id);
                                     changed = true;
                                 }
                                 ClutchState::Complete => {
