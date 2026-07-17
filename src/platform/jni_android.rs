@@ -568,6 +568,72 @@ pub extern "C" fn Java_com_photon_messenger_PhotonBeacon_nativeOnBeaconHeard(
 
 /// Call a no-arg PhotonBeacon method ("stopAdvertise" / "startScan" / "stopScan") from any Rust thread. No-op with a log if the bridge never registered (Activity not up yet).
 #[cfg(target_os = "android")]
+// ── PhotonNfc bridge (NFC instant device add): the Kotlin object registers at nativeInit; Rust drives serve/reader thru the global ref; the reader's tap comes down via nativeOnNfcSecret. Same lifecycle pattern as PhotonBeacon. ──
+static PHOTON_NFC: std::sync::OnceLock<(jni::JavaVM, jni::objects::GlobalRef)> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonNfc_nativeInit(
+    env: JNIEnv<'_>,
+    obj: jni::objects::JObject<'_>,
+) {
+    let vm = env.get_java_vm();
+    let gref = env.new_global_ref(&obj);
+    if let (Ok(vm), Ok(gref)) = (vm, gref) {
+        let _ = PHOTON_NFC.set((vm, gref));
+        info!("PhotonNfc: bridge registered");
+    }
+}
+
+/// Kotlin reader-mode tap → the 32-byte pairing secret S.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonNfc_nativeOnNfcSecret(
+    mut env: JNIEnv<'_>,
+    _obj: jni::objects::JObject<'_>,
+    bytes: jni::objects::JByteArray<'_>,
+) {
+    if let Ok(v) = env.convert_byte_array(&bytes) {
+        if v.len() == 32 {
+            let mut s = [0u8; 32];
+            s.copy_from_slice(&v);
+            crate::network::pairing_nfc::on_secret_read(s);
+            info!("PhotonNfc: secret read from tap");
+        }
+    }
+}
+
+pub fn nfc_call(method: &str) {
+    let Some((vm, obj)) = PHOTON_NFC.get() else {
+        return;
+    };
+    match vm.attach_current_thread() {
+        Ok(mut env) => {
+            if env.call_method(obj.as_obj(), method, "()V", &[]).is_err() {
+                let _ = env.exception_clear();
+            }
+        }
+        Err(_) => {}
+    }
+}
+
+pub fn nfc_call_bytes(method: &str, a: &[u8]) {
+    let Some((vm, obj)) = PHOTON_NFC.get() else {
+        return;
+    };
+    match vm.attach_current_thread() {
+        Ok(mut env) => {
+            let Ok(arr) = env.byte_array_from_slice(a) else {
+                return;
+            };
+            if env.call_method(obj.as_obj(), method, "([B)V", &[(&arr).into()]).is_err() {
+                let _ = env.exception_clear();
+            }
+        }
+        Err(_) => {}
+    }
+}
+
 pub fn beacon_call(method: &str) {
     let Some((vm, obj)) = BEACON_BRIDGE.get() else {
         error!("beacon_call({method}): bridge not registered");
