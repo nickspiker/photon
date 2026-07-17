@@ -1240,16 +1240,16 @@ pub fn encrypt_av1_data_from_seed(
     encrypt_av1_data_with_key(av1_data, &derive_avatar_encryption_key_from_seed(identity_seed))
 }
 
-/// Encrypt AV1 data under an EXPLICIT key — the avatar-pin's key half. The friend-gated upload path: neither this key nor the FGTW lookup is derivable from the handle, so possession of the handle no longer decrypts the avatar (docs/identity-profile.md). Format: `[nonce:12][ciphertext+tag]`.
+/// Encrypt AV1 data under an EXPLICIT key — the avatar-pin's key half — with ChaCha20-Poly1305, the SAME AEAD the rest of Photon's at-rest layer uses (kete vault, sealed log, blind blobs): constant-time in software, no AES-NI dependence on mobile. The friend-gated upload path: neither this key nor the FGTW lookup is derivable from the handle, so possession of the handle no longer decrypts the avatar (docs/identity-profile.md). Format: `[nonce:12][ciphertext+tag]`.
 pub fn encrypt_av1_data_with_key(av1_data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit};
+    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
     use rand::RngCore;
 
     // Build v'a' wrapped AV1 data
     let va_wrapped = encode_va_wrapper(av1_data);
 
     let cipher =
-        Aes256Gcm::new_from_slice(key).map_err(|e| format!("Failed to create cipher: {}", e))?;
+        ChaCha20Poly1305::new_from_slice(key).map_err(|e| format!("Failed to create cipher: {}", e))?;
 
     // Generate random nonce
     let mut nonce_bytes = [0u8; 12];
@@ -1289,9 +1289,9 @@ pub fn decrypt_av1_data_from_seed(
     decrypt_av1_data_with_key(encrypted, &derive_avatar_encryption_key_from_seed(identity_seed))
 }
 
-/// `decrypt_av1_data` with an explicit avatar AES key — the pin's first half; how a contact's avatar decrypts once the handle/seed no longer exist on this side.
+/// `decrypt_av1_data` with an explicit avatar key (ChaCha20-Poly1305) — the pin's first half; how a contact's avatar decrypts from the pin alone, no handle/seed.
 pub fn decrypt_av1_data_with_key(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit};
+    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
 
     if encrypted.len() < 12 + 16 {
         return Err(format!(
@@ -1307,7 +1307,7 @@ pub fn decrypt_av1_data_with_key(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec
     let ciphertext = &encrypted[12..];
 
     let cipher =
-        Aes256Gcm::new_from_slice(key).map_err(|e| format!("Failed to create cipher: {}", e))?;
+        ChaCha20Poly1305::new_from_slice(key).map_err(|e| format!("Failed to create cipher: {}", e))?;
 
     // Decrypt
     let va_wrapped = cipher
