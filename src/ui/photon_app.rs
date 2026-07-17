@@ -9895,7 +9895,7 @@ impl PhotonApp {
                     sender_addr,
                 } => {
                     // Get our handle_hash for chain lookups
-                    let our_handle_hash = match self.session.as_ref().map(|s| s.identity_seed) {
+                    let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {  // PARTY ID: the friendship chain + slots are keyed on party ids (from_clutch + send both use our_party_id); matching on the raw seed here dropped every incoming message/probe as "not a participant" and hung the weave (2026-07-17).
                         Some(h) => h,
                         None => {
                             crate::log("CHAT: No user_identity_seed - cannot decrypt");
@@ -9915,7 +9915,7 @@ impl PhotonApp {
                     // Contact index to seal the chain-weave for AFTER the `chains` borrow ends.
                     let mut recv_seal_idx: Option<usize> = None;
                     if let Some((fid, chains)) = chains_result {
-                        // Party-id seam: whichever of (identity seed, sibling pid) is actually a participant is "us" in these chains.
+                        // Party-id seam: our participant id is the identity PARTY id (friends) or the sibling pid (siblings) — whichever the chain actually holds. (The raw seed is never a chain participant post-pin-set.)
                         let our_handle_hash = if chains.participants().contains(&our_handle_hash) {
                             our_handle_hash
                         } else if let Some(pid) =
@@ -10249,7 +10249,7 @@ impl PhotonApp {
                     plaintext_hash,
                 } => {
                     // Get our handle_hash
-                    let our_handle_hash = match self.session.as_ref().map(|s| s.identity_seed) {
+                    let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {  // PARTY ID: the friendship chain + slots are keyed on party ids (from_clutch + send both use our_party_id); matching on the raw seed here dropped every incoming message/probe as "not a participant" and hung the weave (2026-07-17).
                         Some(h) => h,
                         None => {
                             crate::log("CHAT: No user_identity_seed - cannot process ACK");
