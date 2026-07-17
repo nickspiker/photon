@@ -732,6 +732,8 @@ pub struct LogRecord {
     pub level: u64,
     /// The rendered message: the stored template with its typed `val` fields substituted at READ time (numbers live binary in the record; this is the display edge).
     pub msg: String,
+    /// The record's raw bytes — one complete VSF document, so the in-app viewer can hand it to `vsf::inspect_vsf` for the coloured structural view. photonlog ignores it.
+    pub raw: Vec<u8>,
 }
 
 /// Decode complete records from a `photon.log.vsf` byte stream (each record = one full VSF file: {creation_time (Eagle), section "log" {lvl, msg, val*}}). Returns the records plus the byte offset of the last COMPLETE record boundary — a half-written trailing record (mid-append) is left for the next pass instead of being mis-decoded. Shared by the `photonlog` bin and the in-app viewer, so the two surfaces can never drift.
@@ -805,7 +807,7 @@ pub fn parse_log_records(buf: &[u8]) -> (Vec<LogRecord>, usize) {
             Some(VsfType::e(EtType::e7(o))) => *o as i64,
             _ => 0,
         };
-        records.push(LogRecord { osc, level, msg });
+        records.push(LogRecord { osc, level, msg, raw: rest[..rec].to_vec() });
         off += rec;
     }
     (records, off)
