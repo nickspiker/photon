@@ -1,6 +1,6 @@
 // PHOTON SOURCE MAP — one readable line per file. Keep updated when files or major pub items change.
 //
-// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/log_size_bytes/install_log_bridge, fp(public_id) (non-PII log label), dozenal helpers (DOZENAL_NAMES, dozenal_glyphs UI / dozenal_spell read-aloud / dozenal_words camelCase log form, deglyph_for_log), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports.
+// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/log_size_bytes/read_log_from/install_log_bridge, LogRecord + parse_log_records (shared record decode: photonlog bin + the in-app Diagnostics viewer), fp(public_id) (non-PII log label), dozenal helpers (DOZENAL_NAMES, dozenal_glyphs UI / dozenal_spell read-aloud / dozenal_words camelCase log form, deglyph_for_log), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports.
 // main.rs  — winit event loop, window creation, tokio async runtime.
 //
 // crypto/
@@ -721,6 +721,115 @@ pub fn render_log_line(template: &str, vals: &[LogValue]) -> String {
         }
     }
     out
+}
+
+/// One decoded log record — the shared decode shape for the `photonlog` bin and the in-app Diagnostics log viewer.
+#[derive(Clone, Debug)]
+pub struct LogRecord {
+    /// Record creation time, eagle oscillations (0 = the record carried none).
+    pub osc: i64,
+    /// Severity 0..=4 (TRACE..ERROR); u64::MAX = the record carried none.
+    pub level: u64,
+    /// The rendered message: the stored template with its typed `val` fields substituted at READ time (numbers live binary in the record; this is the display edge).
+    pub msg: String,
+}
+
+/// Decode complete records from a `photon.log.vsf` byte stream (each record = one full VSF file: {creation_time (Eagle), section "log" {lvl, msg, val*}}). Returns the records plus the byte offset of the last COMPLETE record boundary — a half-written trailing record (mid-append) is left for the next pass instead of being mis-decoded. Shared by the `photonlog` bin and the in-app viewer, so the two surfaces can never drift.
+pub fn parse_log_records(buf: &[u8]) -> (Vec<LogRecord>, usize) {
+    use vsf::file_format::{VsfHeader, VsfSection};
+    use vsf::types::EtType;
+    use vsf::VsfType;
+    let mut records = Vec::new();
+    let mut off = 0usize;
+    while off < buf.len() {
+        let rest = &buf[off..];
+        let Ok((header, header_end)) = VsfHeader::decode(rest) else {
+            break; // incomplete tail — stop, retry next pass
+        };
+        let mut ptr = 0usize;
+        let Ok(section) = VsfSection::parse(&rest[header_end..], &mut ptr) else {
+            break;
+        };
+        let rec = header_end + ptr;
+        if rec == 0 {
+            break;
+        }
+        let level = section
+            .get_field("lvl")
+            .and_then(|f| f.values.first())
+            .and_then(|v| {
+                use vsf::schema::FromVsfType;
+                u64::from_vsf_type(v).ok()
+            })
+            .unwrap_or(u64::MAX);
+        let template = section
+            .get_field("msg")
+            .and_then(|f| f.values.first())
+            .and_then(|v| match v {
+                VsfType::x(s) => Some(s.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let vals: Vec<LogValue> = section
+            .get_fields("val")
+            .iter()
+            .filter_map(|f| f.values.first())
+            .map(|v| match v {
+                VsfType::u(n, _) => LogValue::U(*n as u128),
+                VsfType::i6(n) => LogValue::I(*n as i128),
+                VsfType::f6(n) => LogValue::F(*n),
+                VsfType::x(s) => LogValue::T(s.clone()),
+                VsfType::v_u3(vec) if vec.data.len() == 6 || vec.data.len() == 18 => {
+                    let (ip_bytes, port_bytes) = vec.data.split_at(vec.data.len() - 2);
+                    let port = u16::from_le_bytes([port_bytes[0], port_bytes[1]]);
+                    let ip: std::net::IpAddr = if ip_bytes.len() == 4 {
+                        std::net::Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]).into()
+                    } else {
+                        let mut o = [0u8; 16];
+                        o.copy_from_slice(ip_bytes);
+                        std::net::Ipv6Addr::from(o).into()
+                    };
+                    LogValue::Addr(std::net::SocketAddr::new(ip, port))
+                }
+                other => LogValue::T(format!("{other:?}")),
+            })
+            .collect();
+        let msg = if vals.is_empty() {
+            template
+        } else {
+            render_log_line(&template, &vals)
+        };
+        let osc = match &header.creation_time {
+            Some(VsfType::e(EtType::e6(o))) => *o,
+            Some(VsfType::e(EtType::e5(o))) => *o as i64,
+            Some(VsfType::e(EtType::e7(o))) => *o as i64,
+            _ => 0,
+        };
+        records.push(LogRecord { osc, level, msg });
+        off += rec;
+    }
+    (records, off)
+}
+
+/// Read the on-disk log from byte `offset` to EOF — the in-app viewer's tail-follow read (a seek, not a whole-file copy). `None` = no log yet or nothing past the offset; a shrunken file (rotation/clear) also reads `None` here and the caller re-syncs from zero.
+#[cfg(feature = "logging")]
+pub fn read_log_from(offset: u64) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let path = log_dir()?.join("photon.log.vsf");
+    let mut f = std::fs::File::open(&path).ok()?;
+    let len = f.metadata().ok()?.len();
+    if len <= offset {
+        return None;
+    }
+    f.seek(SeekFrom::Start(offset)).ok()?;
+    let mut out = Vec::with_capacity((len - offset) as usize);
+    f.read_to_end(&mut out).ok()?;
+    Some(out)
+}
+#[cfg(not(feature = "logging"))]
+#[inline(always)]
+pub fn read_log_from(_offset: u64) -> Option<Vec<u8>> {
+    None
 }
 
 #[cfg(feature = "logging")]

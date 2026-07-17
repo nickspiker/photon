@@ -571,6 +571,22 @@ fn you_row_rect(layout: &SettingsLayout, scroll: Coord, i: usize) -> fluor::regi
     )
 }
 
+/// Viewer cap: the newest 2^15 decoded records. A capped 16 MiB log holds more than anyone scrolls thru in-app; `photonlog` serves the full-file cases.
+const DIAG_LOG_MAX_ROWS: usize = 1 << 15;
+
+/// The Region for the `i`th decoded record on the Diagnostics log viewer: HALF the natural line height (a log wants density), below the full-height header row, shifted by the content scroll. Shared by the render loop and the extent math so the scroll bound matches the drawn rows exactly.
+fn diag_log_row_rect(layout: &SettingsLayout, scroll: Coord, i: usize) -> fluor::region::Region {
+    let inset = layout.content_inset();
+    let line = layout.content_line_h();
+    let row_h = line * 0.5;
+    fluor::region::Region::new(
+        inset.x,
+        inset.y - scroll + 2. * line + i as Coord * row_h,
+        inset.w,
+        row_h,
+    )
+}
+
 /// Photon-desktop as a `FluorApp`. Owns fluor's `DefaultChrome` (window frame), the dense hit-id counter for widget allocation, and an optional event-loop proxy clone for waking from background tasks.
 ///
 /// `chrome` is `Option` because [`DefaultChrome::new`] needs the actual viewport size, which the host doesn't hand the app until [`FluorApp::init`] fires. `new()` is parameterless; everything else allocates in `init`.
@@ -834,6 +850,18 @@ pub struct PhotonApp {
     settings_presence_check: Option<crate::ui::settings_widgets::Checkbox>,
     /// Updates-page auto-update on/off — a custom `Checkbox`.
     settings_autoupdate_check: Option<crate::ui::settings_widgets::Checkbox>,
+    /// Diagnostics log viewer: `true` = the page body is the scrollable decoded-record list instead of the Clear/Snapshot/Submit controls. Toggled by the "View"/"Hide" pill.
+    diag_log_view: bool,
+    /// Decoded records currently held by the viewer (shared decode with the `photonlog` bin — [`crate::parse_log_records`]), capped to the newest [`DIAG_LOG_MAX_ROWS`].
+    diag_log_rows: Vec<crate::LogRecord>,
+    /// Byte offset into the on-disk log of the last COMPLETE record decoded — the tail-follow cursor. A shrink (rotation/Clear) re-syncs from zero.
+    diag_log_consumed: u64,
+    /// Off-thread initial decode in flight (a full 16 MiB parse must not stall a frame); the result lands here and is drained in tick.
+    diag_log_rx: Option<std::sync::mpsc::Receiver<(Vec<crate::LogRecord>, usize)>>,
+    /// `true` = the view is pinned to the newest record (scroll rides the extent as records append). Scrolling up unpins; scrolling back to the bottom re-pins.
+    diag_log_follow: bool,
+    /// Earliest eagle time the next tail-follow poll may run (the on-disk size probe is an atomic, but the seek+decode shouldn't run every frame).
+    diag_log_next_poll_osc: i64,
     /// Diagnostics-page optional-note field — a real fluor `Textbox` (distinct from the launch / contacts / compose boxes so content never bleeds).
     settings_note_textbox: Option<Textbox>,
     /// You-page profile editor: one box per field (display name, first, email, custom fields, …), grouped by taxonomy tier and prefilled from the fleet `profile.<id>` settings on page-open. "Save profile" writes every changed field in one batched push. HitId is scarce (u16) so this is built ONCE (lazily, on first open) and never rebuilt — custom fields append.
@@ -1036,6 +1064,12 @@ impl PhotonApp {
             settings_chime_check: None,
             settings_presence_check: None,
             settings_autoupdate_check: None,
+            diag_log_view: false,
+            diag_log_rows: Vec::new(),
+            diag_log_consumed: 0,
+            diag_log_rx: None,
+            diag_log_follow: true,
+            diag_log_next_poll_osc: 0,
             settings_note_textbox: None,
             you_fields: Vec::new(),
             you_add_textbox: None,
@@ -2042,7 +2076,16 @@ impl FluorApp for PhotonApp {
                         self.spawn_update_apply(Channel::Dev);
                     }
                 } else if page == SettingsPage::Diagnostics {
-                    if slot == 0 {
+                    if slot == 3 {
+                        // "View"/"Back" → toggle the in-app log viewer (the page body becomes the scrollable decoded-record list).
+                        if self.diag_log_view {
+                            self.diag_log_close();
+                        } else {
+                            self.diag_log_open();
+                        }
+                    } else if self.diag_log_view {
+                        // The viewer replaces the Clear/Snapshot/Submit pills — their hit stamps can outlive a frame, and a stale tap must not clear or submit invisibly.
+                    } else if slot == 0 {
                         // "Clear" → wipe the on-device log; the next line reopens a fresh, empty file.
                         crate::clear_log();
                         self.ready_toast = Some("Log cleared".to_string());
@@ -2295,6 +2338,13 @@ impl FluorApp for PhotonApp {
                             self.settings_rail_scroll = rubber_step(self.settings_rail_scroll, step, self.settings_rail_extent, reach);
                         } else {
                             self.settings_content_scroll = rubber_step(self.settings_content_scroll, step, self.settings_content_extent, reach);
+                            // Log viewer tail-follow rides where the user LEAVES the scroll: at (or past) the extent = pinned to the newest record; anywhere above = reading history, appends must not yank the view.
+                            if self.diag_log_view
+                                && matches!(self.state, AppState::Settings(SettingsPage::Diagnostics))
+                            {
+                                self.diag_log_follow =
+                                    self.settings_content_scroll >= self.settings_content_extent - 1.0;
+                            }
                         }
                     } else if matches!(self.state, AppState::Conversation) {
                         // In a conversation the wheel scrolls the message history. The list lays out bottom-up with newest at the bottom; a positive offset pushes messages down (reveals older ones above). Scroll-up (positive dy) shows older → add. Only the 0 end rubber-bands (hi = ∞); the old-history end is backfill-paged, not clamped.
@@ -2838,6 +2888,12 @@ impl FluorApp for PhotonApp {
             }
         }
 
+        // Diagnostics log viewer: drain the off-thread decode / tail-follow the live file (no-op unless the viewer is open on its page). Rows are CONTENT — a change needs the full scene frame, not just a widget-overlay pass.
+        if self.drive_diag_log() {
+            self.scene_dirty = true;
+            needs_redraw = true;
+        }
+
         // Self-update: drain check/apply results, then re-exec if a verified swap landed. The exec MUST happen here on the main thread, outside every borrow — the process image is replaced in place (unix) or handed off (windows), so nothing after it runs.
         needs_redraw |= self.drain_update_events();
         if let Some(exe) = self.update_reexec.take() {
@@ -2993,13 +3049,19 @@ impl FluorApp for PhotonApp {
             let sl = SettingsLayout::compute(&ctx.viewport);
             // Publish the extents (rubber-band bounds) — NO hard clamp: the wheel handler resists past-the-end steps and tick() eases the overshoot back, so an out-of-range value here is the rubber-band mid-stretch, rendered as-is. Labels, widgets, and bg all read this same raw value, so the whole pane stretches together.
             self.settings_rail_extent = (sl.nav_row_h() * (SettingsPage::ALL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0);
-            // The You page is a dynamic form — its row count is the field set plus the fixed chrome rows, not a constant.
-            let n_rows = if page == SettingsPage::You {
-                you_rows_plan(&self.you_fields).len()
+            // The You page is a dynamic form — its row count is the field set plus the fixed chrome rows, not a constant. The Diagnostics log viewer counts fractionally: two full-height header rows plus half-height record rows (matching diag_log_row_rect exactly, or the scroll bound and the drawn rows disagree).
+            let content_rows_h = if page == SettingsPage::You {
+                sl.content_line_h() * you_rows_plan(&self.you_fields).len() as Coord
+            } else if page == SettingsPage::Diagnostics && self.diag_log_view {
+                sl.content_line_h() * (2.5 + self.diag_log_rows.len() as Coord * 0.5)
             } else {
-                settings_page_rows(page)
+                sl.content_line_h() * settings_page_rows(page) as Coord
             };
-            self.settings_content_extent = (sl.content_line_h() * n_rows as Coord - sl.content_inset().h).max(0.0);
+            self.settings_content_extent = (content_rows_h - sl.content_inset().h).max(0.0);
+            // The pinned log viewer rides the newest record: scroll sits at the extent as records append, until the user scrolls up (the wheel handler un-pins).
+            if page == SettingsPage::Diagnostics && self.diag_log_view && self.diag_log_follow {
+                self.settings_content_scroll = self.settings_content_extent;
+            }
             (self.settings_rail_scroll, self.settings_content_scroll)
         } else {
             (0.0, 0.0)
@@ -4721,11 +4783,83 @@ impl FluorApp for PhotonApp {
                         settings_line(&mut canvas, ctx.text, rows[7], status, hspan2, theme::CONTACT_NAME_COLOUR, 500);
                     }
                 }
+                SettingsPage::Diagnostics if self.diag_log_view => {
+                    // The in-app log viewer: two full-height header rows PINNED (unscrolled — the Back pill must stay reachable while the view opens at the bottom of a 30k-row log), then the decoded records at HALF line height (dense), scrolling UNDER a clip that starts below the header. Culled to the visible slice — drawing ~40 rows is one frame's work. Row geometry mirrors diag_log_row_rect / the extent math exactly.
+                    let inset = layout.content_inset();
+                    let line = layout.content_line_h();
+                    // Records clip BELOW the pinned header band.
+                    let content_clip = fluor::paint::Clip::new(
+                        inset.x.max(0.0) as usize,
+                        (inset.y + 2. * line).max(0.0) as usize,
+                        inset.right().max(0.0) as usize,
+                        inset.bottom().max(0.0) as usize,
+                    );
+                    let header = layout.content_scrolled(2, 0.0).split_v([1.0; 2]);
+                    let hr = header[0].split_h([2.0, 1.0]);
+                    settings_line(&mut canvas, ctx.text, hr[0], "Log", tspan, theme::CONTACT_NAME_COLOUR, 600);
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, hr[1].center_h(0.85), "Back", btn_base.wrapping_add(3), ctx.pressed_hit);
+                    let meta = if self.diag_log_rx.is_some() {
+                        "Decoding log\u{2026}".to_string()
+                    } else if self.diag_log_rows.is_empty() {
+                        "Log is empty".to_string()
+                    } else {
+                        format!(
+                            "{} record(s) · {} KiB · newest at the bottom{}",
+                            self.diag_log_rows.len(),
+                            (crate::log_size_bytes() + 1023) / 1024,
+                            if self.diag_log_rows.len() >= DIAG_LOG_MAX_ROWS { " · oldest trimmed" } else { "" },
+                        )
+                    };
+                    settings_line(&mut canvas, ctx.text, header[1], &meta, hspan2, theme::LABEL_COLOUR, 400);
+
+                    let row_h = line * 0.5;
+                    // First visible record: the band's top scrolls as inset.y + 2·line − scroll, the clip top sits at inset.y + 2·line, so the first index is simply scroll/row_h. +2 rows of slack covers the fractional edges.
+                    let first = ((settings_content_scroll / row_h).floor().max(0.)) as usize;
+                    let visible = (inset.h / row_h).ceil() as usize + 2;
+                    let size = row_h * 0.62;
+                    for i in first..(first + visible).min(self.diag_log_rows.len()) {
+                        let r = diag_log_row_rect(&layout, settings_content_scroll, i);
+                        if r.y > inset.y + inset.h {
+                            break;
+                        }
+                        let rec = &self.diag_log_rows[i];
+                        // Display-edge time render (records store eagle time binary).
+                        let ts = if rec.osc != 0 {
+                            vsf::types::EagleTime::from_oscillations(rec.osc)
+                                .to_datetime()
+                                .format("%m-%d %H:%M:%S%.3f")
+                                .to_string()
+                        } else {
+                            "\u{2014}".to_string()
+                        };
+                        let (lvl, colour) = match rec.level {
+                            4 => ("E", theme::ERROR_TEXT_COLOUR),
+                            3 => ("W", theme::HOURGLASS_COLOUR),
+                            2 => ("I", theme::CONTACT_NAME_COLOUR),
+                            1 => ("D", theme::LABEL_COLOUR),
+                            0 => ("T", theme::LABEL_COLOUR),
+                            _ => ("?", theme::LABEL_COLOUR),
+                        };
+                        ctx.text.draw_text_left_u32(
+                            &mut canvas,
+                            &format!("{ts} {lvl}  {}", rec.msg),
+                            r.x,
+                            r.center_y(),
+                            size,
+                            400,
+                            colour,
+                            "Oxanium",
+                            Some(content_clip),
+                            None,
+                            None,
+                        );
+                    }
+                }
                 SettingsPage::Diagnostics => {
                     let rows = layout.content_scrolled(10, settings_content_scroll).split_v([1.0; 10]);
                     settings_line(&mut canvas, ctx.text, rows[0], "Diagnostics", tspan, theme::CONTACT_NAME_COLOUR, 600);
                     settings_line(&mut canvas, ctx.text, rows[1], "On-device log · 16 MiB · self-expires 24–48h", hspan2, theme::LABEL_COLOUR, 400);
-                    let pr = rows[3].split_h([1.0, 1.0, 1.0]);
+                    let pr = rows[3].split_h([1.0, 1.0, 1.0, 1.0]);
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Clear", btn_base.wrapping_add(0), ctx.pressed_hit);
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Snapshot", btn_base.wrapping_add(1), ctx.pressed_hit);
                     // Submit greys while an upload is in flight or the log hasn't grown past the last successful submit — a resend then would be a byte-identical duplicate. Any new record (or Clear) moves the size and re-arms it.
@@ -4736,6 +4870,7 @@ impl FluorApp for PhotonApp {
                     } else {
                         draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[2].center_h(0.85), "Submit", btn_base.wrapping_add(2), ctx.pressed_hit);
                     }
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[3].center_h(0.85), "View", btn_base.wrapping_add(3), ctx.pressed_hit);
                     settings_line(&mut canvas, ctx.text, rows[6], "Optional note", hspan2, theme::LABEL_COLOUR, 400);
                     if let Some(tb) = self.settings_note_textbox.as_mut() {
                         let id = tb.hit_id();
@@ -6921,6 +7056,80 @@ impl PhotonApp {
 
     /// Off-thread submit of this device's diagnostic log to FGTW (the Diagnostics "Submit" pill).
     /// The log can be up to 16 MiB and the POST blocks, so it runs on a thread and reports thru `log_submit_rx`. `note` is the user's optional-note textbox text. Snapshots the log bytes on the caller thread first (a plain file read) so a submit captures the log AT press time.
+    /// Open (or re-sync) the Diagnostics log viewer: decode the whole on-disk log OFF-THREAD (16 MiB of per-line VSF records must not stall a frame) and land the rows via the channel tick drains. Also the rotation/Clear recovery path — a shrunken file re-syncs thru here from zero.
+    fn diag_log_open(&mut self) {
+        self.diag_log_view = true;
+        self.diag_log_follow = true;
+        self.diag_log_rows = Vec::new();
+        self.diag_log_consumed = 0;
+        self.diag_log_next_poll_osc = 0;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.diag_log_rx = Some(rx);
+        std::thread::spawn(move || {
+            let bytes = crate::snapshot_log_bytes().unwrap_or_default();
+            let (rows, consumed) = crate::parse_log_records(&bytes);
+            let _ = tx.send((rows, consumed));
+        });
+    }
+
+    /// Close the viewer and drop its rows (a capped log decodes to tens of MB of strings — not worth holding while the page shows the controls).
+    fn diag_log_close(&mut self) {
+        self.diag_log_view = false;
+        self.diag_log_rows = Vec::new();
+        self.diag_log_rx = None;
+    }
+
+    /// Log-viewer driver (tick): drain the off-thread initial decode, then tail-follow the live file — the size probe is one atomic load; the seek+decode runs at most twice a second and only for appended bytes. A shrink (16 MiB rotation or Clear) re-syncs from zero. Returns whether the view changed.
+    fn drive_diag_log(&mut self) -> bool {
+        if !self.diag_log_view
+            || !matches!(self.state, AppState::Settings(SettingsPage::Diagnostics))
+        {
+            return false;
+        }
+        let mut changed = false;
+        if let Some(rx) = self.diag_log_rx.as_ref() {
+            if let Ok((mut rows, consumed)) = rx.try_recv() {
+                if rows.len() > DIAG_LOG_MAX_ROWS {
+                    let excess = rows.len() - DIAG_LOG_MAX_ROWS;
+                    rows.drain(..excess);
+                }
+                self.diag_log_rows = rows;
+                self.diag_log_consumed = consumed as u64;
+                self.diag_log_rx = None;
+                changed = true;
+            }
+            return changed;
+        }
+        let now = vsf::eagle_time_oscillations();
+        if now < self.diag_log_next_poll_osc {
+            return false;
+        }
+        self.diag_log_next_poll_osc = now + (crate::OSC_PER_SEC >> 1);
+        let size = crate::log_size_bytes();
+        if size < self.diag_log_consumed {
+            // Rotated or cleared — the offsets no longer mean anything; full re-sync.
+            self.diag_log_open();
+            return true;
+        }
+        if size > self.diag_log_consumed {
+            if let Some(tail) = crate::read_log_from(self.diag_log_consumed) {
+                let (mut rows, consumed) = crate::parse_log_records(&tail);
+                if consumed > 0 {
+                    self.diag_log_consumed += consumed as u64;
+                    if !rows.is_empty() {
+                        self.diag_log_rows.append(&mut rows);
+                        if self.diag_log_rows.len() > DIAG_LOG_MAX_ROWS {
+                            let excess = self.diag_log_rows.len() - DIAG_LOG_MAX_ROWS;
+                            self.diag_log_rows.drain(..excess);
+                        }
+                        changed = true;
+                    }
+                }
+            }
+        }
+        changed
+    }
+
     fn spawn_log_submit(&mut self, note: String) {
         use crate::network::fgtw::put_log_blocking;
         let Some(bytes) = crate::snapshot_log_bytes() else {
