@@ -17,9 +17,6 @@
 //! Examples: `photonlog -l warn` · `photonlog --pull --handle alice -l warn` · `photonlog --pull --seed <64hex>` · `photonlog her-blob.vsf --handle alice`.
 
 use std::io::Read;
-use vsf::file_format::{VsfHeader, VsfSection};
-use vsf::types::EtType;
-use vsf::VsfType;
 
 fn level_name(lvl: u64) -> &'static str {
     match lvl {
@@ -54,88 +51,27 @@ struct Filter {
     grep: Option<String>,
 }
 
-/// Decode and print whole records from `buf`, applying the filter.
+/// Decode and print whole records from `buf` (via the shared [`photon_messenger::parse_log_records`] — the in-app viewer walks the same decode), applying the filter.
 /// Returns the number of bytes consumed — i.e. the offset of the last COMPLETE record boundary — so a
 /// half-written trailing record (mid-append) is left for the next pass instead of being mis-decoded.
 fn print_records(buf: &[u8], filter: &Filter) -> usize {
-    let mut off = 0usize;
-    while off < buf.len() {
-        let rest = &buf[off..];
-        let (header, header_end) = match VsfHeader::decode(rest) {
-            Ok(h) => h,
-            Err(_) => break, // incomplete tail — stop, retry next pass
-        };
-        let mut ptr = 0usize;
-        let section = match VsfSection::parse(&rest[header_end..], &mut ptr) {
-            Ok(s) => s,
-            Err(_) => break,
-        };
-        let rec = header_end + ptr;
-        if rec == 0 {
-            break;
-        }
-
-        let lvl = section
-            .get_field("lvl")
-            .and_then(|f| f.values.first())
-            .and_then(u64_of)
-            .unwrap_or(u64::MAX);
-        let template = section
-            .get_field("msg")
-            .and_then(|f| f.values.first())
-            .and_then(|v| match v {
-                VsfType::x(s) => Some(s.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
-        // Structured records: typed `val` fields substitute into the template's slots at READ time — the record stored numbers binary; this terminal render picks the base (current mixed arabic per the display doctrine).
-        let vals: Vec<photon_messenger::LogValue> = section
-            .get_fields("val")
-            .iter()
-            .filter_map(|f| f.values.first())
-            .map(|v| match v {
-                VsfType::u(n, _) => photon_messenger::LogValue::U(*n as u128),
-                VsfType::i6(n) => photon_messenger::LogValue::I(*n as i128),
-                VsfType::f6(n) => photon_messenger::LogValue::F(*n),
-                VsfType::x(s) => photon_messenger::LogValue::T(s.clone()),
-                VsfType::v_u3(vec) if vec.data.len() == 6 || vec.data.len() == 18 => {
-                    let (ip_bytes, port_bytes) = vec.data.split_at(vec.data.len() - 2);
-                    let port = u16::from_le_bytes([port_bytes[0], port_bytes[1]]);
-                    let ip: std::net::IpAddr = if ip_bytes.len() == 4 {
-                        std::net::Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]).into()
-                    } else {
-                        let mut o = [0u8; 16];
-                        o.copy_from_slice(ip_bytes);
-                        std::net::Ipv6Addr::from(o).into()
-                    };
-                    photon_messenger::LogValue::Addr(std::net::SocketAddr::new(ip, port))
-                }
-                other => photon_messenger::LogValue::T(format!("{other:?}")),
-            })
-            .collect();
-        let msg = if vals.is_empty() {
-            template
-        } else {
-            photon_messenger::render_log_line(&template, &vals)
-        };
-
-        let pass_level = lvl >= filter.min_level;
+    let (records, consumed) = photon_messenger::parse_log_records(buf);
+    for r in &records {
+        let pass_level = r.level >= filter.min_level;
         let pass_grep = match &filter.grep {
-            Some(g) => msg.to_lowercase().contains(g),
+            Some(g) => r.msg.to_lowercase().contains(g),
             None => true,
         };
         if pass_level && pass_grep {
-            let ts = match &header.creation_time {
-                Some(VsfType::e(EtType::e6(o))) => eagle_display(*o),
-                Some(VsfType::e(EtType::e5(o))) => eagle_display(*o as i64),
-                Some(VsfType::e(EtType::e7(o))) => eagle_display(*o as i64),
-                _ => "(no time)".to_string(),
+            let ts = if r.osc != 0 {
+                eagle_display(r.osc)
+            } else {
+                "(no time)".to_string()
             };
-            println!("{ts}  [{}]  {msg}", level_name(lvl));
+            println!("{ts}  [{}]  {}", level_name(r.level), r.msg);
         }
-        off += rec;
     }
-    off
+    consumed
 }
 
 fn read_all(path: &str) -> std::io::Result<Vec<u8>> {
@@ -299,8 +235,3 @@ fn main() {
     }
 }
 
-/// Tolerant unsigned read — the encoder optimises a small `u(0)` to `u3` on round-trip, so match any width.
-fn u64_of(v: &VsfType) -> Option<u64> {
-    use vsf::schema::FromVsfType;
-    u64::from_vsf_type(v).ok()
-}
