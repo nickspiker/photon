@@ -4023,7 +4023,13 @@ impl FluorApp for PhotonApp {
                         &our_handle_hash,
                     ))
                 };
-                ctx.text.draw_text_left(&mut canvas, &self.contacts[ci].display_name_or_pending(), text_x, cy, &TextStyle::new(text_size, row_colour).weight(500).font("Oxanium"), Some(rows_clip), None);
+                // "Pending…" reads in SKEW (the honest oblique — tan 12°): a name-shaped placeholder must not look like a name. The first styled-text consumer (fluor TextStyle, 2026-07-17).
+                let row_style = if self.contacts[ci].has_real_name() {
+                    TextStyle::new(text_size, row_colour).weight(500).font("Oxanium")
+                } else {
+                    TextStyle::new(text_size, row_colour).weight(500).font("Oxanium").skew(0.2126)
+                };
+                ctx.text.draw_text_left(&mut canvas, &self.contacts[ci].display_name_or_pending(), text_x, cy, &row_style, Some(rows_clip), None);
 
                 // Stamp the row into the hit map so clicks dispatch to this contact.
                 if ci < 256 {
@@ -4221,7 +4227,12 @@ impl FluorApp for PhotonApp {
                     // Contact name, centred BELOW the avatar, in their relationship colour.
                     let name_size = unit * 1.2;
                     let name_y = avatar_y + avatar_r + unit * 1.2;
-                    ctx.text.draw_text_center(&mut canvas, &contact.display_name_or_pending(), buf_w as f32 * 0.5, name_y, &TextStyle::new(name_size, their_colour).weight(600).font("Oxanium"), None, None);
+                    let header_style = if contact.has_real_name() {
+                        TextStyle::new(name_size, their_colour).weight(600).font("Oxanium")
+                    } else {
+                        TextStyle::new(name_size, their_colour).weight(600).font("Oxanium").skew(0.2126)
+                    };
+                    ctx.text.draw_text_center(&mut canvas, &contact.display_name_or_pending(), buf_w as f32 * 0.5, name_y, &header_style, None, None);
 
                     // CLUTCH state (compact, under the name). Show the base state PLUS a behind-the-scenes detail (slot fill, keygen / KEM / proof stage) so a stuck handshake reads as "what's it waiting on" instead of a flat "pending" — see Contact::clutch_status_detail. Self-contact (notes-to-self) has no peer + no ceremony: the weave probe is skipped, so chain_woven never seals and clutch_status_detail would read "testing · weaving the chain" forever — show a plain reachability line instead.
                     let clutch_y = name_y + unit * 1.5;
