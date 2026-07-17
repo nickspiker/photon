@@ -1160,8 +1160,25 @@ impl PhotonApp {
             .handle_query
             .as_ref()
             .and_then(|hq| hq.get_handle_proof());
-        let avatar_pin = self.ensure_avatar_pin();
+        // ROTATE the pin on every set (2026-07-17): a fresh random key ‖ lookup per avatar change. Two birds — friends detect the change (the pin rides every pong, a new pin = refetch, closing the stale-avatar-until-next-session gap), and any cross-identity pin pollution heals on the next set (the old slot is deleted after the new upload lands).
+        let old_pin = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("profile.avatar_pin"))
+            .filter(|v| v.len() == 64)
+            .map(|v| {
+                let mut p = [0u8; 64];
+                p.copy_from_slice(v);
+                p
+            });
+        let mut new_pin = [0u8; 64];
+        {
+            use rand::RngCore;
+            rand::thread_rng().fill_bytes(&mut new_pin);
+        }
+        self.settings_set("profile.avatar_pin", new_pin.to_vec());
         self.publish_avatar_pin();
+        let avatar_pin = Some(new_pin);
         // Sibling ding: bump the fleet-synced avatar stamp so the fstate event wakes the fleet and their next avatar sync pulls the fresh copy. Bumped at SET time — a sibling racing the upload just gets the old copy once and heals on the next sync (newest-wins).
         self.settings_set("profile.avatar_ts", vsf::eagle_time_oscillations().to_le_bytes().to_vec());
         let kp = self.device_keypair.clone();
@@ -1207,7 +1224,17 @@ impl PhotonApp {
                         &hp,
                         &storage,
                     ) {
-                        Ok(_) => crate::log("avatar picker: FGTW upload ok"),
+                        Ok(_) => {
+                            crate::log("avatar picker: FGTW upload ok");
+                            // The rotation's second half: the OLD slot dies once the new one is live — no orphan blobs, and a polluted/shared slot stops serving this identity's history.
+                            if let Some(op) = old_pin.filter(|op| *op != pin) {
+                                let sk = ed25519_dalek::SigningKey::from_bytes(kp.secret.as_bytes());
+                                match crate::ui::avatar::delete_avatar_blocking(&sk, &identity_seed, &op) {
+                                    Ok(()) => crate::log("avatar picker: old wall slot deleted (pin rotated)"),
+                                    Err(e) => crate::logf!("avatar picker: old slot delete failed (orphan blob remains): {}", e),
+                                }
+                            }
+                        }
                         Err(e) => crate::logf!("avatar picker: FGTW upload failed: {}", e),
                     }
                 }
@@ -13595,6 +13622,20 @@ impl PhotonApp {
             pks.clear();
         }
         self.storage = None; // next attest re-opens a fresh vault
+        // EVERY identity-flavoured RAM slot dies here (2026-07-17: a peer's avatar surfaced under peer-B after a wipe — the in-place reset only cleared what it knew about, and the settings cache kept feeding the OLD identity's avatar pin + name into the new session's pongs and wall sync). Desktop re-execs below anyway; Android's in-place reset is exactly this list, so the list must be COMPLETE.
+        self.fleet_settings = None; // the big one: cached profile.avatar_pin / profile.name of the OLD identity
+        self.device_avatar_pixels = None;
+        self.device_avatar_scaled = None;
+        self.device_avatar_scaled_diameter = 0;
+        self.avatar_set_rx = None; // an in-flight avatar pick must not install under the next identity
+        self.pending_fleet_key = None;
+        self.probed_session = None;
+        self.probed_handle = None;
+        self.active_contact = None;
+        self.ready_toast = None;
+        self.diag_log_close();
+        crate::network::status::set_profile_name(""); // pong slots: empty/zero = omitted
+        crate::network::status::set_avatar_pin(&[0u8; 64]);
         self.pending_broadcast_signal = -1; // Android: drop the sticky session broadcast
         self.state = AppState::Launch(LaunchState::Fresh);
         self.refocus_handle_select_all();
