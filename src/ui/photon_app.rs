@@ -1181,19 +1181,22 @@ impl PhotonApp {
             .handle_query
             .as_ref()
             .and_then(|hq| hq.get_handle_proof());
-        match (self.device_keypair.as_ref(), proof) {
-            (Some(kp), Some(hp)) => {
+        let avatar_pin = self.ensure_avatar_pin();
+        match (self.device_keypair.as_ref(), proof, avatar_pin) {
+            (Some(kp), Some(hp), Some(pin)) => {
                 match crate::ui::avatar::upload_avatar_from_seed(
                     &kp.secret,
                     &identity_seed,
+                    &pin,
                     &hp,
                     &storage,
                 ) {
                     Ok(_) => crate::log("avatar picker: FGTW upload ok"),
                     Err(e) => crate::logf!("avatar picker: FGTW upload failed: {}", e),
                 }
+                self.publish_avatar_pin();
             }
-            _ => crate::log("avatar picker: skipping FGTW upload — keypair / proof unavailable"),
+            _ => crate::log("avatar picker: skipping FGTW upload — keypair / proof / pin unavailable"),
         }
     }
 }
@@ -5274,6 +5277,7 @@ impl PhotonApp {
                         // A sibling's profile edit just landed: refresh the You-page boxes from the merged values (reload-on-next-frame) and republish our pong name in case profile.name changed.
                         self.you_fields_loaded = false;
                         self.publish_profile_name();
+                        self.publish_avatar_pin();
                         crate::log("SETTINGS: adopted fleet changes");
                     }
                 }
@@ -6201,6 +6205,7 @@ impl PhotonApp {
         self.fleet_settings = Some(crate::storage::fleet_settings::load_fleet_settings(storage, kp.public.to_bytes()));
         self.apply_settings_to_ui();
         self.publish_profile_name();
+        self.publish_avatar_pin();
         true
     }
 
@@ -6319,6 +6324,33 @@ impl PhotonApp {
             }
         }
         changed
+    }
+
+    /// Our avatar PIN (random AES key ‖ FGTW lookup, 64 bytes), fleet-synced as the `profile.avatar_pin` setting so every device of our fleet uses the SAME random key + lookup — probe-then-generate, once. NOT handle-derived: a handle-knower can neither locate nor decrypt the avatar. Returns `None` only if settings can't load yet.
+    fn ensure_avatar_pin(&mut self) -> Option<[u8; 64]> {
+        if !self.ensure_fleet_settings() {
+            return None;
+        }
+        if let Some(v) = self.fleet_settings.as_ref().and_then(|fs| fs.effective("profile.avatar_pin")) {
+            if v.len() == 64 {
+                let mut p = [0u8; 64];
+                p.copy_from_slice(&v);
+                return Some(p);
+            }
+        }
+        use rand::RngCore;
+        let mut pin = [0u8; 64];
+        rand::thread_rng().fill_bytes(&mut pin);
+        self.settings_set("profile.avatar_pin", pin.to_vec());
+        crate::log("AVATAR: generated a fresh random pin (fleet-synced)");
+        Some(pin)
+    }
+
+    /// Push our avatar pin into the status thread's pong slot, so friends receive the friend-gated avatar capability on their next ping cycle. Called on avatar set, on settings load, and when a sibling's merged edit lands.
+    fn publish_avatar_pin(&mut self) {
+        if let Some(pin) = self.ensure_avatar_pin() {
+            crate::network::status::set_avatar_pin(&pin);
+        }
     }
 
     /// Push our `profile.name` into the status thread's pong slot, so every friend's next ping cycle carries the current name (the always-granted slot). Called on settings load, on Update, and when a sibling's merged edit lands.
@@ -6558,6 +6590,7 @@ impl PhotonApp {
             self.persist_and_push_settings();
             // Friends learn the new name on their next ping cycle (the pong carries it).
             self.publish_profile_name();
+            self.publish_avatar_pin();
             self.ready_toast = Some("Profile saved \u{221a}".to_string());
         } else {
             self.ready_toast = Some("No changes".to_string());
@@ -7716,6 +7749,15 @@ impl PhotonApp {
         else {
             return;
         };
+        // Read the fleet-synced avatar pin (random key ‖ lookup) immutably; absent = no avatar set for this identity yet, so nothing to sync.
+        let avatar_pin = match self.fleet_settings.as_ref().and_then(|fs| fs.effective("profile.avatar_pin")) {
+            Some(v) if v.len() == 64 => {
+                let mut p = [0u8; 64];
+                p.copy_from_slice(&v);
+                p
+            }
+            _ => return,
+        };
         let secret = kp.secret.clone();
         let identity_seed = session.identity_seed;
         let tx = self.avatar_dl_tx.clone();
@@ -7726,6 +7768,7 @@ impl PhotonApp {
             let result = crate::ui::avatar::sync_avatar_bidirectional_from_seed(
                 &secret,
                 &identity_seed,
+                &avatar_pin,
                 Some(&handle_proof),
                 &storage,
             );
@@ -9620,6 +9663,7 @@ impl PhotonApp {
                     peer_addr,
                     sync_records,
                     display_name,
+                    avatar_pin,
                 } => {
                     // Stall recovery (runs EVERY ping that carries sync records, not just the offline→online edge): each record is the peer's contiguous tip (last_received_osc = "I have everything in order up to here"). Re-arm any pending message of ours that's newer than that tip AND has exhausted its retransmit attempts — so a gap-filler the sender already gave up on gets resent, and a receiver stuck behind a permanently-lost message un-sticks. collect_due_retransmits (the tick path) then actually sends the revived messages.
                     let now_osc = vsf::eagle_time_oscillations();
@@ -9683,6 +9727,15 @@ impl PhotonApp {
                                     crate::logf!("CONTACT: {} published name {} -> {}", crate::fp(&contact.handle_proof), format!("{:?}", contact.published_name), format!("{:?}", name));
                                     contact.published_name = name.clone();
                                     contact.published_name_dirty = true;
+                                    changed = true;
+                                }
+                            }
+                            // Always-granted AVATAR slot off the pong: adopt the friend's avatar pin (random key ‖ lookup). This is the ONLY way a friend learns the pin — it's never handle-derivable — so it arrives here, gated by the pong only answering authenticated contacts. A new/changed pin marks the contact for a fresh avatar fetch.
+                            if let Some(pin) = avatar_pin.as_ref() {
+                                if !contact.is_sibling && contact.avatar_pin != *pin {
+                                    crate::logf!("CONTACT: {} avatar pin adopted", crate::fp(&contact.handle_proof));
+                                    contact.avatar_pin = *pin;
+                                    contact.avatar_pin_dirty = true;
                                     changed = true;
                                 }
                             }
@@ -12209,6 +12262,39 @@ impl PhotonApp {
                         crate::logf!("CONTACT: published-name persist failed: {}", e);
                     }
                 }
+            }
+        }
+
+        // Persist + fetch any avatar-pin adoptions from this drain: the pin lives in the contact-list INDEX (save_contact_list rewrites it), and a fresh pin means a fresh avatar to pull.
+        let avatar_adopted: Vec<usize> = self
+            .contacts
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.avatar_pin_dirty)
+            .map(|(i, _)| i)
+            .collect();
+        if !avatar_adopted.is_empty() {
+            for c in self.contacts.iter_mut() {
+                c.avatar_pin_dirty = false;
+            }
+            if let Some(storage) = self.storage.as_ref() {
+                let index: Vec<crate::storage::contacts::ContactIdentity> = self
+                    .contacts
+                    .iter()
+                    .filter(|c| !c.is_sibling)
+                    .map(|c| crate::storage::contacts::ContactIdentity {
+                        handle_proof: c.handle_proof,
+                        party_id: c.handle_hash,
+                        name: c.petname.clone(),
+                        avatar_pin: c.avatar_pin,
+                    })
+                    .collect();
+                if let Err(e) = crate::storage::contacts::save_contact_list(&index, storage) {
+                    crate::logf!("CONTACT: avatar-pin persist failed: {}", e);
+                }
+            }
+            for i in avatar_adopted {
+                self.spawn_avatar_download(i);
             }
         }
 

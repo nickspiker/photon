@@ -162,6 +162,8 @@ pub struct Contact {
     pub published_name: String,
     /// Runtime: `published_name` changed since the last state save — the status drain sets it, the post-drain sweep persists + clears it (persisting inside the drain would fight the contacts borrow).
     pub published_name_dirty: bool,
+    /// Runtime: `avatar_pin` adopted from a pong since the last save — the post-drain sweep persists the contact list + fetches the avatar, then clears it.
+    pub avatar_pin_dirty: bool,
     /// The avatar-wall pin, derived at first-met before the seed dropped: AES key (32) ‖ FGTW lookup hash (32). All zeroes = not pinned (siblings and self use the session-seed path).
     pub avatar_pin: [u8; 64],
     pub handle_proof: [u8; 32], // Cached handle_proof (expensive to compute - ~1 second) - PUBLIC
@@ -290,8 +292,8 @@ impl Contact {
     pub fn new(handle: HandleText, handle_proof: [u8; 32], public_identity: DevicePubkey) -> Self {
         let seed = crate::types::Handle::to_identity_seed(handle.as_str());
         let handle_hash = crate::crypto::clutch::identity_party_id(&seed);
-        let avatar_pin = crate::ui::avatar::avatar_pin_from_seed(&seed);
-        Self::from_pin(String::new(), avatar_pin, handle_proof, handle_hash, public_identity)
+        // NO handle-derived avatar pin: that made the avatar readable by anyone who knew the handle (docs/identity-profile.md). A fresh contact starts UNPINNED (zero) — its real pin (random key ‖ lookup) arrives over an authenticated pong once the friendship is mutual, exactly like the published name. Until then the gradient avatar renders.
+        Self::from_pin(String::new(), [0u8; 64], handle_proof, handle_hash, public_identity)
     }
 
     /// PIN-SET constructor: reconstruct a contact from stored/synced material (vault rows, roster entries) — no handle anywhere.
@@ -307,6 +309,7 @@ impl Contact {
             petname,
             published_name: String::new(),
             published_name_dirty: false,
+            avatar_pin_dirty: false,
             avatar_pin,
             handle_proof,
             handle_hash: party_id,
