@@ -2468,6 +2468,20 @@ impl FluorApp for PhotonApp {
                 if matches!(self.state, AppState::Launch(LaunchState::KnownHandle)) {
                     if hit_id == self.known_mine_hit {
                         if let Some(session) = self.probed_session.take() {
+                            // ONE IDENTITY PER DEVICE holds HERE too (docs/lifecycle.md D2): this path bypasses submit_handle's marker gate, and the worker's bindreq gate would only fire AFTER the words screen showed. A device bound to a different identity never gets to the words.
+                            if let Some(kp) = self.device_keypair.as_ref() {
+                                if let Some(bound) = crate::storage::device_binding::bound_party_id(kp.secret.as_bytes()) {
+                                    if crate::crypto::clutch::identity_party_id(&session.identity_seed) != bound {
+                                        crate::log("KnownHandle: DEVICE BUSY — bound to another identity; refusing the join");
+                                        self.state = AppState::Launch(LaunchState::Error(
+                                            "this device already carries an identity \u{2014} wipe it first (Settings \u{2192} Security)".to_string(),
+                                        ));
+                                        self.refocus_handle_select_all();
+                                        ctx.window.request_redraw();
+                                        return EventResponse::Handled;
+                                    }
+                                }
+                            }
                             crate::log("KnownHandle: it's-mine → pairing words (the ceremony posts NOW)");
                             self.probed_handle = None;
                             self.launch_add_mode = true;
@@ -7563,6 +7577,17 @@ impl PhotonApp {
             self.add_join_status = "no device key".to_string();
             return;
         };
+        // ONE IDENTITY PER DEVICE at the join door (docs/lifecycle.md D2): the direct join-mode entry (orb toggle → type handle) skips submit_handle's marker gate, and the worker's bindreq gate would only reject AFTER the words screen showed. Refuse a device bound to a different identity BEFORE any words, any beacon, any registry post.
+        if let Some(bound) = crate::storage::device_binding::bound_party_id(device_key.secret.as_bytes()) {
+            let typed_pid = crate::crypto::clutch::identity_party_id(
+                &crate::types::Handle::to_identity_seed(&handle),
+            );
+            if typed_pid != bound {
+                crate::log("join: DEVICE BUSY — bound to another identity; refusing before the words");
+                self.add_join_status = "this device already carries an identity \u{2014} wipe it first (Settings \u{2192} Security)".to_string();
+                return;
+            }
+        }
         self.add_join_handle = Some(handle.clone());
         self.add_join_status = "Preparing\u{2026}".to_string();
         self.change_focus(None);
@@ -10639,6 +10664,30 @@ impl PhotonApp {
                             // A sibling coming online is the fleet-history catch-up trigger: it may hold conversation rows written while we were apart. Deferred — the sweep needs &mut contacts.
                             if came_online && contact.is_sibling {
                                 fleet_sweep_due = true;
+                            }
+                            // Bootstrap un-deadlock (docs/lifecycle.md aftermath, observed live 2026-07-17): a roster-merged contact starts with ONE bootstrap device (public_identity) as its ping target — if THAT device is asleep, pings chase a corpse forever while the friend's live devices sit in the fold. On the offline edge, rotate the ACTIVE device to the next fleet member with a known endpoint and retarget the contact-level address; the sweep pings it next cycle (round-robin until one answers — a pong or inbound DATA re-elects the real active device).
+                            if !identity_online && !is_online {
+                                let cur = contact.active_device;
+                                let next = contact
+                                    .device_endpoints
+                                    .iter()
+                                    .filter(|ep| Some(ep.pubkey) != cur && (ep.public.is_some() || ep.lan.is_some()))
+                                    .map(|ep| (ep.pubkey, ep.public, ep.lan))
+                                    .next();
+                                if let Some((pk, public, lan)) = next {
+                                    crate::logf!("Status: active device {} unreachable — rotating to fleet member {}", cur.map(|d| hex::encode(&d[..4])).unwrap_or_default(), hex::encode(&pk[..4]));
+                                    contact.active_device = Some(pk);
+                                    if let Some(addr) = public {
+                                        contact.ip = Some(addr);
+                                    }
+                                    if let Some(addr) = lan {
+                                        if let std::net::IpAddr::V4(v4) = addr.ip() {
+                                            contact.local_ip = Some(v4);
+                                            contact.local_port = Some(addr.port());
+                                        }
+                                    }
+                                    changed = true;
+                                }
                             }
 
                             // Deadlock recovery: a queued KEM with no offer means their offer never arrived (lost in transit — their KEM landed but the larger offer transfer didn't). We can't derive ceremony_id or complete our slot without it, and there's no timeout on the queue, so this hangs Pending forever (only a restart, which forces a fresh offer exchange, recovers it). Self-heal: when we see a still-queued KEM on a pong AND we've already sent our offer (so we're genuinely stuck, not mid-initial-exchange), reset clutch_offer_sent so the offer-send block below re-fires this pong — our re-sent offer prompts them to re-send theirs (the same path a restart takes). Pong cadence rate-limits the re-request to one per pong. Only the "their offer was lost" case is recoverable here; if a peer genuinely never sends an offer, nothing we do fixes it.

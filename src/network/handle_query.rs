@@ -627,7 +627,8 @@ impl HandleQuery {
                         {
                             use num_bigint::BigUint;
                             let handle_seed = vault_seed;
-                            crate::logf!("Development: identity_seed = {}  handle_seed = {}  device_secret = {}", voca::encode(BigUint::from_bytes_be(&identity_seed)), voca::encode(BigUint::from_bytes_be(&handle_seed)), voca::encode(BigUint::from_bytes_be(&device_secret_bytes)));
+                            // device_secret is NEVER logged: the identity/handle seeds are handle-derivable anyway (no new capability in the log), but the device secret is fingerprint-derived and the log is SUBMITTABLE — writing it would hand fleet-membership keys to anyone who can pull the blob (which only needs the handle). Leak shipped 2026-07-17, scrubbed same day.
+                            crate::logf!("Development: identity_seed = {}  handle_seed = {}", voca::encode(BigUint::from_bytes_be(&identity_seed)), voca::encode(BigUint::from_bytes_be(&handle_seed)));
                         }
 
                         // Initialize FlatStorage for this session. A bare `return` here would silently strand the UI on the Attesting spinner because the result channel never gets a verdict — the worker has already proven FGTW says the handle is ours, but with no local vault we can't reach Ready. Surface the failure as a QueryResult::Error so the Launch screen flips to its error state and the user sees what happened.
