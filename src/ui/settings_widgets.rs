@@ -3,6 +3,7 @@
 //! STUB scope: the checkbox flips its own `checked` flag on click (a control "toggling its own visual state" is explicitly allowed); nothing downstream reads it yet.
 
 use fluor::canvas::{Canvas, PixelRect};
+use fluor::text::TextStyle;
 use fluor::coord::Coord;
 use fluor::paint::{self, Clip, HitId, HIT_NONE};
 use fluor::region::Region;
@@ -196,19 +197,7 @@ impl Checkbox {
 
         // Label to the right of the box.
         if !self.label.is_empty() {
-            text.draw_text_left_u32(
-                canvas,
-                &self.label,
-                box_x0 + side + self.font_size * 0.5,
-                self.center_y,
-                self.font_size,
-                400,
-                fluor::theme::TEXTBOX_TEXT,
-                "Open Sans",
-                clip,
-                None,
-                None,
-            );
+            text.draw_text_left(canvas, &self.label, box_x0 + side + self.font_size * 0.5, self.center_y, &TextStyle::new(self.font_size, fluor::theme::TEXTBOX_TEXT), clip, None);
         }
 
         // Stamp the hit id over the whole widget rect (box + label) so the entire row is clickable.

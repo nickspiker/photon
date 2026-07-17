@@ -1,6 +1,7 @@
 //! [`PhotonApp`]: the [`fluor::host::app::FluorApp`] impl that hosts Photon on desktop. Owns the app state machine (`AppState`), network handles, contact list, and the per-screen widgets (Launch / Ready / Searching / Conversation), drawing the chrome (perimeter, shadow, window buttons, app-icon orb) plus each screen's content, and routing cross-thread wake-ups thru `FluorApp::on_user_event` with the [`super::PhotonEvent`] payload.
 
 use super::chromatic_wave::chromatic_wave;
+use fluor::text::TextStyle;
 use super::launch_layout::{AttestBlockLayout, LaunchLayout};
 use super::photon_logo::paint_photon_logo;
 use super::ready_layout::ReadyLayout;
@@ -3427,35 +3428,11 @@ impl FluorApp for PhotonApp {
             if show_version {
                 // On the Ready screen the version rides the scroll block (positioned past the last contact row); elsewhere it stays pinned at `version_cy`.
                 let vy = ready_block_version_y.unwrap_or(version_cy);
-                text.draw_text_left_u32(
-                    canvas,
-                    &version_glyphs,
-                    version_x,
-                    vy,
-                    version_size,
-                    400,
-                    theme::VERSION_COLOUR,
-                    "Oxanium",
-                    None,
-                    None,
-                    None,
-                );
+                text.draw_text_left(canvas, &version_glyphs, version_x, vy, &TextStyle::new(version_size, theme::VERSION_COLOUR).font("Oxanium"), None, None);
             }
             // Zoom hint is independent of the version's screen gate — it shows on ANY screen, but only while actively zooming (a held zoom modifier after a `ru` change), per `show_zoom`.
             if show_zoom {
-                text.draw_text_center_u32(
-                    canvas,
-                    &zoom_text,
-                    zoom_cx,
-                    zoom_cy,
-                    zoom_size,
-                    400,
-                    theme::ZOOM_COLOUR,
-                    "Oxanium",
-                    None,
-                    None,
-                    None,
-                );
+                text.draw_text_center(canvas, &zoom_text, zoom_cx, zoom_cy, &TextStyle::new(zoom_size, theme::ZOOM_COLOUR).font("Oxanium"), None, None);
             }
             paint::background_noise_split(canvas, shimmer, bg_fullscreen, bg_right_scroll, bg_split_x, bg_left_scroll, None, bg_base);
             // Wave then logo — RMW ops that read the now-opaque noise beneath as their base. The chromatic wave quadrature-blends with the bg colour (sqrt-linear-light) so it MUST follow the noise; the logo composites over the wave/noise. (Watermarks above went before the noise so it composes under them.)
@@ -3513,19 +3490,8 @@ impl FluorApp for PhotonApp {
                     let cx = (error_rect.x0 + error_rect.x1) as f32 * 0.5;
                     let cy = (error_rect.y0 + error_rect.y1) as f32 * 0.5;
                     // Half-height font: status messages are short by convention; full-rect-height is too loud for one-line text and overflows wide messages off the side.
-                    ctx.text.draw_text_center_u32(
-                        &mut canvas,
-                        text,
-                        cx,
-                        cy,
-                        region_h * 0.5,
-                        500, // Medium weight — readable at small sizes; matches the Oxanium family already loaded in init().
-                        colour,
-                        "Oxanium",
-                        None,
-                        None,
-                        None,
-                    );
+                    ctx.text.draw_text_center(&mut canvas, text, cx, cy, &TextStyle::new(region_h * 0.5, // Medium weight — readable at small sizes; matches the Oxanium family already loaded in init().
+                        colour).weight(500).font("Oxanium"), None, None);
                 }
             }
 
@@ -3544,9 +3510,7 @@ impl FluorApp for PhotonApp {
                     ("Press again if you mean it.", theme::STATUS_TEXT_COLOUR),
                 ];
                 for (line, colour) in lines {
-                    ctx.text.draw_text_center_u32(
-                        &mut canvas, line, cx, y, line_h, 600, colour, "Oxanium", None, None, None,
-                    );
+                    ctx.text.draw_text_center(&mut canvas, line, cx, y, &TextStyle::new(line_h, colour).weight(600).font("Oxanium"), None, None);
                     y += line_h * 1.35;
                 }
             }
@@ -3563,9 +3527,7 @@ impl FluorApp for PhotonApp {
                     ("Yours? Approve this device from one you're signed in on.", theme::STATUS_TEXT_COLOUR),
                 ];
                 for (line, colour) in lines {
-                    ctx.text.draw_text_center_u32(
-                        &mut canvas, line, cx, y, line_h, 600, colour, "Oxanium", None, None, None,
-                    );
+                    ctx.text.draw_text_center(&mut canvas, line, cx, y, &TextStyle::new(line_h, colour).weight(600).font("Oxanium"), None, None);
                     y += line_h * 1.35;
                 }
                 y += line_h * 0.5;
@@ -3605,9 +3567,7 @@ impl FluorApp for PhotonApp {
                     let lines: Vec<String> = tokens.chunks(4).map(|c| c.join(" ")).collect();
                     let mut y = attest.error.y1 as f32 + line_h * 1.2;
                     for line in &lines {
-                        ctx.text.draw_text_center_u32(
-                            &mut canvas, line, cx, y, line_h, 600, colour, "Oxanium", None, None, None,
-                        );
+                        ctx.text.draw_text_center(&mut canvas, line, cx, y, &TextStyle::new(line_h, colour).weight(600).font("Oxanium"), None, None);
                         y += line_h * 1.35;
                     }
                     // Name the device being enrolled, so a user pairing several devices can tell on both screens which one these words belong to. Deterministic two-word default from the device PUBLIC key + the fleet's identity seed, so the Fleet list on every device in this fleet shows this same name; the owner-edited override arrives with the devices page. Pre-attest the session isn't set yet, so derive the seed from the handle being joined (`add_join_handle`).
@@ -3623,19 +3583,7 @@ impl FluorApp for PhotonApp {
                     if let (Some(kp), Some(seed)) = (self.device_keypair.as_ref(), join_seed) {
                         let name = crate::network::fgtw::fleet::device_name_default(kp.public.as_bytes(), &seed);
                         y += line_h * 0.4;
-                        ctx.text.draw_text_center_u32(
-                            &mut canvas,
-                            &format!("this device: {name}"),
-                            cx,
-                            y,
-                            line_h * 0.8,
-                            500,
-                            fluor::theme::HINT_COLOUR,
-                            "Oxanium",
-                            None,
-                            None,
-                            None,
-                        );
+                        ctx.text.draw_text_center(&mut canvas, &format!("this device: {name}"), cx, y, &TextStyle::new(line_h * 0.8, fluor::theme::HINT_COLOUR).weight(500).font("Oxanium"), None, None);
                     }
                     // How-to guidance: the two ways the OTHER (already-in-fleet) device adds this one, plus the confirm. Small + dim so it reads as instructions, not chrome.
                     {
@@ -3647,10 +3595,7 @@ impl FluorApp for PhotonApp {
                             "just tap this device in the list.",
                             "You'll confirm the add on that device.",
                         ] {
-                            ctx.text.draw_text_center_u32(
-                                &mut canvas, line, cx, y, gsize, 400,
-                                fluor::theme::HINT_COLOUR, "Oxanium", None, None, None,
-                            );
+                            ctx.text.draw_text_center(&mut canvas, line, cx, y, &TextStyle::new(gsize, fluor::theme::HINT_COLOUR).font("Oxanium"), None, None);
                             y += gsize * 1.5;
                         }
                     }
@@ -3664,9 +3609,7 @@ impl FluorApp for PhotonApp {
                         };
                         let sf_size = line_h * 0.7;
                         let sf_colour = if self.join_startfresh_armed { theme::ERROR_TEXT_COLOUR } else { fluor::theme::HINT_COLOUR };
-                        ctx.text.draw_text_center_u32(
-                            &mut canvas, sf_label, cx, y, sf_size, 500, sf_colour, "Oxanium", None, None, None,
-                        );
+                        ctx.text.draw_text_center(&mut canvas, sf_label, cx, y, &TextStyle::new(sf_size, sf_colour).weight(500).font("Oxanium"), None, None);
                         let half_w = buf_w as f32 * 0.4;
                         restamp_hit_rect(
                             &mut chrome.hit_test_map,
@@ -3692,19 +3635,7 @@ impl FluorApp for PhotonApp {
                     } else {
                         "handle"
                     };
-                    ctx.text.draw_text_center_u32(
-                        &mut canvas,
-                        hint_label,
-                        cx,
-                        cy,
-                        region_h * 0.7,
-                        500,
-                        fluor::theme::HINT_COLOUR,
-                        "Oxanium",
-                        None,
-                        None,
-                        None,
-                    );
+                    ctx.text.draw_text_center(&mut canvas, hint_label, cx, cy, &TextStyle::new(region_h * 0.7, fluor::theme::HINT_COLOUR).weight(500).font("Oxanium"), None, None);
                 }
 
                 // Resting-state gates for the attest slot. The handle textbox owns the empty/focused truth; the attest button and the infinity glyph are the two mutually-exclusive things that can occupy the slot below it.
@@ -3726,19 +3657,8 @@ impl FluorApp for PhotonApp {
                     if let Some(tb) = self.textbox.as_ref() {
                         // ∞ ink sits ~1-2px high because `draw_text_center_u32` centres on the line box (ascent+descent), and a math symbol's ink rides the math axis, slightly above where baseline-seated text reads as centred. Nudge the y anchor down by font_size/32 (≈1-2px here, scales with zoom) to seat the glyph at the pill's visual centre.
                         let baseline_nudge = tb.font_size * (1.0 / (1 << 5) as f32);
-                        ctx.text.draw_text_center_u32(
-                            &mut canvas,
-                            "\u{221E}",
-                            tb.center_x,
-                            tb.center_y + baseline_nudge,
-                            tb.font_size,
-                            400, // Same weight the textbox renders its own glyphs at (see textbox `measure_text_widths_per_char` / draw calls).
-                            fluor::theme::HINT_COLOUR,
-                            "Oxanium",
-                            None,
-                            None,
-                            None,
-                        );
+                        ctx.text.draw_text_center(&mut canvas, "\u{221E}", tb.center_x, tb.center_y + baseline_nudge, &TextStyle::new(tb.font_size, // Same weight the textbox renders its own glyphs at (see textbox `measure_text_widths_per_char` / draw calls).
+                            fluor::theme::HINT_COLOUR).font("Oxanium"), None, None);
                     }
                 }
 
@@ -3854,19 +3774,7 @@ impl FluorApp for PhotonApp {
                 // Anchored directly below the avatar circle (not the hint slot), at half the hint slot's text size.
                 let size = (ready_layout.hint.y1 - ready_layout.hint.y0) as f32 * 0.3;
                 let hcy = cy + radius + size;
-                ctx.text.draw_text_center_u32(
-                    &mut canvas,
-                    "drag/drop to update avatar",
-                    cx,
-                    hcy,
-                    size,
-                    500,
-                    fluor::theme::HINT_COLOUR,
-                    "Oxanium",
-                    None,
-                    None,
-                    None,
-                );
+                ctx.text.draw_text_center(&mut canvas, "drag/drop to update avatar", cx, hcy, &TextStyle::new(size, fluor::theme::HINT_COLOUR).weight(500).font("Oxanium"), None, None);
             }
 
             // Contacts-page textbox + plus button. The plus button is OVERLAID inside the textbox right edge and ONLY rendered when the textbox has content — empty textbox shows no button. While an add-friend search is in flight, a rotating hourglass replaces the button (and the button is not hit-stampable, so it can't be re-clicked mid-search).
@@ -3916,19 +3824,7 @@ impl FluorApp for PhotonApp {
                 .unwrap_or(false);
             if search_empty && !search_focused {
                 if let Some(tb) = self.contacts_textbox.as_ref() {
-                    ctx.text.draw_text_center_u32(
-                        &mut canvas,
-                        "search | add",
-                        tb.center_x,
-                        tb.center_y,
-                        tb.font_size * 0.6,
-                        500,
-                        fluor::theme::HINT_COLOUR,
-                        "Oxanium",
-                        None,
-                        None,
-                        None,
-                    );
+                    ctx.text.draw_text_center(&mut canvas, "search | add", tb.center_x, tb.center_y, &TextStyle::new(tb.font_size * 0.6, fluor::theme::HINT_COLOUR).weight(500).font("Oxanium"), None, None);
                 }
             }
             if let Some(tb) = self.contacts_textbox.as_mut() {
@@ -3958,19 +3854,7 @@ impl FluorApp for PhotonApp {
                     let region_h = (hint.y1 - hint.y0) as f32;
                     let scx = (hint.x0 + hint.x1) as f32 * 0.5;
                     let scy = (hint.y0 + hint.y1) as f32 * 0.5 - scroll;
-                    ctx.text.draw_text_center_u32(
-                        &mut canvas,
-                        text,
-                        scx,
-                        scy,
-                        region_h * 0.6,
-                        500,
-                        *colour,
-                        "Oxanium",
-                        None,
-                        None,
-                        None,
-                    );
+                    ctx.text.draw_text_center(&mut canvas, text, scx, scy, &TextStyle::new(region_h * 0.6, *colour).weight(500).font("Oxanium"), None, None);
                 }
             }
 
@@ -3982,19 +3866,7 @@ impl FluorApp for PhotonApp {
                     let tcx = (hint.x0 + hint.x1) as f32 * 0.5;
                     let lift = if self.search_status.is_some() { region_h * 1.15 } else { 0.0 };
                     let tcy = (hint.y0 + hint.y1) as f32 * 0.5 - scroll - lift;
-                    ctx.text.draw_text_center_u32(
-                        &mut canvas,
-                        msg,
-                        tcx,
-                        tcy,
-                        region_h * 0.6,
-                        600,
-                        theme::SEARCH_FOUND_COLOUR,
-                        "Oxanium",
-                        None,
-                        None,
-                        None,
-                    );
+                    ctx.text.draw_text_center(&mut canvas, msg, tcx, tcy, &TextStyle::new(region_h * 0.6, theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
                 }
             }
 
@@ -4151,19 +4023,7 @@ impl FluorApp for PhotonApp {
                         &our_handle_hash,
                     ))
                 };
-                ctx.text.draw_text_left_u32(
-                    &mut canvas,
-                    &self.contacts[ci].display_name_or_pending(),
-                    text_x,
-                    cy,
-                    text_size,
-                    500,
-                    row_colour,
-                    "Oxanium",
-                    Some(rows_clip),
-                    None,
-                    None,
-                );
+                ctx.text.draw_text_left(&mut canvas, &self.contacts[ci].display_name_or_pending(), text_x, cy, &TextStyle::new(text_size, row_colour).weight(500).font("Oxanium"), Some(rows_clip), None);
 
                 // Stamp the row into the hit map so clicks dispatch to this contact.
                 if ci < 256 {
@@ -4190,19 +4050,7 @@ impl FluorApp for PhotonApp {
                 let cx = buf_w as f32 * 0.5;
                 let cy = buf_h as f32 - band_h * 0.5;
                 let font_size = band_h * 0.6;
-                ctx.text.draw_text_center_u32(
-                    &mut canvas,
-                    "storage degraded",
-                    cx,
-                    cy,
-                    font_size,
-                    600,
-                    DEGRADED_TEXT,
-                    "Oxanium",
-                    None,
-                    None,
-                    None,
-                );
+                ctx.text.draw_text_center(&mut canvas, "storage degraded", cx, cy, &TextStyle::new(font_size, DEGRADED_TEXT).weight(600).font("Oxanium"), None, None);
             }
 
             // Clock-off indicator: same amber as the degraded banner (nunc-time consensus says the system clock is grossly wrong). Warn only — Photon never corrects the clock. Stacks one band above "storage degraded" when both are showing so they don't overlap.
@@ -4225,19 +4073,7 @@ impl FluorApp for PhotonApp {
                 };
                 let dir = if offset_secs < 0 { "ahead" } else { "behind" };
                 let label = format!("clock off — {} {}", pretty, dir);
-                ctx.text.draw_text_center_u32(
-                    &mut canvas,
-                    &label,
-                    cx,
-                    cy,
-                    font_size,
-                    600,
-                    CLOCK_TEXT,
-                    "Oxanium",
-                    None,
-                    None,
-                    None,
-                );
+                ctx.text.draw_text_center(&mut canvas, &label, cx, cy, &TextStyle::new(font_size, CLOCK_TEXT).weight(600).font("Oxanium"), None, None);
             }
 
             // Security & Recovery posture meters, bottom-right of the Ready strip (the dozenal version sits bottom-left). Two orthogonal axes — see `identity_posture`. Drawn into `target` at full opacity (unlike the watermark version) so they read as a real, glanceable status affordance, aligned to the version's baseline band. Read-only for now; the tap-to-device-sheet lands with the first modal primitive.
@@ -4251,29 +4087,17 @@ impl FluorApp for PhotonApp {
                 let group_gap = version_size * 1.2; // Sec group → Rec group
                 let w_sec = ctx
                     .text
-                    .measure_text_width("Sec", label_size, 500, "Oxanium");
+                    .measure_text("Sec", &TextStyle::new(label_size, 0).weight(500).font("Oxanium"));
                 let w_rec = ctx
                     .text
-                    .measure_text_width("Rec", label_size, 500, "Oxanium");
+                    .measure_text("Rec", &TextStyle::new(label_size, 0).weight(500).font("Oxanium"));
                 let total = w_sec + lp_gap + pips_span + group_gap + w_rec + lp_gap + pips_span;
                 // Inset by 2× the version's margin (right + bottom) to clear the now-2×-larger bottom-right squircle corner — the same move the top-left orb made for its enlarged corner. The bottom-left version stays put (it sits by the small BL corner).
                 let mut x = buf_w as f32 - version_size * 2.0 - total;
                 // Centre sits a clean 2·version_size up from the bottom — matching the 2·version_size right inset. Independent of `version_cy` (which carries the version's bottom-edge anchor offset); the pip rows + labels here are centre-anchored, so this is a direct centre inset.
                 let strip_cy = buf_h as f32 - version_size * 2.0;
                 for (label, w_label, filled) in [("Sec", w_sec, sec), ("Rec", w_rec, rec)] {
-                    ctx.text.draw_text_left_u32(
-                        &mut canvas,
-                        label,
-                        x,
-                        strip_cy,
-                        label_size,
-                        500,
-                        fluor::theme::HINT_COLOUR,
-                        "Oxanium",
-                        None,
-                        None,
-                        None,
-                    );
+                    ctx.text.draw_text_left(&mut canvas, label, x, strip_cy, &TextStyle::new(label_size, fluor::theme::HINT_COLOUR).weight(500).font("Oxanium"), None, None);
                     x += w_label + lp_gap;
                     let on = posture_colour(filled);
                     for i in 0..POSTURE_PIPS {
@@ -4320,23 +4144,11 @@ impl FluorApp for PhotonApp {
                     let back_y = buf_h as f32 * 0.06 + unit;
                     let back_size = unit * 1.15;
                     let back_text = "\u{2039} Contacts";
-                    ctx.text.draw_text_left_u32(
-                        &mut canvas,
-                        back_text,
-                        unit,
-                        back_y,
-                        back_size,
-                        500,
-                        theme::CONTACT_NAME_COLOUR,
-                        "Oxanium",
-                        None,
-                        None,
-                        None,
-                    );
+                    ctx.text.draw_text_left(&mut canvas, back_text, unit, back_y, &TextStyle::new(back_size, theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium"), None, None);
                     // Stamp the back button hit rect.
                     let back_w = ctx
                         .text
-                        .measure_text_width(back_text, back_size, 500, "Oxanium");
+                        .measure_text(back_text, &TextStyle::new(back_size, 0).weight(500).font("Oxanium"));
                     restamp_hit_rect(
                         &mut chrome.hit_test_map,
                         buf_w,
@@ -4409,19 +4221,7 @@ impl FluorApp for PhotonApp {
                     // Contact name, centred BELOW the avatar, in their relationship colour.
                     let name_size = unit * 1.2;
                     let name_y = avatar_y + avatar_r + unit * 1.2;
-                    ctx.text.draw_text_center_u32(
-                        &mut canvas,
-                        &contact.display_name_or_pending(),
-                        buf_w as f32 * 0.5,
-                        name_y,
-                        name_size,
-                        600,
-                        their_colour,
-                        "Oxanium",
-                        None,
-                        None,
-                        None,
-                    );
+                    ctx.text.draw_text_center(&mut canvas, &contact.display_name_or_pending(), buf_w as f32 * 0.5, name_y, &TextStyle::new(name_size, their_colour).weight(600).font("Oxanium"), None, None);
 
                     // CLUTCH state (compact, under the name). Show the base state PLUS a behind-the-scenes detail (slot fill, keygen / KEM / proof stage) so a stuck handshake reads as "what's it waiting on" instead of a flat "pending" — see Contact::clutch_status_detail. Self-contact (notes-to-self) has no peer + no ceremony: the weave probe is skipped, so chain_woven never seals and clutch_status_detail would read "testing · weaving the chain" forever — show a plain reachability line instead.
                     let clutch_y = name_y + unit * 1.5;
@@ -4442,19 +4242,7 @@ impl FluorApp for PhotonApp {
                             },
                         )
                     };
-                    ctx.text.draw_text_center_u32(
-                        &mut canvas,
-                        &clutch_label,
-                        buf_w as f32 * 0.5,
-                        clutch_y,
-                        unit * 0.6,
-                        500,
-                        clutch_colour,
-                        "Oxanium",
-                        None,
-                        None,
-                        None,
-                    );
+                    ctx.text.draw_text_center(&mut canvas, &clutch_label, buf_w as f32 * 0.5, clutch_y, &TextStyle::new(unit * 0.6, clutch_colour).weight(500).font("Oxanium"), None, None);
 
                     // Message history + compose box only exist once CLUTCH is Complete — before that there's no chain to encrypt on, and sending no-ops. Until then the screen shows just the avatar + "CLUTCH: …" status (above), so the user isn't presented a dead input box for a contact they can't message yet.
                     if contact.clutch_state == crate::types::ClutchState::Complete {
@@ -4512,33 +4300,9 @@ impl FluorApp for PhotonApp {
                                 their_colour
                             };
                             if msg.is_outgoing || is_self_contact {
-                                ctx.text.draw_text_right_u32(
-                                    &mut canvas,
-                                    &msg.content,
-                                    buf_w as f32 - pad_x,
-                                    y,
-                                    msg_size,
-                                    500,
-                                    colour,
-                                    "Open Sans",
-                                    Some(list_clip),
-                                    None,
-                                    None,
-                                );
+                                ctx.text.draw_text_right(&mut canvas, &msg.content, buf_w as f32 - pad_x, y, &TextStyle::new(msg_size, colour).weight(500), Some(list_clip), None);
                             } else {
-                                ctx.text.draw_text_left_u32(
-                                    &mut canvas,
-                                    &msg.content,
-                                    pad_x,
-                                    y,
-                                    msg_size,
-                                    500,
-                                    colour,
-                                    "Open Sans",
-                                    Some(list_clip),
-                                    None,
-                                    None,
-                                );
+                                ctx.text.draw_text_left(&mut canvas, &msg.content, pad_x, y, &TextStyle::new(msg_size, colour).weight(500), Some(list_clip), None);
                             }
                             y -= line_h;
                         }
@@ -4559,19 +4323,7 @@ impl FluorApp for PhotonApp {
                                 .unwrap_or(false);
                             let compose_cy = buf_h as f32 - compose_margin - compose_h * 0.5;
                             if compose_empty && !compose_focused {
-                                ctx.text.draw_text_left_u32(
-                                    &mut canvas,
-                                    "message",
-                                    pad_x * 1.2,
-                                    compose_cy,
-                                    msg_size,
-                                    400,
-                                    theme::LABEL_COLOUR,
-                                    "Open Sans",
-                                    None,
-                                    None,
-                                    None,
-                                );
+                                ctx.text.draw_text_left(&mut canvas, "message", pad_x * 1.2, compose_cy, &TextStyle::new(msg_size, theme::LABEL_COLOUR), None, None);
                             }
                             // Send button COLOUR first (its under() blit lands on the noise), then the arrowhead over the pill (source-over). The textbox draws after — it sits over the button and clobbers the button's hit stamp with its own id — so we re-stamp the button's TRUE pill silhouette (fill + stroke, which also covers the arrowhead) AFTER the textbox, as the last writer. That's the whole click + hover region: shape-accurate, not a bbox rectangle.
                             if let Some(btn) = self.message_send_btn.as_mut() {
@@ -4627,11 +4379,8 @@ impl FluorApp for PhotonApp {
                 let back_y = buf_h as f32 * 0.06 + unit;
                 let back_size = unit * 1.15;
                 let back_text = "‹ Contacts";
-                ctx.text.draw_text_left_u32(
-                    &mut canvas, back_text, unit, back_y, back_size, 500,
-                    theme::CONTACT_NAME_COLOUR, "Oxanium", None, None, None,
-                );
-                let back_w = ctx.text.measure_text_width(back_text, back_size, 500, "Oxanium");
+                ctx.text.draw_text_left(&mut canvas, back_text, unit, back_y, &TextStyle::new(back_size, theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium"), None, None);
+                let back_w = ctx.text.measure_text(back_text, &TextStyle::new(back_size, 0).weight(500).font("Oxanium"));
                 restamp_hit_rect(
                     &mut chrome.hit_test_map, buf_w, buf_h,
                     0, (back_y - back_size) as isize,
@@ -4650,10 +4399,7 @@ impl FluorApp for PhotonApp {
             let u = tb_h;
             let gap = u * 0.45;
             // Two header rows above the field.
-            ctx.text.draw_text_center_u32(
-                &mut canvas, "Add a device", cx, tb_cy - u * 2.5,
-                u * 0.85, 600, theme::STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
-            );
+            ctx.text.draw_text_center(&mut canvas, "Add a device", cx, tb_cy - u * 2.5, &TextStyle::new(u * 0.85, theme::STATUS_TEXT_COLOUR).weight(600).font("Oxanium"), None, None);
             let subtitle = if self.add_device_bound.is_none() {
                 "Type the words shown on the new device"
             } else if self.add_device_checking {
@@ -4662,10 +4408,7 @@ impl FluorApp for PhotonApp {
                 // BLE/tap path only: load-bearing — the human must check the FAR (new) device's screen, not this one.
                 "Confirm only once the new device shows it's in"
             };
-            ctx.text.draw_text_center_u32(
-                &mut canvas, subtitle, cx, tb_cy - u * 1.35,
-                u * 0.45, 400, theme::STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
-            );
+            ctx.text.draw_text_center(&mut canvas, subtitle, cx, tb_cy - u * 1.35, &TextStyle::new(u * 0.45, theme::STATUS_TEXT_COLOUR).font("Oxanium"), None, None);
             // Running cursor for everything BELOW the field slot (top edge of the next row).
             let mut y = tb_cy + u * 0.85;
             if self.add_device_bound.is_none() {
@@ -4680,29 +4423,20 @@ impl FluorApp for PhotonApp {
                 let full = count == crate::network::fgtw::fleet::PAIR_WORD_COUNT;
                 let counter = format!("{count} / {}", crate::network::fgtw::fleet::PAIR_WORD_COUNT);
                 let counter_colour = if full { theme::SEARCH_FOUND_COLOUR } else { fluor::theme::HINT_COLOUR };
-                ctx.text.draw_text_center_u32(
-                    &mut canvas, &counter, cx, y + u * 0.25,
-                    u * 0.5, 500, counter_colour, "Oxanium", None, None, None,
-                );
+                ctx.text.draw_text_center(&mut canvas, &counter, cx, y + u * 0.25, &TextStyle::new(u * 0.5, counter_colour).weight(500).font("Oxanium"), None, None);
                 y += u * 0.5 + gap;
                 // Tappable candidate list — PROXIMITY POPULATION ONLY (docs/pairing-v2.md): only devices HEARD over the BLE announce beacon (later: NFC tap) become tap targets, NEVER the raw registry — a remote attacker who holds the handle can flood the identity-gated registry, so listing registry entries as taps would fill your finger's reach with decoys. Registry = sync only (the consent a tap binds with); proximity is what a remote attacker can't fake. Not-nearby devices don't appear — you type their words (reading them off the physical screen IS the proximity check). Index i = position in the HEARD-only subset; the tap dispatch filters identically.
                 let nearby: Vec<&AddCandidate> =
                     self.add_device_candidates.iter().filter(|c| c.heard_ble).take(7).collect();
                 if !nearby.is_empty() {
-                    ctx.text.draw_text_center_u32(
-                        &mut canvas, "or tap the nearby device asking to join:", cx, y + u * 0.2,
-                        u * 0.4, 400, fluor::theme::HINT_COLOUR, "Oxanium", None, None, None,
-                    );
+                    ctx.text.draw_text_center(&mut canvas, "or tap the nearby device asking to join:", cx, y + u * 0.2, &TextStyle::new(u * 0.4, fluor::theme::HINT_COLOUR).font("Oxanium"), None, None);
                     y += u * 0.4 + gap * 0.5;
                     let row_h = u * 0.85;
                     for (i, cand) in nearby.iter().enumerate() {
                         let label = format!("{}   · nearby", cand.name);
                         let held = ctx.pressed_hit != HIT_NONE
                             && ctx.pressed_hit == self.add_candidate_hit_base.wrapping_add(i as HitId);
-                        ctx.text.draw_text_center_u32(
-                            &mut canvas, &label, cx, y + row_h * 0.5,
-                            u * 0.55, if held { 700 } else { 500 }, theme::SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
-                        );
+                        ctx.text.draw_text_center(&mut canvas, &label, cx, y + row_h * 0.5, &TextStyle::new(u * 0.55, theme::SEARCH_FOUND_COLOUR).weight(if held { 700 } else { 500 }).font("Oxanium"), None, None);
                         let half_w = buf_w as f32 * 0.42;
                         restamp_hit_rect(
                             &mut chrome.hit_test_map, buf_w, buf_h,
@@ -4716,10 +4450,7 @@ impl FluorApp for PhotonApp {
                 }
             } else if !self.add_device_checking {
                 // Green-confirm affordance (two-phase) — sits IN the field slot (tb_cy), the same place the words field would be. On the WORDS path the Bound handler auto-fires the rotation, so this never renders; it's the tap/BLE gate. Hit-stamped so Android taps land.
-                ctx.text.draw_text_center_u32(
-                    &mut canvas, "Yes, it's green \u{2014} finish", cx, tb_cy,
-                    u * 0.7, 600, theme::SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
-                );
+                ctx.text.draw_text_center(&mut canvas, "Yes, it's green \u{2014} finish", cx, tb_cy, &TextStyle::new(u * 0.7, theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
                 let half_w = buf_w as f32 * 0.4;
                 restamp_hit_rect(
                     &mut chrome.hit_test_map, buf_w, buf_h,
@@ -4737,17 +4468,11 @@ impl FluorApp for PhotonApp {
                 } else {
                     theme::STATUS_TEXT_COLOUR
                 };
-                ctx.text.draw_text_center_u32(
-                    &mut canvas, &self.add_device_status, cx, y + u * 0.28,
-                    u * 0.5, 400, status_colour, "Oxanium", None, None, None,
-                );
+                ctx.text.draw_text_center(&mut canvas, &self.add_device_status, cx, y + u * 0.28, &TextStyle::new(u * 0.5, status_colour).font("Oxanium"), None, None);
                 y += u * 0.56 + gap;
             }
             // Cancel hint (the orb cancels; matching words bind automatically).
-            ctx.text.draw_text_center_u32(
-                &mut canvas, "tap the orb to cancel", cx, y + u * 0.22,
-                u * 0.4, 400, theme::STATUS_TEXT_COLOUR, "Oxanium", None, None, None,
-            );
+            ctx.text.draw_text_center(&mut canvas, "tap the orb to cancel", cx, y + u * 0.22, &TextStyle::new(u * 0.4, theme::STATUS_TEXT_COLOUR).font("Oxanium"), None, None);
         }
 
         // Settings panel (STUB) — nav rail + selected page body. Controls render but wire nothing (a checkbox may flip its own visual state; every button / dropdown / slider is inert).
@@ -4772,22 +4497,12 @@ impl FluorApp for PhotonApp {
             // Status toast ("Sending log (N KiB)…", "Log sent √", "Device removed √", ...) — the Ready screen draws `ready_toast` in its hint slot, but settings is a different AppState, so without this the toasts fired FROM settings pages (log submit, device remove) were invisible. Bottom of the content pane, painted early so under-blend keeps it above the page body; event-shown, cleared on the next interaction via clear_hints, never time-based.
             if let Some(msg) = &self.ready_toast {
                 let ts = (layout.unit * 0.72).max(9.0);
-                ctx.text.draw_text_center_u32(
-                    &mut canvas, msg,
-                    layout.content.x + layout.content.w * 0.5,
-                    layout.content.bottom() - ts,
-                    ts, 600, theme::SEARCH_FOUND_COLOUR, "Oxanium",
-                    None, None, None,
-                );
+                ctx.text.draw_text_center(&mut canvas, msg, layout.content.x + layout.content.w * 0.5, layout.content.bottom() - ts, &TextStyle::new(ts, theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
             }
 
             // --- Header: title, centered ON the rail|content divider hairline (1/3 width) — it caps the column split rather than floating at the far-left edge. ---
             let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
-            ctx.text.draw_text_center_u32(
-                &mut canvas, "Settings", layout.content.x,
-                layout.header.center_y(), hspan, 600, theme::CONTACT_NAME_COLOUR, "Oxanium",
-                None, None, None,
-            );
+            ctx.text.draw_text_center(&mut canvas, "Settings", layout.content.x, layout.header.center_y(), &TextStyle::new(hspan, theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium"), None, None);
             // --- Nav rail: Back is PINNED at the top (never scrolls — you never have to scroll up to go back); the nine page labels scroll BELOW it. Natural row height, no clamp-to-fit. Fills are painted AFTER the label so, under the settings pane's topmost-first (under-blend) compositing, the text sits in FRONT of the fill. ---
             let rail_inset = layout.rail_inset();
             let nav_h = layout.nav_row_h();
@@ -4797,10 +4512,7 @@ impl FluorApp for PhotonApp {
                 let r = fluor::region::Region::new(rail_inset.x, rail_inset.y, rail_inset.w, nav_h);
                 let back_held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
                 // Text FIRST (topmost-first → in front), THEN the fill behind it. 50%-black (α = 0x80) in darkness space is 0x80_FF_FF_FF (visible black is 0xFFFFFF in the RGB bytes); brighter when held.
-                ctx.text.draw_text_left_u32(
-                    &mut canvas, "‹ Back", r.x + rspan * 0.6, r.center_y(),
-                    rspan, 600, theme::SEARCH_FOUND_COLOUR, "Oxanium", None, None, None,
-                );
+                ctx.text.draw_text_left(&mut canvas, "‹ Back", r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
                 let fill = if back_held { fluor::theme::BUTTON_HELD } else { 0x80_FF_FF_FF };
                 paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fill, None, None);
                 restamp_hit_rect(
@@ -4833,11 +4545,7 @@ impl FluorApp for PhotonApp {
                     && ctx.pressed_hit == self.settings_nav_base.wrapping_add(i as HitId);
                 let colour = if active { theme::CONTACT_NAME_COLOUR } else { theme::LABEL_COLOUR };
                 // Label FIRST (in front), then the highlight fill behind it.
-                ctx.text.draw_text_left_u32(
-                    &mut canvas, p.label(), r.x + rspan * 0.6, r.center_y(),
-                    rspan, if active { 600 } else { 400 }, colour, "Oxanium",
-                    Some(pages_clip), None, None,
-                );
+                ctx.text.draw_text_left(&mut canvas, p.label(), r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, colour).weight(if active { 600 } else { 400 }).font("Oxanium"), Some(pages_clip), None);
                 if held {
                     // Held (pointer down, release switches to this page) reads brightest.
                     paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fluor::theme::BUTTON_HELD, Some(pages_clip), None);
@@ -4913,12 +4621,12 @@ impl FluorApp for PhotonApp {
                         }
                         match row {
                             YouRow::Header(title) => {
-                                ctx.text.draw_text_left_u32(&mut canvas, title, r.x + tspan * 0.3, r.center_y(), tspan, 600, theme::CONTACT_NAME_COLOUR, "Oxanium", Some(content_clip), None, None);
+                                ctx.text.draw_text_left(&mut canvas, title, r.x + tspan * 0.3, r.center_y(), &TextStyle::new(tspan, theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium"), Some(content_clip), None);
                             }
                             YouRow::Field(idx) => {
                                 let cols = r.split_h([0.4, 0.6]);
                                 let label = self.you_fields[*idx].label.clone();
-                                ctx.text.draw_text_left_u32(&mut canvas, &label, cols[0].x + hspan2 * 0.3, cols[0].center_y(), hspan2, 400, theme::LABEL_COLOUR, "Oxanium", Some(content_clip), None, None);
+                                ctx.text.draw_text_left(&mut canvas, &label, cols[0].x + hspan2 * 0.3, cols[0].center_y(), &TextStyle::new(hspan2, theme::LABEL_COLOUR).font("Oxanium"), Some(content_clip), None);
                                 let pf = &mut self.you_fields[*idx];
                                 let id = pf.tb.hit_id();
                                 pf.tb.render_content_into(&mut canvas, 0., 0., ctx.text, Some(glow_clip), None, Some(&mut chrome.hit_test_map), id);
@@ -4929,7 +4637,7 @@ impl FluorApp for PhotonApp {
                                 }
                             }
                             YouRow::AddHeader => {
-                                ctx.text.draw_text_left_u32(&mut canvas, "Add a custom field", r.x + tspan * 0.3, r.center_y(), tspan, 600, theme::CONTACT_NAME_COLOUR, "Oxanium", Some(content_clip), None, None);
+                                ctx.text.draw_text_left(&mut canvas, "Add a custom field", r.x + tspan * 0.3, r.center_y(), &TextStyle::new(tspan, theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium"), Some(content_clip), None);
                             }
                             YouRow::AddInput => {
                                 let cols = r.split_h([0.62, 0.38]);
@@ -4940,10 +4648,10 @@ impl FluorApp for PhotonApp {
                                 draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, cols[1].center_h(0.72), "Add", btn_base.wrapping_add(2), ctx.pressed_hit);
                             }
                             YouRow::Note => {
-                                ctx.text.draw_text_left_u32(&mut canvas, "Your handle IS your identity — you don't have to set any of this.", r.x + hspan2 * 0.3, r.center_y(), hspan2, 400, theme::LABEL_COLOUR, "Oxanium", Some(content_clip), None, None);
+                                ctx.text.draw_text_left(&mut canvas, "Your handle IS your identity — you don't have to set any of this.", r.x + hspan2 * 0.3, r.center_y(), &TextStyle::new(hspan2, theme::LABEL_COLOUR).font("Oxanium"), Some(content_clip), None);
                             }
                             YouRow::IdentityHeader => {
-                                ctx.text.draw_text_left_u32(&mut canvas, "Identity", r.x + tspan * 0.3, r.center_y(), tspan, 600, theme::CONTACT_NAME_COLOUR, "Oxanium", Some(content_clip), None, None);
+                                ctx.text.draw_text_left(&mut canvas, "Identity", r.x + tspan * 0.3, r.center_y(), &TextStyle::new(tspan, theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium"), Some(content_clip), None);
                             }
                             YouRow::IdentityFp => {
                                 let fp = self
@@ -4951,7 +4659,7 @@ impl FluorApp for PhotonApp {
                                     .as_ref()
                                     .map(|s| crate::fp(&crate::crypto::clutch::identity_party_id(&s.identity_seed)))
                                     .unwrap_or_else(|| "—".to_string());
-                                ctx.text.draw_text_left_u32(&mut canvas, &fp, r.x + hspan2 * 0.3, r.center_y(), hspan2, 400, theme::LABEL_COLOUR, "Oxanium", Some(content_clip), None, None);
+                                ctx.text.draw_text_left(&mut canvas, &fp, r.x + hspan2 * 0.3, r.center_y(), &TextStyle::new(hspan2, theme::LABEL_COLOUR).font("Oxanium"), Some(content_clip), None);
                             }
                             YouRow::SavePill => {
                                 draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, r.center_h(pillf(0.5)), "Update", btn_base.wrapping_add(0), ctx.pressed_hit);
@@ -4972,11 +4680,8 @@ impl FluorApp for PhotonApp {
                     {
                         let cc = "click to copy";
                         let cc_size = hspan2 * 0.82;
-                        let cc_w = ctx.text.measure_text_width(cc, cc_size, 400, "Oxanium");
-                        ctx.text.draw_text_left_u32(
-                            &mut canvas, cc, rows[0].right() - cc_w - hspan2 * 0.3, rows[0].center_y(),
-                            cc_size, 400, theme::LABEL_COLOUR, "Oxanium", None, None, None,
-                        );
+                        let cc_w = ctx.text.measure_text(cc, &TextStyle::new(cc_size, 0).font("Oxanium"));
+                        ctx.text.draw_text_left(&mut canvas, cc, rows[0].right() - cc_w - hspan2 * 0.3, rows[0].center_y(), &TextStyle::new(cc_size, theme::LABEL_COLOUR).font("Oxanium"), None, None);
                     }
                     for (i, (_pk, is_self, online, name)) in devices.iter().take(6).enumerate() {
                         let row = rows[1 + i];
@@ -4989,11 +4694,8 @@ impl FluorApp for PhotonApp {
                             ("offline", theme::LABEL_COLOUR)
                         };
                         settings_line(&mut canvas, ctx.text, row, status, hspan2 * 0.85, status_colour, 400);
-                        let name_w = ctx.text.measure_text_width(name, hspan2, 500, "Oxanium");
-                        ctx.text.draw_text_left_u32(
-                            &mut canvas, name, row.right() - name_w - hspan2 * 0.3, row.center_y(),
-                            hspan2, 500, theme::CONTACT_NAME_COLOUR, "Oxanium", None, None, None,
-                        );
+                        let name_w = ctx.text.measure_text(name, &TextStyle::new(hspan2, 0).weight(500).font("Oxanium"));
+                        ctx.text.draw_text_left(&mut canvas, name, row.right() - name_w - hspan2 * 0.3, row.center_y(), &TextStyle::new(hspan2, theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium"), None, None);
                         // Every row (self included) is a tap-to-copy target for its name.
                         restamp_hit_rect(
                             &mut chrome.hit_test_map,
@@ -5171,11 +4873,8 @@ impl FluorApp for PhotonApp {
                             }
                             let mut x = r.x;
                             for (span, colour) in &ins_lines[i] {
-                                ctx.text.draw_text_left_u32(
-                                    &mut canvas, span, x, r.center_y(), size, 400, *colour, "Oxanium",
-                                    Some(content_clip), None, None,
-                                );
-                                x += ctx.text.measure_text_width(span, size, 400, "Oxanium");
+                                ctx.text.draw_text_left(&mut canvas, span, x, r.center_y(), &TextStyle::new(size, *colour).font("Oxanium"), Some(content_clip), None);
+                                x += ctx.text.measure_text(span, &TextStyle::new(size, 0).font("Oxanium"));
                             }
                         }
                         // The list rendering below is the OTHER mode.
@@ -5207,19 +4906,7 @@ impl FluorApp for PhotonApp {
                             0 => ("T", theme::LABEL_COLOUR),
                             _ => ("?", theme::LABEL_COLOUR),
                         };
-                        ctx.text.draw_text_left_u32(
-                            &mut canvas,
-                            &format!("{ts} {lvl}  {}", rec.msg),
-                            r.x,
-                            r.center_y(),
-                            size,
-                            400,
-                            colour,
-                            "Oxanium",
-                            Some(content_clip),
-                            None,
-                            None,
-                        );
+                        ctx.text.draw_text_left(&mut canvas, &format!("{ts} {lvl}  {}", rec.msg), r.x, r.center_y(), &TextStyle::new(size, colour).font("Oxanium"), Some(content_clip), None);
                     }
                     }
                 }
@@ -5285,32 +4972,8 @@ impl FluorApp for PhotonApp {
             );
             let span = 2. * buf_w as f32 * buf_h as f32 / (buf_w + buf_h) as f32;
             let cx = buf_w as f32 * 0.5;
-            ctx.text.draw_text_center_u32(
-                &mut canvas,
-                "Selected!",
-                cx,
-                buf_h as f32 * 0.4,
-                span / 8.,
-                800,
-                theme::CONTACT_NAME_COLOUR,
-                "Oxanium",
-                None,
-                None,
-                None,
-            );
-            ctx.text.draw_text_center_u32(
-                &mut canvas,
-                "Confirm on your other device to finish.",
-                cx,
-                buf_h as f32 * 0.58,
-                span / 24.,
-                500,
-                theme::CONTACT_NAME_COLOUR,
-                "Oxanium",
-                None,
-                None,
-                None,
-            );
+            ctx.text.draw_text_center(&mut canvas, "Selected!", cx, buf_h as f32 * 0.4, &TextStyle::new(span / 8., theme::CONTACT_NAME_COLOUR).weight(800).font("Oxanium"), None, None);
+            ctx.text.draw_text_center(&mut canvas, "Confirm on your other device to finish.", cx, buf_h as f32 * 0.58, &TextStyle::new(span / 24., theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium"), None, None);
         }
 
         // LAST RITES — the red flood (docs/lifecycle.md D3): the whole surface goes deep red with the truth in big letters and ONE pill; any press anywhere else cancels (interstitial rules, dispatched in the Pressed arm). Painted over every page layer; chrome composites above it, so the window stays operable (close = another cancel path). This is the THIRD press of the exit — Remove & shred pressed twice got the user here.
@@ -5339,9 +5002,7 @@ impl FluorApp for PhotonApp {
                 ("Anywhere else cancels.", theme::LABEL_COLOUR, 400),
             ];
             for (line, colour, weight) in lines {
-                ctx.text.draw_text_center_u32(
-                    &mut canvas, line, cx, y, line_h, weight, colour, "Oxanium", None, None, None,
-                );
+                ctx.text.draw_text_center(&mut canvas, line, cx, y, &TextStyle::new(line_h, colour).weight(weight).font("Oxanium"), None, None);
                 y += line_h * 1.6;
             }
             y += line_h;
@@ -14126,19 +13787,7 @@ fn settings_line(
     colour: u32,
     weight: u16,
 ) {
-    text.draw_text_left_u32(
-        canvas,
-        s,
-        row.x + size * 0.3,
-        row.center_y(),
-        size,
-        weight,
-        colour,
-        "Oxanium",
-        None,
-        None,
-        None,
-    );
+    text.draw_text_left(canvas, s, row.x + size * 0.3, row.center_y(), &TextStyle::new(size, colour).weight(weight).font("Oxanium"), None, None);
 }
 
 /// Draw an inert stub action pill filling `rect`: a Button-family squircle (fill + two-tone raised edge) with a centred label, hit-stamped with `hit_id`. STUB only — clicks land in the settings dispatch range and log a line; nothing functional fires. Kept immediate-mode (not a persistent `Button`) because the panel has many one-off action pills and a stub doesn't need each to carry click-counter state.
@@ -14211,13 +13860,13 @@ fn draw_stub_pill_filled(
     let (fill_idle, fill_held) = fill.unwrap_or((fluor::theme::BUTTON_FILL, fluor::theme::BUTTON_HELD));
     let mut font_size = rect.h * 0.5;
     // Label first (topmost-first): centred in the pill. `label_font` is normally "Open Sans"; the version buttons pass "Oxanium" so the dozenal control-block glyphs resolve to its +glyphs face (Open Sans has no such glyphs → notdef).
-    let mut tw = text.measure_text_width(label, font_size, 400, label_font);
+    let mut tw = text.measure_text(label, &TextStyle::new(font_size, 0).font(label_font));
     // Fit order: SHRINK the font toward the slot first (pills sharing a row must not collide with their neighbours), then widen the bg only if the font hit its readability floor — so a long label on a full-width row still gets wrapped rather than truncated.
     let max_w = rect.w * 0.96;
     if tw + font_size * 1.6 > max_w {
         let scaled = font_size * max_w / (tw + font_size * 1.6);
         font_size = scaled.max(9.0).min(font_size);
-        tw = text.measure_text_width(label, font_size, 400, label_font);
+        tw = text.measure_text(label, &TextStyle::new(font_size, 0).font(label_font));
     }
     let need_w = tw + font_size * 1.6;
     let (px, pw) = if need_w > rect.w { (rect.center_x() - need_w * 0.5, need_w) } else { (rect.x, rect.w) };
@@ -14232,19 +13881,7 @@ fn draw_stub_pill_filled(
     } else {
         fluor::theme::dark(fluor::theme::fmt(0x00_70_70_6E))
     };
-    text.draw_text_left_u32(
-        canvas,
-        label,
-        rect.center_x() - tw * 0.5,
-        rect.center_y(),
-        font_size,
-        400,
-        label_colour,
-        label_font,
-        None,
-        None,
-        None,
-    );
+    text.draw_text_left(canvas, label, rect.center_x() - tw * 0.5, rect.center_y(), &TextStyle::new(font_size, label_colour).font(label_font), None, None);
     let inner_w = (w - 2 * stroke).max(0);
     let inner_h = (h - 2 * stroke).max(0);
     if inner_w > 0 && inner_h > 0 {
