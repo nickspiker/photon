@@ -800,6 +800,8 @@ pub struct PhotonApp {
     lastrites_hit: HitId,
     /// JOINER SELECTED (docs/lifecycle.md): this just-bound device floods green with "Selected!" and HOLDS until the sponsor's confirm rotation releases the fleet key — the green the far-side human is asked to verify. Cleared when sign-in proceeds.
     joiner_selected: bool,
+    /// One-shot absolute-zoom restore (the persisted per-device `display.zoom`), handed to the host via `FluorApp::take_zoom_request`. Set when settings load; the host applies + clears it.
+    pending_zoom_restore: Option<f32>,
     /// One-shot Android image-picker request. Set when the user taps the avatar; consumed by the JNI poll (`nativePollAvatarPicker`) which signals the Activity to launch `ACTION_GET_CONTENT`. Stays `None` on idle frames so the Activity doesn't churn.
     pending_picker_request: bool,
     /// One-shot signal for the Android sticky session broadcast: 1=send, -1=clear, 0=nothing. Set by attest success and []n nuke.
@@ -1050,6 +1052,7 @@ impl PhotonApp {
             lastrites_active: false,
             lastrites_hit: HIT_NONE,
             joiner_selected: false,
+            pending_zoom_restore: None,
             active_contact: None,
             contact_hit_base: HIT_NONE,
             back_btn_hit_id: HIT_NONE,
@@ -1454,6 +1457,11 @@ impl PhotonApp {
 }
 
 impl FluorApp for PhotonApp {
+    /// One-shot absolute-zoom restore: the persisted per-device `display.zoom`, set when settings load; the host applies it exactly like a user zoom.
+    fn take_zoom_request(&mut self) -> Option<f32> {
+        self.pending_zoom_restore.take()
+    }
+
     type UserEvent = PhotonEvent;
 
     fn title(&self) -> &str {
@@ -2323,6 +2331,8 @@ impl FluorApp for PhotonApp {
                 // Zoom hint persists only while a zoom modifier is held. The instant Ctrl/Cmd is released, drop the top-centre percentage watermark (render arms it when `ru` changes under a held modifier). Releasing focus mid-zoom also lands here via the WM clearing modifiers.
                 if !(mods.control_key() || mods.super_key()) && self.zoom_hint {
                     self.zoom_hint = false;
+                    // The release edge after a zoom IS the persistence point (event-driven, no debounce timer): save the settled ru as this DEVICE's zoom — per-device (unlinked) but mirrored thru the fleet's device maps like every device setting.
+                    self.save_zoom_setting(ctx.viewport.ru);
                     // The watermark lives in the bg layer, which `rasterize_bg` only repaints when dirty — invalidate it so the clearing frame actually re-runs the closure without the hint, instead of leaving the stale glyphs painted.
                     if let Some(chrome) = self.chrome.as_mut() {
                         chrome.invalidate_bg();
@@ -6965,6 +6975,33 @@ impl PhotonApp {
             .unwrap_or(true);
         if let Some(cb) = self.settings_autoupdate_check.as_mut() {
             cb.set_checked(auto);
+        }
+        // Restore this device's persisted zoom (display.zoom, f32 LE bytes — binary at rest). Handed to the host as a one-shot absolute request; applies exactly like a user zoom.
+        if let Some(ru) = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("display.zoom"))
+            .filter(|v| v.len() == 4)
+            .map(|v| f32::from_le_bytes([v[0], v[1], v[2], v[3]]))
+            .filter(|ru| ru.is_finite() && *ru > 0.0)
+        {
+            self.pending_zoom_restore = Some(ru);
+        }
+    }
+
+    /// Persist the settled zoom as this DEVICE's `display.zoom` (docs/global-vault.md model: per-device value, so it's UNLINKED — zoom is monitor ergonomics, never fleet-global — but still mirrored thru the fleet's device maps like every device setting). f32 LE bytes: binary at rest.
+    fn save_zoom_setting(&mut self, ru: f32) {
+        if !self.ensure_fleet_settings() {
+            return;
+        }
+        let now = vsf::eagle_time_oscillations();
+        let fs = self.fleet_settings.as_mut().unwrap();
+        if fs.linked("display.zoom") {
+            fs.set_link("display.zoom", false, now);
+        }
+        if fs.set("display.zoom", ru.to_le_bytes().to_vec(), now) {
+            crate::logf!("SETTINGS: display.zoom = {} (device-local)", ru);
+            self.persist_and_push_settings();
         }
     }
 
