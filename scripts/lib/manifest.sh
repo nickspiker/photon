@@ -86,7 +86,7 @@ manifest_publish_dev_row() {
     local merge_arg=""
     [ -s /tmp/manifest-dev-current.vsf ] && merge_arg="--merge /tmp/manifest-dev-current.vsf"
     "$tool" --channel development --out /tmp/manifest-dev.vsf $merge_arg \
-        --artefact "$platform" "$arch" "$full" "$commit" "$R2_DEV_URL/$object" "$hash"
+        --artefact "$platform" "$arch" "$full" "$commit" "$R2_DEV_URL/$object" "$hash" "$(stat -c %s "$file")"
     wrangler r2 object put "$R2_BUCKET/$R2_PATH/manifest-dev.vsf" \
         --file /tmp/manifest-dev.vsf --content-type application/octet-stream --remote
     echo "dev manifest: $platform/$arch -> $full ($commit) published"

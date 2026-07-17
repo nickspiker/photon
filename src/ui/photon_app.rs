@@ -4968,7 +4968,15 @@ impl FluorApp for PhotonApp {
                     // Status line: the download bar while bytes stream (label flips "Downloading" → "Updating…" at the end), else the last APPLY outcome (installing / failed / restarting).
                     if let Some((done, total)) = self.update_progress {
                         let finishing = total > 0 && done >= total;
-                        let label = if finishing { "Updating\u{2026}" } else { "Downloading" };
+                        // Unknown length (old manifest without size + a chunked CDN stream): the label carries a live MiB counter so the bar area shows life even without a denominator.
+                        let label = if finishing {
+                            "Updating\u{2026}".to_string()
+                        } else if total > 0 {
+                            "Downloading".to_string()
+                        } else {
+                            format!("Downloading {} MiB\u{2026}", done >> 20)
+                        };
+                        let label = label.as_str();
                         let r = rows[7];
                         settings_line(&mut canvas, ctx.text, fluor::region::Region::new(r.x, r.y, r.w, r.h * 0.5), label, hspan2, theme::CONTACT_NAME_COLOUR, 500);
                         // The bar: full-width track, proportional fill. Unknown length (total 0) fills nothing but the label still shows life via the byte count below.
