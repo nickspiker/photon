@@ -30,6 +30,10 @@
     <uses-permission android:name="android.permission.BROADCAST_STICKY" />
     <!-- Self-update (docs/updates.md): fire the system installer on a downloaded, hash-verified APK. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- NFC instant device add: reader mode (sponsor) + HCE dumb-tag (joiner). Neither feature is required — phones without NFC pair via words/BLE. -->
+    <uses-permission android:name="android.permission.NFC" />
+    <uses-feature android:name="android.hardware.nfc" android:required="false" />
+    <uses-feature android:name="android.hardware.nfc.hce" android:required="false" />
     <uses-permission android:name="com.photon.SESSION_READ" />
 
     <!-- Signature-level permission gates who can receive the sticky session broadcast -->
@@ -73,6 +77,19 @@
             android:name=".PhotonConnectionService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
+
+        <!-- NFC instant device add: the joiner's HCE service serving the pairing secret under photon's private AID (res/xml/apduservice.xml). -->
+        <service
+            android:name=".PhotonHceService"
+            android:exported="true"
+            android:permission="android.permission.BIND_NFC_SERVICE">
+            <intent-filter>
+                <action android:name="android.nfc.cardemulation.action.HOST_APDU_SERVICE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.nfc.cardemulation.host_apdu_service"
+                android:resource="@xml/apduservice" />
+        </service>
 
         <!-- Exposes the staged self-update APK (app-private files dir) to the system installer. -->
         <provider

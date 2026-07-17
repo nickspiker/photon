@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- NFC instant device add: the HCE "dumb tag" serving the pairing secret under photon's PRIVATE AID (F0 proprietary range + "PHOTON" + 01 — must match PhotonNfc.AID). requireDeviceUnlock: the joiner phone must be unlocked to serve, so a pocketed/locked phone never leaks its live ceremony secret to a bump. -->
+<host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/app_name"
+    android:requireDeviceUnlock="true">
+    <aid-group android:category="other"
+        android:description="@string/app_name">
+        <aid-filter android:name="F050484F544F4E01" />
+    </aid-group>
+</host-apdu-service>
