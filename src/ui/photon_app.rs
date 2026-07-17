@@ -802,6 +802,8 @@ pub struct PhotonApp {
     joiner_selected: bool,
     /// One-shot absolute-zoom restore (the persisted per-device `display.zoom`), handed to the host via `FluorApp::take_zoom_request`. Set when settings load; the host applies + clears it.
     pending_zoom_restore: Option<f32>,
+    /// The picked avatar's display pixels, arriving from the OFF-THREAD set pipeline (decode runs there too — a 50MP photo must not stall a frame). Installed + repainted in tick.
+    avatar_set_rx: Option<std::sync::mpsc::Receiver<Vec<u8>>>,
     /// One-shot Android image-picker request. Set when the user taps the avatar; consumed by the JNI poll (`nativePollAvatarPicker`) which signals the Activity to launch `ACTION_GET_CONTENT`. Stays `None` on idle frames so the Activity doesn't churn.
     pending_picker_request: bool,
     /// One-shot signal for the Android sticky session broadcast: 1=send, -1=clear, 0=nothing. Set by attest success and []n nuke.
@@ -1053,6 +1055,7 @@ impl PhotonApp {
             lastrites_hit: HIT_NONE,
             joiner_selected: false,
             pending_zoom_restore: None,
+            avatar_set_rx: None,
             active_contact: None,
             contact_hit_base: HIT_NONE,
             back_btn_hit_id: HIT_NONE,
@@ -1151,21 +1154,8 @@ impl PhotonApp {
                 return;
             }
         };
-        // INSTANT display: only the fast half runs on this thread (decode + crop + resize + mask — milliseconds). The avatar shows THIS frame; the seconds-long rav1e encode, the vault save, and the blocking upload all move off-thread (the old inline pipeline was the "considerable delay before it shows" + the mac click-again freeze).
-        let rgb_f32 = match crate::ui::avatar::image_to_avatar_rgb_f32(&image_bytes) {
-            Ok(p) => p,
-            Err(e) => {
-                crate::logf!("avatar picker: decode failed: {}", e);
-                return;
-            }
-        };
-        let vsf_rgb = crate::ui::avatar::avatar_rgb_f32_to_u8(&rgb_f32);
-        self.device_avatar_pixels = Some(crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb));
-        self.device_avatar_scaled = None;
-        self.device_avatar_scaled_diameter = 0;
-        self.scene_dirty = true;
-        crate::log("avatar picker: installed for display — encode + save + upload continue off-thread");
-        // Pin + upload material gathered on the UI thread (ensure_avatar_pin may mint + persist), then the slow half runs detached. The pong slot updates now so friends' next ping already carries the pin.
+        // NOTHING runs on the UI thread (a 50MP photo's decode + Lanczos is hundreds of ms — no half of this pipeline is frame-safe): one LOW-PRIORITY worker decodes, sends the display pixels back thru `avatar_set_rx` (installed next tick, typically a frame or two later), then grinds thru the rav1e encode, vault save, and upload behind everything else.
+        // Pin + upload material gathered here first (ensure_avatar_pin may mint + persist, needs &mut self); the pong slot updates now so friends' next ping already carries the pin.
         let proof = self
             .handle_query
             .as_ref()
@@ -1175,7 +1165,25 @@ impl PhotonApp {
         // Sibling ding: bump the fleet-synced avatar stamp so the fstate event wakes the fleet and their next avatar sync pulls the fresh copy. Bumped at SET time — a sibling racing the upload just gets the old copy once and heals on the next sync (newest-wins).
         self.settings_set("profile.avatar_ts", vsf::eagle_time_oscillations().to_le_bytes().to_vec());
         let kp = self.device_keypair.clone();
+        let (px_tx, px_rx) = std::sync::mpsc::channel();
+        self.avatar_set_rx = Some(px_rx);
+        let wake = self.event_proxy.clone();
         std::thread::spawn(move || {
+            #[cfg(not(target_os = "redox"))]
+            let _ = thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min);
+            let rgb_f32 = match crate::ui::avatar::image_to_avatar_rgb_f32(&image_bytes) {
+                Ok(p) => p,
+                Err(e) => {
+                    crate::logf!("avatar picker: decode failed: {}", e);
+                    return;
+                }
+            };
+            // Display pixels first — the UI installs them the next tick; the grind continues below.
+            let vsf_rgb = crate::ui::avatar::avatar_rgb_f32_to_u8(&rgb_f32);
+            let _ = px_tx.send(crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb));
+            if let Some(w) = wake.as_ref() {
+                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+            }
             let av1_data = match crate::ui::avatar::encode_avatar_rgb_f32(&rgb_f32) {
                 Ok(d) => d,
                 Err(e) => {
@@ -10435,6 +10443,18 @@ impl PhotonApp {
 
         // Peer avatars: install any completed downloads, then kick a fetch (once/session/handle) for any contact still without one. Cache-first + dedup'd by avatar_dl_started, so this is cheap to run every tick — it spawns at most one thread per peer per session.
         self.drain_avatar_downloads();
+
+        // Our OWN just-picked avatar, arriving from the off-thread set pipeline (decode ran there too): install + repaint, then drop the channel — one avatar per pick.
+        if let Some(rx) = self.avatar_set_rx.as_ref() {
+            if let Ok(px) = rx.try_recv() {
+                self.device_avatar_pixels = Some(px);
+                self.device_avatar_scaled = None;
+                self.device_avatar_scaled_diameter = 0;
+                self.scene_dirty = true;
+                self.avatar_set_rx = None;
+                crate::log("avatar picker: display pixels installed");
+            }
+        }
 
         // Clock sanity: drain any completed nunc verdict, then (if the wall clock has grossly jumped since the last baseline) spawn a fresh re-check. Both are cheap — the jump check is two clock reads and a subtraction; a re-check only spawns on an actual jump.
         self.drain_clock_check();
