@@ -4745,7 +4745,7 @@ impl FluorApp for PhotonApp {
                     let button = |canvas: &mut Canvas, text: &mut fluor::text::TextRenderer, hit_map: &mut [HitId], rect: fluor::region::Region, slot: HitId, kind: &str, avail_fill: (u32, u32), state: &ChannelCheck, busy: bool| {
                         let (label, fill, enabled) = match state {
                             ChannelCheck::Idle | ChannelCheck::Checking => (format!("Checking {kind}\u{2026}"), PILL_GREY, false),
-                            ChannelCheck::Failed(_) => (format!("{kind} unavailable"), PILL_GREY, false),
+                            ChannelCheck::Failed => (format!("{kind} unavailable"), PILL_GREY, false),
                             ChannelCheck::Ready(None) => (format!("No {kind} build for this device"), PILL_GREY, false),
                             ChannelCheck::Ready(Some(row)) if row.version == ours => (format!("Already on {kind} {}", dozenal_version_tuple(row.version)), PILL_GREY, false),
                             ChannelCheck::Ready(Some(row)) => (format!("Get {kind} {}", dozenal_version_tuple(row.version)), avail_fill, !busy),
@@ -6303,7 +6303,12 @@ impl PhotonApp {
                 UpdateEvent::Checked(channel, result) => {
                     let state = match result {
                         Ok(row) => ChannelCheck::Ready(row),
-                        Err(e) => ChannelCheck::Failed(e),
+                        Err(e) => {
+                            // Read (log) the reason — otherwise the field is dead and the failure is invisible.
+                            crate::logf!("UPDATE: {} check failed: {}", channel.label(), e);
+                            let _ = e;
+                            ChannelCheck::Failed
+                        }
                     };
                     match channel {
                         crate::network::updates::Channel::Release => self.update_release = state,
@@ -12743,8 +12748,8 @@ enum ChannelCheck {
     Checking,
     /// Fetched: the row for our platform (`None` = manifest carries no build for us).
     Ready(Option<crate::network::updates::ManifestRow>),
-    /// Fetch/verify failed.
-    Failed(String),
+    /// Fetch/verify failed (reason is logged at the point it's set).
+    Failed,
 }
 
 /// Off-thread self-update results (docs/updates.md), drained in tick.
