@@ -90,4 +90,10 @@ fn main() {
         if dirty { "+dirty" } else { "" }
     );
     println!("cargo:rerun-if-changed=.git/HEAD");
+
+    // The update stamp window's FLOOR (docs/updates.md): the moment THIS binary was built, in eagle-time oscillations. The automatic path accepts a manifest iff floor < manifest_stamp ≤ now — below the floor is a replay/downgrade, above now is forward-dated ("not yet"). The floor advances only by exec'ing into a newer build: it's compiled in, never mutable stored state. Refreshes only when the crate actually rebuilds (build.rs doesn't rerun on a no-op build), so binary identity ⇒ stamp identity.
+    println!(
+        "cargo:rustc-env=PHOTON_BUILD_STAMP={}",
+        vsf::eagle_time_oscillations()
+    );
 }
