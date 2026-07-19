@@ -672,6 +672,15 @@ pub struct PhotonApp {
     last_interaction: Option<Instant>,
     /// Last time an already-running device re-folded its OWN fleet chain to catch a device add/remove it may have missed. The hub `fleet` event is the fast path but best-effort (a dropped WebSocket = a missed add), so this periodic re-fold is the reliable doorbell: without it, an existing device never learns a newly-added sibling until relaunch — it wouldn't answer the new device's presence pings (→ shows it offline) and its Fleet list would stay stale. `None` until the first poll.
     last_fleet_refold: Option<Instant>,
+    /// Last time we pulsed a background resume to re-fetch a stalled contact's address. Address
+    /// discovery (`contact.ip`) only refreshes on attest echo / roster / search — there is no
+    /// periodic re-fetch — so a contact whose initial fetch failed (flaky cellular fgtw) is stuck
+    /// with no address: its CLUTCH offer can't send, name/avatar (which ride the pong) never
+    /// arrive, and it loops keygen forever. While any contact is blocked this way we pulse a
+    /// lightweight background resume on a fast cadence; one success learns the address and
+    /// fire-on-learn punches + the offer sends. `None` until the first pulse. (Stopgap for the
+    /// peer-gossip fix, TICKETS T0.)
+    last_stalled_refetch: Option<Instant>,
     /// HandleQuery client — owns the UDP socket, device keypair, and FGTW peer store. Submission calls `handle_query.query(handle)`; `tick()` polls `try_recv()` for results. `None` until init.
     handle_query: Option<HandleQuery>,
     /// Per-contact presence + CLUTCH ceremony driver. Shares HandleQuery's UDP socket; pings contacts, receives pongs (→ `is_online`), and runs the slot-based CLUTCH offer/KEM/complete exchange. `None` until init. Ported from the retired `app.rs` — the fluor migration left this whole subsystem behind, so contacts showed offline and CLUTCH never started.
@@ -1018,6 +1027,7 @@ impl PhotonApp {
             last_presence_ping: None,
             last_interaction: None,
             last_fleet_refold: None,
+            last_stalled_refetch: None,
             handle_query: None,
             status_checker: None,
             contact_pubkeys: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -5285,6 +5295,40 @@ impl PhotonApp {
                 if let Some(our_hp) = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()) {
                     self.last_fleet_refold = Some(now);
                     self.spawn_contact_fleet_refresh(vec![our_hp]);
+                }
+            }
+        }
+
+        // Stalled-address re-fetch — the deadlock breaker for flaky-fgtw address discovery.
+        // A contact whose address fetch failed sits with `ip = None`: its CLUTCH offer can't
+        // send (send needs an address), name/avatar never arrive (they ride the pong, which
+        // needs a reachable path), and the ceremony loops keygen forever. There is no periodic
+        // address re-fetch otherwise, so while any non-self contact is Pending-CLUTCH with no
+        // address, pulse a lightweight background resume (re-runs the announce + peer fetch →
+        // refresh_contact_addrs_from_peers). A single success learns the address, fire-on-learn
+        // punches, the offer sends, and the pong then carries name/avatar. Self-limiting: stops
+        // the moment the address lands. (Stopgap for the peer-gossip fix, TICKETS T0.)
+        const STALLED_ADDR_REFETCH: std::time::Duration = std::time::Duration::from_secs(15);
+        if matches!(self.state, AppState::Ready | AppState::Conversation | AppState::Settings(_)) {
+            let our_pid = self
+                .session
+                .as_ref()
+                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+            let blocked = self.contacts.iter().any(|c| {
+                c.ip.is_none()
+                    && c.clutch_state == crate::types::ClutchState::Pending
+                    && Some(c.handle_hash) != our_pid
+            });
+            let due = self
+                .last_stalled_refetch
+                .is_none_or(|last| now.duration_since(last) >= STALLED_ADDR_REFETCH);
+            if blocked && due {
+                if let (Some(hq), Some(session)) =
+                    (self.handle_query.as_ref(), self.session.clone())
+                {
+                    self.last_stalled_refetch = Some(now);
+                    crate::logf!("FGTW: a Pending contact has no address — pulsing background resume to re-fetch");
+                    hq.query_resume(session);
                 }
             }
         }
