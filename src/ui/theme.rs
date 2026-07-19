@@ -59,6 +59,9 @@ pub const PILL_GREY: (u32, u32) = (
     fluor::theme::dark(fluor::theme::fmt(0x00_24_24_28)),
     fluor::theme::dark(fluor::theme::fmt(0x00_24_24_28)),
 );
+/// Updates-page download bar: lime progress over a black track. α+darkness like the pills; the fill paints FIRST (under-blend, first-wins) and the track sweeps the remainder.
+pub const PROGRESS_FILL: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_80_FF_00));
+pub const PROGRESS_TRACK: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_00_00_00));
 /// Send-button arrowhead glyph — light grey, α+darkness format for under-blend (visible-RGB is not usable on this canvas).
 pub const SEND_ARROW_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_D0_D0_D0));
 /// Hover fill for the send / plus action buttons — a SUBTLE neutral brightening of BUTTON_FILL (0x1A224E), reproducing the pre-fluor QUERY_BUTTON_HOVER feel rather than the shared BUTTON_HOVER's saturated-blue shift. A small delta also keeps the overlay from cooking the near-white arrowhead.
