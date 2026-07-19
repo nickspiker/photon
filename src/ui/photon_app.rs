@@ -4918,15 +4918,15 @@ impl FluorApp for PhotonApp {
                         let label = label.as_str();
                         let r = rows[7];
                         settings_line(&mut canvas, ctx.text, fluor::region::Region::new(r.x, r.y, r.w, r.h * 0.5), label, hspan2, theme::CONTACT_NAME_COLOUR, 500);
-                        // The bar: proportional fill THEN full-width track. fluor is under-blend (FIRST paint wins), so the green fill MUST be painted before the grey track — draw the track first and it wins every pixel, burying the fill (the "permanent grey bar" bug). Fill goes down first over [0..fill_w], then the track over the whole width fills only the un-painted remainder.
+                        // The bar: proportional fill THEN full-width track. fluor is under-blend (FIRST paint wins), so the lime fill MUST be painted before the black track — draw the track first and it wins every pixel, burying the fill (the "permanent grey bar" bug). Fill goes down first over [0..fill_w], then the track over the whole width fills only the un-painted remainder.
                         let bar_y = (r.y + r.h * 0.55) as isize;
                         let bar_h = (r.h * 0.25).max(3.0) as isize;
                         let bar_w = r.w as isize;
                         if total > 0 {
                             let fill_w = (r.w as f64 * (done as f64 / total as f64)) as isize;
-                            paint::fill_rect(&mut canvas, r.x as isize, bar_y, fill_w.clamp(0, bar_w), bar_h, theme::PILL_GREEN.1, None, None);
+                            paint::fill_rect(&mut canvas, r.x as isize, bar_y, fill_w.clamp(0, bar_w), bar_h, theme::PROGRESS_FILL, None, None);
                         }
-                        paint::fill_rect(&mut canvas, r.x as isize, bar_y, bar_w, bar_h, theme::PILL_GREY.0, None, None);
+                        paint::fill_rect(&mut canvas, r.x as isize, bar_y, bar_w, bar_h, theme::PROGRESS_TRACK, None, None);
                     } else if let Some(status) = &self.update_status {
                         settings_line(&mut canvas, ctx.text, rows[7], status, hspan2, theme::CONTACT_NAME_COLOUR, 500);
                     }
