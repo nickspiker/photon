@@ -9849,8 +9849,12 @@ impl PhotonApp {
         // Cycles an online contact may go punched-but-unvalidated before we treat it as direct-unreachable.
         const PUNCH_UNREACHABLE_THRESHOLD: u8 = 3;
 
+        // Cycles a Pending ceremony may sit offer-sent with a validated path up and no peer offer before we re-fire ours (see Contact::clutch_offer_stall_cycles).
+        const OFFER_STALL_CYCLES: u8 = 6;
+
         // Expire stale validated paths (no keepalive ack within TTL → the NAT mapping is likely dead): clear so `race_addrs` falls back to LAN/public and this cycle re-punches. Track the symmetric↔symmetric case: an online contact we keep punching but never validate is direct-unreachable — bump the graceful-failure counter (the hook M2's relay reads) and log the state once at the threshold.
-        for c in self.contacts.iter_mut() {
+        let mut stalled_offers: Vec<usize> = Vec::new();
+        for (i, c) in self.contacts.iter_mut().enumerate() {
             if let Some((_, at)) = c.validated_path {
                 if at.elapsed() >= PATH_TTL {
                     c.validated_path = None;
@@ -9862,6 +9866,26 @@ impl PhotonApp {
                     crate::logf!("TRAVERSE: {} online but no direct path after {} cycles — pending relay (M2)", crate::fp(&c.handle_proof).as_str(), PUNCH_UNREACHABLE_THRESHOLD);
                 }
             }
+            // Parked-ceremony safety net: our offer went out, a direct path is PROVEN up, and the peer's offer still hasn't arrived — so ours (or theirs) died in transit and nothing pong-driven will ever retry it. Re-fire ours every few cycles until the exchange moves; bounded to one half-MB transfer per threshold-crossing, self-terminating the moment their offer lands.
+            let parked = !c.is_sibling
+                && c.clutch_state == crate::types::ClutchState::Pending
+                && c.clutch_offer_sent
+                && c.validated_path.is_some()
+                && c.get_slot(&c.handle_hash).map_or(true, |s| s.offer.is_none());
+            if parked {
+                c.clutch_offer_stall_cycles = c.clutch_offer_stall_cycles.saturating_add(1);
+                if c.clutch_offer_stall_cycles >= OFFER_STALL_CYCLES {
+                    c.clutch_offer_stall_cycles = 0;
+                    stalled_offers.push(i);
+                }
+            } else {
+                c.clutch_offer_stall_cycles = 0;
+            }
+        }
+        for i in stalled_offers {
+            crate::logf!("CLUTCH: {} still has no offer from the peer after {} validated-path ping cycles — re-firing ours", crate::fp(&self.contacts[i].handle_proof), OFFER_STALL_CYCLES);
+            self.contacts[i].clutch_offer_sent = false;
+            self.resend_clutch_offer(i);
         }
 
         let Some(checker) = self.status_checker.as_ref() else {
@@ -9888,6 +9912,17 @@ impl PhotonApp {
                     .collect(),
             };
             let mut sent = false;
+            // The punch-validated path is the one address PROVEN reachable — when it matches neither stored record (a reflexive-learned mapping can differ from both the registry ip and the LAN row), ping it too, or presence sits TIMEOUT on two dead addresses while the keepalive acks flow.
+            if let Some((vpath, _)) = contact.validated_path {
+                if Some(vpath) != lan_addr && Some(vpath) != contact.ip {
+                    checker.ping(
+                        vpath,
+                        contact.public_identity.clone(),
+                        std::mem::take(&mut punch),
+                    );
+                    sent = true;
+                }
+            }
             if let Some(addr) = lan_addr {
                 checker.ping(
                     addr,
@@ -10001,6 +10036,68 @@ impl PhotonApp {
                 && contact.clutch_state == crate::types::ClutchState::Complete
             {
                 contact.clutch_our_eggs_proof = None;
+            }
+        }
+    }
+
+    /// Re-fire our full CLUTCH offer to `self.contacts[idx]`, outside the pong-driven send block. The normal driver re-sends only when a pong flips the contact online — useless when the peer's pongs don't flow (2026-07-19 peer-B↔a peer: presence sat TIMEOUT for twenty minutes while punch keepalives validated a perfectly good direct path, and the ceremony stayed parked in Pending because the offer's single PT transfer had died racing a dead carrier-NAT address). `race_addrs` routes the re-send over the validated path first; the receiver's ceremony-round scoping makes a crossed duplicate free. Callers reset `clutch_offer_sent` first — this sets it back on a successful hand-off to the checker.
+    fn resend_clutch_offer(&mut self, idx: usize) {
+        use crate::network::fgtw::protocol::build_clutch_offer_vsf;
+        use crate::network::status::ClutchOfferRequest;
+
+        let Some(our_handle_hash) = self.session.as_ref().map(|s| s.identity_seed) else {
+            return;
+        };
+        let Some((device_pubkey, device_secret)) = self
+            .device_keypair
+            .as_ref()
+            .map(|kp| (*kp.public.as_bytes(), *kp.secret.as_bytes()))
+        else {
+            return;
+        };
+        let Some(checker) = self.status_checker.as_ref() else {
+            return;
+        };
+        let contact = &mut self.contacts[idx];
+        let Some(ref keypairs) = contact.clutch_our_keypairs else {
+            // Keygen hasn't (re)filled the ephemerals — the serialized keygen worker will, and its own completion path sends the offer.
+            return;
+        };
+        let Some(ip) = contact.ip else {
+            return;
+        };
+
+        let payload = crate::crypto::clutch::ClutchOfferPayload::from_keypairs(keypairs);
+        let conversation_token =
+            crate::crypto::clutch::derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
+        match build_clutch_offer_vsf(&conversation_token, &payload, &device_pubkey, &device_secret) {
+            Ok((vsf_bytes, our_offer_provenance)) => {
+                crate::logf!("CLUTCH: re-sending full offer to {} (prov={}...)", crate::fp(&contact.handle_proof), hex::encode(&our_offer_provenance[..4]));
+                if !contact.offer_provenances.contains(&our_offer_provenance) {
+                    contact.offer_provenances.push(our_offer_provenance);
+                }
+                let (primary, alt) = contact.race_addrs().unwrap_or((ip, None));
+                checker.send_offer(ClutchOfferRequest {
+                    peer_addr: primary,
+                    alt_addr: alt,
+                    vsf_bytes,
+                });
+                contact.clutch_offer_sent = true;
+                if let Some(storage) = self.storage.as_ref() {
+                    let c = &self.contacts[idx];
+                    if let Err(e) = crate::storage::contacts::save_clutch_slots(
+                        &c.clutch_slots,
+                        &c.offer_provenances,
+                        c.ceremony_id,
+                        &c.handle_hash,
+                        storage,
+                    ) {
+                        crate::logf!("Failed to persist CLUTCH provenance: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                crate::logf!("CLUTCH: Failed to build offer VSF for {}: {}", crate::fp(&self.contacts[idx].handle_proof), e);
             }
         }
     }
@@ -10593,6 +10690,8 @@ impl PhotonApp {
         // Chain-weave probe deferrals — the loop holds an immutable `checker` borrow of `self`, so the `&mut self` seal/probe helpers can't run inline; collect contact indices and process them after the loop, like ceremony_completions / lan_ping_indices already do.
         let mut chain_seal_indices: Vec<usize> = Vec::new(); // seal_chain_if_ready after loop
         let mut chain_probe_indices: Vec<usize> = Vec::new(); // maybe_send_chain_probe after loop
+        // Parked-ceremony offer re-fires on a path-up edge (resend_clutch_offer needs &mut self) — same deferral discipline.
+        let mut offer_refire_indices: Vec<usize> = Vec::new();
         // Fleet history sweep deferral: a sibling coming online means it may hold conversation rows we don't — arm the per-conversation walk after the loop (the sweep needs &mut contacts).
         let mut fleet_sweep_due = false;
 
@@ -13212,16 +13311,26 @@ impl PhotonApp {
                 StatusUpdate::PathValidated { peer_pubkey, remote } => {
                     // A hole-punch (or keepalive) round-tripped. Record/refresh it on the matching contact (any device in the friend's fleet) so `race_addrs` prefers this direct path, keeping the public/LAN as the alternate. First-wins on the address (we stop full-punching once a path is set, so among a single cycle's candidates the first to round-trip — ≈ the lowest-latency path — wins); the timestamp is refreshed on every ack for that same path (keepalive liveness). Any validation clears the graceful-failure counter.
                     let now = std::time::Instant::now();
-                    if let Some(contact) = self
+                    let mut refire: Option<usize> = None;
+                    if let Some((idx, contact)) = self
                         .contacts
                         .iter_mut()
-                        .find(|c| c.knows_device(&peer_pubkey.key))
+                        .enumerate()
+                        .find(|(_, c)| c.knows_device(&peer_pubkey.key))
                     {
                         contact.punch_unvalidated_cycles = 0;
                         match contact.validated_path {
                             None => {
                                 crate::logf!("TRAVERSE: path validated to {} = {}", crate::fp(&contact.handle_proof).as_str(), remote);
                                 contact.validated_path = Some((remote, now));
+                                // Path-up EDGE doubles as the parked ceremony's second chance: the one offer send may have raced only dead records (carrier-NAT LAN + a stale registry address) before this path proved out — and the pong-driven re-send never fires for a peer whose pongs don't flow. Only when the peer's own offer hasn't arrived either (a present offer means the exchange is moving; duplicates would just burn a half-MB transfer).
+                                if !contact.is_sibling
+                                    && contact.clutch_state == crate::types::ClutchState::Pending
+                                    && contact.clutch_offer_sent
+                                    && contact.get_slot(&contact.handle_hash).map_or(true, |s| s.offer.is_none())
+                                {
+                                    refire = Some(idx);
+                                }
                             }
                             Some((existing, _)) if existing == remote => {
                                 // Keepalive ack for the current path — refresh liveness.
@@ -13230,8 +13339,18 @@ impl PhotonApp {
                             Some(_) => { /* a different candidate acked; keep the first-won path */ }
                         }
                     }
+                    if let Some(idx) = refire {
+                        offer_refire_indices.push(idx);
+                    }
                 }
             }
+        }
+
+        // Parked-ceremony offer re-fires collected on path-up edges (after releasing the checker borrow).
+        for idx in offer_refire_indices {
+            crate::logf!("CLUTCH: {} direct path came up while the ceremony is parked — re-firing our offer on it", crate::fp(&self.contacts[idx].handle_proof));
+            self.contacts[idx].clutch_offer_sent = false;
+            self.resend_clutch_offer(idx);
         }
 
         // Process deferred ceremony completions (after releasing checker borrow)
