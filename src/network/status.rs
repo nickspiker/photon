@@ -360,6 +360,11 @@ pub struct StatusChecker {
     lan_broadcast_sender: Sender<LanBroadcastRequest>,
     clear_pt_sender: Sender<ClearPtSendsRequest>,
     status_receiver: Receiver<StatusUpdate>,
+    /// Fire a phonebook-gossip request at a reachable peer (its address). The peer replies with
+    /// the self-signed peer records it holds, so a device whose own fgtw is unreachable can still
+    /// learn a friend's address from a friend it CAN reach. Not a relay — only routing records
+    /// (each independently verifiable) travel, never payload.
+    phonebook_req_sender: Sender<SocketAddr>,
 }
 
 impl StatusChecker {
@@ -373,6 +378,7 @@ impl StatusChecker {
         contacts: ContactPubkeys,
         sync_records: SyncRecordsProvider,
         event_proxy: Arc<dyn WakeSender<PhotonEvent>>,
+        peer_store: Arc<Mutex<crate::network::fgtw::PeerStore>>,
     ) -> Result<Self, String> {
         let (ping_tx, ping_rx) = channel::<PingRequest>();
         let (message_tx, message_rx) = channel::<MessageRequest>();
@@ -387,6 +393,7 @@ impl StatusChecker {
         let (lan_broadcast_tx, lan_broadcast_rx) = channel::<LanBroadcastRequest>();
         let (clear_pt_tx, clear_pt_rx) = channel::<ClearPtSendsRequest>();
         let (status_tx, status_rx) = channel::<StatusUpdate>();
+        let (phonebook_req_tx, phonebook_req_rx) = channel::<SocketAddr>();
 
         let our_pubkey = DevicePubkey::from_bytes(keypair.public.to_bytes());
 
@@ -432,6 +439,8 @@ impl StatusChecker {
                     contacts,
                     sync_records,
                     Some(event_proxy),
+                    phonebook_req_rx,
+                    peer_store,
                 )
                 .await;
             });
@@ -467,6 +476,7 @@ impl StatusChecker {
             lan_broadcast_sender: lan_broadcast_tx,
             clear_pt_sender: clear_pt_tx,
             status_receiver: status_rx,
+            phonebook_req_sender: phonebook_req_tx,
         })
     }
 
@@ -477,6 +487,7 @@ impl StatusChecker {
         keypair: Keypair,
         contacts: ContactPubkeys,
         sync_records: SyncRecordsProvider,
+        peer_store: Arc<Mutex<crate::network::fgtw::PeerStore>>,
     ) -> Result<Self, String> {
         let (ping_tx, ping_rx) = channel::<PingRequest>();
         let (message_tx, message_rx) = channel::<MessageRequest>();
@@ -491,6 +502,7 @@ impl StatusChecker {
         let (lan_broadcast_tx, lan_broadcast_rx) = channel::<LanBroadcastRequest>();
         let (clear_pt_tx, clear_pt_rx) = channel::<ClearPtSendsRequest>();
         let (status_tx, status_rx) = channel::<StatusUpdate>();
+        let (phonebook_req_tx, phonebook_req_rx) = channel::<SocketAddr>();
 
         let our_pubkey = DevicePubkey::from_bytes(keypair.public.to_bytes());
 
@@ -536,6 +548,8 @@ impl StatusChecker {
                     contacts,
                     sync_records,
                     None,
+                    phonebook_req_rx,
+                    peer_store,
                 )
                 .await;
             });
@@ -571,6 +585,7 @@ impl StatusChecker {
             lan_broadcast_sender: lan_broadcast_tx,
             clear_pt_sender: clear_pt_tx,
             status_receiver: status_rx,
+            phonebook_req_sender: phonebook_req_tx,
         })
     }
 
@@ -616,6 +631,13 @@ impl StatusChecker {
     }
 
     /// Start a PT large transfer (non-blocking)
+    /// Ask a reachable peer (by address) for the peer records it holds — phonebook gossip. Used when
+    /// our own fgtw is unreachable but a friend is: they answer with self-signed records that merge
+    /// into the shared peer store, so a friend we can't reach gets learned from one we can.
+    pub fn send_phonebook_request(&self, addr: SocketAddr) {
+        let _ = self.phonebook_req_sender.send(addr);
+    }
+
     pub fn send_pt(&self, peer_addr: SocketAddr, data: Vec<u8>) {
         let _ = self.pt_sender.send(PTSendRequest { peer_addr, data });
     }
@@ -710,6 +732,8 @@ async fn run_checker(
     contacts: ContactPubkeys,
     sync_records_provider: SyncRecordsProvider,
     event_proxy: OptionalEventProxy,
+    phonebook_req_rx: Receiver<SocketAddr>,
+    peer_store: Arc<Mutex<crate::network::fgtw::PeerStore>>,
 ) {
     use tokio::net::UdpSocket as TokioUdpSocket;
 
@@ -792,6 +816,7 @@ async fn run_checker(
     let event_proxy_recv = event_proxy.clone();
     let pt_recv = pt.clone();
     let failed_pings_recv = failed_pings.clone();
+    let peer_store_recv = peer_store.clone();
 
     // Spawn multicast listener for LAN peer discovery Multicast is more reliable than broadcast across different network configurations
     {
@@ -2091,6 +2116,74 @@ async fn run_checker(
                                     }
                                 }
 
+                                FgtwMessage::PhonebookRequest {
+                                    timestamp: _,
+                                    sender_pubkey,
+                                    provenance_hash,
+                                    signature,
+                                } => {
+                                    // Peers-are-FGTW gossip: a contact whose own fgtw is unreachable asks us for the peer records we hold. Friend-gated (same set as ping/probe) + signature-verified. We reply with our self-signed records; each verifies on its own, so this relay is untrusted — we can carry a device's entry but can't forge or redirect it.
+                                    let is_contact = {
+                                        let list = contacts_recv.lock().unwrap();
+                                        list.iter().any(|p| *p == sender_pubkey)
+                                    };
+                                    if !is_contact {
+                                        continue;
+                                    }
+                                    if !verify_provenance_signature(
+                                        &provenance_hash,
+                                        &sender_pubkey,
+                                        &signature,
+                                    ) {
+                                        continue;
+                                    }
+                                    let peers = peer_store_recv.lock().unwrap().get_all_peers();
+                                    // Sign the ECHOED request provenance — proves we saw this exact request and are a valid device; the records carry their own trust.
+                                    let sig = keypair_recv.sign(&provenance_hash);
+                                    let mut sig_bytes = [0u8; 64];
+                                    sig_bytes.copy_from_slice(&sig.to_bytes());
+                                    let resp = FgtwMessage::PhonebookResponse {
+                                        timestamp: eagle_time_now(),
+                                        responder_pubkey: our_pubkey_recv.clone(),
+                                        provenance_hash,
+                                        signature: sig_bytes,
+                                        peers,
+                                    };
+                                    let resp_bytes = resp.to_vsf_bytes();
+                                    if !resp_bytes.is_empty() {
+                                        udp::send(&socket_recv, &resp_bytes, src_addr).await;
+                                    }
+                                }
+
+                                FgtwMessage::PhonebookResponse {
+                                    timestamp: _,
+                                    responder_pubkey,
+                                    provenance_hash: _,
+                                    signature: _,
+                                    peers,
+                                } => {
+                                    // A friend answered our phonebook request. Gate on contact (only merge gossip from a friend); each record is self-signed, and `merge_peer` rejects anything that doesn't verify, so a lying responder can't inject forged rows — it can only fail to help. The app harvests the shared store on its next stalled-contact tick.
+                                    let is_contact = {
+                                        let list = contacts_recv.lock().unwrap();
+                                        list.iter().any(|p| *p == responder_pubkey)
+                                    };
+                                    if !is_contact {
+                                        continue;
+                                    }
+                                    let mut merged = 0usize;
+                                    {
+                                        let mut store = peer_store_recv.lock().unwrap();
+                                        for rec in peers {
+                                            if store.merge_peer(rec) {
+                                                merged += 1;
+                                            }
+                                        }
+                                    }
+                                    if merged > 0 {
+                                        crate::logf!("GOSSIP: merged {} peer record(s) from {}", merged, src_addr);
+                                    }
+                                }
+
                                 _ => {
                                     crate::log("Status: Unknown message type received");
                                 }
@@ -2175,6 +2268,27 @@ async fn run_checker(
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+        }
+
+        // Fire any queued phonebook-gossip requests: ask a reachable peer for the peer records it
+        // holds, so a friend we CAN'T reach (our fgtw is flaky) is learned from one we can. Small
+        // signed control message, best-effort like a ping; the response merges into the shared store.
+        while let Ok(addr) = phonebook_req_rx.try_recv() {
+            let ts = eagle_time_now();
+            let prov = compute_provenance_hash(&our_pubkey, ts);
+            let sig = keypair.sign(&prov);
+            let mut sig_bytes = [0u8; 64];
+            sig_bytes.copy_from_slice(&sig.to_bytes());
+            let req = FgtwMessage::PhonebookRequest {
+                timestamp: ts,
+                sender_pubkey: our_pubkey.clone(),
+                provenance_hash: prov,
+                signature: sig_bytes,
+            };
+            let bytes = req.to_vsf_bytes();
+            if !bytes.is_empty() {
+                udp::send(&socket, &bytes, addr).await;
+            }
         }
 
         // Drop hole-punch probes that never round-tripped (unreachable candidate / symmetric NAT), so pending_probes doesn't grow unbounded across ping cycles.

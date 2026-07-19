@@ -681,6 +681,10 @@ pub struct PhotonApp {
     /// fire-on-learn punches + the offer sends. `None` until the first pulse. (Stopgap for the
     /// peer-gossip fix, TICKETS T0.)
     last_stalled_refetch: Option<Instant>,
+    /// Shared peer store (self-signed routing records), cloned from HandleQuery's. Populated by
+    /// fgtw fetches AND by phonebook-gossip responses (see status.rs); the app harvests learned
+    /// addresses from it for stalled contacts whose own fgtw fetch keeps failing. `None` until init.
+    peer_store: Option<std::sync::Arc<std::sync::Mutex<crate::network::fgtw::PeerStore>>>,
     /// HandleQuery client — owns the UDP socket, device keypair, and FGTW peer store. Submission calls `handle_query.query(handle)`; `tick()` polls `try_recv()` for results. `None` until init.
     handle_query: Option<HandleQuery>,
     /// Per-contact presence + CLUTCH ceremony driver. Shares HandleQuery's UDP socket; pings contacts, receives pongs (→ `is_online`), and runs the slot-based CLUTCH offer/KEM/complete exchange. `None` until init. Ported from the retired `app.rs` — the fluor migration left this whole subsystem behind, so contacts showed offline and CLUTCH never started.
@@ -1028,6 +1032,7 @@ impl PhotonApp {
             last_interaction: None,
             last_fleet_refold: None,
             last_stalled_refetch: None,
+            peer_store: None,
             handle_query: None,
             status_checker: None,
             contact_pubkeys: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -1872,8 +1877,12 @@ impl FluorApp for PhotonApp {
             let _ = proxy;
             HandleQuery::new(keypair)
         };
+        // ONE shared peer store: HandleQuery populates it from fgtw fetches, the status receiver
+        // serves/merges phonebook-gossip records into it, and the app harvests learned addresses
+        // from it for stalled contacts. All three hold clones of the same Arc.
         let peer_store = Arc::new(Mutex::new(PeerStore::new()));
-        hq.set_transport(peer_store);
+        self.peer_store = Some(peer_store.clone());
+        hq.set_transport(peer_store.clone());
 
         // Wire the CLUTCH job channels (replace the disconnected placeholders from `new`).
         {
@@ -1916,6 +1925,7 @@ impl FluorApp for PhotonApp {
             self.contact_pubkeys.clone(),
             self.sync_records.clone(),
             proxy.clone(),
+            peer_store.clone(),
         );
         #[cfg(target_os = "android")]
         let checker_result = crate::network::status::StatusChecker::new(
@@ -1925,6 +1935,7 @@ impl FluorApp for PhotonApp {
                 .expect("device_keypair set above"),
             self.contact_pubkeys.clone(),
             self.sync_records.clone(),
+            peer_store.clone(),
         );
         match checker_result {
             Ok(c) => {
@@ -5322,13 +5333,55 @@ impl PhotonApp {
             let due = self
                 .last_stalled_refetch
                 .is_none_or(|last| now.duration_since(last) >= STALLED_ADDR_REFETCH);
+            // Harvest every tick while blocked: a record for a stalled contact may have landed in
+            // the shared peer store — from our own fgtw fetch OR from a phonebook-gossip response.
+            // Adopt it as the contact's address so the offer can send; fire-on-learn does the rest.
+            if blocked {
+                let recs = self
+                    .peer_store
+                    .as_ref()
+                    .map(|s| s.lock().unwrap().get_all_peers())
+                    .unwrap_or_default();
+                if !recs.is_empty() {
+                    let mut learned = false;
+                    for contact in self.contacts.iter_mut() {
+                        if contact.ip.is_some() {
+                            continue;
+                        }
+                        if let Some(rec) = recs.iter().find(|r| {
+                            r.handle_proof == contact.handle_proof
+                                && r.device_pubkey.as_bytes() == contact.public_identity.as_bytes()
+                        }) {
+                            contact.ip = Some(rec.ip);
+                            contact.punch_unvalidated_cycles = 0;
+                            learned = true;
+                            crate::logf!("GOSSIP/harvest: adopted a stalled contact's address from the peer store");
+                        }
+                    }
+                    if learned {
+                        self.ping_contacts();
+                    }
+                }
+            }
+            // Every 15s while blocked: pulse our own fgtw (may catch a working window) AND ask every
+            // reachable peer for its phonebook — so a friend we CAN'T reach is learned from one we can.
             if blocked && due {
+                self.last_stalled_refetch = Some(now);
                 if let (Some(hq), Some(session)) =
                     (self.handle_query.as_ref(), self.session.clone())
                 {
-                    self.last_stalled_refetch = Some(now);
-                    crate::logf!("FGTW: a Pending contact has no address — pulsing background resume to re-fetch");
+                    crate::logf!("FGTW: a Pending contact has no address — pulsing resume + gossiping reachable peers");
                     hq.query_resume(session);
+                }
+                let reachable: Vec<std::net::SocketAddr> = self
+                    .contacts
+                    .iter()
+                    .filter_map(|c| c.validated_path.map(|(a, _)| a))
+                    .collect();
+                if let Some(checker) = self.status_checker.as_ref() {
+                    for addr in reachable {
+                        checker.send_phonebook_request(addr);
+                    }
                 }
             }
         }
