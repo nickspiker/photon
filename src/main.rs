@@ -66,12 +66,26 @@ fn main() {
 
     // Single-instance guard: a second instance on the SAME data dir would race the vault and corrupt the log.
     // Held for the whole process (OS frees it on exit). A second instance with its own PHOTON_DATA_DIR (+ PHOTON_FINGERPRINT for a distinct identity) hashes to a different lock port and is allowed — that's the supported way to run two parties on one machine.
+    // Losing the lock is no longer an error by default: the resident-mode handoff — clicking the icon while a (possibly hidden) instance runs — asks that instance to surface itself and exits quietly. The old already-running error remains the fallback when nobody answers the control channel.
     let _instance_lock = {
         let dir = photon_messenger::storage::photon_config_dir()
             .unwrap_or_else(|_| std::path::PathBuf::from("."));
         match photon_messenger::storage::acquire_single_instance(&dir) {
-            Some(listener) => listener,
+            Some(lock) => {
+                // We ARE the instance: park the control listener for the app to serve once its event proxy exists. Unix gets a dedicated socket (safe to create only now, under the flock); Windows reuses the lock's own TcpListener.
+                #[cfg(unix)]
+                photon_messenger::platform::control::install_unix_listener(&dir);
+                #[cfg(not(unix))]
+                if let Some(l) = lock.control_listener() {
+                    photon_messenger::platform::control::install_tcp_listener(l);
+                }
+                lock
+            }
             None => {
+                if photon_messenger::platform::control::request_show(&dir) {
+                    println!("photon: already running — asked the resident instance to show itself.");
+                    std::process::exit(0);
+                }
                 eprintln!(
                     "photon: another instance is already running for this data dir:\n  {}\nFor a second instance (two-party testing) set a separate PHOTON_DATA_DIR (and PHOTON_FINGERPRINT for a distinct identity).",
                     dir.display()
