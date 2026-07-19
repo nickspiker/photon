@@ -56,4 +56,6 @@ pub enum PhotonEvent {
     ClutchKemEncapComplete,
     /// Background CLUTCH ceremony completion (avalanche_expand) completed
     ClutchCeremonyComplete,
+    /// A second launch handed off "surface yourself" over the control channel (desktop resident mode) — the handler un-hides the window via `EventResponse::ShowWindow`.
+    ShowWindow,
 }

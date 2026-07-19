@@ -82,6 +82,14 @@ pub fn acquire_single_instance(data_dir: &std::path::Path) -> Option<InstanceLoc
 pub struct InstanceLock {
     _socket: std::net::TcpListener,
 }
+
+#[cfg(all(not(unix), not(target_os = "android")))]
+impl InstanceLock {
+    /// A clone of the lock socket for the second-launch control channel — the listener already exists and is dir-keyed, so it doubles as the handoff endpoint (see `platform::control`).
+    pub fn control_listener(&self) -> Option<std::net::TcpListener> {
+        self._socket.try_clone().ok()
+    }
+}
 #[cfg(all(not(unix), not(target_os = "android")))]
 pub fn acquire_single_instance(data_dir: &std::path::Path) -> Option<InstanceLock> {
     let h = blake3::hash(data_dir.to_string_lossy().as_bytes());

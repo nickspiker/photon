@@ -911,6 +911,12 @@ pub struct PhotonApp {
     settings_presence_check: Option<crate::ui::settings_widgets::Checkbox>,
     /// Updates-page auto-update on/off — a custom `Checkbox`.
     settings_autoupdate_check: Option<crate::ui::settings_widgets::Checkbox>,
+    /// Desktop "Run in background" toggle (Notifications page): the OS autostart artifact IS the stored state (`platform::autostart` — no vault setting to desync), and `resident_mode` follows it live. Never built on Android (the OS owns app lifecycle there).
+    settings_background_check: Option<crate::ui::settings_widgets::Checkbox>,
+    /// Desktop resident mode: close hides the window instead of exiting (`FluorApp::on_close_requested`), the process keeps serving the network, and a second launch (or a future tray click) surfaces it via the control channel. True when launched `--background` or when the autostart artifact exists; the settings toggle moves it live.
+    resident_mode: bool,
+    /// Launched with `--background` (the login-item invocation): the host creates the window invisible (`FluorApp::start_hidden`) and nothing shows until a ShowWindow surfaces it.
+    start_in_background: bool,
     /// Diagnostics log viewer: `true` = the page body is the scrollable decoded-record list instead of the Clear/Snapshot/Submit controls. Toggled by the "View"/"Hide" pill.
     diag_log_view: bool,
     /// Decoded records currently held by the viewer (shared decode with the `photonlog` bin — [`crate::parse_log_records`]), capped to the newest [`DIAG_LOG_MAX_ROWS`].
@@ -979,7 +985,21 @@ pub struct PhotonApp {
 impl PhotonApp {
     /// Construct an empty app shell. Real state (chrome, network handles, app state machine) initializes in [`FluorApp::init`] once the viewport is known.
     pub fn new() -> Self {
+        // Desktop resident mode: `--background` (the login-item launch) starts hidden; residency itself = that flag OR the autostart artifact being present, so a normally-launched app with autostart on also hides on close — the artifact is the user's standing "photon keeps running" opt-in.
+        #[cfg(not(target_os = "android"))]
+        let (start_in_background, resident_mode) = {
+            let bg = std::env::args().any(|a| a == "--background");
+            if bg {
+                crate::platform::desktop_notify::set_window_visible(false);
+            }
+            (bg, bg || crate::platform::autostart::enabled())
+        };
+        #[cfg(target_os = "android")]
+        let (start_in_background, resident_mode) = (false, false);
         Self {
+            start_in_background,
+            resident_mode,
+            settings_background_check: None,
             chrome: None,
             hit_counter: 0,
             event_proxy: None,
@@ -1532,6 +1552,9 @@ impl PhotonApp {
                     if let Some(cb) = self.settings_presence_check.as_mut() {
                         f(cb);
                     }
+                    if let Some(cb) = self.settings_background_check.as_mut() {
+                        f(cb);
+                    }
                 }
                 SettingsPage::Updates => {
                     if let Some(cb) = self.settings_autoupdate_check.as_mut() {
@@ -1592,7 +1615,37 @@ impl FluorApp for PhotonApp {
     }
 
     fn set_event_proxy(&mut self, proxy: Arc<dyn WakeSender<Self::UserEvent>>) {
+        // Desktop resident mode: start serving the second-launch control channel now that we can wake the UI thread. No-op if main never parked a listener (lock-holder only).
+        #[cfg(not(target_os = "android"))]
+        crate::platform::control::spawn_accept_thread(proxy.clone());
         self.event_proxy = Some(proxy);
+    }
+
+    fn start_hidden(&self) -> bool {
+        self.start_in_background
+    }
+
+    fn on_close_requested(&mut self) -> bool {
+        // Resident mode: close = hide, keep running (network, timers, notifications). The host does the set_visible(false); we track "nobody's looking" for the notification gate. Non-resident closes exit as ever.
+        if self.resident_mode {
+            #[cfg(not(target_os = "android"))]
+            crate::platform::desktop_notify::set_window_visible(false);
+            crate::log("RESIDENT: window hidden on close — still running; launch photon again to surface it");
+            true
+        } else {
+            false
+        }
+    }
+
+    fn on_user_event(&mut self, event: PhotonEvent, _ctx: &mut Context) -> EventResponse {
+        if matches!(event, PhotonEvent::ShowWindow) {
+            #[cfg(not(target_os = "android"))]
+            crate::platform::desktop_notify::set_window_visible(true);
+            self.scene_dirty = true;
+            return EventResponse::ShowWindow;
+        }
+        // Every other variant is a pure wake — the loop's tick drains whatever channel the sender filled.
+        EventResponse::Pass
     }
 
     fn init(&mut self, ctx: &mut Context) {
@@ -1754,6 +1807,20 @@ impl FluorApp for PhotonApp {
             12.,
             true,
         ));
+        // Desktop only: Android's lifecycle is the OS's business (foreground service + FCM), so no toggle there.
+        #[cfg(not(target_os = "android"))]
+        {
+            self.settings_background_check = Some(crate::ui::settings_widgets::Checkbox::new(
+                &mut self.hit_counter,
+                "Run in background (start at login, keep running when closed)",
+                0.,
+                0.,
+                1.,
+                1.,
+                12.,
+                crate::platform::autostart::enabled(),
+            ));
+        }
         self.settings_note_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         self.you_add_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         // The per-field boxes are built lazily on first You-page open (build_you_fields) — HitId is a u16, so we allocate the ~32 field ids only when the page is actually visited.
@@ -2487,6 +2554,9 @@ impl FluorApp for PhotonApp {
                 EventResponse::Pass
             }
             Event::Focused(focused) => {
+                // Feed the desktop-notification gate: focused = someone's looking, stay quiet; unfocused/hidden = ding.
+                #[cfg(not(target_os = "android"))]
+                crate::platform::desktop_notify::set_window_focused(*focused);
                 // On focus GAIN, force an immediate presence sweep so rings are fresh the instant the user looks — clearing last_presence_ping makes the next tick treat a sweep as due regardless of how far the idle cadence had backed off. (last_interaction was already stamped at the top of on_event, resetting the cadence to the active tier.)
                 if *focused {
                     self.last_presence_ping = None;
@@ -4880,6 +4950,9 @@ impl FluorApp for PhotonApp {
                     if let Some(cb) = self.settings_presence_check.as_mut() {
                         cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
                     }
+                    if let Some(cb) = self.settings_background_check.as_mut() {
+                        cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                    }
                 }
                 SettingsPage::Updates => {
                     // Rows (blanks between the pills for vertical breathing room): 0 title · 1 current version · 2 blank · 3 release pill · 4 blank · 5 dev pill · 6 blank · 7 status.
@@ -5386,6 +5459,36 @@ impl PhotonApp {
             needs_redraw = true;
         }
 
+        // Desktop resident-mode toggle: the OS autostart artifact IS the stored setting (platform::autostart — nothing in the vault to desync), and the live flag follows it immediately, so unchecking makes the very next close a real quit. A write failure reverts the box and says why.
+        #[cfg(not(target_os = "android"))]
+        {
+            let bg_toggle = self
+                .settings_background_check
+                .as_mut()
+                .map(|cb| (cb.take_toggle(), cb.is_checked()));
+            if let Some((true, checked)) = bg_toggle {
+                let result = if checked {
+                    crate::platform::autostart::enable()
+                } else {
+                    crate::platform::autostart::disable()
+                };
+                match result {
+                    Ok(()) => {
+                        self.resident_mode = checked;
+                        crate::logf!("RESIDENT: background mode {} (login item {})", if checked { "ON" } else { "OFF" }, if checked { "written" } else { "removed" });
+                    }
+                    Err(e) => {
+                        crate::logf!("RESIDENT: login-item change failed: {}", e);
+                        if let Some(cb) = self.settings_background_check.as_mut() {
+                            cb.set_checked(!checked);
+                        }
+                        self.ready_toast = Some(format!("Couldn't change login item: {e}"));
+                    }
+                }
+                needs_redraw = true;
+            }
+        }
+
         // AddDevice flow: the status line is EVENT-driven, re-derived on every edit by the LIVE MATCHER — the typed entry prefix-matches against the candidate word strings from the binding-request registry (docs/pairing-v2.md), so a typo flags at the exact word it happens and a full 23-word match auto-binds.
         if matches!(self.state, AppState::AddDevice) {
             let text: String = self.textbox.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
@@ -5783,6 +5886,11 @@ impl PhotonApp {
                     }
                     if let Some(cb) = self.settings_presence_check.as_mut() {
                         let r = rows[3];
+                        cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
+                        cb.set_font_size(ctrl_font);
+                    }
+                    if let Some(cb) = self.settings_background_check.as_mut() {
+                        let r = rows[5];
                         cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
                         cb.set_font_size(ctrl_font);
                     }

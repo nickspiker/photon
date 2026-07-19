@@ -1824,6 +1824,10 @@ async fn run_checker(
                                     #[cfg(target_os = "android")]
                                     crate::platform::jni_android::notify_new_message(&prev_msg_hp, &sender_key_bytes);
 
+                                    // Desktop mirror: same RX-worker vantage, same generic-text privacy stance, same prev_msg_hp dedup — gated inside on the window being hidden/unfocused (resident mode makes "app running, nobody looking" the common case).
+                                    #[cfg(not(target_os = "android"))]
+                                    crate::platform::desktop_notify::notify_new_message(&prev_msg_hp);
+
                                     // Forward to UI for decryption
                                     send_status_update(
                                         &status_tx_recv,

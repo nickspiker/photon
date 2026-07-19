@@ -29,7 +29,7 @@
 //   traverse/       — NAT traversal (reflexive discovery so far): reflexive.rs (ReflexiveState, quorum-adopted public addr from pong observed_addr + ReflectResponse).
 //   udp.rs          — UDP socket utilities: send/send_sync, canon_socketaddr (::ffff:→v4), get_local_ip, get_broadcast_addr.
 //
-// platform/  — mod.rs (platform detection), jni_android.rs (Android JNI bridge).
+// platform/  — mod.rs (platform detection), jni_android.rs (Android JNI bridge), autostart.rs (desktop login-item write/read/remove: HKCU Run / LaunchAgent plist / XDG autostart), control.rs (second-launch "show yourself" handoff channel for resident mode), desktop_notify.rs (generic "New message" system notification, hidden/unfocused-gated).
 //
 // storage/ — flat vault via the kete crate (FlatStorage, re-exported); conversation content in the rarangi crate. Every entry is addressed by a flat 32-byte key vault_key(domain, scope) = blake3_kdf("photon.storage.entry.v0", domain||scope), never a path — domain is a plain word ("avatar","state","chains",...), scope is the 32-byte identity the entry is about.
 //   mod.rs        — kete re-exports (FlatStorage, StorageError, encrypt/decrypt_bytes, App, APP, android_vault_dirs), vault_key, raw file helpers, photon_config_dir.
