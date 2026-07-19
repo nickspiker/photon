@@ -254,6 +254,8 @@ pub struct Contact {
     pub validated_path: Option<(SocketAddr, std::time::Instant)>,
     /// Runtime-only graceful-failure counter: consecutive ping cycles where an ONLINE contact was punched but never validated a direct path (the symmetric↔symmetric case). Past a small threshold the peer is treated as direct-unreachable — the hook the relay milestone (M2) reads. Reset to 0 on any validation.
     pub punch_unvalidated_cycles: u8,
+    /// Runtime-only stall counter: consecutive ping cycles spent in `Pending` with our offer sent, a validated direct path up, and still no offer from the peer. The ping cycle re-fires our offer each time this crosses its threshold (then zeroes it) — the pong-driven offer re-send never triggers for a peer whose pongs don't flow, and a one-shot offer whose PT transfer died leaves the ceremony parked forever (2026-07-19 peer-B↔a peer). Reset whenever the stall condition doesn't hold.
+    pub clutch_offer_stall_cycles: u8,
     /// Friend-assisted history recovery state machine (newest-first cursor pagination from the friend's copy). `None` = no recovery running/known. Runtime struct; the durable cursor + complete flag persist as `hist_oldest` / `hist_complete` in contact state.
     pub history_recovery: Option<HistoryRecovery>,
     /// Runtime-only: when the CLUTCH ceremony last reached Complete (proof verified). Guards a post-completion RE-KEY COOLDOWN: completion zeroizes our ephemeral keypairs, so a peer's offer that was in flight just before they saw our completion arrives with `clutch_our_keypairs == None` and would trip the "peer lost chains, accept re-key" path — a spurious re-key that, when both sides do it near-simultaneously, storms into divergent ceremonies (observed: two devices wedged at 5/8 and 7/8 forever, though they'd already computed matching eggs). The window opens at completion (before the ~1s-later weave), so it's armed HERE, not at weave. Within it we ignore such offers; a GENUINE reset peer keeps sending and re-keys once it passes. `Instant` — never persisted.
@@ -374,6 +376,7 @@ impl Contact {
             chain_advanced_by_ack: false, // Our TX chain not yet ACK-advanced
             validated_path: None,         // No punch-validated direct path yet
             punch_unvalidated_cycles: 0,  // No failed punch cycles yet
+            clutch_offer_stall_cycles: 0, // No stalled-offer cycles yet
             history_recovery: None,       // No history recovery running
             clutch_completed_at: None,         // Ceremony not yet complete
             is_sibling: false,            // A friend, unless made via new_sibling

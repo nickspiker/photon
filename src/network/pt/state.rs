@@ -238,6 +238,8 @@ impl OutboundTransfer {
         if self.send_buffer.mark_acked(ack.sequence) {
             self.window.on_ack();
             self.last_activity = Instant::now();
+            // `retries` counts CONSECUTIVE no-progress timeout rounds, not lifetime losses — so any real progress refunds the whole stale budget. Without this, a blast into a path whose RTT hovers near the RTO (cellular: every tick finds SOME packet older than the ACK-recomputed RTO) bumps `retries` past the `is_stale` cap in under a second and kills a transfer that is actively ACKing (2026-07-19: both sides of a 536-packet offer exchange self-killed ~1s after locking a working path).
+            self.retries = 0;
         }
 
         // Check if complete

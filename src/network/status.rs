@@ -1716,13 +1716,18 @@ async fn run_checker(
                                         }
                                     };
 
+                                    // Torch every drop: a pong dying silently in one of these gates is indistinguishable from "peer never answers" in the field (2026-07-19: a contact sat TIMEOUT for 20 minutes while its punch acks flowed fine — whether its pongs were absent or discarded was unknowable from the log).
                                     let pending_ping = match pending_ping {
                                         Some(p) => p,
-                                        None => continue,
+                                        None => {
+                                            crate::logf!("Status: pong from {} ({}) dropped — no pending ping matches its provenance (late, replayed, or already-answered race twin)", crate::fp(responder_pubkey.as_bytes()), src_addr);
+                                            continue;
+                                        }
                                     };
 
                                     // Verify responder matches who we pinged
                                     if responder_pubkey != pending_ping.recipient_pubkey {
+                                        crate::logf!("Status: pong dropped — responder {} is not the {} we pinged (another fleet device answered, or a stale contact record)", crate::fp(responder_pubkey.as_bytes()), crate::fp(pending_ping.recipient_pubkey.as_bytes()));
                                         continue;
                                     }
 
@@ -1732,6 +1737,7 @@ async fn run_checker(
                                         &responder_pubkey,
                                         &signature,
                                     ) {
+                                        crate::logf!("Status: pong from {} dropped — provenance signature failed", crate::fp(responder_pubkey.as_bytes()));
                                         continue;
                                     }
 

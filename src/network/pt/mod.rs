@@ -247,6 +247,8 @@ impl PTManager {
             transfer.spec_acked = true;
             transfer.state = TransferState::Transferring;
             transfer.last_activity = Instant::now();
+            // Fresh stale budget for the just-proven path: whatever was burned before the lock (SPEC rounds against a dead primary can run 10+ seconds) must not bill the DATA phase.
+            transfer.retries = 0;
 
             crate::logf!("PT: SPEC ACK received from {} for stream '{}', starting DATA transfer", peer_addr, stream_id as char);
 
