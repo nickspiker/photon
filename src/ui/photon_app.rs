@@ -928,6 +928,8 @@ pub struct PhotonApp {
     settings_background_check: Option<crate::ui::settings_widgets::Checkbox>,
     /// Desktop resident mode: close hides the window instead of exiting (`FluorApp::on_close_requested`), the process keeps serving the network, and a second launch (or a future tray click) surfaces it via the control channel. True when launched `--background` or when the autostart artifact exists; the settings toggle moves it live.
     resident_mode: bool,
+    /// The bell string this session last published to the worker (Android: `fcm:<project>:<token>`), so the ping-cycle publish is a no-op until the token rotates. `None` = nothing published yet.
+    published_bell: Option<String>,
     /// Launched with `--background` (the login-item invocation): the host creates the window invisible (`FluorApp::start_hidden`) and nothing shows until a ShowWindow surfaces it.
     start_in_background: bool,
     /// Diagnostics log viewer: `true` = the page body is the scrollable decoded-record list instead of the Clear/Snapshot/Submit controls. Toggled by the "View"/"Hide" pill.
@@ -1012,6 +1014,7 @@ impl PhotonApp {
         Self {
             start_in_background,
             resident_mode,
+            published_bell: None,
             settings_background_check: None,
             chrome: None,
             hit_counter: 0,
@@ -10059,6 +10062,7 @@ impl PhotonApp {
 
         // Expire stale validated paths (no keepalive ack within TTL → the NAT mapping is likely dead): clear so `race_addrs` falls back to LAN/public and this cycle re-punches. Track the symmetric↔symmetric case: an online contact we keep punching but never validate is direct-unreachable — bump the graceful-failure counter (the hook M2's relay reads) and log the state once at the threshold.
         let mut stalled_offers: Vec<usize> = Vec::new();
+        let mut dozed_rings: Vec<usize> = Vec::new();
         for (i, c) in self.contacts.iter_mut().enumerate() {
             if let Some((_, at)) = c.validated_path {
                 if at.elapsed() >= PATH_TTL {
@@ -10085,6 +10089,24 @@ impl PhotonApp {
                 }
             } else {
                 c.clutch_offer_stall_cycles = 0;
+            }
+            // The DOZED flavour of a parked ceremony: offer sent, NO validated path, and total silence past the dozed threshold — their process probably isn't scheduled at all (phone in a pocket), so no amount of re-sending lands. Ring the doorbell; the woken phone re-punches, traffic flows, the ceremony drivers take it from there. Same double debounce as the chat ring.
+            if c.clutch_state == crate::types::ClutchState::Pending
+                && c.clutch_offer_sent
+                && c.validated_path.is_none()
+                && c.last_heard.map_or(true, |t| t.elapsed() >= std::time::Duration::from_secs(90))
+                && c.last_ring.map_or(true, |t| t.elapsed() >= std::time::Duration::from_secs(300))
+            {
+                c.last_ring = Some(std::time::Instant::now());
+                dozed_rings.push(i);
+            }
+        }
+        if !dozed_rings.is_empty() {
+            if let Some(secret) = self.device_keypair.as_ref().map(|kp| *kp.secret.as_bytes()) {
+                for i in dozed_rings {
+                    crate::logf!("DOORBELL: {} ceremony parked with no path and no traffic — ringing", crate::fp(&self.contacts[i].handle_proof));
+                    crate::network::doorbell::spawn_ring(secret, self.contacts[i].handle_proof);
+                }
             }
         }
         for i in stalled_offers {
@@ -10169,6 +10191,18 @@ impl PhotonApp {
         // LAN broadcast for same-network local-IP discovery (hairpin-NAT workaround).
         if let (Some(session), Some(hq)) = (self.session.as_ref(), self.handle_query.as_ref()) {
             checker.send_lan_broadcast(session.handle_proof, hq.port());
+        }
+
+        // Bell publish (Android only — desktops don't doze, so they publish nothing and are never rung): once Kotlin has handed over the FCM token, publish `fcm:<project>:<token>` under OUR handle_proof, and re-publish whenever the token rotates. Piggybacks the ping cadence so a late token or a rotation heals without dedicated machinery.
+        #[cfg(target_os = "android")]
+        if let Some((project, token)) = crate::platform::jni_android::fcm_bell() {
+            let bell = format!("fcm:{}:{}", project, token);
+            if self.published_bell.as_deref() != Some(bell.as_str()) {
+                if let (Some(kp), Some(session)) = (self.device_keypair.as_ref(), self.session.as_ref()) {
+                    crate::network::doorbell::spawn_publish_bells(*kp.secret.as_bytes(), session.handle_proof, vec![bell.clone()]);
+                    self.published_bell = Some(bell);
+                }
+            }
         }
 
         // Recovery for a side stranded in AwaitingProof: while the peer is ONLINE and we still hold our computed proof, keep the resend budget topped up so we keep re-sending our proof every few cycles. The peer — already Complete — now treats our repeated proof as an implicit re-request and re-sends its ClutchComplete (see the Complete-state duplicate handler). So a ClutchComplete dropped during the original ceremony (e.g. before the v4-mapped-v6 send fix, or any single UDP loss) self-heals once both sides are online, instead of leaving us AwaitingProof forever with the peer already Complete. Bounded per-cycle so an offline peer doesn't spin; it only tops up when we actually have the peer online with a proof to send.
@@ -10329,15 +10363,18 @@ impl PhotonApp {
             return;
         };
 
+        let mut undelivered_fids: Vec<crate::types::FriendshipId> = Vec::new();
         for (fid, peer_addr, alt_addr, recipient_pubkey) in routes {
             let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid)
             else {
                 continue;
             };
             let conversation_token = chains.conversation_token;
+            let mut any_due = false;
             for (eagle_time, prev_msg_hp, ciphertext, attempts, exhausted) in
                 chains.collect_due_retransmits(now_osc)
             {
+                any_due = true;
                 checker.send_message(crate::network::status::MessageRequest {
                     peer_addr,
                     alt_addr,
@@ -10351,6 +10388,30 @@ impl PhotonApp {
                     crate::logf!("CHAT: retransmit GAVE UP on msg eagle_time {} after {} attempts (undelivered)", eagle_time, attempts);
                 } else {
                     crate::logf!("CHAT: retransmit msg eagle_time {} (attempt {})", eagle_time, attempts);
+                }
+            }
+            if any_due {
+                undelivered_fids.push(fid);
+            }
+        }
+
+        // The doorbell cascade (docs/reachability-doorbell.md): a due retransmit IS "I have something for this peer and direct isn't landing". If we also haven't heard ANY signed traffic from them past the dozed threshold, their process likely isn't scheduled — ring the bell once. Double-debounced: `last_ring` here, the per-target guard on the worker. Under-ringing is the design bias: a brief packet-loss blip on a live conversation never wakes anyone (their pongs/acks keep last_heard fresh).
+        const DOZED_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(90);
+        const RE_RING_MIN: std::time::Duration = std::time::Duration::from_secs(300);
+        if !undelivered_fids.is_empty() {
+            if let Some(secret) = self.device_keypair.as_ref().map(|kp| *kp.secret.as_bytes()) {
+                for c in self.contacts.iter_mut() {
+                    let Some(fid) = c.friendship_id else { continue };
+                    if !undelivered_fids.contains(&fid) {
+                        continue;
+                    }
+                    let dozed = c.last_heard.map_or(true, |t| t.elapsed() >= DOZED_THRESHOLD);
+                    let ring_ok = c.last_ring.map_or(true, |t| t.elapsed() >= RE_RING_MIN);
+                    if dozed && ring_ok {
+                        c.last_ring = Some(std::time::Instant::now());
+                        crate::logf!("DOORBELL: {} has undelivered traffic and {}s+ of silence — ringing", crate::fp(&c.handle_proof), DOZED_THRESHOLD.as_secs());
+                        crate::network::doorbell::spawn_ring(secret, c.handle_proof);
+                    }
                 }
             }
         }
@@ -11001,6 +11062,10 @@ impl PhotonApp {
                             {
                                 let ep = contact.endpoint_mut(&peer_pubkey.key);
                                 ep.online = is_online;
+                            }
+                            // Reachability clock: only the POSITIVE report counts (a TIMEOUT arrives thru this same arm with is_online=false — silence is exactly what the clock measures).
+                            if is_online {
+                                contact.last_heard = Some(std::time::Instant::now());
                             }
                             let identity_online = is_online || contact.any_device_online();
                             // True only on the offline→online EDGE, not every online ping/chat. Retransmit-of-pending (below) keys off this — without the edge gate it re-fired on every received chat (now that a chat marks the sender online), resending all pending messages in a storm.
@@ -13524,6 +13589,8 @@ impl PhotonApp {
                         .find(|(_, c)| c.knows_device(&peer_pubkey.key))
                     {
                         contact.punch_unvalidated_cycles = 0;
+                        // Reachability clock: a signed punch ack = the guard's eyes are open.
+                        contact.last_heard = Some(now);
                         match contact.validated_path {
                             None => {
                                 crate::logf!("TRAVERSE: path validated to {} = {}", crate::fp(&contact.handle_proof).as_str(), remote);

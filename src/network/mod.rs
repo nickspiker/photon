@@ -1,5 +1,6 @@
 pub mod clock_check;
 pub mod clutch_jobs;
+pub mod doorbell;
 pub mod fgtw;
 pub mod handle_query;
 pub mod history_pages;
