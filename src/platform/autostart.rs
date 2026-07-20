@@ -3,6 +3,38 @@
 //! Every path here is user-owned (HKCU / ~/Library/LaunchAgents / ~/.config/autostart): no sudo, no UAC, no prompts — see the 2026-07-19 design discussion.
 //! The registered command is `<current_exe> --background`, so a login launch comes up RESIDENT (hidden window, network up) rather than opening a window over the fresh session.
 
+// ───────── Default-ON policy (2026-07-19 user mandate) ─────────
+// Background residency + launch-at-login are ON unless the user explicitly turned them off. The OS artifact alone can't carry that: auto-enrolling every launch would resurrect a login item the user deleted, so the explicit "no" lives in a marker file — present = user opted out, absent = default-on. The artifact stays the OS-visible truth for WHAT runs at login; the marker is only the user's veto.
+
+fn optout_path() -> Option<std::path::PathBuf> {
+    crate::storage::photon_config_dir().ok().map(|d| d.join("background_optout"))
+}
+
+/// The user's standing wish: `true` unless they flipped the settings toggle off. Drives `resident_mode` and the toggle's initial state.
+pub fn background_desired() -> bool {
+    optout_path().map_or(true, |p| !p.exists())
+}
+
+/// Record the toggle: off writes the veto marker, on removes it.
+pub fn set_background_desired(on: bool) {
+    let Some(p) = optout_path() else { return };
+    if on {
+        let _ = std::fs::remove_file(&p);
+    } else {
+        let _ = std::fs::write(&p, b"user disabled background mode\n");
+    }
+}
+
+/// Default-on enrollment, called once per launch: if backgrounding is desired and no login item exists yet, write it. Idempotent and best-effort — a failure logs and the session still runs resident; the next launch retries.
+pub fn ensure_enrolled() {
+    if background_desired() && !enabled() {
+        match enable() {
+            Ok(()) => crate::log("RESIDENT: default-on — login item written (settings toggle to opt out)"),
+            Err(e) => crate::logf!("RESIDENT: default-on enrollment failed: {} (still resident this session)", e),
+        }
+    }
+}
+
 /// The command line the login item runs: the running binary, backgrounded. `current_exe` is honest about dev runs (a debug-target path) — registering from a dev build points autostart at that dev binary, which is what a developer iterating on this feature wants anyway. Installed builds resolve to `~/.local/bin/photon-messenger` (or the platform equivalent), which self-update swaps atomically in place, so the artifact never goes stale.
 fn exe_path() -> Result<std::path::PathBuf, String> {
     std::env::current_exe().map_err(|e| format!("current_exe: {e}"))

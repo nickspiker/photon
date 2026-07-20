@@ -1002,14 +1002,15 @@ pub struct PhotonApp {
 impl PhotonApp {
     /// Construct an empty app shell. Real state (chrome, network handles, app state machine) initializes in [`FluorApp::init`] once the viewport is known.
     pub fn new() -> Self {
-        // Desktop resident mode: `--background` (the login-item launch) starts hidden; residency itself = that flag OR the autostart artifact being present, so a normally-launched app with autostart on also hides on close — the artifact is the user's standing "photon keeps running" opt-in.
+        // Desktop resident mode is ON BY DEFAULT (2026-07-19 mandate): residency + the login item enroll automatically unless the user's explicit opt-out marker exists (the settings toggle writes it). `--background` (the login-item launch) additionally starts hidden.
         #[cfg(not(target_os = "android"))]
         let (start_in_background, resident_mode) = {
             let bg = std::env::args().any(|a| a == "--background");
             if bg {
                 crate::platform::desktop_notify::set_window_visible(false);
             }
-            (bg, bg || crate::platform::autostart::enabled())
+            crate::platform::autostart::ensure_enrolled();
+            (bg, bg || crate::platform::autostart::background_desired())
         };
         #[cfg(target_os = "android")]
         let (start_in_background, resident_mode) = (false, false);
@@ -1846,7 +1847,7 @@ impl FluorApp for PhotonApp {
                 1.,
                 1.,
                 12.,
-                crate::platform::autostart::enabled(),
+                crate::platform::autostart::background_desired(),
             ));
         }
         self.settings_note_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
@@ -5584,6 +5585,8 @@ impl PhotonApp {
                 };
                 match result {
                     Ok(()) => {
+                        // The veto marker is the durable half of the choice — background is default-ON, so "off" must survive restarts (the artifact alone would just re-enroll next launch).
+                        crate::platform::autostart::set_background_desired(checked);
                         self.resident_mode = checked;
                         crate::logf!("RESIDENT: background mode {} (login item {})", if checked { "ON" } else { "OFF" }, if checked { "written" } else { "removed" });
                         if checked && !self.tray_spawned {
