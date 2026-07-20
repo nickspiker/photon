@@ -132,6 +132,8 @@ class PhotonConnectionService : Service() {
                             .addOnSuccessListener { token ->
                                 if (!token.isNullOrEmpty()) nativeSetFcmToken(token, projectId)
                             }
+                        // Release-notice fan-out: one topic send from the worker reaches every subscriber (docs/reachability-doorbell.md + updates.md). Subscription is idempotent.
+                        com.google.firebase.messaging.FirebaseMessaging.getInstance().subscribeToTopic("updates")
                     }
                 } catch (e: Exception) {
                     PhotonLog.w(TAG, "FCM token fetch failed (no Play services?)", e)

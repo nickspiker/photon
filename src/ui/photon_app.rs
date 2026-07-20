@@ -5688,6 +5688,12 @@ impl PhotonApp {
             let our_hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
             let mut refresh_contacts: Vec<[u8; 32]> = Vec::new();
             for (kind, evt_hp) in &fleet_evts {
+                if *kind == "release" {
+                    // Release notice off the hub — the advisory "go look" a deploy fires: make the next drive_auto_update poll due NOW instead of the jittered 6-8h cadence. Trust is unchanged — the poll fetches the SIGNED manifest thru the stamp window, so the worst a forged notice does is cause a poll. (`1` = due-in-the-past but nonzero, so the ==0 first-launch ramp doesn't swallow it.)
+                    crate::log("UPDATE: release notice from the hub — manifest poll due now");
+                    self.next_update_check_osc = 1;
+                    continue;
+                }
                 if Some(*evt_hp) == our_hp {
                     // OUR fleet: shared-state or membership change — pull it now.
                     match *kind {
@@ -6470,6 +6476,7 @@ impl PhotonApp {
                                                 "fstate" => "fstate",
                                                 "fleet" => "fleet",
                                                 "friendship" => "friendship",
+                                                "release" => "release",
                                                 _ => continue,
                                             };
                                             if tx.send((k, evt_hp)).is_err() {
@@ -6871,6 +6878,12 @@ impl PhotonApp {
     fn drive_auto_update(&mut self) {
         if !self.online || self.update_busy || !self.auto_updates_enabled() {
             return;
+        }
+        // Android: the FCM `updates` topic notice sets a one-shot flag from the messaging service; drain it only past the act-ability gates above so an offline/busy moment doesn't swallow it.
+        #[cfg(target_os = "android")]
+        if crate::platform::jni_android::check_fcm_update_notice() {
+            crate::log("UPDATE: FCM release notice — manifest poll due now");
+            self.next_update_check_osc = 1;
         }
         let now = vsf::eagle_time_oscillations();
         if self.next_update_check_osc == 0 {
