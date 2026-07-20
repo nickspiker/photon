@@ -154,6 +154,7 @@ wgpu = { version = "28", default-features = false, features = ["metal", "wgsl"] 
 x11 = { version = "2.21.0", features = ["xlib"] }
 # Pairing v2 beacon scanner (BlueZ over D-Bus) — docs/pairing-v2.md. Rides the existing tokio runtime.
 bluer = { version = "0.17", features = ["bluetoothd"] }
+ksni = "0.3.6"
 
 # Pairing v2 beacon SCANNER (sponsor / old-device role) via btleplug's cross-platform central (CoreBluetooth on macOS, WinRT on Windows) — docs/pairing-v2.md. btleplug is central-only, so ADVERTISING (new-device role) is wired per-OS natively (CoreBluetooth CBPeripheralManager / WinRT BluetoothLEAdvertisementPublisher).
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]

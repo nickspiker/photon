@@ -7,3 +7,5 @@ pub mod autostart;
 pub mod control;
 #[cfg(not(target_os = "android"))]
 pub mod desktop_notify;
+#[cfg(not(target_os = "android"))]
+pub mod tray;
