@@ -254,6 +254,10 @@ pub struct Contact {
     pub validated_path: Option<(SocketAddr, std::time::Instant)>,
     /// Runtime-only graceful-failure counter: consecutive ping cycles where an ONLINE contact was punched but never validated a direct path (the symmetric↔symmetric case). Past a small threshold the peer is treated as direct-unreachable — the hook the relay milestone (M2) reads. Reset to 0 on any validation.
     pub punch_unvalidated_cycles: u8,
+    /// Runtime-only reachability clock (docs/reachability-doorbell.md): the last time ANY signed traffic from this contact's devices reached us — pong, punch ack, chat frame. "The guard's eyes are open." `None` since boot = never heard. Drives the dozed classification: silence past the dozed threshold plus undeliverable traffic = ring the doorbell.
+    pub last_heard: Option<std::time::Instant>,
+    /// Runtime-only: when we last rang this contact's doorbell — the client-side debounce above the worker's per-target guard. One wake per re-ring window no matter how much traffic queues behind it.
+    pub last_ring: Option<std::time::Instant>,
     /// Runtime-only stall counter: consecutive ping cycles spent in `Pending` with our offer sent, a validated direct path up, and still no offer from the peer. The ping cycle re-fires our offer each time this crosses its threshold (then zeroes it) — the pong-driven offer re-send never triggers for a peer whose pongs don't flow, and a one-shot offer whose PT transfer died leaves the ceremony parked forever (2026-07-19 peer-B↔a peer). Reset whenever the stall condition doesn't hold.
     pub clutch_offer_stall_cycles: u8,
     /// Friend-assisted history recovery state machine (newest-first cursor pagination from the friend's copy). `None` = no recovery running/known. Runtime struct; the durable cursor + complete flag persist as `hist_oldest` / `hist_complete` in contact state.
@@ -377,6 +381,8 @@ impl Contact {
             validated_path: None,         // No punch-validated direct path yet
             punch_unvalidated_cycles: 0,  // No failed punch cycles yet
             clutch_offer_stall_cycles: 0, // No stalled-offer cycles yet
+            last_heard: None,             // No signed traffic from them yet this session
+            last_ring: None,              // Doorbell never rung this session
             history_recovery: None,       // No history recovery running
             clutch_completed_at: None,         // Ceremony not yet complete
             is_sibling: false,            // A friend, unless made via new_sibling

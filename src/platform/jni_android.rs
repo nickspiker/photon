@@ -697,6 +697,52 @@ pub extern "C" fn Java_com_photon_messenger_PhotonMessagingService_nativePeerUpd
     FCM_PEER_UPDATE_PENDING.store(true, Ordering::SeqCst);
 }
 
+/// This device's FCM bell material as Kotlin last reported it: `(project_id, token)`. The ping cycle reads it and publishes `fcm:<project>:<token>` to the worker's bell registry (docs/reachability-doorbell.md); a rotation lands here via `onNewToken` and re-publishes on the next cycle.
+static FCM_BELL: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+
+#[cfg(target_os = "android")]
+pub fn fcm_bell() -> Option<(String, String)> {
+    FCM_BELL.lock().unwrap().clone()
+}
+
+/// Shared body for the two Kotlin entry points (the connection service's startup fetch + the messaging service's rotation callback — JNI names are class-scoped, hence two thin exports).
+#[cfg(target_os = "android")]
+fn set_fcm_bell(env: &mut JNIEnv<'_>, token: jni::objects::JString<'_>, project_id: jni::objects::JString<'_>) {
+    let (Ok(token), Ok(project)) = (env.get_string(&token), env.get_string(&project_id)) else {
+        error!("set_fcm_bell: bad JNI strings");
+        return;
+    };
+    let token: String = token.into();
+    let project: String = project.into();
+    if token.is_empty() || project.is_empty() {
+        return;
+    }
+    info!("FCM bell material set (project {}, token {} chars)", project, token.len());
+    *FCM_BELL.lock().unwrap() = Some((project, token));
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeSetFcmToken<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    token: jni::objects::JString<'l>,
+    project_id: jni::objects::JString<'l>,
+) {
+    set_fcm_bell(&mut env, token, project_id);
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonMessagingService_nativeSetFcmToken<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    token: jni::objects::JString<'l>,
+    project_id: jni::objects::JString<'l>,
+) {
+    set_fcm_bell(&mut env, token, project_id);
+}
+
 // ============================================================================
 
 /// Kotlin's `PhotonLog` object routes every line the Java layer used to send to logcat into the same structured VSF log as the Rust side (photon.log.vsf) — logcat is retired across the board, ONE durable pullable log. `level` carries photon's `LogLevel` discriminant (1=Debug, 2=Info, 3=Warn, 4=Error); lines logged before the JNI data dir lands buffer in the sink's pending queue and flush when it opens.
