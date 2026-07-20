@@ -66,15 +66,21 @@ blake3_short() {
 DEV_KEEP=3
 publish_github_dev() {
     local base="$1" file="$2"
+    # The mirror is BEST-EFFORT: R2 is the authoritative channel and is already live by the time we get here, so a GitHub hiccup (transient 502s are routine on uploads.github.com) must not abort the publish under set -e — that strands the post-publish version bump and every platform queued behind it (happened 2026-07-19: one 502 killed dev-linux.sh post-R2 pre-bump and blocked five publishes).
     if [ ! -f "$file" ]; then
-        echo "ERROR: asset not found for GitHub upload: $file"
-        return 1
+        echo "WARNING: asset not found for GitHub mirror: $file — skipping mirror (R2 already live)"
+        return 0
     fi
-    ensure_release dev true
     local hash name
-    hash=$(blake3_short "$file") || return 1   # bail rather than upload a hash-less colliding name
+    if ! ensure_release dev true || ! hash=$(blake3_short "$file"); then
+        echo "WARNING: GitHub mirror prep failed — continuing without mirror (R2 already live)"
+        return 0
+    fi
     name="${base}-${hash}"
-    publish_github dev "$name" "$file"
+    if ! publish_github dev "$name" "$file"; then
+        echo "WARNING: GitHub mirror upload failed — continuing without mirror (R2 already live)"
+        return 0
+    fi
     prune_github_dev "$base"
 }
 
