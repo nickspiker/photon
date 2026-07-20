@@ -180,17 +180,26 @@ echo "  Windows SHA256: $WINDOWS_SHA256"
 
 # Mirror the identical signed artefacts to a GitHub Release `v<n>` (redundant fallback behind R2).
 # Same bytes as R2 — never rebuild per-destination — so the Windows SHA256 patched above holds everywhere.
+# BEST-EFFORT: by this point the release is fully live on R2, so a GitHub hiccup (uploads.github.com 502s
+# are routine; one aborted the whole v39 deploy here, 2026-07-19 — stranding the website update, release
+# notice, and dev-line-open behind an already-shipped release) warns loudly and moves on, never aborts.
 GH_TAG="v$SHIP_VERSION"
+mirror() {
+    publish_github "$GH_TAG" "$1" "$2" || echo "WARNING: GitHub mirror of $1 failed — continuing (R2 is authoritative and live)"
+}
 echo ""
 echo "Mirroring release to GitHub ($GH_TAG)..."
-ensure_release "$GH_TAG" false
-publish_github "$GH_TAG" "photon-messenger-linux-x86_64-release"  target/release/photon-messenger
-publish_github "$GH_TAG" "photon-messenger-linux-arm64-release"   target/aarch64-unknown-linux-gnu/release/photon-messenger
-publish_github "$GH_TAG" "photon-messenger-windows-release.exe"   target/x86_64-pc-windows-gnu/release/photon-messenger.exe
-publish_github "$GH_TAG" "photon-messenger-redox-release"         target/x86_64-unknown-redox/release/photon-messenger
-publish_github "$GH_TAG" "photon-messenger-macos-intel-release"   target/x86_64-apple-darwin/release/photon-messenger
-publish_github "$GH_TAG" "photon-messenger-macos-arm64-release"   target/aarch64-apple-darwin/release/photon-messenger
-publish_github "$GH_TAG" "photon-messenger-android-release.apk"   android/app/build/outputs/apk/release/app-release.apk
+if ensure_release "$GH_TAG" false; then
+    mirror "photon-messenger-linux-x86_64-release"  target/release/photon-messenger
+    mirror "photon-messenger-linux-arm64-release"   target/aarch64-unknown-linux-gnu/release/photon-messenger
+    mirror "photon-messenger-windows-release.exe"   target/x86_64-pc-windows-gnu/release/photon-messenger.exe
+    mirror "photon-messenger-redox-release"         target/x86_64-unknown-redox/release/photon-messenger
+    mirror "photon-messenger-macos-intel-release"   target/x86_64-apple-darwin/release/photon-messenger
+    mirror "photon-messenger-macos-arm64-release"   target/aarch64-apple-darwin/release/photon-messenger
+    mirror "photon-messenger-android-release.apk"   android/app/build/outputs/apk/release/app-release.apk
+else
+    echo "WARNING: GitHub release creation failed — skipping the mirror entirely (R2 is authoritative and live)"
+fi
 # Binaries only — no installer scripts on GitHub. The README carries the GitHub-fallback install
 # commands (they fetch these assets by name from the latest release), so the scripts aren't needed here.
 
