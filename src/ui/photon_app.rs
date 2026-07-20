@@ -13640,6 +13640,11 @@ impl PhotonApp {
                                 // Keepalive ack for the current path — refresh liveness.
                                 contact.validated_path = Some((remote, now));
                             }
+                            Some((existing, _)) if is_private_addr(&remote.ip()) && !is_private_addr(&existing.ip()) => {
+                                // A LAN path acked while we're pinned to a public/cell one — UPGRADE. First-wins normally holds, but a private-subnet path is categorically better than a carrier one: it never rotates (the cell IPv6 privacy address churns — five in one field log — and each rotation strands the pinned path until TTL), no NAT, lowest latency. Two devices on one LAN must ride the LAN, not race a dying cell mapping. (Only LAN-supplants-public; a second public path never displaces the first-won.)
+                                crate::logf!("TRAVERSE: {} LAN path {} supplants pinned public {}", crate::fp(&contact.handle_proof).as_str(), remote, existing);
+                                contact.validated_path = Some((remote, now));
+                            }
                             Some(_) => { /* a different candidate acked; keep the first-won path */ }
                         }
                     }
