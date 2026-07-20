@@ -928,6 +928,8 @@ pub struct PhotonApp {
     settings_background_check: Option<crate::ui::settings_widgets::Checkbox>,
     /// Desktop resident mode: close hides the window instead of exiting (`FluorApp::on_close_requested`), the process keeps serving the network, and a second launch (or a future tray click) surfaces it via the control channel. True when launched `--background` or when the autostart artifact exists; the settings toggle moves it live.
     resident_mode: bool,
+    /// The tray icon exists (once per process — a re-spawn would park a second orb). Set on the resident-at-launch spawn or the first toggle-on; toggle-off leaves the icon until exit (v1 — despawn needs a service handle plumb-thru).
+    tray_spawned: bool,
     /// The bell string this session last published to the worker (Android: `fcm:<project>:<token>`), so the ping-cycle publish is a no-op until the token rotates. `None` = nothing published yet.
     published_bell: Option<String>,
     /// Launched with `--background` (the login-item invocation): the host creates the window invisible (`FluorApp::start_hidden`) and nothing shows until a ShowWindow surfaces it.
@@ -1015,6 +1017,7 @@ impl PhotonApp {
             start_in_background,
             resident_mode,
             published_bell: None,
+            tray_spawned: false,
             settings_background_check: None,
             chrome: None,
             hit_counter: 0,
@@ -1635,7 +1638,14 @@ impl FluorApp for PhotonApp {
     fn set_event_proxy(&mut self, proxy: Arc<dyn WakeSender<Self::UserEvent>>) {
         // Desktop resident mode: start serving the second-launch control channel now that we can wake the UI thread. No-op if main never parked a listener (lock-holder only).
         #[cfg(not(target_os = "android"))]
-        crate::platform::control::spawn_accept_thread(proxy.clone());
+        {
+            crate::platform::control::spawn_accept_thread(proxy.clone());
+            // Resident from launch → the orb parks next to the clock now; a later toggle-on spawns it then (tray_spawned gates the once-per-process).
+            if self.resident_mode {
+                crate::platform::tray::spawn(proxy.clone());
+                self.tray_spawned = true;
+            }
+        }
         self.event_proxy = Some(proxy);
     }
 
@@ -5576,6 +5586,12 @@ impl PhotonApp {
                     Ok(()) => {
                         self.resident_mode = checked;
                         crate::logf!("RESIDENT: background mode {} (login item {})", if checked { "ON" } else { "OFF" }, if checked { "written" } else { "removed" });
+                        if checked && !self.tray_spawned {
+                            if let Some(proxy) = self.event_proxy.clone() {
+                                crate::platform::tray::spawn(proxy);
+                                self.tray_spawned = true;
+                            }
+                        }
                     }
                     Err(e) => {
                         crate::logf!("RESIDENT: login-item change failed: {}", e);
