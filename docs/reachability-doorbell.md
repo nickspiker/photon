@@ -1,9 +1,8 @@
 # Reachability & the doorbell — waking a dozing peer
 
-> Status: **DESIGN ONLY, not implemented.** Agreed shape from the 2026-07-08 design session.
-> The receiving half (FCM `google-services.json` for project `fgtw-90220`) is already in the APK.
-> Everything below — the reachability clock, the targeted doorbell, endpoint registration — is net-new.
-> The existing `send_fcm_push()` in the worker is the **wrong shape** (target-less topic broadcast, coupled to IP-change) and is replaced, not revived.
+> Status: **v1 BUILT 2026-07-19** (design agreed 2026-07-08). Shipped: the reachability clock (`Contact::last_heard`, stamped by pongs/punch-acks/chat), the dozed classification + double-debounced ring triggers (chat retransmit sweep + parked-ceremony branch in the ping cycle), `bell_put`/`bell_del`/`ring` on the worker (device-signed, hp-keyed, 30s per-target ring guard), the direct FCM v1 sender (RS256 JWT via WebCrypto, `FCM_SERVICE_ACCOUNT` wrangler secret — set), the `up:` rung (empty POST, RFC 8030 TTL), Android bell publish (token via JNI off the baked google-services.json project id, republish-on-rotation), and the Kotlin wake handler (warm → service tick; cold → generic notification).
+> NOT yet: TCP-keepalive as background tier-1 (UDP treadmill still runs), UnifiedPush *client* registration, per-DEVICE bell keying (fleet siblings share one hp → last publisher wins the bell slot), the settings toggle (bells publish unconditionally on Android for now — the honest-copy opt-in row still needs building), store-and-forward.
+> The old `send_fcm_push()` topic broadcast remains for `peer_update` only; the doorbell does not touch it.
 
 ## The one physical fact everything hangs off
 

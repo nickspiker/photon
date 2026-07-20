@@ -47,6 +47,11 @@ class PhotonConnectionService : Service() {
         const val SESSION_ACTION = "com.photon.SESSION"
         const val SESSION_PERMISSION = "com.photon.SESSION_READ"
         const val SESSION_EXTRA_VSF = "vsf"
+
+        // The live service instance, for the FCM doorbell path (PhotonMessagingService needs to poke
+        // a protocol tick on wake, and Android gives it no binding to an already-running service).
+        // Set in onCreate, cleared in onDestroy; @Volatile because FCM delivers on a binder thread.
+        @Volatile var live: PhotonConnectionService? = null
     }
 
     // Native network context pointer (HandleQuery + FgtwTransport)
@@ -83,6 +88,7 @@ class PhotonConnectionService : Service() {
 
     // Native methods for network operations
     private external fun nativeNetworkInit(fingerprint: ByteArray, dataDir: String, shadowDir: String): Long
+    private external fun nativeSetFcmToken(token: String, projectId: String)
     private external fun nativeNetworkDestroy(networkPtr: Long)
     private external fun nativeNetworkPoll(networkPtr: Long)  // Check for incoming messages, refresh peers
     private external fun nativeGetDevicePubkey(networkPtr: Long): String
@@ -97,6 +103,7 @@ class PhotonConnectionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        live = this
         createNotificationChannel()
         PhotonLog.d(TAG, "Service created")
     }
@@ -114,6 +121,21 @@ class PhotonConnectionService : Service() {
                 devicePubkeyHex = nativeGetDevicePubkey(networkPtr)
                 PhotonLog.d(TAG, "Network initialized, device: ${devicePubkeyHex.take(16)}...")
                 startNetworkPolling()
+                // Hand the FCM bell material to Rust: the ping cycle publishes `fcm:<project>:<token>`
+                // to the worker's bell registry so a sender can wake this phone from deep Doze
+                // (docs/reachability-doorbell.md). Project id comes off the baked google-services.json
+                // — a fork's tenant flows thru without code changes. Rotation lands via onNewToken.
+                try {
+                    val projectId = com.google.firebase.FirebaseApp.getInstance().options.projectId ?: ""
+                    if (projectId.isNotEmpty()) {
+                        com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+                            .addOnSuccessListener { token ->
+                                if (!token.isNullOrEmpty()) nativeSetFcmToken(token, projectId)
+                            }
+                    }
+                } catch (e: Exception) {
+                    PhotonLog.w(TAG, "FCM token fetch failed (no Play services?)", e)
+                }
             } else {
                 PhotonLog.e(TAG, "Failed to initialize network")
             }
@@ -127,6 +149,7 @@ class PhotonConnectionService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onDestroy() {
+        live = null
         PhotonLog.d(TAG, "Service destroying")
         stopNetworkPolling()
         if (networkPtr != 0L) {
