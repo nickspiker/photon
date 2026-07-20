@@ -1782,10 +1782,12 @@ async fn run_checker(
                                         }
                                     }
 
-                                    // Reset failure counter on successful pong (prevents bouncing)
+                                    // Reset failure counter on successful pong (prevents bouncing) — and purge the device's OTHER still-pending pings. Each cycle fans pings across every known address (validated + LAN + public); the ones aimed at dead addresses expire 5s later and were each counted as a "consecutive failure", so a device answering perfectly on its LAN path still accrued strikes from its rotated cell address and flapped offline every few cycles (peer-B: 923 offline marks vs 17 online in one log). One live path answering = the device is alive; the dead paths' pings must not outlive that verdict.
                                     {
                                         let mut failures = failed_pings_recv.lock().unwrap();
                                         failures.retain(|(k, _)| k != responder_pubkey.as_bytes());
+                                        let mut list = pending_recv.lock().unwrap();
+                                        list.retain(|p| p.recipient_pubkey != responder_pubkey);
                                     }
 
                                     // Send status update with sync_records for retransmit handling
@@ -2303,12 +2305,14 @@ async fn run_checker(
             let now = Instant::now();
             let timeout = Duration::from_secs(5);
 
-            // Find expired pings and increment failure counters
-            let expired: Vec<_> = list
+            // Find expired pings and increment failure counters — ONE strike per device per sweep, however many of its pings expired. The multi-address fan-out (validated + LAN + public) parks several pings per device per cycle; counting each expiry burned the 3-strike "consecutive failures" budget in a single cycle (the field log's same-millisecond 2/3→3/3 pairs), turning one round of dead addresses into an instant offline.
+            let mut expired: Vec<_> = list
                 .iter()
                 .filter(|ping| now.duration_since(ping.sent_at) >= timeout)
                 .map(|ping| ping.recipient_pubkey.clone())
                 .collect();
+            expired.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            expired.dedup();
 
             for pubkey in expired {
                 let pubkey_bytes = *pubkey.as_bytes();
