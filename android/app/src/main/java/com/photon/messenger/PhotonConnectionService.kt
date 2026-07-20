@@ -39,7 +39,8 @@ class PhotonConnectionService : Service() {
         init {
             System.loadLibrary("photon_messenger")
         }
-        const val CHANNEL_ID = "photon_connection"
+        // "_quiet" suffix (2026-07-19): channel importance is IMMUTABLE once created on a device, so demoting the old IMPORTANCE_LOW "photon_connection" channel to MIN required a fresh id. The old channel lingers orphaned on upgraded installs (harmless; Android hides channels with no notifications).
+        const val CHANNEL_ID = "photon_connection_quiet"
         const val NOTIFICATION_ID = 1001
         const val MESSAGE_NOTIFICATION_ID = 1002
         private const val TAG = "PhotonService"
@@ -271,12 +272,13 @@ class PhotonConnectionService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // IMPORTANCE_MIN = the legal minimum for a foreground service: NO status-bar icon, silent, collapsed under the shade's quiet section. The OS mandates the notification EXIST (it's the contract that keeps the service scheduled); this is as invisible as it gets. On Android 13+ the user can additionally swipe it away and the service keeps running.
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "Connection Status",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_MIN
             ).apply {
-                description = "Shows when Photon is maintaining a secure connection"
+                description = "Quiet indicator that Photon is maintaining a secure connection"
                 setShowBadge(false)
             }
             val manager = getSystemService(NotificationManager::class.java)
@@ -304,7 +306,9 @@ class PhotonConnectionService : Service() {
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setSilent(true)
+            .setShowWhen(false)
             .build()
     }
 
