@@ -34,6 +34,7 @@ class PhotonMessagingService : FirebaseMessagingService() {
     // Native method to notify Rust of peer update
     private external fun nativePeerUpdateReceived()
     private external fun nativeSetFcmToken(token: String, projectId: String)
+    private external fun nativeUpdateNoticeReceived()
 
     override fun onMessageReceived(remoteMessage: RemoteMessage) {
         super.onMessageReceived(remoteMessage)
@@ -48,6 +49,11 @@ class PhotonMessagingService : FirebaseMessagingService() {
                     PhotonLog.d(TAG, "Doorbell wake with no live service — posting notification")
                     postWakeNotification()
                 }
+            }
+            "update" -> {
+                // Release notice off the `updates` topic — a deploy shipped. Flag the manifest poll due; the check runs on the next UI tick (a dozed phone learns on next open — updates aren't message-urgent, so no wakelock ceremony here). Advisory only: what installs is still gated by the manifest signature + stamp window.
+                PhotonLog.d(TAG, "Release notice — flagging update check")
+                nativeUpdateNoticeReceived()
             }
             "peer_update" -> {
                 PhotonLog.d(TAG, "Peer update received from FGTW")

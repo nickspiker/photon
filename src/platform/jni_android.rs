@@ -686,6 +686,26 @@ pub fn check_fcm_peer_update() -> bool {
     FCM_PEER_UPDATE_PENDING.swap(false, Ordering::SeqCst)
 }
 
+/// One-shot set by the FCM `updates`-topic release notice; `drive_auto_update` drains it and makes the signed-manifest poll due immediately.
+static FCM_UPDATE_NOTICE_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Check and clear the FCM release-notice flag.
+#[cfg(target_os = "android")]
+pub fn check_fcm_update_notice() -> bool {
+    FCM_UPDATE_NOTICE_PENDING.swap(false, Ordering::SeqCst)
+}
+
+/// Called from FirebaseMessagingService on a `type=update` topic message — a release shipped; flag the manifest poll due.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonMessagingService_nativeUpdateNoticeReceived(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+) {
+    info!("FCM release notice — flagging update check");
+    FCM_UPDATE_NOTICE_PENDING.store(true, Ordering::SeqCst);
+}
+
 /// Called from FirebaseMessagingService when peer_update FCM message received This is called from a background thread, so we just set a flag
 #[cfg(target_os = "android")]
 #[no_mangle]

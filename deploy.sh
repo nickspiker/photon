@@ -209,6 +209,14 @@ echo "Deploying website..."
 # top, before the builds) is now permanent: disarm the rollback.
 trap - ERR
 
+# Ring the release notice: the worker broadcasts "release" over the WS hub (every RUNNING client
+# polls the signed manifest now instead of at its 6-8h cadence) and fires the FCM `updates` topic
+# (wakes dozed Android subscribers). Advisory only — what installs is still gated by the manifest
+# signature + stamp window — so best-effort: a failed curl just leaves everyone on the slow cadence.
+echo ""
+echo "Sending release notice (hub + FCM topic)..."
+curl -s "https://fgtw.org/admin/release-notice?auth=f6d46fc44bd35b1b7204640d8cade6b2d01ef5e6ba96261200bcb728003c2724" || echo "release notice failed (non-fatal)"
+
 # OPEN THE DEV LINE (2026-07-17): the tree must never rest at X.Y.0 — patch 0 IS the release marker,
 # so a local dev build compiled from a .0 tree would masquerade as the release ("already on latest
 # release" on a dev build, observed live). The release artifacts above embedded .0; from this commit
