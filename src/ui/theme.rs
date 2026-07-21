@@ -23,6 +23,9 @@ pub const SEPARATOR_COLOUR: u32 = 0x40_00_00_00;
 /// Contact presence ring around a row avatar: green online, grey offline. α+darkness.
 pub const RING_ONLINE_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_00_C0_00));
 pub const RING_OFFLINE_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_28_28_28));
+/// Presence when reachable ONLY via the FGTW relay (no direct path — the Seattle↔Montana case: one peer IPv6-only, the other IPv4-only behind symmetric NAT). Lime-yellow (0xB0FF00), deliberately NOT the direct-connection green, so a relayed link never masquerades as a direct one. α+darkness, same discipline as the online/offline rings.
+pub const RING_RELAY_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_B0_FF_00));
+pub const SEARCH_RELAY_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_B0_FF_00));
 /// Add-friend result text + the in-flight hourglass: green on success, red on not-found/error. α+darkness.
 pub const SEARCH_FOUND_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_40_E0_40));
 pub const SEARCH_FAIL_COLOUR: u32 = fluor::theme::dark(fluor::theme::fmt(0x00_E0_40_40));

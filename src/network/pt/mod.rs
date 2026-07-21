@@ -564,8 +564,11 @@ impl PTManager {
                     None
                 };
 
-                // Check if we should try relay (both UDP and TCP exhausted)
-                let use_relay = transfer.should_relay_fallback();
+                // Check if we should try relay (UDP+TCP tried, no ACK) — ONCE per transfer: should_relay_fallback stays true every retry tick past the threshold, so guard on relay_sent to avoid re-uploading the whole payload each cycle.
+                let use_relay = transfer.should_relay_fallback() && !transfer.relay_sent;
+                if use_relay {
+                    transfer.relay_sent = true;
+                }
 
                 transfer.mark_spec_sent();
                 let spec = transfer.build_spec();
