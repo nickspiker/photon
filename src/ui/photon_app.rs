@@ -10170,6 +10170,18 @@ impl PhotonApp {
                     .map(|c| c.addr)
                     .collect(),
             };
+            // Belt-and-suspenders: the peer's public address MUST be probed even if the candidate gather missed it (two-device fleet keying, a stale endpoint set). For a remote peer behind NAT — reached via 464XLAT when we're IPv6-only — this WAN address is frequently the ONLY viable path, and a bug that dropped it stranded the whole ceremony (Seattle↔Montana: peer-B never sent one packet to mom's real public v4). Log the exact probe set so a stuck ceremony is diagnosable at a glance.
+            if contact.validated_path.is_none() {
+                if let Some(ip) = contact.ip {
+                    if !punch.contains(&ip) {
+                        punch.push(ip);
+                    }
+                }
+                if !punch.is_empty() {
+                    let set = punch.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(" , ");
+                    crate::logf!("PUNCH: {} probing {}", crate::fp(&contact.handle_proof), set);
+                }
+            }
             let mut sent = false;
             // The punch-validated path is the one address PROVEN reachable — when it matches neither stored record (a reflexive-learned mapping can differ from both the registry ip and the LAN row), ping it too, or presence sits TIMEOUT on two dead addresses while the keepalive acks flow.
             if let Some((vpath, _)) = contact.validated_path {
