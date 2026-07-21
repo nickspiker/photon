@@ -4089,6 +4089,7 @@ impl FluorApp for PhotonApp {
                 let row_hovered = row_pressed || (ci < 256 && ctx.pressed_hit == HIT_NONE && self.hover_hit == row_hit_here);
                 let cy = (row_top + row_h / 2) as f32;                let cy = (row_top + row_h / 2) as f32;
                 let online = self.contacts[ci].is_online;
+                let online_via_relay = self.contacts[ci].reached_via_relay;
 
                 // Build/refresh the contact's scaled-avatar cache at the row diameter.
                 let has_avatar = self.contacts[ci].avatar_pixels.is_some();
@@ -4132,7 +4133,11 @@ impl FluorApp for PhotonApp {
                     );
                 }
                 let ring = if online {
-                    theme::RING_ONLINE_COLOUR
+                    if online_via_relay {
+                        theme::RING_RELAY_COLOUR // lime-yellow: online only via the relay
+                    } else {
+                        theme::RING_ONLINE_COLOUR
+                    }
                 } else {
                     theme::RING_OFFLINE_COLOUR
                 };
@@ -4380,7 +4385,11 @@ impl FluorApp for PhotonApp {
                         );
                     }
                     let ring = if contact.is_online {
-                        theme::RING_ONLINE_COLOUR
+                        if contact.reached_via_relay {
+                            theme::RING_RELAY_COLOUR // lime-yellow: online but only via the relay, not a direct path
+                        } else {
+                            theme::RING_ONLINE_COLOUR
+                        }
                     } else {
                         theme::RING_OFFLINE_COLOUR
                     };
@@ -11918,10 +11927,13 @@ impl PhotonApp {
 
                     for (idx, contact) in self.contacts.iter_mut().enumerate() {
                         if contact.handle_hash == their_handle_hash {
-                            contact.ip = Some(sender_addr);
-                            // Inbound DATA elects the sending device ACTIVE (the device in their hand — the fleet reply-TX rule) and seeds its endpoint, so contact-level addressing follows the device actually talking to us instead of whichever sibling ponged last.
-                            contact.active_device = Some(sender_pubkey);
-                            {
+                            // A relayed message (RELAY_ADDR sentinel) carries no reachable peer address — skip address-learning (storing the sentinel as contact.ip would poison direct sends) and mark the link relay-only, which lights the presence lime-yellow. A direct message clears the flag: direct always wins. Otherwise inbound DATA elects the sending device ACTIVE (the fleet reply-TX rule) and seeds its endpoint, so contact-level addressing follows the device actually talking to us.
+                            if sender_addr == crate::network::status::RELAY_ADDR {
+                                contact.reached_via_relay = true;
+                            } else {
+                                contact.reached_via_relay = false;
+                                contact.ip = Some(sender_addr);
+                                contact.active_device = Some(sender_pubkey);
                                 let pub_src = !is_private_addr(&sender_addr.ip());
                                 let ep = contact.endpoint_mut(&sender_pubkey);
                                 if pub_src {
@@ -12511,10 +12523,13 @@ impl PhotonApp {
                     // Find contact by handle_hash
                     for (idx, contact) in self.contacts.iter_mut().enumerate() {
                         if contact.handle_hash == their_handle_hash {
-                            contact.ip = Some(sender_addr);
-                            // Inbound DATA elects the sending device ACTIVE (the device in their hand — the fleet reply-TX rule) and seeds its endpoint, so contact-level addressing follows the device actually talking to us instead of whichever sibling ponged last.
-                            contact.active_device = Some(sender_pubkey);
-                            {
+                            // A relayed message (RELAY_ADDR sentinel) carries no reachable peer address — skip address-learning (storing the sentinel as contact.ip would poison direct sends) and mark the link relay-only, which lights the presence lime-yellow. A direct message clears the flag: direct always wins. Otherwise inbound DATA elects the sending device ACTIVE (the fleet reply-TX rule) and seeds its endpoint, so contact-level addressing follows the device actually talking to us.
+                            if sender_addr == crate::network::status::RELAY_ADDR {
+                                contact.reached_via_relay = true;
+                            } else {
+                                contact.reached_via_relay = false;
+                                contact.ip = Some(sender_addr);
+                                contact.active_device = Some(sender_pubkey);
                                 let pub_src = !is_private_addr(&sender_addr.ip());
                                 let ep = contact.endpoint_mut(&sender_pubkey);
                                 if pub_src {
@@ -12707,10 +12722,13 @@ impl PhotonApp {
                     let mut newly_complete_idx: Option<usize> = None;
                     for (contact_idx, contact) in self.contacts.iter_mut().enumerate() {
                         if contact.handle_hash == their_handle_hash {
-                            contact.ip = Some(sender_addr);
-                            // Inbound DATA elects the sending device ACTIVE (the device in their hand — the fleet reply-TX rule) and seeds its endpoint, so contact-level addressing follows the device actually talking to us instead of whichever sibling ponged last.
-                            contact.active_device = Some(sender_pubkey);
-                            {
+                            // A relayed message (RELAY_ADDR sentinel) carries no reachable peer address — skip address-learning (storing the sentinel as contact.ip would poison direct sends) and mark the link relay-only, which lights the presence lime-yellow. A direct message clears the flag: direct always wins. Otherwise inbound DATA elects the sending device ACTIVE (the fleet reply-TX rule) and seeds its endpoint, so contact-level addressing follows the device actually talking to us.
+                            if sender_addr == crate::network::status::RELAY_ADDR {
+                                contact.reached_via_relay = true;
+                            } else {
+                                contact.reached_via_relay = false;
+                                contact.ip = Some(sender_addr);
+                                contact.active_device = Some(sender_pubkey);
                                 let pub_src = !is_private_addr(&sender_addr.ip());
                                 let ep = contact.endpoint_mut(&sender_pubkey);
                                 if pub_src {
@@ -13633,6 +13651,8 @@ impl PhotonApp {
                         .find(|(_, c)| c.knows_device(&peer_pubkey.key))
                     {
                         contact.punch_unvalidated_cycles = 0;
+                        // A direct path just proved out — this contact is no longer relay-only, so drop the lime-yellow and show normal green.
+                        contact.reached_via_relay = false;
                         // Reachability clock: a signed punch ack = the guard's eyes are open.
                         contact.last_heard = Some(now);
                         match contact.validated_path {

@@ -692,6 +692,87 @@ type OptionalEventProxy = Option<Arc<dyn WakeSender<PhotonEvent>>>;
 type OptionalEventProxy = Option<()>;
 
 /// Send a status update and wake the UI thread if a wake sender is available
+/// Sentinel `sender_addr` for a CLUTCH StatusUpdate that arrived via the FGTW relay, not a direct socket. The app checks for it to skip address-learning (a relayed message carries no reachable peer address) and to mark the contact reached_via_relay (lime-yellow presence). Unspecified v4:0 — never a real peer address.
+pub const RELAY_ADDR: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+
+/// Split a blob of back-to-back complete VSF documents (the relay's fetch response concatenates them) into individual messages. Each VSF header carries its own `file_length`, so we walk header-by-header. Stops on the first undecodable or oversized length rather than looping — a truncated tail is dropped, never mis-parsed.
+fn split_concatenated_vsf(data: &[u8]) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut ptr = 0;
+    while ptr < data.len() {
+        match vsf::file_format::VsfHeader::decode(&data[ptr..]) {
+            Ok((h, _)) if h.file_length > 0 && ptr + h.file_length <= data.len() => {
+                out.push(data[ptr..ptr + h.file_length].to_vec());
+                ptr += h.file_length;
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
+/// Parse a relayed VSF as a CLUTCH offer/KEM/complete and emit the SAME `StatusUpdate` the UDP/TCP receive paths do — but tagged with [`RELAY_ADDR`] so the app treats it as relayed (no address to learn, mark reached_via_relay). Each parser verifies the signature internally; a message that is none of the three is ignored.
+fn dispatch_relayed_clutch(
+    data: &[u8],
+    status_tx: &Sender<StatusUpdate>,
+    event_proxy: &OptionalEventProxy,
+) {
+    use crate::network::fgtw::protocol::{
+        parse_clutch_complete_vsf_without_recipient_check,
+        parse_clutch_kem_response_vsf_without_recipient_check,
+        parse_clutch_offer_vsf_without_recipient_check,
+    };
+    if let Ok((payload, sender_pubkey, offer_provenance, conversation_token)) =
+        parse_clutch_offer_vsf_without_recipient_check(data)
+    {
+        crate::log("RELAY: parsed ClutchOffer (VSF verified) — dispatching");
+        send_status_update(
+            status_tx,
+            StatusUpdate::ClutchOfferReceived {
+                conversation_token,
+                offer_provenance,
+                sender_pubkey,
+                payload,
+                sender_addr: RELAY_ADDR,
+            },
+            event_proxy,
+        );
+    } else if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
+        parse_clutch_kem_response_vsf_without_recipient_check(data)
+    {
+        crate::log("RELAY: parsed ClutchKemResponse (VSF verified) — dispatching");
+        send_status_update(
+            status_tx,
+            StatusUpdate::ClutchKemResponseReceived {
+                conversation_token,
+                ceremony_id,
+                sender_pubkey,
+                payload,
+                sender_addr: RELAY_ADDR,
+            },
+            event_proxy,
+        );
+    } else if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
+        parse_clutch_complete_vsf_without_recipient_check(data)
+    {
+        crate::log("RELAY: parsed ClutchComplete (VSF verified) — dispatching");
+        send_status_update(
+            status_tx,
+            StatusUpdate::ClutchCompleteReceived {
+                conversation_token,
+                ceremony_id,
+                sender_pubkey,
+                payload,
+                sender_addr: RELAY_ADDR,
+            },
+            event_proxy,
+        );
+    } else {
+        crate::log("RELAY: fetched message is not a CLUTCH type — ignored");
+    }
+}
+
 fn send_status_update(
     status_tx: &Sender<StatusUpdate>,
     update: StatusUpdate,
@@ -1174,6 +1255,42 @@ async fn run_checker(
                     Err(e) => {
                         crate::logf!("Status: TCP accept error: {}", e);
                     }
+                }
+            }
+        });
+    }
+
+    // Spawn RELAY POLL task — the store-and-forward bridge for peers with NO direct path (asymmetric reachability: one end IPv6-only, the other IPv4-only behind symmetric NAT — the Seattle↔Montana case). fgtw.org is dual-stack, so both ends reach it (mom over v4, peer-B over v6) and it forwards the ceremony no direct socket can carry. We poll our relay queue, split the concatenated self-delimiting VSF docs (each carries its own header file_length), and dispatch each exactly like a directly-received CLUTCH message — but tagged with RELAY_ADDR so the app skips address-learning and lights the contact lime-yellow (reached_via_relay). The sender was signature-verified when parsed; the relay is an untrusted forwarder that can drop or reorder but never forge. NOTE: polls unconditionally on a slow cadence for now; a later pass should gate it on having a relay-pending ceremony to spare fgtw.org needless drains.
+    {
+        let keypair_relay = keypair.clone();
+        let status_tx_relay = status_tx.clone();
+        let event_proxy_relay = event_proxy.clone();
+        let contacts_relay = contacts.clone();
+        tokio::spawn(async move {
+            crate::log("Status: Relay poll task started");
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let messages =
+                    match crate::network::fgtw::relay::fetch_relay_messages(&keypair_relay).await {
+                        Ok(m) => m,
+                        Err(_) => continue, // relay unreachable / nothing pending — best-effort
+                    };
+                if messages.is_empty() {
+                    continue;
+                }
+                for data in split_concatenated_vsf(&messages) {
+                    // Trust gate: the signer must be a known contact (same as the UDP/TCP paths — the relay is an untrusted forwarder).
+                    if let Ok(signer) = vsf::verification::extract_signer_pubkey(&data) {
+                        let known = {
+                            let list = contacts_relay.lock().unwrap();
+                            list.iter().any(|p| *p == DevicePubkey::from_bytes(signer))
+                        };
+                        if !known {
+                            crate::logf!("RELAY: message from non-contact {} dropped", hex::encode(&signer[..signer.len().min(8)]));
+                            continue;
+                        }
+                    }
+                    dispatch_relayed_clutch(&data, &status_tx_relay, &event_proxy_relay);
                 }
             }
         });

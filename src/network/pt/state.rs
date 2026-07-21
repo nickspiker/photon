@@ -74,6 +74,8 @@ pub struct OutboundTransfer {
     pub spec_tcp_fallback: bool,
     /// Whether the whole-payload TCP fallback copy has already been sent. TCP is reliable + ordered and the VSF `l` field self-frames the payload, so the full VSF is sent over TCP exactly ONCE per transfer (not per shard / per retry tick — a 548 KB resend every tick would be brutal). UDP sharding stays the preferred path; this only fires after the UDP SPEC has gone unacked.
     pub tcp_sent: bool,
+    /// Whether the payload has already been handed to the relay. Like `tcp_sent`, the ~548 KB CLUTCH offer must be stored on fgtw.org exactly ONCE — `should_relay_fallback` stays true on every retry tick past the threshold, so without this guard we'd re-upload the whole payload each cycle.
+    pub relay_sent: bool,
     /// Recipient's device pubkey for relay fallback (optional)
     pub recipient_pubkey: Option<[u8; 32]>,
     /// Original payload for relay fallback (the full VSF before sharding)
@@ -110,6 +112,7 @@ impl OutboundTransfer {
             spec_next_delay: Duration::from_secs(1),
             spec_tcp_fallback: false,
             tcp_sent: false,
+            relay_sent: false,
             recipient_pubkey: None,
             original_payload,
         }
@@ -144,10 +147,9 @@ impl OutboundTransfer {
         self.created_at.elapsed() >= Duration::from_secs(1)
     }
 
-    /// Check if we should fall back to relay (both UDP and TCP exhausted)
+    /// Check if we should fall back to relay (UDP + TCP tried, no ACK). Trigger at SPEC_MAX_RETRIES (~31s with 1/2/4/8/16s jittered backoff), NOT 2× that: the old ~90s / 10-retry threshold was never reached because a re-firing CLUTCH ceremony supersedes the transfer first (field logs topped out at attempt 7), so relay NEVER engaged for the peers that needed it most (asymmetric reachability, no direct path — Seattle↔Montana). The relayed copy is redundant if a direct path ACKs in the meantime, so an earlier trigger only costs one best-effort store on fgtw.org.
     pub fn should_relay_fallback(&self) -> bool {
-        // After 5 UDP retries + 5 TCP retries = about 62s total, try relay
-        self.spec_retry_count >= Self::SPEC_MAX_RETRIES * 2 && self.spec_tcp_fallback
+        self.spec_retry_count >= Self::SPEC_MAX_RETRIES && self.spec_tcp_fallback
     }
 
     /// Mark SPEC as using TCP fallback (for tracking that TCP has been tried)
