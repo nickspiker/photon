@@ -229,6 +229,8 @@ pub struct Contact {
     pub roster_updated: i64,
     pub last_seen: Option<i64>,
     pub is_online: bool, // True when we have confirmed bidirectional comms
+    /// True when the ONLY working path to this contact is the FGTW relay (no direct socket — the asymmetric-reachability case). Drives the lime-yellow presence (theme::RING_RELAY_COLOUR) instead of the direct-connection green, so a relayed link is never mistaken for a direct one. Set when a message arrives via relay / a direct path is proven unreachable; cleared the moment a direct path validates. Not persisted (a session-scoped reachability fact).
+    pub reached_via_relay: bool,
     pub messages: Vec<ChatMessage>, // Conversation history
     pub message_scroll_offset: f32, // Vertical scroll offset for message area (pixels)
     pub prev_is_online: bool, // For differential rendering (not persisted)
@@ -364,6 +366,7 @@ impl Contact {
             roster_updated: vsf::eagle_time_oscillations(),
             last_seen: None,
             is_online: false,           // Starts offline until we confirm comms
+            reached_via_relay: false,   // Direct until proven relay-only
             messages: Vec::new(),       // No messages yet
             message_scroll_offset: 0.0, // Starts at top (scrolled to latest when messages added)
             prev_is_online: false,      // Match initial state
