@@ -204,6 +204,8 @@ pub struct Contact {
     pub clutch_pending_kem: Option<ClutchKemResponsePayload>,
     /// Track if we've sent our offer (to avoid resending)
     pub clutch_offer_sent: bool,
+    /// Eagle time this ceremony round's keypairs were minted (the round started). Ephemeral, never persisted. Two uses, both serving the rule that re-key is a DELIBERATE act on real failure — never a reflex to transient key loss: (1) a routine resume reloads contacts from disk and wipes the ephemeral keypairs; if this stamp is fresh we RESTORE the in-flight round rather than let the keygen sweep mint a divergent one the peer never agreed to (the relay ceremony stall — a slow relay round-trip outlived the keys); (2) the keygen/re-key sweep only fires when a round is genuinely stale by this clock, not the instant keypairs read `None`. `None` = no round in flight.
+    pub clutch_round_started: Option<i64>,
     /// Our computed eggs_proof (stored while awaiting peer's proof for verification)
     pub clutch_our_eggs_proof: Option<[u8; 32]>,
     /// Peer's eggs_proof if received before we computed ours
@@ -352,6 +354,7 @@ impl Contact {
             ceremony_id: None,           // Computed from handle_hashes + ping provenances
             clutch_pending_kem: None,    // KEM response received before keygen completed
             clutch_offer_sent: false,    // Track if we've sent our offer
+            clutch_round_started: None,  // No ceremony round in flight yet
             clutch_our_eggs_proof: None, // Our proof (stored while awaiting peer's)
             clutch_their_eggs_proof: None, // Peer's proof (if received early)
             clutch_their_proof_ceremony: None, // The round that early proof belongs to
