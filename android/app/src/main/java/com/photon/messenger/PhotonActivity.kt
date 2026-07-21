@@ -9,6 +9,8 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.Resources
+import android.database.ContentObserver
 import android.graphics.PixelFormat
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -16,7 +18,10 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.provider.Settings
 import android.view.Choreographer
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -80,6 +85,24 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private var gravityY: Float = 9.8f
     private var gravityZ: Float = 0f
     private var currentOrientation: Int = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+
+    // HONOR THE USER'S ROTATION SETTINGS while keeping OUR rotation FEEL (instant, 7 m/s² deadband, jumpcut — never the OS listener's ~500ms lag or its flat-table jitter). We drive WHEN to rotate from gravity; the OS decides only WHICH angles are allowed:
+    //  • autoRotateEnabled — Settings.System.ACCELEROMETER_ROTATION (live via a ContentObserver). Off = user locked rotation → we stop sensor-driving and hand the LOCKED angle to SCREEN_ORIENTATION_USER (Android holds their chosen orientation; we don't compute it).
+    //  • allowReversePortrait — the framework's config_allowAllRotations bool, read once by resource-identifier (NOT hidden-API reflection; resource lookups aren't blocklisted). Most phones disallow 180°; when they do, our gravity snap skips the reverse-portrait branch instead of forcing it.
+    private var autoRotateEnabled: Boolean = true
+    private val allowReversePortrait: Boolean by lazy {
+        val id = Resources.getSystem().getIdentifier("config_allowAllRotations", "bool", "android")
+        id != 0 && Resources.getSystem().getBoolean(id)
+    }
+    private val rotationSettingObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) {
+            autoRotateEnabled = readAutoRotate()
+            updateOrientationFromGravity() // apply the toggle immediately, don't wait for the next sensor tick
+        }
+    }
+    private fun readAutoRotate(): Boolean =
+        Settings.System.getInt(contentResolver, Settings.System.ACCELEROMETER_ROTATION, 1) == 1
+
     private val gravityListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
             if (event.sensor.type == Sensor.TYPE_GRAVITY) {
@@ -92,12 +115,21 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
     }
 
-    /// Snap raw gravity to one of the four screen orientations with a 7.0 m/s² deadband (≈71% of g, well past the 45° diagonal). Below threshold on both horizontal axes (phone near-flat) the previous orientation is retained.
+    /// Snap raw gravity to one of the four screen orientations with a 7.0 m/s² deadband (≈71% of g, well past the 45° diagonal). Below threshold on both horizontal axes (phone near-flat) the previous orientation is retained — this is what keeps a phone flat on a table from flapping (the OS listener has no such deadband, which is exactly why it jitters). Gated + filtered by the user's rotation settings: their lock and their allowed angles, our timing.
     private fun updateOrientationFromGravity() {
+        if (!autoRotateEnabled) {
+            // User locked rotation — honor it. SCREEN_ORIENTATION_USER holds their chosen angle; we don't sensor-drive and we don't compute the angle (Android maps USER_ROTATION for us).
+            if (currentOrientation != ActivityInfo.SCREEN_ORIENTATION_USER) {
+                currentOrientation = ActivityInfo.SCREEN_ORIENTATION_USER
+                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_USER
+            }
+            return
+        }
         val target = when {
             gravityY > 7.0f -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             gravityX < -7.0f -> ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
-            gravityY < -7.0f -> ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
+            // Reverse-portrait only if the device permits it (config_allowAllRotations); otherwise hold — don't force an angle the user's rules disallow.
+            gravityY < -7.0f -> if (allowReversePortrait) ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT else currentOrientation
             gravityX > 7.0f -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
             else -> currentOrientation
         }
@@ -563,6 +595,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         inForeground = false
         Choreographer.getInstance().removeFrameCallback(this)
         sensorManager.unregisterListener(gravityListener)
+        contentResolver.unregisterContentObserver(rotationSettingObserver)
     }
 
     override fun onResume() {
@@ -574,6 +607,14 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         gravitySensor?.let {
             sensorManager.registerListener(gravityListener, it, SensorManager.SENSOR_DELAY_UI)
         }
+        // Re-read the auto-rotate lock (the user may have toggled it while we were backgrounded) and watch it live.
+        autoRotateEnabled = readAutoRotate()
+        updateOrientationFromGravity()
+        contentResolver.registerContentObserver(
+            Settings.System.getUriFor(Settings.System.ACCELEROMETER_ROTATION),
+            false,
+            rotationSettingObserver,
+        )
         if (nativePtr != 0L && surfaceReady) {
             Choreographer.getInstance().postFrameCallback(this)
         }
