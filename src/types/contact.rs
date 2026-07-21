@@ -471,32 +471,18 @@ impl Contact {
     }
 
     pub fn race_addrs(&self) -> Option<(SocketAddr, Option<SocketAddr>)> {
-        // A punch-validated direct path wins. Keep a distinct public/LAN address as the alternate so a stale NAT mapping still falls back via PT's race. This also makes a peer reachable when we only learned an address by punching (no phonebook `ip` yet).
+        // A punch-validated direct path wins — it's proven reachable right now. Keep the best DISTINCT candidate as the alternate so a stale NAT mapping still falls back via PT's race.
         if let Some((validated, _at)) = self.validated_path {
-            let alt = self
-                .ip
-                .filter(|ip| *ip != validated)
-                .or_else(|| match (self.local_ip, self.local_port) {
-                    (Some(v4), Some(p)) if crate::network::udp::is_usable_lan_ipv4(v4) => {
-                        let lan = SocketAddr::new(std::net::IpAddr::V4(v4), p);
-                        (lan != validated).then_some(lan)
-                    }
-                    _ => None,
-                });
+            let alt = crate::network::traverse::gather::gather_peer_candidates(self)
+                .sorted()
+                .into_iter()
+                .map(|c| c.addr)
+                .find(|a| *a != validated);
             return Some((validated, alt));
         }
 
-        let public_addr = self.ip?;
-        if let (Some(local_v4), Some(local_port)) = (self.local_ip, self.local_port) {
-            // Skip an unreachable LAN candidate (464XLAT CLAT `192.0.0.4` and friends) — racing it just burns the retry budget before the WAN path wins. A peer on cellular has no real LAN address; the public path is the only one.
-            if crate::network::udp::is_usable_lan_ipv4(local_v4) {
-                let lan = SocketAddr::new(std::net::IpAddr::V4(local_v4), local_port);
-                if lan != public_addr {
-                    return Some((lan, Some(public_addr)));
-                }
-            }
-        }
-        Some((public_addr, None))
+        // No proven path yet: try candidates in priority order — global IPv6 host first (no NAT, no punch), then IPv6 reflexive, then IPv4 LAN, then IPv4 reflexive (the punched WAN path). This is the v6-first send order; it replaces the old LAN-first-then-public choice, so a reachable v6 address is tried before a v4 LAN address that may belong to a foreign network (the Seattle↔Montana `192.168.0.x` collision). Falls back to nothing only when we know no address at all.
+        crate::network::traverse::gather::gather_peer_candidates(self).best_pair()
     }
 
     /// True once the CLUTCH ceremony is Complete — which is cryptographically impossible unless BOTH parties ran it, so it doubles as the mutual-consent signal ("we each added the other"). Used to gate friend-only behaviour like the direct peer-to-peer avatar exchange.

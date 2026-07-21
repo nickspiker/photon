@@ -82,7 +82,7 @@ impl CandidateSet {
         self.candidates.is_empty()
     }
 
-    /// The `(primary, alternate)` pair for the transport, matching `Contact::race_addrs`'s contract: primary = highest-priority candidate, alternate = next distinct-address candidate (or `None`). PT races both and locks onto whichever ACKs first. Once the candidate model drives sends (P3), this replaces the ad-hoc LAN-vs-WAN choice with the full priority order (e.g. an IPv6 host first).
+    /// The `(primary, alternate)` pair for the transport, matching `Contact::race_addrs`'s contract: primary = highest-priority candidate, alternate = next distinct-address candidate (or `None`). PT races both and locks onto whichever ACKs first. This drives the actual send order via `race_addrs` — a global IPv6 host outranks everything (no NAT, no punch), then IPv6 reflexive, then IPv4 LAN, then IPv4 reflexive — so v6 is tried first whenever both ends have it.
     pub fn best_pair(&self) -> Option<(SocketAddr, Option<SocketAddr>)> {
         let sorted = self.sorted();
         let primary = sorted.first()?.addr;
