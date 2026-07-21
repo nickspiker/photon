@@ -161,6 +161,8 @@ pub struct ClutchOfferRequest {
     pub peer_addr: SocketAddr, // Primary path (LAN-preferred); port comes from FGTW (peer's photon_port)
     pub alt_addr: Option<SocketAddr>, // Alternate path raced alongside (WAN) — see PtManager::send_with_pubkey_and_alt
     pub vsf_bytes: Vec<u8>,           // Pre-built and signed VSF message
+    pub recipient_pubkey: [u8; 32],   // Peer's primary device — PT's own retry-threshold relay fallback stores under relay/{recipient}/
+    pub relay_to: Vec<[u8; 32]>, // Store on the FGTW relay for EACH of these peer devices in parallel (empty = don't relay). Set to the peer's full device list when no direct path is proven (asymmetric reachability): the direct transfer keeps getting cancelled on address churn before it could reach PT's own fallback, and we can't tell which of a multi-device peer's phones is polling, so we address them all.
 }
 
 /// Request to send CLUTCH KEM response (~31KB) via TCP fallback
@@ -175,6 +177,8 @@ pub struct ClutchKemResponseRequest {
     pub payload: crate::crypto::clutch::ClutchKemResponsePayload,
     pub device_pubkey: [u8; 32],
     pub device_secret: [u8; 32], // For signing (zeroize after use)
+    pub recipient_pubkey: [u8; 32], // Peer primary device (PT fallback)
+    pub relay_to: Vec<[u8; 32]>,    // Relay for each of these peer devices (empty = no relay)
 }
 
 /// Request to send CLUTCH complete proof (~200 bytes) via TCP fallback
@@ -189,6 +193,8 @@ pub struct ClutchCompleteRequest {
     pub payload: crate::crypto::clutch::ClutchCompletePayload,
     pub device_pubkey: [u8; 32],
     pub device_secret: [u8; 32], // For signing (zeroize after use)
+    pub recipient_pubkey: [u8; 32], // Peer primary device (PT fallback)
+    pub relay_to: Vec<[u8; 32]>,    // Relay for each of these peer devices (empty = no relay)
 }
 
 /// Request to broadcast presence on LAN for local peer discovery Solves NAT hairpinning - when peers are on same LAN, use local IPs
@@ -2689,13 +2695,20 @@ async fn run_checker(
                 pt_mgr.send_with_pubkey_and_alt(
                     request.peer_addr,
                     request.alt_addr,
-                    vsf_bytes,
-                    None,
+                    vsf_bytes.clone(),
+                    Some(request.recipient_pubkey),
                 )
             };
             udp::send(&socket, &bytes_to_send, request.peer_addr).await;
             if let Some(alt) = request.alt_addr {
                 udp::send(&socket, &bytes_to_send, alt).await;
+            }
+            // No direct path proven → store on the relay in parallel. A peer we can't reach directly (asymmetric reachability — one end v6-only, the other v4-only behind symmetric NAT) still gets the offer via dual-stack fgtw.org. We relay explicitly here because the direct transfer keeps getting cancelled on address churn before its own retry-threshold relay fallback could fire.
+            for dev in &request.relay_to {
+                match crate::network::fgtw::relay::send_via_relay(&keypair, dev, &vsf_bytes).await {
+                    Ok(()) => crate::logf!("RELAY: stored ClutchOffer for {}", hex::encode(&dev[..4])),
+                    Err(e) => crate::logf!("RELAY: ClutchOffer store failed: {}", e),
+                }
             }
         }
 
@@ -2730,13 +2743,19 @@ async fn run_checker(
                 pt_mgr.send_with_pubkey_and_alt(
                     request.peer_addr,
                     request.alt_addr,
-                    vsf_bytes,
-                    None,
+                    vsf_bytes.clone(),
+                    Some(request.recipient_pubkey),
                 )
             };
             udp::send(&socket, &bytes_to_send, request.peer_addr).await;
             if let Some(alt) = request.alt_addr {
                 udp::send(&socket, &bytes_to_send, alt).await;
+            }
+            for dev in &request.relay_to {
+                match crate::network::fgtw::relay::send_via_relay(&keypair, dev, &vsf_bytes).await {
+                    Ok(()) => crate::logf!("RELAY: stored ClutchKemResponse for {}", hex::encode(&dev[..4])),
+                    Err(e) => crate::logf!("RELAY: ClutchKemResponse store failed: {}", e),
+                }
             }
         }
 
@@ -2771,13 +2790,19 @@ async fn run_checker(
                 pt_mgr.send_with_pubkey_and_alt(
                     request.peer_addr,
                     request.alt_addr,
-                    vsf_bytes,
-                    None,
+                    vsf_bytes.clone(),
+                    Some(request.recipient_pubkey),
                 )
             };
             udp::send(&socket, &bytes_to_send, request.peer_addr).await;
             if let Some(alt) = request.alt_addr {
                 udp::send(&socket, &bytes_to_send, alt).await;
+            }
+            for dev in &request.relay_to {
+                match crate::network::fgtw::relay::send_via_relay(&keypair, dev, &vsf_bytes).await {
+                    Ok(()) => crate::logf!("RELAY: stored ClutchComplete for {}", hex::encode(&dev[..4])),
+                    Err(e) => crate::logf!("RELAY: ClutchComplete store failed: {}", e),
+                }
             }
         }
 

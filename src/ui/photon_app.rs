@@ -9310,6 +9310,8 @@ impl PhotonApp {
                                                 peer_addr: primary,
                                                 alt_addr: alt,
                                                 vsf_bytes,
+                                                recipient_pubkey: contact.public_identity.key,
+                                                relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
                                             });
                                             contact.clutch_offer_sent = true;
                                             crate::logf!("CLUTCH: Sent offer to {} (prov={}...)", crate::fp(&contact.handle_proof), hex::encode(&our_offer_provenance[..4]));
@@ -9552,6 +9554,8 @@ impl PhotonApp {
                             payload: result.kem_response,
                             device_pubkey,
                             device_secret,
+                            recipient_pubkey: contact.public_identity.key,
+                            relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
                         });
                         crate::logf!("CLUTCH: Sent KEM response to {}", crate::fp(&contact.handle_proof));
                     }
@@ -9679,6 +9683,8 @@ impl PhotonApp {
                         payload,
                         device_pubkey,
                         device_secret,
+                        recipient_pubkey: contact.public_identity.key,
+                        relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
                     });
 
                     crate::logf!("CLUTCH: Sent proof to {} via status checker", contact_handle);
@@ -10320,6 +10326,8 @@ impl PhotonApp {
                 payload: ClutchCompletePayload { eggs_proof },
                 device_pubkey,
                 device_secret,
+                recipient_pubkey: contact.public_identity.key,
+                relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
             });
             contact.clutch_proof_resends_left -= 1;
             crate::logf!("CLUTCH: Retransmitted proof to {} ({} resends left)", crate::fp(&contact.handle_proof), contact.clutch_proof_resends_left);
@@ -10373,6 +10381,8 @@ impl PhotonApp {
                     peer_addr: primary,
                     alt_addr: alt,
                     vsf_bytes,
+                    recipient_pubkey: contact.public_identity.key,
+                    relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
                 });
                 contact.clutch_offer_sent = true;
                 if let Some(storage) = self.storage.as_ref() {
@@ -11234,6 +11244,8 @@ impl PhotonApp {
                                                     peer_addr: primary,
                                                     alt_addr: alt,
                                                     vsf_bytes,
+                                                    recipient_pubkey: contact.public_identity.key,
+                                                    relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
                                                 });
                                                 contact.clutch_offer_sent = true;
                                                 changed = true;
@@ -12182,6 +12194,8 @@ impl PhotonApp {
                                                 peer_addr: sender_addr,
                                                 alt_addr: alt,
                                                 vsf_bytes,
+                                                recipient_pubkey: contact.public_identity.key,
+                                                relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
                                             });
                                             contact.clutch_offer_sent = true;
                                             // Store local offer in local slot too
@@ -12266,6 +12280,8 @@ impl PhotonApp {
                                                 .expect("device_keypair set in init")
                                                 .secret
                                                 .as_bytes(),
+                                            recipient_pubkey: contact.public_identity.key,
+                                            relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
                                         });
                                         crate::logf!("CLUTCH: Re-sent KEM response to {}", crate::fp(&contact.handle_proof));
                                     }
