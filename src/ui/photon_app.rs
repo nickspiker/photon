@@ -6167,6 +6167,7 @@ impl PhotonApp {
                 let mut contact =
                     crate::types::Contact::new(handle_text, session.handle_proof, device_pubkey);
                 contact.clutch_state = crate::types::ClutchState::Complete;
+                contact.is_online = true; // notes-to-self is always reachable — no pong will ever flip it
                 crate::log("add-friend: self-contact — CLUTCH auto-completed");
                 self.contacts.push(contact);
                 if let Some(storage) = self.storage.as_ref() {
@@ -10111,15 +10112,20 @@ impl PhotonApp {
         };
         let mut changed = false;
         for contact in self.contacts.iter_mut() {
-            if contact.handle_hash == our_pid
-                && contact.clutch_state != crate::types::ClutchState::Complete
-            {
-                contact.clutch_state = crate::types::ClutchState::Complete;
-                contact.clutch_keygen_in_progress = false;
-                changed = true;
-                crate::logf!("CLUTCH: self-contact '{}' auto-completed (no key exchange with self)", crate::fp(&contact.handle_proof));
-                if let Some(storage) = self.storage.as_ref() {
-                    let _ = crate::storage::contacts::save_contact(contact, storage);
+            if contact.handle_hash == our_pid {
+                // The "notes to self" contact IS this identity — always reachable, no ceremony, no pong. It never gets a pong to flip it online, so without forcing it here it shows OFFLINE forever (the reported bug). Mark it online + Complete unconditionally, on every settle (attest + resume — a reloaded-from-disk self-contact needs it re-applied).
+                if !contact.is_online {
+                    contact.is_online = true;
+                    changed = true;
+                }
+                if contact.clutch_state != crate::types::ClutchState::Complete {
+                    contact.clutch_state = crate::types::ClutchState::Complete;
+                    contact.clutch_keygen_in_progress = false;
+                    changed = true;
+                    crate::logf!("CLUTCH: self-contact '{}' auto-completed (no key exchange with self)", crate::fp(&contact.handle_proof));
+                    if let Some(storage) = self.storage.as_ref() {
+                        let _ = crate::storage::contacts::save_contact(contact, storage);
+                    }
                 }
             }
         }
