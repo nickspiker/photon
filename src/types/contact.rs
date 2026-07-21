@@ -459,6 +459,17 @@ impl Contact {
     }
 
     /// Returns the (primary, alternate) address pair for racing a transfer across the reachable paths. A punch-validated direct path (from NAT traversal) wins as primary when present, with the public/LAN kept as the alternate so PT still races if the validated mapping went stale. Otherwise: primary is the LAN address (preferred — no router hairpin, no AP isolation), alternate is the public address; and when no LAN address is known, primary is the public address and alternate is `None`. PT sends the SPEC to both and locks onto whichever ACKs first (see [`crate::network::pt::PtManager::send_with_pubkey_and_alt`]).
+    /// Every device pubkey we know for this contact: the first-met identity device plus every discovered fleet endpoint. Used to address a RELAY store — we can't tell which of a multi-device peer's phones is the one currently polling its relay queue (they may run a different device than the one we first met), so we store the message for ALL of them; whichever is live fetches it, the rest expire harmlessly. Deduplicated.
+    pub fn relay_device_list(&self) -> Vec<[u8; 32]> {
+        let mut out = vec![self.public_identity.key];
+        for ep in &self.device_endpoints {
+            if !out.contains(&ep.pubkey) {
+                out.push(ep.pubkey);
+            }
+        }
+        out
+    }
+
     /// Upsert the per-device endpoint for `pubkey` and apply `update` to it. Linear scan — fleets are single-digit sized.
     pub fn endpoint_mut(&mut self, pubkey: &[u8; 32]) -> &mut DeviceEndpoint {
         if let Some(i) = self.device_endpoints.iter().position(|e| e.pubkey == *pubkey) {
