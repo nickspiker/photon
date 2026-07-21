@@ -1975,7 +1975,51 @@ impl FluorApp for PhotonApp {
                     device_secret,
                 ) {
                     Ok(s) => {
+                        // Preserve any IN-FLIGHT ceremony round across this reload. CLUTCH keypairs/slots are ephemeral scratch, so a wholesale reload from disk wipes a live round — and a warm resume (Android foregrounds constantly) then trips the keygen sweep into minting a DIVERGENT round the peer never agreed to. That is exactly what stranded the relay ceremony: the slow relay round-trip outlived the keys, mom's KEM came back addressed to keys we'd already discarded, and it was dropped as "old keys". Re-key must be deliberate on real failure — never a side effect of a lifecycle event. Snapshot rounds that are still FRESH by eagle time (a genuinely stale one is let go, to be re-keyed cleanly) and restore them after the reload.
+                        let now = vsf::eagle_time_oscillations();
+                        const ROUND_TTL_OSC: i64 = 300 * vsf::OSCILLATIONS_PER_SECOND as i64; // 5 min: a relay ceremony (offer+KEM+proof, each a 5-30s store-and-forward hop) can run 1-2 min, and the round's keys must stay valid the whole time
+                        let inflight: std::collections::HashMap<[u8; 32], _> = self
+                            .contacts
+                            .iter()
+                            .filter(|c| {
+                                c.clutch_our_keypairs.is_some()
+                                    && c.clutch_round_started.map_or(false, |t| now - t < ROUND_TTL_OSC)
+                            })
+                            .map(|c| {
+                                (
+                                    c.handle_hash,
+                                    (
+                                        c.clutch_our_keypairs.clone(),
+                                        c.clutch_slots.clone(),
+                                        c.offer_provenances.clone(),
+                                        c.ceremony_id,
+                                        c.clutch_round_started,
+                                        c.clutch_offer_sent,
+                                        c.clutch_pending_kem.clone(),
+                                        c.clutch_state,
+                                    ),
+                                )
+                            })
+                            .collect();
                         self.contacts = crate::storage::contacts::load_all_contacts(&s);
+                        for c in self.contacts.iter_mut() {
+                            if let Some((kp, slots, provs, cid, started, offer_sent, pending_kem, state)) =
+                                inflight.get(&c.handle_hash)
+                            {
+                                c.clutch_our_keypairs = kp.clone();
+                                c.clutch_slots = slots.clone();
+                                c.offer_provenances = provs.clone();
+                                c.ceremony_id = *cid;
+                                c.clutch_round_started = *started;
+                                c.clutch_offer_sent = *offer_sent;
+                                c.clutch_pending_kem = pending_kem.clone();
+                                // Keep a mid-ceremony state alive — never downgrade a live AwaitingProof to disk's stale Pending. A persisted Complete on disk wins (the round already sealed).
+                                if !matches!(c.clutch_state, crate::types::ClutchState::Complete) {
+                                    c.clutch_state = *state;
+                                }
+                                crate::logf!("CLUTCH: preserved in-flight round for {} across resume (no willy-nilly re-key)", crate::fp(&c.handle_proof));
+                            }
+                        }
                         // Fleet siblings load from their own index (they never enter the contacts index).
                         {
                             let siblings = crate::storage::contacts::load_all_siblings(
@@ -8703,11 +8747,15 @@ impl PhotonApp {
         if self.contacts.iter().any(|c| c.clutch_keygen_in_progress) {
             return false;
         }
+        // Eagle-time gate on re-key: a round whose keys read `None` but that STARTED recently is not a failure to re-key — it's a transient loss (a resume that hadn't restored yet, an in-flight round). Re-keying it mints a divergent round the peer never agreed to; instead wait, and only re-key once the round is genuinely stale. A contact that never started a round (`clutch_round_started == None`) is the legitimate initial-keygen case and fires immediately.
+        let now = vsf::eagle_time_oscillations();
+        const ROUND_TTL_OSC: i64 = 300 * vsf::OSCILLATIONS_PER_SECOND as i64; // 5 min: a relay ceremony (offer+KEM+proof, each a 5-30s store-and-forward hop) can run 1-2 min, and the round's keys must stay valid the whole time
         let next_idx = self.contacts.iter().position(|c| {
             c.handle_hash != our_seed
                 && c.clutch_state == crate::types::ClutchState::Pending
                 && c.clutch_our_keypairs.is_none()
                 && !c.clutch_keygen_in_progress
+                && c.clutch_round_started.map_or(true, |t| now - t >= ROUND_TTL_OSC)
         });
         if let Some(i) = next_idx {
             // Party id per contact: identity seed for friends, device-derived pid for fleet siblings.
@@ -9223,6 +9271,8 @@ impl PhotonApp {
 
                     // Store keypairs (ceremony_id computed on-demand when provenances available)
                     contact.clutch_our_keypairs = Some(result.keypairs);
+                    // Stamp the round start (eagle time): this is the moment a round's keys exist. A resume that reloads contacts from disk wipes these ephemeral keys — a fresh stamp lets the resume RESTORE the round instead of the sweep minting a divergent one, and gates re-key on real staleness (see Contact::clutch_round_started).
+                    contact.clutch_round_started = Some(vsf::eagle_time_oscillations());
                     changed = true;
 
                     // Persist keypairs to disk immediately (crash recovery)
@@ -9732,6 +9782,7 @@ impl PhotonApp {
                         contact.ceremony_id = None;
                         contact.clutch_pending_kem = None;
                         contact.clutch_our_keypairs = None;
+                        contact.clutch_round_started = None;
                         contact.clutch_offer_sent = false;
                     }
                 } else {
@@ -11739,6 +11790,7 @@ impl PhotonApp {
                                         keys.zeroize();
                                     }
                                     contact.clutch_our_keypairs = None;
+                                    contact.clutch_round_started = None;
                                     for slot in &mut contact.clutch_slots {
                                         slot.offer = None;
                                         if let Some(ref mut s) = slot.kem_secrets_from_them {
@@ -12018,6 +12070,7 @@ impl PhotonApp {
                                         crate::logf!("CLUTCH: Re-key from {} - we're Complete, they have new keys, nuking for fresh ceremony", crate::fp(&contact.handle_proof));
                                         // Full re-key: nuke everything
                                         contact.clutch_our_keypairs = None;
+                                        contact.clutch_round_started = None;
                                         contact.clutch_slots.clear();
                                         contact.ceremony_id = None;
                                         contact.offer_provenances.clear();
@@ -12343,6 +12396,7 @@ impl PhotonApp {
                                         contact.friendship_id = None;
                                         contact.completed_their_hqc_prefix = None;
                                         contact.clutch_our_keypairs = None;
+                                        contact.clutch_round_started = None;
                                         contact.clutch_slots.clear();
                                         contact.ceremony_id = None;
                                         contact.offer_provenances.clear(); // Clear for fresh ceremony nonce
@@ -12832,6 +12886,7 @@ impl PhotonApp {
                                             contact.ceremony_id = None;
                                             contact.clutch_pending_kem = None;
                                             contact.clutch_our_keypairs = None;
+                                            contact.clutch_round_started = None;
                                             contact.clutch_offer_sent = false;
                                             changed = true;
                                         }
