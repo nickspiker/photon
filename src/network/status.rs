@@ -1266,7 +1266,7 @@ async fn run_checker(
         });
     }
 
-    // Spawn RELAY POLL task — the store-and-forward bridge for peers with NO direct path (asymmetric reachability: one end IPv6-only, the other IPv4-only behind symmetric NAT — the Seattle↔Montana case). fgtw.org is dual-stack, so both ends reach it (mom over v4, peer-B over v6) and it forwards the ceremony no direct socket can carry. We poll our relay queue, split the concatenated self-delimiting VSF docs (each carries its own header file_length), and dispatch each exactly like a directly-received CLUTCH message — but tagged with RELAY_ADDR so the app skips address-learning and lights the contact lime-yellow (reached_via_relay). The sender was signature-verified when parsed; the relay is an untrusted forwarder that can drop or reorder but never forge. NOTE: polls unconditionally on a slow cadence for now; a later pass should gate it on having a relay-pending ceremony to spare fgtw.org needless drains.
+    // Spawn RELAY POLL task — the store-and-forward bridge for peers with NO direct path (Seattle↔Montana: one end IPv6-only, the other IPv4-only behind symmetric NAT). fgtw.org is dual-stack, so both reach it and it forwards the CLUTCH ceremony no direct socket can carry. We poll our queue, split the concatenated self-delimiting VSF docs, and dispatch each CLUTCH message tagged with RELAY_ADDR (the app skips address-learning + marks reached_via_relay). Trust is applied downstream (parse verifies the signature; the app's CLUTCH handlers gate on fold-respecting knows_device — the relay task has no fold state). NOTE: this carries the CEREMONY only. The full data plane — ping/pong presence, chat, acks — needs the re-injection rework (feed relayed bytes through THIS receiver's dispatch so pong-matching / chat-decrypt are reused), tracked separately.
     {
         let keypair_relay = keypair.clone();
         let status_tx_relay = status_tx.clone();
@@ -1284,7 +1284,6 @@ async fn run_checker(
                     continue;
                 }
                 for data in split_concatenated_vsf(&messages) {
-                    // NO flat-contact gate here. The relay fan-out sends from EVERY device of a peer's fleet, so a legitimate offer/KEM/proof is frequently signed by a SIBLING device the flat contacts list never held (mom met peer-B as <dev> but his sibling <dev> relayed the offer → the old gate dropped it, stalling the ceremony). Trust is applied correctly downstream instead: the parse verifies the signature, and the app's CLUTCH handlers gate on fold-respecting `knows_device` — which the relay task can't do (it has only the flat pubkey list, no fold state). The relay queue is per-device and worker-signed, so the DoS surface is already bounded.
                     dispatch_relayed_clutch(&data, &status_tx_relay, &event_proxy_relay);
                 }
             }
@@ -2153,6 +2152,10 @@ async fn run_checker(
                                     provenance_hash,
                                     signature,
                                 } => {
+                                    // NEVER answer our OWN probe reflected back (LAN hairpin / multicast loopback). Our own device is in the contacts list (the self-contact + siblings), so it passes the friend gate below — and ACKing it validates a path TO OURSELVES, which poisons addressing exactly like the 0.0.0.0 sentinel did: sends go to our loopback and relay_to empties out. Seen live as mom validating a path to her own <lan-ip>.
+                                    if sender_pubkey == our_pubkey_recv {
+                                        continue;
+                                    }
                                     // Friend-tier hole-punch: only a contact/fleet member's probe is answered (the data plane is friend-gated, same set as ping). Receiving the probe means their packet traversed our NAT; replying opens ours toward them, and the ack — echoing their provenance — lets them validate this exact `(local, remote)` path. The ack also carries the address we saw, doubling as a reflexive echo for them.
                                     let is_contact = {
                                         let list = contacts_recv.lock().unwrap();
