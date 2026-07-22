@@ -1271,7 +1271,6 @@ async fn run_checker(
         let keypair_relay = keypair.clone();
         let status_tx_relay = status_tx.clone();
         let event_proxy_relay = event_proxy.clone();
-        let contacts_relay = contacts.clone();
         tokio::spawn(async move {
             crate::log("Status: Relay poll task started");
             loop {
@@ -1285,17 +1284,7 @@ async fn run_checker(
                     continue;
                 }
                 for data in split_concatenated_vsf(&messages) {
-                    // Trust gate: the signer must be a known contact (same as the UDP/TCP paths — the relay is an untrusted forwarder).
-                    if let Ok(signer) = vsf::verification::extract_signer_pubkey(&data) {
-                        let known = {
-                            let list = contacts_relay.lock().unwrap();
-                            list.iter().any(|p| *p == DevicePubkey::from_bytes(signer))
-                        };
-                        if !known {
-                            crate::logf!("RELAY: message from non-contact {} dropped", hex::encode(&signer[..signer.len().min(8)]));
-                            continue;
-                        }
-                    }
+                    // NO flat-contact gate here. The relay fan-out sends from EVERY device of a peer's fleet, so a legitimate offer/KEM/proof is frequently signed by a SIBLING device the flat contacts list never held (mom met peer-B as <dev> but his sibling <dev> relayed the offer → the old gate dropped it, stalling the ceremony). Trust is applied correctly downstream instead: the parse verifies the signature, and the app's CLUTCH handlers gate on fold-respecting `knows_device` — which the relay task can't do (it has only the flat pubkey list, no fold state). The relay queue is per-device and worker-signed, so the DoS surface is already bounded.
                     dispatch_relayed_clutch(&data, &status_tx_relay, &event_proxy_relay);
                 }
             }
