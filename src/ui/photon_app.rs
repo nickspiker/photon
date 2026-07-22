@@ -2213,7 +2213,12 @@ impl FluorApp for PhotonApp {
             }
             if matches!(self.state, AppState::Settings(_)) {
                 self.change_focus(None);
-                self.state = AppState::Ready;
+                // Back returns to the screen the orb opened settings FROM: Ready when attested, else the Launch/attest screen (pre-attest the orb opens About/Updates over Launch, so back must land there, not a Ready that doesn't exist yet).
+                self.state = if self.session.is_some() {
+                    AppState::Ready
+                } else {
+                    AppState::Launch(LaunchState::Fresh)
+                };
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
@@ -2226,7 +2231,8 @@ impl FluorApp for PhotonApp {
                 && hit_id < self.settings_nav_base.wrapping_add(9)
             {
                 let idx = (hit_id - self.settings_nav_base) as usize;
-                if let Some(p) = SettingsPage::ALL.get(idx) {
+                if let Some(p) = self.settings_pages().get(idx).copied() {
+                    let p = &p;
                     self.change_focus(None);
                     // Leaving a page clears its selection/destructive-action arms (interaction-cleared).
                     if *p != SettingsPage::Fleet {
@@ -3515,7 +3521,7 @@ impl FluorApp for PhotonApp {
         let (settings_rail_scroll, settings_content_scroll) = if let AppState::Settings(page) = self.state {
             let sl = SettingsLayout::compute(&ctx.viewport);
             // Publish the extents (rubber-band bounds) — NO hard clamp: the wheel handler resists past-the-end steps and tick() eases the overshoot back, so an out-of-range value here is the rubber-band mid-stretch, rendered as-is. Labels, widgets, and bg all read this same raw value, so the whole pane stretches together.
-            self.settings_rail_extent = (sl.nav_row_h() * (SettingsPage::ALL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0);
+            self.settings_rail_extent = (sl.nav_row_h() * (self.settings_pages().len() as Coord + 1.0) - sl.rail_inset().h).max(0.0);
             // The You page is a dynamic form — its row count is the field set plus the fixed chrome rows, not a constant. The Diagnostics log viewer counts fractionally: two full-height header rows plus half-height record rows (matching diag_log_row_rect exactly, or the scroll bound and the drawn rows disagree).
             let content_rows_h = if page == SettingsPage::You {
                 sl.content_line_h() * you_rows_plan(&self.you_fields).len() as Coord
@@ -3551,6 +3557,9 @@ impl FluorApp for PhotonApp {
         if matches!(self.state, AppState::Conversation) {
             self.update_widget_layout(ctx);
         }
+
+        // Capture the settings page set BEFORE the chrome mutable-borrow — it returns &'static data (reads only self.session), so the local outlives the borrow and the render loop can't re-borrow self.
+        let settings_pages = self.settings_pages();
 
         let Some(chrome) = self.chrome.as_mut() else {
             return;
@@ -4777,7 +4786,7 @@ impl FluorApp for PhotonApp {
                 layout.rail.right().max(0.0) as usize,
                 layout.rail.bottom().max(0.0) as usize,
             );
-            for (i, p) in SettingsPage::ALL.iter().enumerate() {
+            for (i, p) in settings_pages.iter().enumerate() {
                 let r = fluor::region::Region::new(
                     rail_inset.x,
                     pages_top - settings_rail_scroll + i as Coord * nav_h,
@@ -6303,6 +6312,15 @@ impl PhotonApp {
     }
 
     /// Encrypt + send the compose-box contents to the open contact, append it as an outgoing bubble, and persist. No-op unless a CLUTCH-Complete contact is open with a friendship chain and the box is non-empty. The crypto/wire/persist layers already exist (`FriendshipChains::prepare_send`, `StatusChecker::send_message`, `save_messages`); this is the UI→chain→network glue. Orb (chrome app-icon) tap. Returns true if it acted (caller redraws). Routed by screen: Ready → open the settings / about / help panel (its own screen with a nine-page nav rail); Settings → no-op (the dedicated back affordance exits). Launch / AddDevice / Conversation ignore the orb. The interim Ready → AddDevice entry moved onto the Fleet page's "Add device" pill.
+    /// Which settings pages the nav rail shows, gated by attest state. Pre-attest (no session) there is no identity to configure — You/Fleet/Security/Recovery/Appearance/Notifications/Diagnostics all need one — so only About and Updates make sense. Post-attest: the full rail. The orb opens the panel on EITHER screen; this just narrows what's inside.
+    fn settings_pages(&self) -> &'static [SettingsPage] {
+        if self.session.is_some() {
+            &SettingsPage::ALL
+        } else {
+            &[SettingsPage::About, SettingsPage::Updates]
+        }
+    }
+
     fn on_orb_click(&mut self) -> bool {
         match self.state {
             AppState::Ready => {
@@ -6312,7 +6330,14 @@ impl PhotonApp {
                 self.state = AppState::Settings(SettingsPage::You);
                 true
             }
-            // Settings / AddDevice / Launch / Conversation fall thru: the orb is settings-only, and navigation off those screens is a dedicated control (back button), never the orb.
+            // Pre-attest: the orb ALSO opens the panel, but `settings_pages` narrows it to About + Updates. Land on About. (Editing the handle already cancels the permanence interstitial, so opening settings from Launch is safe.)
+            AppState::Launch(_) => {
+                self.change_focus(None);
+                self.settings_content_scroll = 0.0;
+                self.state = AppState::Settings(SettingsPage::About);
+                true
+            }
+            // Settings / AddDevice / Conversation fall thru: the orb is settings-only, and navigation off those screens is a dedicated control (back button), never the orb.
             _ => false,
         }
     }
