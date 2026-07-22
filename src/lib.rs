@@ -318,6 +318,7 @@ fn append_log_record(level: LogLevel, msg: &str, vals: &[LogValue]) {
     for v in vals {
         let t = match v {
             LogValue::U(n) => vsf::VsfType::u(*n as usize, false),
+            LogValue::Z(n) => vsf::VsfType::z(*n as usize),
             LogValue::I(n) => vsf::VsfType::i6(*n as i64),
             LogValue::F(n) => vsf::VsfType::f6(*n),
             LogValue::B(b) => vsf::VsfType::u(*b as usize, false),
@@ -637,6 +638,22 @@ pub enum LogValue {
     B(bool),
     T(String),
     Addr(std::net::SocketAddr),
+    /// A version component — emits the VSF `z` (version) type, not a plain integer. Carried by [`Ver`].
+    Z(u128),
+}
+
+/// Wrap a version-number component so `logf!` captures it as VSF `z` (the version type) rather than a plain `u`. `logf!("v{}.{}.{}", Ver(maj), Ver(min), Ver(pat))` renders normally and stores three `z` fields.
+#[derive(Clone, Copy)]
+pub struct Ver(pub u64);
+impl std::fmt::Display for Ver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+impl CapPrim for Ver {
+    fn to_log(self) -> LogValue {
+        LogValue::Z(self.0 as u128)
+    }
 }
 
 /// Capture wrapper for `logf!` args. Inherent impls (numerics, bools, addresses) outrank the [`CapDisplay`] blanket at method resolution, so typed capture is automatic and everything else degrades to text — the autoref-free inherent-priority specialization.
@@ -708,6 +725,7 @@ pub fn render_log_line(template: &str, vals: &[LogValue]) -> String {
                 if let Some(v) = vals.get(next) {
                     match v {
                         LogValue::U(n) => out.push_str(&n.to_string()),
+                        LogValue::Z(n) => out.push_str(&n.to_string()),
                         LogValue::I(n) => out.push_str(&n.to_string()),
                         LogValue::F(n) => out.push_str(&n.to_string()),
                         LogValue::B(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -778,6 +796,7 @@ pub fn parse_log_records(buf: &[u8]) -> (Vec<LogRecord>, usize) {
             .filter_map(|f| f.values.first())
             .map(|v| match v {
                 VsfType::u(n, _) => LogValue::U(*n as u128),
+                VsfType::z(n) => LogValue::Z(*n as u128),
                 VsfType::i6(n) => LogValue::I(*n as i128),
                 VsfType::f6(n) => LogValue::F(*n),
                 VsfType::x(s) => LogValue::T(s.clone()),
@@ -840,6 +859,23 @@ pub fn log_structured(level: LogLevel, template: &str, vals: Vec<LogValue>) {
 }
 #[cfg(not(feature = "logging"))]
 pub fn log_structured(_level: LogLevel, _template: &str, _vals: Vec<LogValue>) {}
+
+/// Log this build's version + git commit — the FIRST line at startup, so every submitted log self-identifies its build. Ends the "which build is this device even running?" guesswork that stalled diagnosis (a device silently on an old build reads identically to one on the new build until you catch a behavioural tell). Version parts ride as VSF `z` (the version type), the commit as text — binary at rest, rendered at the edge. Called from both the desktop `main()` and the Android JNI entry so it fires on every platform.
+pub fn log_version() {
+    let major: u64 = env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap_or(0);
+    let minor: u64 = env!("CARGO_PKG_VERSION_MINOR").parse().unwrap_or(0);
+    let patch: u64 = env!("CARGO_PKG_VERSION_PATCH").parse().unwrap_or(0);
+    log_structured(
+        LogLevel::Info,
+        "photon v{}.{}.{} \u{00b7} commit {}",
+        vec![
+            LogValue::Z(major as u128),
+            LogValue::Z(minor as u128),
+            LogValue::Z(patch as u128),
+            LogValue::T(env!("PHOTON_GIT_COMMIT").to_string()),
+        ],
+    );
+}
 
 /// format!-shaped structured log at Info: `logf!("RX {} bytes from {}", n, addr)` — the template stores as pure text, `n`/`addr` as typed fields.
 #[macro_export]
