@@ -891,6 +891,8 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetwor
     data_dir: JString<'_>,
     shadow_dir: JString<'_>,
 ) -> jlong {
+    // FIRST log line on Android: which build is this? Ends the "is this phone even on the new APK?" guesswork.
+    crate::log_version();
     info!("PhotonConnectionService: Initializing network stack");
 
     // Register the service as the message-notification sink. nativeNetworkInit is an INSTANCE method on the Kotlin side, so the second JNI parameter is the service `this` — a global ref of it (+ the JavaVM) lets the RX thread post "new message" notifications up thru Kotlin regardless of Activity lifecycle (the Choreographer poll bridge stops when the app backgrounds, which is exactly when notifications matter).

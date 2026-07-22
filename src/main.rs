@@ -7,6 +7,8 @@ use photon_messenger::ui::photon_app::PhotonApp;
 fn main() {
     // Initialize logging (redirects stdout/stderr to file on Windows GUI apps)
     photon_messenger::init_logging();
+    // FIRST log line: which build is this? Every submitted log now self-identifies its version + commit.
+    photon_messenger::log_version();
 
     // Set up panic hook to log panics to file (critical for debugging Windows GUI crashes)
     std::panic::set_hook(Box::new(|panic_info| {
