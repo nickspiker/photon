@@ -83,6 +83,8 @@ pub struct PingRequest {
     pub peer_pubkey: DevicePubkey,
     /// Hole-punch candidate addresses to fire a probe at, alongside the ping. Empty = no punch this cycle (e.g. we already have a fresh validated path). Piggybacking on the ping cycle gives the punch a natural cadence and doubles as keepalive on a validated path.
     pub punch_candidates: Vec<SocketAddr>,
+    /// Peer device keys to also send this ping to over the relay pipe (empty = direct only). Set to the peer's device list when no direct path is proven, so PRESENCE rides the relay: the peer receives the ping over its pipe, pongs back over ITS pipe, and each side flips the other online (reached_via_relay → lime-yellow). This is the presence keepalive for a relay-only contact.
+    pub relay_to: Vec<[u8; 32]>,
 }
 
 // NOTE: ClutchRequest and ClutchRequestType REMOVED Full 8-primitive CLUTCH uses ClutchOfferRequest and ClutchKemResponseRequest which are handled via build_clutch_offer_vsf() and build_clutch_kem_response_vsf() See docs/clutch.md Section 4.2 for the slot-based ceremony protocol.
@@ -103,6 +105,8 @@ pub struct MessageRequest {
     pub ciphertext: Vec<u8>,
     /// Eagle time oscillations used for encryption - MUST match for decryption The nonce is derived from this, so sender and receiver must use identical value
     pub eagle_time: i64,
+    /// Peer device keys to also send this message to over the relay pipe (empty = direct only). Set to the peer's device list when no direct path is proven, so CHAT rides the relay identically to how CLUTCH already does.
+    pub relay_to: Vec<[u8; 32]>,
 }
 
 /// Request to send a message acknowledgment (CHAIN format)
@@ -117,6 +121,8 @@ pub struct AckRequest {
     pub acked_eagle_time: i64,
     /// Hash of the decrypted plaintext - proves we decrypted their message
     pub plaintext_hash: [u8; 32],
+    /// Peer device keys to also send this ACK to over the relay pipe (empty = direct only). Set to the peer's device list when no direct path is proven, so the chat ACK returns over the relay and clears the sender's message-layer retransmit.
+    pub relay_to: Vec<[u8; 32]>,
 }
 
 /// Request to send an AvatarRequest to this peer asking for their avatar.
@@ -595,17 +601,20 @@ impl StatusChecker {
         })
     }
 
-    /// Request to ping a contact (non-blocking)
+    /// Request to ping a contact (non-blocking). `relay_to` = peer device keys to also ping over the relay
+    /// pipe (empty = direct only); set when no direct path is proven so presence works for a relay-only peer.
     pub fn ping(
         &self,
         peer_addr: SocketAddr,
         peer_pubkey: DevicePubkey,
         punch_candidates: Vec<SocketAddr>,
+        relay_to: Vec<[u8; 32]>,
     ) {
         let _ = self.ping_sender.send(PingRequest {
             peer_addr,
             peer_pubkey,
             punch_candidates,
+            relay_to,
         });
     }
 
@@ -702,82 +711,34 @@ type OptionalEventProxy = Option<()>;
 pub const RELAY_ADDR: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
 
-/// Split a blob of back-to-back complete VSF documents (the relay's fetch response concatenates them) into individual messages. Each VSF header carries its own `file_length`, so we walk header-by-header. Stops on the first undecodable or oversized length rather than looping — a truncated tail is dropped, never mis-parsed.
-fn split_concatenated_vsf(data: &[u8]) -> Vec<Vec<u8>> {
-    let mut out = Vec::new();
-    let mut ptr = 0;
-    while ptr < data.len() {
-        match vsf::file_format::VsfHeader::decode(&data[ptr..]) {
-            Ok((h, _)) if h.file_length > 0 && ptr + h.file_length <= data.len() => {
-                out.push(data[ptr..ptr + h.file_length].to_vec());
-                ptr += h.file_length;
-            }
-            _ => break,
+/// Send a REPLY (pong, chat ACK, CLUTCH proof ACK) back to whoever sent us the message we're answering.
+/// If it arrived directly (`dst` is a real address) this is a plain UDP send. If it arrived over the relay
+/// pipe (`dst == RELAY_ADDR`), UDP would black-hole to 0.0.0.0:0 — so instead we relay the reply back to the
+/// sender's device key over their pipe. `reply_to_device` is the device key extracted from the inbound
+/// message (its signer). This is what makes the relay BIDIRECTIONAL: a pong/ACK returns the same way the
+/// message came, so presence flips online on both ends and chat ACKs clear the sender's retransmit.
+async fn relay_reply(
+    socket: &tokio::net::UdpSocket,
+    keypair: &crate::network::fgtw::Keypair,
+    dst: SocketAddr,
+    reply_to_device: &[u8; 32],
+    bytes: &[u8],
+) {
+    if dst == RELAY_ADDR {
+        if let Err(e) =
+            crate::network::fgtw::relay::send_via_relay(keypair, reply_to_device, bytes).await
+        {
+            crate::logf!("RELAY: reply to {} failed: {}", hex::encode(&reply_to_device[..4]), e);
         }
+    } else {
+        udp::send(socket, bytes, dst).await;
     }
-    out
 }
 
-/// Parse a relayed VSF as a CLUTCH offer/KEM/complete and emit the SAME `StatusUpdate` the UDP/TCP receive paths do — but tagged with [`RELAY_ADDR`] so the app treats it as relayed (no address to learn, mark reached_via_relay). Each parser verifies the signature internally; a message that is none of the three is ignored.
-fn dispatch_relayed_clutch(
-    data: &[u8],
-    status_tx: &Sender<StatusUpdate>,
-    event_proxy: &OptionalEventProxy,
-) {
-    use crate::network::fgtw::protocol::{
-        parse_clutch_complete_vsf_without_recipient_check,
-        parse_clutch_kem_response_vsf_without_recipient_check,
-        parse_clutch_offer_vsf_without_recipient_check,
-    };
-    if let Ok((payload, sender_pubkey, offer_provenance, conversation_token)) =
-        parse_clutch_offer_vsf_without_recipient_check(data)
-    {
-        crate::log("RELAY: parsed ClutchOffer (VSF verified) — dispatching");
-        send_status_update(
-            status_tx,
-            StatusUpdate::ClutchOfferReceived {
-                conversation_token,
-                offer_provenance,
-                sender_pubkey,
-                payload,
-                sender_addr: RELAY_ADDR,
-            },
-            event_proxy,
-        );
-    } else if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
-        parse_clutch_kem_response_vsf_without_recipient_check(data)
-    {
-        crate::log("RELAY: parsed ClutchKemResponse (VSF verified) — dispatching");
-        send_status_update(
-            status_tx,
-            StatusUpdate::ClutchKemResponseReceived {
-                conversation_token,
-                ceremony_id,
-                sender_pubkey,
-                payload,
-                sender_addr: RELAY_ADDR,
-            },
-            event_proxy,
-        );
-    } else if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
-        parse_clutch_complete_vsf_without_recipient_check(data)
-    {
-        crate::log("RELAY: parsed ClutchComplete (VSF verified) — dispatching");
-        send_status_update(
-            status_tx,
-            StatusUpdate::ClutchCompleteReceived {
-                conversation_token,
-                ceremony_id,
-                sender_pubkey,
-                payload,
-                sender_addr: RELAY_ADDR,
-            },
-            event_proxy,
-        );
-    } else {
-        crate::log("RELAY: fetched message is not a CLUTCH type — ignored");
-    }
-}
+// The old relay dispatch (split_concatenated_vsf + dispatch_relayed_clutch) is GONE. The pipe injects each
+// relayed frame directly into the receiver's select! as a whole datagram tagged RELAY_ADDR, so the real
+// dispatch parses it — CLUTCH, ping/pong, chat, acks all — with no bespoke relay parser. There is nothing to
+// split either: a WebSocket frame IS one message (no concatenation, unlike the old fetch response).
 
 fn send_status_update(
     status_tx: &Sender<StatusUpdate>,
@@ -1266,26 +1227,55 @@ async fn run_checker(
         });
     }
 
-    // Spawn RELAY POLL task — the store-and-forward bridge for peers with NO direct path (Seattle↔Montana: one end IPv6-only, the other IPv4-only behind symmetric NAT). fgtw.org is dual-stack, so both reach it and it forwards the CLUTCH ceremony no direct socket can carry. We poll our queue, split the concatenated self-delimiting VSF docs, and dispatch each CLUTCH message tagged with RELAY_ADDR (the app skips address-learning + marks reached_via_relay). Trust is applied downstream (parse verifies the signature; the app's CLUTCH handlers gate on fold-respecting knows_device — the relay task has no fold state). NOTE: this carries the CEREMONY only. The full data plane — ping/pong presence, chat, acks — needs the re-injection rework (feed relayed bytes through THIS receiver's dispatch so pong-matching / chat-decrypt are reused), tracked separately.
+    // The RELAY PIPE inject channel. Frames that arrive over the live WebSocket pipe are pushed here and
+    // the receiver task's select! pulls them out AS IF they'd arrived on the UDP socket, tagged RELAY_ADDR.
+    // That means the ENTIRE existing dispatch — PT DATA, ping/pong presence, chat, acks, CLUTCH — runs on
+    // relayed bytes with zero bespoke per-message-type handling. A generous bound so a burst (a 548 KB
+    // CLUTCH offer arrives as one frame) never blocks the WS reader.
+    let (inject_tx, mut inject_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+
+    // Spawn RELAY PIPE task — the live bridge for peers with NO direct path (Seattle↔Montana: one end IPv6-only, the other IPv4-only). fgtw.org is dual-stack, so both reach it. We hold ONE WebSocket open to our own device's PipeHub (keyed by our device key); a sender's signed `relay` request is forwarded straight down it by the worker — no polling, no store-and-forward, no R2. Every frame received is fed into the inject channel, so it rides the receiver task's real dispatch tagged RELAY_ADDR (the app skips address-learning + marks reached_via_relay). Trust is applied downstream exactly as for a UDP packet (each parser verifies the signature; CLUTCH handlers gate on fold-respecting knows_device). This carries the WHOLE data plane, not just the ceremony — presence and chat ride it too.
+    #[cfg(not(target_os = "android"))]
     {
-        let keypair_relay = keypair.clone();
-        let status_tx_relay = status_tx.clone();
-        let event_proxy_relay = event_proxy.clone();
+        let our_dev_hex = hex::encode(our_device_pk);
+        let inject_tx_pipe = inject_tx.clone();
         tokio::spawn(async move {
-            crate::log("Status: Relay poll task started");
+            use futures::StreamExt;
+            use tokio_tungstenite::tungstenite::Message;
+            let url = format!("wss://fgtw.org/pipe?dev={}", our_dev_hex);
+            crate::logf!("PIPE: relay pipe task started (dev {}...)", &our_dev_hex[..8]);
             loop {
+                match tokio_tungstenite::connect_async(&url).await {
+                    Ok((ws_stream, _)) => {
+                        crate::log("PIPE: connected — relay is a live socket now");
+                        let (_, mut read) = ws_stream.split();
+                        while let Some(msg) = read.next().await {
+                            match msg {
+                                Ok(Message::Binary(data)) => {
+                                    crate::logf!("PIPE: ← {} bytes (injecting into dispatch)", data.len());
+                                    if inject_tx_pipe.send(data.to_vec()).await.is_err() {
+                                        // Receiver task gone — the whole status task is tearing down.
+                                        return;
+                                    }
+                                }
+                                Ok(Message::Close(_)) => {
+                                    crate::log("PIPE: server closed");
+                                    break;
+                                }
+                                Ok(_) => {} // text/ping/pong — tungstenite auto-pongs
+                                Err(e) => {
+                                    crate::logf!("PIPE: read error: {}", e);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        crate::logf!("PIPE: connect failed: {} — retrying", e);
+                    }
+                }
+                // Reconnect: hold the pipe open for the life of the session so a relay-only peer stays reachable.
                 tokio::time::sleep(Duration::from_secs(5)).await;
-                let messages =
-                    match crate::network::fgtw::relay::fetch_relay_messages(&keypair_relay).await {
-                        Ok(m) => m,
-                        Err(_) => continue, // relay unreachable / nothing pending — best-effort
-                    };
-                if messages.is_empty() {
-                    continue;
-                }
-                for data in split_concatenated_vsf(&messages) {
-                    dispatch_relayed_clutch(&data, &status_tx_relay, &event_proxy_relay);
-                }
             }
         });
     }
@@ -1298,7 +1288,30 @@ async fn run_checker(
         // This node's own reflexive (public) address, learned from peer-echoed reflection (pong `observed_addr` + `ReflectResponse`). Local to the long-lived receiver task; each adoption change is pushed to the app as `StatusUpdate::ReflexiveLearned`.
         let mut reflexive = crate::network::traverse::reflexive::ReflexiveState::new();
         loop {
-            match socket_recv.recv_from(&mut buf).await {
+            // Take the next datagram from EITHER the real UDP socket OR the relay pipe. A pipe frame is
+            // copied into `buf` and handed `RELAY_ADDR` as its source, so everything below this line — the
+            // entire ~900-line dispatch — cannot tell a relayed message from a directly-received one, except
+            // that RELAY_ADDR tells the app to skip address-learning and mark reached_via_relay. This is the
+            // whole reason the pipe is one select! arm and not a parallel dispatch: presence, chat, acks and
+            // CLUTCH all reuse the proven receive path.
+            let recv_result: std::io::Result<(usize, SocketAddr)> = tokio::select! {
+                r = socket_recv.recv_from(&mut buf) => r,
+                injected = inject_rx.recv() => match injected {
+                    Some(bytes) => {
+                        let n = bytes.len().min(buf.len());
+                        if n < bytes.len() {
+                            crate::logf!("PIPE: injected frame {} > RX buf {} — truncated (should not happen; worker caps at 1 MiB)", bytes.len(), buf.len());
+                        }
+                        buf[..n].copy_from_slice(&bytes[..n]);
+                        Ok((n, RELAY_ADDR))
+                    }
+                    None => {
+                        // Pipe task dropped its sender — never expected while the session lives; keep serving UDP.
+                        continue;
+                    }
+                },
+            };
+            match recv_result {
                 Ok((len, src_addr)) => {
                     let msg_bytes = &buf[..len];
 
@@ -1825,7 +1838,16 @@ async fn run_checker(
 
                                     let pong_bytes = pong.to_vsf_bytes();
                                     if !pong_bytes.is_empty() {
-                                        udp::send(&socket_recv, &pong_bytes, src_addr).await;
+                                        // Route back the way the ping came: UDP if direct, relay-pipe to the
+                                        // pinger's device key if this ping arrived over the relay (RELAY_ADDR).
+                                        relay_reply(
+                                            &socket_recv,
+                                            &keypair_recv,
+                                            src_addr,
+                                            sender_pubkey.as_bytes(),
+                                            &pong_bytes,
+                                        )
+                                        .await;
                                     }
                                 }
 
@@ -2359,6 +2381,18 @@ async fn run_checker(
 
                 udp::send(&socket, &msg_bytes, request.peer_addr).await;
 
+                // No direct path → also ping over the relay pipe so PRESENCE works for a relay-only peer.
+                // The peer receives it on its pipe and pongs back over its own pipe; each side flips the
+                // other online (reached_via_relay). Best-effort — a live pipe means the peer is reachable;
+                // a dropped frame just means they're offline, which a missed pong already conveys.
+                for dev in &request.relay_to {
+                    if let Err(e) =
+                        crate::network::fgtw::relay::send_via_relay(&keypair, dev, &msg_bytes).await
+                    {
+                        crate::logf!("RELAY: ping to {} failed: {}", hex::encode(&dev[..4]), e);
+                    }
+                }
+
                 // Fire hole-punch probes at the peer's candidates (piggybacked on the ping cycle). Sending each probe opens our NAT toward that candidate; a friend's ack — matched by provenance in `pending_probes` — validates that path. Candidates arrive best-first, so the first to round-trip (usually the lowest-latency path) wins. The nonce is derived from the candidate so concurrent probes get distinct provenances.
                 for cand in &request.punch_candidates {
                     let mut nonce = [0u8; 32];
@@ -2510,6 +2544,16 @@ async fn run_checker(
                         udp::send(&socket, &pt_bytes, alt).await;
                     }
                 }
+                // No direct path → also send the WHOLE chat VSF (not the PT shard) over the relay pipe.
+                // The peer receives it on its pipe and its dispatch decrypts + ACKs exactly as a direct
+                // message; the ACK returns over the peer's pipe. Chat now works Seattle↔Montana.
+                for dev in &request.relay_to {
+                    if let Err(e) =
+                        crate::network::fgtw::relay::send_via_relay(&keypair, dev, &msg_bytes).await
+                    {
+                        crate::logf!("RELAY: chat to {} failed: {}", hex::encode(&dev[..4]), e);
+                    }
+                }
             }
         }
 
@@ -2570,6 +2614,14 @@ async fn run_checker(
                 // Empty = queued behind an in-flight packet (stop-and-wait); tick() will send it.
                 if !pt_bytes.is_empty() {
                     udp::send(&socket, &pt_bytes, request.peer_addr).await;
+                }
+                // No direct path → relay the whole ACK VSF so it returns over the sender's pipe.
+                for dev in &request.relay_to {
+                    if let Err(e) =
+                        crate::network::fgtw::relay::send_via_relay(&keypair, dev, &msg_bytes).await
+                    {
+                        crate::logf!("RELAY: ack to {} failed: {}", hex::encode(&dev[..4]), e);
+                    }
                 }
             }
         }
