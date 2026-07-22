@@ -1235,7 +1235,11 @@ async fn run_checker(
     let (inject_tx, mut inject_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
 
     // Spawn RELAY PIPE task — the live bridge for peers with NO direct path (Seattle↔Montana: one end IPv6-only, the other IPv4-only). fgtw.org is dual-stack, so both reach it. We hold ONE WebSocket open to our own device's PipeHub (keyed by our device key); a sender's signed `relay` request is forwarded straight down it by the worker — no polling, no store-and-forward, no R2. Every frame received is fed into the inject channel, so it rides the receiver task's real dispatch tagged RELAY_ADDR (the app skips address-learning + marks reached_via_relay). Trust is applied downstream exactly as for a UDP packet (each parser verifies the signature; CLUTCH handlers gate on fold-respecting knows_device). This carries the WHOLE data plane, not just the ceremony — presence and chat ride it too.
-    #[cfg(not(target_os = "android"))]
+    // Runs on EVERY platform including Android — mom + peer-B are on Android and are the whole reason the relay
+    // exists. tokio-tungstenite is not target-gated in Cargo and ring/rustls cross-compile under the NDK (the
+    // same precedent that un-gated nunc); unlike peer_updates' desktop-only WS, this runs in the JNI network
+    // runtime too. If a device build ever fails to hold the WS over cellular, that's the thing to chase — not a
+    // reason to gate it off, which would strand the exact peers it serves.
     {
         let our_dev_hex = hex::encode(our_device_pk);
         let inject_tx_pipe = inject_tx.clone();
