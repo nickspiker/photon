@@ -8097,7 +8097,7 @@ impl PhotonApp {
         }
 
         // Contact must be CLUTCH-Complete with a friendship chain.
-        let (friendship_id, recipient_pubkey, addr_pair, our_handle_hash) = {
+        let (friendship_id, recipient_pubkey, addr_pair, our_handle_hash, msg_relay_to) = {
             let Some(contact) = self.contacts.get(ci) else {
                 return false;
             };
@@ -8113,7 +8113,13 @@ impl PhotonApp {
             let Some(our_pid) = self.our_party_id(contact) else {
                 return false;
             };
-            (fid, contact.public_identity.key, contact.race_addrs(), our_pid)
+            // No direct path → also relay this message over the pipe (chat Seattle↔Montana).
+            let relay_to = if contact.validated_path.is_none() {
+                contact.relay_device_list()
+            } else {
+                Vec::new()
+            };
+            (fid, contact.public_identity.key, contact.race_addrs(), our_pid, relay_to)
         };
         let Some((peer_addr, alt_addr)) = addr_pair else {
             crate::log("CHAT: cannot send — no known address for contact");
@@ -8227,6 +8233,7 @@ impl PhotonApp {
                 prev_msg_hp,
                 ciphertext,
                 eagle_time,
+                relay_to: msg_relay_to,
             });
             crate::logf!("CHAT: sent message ({} chars) to contact", text.len());
         }
@@ -10280,6 +10287,14 @@ impl PhotonApp {
                 }
             }
             let mut sent = false;
+            // No direct path proven → also ping over the relay pipe so PRESENCE works for a relay-only peer
+            // (Seattle↔Montana). Taken once per cycle so we don't relay the same ping three times (once
+            // per candidate address). A validated path means direct pings suffice — no relay ping needed.
+            let mut relay_ping = if contact.validated_path.is_none() {
+                contact.relay_device_list()
+            } else {
+                Vec::new()
+            };
             // The punch-validated path is the one address PROVEN reachable — when it matches neither stored record (a reflexive-learned mapping can differ from both the registry ip and the LAN row), ping it too, or presence sits TIMEOUT on two dead addresses while the keepalive acks flow.
             if let Some((vpath, _)) = contact.validated_path {
                 if Some(vpath) != lan_addr && Some(vpath) != contact.ip {
@@ -10287,6 +10302,7 @@ impl PhotonApp {
                         vpath,
                         contact.public_identity.clone(),
                         std::mem::take(&mut punch),
+                        std::mem::take(&mut relay_ping),
                     );
                     sent = true;
                 }
@@ -10296,6 +10312,7 @@ impl PhotonApp {
                     addr,
                     contact.public_identity.clone(),
                     std::mem::take(&mut punch),
+                    std::mem::take(&mut relay_ping),
                 );
                 sent = true;
             }
@@ -10306,9 +10323,22 @@ impl PhotonApp {
                         public,
                         contact.public_identity.clone(),
                         std::mem::take(&mut punch),
+                        std::mem::take(&mut relay_ping),
                     );
                     sent = true;
                 }
+            }
+            // If neither address fired (relay-only peer with no stored endpoint at all), still send the
+            // presence ping over the relay so the pipe keepalive keeps them yellow. peer_addr is a
+            // sentinel the send drain will UDP-send to harmlessly; the relay_to fan-out is what matters.
+            if !relay_ping.is_empty() {
+                checker.ping(
+                    crate::network::status::RELAY_ADDR,
+                    contact.public_identity.clone(),
+                    Vec::new(),
+                    std::mem::take(&mut relay_ping),
+                );
+                sent = true;
             }
             if sent {
                 pinged += 1;
@@ -10322,7 +10352,7 @@ impl PhotonApp {
                 }
                 let dev = crate::types::DevicePubkey::from_bytes(ep.pubkey);
                 for addr in [ep.lan, ep.public].into_iter().flatten() {
-                    checker.ping(addr, dev.clone(), Vec::new());
+                    checker.ping(addr, dev.clone(), Vec::new(), Vec::new());
                 }
             }
         }
@@ -10491,13 +10521,15 @@ impl PhotonApp {
         let now_osc = vsf::eagle_time_oscillations();
 
         // Snapshot (friendship_id → primary + alt addr + recipient pubkey) from contacts so we don't hold a contacts borrow across the mutable chains sweep. Only Complete contacts with a known address. Carry BOTH addresses — a retransmit that only re-hit the primary would keep blackholing an off-LAN peer for the whole retry budget (observed: 8 attempts all to a dead LAN IPv4).
-        let routes: Vec<(crate::types::FriendshipId, std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32])> = self
+        let routes: Vec<(crate::types::FriendshipId, std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32], Vec<[u8; 32]>)> = self
             .contacts
             .iter()
             .filter_map(|c| {
                 let fid = c.friendship_id?;
                 let (primary, alt) = c.race_addrs()?;
-                Some((fid, primary, alt, *c.public_identity.as_bytes()))
+                // No direct path → carry the peer's relay device list so the retransmit also rides the pipe.
+                let relay_to = if c.validated_path.is_none() { c.relay_device_list() } else { Vec::new() };
+                Some((fid, primary, alt, *c.public_identity.as_bytes(), relay_to))
             })
             .collect();
         if routes.is_empty() {
@@ -10509,7 +10541,7 @@ impl PhotonApp {
         };
 
         let mut undelivered_fids: Vec<crate::types::FriendshipId> = Vec::new();
-        for (fid, peer_addr, alt_addr, recipient_pubkey) in routes {
+        for (fid, peer_addr, alt_addr, recipient_pubkey, relay_to) in routes {
             let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid)
             else {
                 continue;
@@ -10528,6 +10560,7 @@ impl PhotonApp {
                     prev_msg_hp,
                     ciphertext,
                     eagle_time,
+                    relay_to: relay_to.clone(),
                 });
                 if exhausted {
                     crate::logf!("CHAT: retransmit GAVE UP on msg eagle_time {} after {} attempts (undelivered)", eagle_time, attempts);
@@ -10949,7 +10982,12 @@ impl PhotonApp {
                     .map(|c| c.addr)
                     .collect(),
             };
-            checker.ping(ip, contact.public_identity.clone(), punch);
+            let relay_to = if contact.validated_path.is_none() {
+                contact.relay_device_list()
+            } else {
+                Vec::new()
+            };
+            checker.ping(ip, contact.public_identity.clone(), punch, relay_to);
         }
     }
 
@@ -11454,12 +11492,19 @@ impl PhotonApp {
                             });
                             if let Some((ph, recipient_pubkey)) = stored {
                                 if let Some(ref checker) = self.status_checker {
+                                    // Message arrived over the relay (or no direct path) → return the ACK over the pipe.
+                                    let relay_to = if sender_addr == crate::network::status::RELAY_ADDR {
+                                        self.contacts.get(contact_idx).map(|c| c.relay_device_list()).unwrap_or_default()
+                                    } else {
+                                        Vec::new()
+                                    };
                                     checker.send_ack(AckRequest {
                                         peer_addr: sender_addr,
                                         recipient_pubkey,
                                         conversation_token,
                                         acked_eagle_time: timestamp,
                                         plaintext_hash: ph,
+                                        relay_to,
                                     });
                                     crate::logf!("CHAT: Re-ACKed duplicate from {} (eagle_time {}) — our earlier ACK was likely lost", handle, timestamp);
                                 }
@@ -11709,12 +11754,19 @@ impl PhotonApp {
                             .unwrap_or([0u8; 32]);
                         // The re-ACK source is now the per-message ack_hash persisted on the stored ChatMessage (see the duplicate handler above + with_ack_hash below), which heals a lost ACK for ANY message — not just the most recent. The old single-slot last_acked is retired.
                         if let Some(ref checker) = self.status_checker {
+                            // Message arrived over the relay (or no direct path) → return the ACK over the pipe.
+                            let relay_to = if sender_addr == crate::network::status::RELAY_ADDR {
+                                self.contacts.get(contact_idx).map(|c| c.relay_device_list()).unwrap_or_default()
+                            } else {
+                                Vec::new()
+                            };
                             checker.send_ack(AckRequest {
                                 peer_addr: sender_addr,
                                 recipient_pubkey,
                                 conversation_token,
                                 acked_eagle_time: timestamp,
                                 plaintext_hash,
+                                relay_to,
                             });
                             crate::logf!("CHAT: Sent ACK to {} (eagle_time {}, hash {}...)", handle, timestamp, hex::encode(&plaintext_hash[..8]));
                         }
@@ -13848,6 +13900,14 @@ impl PhotonApp {
                     if !to_retransmit.is_empty() {
                         crate::logf!("CHAT: Retransmitting {} of {} pending message(s) to {} (came online, last_received={})", to_retransmit.len(), pending.len(), handle, format!("{:?}", last_received_ef6));
                         let conversation_token = chains.conversation_token;
+                        // Came online via relay (no direct path) → retransmit over the pipe too.
+                        let relay_to = self
+                            .contacts
+                            .iter()
+                            .find(|c| c.friendship_id == Some(fid))
+                            .filter(|c| c.validated_path.is_none())
+                            .map(|c| c.relay_device_list())
+                            .unwrap_or_default();
                         for msg in to_retransmit {
                             if let Some(ref checker) = self.status_checker {
                                 checker.send_message(crate::network::status::MessageRequest {
@@ -13858,6 +13918,7 @@ impl PhotonApp {
                                     prev_msg_hp: msg.prev_msg_hp,
                                     ciphertext: msg.ciphertext.clone(),
                                     eagle_time: msg.eagle_time,
+                                    relay_to: relay_to.clone(),
                                 });
                                 crate::logf!("CHAT: Retransmitted msg with eagle_time {} to {}", msg.eagle_time, handle);
                             }
