@@ -20,12 +20,19 @@ fn public_kind(addr: &SocketAddr) -> CandidateKind {
     }
 }
 
+/// True for an address that must NEVER enter the candidate set: the unspecified `0.0.0.0` / `::` — which is the RELAY_ADDR sentinel a relayed message carries. If it leaks in, the punch "validates" a path to `0.0.0.0` (it round-trips locally), which then poisons all addressing: sends go to nowhere and `relay_to` empties out because `validated_path` looks Some. Seen live as mom's proof vanishing after `path validated to … = [0,0,0,0]`.
+fn is_bogus_addr(addr: &SocketAddr) -> bool {
+    addr.ip().is_unspecified()
+}
+
 /// The addresses at which `contact` might be reachable — their public address (reflexive, or a v6 host), their usable LAN address, and every per-device endpoint we've learned. This is the set we punch toward and (via [`CandidateSet::best_pair`]) the send order. Scanning `device_endpoints`, not just the active `ip`, is what surfaces a peer's global IPv6 when the active address happens to be v4 (e.g. a device that ponged over v6 while the phonebook only carried its v4 WAN) — so the v6 host, priority-first, gets tried before a v4 LAN address that may be on a foreign network.
 pub fn gather_peer_candidates(contact: &Contact) -> CandidateSet {
     let mut set = CandidateSet::new();
 
     if let Some(ip) = contact.ip {
-        set.add(Candidate::new(ip, public_kind(&ip)));
+        if !is_bogus_addr(&ip) {
+            set.add(Candidate::new(ip, public_kind(&ip)));
+        }
     }
 
     if let (Some(local_v4), Some(port)) = (contact.local_ip, contact.local_port) {
@@ -39,7 +46,9 @@ pub fn gather_peer_candidates(contact: &Contact) -> CandidateSet {
     // Every device's learned endpoints — a sibling reachable over v6 becomes a HostV6 candidate even when the active `ip` is a v4 WAN address. `add` dedups by address and keeps the higher-priority kind.
     for ep in &contact.device_endpoints {
         if let Some(pub_addr) = ep.public {
-            set.add(Candidate::new(pub_addr, public_kind(&pub_addr)));
+            if !is_bogus_addr(&pub_addr) {
+                set.add(Candidate::new(pub_addr, public_kind(&pub_addr)));
+            }
         }
         if let Some(lan_addr) = ep.lan {
             if let IpAddr::V4(v4) = lan_addr.ip() {

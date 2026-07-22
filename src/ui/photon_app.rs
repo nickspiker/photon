@@ -13727,6 +13727,10 @@ impl PhotonApp {
                         .enumerate()
                         .find(|(_, c)| c.knows_device(&peer_pubkey.key))
                     {
+                        // Never validate the unspecified sentinel (0.0.0.0 / ::) — that's the RELAY_ADDR a relayed message carries, and a punch to it round-trips locally. Validating it poisons addressing: sends go nowhere and relay_to empties out because validated_path looks Some (mom's proof vanished exactly this way). Bail before touching any state.
+                        if remote.ip().is_unspecified() {
+                            continue;
+                        }
                         contact.punch_unvalidated_cycles = 0;
                         // A direct path just proved out — this contact is no longer relay-only, so drop the lime-yellow and show normal green.
                         contact.reached_via_relay = false;
