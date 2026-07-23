@@ -4102,7 +4102,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "photon-messenger"
-version = "0.40.14"
+version = "0.41.0"
 dependencies = [
  "aes-gcm 0.11.0-rc.3",
  "anyhow",
@@ -5645,7 +5645,7 @@ checksum = "47846491253e976bdd07d0f9cc24b7daf24720d11309302ccbbc6e6b6e53550a"
 dependencies = [
  "skrifa",
  "yazi",
- "peer-B",
+ "zeno",
 ]
 
 [[package]]
@@ -7743,7 +7743,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "peer-B"
+name = "zeno"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6df3dc4292935e51816d896edcd52aa30bc297907c26167fec31e2b0c6a32524"
