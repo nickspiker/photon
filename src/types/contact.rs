@@ -229,6 +229,10 @@ pub struct Contact {
     pub added: i64,
     /// Roster LWW clock: eagle time of the last change to this contact's SYNCED identity fields (petname / avatar_pin). The fleet roster entry carries it as `updated`; a pulled entry newer than this overwrites those fields, an older one loses. Starts equal to `added`.
     pub roster_updated: i64,
+    /// The ONE fleet device running this friendship's CLUTCH (fleet-sync.md §4.2 — synced via the roster entry). The adding device claims at add time; siblings park their own rounds while the owner is present; presence-loss enables takeover. `None` = unclaimed (legacy / pre-claim) — first device to pick it up claims.
+    pub ceremony_owner: Option<[u8; 32]>,
+    /// Roster-adopted display truth: the OWNER's ceremony completed ("secured on <device>"). NEVER unlocks our own compose — that stays gated on OUR chain (chain_woven) until chain state travels (braid.md §14).
+    pub owner_woven: bool,
     pub last_seen: Option<i64>,
     pub is_online: bool, // True when we have confirmed bidirectional comms
     /// True when the ONLY working path to this contact is the FGTW relay (no direct socket — the asymmetric-reachability case). Drives the lime-yellow presence (theme::RING_RELAY_COLOUR) instead of the direct-connection green, so a relayed link is never mistaken for a direct one. Set when a message arrives via relay / a direct path is proven unreachable; cleared the moment a direct path validates. Not persisted (a session-scoped reachability fact).
@@ -367,6 +371,8 @@ impl Contact {
             trust_level: TrustLevel::Stranger,
             added: vsf::eagle_time_oscillations(),
             roster_updated: vsf::eagle_time_oscillations(),
+            ceremony_owner: None,
+            owner_woven: false,
             last_seen: None,
             is_online: false,           // Starts offline until we confirm comms
             reached_via_relay: false,   // Direct until proven relay-only

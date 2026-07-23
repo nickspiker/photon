@@ -298,6 +298,8 @@ mod tests {
             added: 100,
             updated,
             tombstone,
+            ceremony_owner: [hp.wrapping_add(2); 32],
+            woven: false,
         }
     }
 

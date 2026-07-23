@@ -174,6 +174,8 @@ fn contact_state_schema() -> SectionSchema {
         .field("fleet_folded_once", TypeConstraint::AnyUnsigned) // bool: chain folded ≥1 time (arms members-only trust). Absent = false (bootstrap).
         .field("fleet_members_ts", TypeConstraint::Any) // e6: chain-tip eagle time of last adopted fold (monotonic floor). Absent = 0.
         .field("roster_updated", TypeConstraint::Any) // e6: roster LWW clock — last change to the synced identity fields (petname/avatar_pin). Absent = `added` (pre-feature contacts).
+        .field("ceremony_owner", TypeConstraint::Ed25519Key) // The fleet device that owns this friendship's CLUTCH (§4.2 one-ceremony claim, roster-synced). Absent = unclaimed.
+        .field("owner_woven", TypeConstraint::AnyUnsigned) // bool: the owner's ceremony completed (display truth for parked siblings). Absent = false.
         .field("pin_genesis", TypeConstraint::AnyHash) // The generation pin: genesis op hash of the friendship's chain (docs/lifecycle.md). Absent = not yet pinned.
         .field("identity_ended", TypeConstraint::AnyUnsigned) // bool: the chain vanished after a fold — owner ended the identity. Absent = false.
         .field("identity_superseded", TypeConstraint::AnyUnsigned) // bool: a different-genesis chain claimed this name — a stranger. Absent = false.
@@ -327,6 +329,16 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
                 "roster_updated",
                 VsfType::e(vsf::types::EtType::e6(contact.roster_updated)),
             )
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    if let Some(owner) = contact.ceremony_owner {
+        builder = builder
+            .set("ceremony_owner", VsfType::ke(owner.to_vec()))
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    if contact.owner_woven {
+        builder = builder
+            .set("owner_woven", true)
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
@@ -490,6 +502,17 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     // Roster LWW clock: absent = never bumped past creation, so `added` (set by the index-row load) stands.
     if let Some(v) = section.get_fields("roster_updated").first().and_then(|f| f.values.first()) {
         contact.roster_updated = vsf_to_oscillations(v);
+    }
+    // §4.2 ceremony-owner claim + the owner's woven display truth (absent = unclaimed / not woven).
+    if let Some(VsfType::ke(k)) = section.get_fields("ceremony_owner").first().and_then(|f| f.values.first()) {
+        if k.len() == 32 {
+            let mut o = [0u8; 32];
+            o.copy_from_slice(k);
+            contact.ceremony_owner = Some(o);
+        }
+    }
+    if section.get_value::<bool>("owner_woven").unwrap_or(false) {
+        contact.owner_woven = true;
     }
     // Generation pin + end-of-identity flags (docs/lifecycle.md).
     if let Some(VsfType::hb(h)) = section.get_fields("pin_genesis").first().and_then(|f| f.values.first()) {
