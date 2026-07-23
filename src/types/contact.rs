@@ -214,6 +214,10 @@ pub struct Contact {
     pub clutch_their_proof_ceremony: Option<[u8; 32]>,
     /// Bounded retransmit budget for our ClutchComplete proof. The proof is a small single-packet UDP send with no PT retransmit, so one drop would strand the peer in AwaitingProof forever (the asymmetric-completion bug: we go Complete via early-proof, null our state, and never resend). Set to a small N when we compute our eggs proof; ping_contacts re-sends the proof and decrements each cycle until it hits 0, so both sides converge even on a lossy or just-refreshed path. Runtime-only — not persisted (a resumed Complete contact needs no further proof sends).
     pub clutch_proof_resends_left: u8,
+    /// LIFETIME cap on AwaitingProof-recovery re-arms. The recovery loop tops the budget back up each cycle while the peer is online and we're still stuck — but that loop had NO ceiling, so a mismatched peer (a ghost/wrong-identity contact that answers a ceremony it can never place — the Esme two-era case) retransmitted its proof forever, every ~13s, one relay request each. This counts total re-arms; past `PROOF_RETRY_LIFETIME_CAP` the recovery loop stops topping up and `clutch_proof_gave_up` latches. Runtime-only.
+    pub clutch_proof_retry_lifetime: u16,
+    /// Latched once proof retransmission gave up (lifetime cap hit) — the peer answered but can never place our proof (token mismatch: a stale-identity ghost, or an interrupted re-genesis). Freezes the resend storm; the UI reads it as "can't complete — remove and re-add". Runtime-only; a fresh session re-tries once (the peer may have re-attested correctly).
+    pub clutch_proof_gave_up: bool,
     /// Flag to prevent multiple concurrent keygens (race condition guard)
     pub clutch_keygen_in_progress: bool,
     /// Flag to prevent multiple concurrent KEM encapsulations
@@ -363,6 +367,8 @@ impl Contact {
             clutch_their_eggs_proof: None, // Peer's proof (if received early)
             clutch_their_proof_ceremony: None, // The round that early proof belongs to
             clutch_proof_resends_left: 0, // Bounded proof-retransmit budget (runtime only)
+            clutch_proof_retry_lifetime: 0, // Lifetime re-arm counter (runtime only)
+            clutch_proof_gave_up: false, // Latched when the lifetime cap is hit (runtime only)
             clutch_keygen_in_progress: false, // No keygen running yet
             clutch_kem_encap_in_progress: false, // No KEM encap running yet
             clutch_ceremony_in_progress: false, // No ceremony completion running yet
