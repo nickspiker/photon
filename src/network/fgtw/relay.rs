@@ -19,11 +19,7 @@ pub fn peel_relay_envelope(bytes: &[u8]) -> Option<([u8; 32], Vec<u8>)> {
     use vsf::file_format::{VsfHeader, VsfSection};
 
     // Verify the sender's whole-file signature with `verify_file_signature`, NOT `read_verified`.
-    // `read_verified` additionally enforces `is_original` (the header `hp` must equal the content hash), but
-    // build_signed_vsf uses `signed_only(ke)` + `sign_file`, and the same waiver every CLUTCH/chat parser
-    // takes applies here: the signature covers the ENTIRE file (authorship + integrity are proven), only the
-    // content-hp self-attestation is not asserted. Using read_verified rejected every real envelope — the
-    // "not a valid signed relay envelope" drop that black-holed the whole pipe data plane.
+    // `read_verified` additionally enforces `is_original` (the header `hp` must equal the content hash), but build_signed_vsf uses `signed_only(ke)` + `sign_file`, and the same waiver every CLUTCH/chat parser takes applies here: the signature covers the ENTIRE file (authorship + integrity are proven), only the content-hp self-attestation is not asserted. Using read_verified rejected every real envelope — the "not a valid signed relay envelope" drop that black-holed the whole pipe data plane.
     match vsf::verification::verify_file_signature(bytes) {
         Ok(true) => {}
         _ => return None,
@@ -40,10 +36,7 @@ pub fn peel_relay_envelope(bytes: &[u8]) -> Option<([u8; 32], Vec<u8>)> {
         _ => return None,
     };
 
-    // Resolve the section via `primary_section`, NOT a bare `VsfSection::parse`: the section NAME lives in the
-    // header TOC (near-form), so a body parse returns `section.name == ""` and a hand-rolled `== "relay"` check
-    // silently fails — the trap that black-holed the pipe (and, historically, the hub push accelerator). Pull
-    // the inner payload (v'r') off the resolved primary section.
+    // Resolve the section via `primary_section`, NOT a bare `VsfSection::parse`: the section NAME lives in the header TOC (near-form), so a body parse returns `section.name == ""` and a hand-rolled `== "relay"` check silently fails — the trap that black-holed the pipe (and, historically, the hub push accelerator). Pull the inner payload (v'r') off the resolved primary section.
     let section = header.primary_section(bytes, header_end).ok()?;
     let payload = section
         .get_field("payload")
@@ -180,9 +173,7 @@ pub fn send_via_relay_sync(
 mod peel_tests {
     use super::*;
 
-    /// A `send_via_relay` envelope must round-trip through `peel_relay_envelope`. This guards the TOC-name trap
-    /// specifically: the section name lives in the header near-form, so a bare body parse sees `name == ""` and
-    /// any `== "relay"` check fails — which silently black-holed the whole pipe data plane until caught in a log.
+    /// A `send_via_relay` envelope must round-trip through `peel_relay_envelope`. This guards the TOC-name trap specifically: the section name lives in the header near-form, so a bare body parse sees `name == ""` and any `== "relay"` check fails — which silently black-holed the whole pipe data plane until caught in a log.
     #[test]
     fn peel_roundtrip() {
         let kp = crate::network::fgtw::Keypair::from_seed(&[3u8; 32]);
