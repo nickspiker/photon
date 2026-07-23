@@ -16,7 +16,7 @@ const FGTW_URL: &str = "https://fgtw.org";
 /// message is known-relayed because it arrived wrapped in this authenticated envelope, not because of a
 /// sentinel address. The inner payload is byte-identical to a direct message, so no inner parser changes.
 pub fn peel_relay_envelope(bytes: &[u8]) -> Option<([u8; 32], Vec<u8>)> {
-    use vsf::file_format::{VsfHeader, VsfSection};
+    use vsf::file_format::VsfHeader;
 
     // Verify the sender's whole-file signature with `verify_file_signature`, NOT `read_verified`.
     // `read_verified` additionally enforces `is_original` (the header `hp` must equal the content hash), but build_signed_vsf uses `signed_only(ke)` + `sign_file`, and the same waiver every CLUTCH/chat parser takes applies here: the signature covers the ENTIRE file (authorship + integrity are proven), only the content-hp self-attestation is not asserted. Using read_verified rejected every real envelope — the "not a valid signed relay envelope" drop that black-holed the whole pipe data plane.

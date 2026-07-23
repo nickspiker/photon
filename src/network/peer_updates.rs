@@ -207,7 +207,7 @@ impl PeerUpdateClient {
     fn parse_peer_update(data: &[u8]) -> Option<PeerUpdate> {
         use vsf::file_format::VsfHeader;
         use vsf::types::VsfType;
-        use vsf::VsfSection;
+        
 
         // Parse VSF header, then the primary section — TOC name resolution lives in the vsf crate now.
         let (header, header_end) = VsfHeader::decode(data).ok()?;

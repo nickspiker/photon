@@ -256,6 +256,19 @@ fn download_verified(
     progress: &dyn Fn(u64, u64),
 ) -> Result<(), String> {
     use std::io::Read;
+    // Already-staged short-circuit: if the destination file already holds bytes matching the signed manifest hash, we downloaded this exact artefact on a prior attempt (user hit Update, then skipped the install). Re-verify from disk and skip the network entirely — otherwise every re-press re-pulls the full ~36MB APK / binary, hammering a metered connection for nothing (the observed "wrecks my hotspot for 30s" on a repeat Update). The hash is the same integrity anchor as a fresh download.
+    if let Ok(existing) = std::fs::read(dest) {
+        if blake3::hash(&existing).as_bytes() == &row.hash {
+            if !check_binary_sig
+                || crate::crypto::self_verify::verify_file(dest).is_ok()
+            {
+                let total = if row.size > 0 { row.size } else { existing.len() as u64 };
+                progress(existing.len() as u64, total);
+                crate::logf!("UPDATE: artefact already staged + hash-verified on disk ({} bytes) — skipping re-download", existing.len());
+                return Ok(());
+            }
+        }
+    }
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
         .build()

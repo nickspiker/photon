@@ -46,28 +46,6 @@ pub fn vsf_inspect(data: &[u8], transport: &str, direction: &str, addr: &str) ->
 
     result
 }
-/// Decode VSF variable-length uint (for PT DATA sequence numbers)
-#[cfg(feature = "development")]
-fn decode_vsf_varint(bytes: &[u8]) -> Option<(usize, usize)> {
-    let mut value: usize = 0;
-    let mut shift = 0;
-
-    for (i, &byte) in bytes.iter().enumerate() {
-        value |= ((byte & 0x7F) as usize) << shift;
-        shift += 7;
-
-        if byte & 0x80 == 0 {
-            return Some((value, i + 1));
-        }
-
-        if shift >= 32 {
-            return None;
-        }
-    }
-
-    None
-}
-
 /// Noisy packet types that should be filtered from inspection logs These match VSF header label names (e.g., `(ping)`) and section names
 const NOISY_SECTION_NAMES: &[&str] = &[
     "ping",
