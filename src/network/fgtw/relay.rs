@@ -8,6 +8,51 @@ use super::Keypair;
 
 const FGTW_URL: &str = "https://fgtw.org";
 
+/// Peel a relay envelope received over the pipe: the whole signed `relay` VSF the SENDER built
+/// (`build_signed_vsf("relay", {recipient, payload})`, signed with their device key), which the worker now
+/// forwards intact instead of the unwrapped inner. Verifies the sender's whole-file signature, then returns
+/// `(sender_device_key, inner_payload)`. `None` on any structural/parse/verify failure — a malformed or
+/// unsigned frame off the pipe is dropped, never injected. This is the DOMAIN SEPARATOR for the pipe: a
+/// message is known-relayed because it arrived wrapped in this authenticated envelope, not because of a
+/// sentinel address. The inner payload is byte-identical to a direct message, so no inner parser changes.
+pub fn peel_relay_envelope(bytes: &[u8]) -> Option<([u8; 32], Vec<u8>)> {
+    use vsf::file_format::{VsfHeader, VsfSection};
+
+    // Verify the sender's canonical whole-file signature (ge over BLAKE3(file, ge zeroed)) and get the header.
+    // read_verified with None trusts no pinned key — it checks the self-signature is internally valid and
+    // returns the signer; authorization (is this a friend's device?) is applied downstream by the dispatch,
+    // exactly as for a directly-received message.
+    let (header, header_end) = vsf::verification::read_verified(bytes, None).ok()?;
+
+    // Signer device key from the header (the sender that built + signed this envelope).
+    let sender_key: [u8; 32] = match &header.signer_pubkey {
+        Some(VsfType::ke(k)) if k.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(k);
+            arr
+        }
+        _ => return None,
+    };
+
+    // Parse the `relay` section and pull the inner payload (v'r').
+    let mut ptr = header_end;
+    let section = VsfSection::parse(bytes, &mut ptr).ok()?;
+    if section.name != "relay" {
+        return None;
+    }
+    let payload = section
+        .get_field("payload")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::v(_, data) => Some(data.clone()),
+            _ => None,
+        })?;
+    if payload.is_empty() {
+        return None;
+    }
+    Some((sender_key, payload))
+}
+
 /// Build a signed VSF for conduit operations
 fn build_signed_vsf(
     keypair: &Keypair,

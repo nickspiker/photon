@@ -33,7 +33,7 @@ use crate::network::fgtw::Keypair;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-/// Canonical form of a socket address for matching, collapsing an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) to its plain IPv4 form. The OS hands the same peer back in different representations on different code paths — a transfer started to `<lan-ip>:4383` gets its SPEC-ACK back from `[::ffff:<lan-ip>]:4383`, and a raw `SocketAddr ==` treats those as different peers, so the ACK lands as "unknown stream" and the transfer never starts. Compare canonical forms everywhere a packet is routed to its transfer so the LAN/WAN race + lock-on actually works regardless of which representation the OS reports.
+/// Canonical form of a socket address for matching, collapsing an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) to its plain IPv4 form. The OS hands the same peer back in different representations on different code paths — a transfer started to `a.b.c.d:port` gets its SPEC-ACK back from `[::ffff:a.b.c.d]:port`, and a raw `SocketAddr ==` treats those as different peers, so the ACK lands as "unknown stream" and the transfer never starts. Compare canonical forms everywhere a packet is routed to its transfer so the LAN/WAN race + lock-on actually works regardless of which representation the OS reports.
 fn canon_addr(a: SocketAddr) -> SocketAddr {
     match a.ip() {
         std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
@@ -538,7 +538,7 @@ impl PTManager {
 
         // Check outbound transfers
         for transfer in &mut self.outbound {
-            // A transfer whose data already fully delivered (all packets ACK'd → AwaitingComplete/Complete) has done its job — don't let the stale sweep fire a spurious "timed out" on it 30 s later (2026-07-17: an offer that delivered fine still logged a timeout because the completed handle lingered in `outbound` past its last-activity window). Failed ones are already done too.
+            // A transfer whose data already fully delivered (all packets ACK'd → AwaitingComplete/Complete) has done its job — don't let the stale sweep fire a spurious "timed out" on it 30 s later (observed: an offer that delivered fine still logged a timeout because the completed handle lingered in `outbound` past its last-activity window). Failed ones are already done too.
             if matches!(
                 transfer.state,
                 TransferState::AwaitingComplete | TransferState::Complete | TransferState::Failed

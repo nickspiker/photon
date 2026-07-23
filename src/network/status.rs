@@ -1234,12 +1234,8 @@ async fn run_checker(
     // CLUTCH offer arrives as one frame) never blocks the WS reader.
     let (inject_tx, mut inject_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
 
-    // Spawn RELAY PIPE task — the live bridge for peers with NO direct path (Seattle↔Montana: one end IPv6-only, the other IPv4-only). fgtw.org is dual-stack, so both reach it. We hold ONE WebSocket open to our own device's PipeHub (keyed by our device key); a sender's signed `relay` request is forwarded straight down it by the worker — no polling, no store-and-forward, no R2. Every frame received is fed into the inject channel, so it rides the receiver task's real dispatch tagged RELAY_ADDR (the app skips address-learning + marks reached_via_relay). Trust is applied downstream exactly as for a UDP packet (each parser verifies the signature; CLUTCH handlers gate on fold-respecting knows_device). This carries the WHOLE data plane, not just the ceremony — presence and chat ride it too.
-    // Runs on EVERY platform including Android — mom + peer-B are on Android and are the whole reason the relay
-    // exists. tokio-tungstenite is not target-gated in Cargo and ring/rustls cross-compile under the NDK (the
-    // same precedent that un-gated nunc); unlike peer_updates' desktop-only WS, this runs in the JNI network
-    // runtime too. If a device build ever fails to hold the WS over cellular, that's the thing to chase — not a
-    // reason to gate it off, which would strand the exact peers it serves.
+    // Spawn RELAY PIPE task — the live bridge for peers with NO direct path (asymmetric reachability: one end IPv6-only, the other IPv4-only). fgtw.org is dual-stack, so both reach it. We hold ONE WebSocket open to our own device's PipeHub (keyed by our device key); a sender's signed `relay` request is forwarded straight down it by the worker — no polling, no store-and-forward, no R2. Every frame received is fed into the inject channel, so it rides the receiver task's real dispatch tagged RELAY_ADDR (the app skips address-learning + marks reached_via_relay). Trust is applied downstream exactly as for a UDP packet (each parser verifies the signature; CLUTCH handlers gate on fold-respecting knows_device). This carries the WHOLE data plane, not just the ceremony — presence and chat ride it too.
+    // Runs on EVERY platform including Android, which is the whole reason the relay exists: the peers that need it are on Android. tokio-tungstenite is not target-gated in Cargo and ring/rustls cross-compile under the NDK (the same precedent that un-gated nunc); unlike peer_updates' desktop-only WS, this runs in the JNI network runtime too. If a device build ever fails to hold the WS over cellular, that's the thing to chase — not a reason to gate it off, which would strand the exact peers it serves.
     {
         let our_dev_hex = hex::encode(our_device_pk);
         let inject_tx_pipe = inject_tx.clone();
@@ -1256,10 +1252,22 @@ async fn run_checker(
                         while let Some(msg) = read.next().await {
                             match msg {
                                 Ok(Message::Binary(data)) => {
-                                    crate::logf!("PIPE: ← {} bytes (injecting into dispatch)", data.len());
-                                    if inject_tx_pipe.send(data.to_vec()).await.is_err() {
-                                        // Receiver task gone — the whole status task is tearing down.
-                                        return;
+                                    // Peel the authenticated relay envelope the worker now forwards intact. The
+                                    // envelope's presence + valid sender signature IS the domain separator: a
+                                    // frame off the pipe is KNOWN-relayed from device X, ground truth in the
+                                    // bytes, not the RELAY_ADDR sentinel. Inject only the inner payload — it's
+                                    // byte-identical to a direct message, so the dispatch below is untouched.
+                                    match crate::network::fgtw::relay::peel_relay_envelope(&data) {
+                                        Some((sender_key, inner)) => {
+                                            crate::logf!("PIPE: ← {}B envelope from {} → {}B inner (injecting)", data.len(), hex::encode(&sender_key[..4]), inner.len());
+                                            if inject_tx_pipe.send(inner).await.is_err() {
+                                                // Receiver task gone — the whole status task is tearing down.
+                                                return;
+                                            }
+                                        }
+                                        None => {
+                                            crate::logf!("PIPE: ← {}B dropped — not a valid signed relay envelope", data.len());
+                                        }
                                     }
                                 }
                                 Ok(Message::Close(_)) => {
@@ -1878,7 +1886,7 @@ async fn run_checker(
                                         }
                                     };
 
-                                    // Torch every drop: a pong dying silently in one of these gates is indistinguishable from "peer never answers" in the field (2026-07-19: a contact sat TIMEOUT for 20 minutes while its punch acks flowed fine — whether its pongs were absent or discarded was unknowable from the log).
+                                    // Torch every drop: a pong dying silently in one of these gates is indistinguishable from "peer never answers" in the field (observed: a contact sat TIMEOUT for 20 minutes while its punch acks flowed fine — whether its pongs were absent or discarded was unknowable from the log).
                                     let pending_ping = match pending_ping {
                                         Some(p) => p,
                                         None => {
@@ -1919,7 +1927,7 @@ async fn run_checker(
                                         }
                                     }
 
-                                    // Reset failure counter on successful pong (prevents bouncing) — and purge the device's OTHER still-pending pings. Each cycle fans pings across every known address (validated + LAN + public); the ones aimed at dead addresses expire 5s later and were each counted as a "consecutive failure", so a device answering perfectly on its LAN path still accrued strikes from its rotated cell address and flapped offline every few cycles (peer-B: 923 offline marks vs 17 online in one log). One live path answering = the device is alive; the dead paths' pings must not outlive that verdict.
+                                    // Reset failure counter on successful pong (prevents bouncing) — and purge the device's OTHER still-pending pings. Each cycle fans pings across every known address (validated + LAN + public); the ones aimed at dead addresses expire 5s later and were each counted as a "consecutive failure", so a device answering perfectly on its LAN path still accrued strikes from its rotated cell address and flapped offline every few cycles (observed as hundreds of offline marks against a handful of online in a single session). One live path answering = the device is alive; the dead paths' pings must not outlive that verdict.
                                     {
                                         let mut failures = failed_pings_recv.lock().unwrap();
                                         failures.retain(|(k, _)| k != responder_pubkey.as_bytes());
@@ -2178,7 +2186,7 @@ async fn run_checker(
                                     provenance_hash,
                                     signature,
                                 } => {
-                                    // NEVER answer our OWN probe reflected back (LAN hairpin / multicast loopback). Our own device is in the contacts list (the self-contact + siblings), so it passes the friend gate below — and ACKing it validates a path TO OURSELVES, which poisons addressing exactly like the 0.0.0.0 sentinel did: sends go to our loopback and relay_to empties out. Seen live as mom validating a path to her own <lan-ip>.
+                                    // NEVER answer our OWN probe reflected back (LAN hairpin / multicast loopback). Our own device is in the contacts list (the self-contact + siblings), so it passes the friend gate below — and ACKing it validates a path TO OURSELVES, which poisons addressing exactly like the 0.0.0.0 sentinel did: sends go to our loopback and relay_to empties out. Observed as a device validating a direct path to its own LAN address.
                                     if sender_pubkey == our_pubkey_recv {
                                         continue;
                                     }
@@ -2550,7 +2558,7 @@ async fn run_checker(
                 }
                 // No direct path → also send the WHOLE chat VSF (not the PT shard) over the relay pipe.
                 // The peer receives it on its pipe and its dispatch decrypts + ACKs exactly as a direct
-                // message; the ACK returns over the peer's pipe. Chat now works Seattle↔Montana.
+                // message; the ACK returns over the peer's pipe. Chat now works with no direct path.
                 for dev in &request.relay_to {
                     if let Err(e) =
                         crate::network::fgtw::relay::send_via_relay(&keypair, dev, &msg_bytes).await

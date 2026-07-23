@@ -39,7 +39,7 @@ use fluor::host::WakeSender;
 const CHORD_RELEASE_GRACE: Duration = Duration::from_millis(40);
 
 
-/// Deploy version = the crate's MINOR number, baked in at compile time. The scheme (2026-07-16): `major.minor.patch` where `deploy.sh` bumps the MINOR and ships `X.Y.0` (patch 0 is RESERVED for releases), and every dev publish bumps the PATCH (≥1, reset to 1 after each release). The dozenal display cues off the minor; a dev build appends `.patch` (also dozenal).
+/// Deploy version = the crate's MINOR number, baked in at compile time. The scheme: `major.minor.patch` where `deploy.sh` bumps the MINOR and ships `X.Y.0` (patch 0 is RESERVED for releases), and every dev publish bumps the PATCH (≥1, reset to 1 after each release). The dozenal display cues off the minor; a dev build appends `.patch` (also dozenal).
 fn deploy_version() -> u32 {
     env!("CARGO_PKG_VERSION_MINOR").parse().unwrap_or(0)
 }
@@ -956,9 +956,9 @@ pub struct PhotonApp {
     you_add_textbox: Option<Textbox>,
     /// Reset to false on each entry to the You page; the layout pass reloads every field box from the current settings (so a fleet-synced edit shows) and flips it true. Prevents the per-frame reload from clobbering in-progress typing.
     you_fields_loaded: bool,
-    /// Fleet-page device management: the device pubkey the user tapped to select (highlighted row). `None` = nothing selected. Only OUR OTHER devices (siblings) are selectable — never this device. Remove-other retired 2026-07-13 (sovereign records: self-signed departure only; eviction = withholding at the key layer, arriving with the device-trust bundle) — selection currently feeds only the future rename.
+    /// Fleet-page device management: the device pubkey the user tapped to select (highlighted row). `None` = nothing selected. Only OUR OTHER devices (siblings) are selectable — never this device. Remove-other retired (sovereign records: self-signed departure only; eviction = withholding at the key layer, arriving with the device-trust bundle) — selection currently feeds only the future rename.
     settings_fleet_selected: Option<[u8; 32]>,
-    /// Fleet-page retired inventory (identity never dies, 2026-07-17): devices the chain shows signed OUT but whose hardware brand this identity still holds — brands survive departure; freeing one takes the owner's member-signed `device_release`. Refreshed synchronously on each Fleet-page entry; rows render "retired — still yours" with a per-row Release pill.
+    /// Fleet-page retired inventory (identity never dies): devices the chain shows signed OUT but whose hardware brand this identity still holds — brands survive departure; freeing one takes the owner's member-signed `device_release`. Refreshed synchronously on each Fleet-page entry; rows render "retired — still yours" with a per-row Release pill.
     fleet_retired: Vec<[u8; 32]>,
     /// The retired pubkey whose Release pill is two-tap armed (`None` = disarmed). Cleared on page switch like every destructive arm.
     fleet_release_armed: Option<[u8; 32]>,
@@ -1002,7 +1002,7 @@ pub struct PhotonApp {
 impl PhotonApp {
     /// Construct an empty app shell. Real state (chrome, network handles, app state machine) initializes in [`FluorApp::init`] once the viewport is known.
     pub fn new() -> Self {
-        // Desktop resident mode is ON BY DEFAULT (2026-07-19 mandate): residency + the login item enroll automatically unless the user's explicit opt-out marker exists (the settings toggle writes it). `--background` (the login-item launch) additionally starts hidden.
+        // Desktop resident mode is ON BY DEFAULT (user mandate): residency + the login item enroll automatically unless the user's explicit opt-out marker exists (the settings toggle writes it). `--background` (the login-item launch) additionally starts hidden.
         #[cfg(not(target_os = "android"))]
         let (start_in_background, resident_mode) = {
             let bg = std::env::args().any(|a| a == "--background");
@@ -1259,7 +1259,7 @@ impl PhotonApp {
             .handle_query
             .as_ref()
             .and_then(|hq| hq.get_handle_proof());
-        // ROTATE the pin on every set (2026-07-17): a fresh random key ‖ lookup per avatar change. Two birds — friends detect the change (the pin rides every pong, a new pin = refetch, closing the stale-avatar-until-next-session gap), and any cross-identity pin pollution heals on the next set (the old slot is deleted after the new upload lands).
+        // ROTATE the pin on every set: a fresh random key ‖ lookup per avatar change. Two birds — friends detect the change (the pin rides every pong, a new pin = refetch, closing the stale-avatar-until-next-session gap), and any cross-identity pin pollution heals on the next set (the old slot is deleted after the new upload lands).
         let old_pin = self
             .fleet_settings
             .as_ref()
@@ -1968,14 +1968,14 @@ impl FluorApp for PhotonApp {
                                           // Initialize local storage and load contacts immediately so the contact list is visible before the FGTW round-trip completes.
             if let Some(kp) = &self.device_keypair {
                 let device_secret = *kp.secret.as_bytes();
-                // open_shared, NEVER new: query_resume below spawns the attest worker, which opens this same vault — a second independent engine racing this one is how the 2026-07-12 vault corruption happened (stale engine committed over the live one's blocks → seal verification failed at every subsequent open).
+                // open_shared, NEVER new: query_resume below spawns the attest worker, which opens this same vault — a second independent engine racing this one is how the vault corruption happened (stale engine committed over the live one's blocks → seal verification failed at every subsequent open).
                 match crate::storage::FlatStorage::open_shared(
                     crate::storage::APP,
                     remembered.vault_seed,
                     device_secret,
                 ) {
                     Ok(s) => {
-                        // Preserve any IN-FLIGHT ceremony round across this reload. CLUTCH keypairs/slots are ephemeral scratch, so a wholesale reload from disk wipes a live round — and a warm resume (Android foregrounds constantly) then trips the keygen sweep into minting a DIVERGENT round the peer never agreed to. That is exactly what stranded the relay ceremony: the slow relay round-trip outlived the keys, mom's KEM came back addressed to keys we'd already discarded, and it was dropped as "old keys". Re-key must be deliberate on real failure — never a side effect of a lifecycle event. Snapshot rounds that are still FRESH by eagle time (a genuinely stale one is let go, to be re-keyed cleanly) and restore them after the reload.
+                        // Preserve any IN-FLIGHT ceremony round across this reload. CLUTCH keypairs/slots are ephemeral scratch, so a wholesale reload from disk wipes a live round — and a warm resume (Android foregrounds constantly) then trips the keygen sweep into minting a DIVERGENT round the peer never agreed to. That is exactly what stranded the relay ceremony: the slow relay round-trip outlived the keys, the peer's KEM came back addressed to keys we'd already discarded, and it was dropped as "old keys". Re-key must be deliberate on real failure — never a side effect of a lifecycle event. Snapshot rounds that are still FRESH by eagle time (a genuinely stale one is let go, to be re-keyed cleanly) and restore them after the reload.
                         let now = vsf::eagle_time_oscillations();
                         const ROUND_TTL_OSC: i64 = 300 * vsf::OSCILLATIONS_PER_SECOND as i64; // 5 min: a relay ceremony (offer+KEM+proof, each a 5-30s store-and-forward hop) can run 1-2 min, and the round's keys must stay valid the whole time
                         let inflight: std::collections::HashMap<[u8; 32], _> = self
@@ -2318,7 +2318,7 @@ impl FluorApp for PhotonApp {
                             }
                         }
                     } else {
-                        // "Rename" (slot 1) is still a stub — no device-label chain-op yet. Remove-other retired 2026-07-13 with the sovereign-records rule (self-signed departure only; eviction = withholding at the key layer, arriving with the device-trust bundle).
+                        // "Rename" (slot 1) is still a stub — no device-label chain-op yet. Remove-other retired with the sovereign-records rule (self-signed departure only; eviction = withholding at the key layer, arriving with the device-trust bundle).
                         crate::log("settings-stub: Rename (no label op yet)");
                     }
                 } else if page == SettingsPage::Security {
@@ -2347,7 +2347,7 @@ impl FluorApp for PhotonApp {
                         if self.settings_removeshred_armed {
                             self.settings_removeshred_armed = false;
                             let hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
-                            // LAST-MEMBER GATE (identity never dies, 2026-07-17 — supersedes lifecycle D3's LastRites): the fleet's final member cannot sign out, full stop. There is no terminal op — an identity always lives somewhere (the worker refuses zero-member folds too, so this isn't just UI courtesy). Want out of this hardware? Add another device first, then retire this one. A fetch failure counts as last (fail toward refusal, never past it).
+                            // LAST-MEMBER GATE (identity never dies — supersedes lifecycle D3's LastRites): the fleet's final member cannot sign out, full stop. There is no terminal op — an identity always lives somewhere (the worker refuses zero-member folds too, so this isn't just UI courtesy). Want out of this hardware? Add another device first, then retire this one. A fetch failure counts as last (fail toward refusal, never past it).
                             if let Some(ref hp_v) = hp {
                                 let last = match crate::network::fgtw::fleet::current_members(hp_v) {
                                     Ok(m) => m.len() <= 1,
@@ -3364,7 +3364,7 @@ impl FluorApp for PhotonApp {
         }
 
         // Self-update: drain check/apply results, then re-exec if a verified swap landed. The exec MUST happen here on the main thread, outside every borrow — the process image is replaced in place (unix) or handed off (windows), so nothing after it runs.
-        // Update events (progress bar, channel states, status lines) are all page CONTENT — without scene_dirty the redraw runs but the dirty-gated content pass skips the page, so the bar painted its empty track once and froze (observed live 2026-07-17).
+        // Update events (progress bar, channel states, status lines) are all page CONTENT — without scene_dirty the redraw runs but the dirty-gated content pass skips the page, so the bar painted its empty track once and froze (observed).
         if self.drain_update_events() {
             self.scene_dirty = true;
             needs_redraw = true;
@@ -4136,7 +4136,7 @@ impl FluorApp for PhotonApp {
                 if row_top + row_h <= 0 || row_top >= buf_h as isize {
                     continue; // fully outside the visible content area (rows now scroll up to the top, not just `rows.y0`)
                 }
-                // Hover/press vocabulary (2026-07-17, block tints vetoed): hover = the NAME goes heavier + the presence ring strokes 1px wider; press = the logo's white-glow halo blooms behind the name. No fills, no deltas — weight, stroke, and light.
+                // Hover/press vocabulary (block tints vetoed): hover = the NAME goes heavier + the presence ring strokes 1px wider; press = the logo's white-glow halo blooms behind the name. No fills, no deltas — weight, stroke, and light.
                 let row_hit_here = self.contact_hit_base.wrapping_add(ci as HitId);
                 let row_pressed = ci < 256 && ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == row_hit_here;
                 let row_hovered = row_pressed || (ci < 256 && ctx.pressed_hit == HIT_NONE && self.hover_hit == row_hit_here);
@@ -4988,7 +4988,7 @@ impl FluorApp for PhotonApp {
                             );
                         }
                     }
-                    // No Remove pill: expulsion is not a verb (sovereign records, 2026-07-13) — a device leaves by its own signed departure. And leaving never frees the hardware (2026-07-17): the brand outlives the membership until the owner releases it above.
+                    // No Remove pill: expulsion is not a verb (sovereign records) — a device leaves by its own signed departure. And leaving never frees the hardware: the brand outlives the membership until the owner releases it above.
                     settings_line(&mut canvas, ctx.text, rows[6], "A device can only sign itself out \u{2014} and its hardware stays yours until you release it.", hspan2, theme::LABEL_COLOUR, 400);
                     let pr = rows[7].split_h([1.0, 1.0]);
                     draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Add device", btn_base.wrapping_add(0), ctx.pressed_hit);
@@ -5360,7 +5360,7 @@ impl PhotonApp {
     pub fn advance_protocol(&mut self, now: Instant) -> bool {
         let mut needs_redraw = false;
 
-        // Recurring background presence sweep — re-ping every contact so online/offline rings stay live. The interval tapers with idle time (5s active → 1min idle → 15min deep-idle) so an untouched window isn't hammering the network. Runs on Ready AND in a Conversation — CRITICAL: presence is symmetric only if both sides keep pinging, and the person you most need a live status for is the one you're actively chatting with. Gating this to Ready meant opening a conversation stopped your pings, so your view of that contact went stale — and if both people opened the chat with each other, NEITHER pinged and both showed offline (observed: peer-B on Ready saw a peer online, a peer in the conversation saw peer-B offline). `wake_at()` schedules the next sweep so this fires even while otherwise idle.
+        // Recurring background presence sweep — re-ping every contact so online/offline rings stay live. The interval tapers with idle time (5s active → 1min idle → 15min deep-idle) so an untouched window isn't hammering the network. Runs on Ready AND in a Conversation — CRITICAL: presence is symmetric only if both sides keep pinging, and the person you most need a live status for is the one you're actively chatting with. Gating this to Ready meant opening a conversation stopped your pings, so your view of that contact went stale — and if both people opened the chat with each other, NEITHER pinged and both showed offline (observed: the peer on Ready saw the other online, while the one in the conversation saw the first offline). `wake_at()` schedules the next sweep so this fires even while otherwise idle.
         if matches!(self.state, AppState::Ready | AppState::Conversation) {
             let interval = self.presence_ping_interval(now);
             let due = self
@@ -5873,7 +5873,7 @@ impl PhotonApp {
                     if shrank {
                         crate::logf!("FLEET: device revoked from {}'s fleet — dropping it from the answerable set", crate::fp(&hp));
                     }
-                    // Fold-race self-heal (2026-07-17): a peer's NEW device can drive the ceremony before we folded it — its CLUTCH SPEC was rejected as "not in contacts", and it gives up before our fold lands. Now that the fold makes that sibling answerable, re-arm our offer so the ceremony re-fires to it (prompting its KEM, which the PT gate now accepts). Only for an unfinished ceremony that grew a member — never disturb a Complete one.
+                    // Fold-race self-heal: a peer's NEW device can drive the ceremony before we folded it — its CLUTCH SPEC was rejected as "not in contacts", and it gives up before our fold lands. Now that the fold makes that sibling answerable, re-arm our offer so the ceremony re-fires to it (prompting its KEM, which the PT gate now accepts). Only for an unfinished ceremony that grew a member — never disturb a Complete one.
                     if grew && c.clutch_state != crate::types::ClutchState::Complete {
                         c.clutch_offer_sent = false;
                         crate::logf!("CLUTCH: {} fleet grew mid-ceremony — re-arming offer to reach the folded device", crate::fp(&hp));
@@ -8113,7 +8113,7 @@ impl PhotonApp {
             let Some(our_pid) = self.our_party_id(contact) else {
                 return false;
             };
-            // No direct path → also relay this message over the pipe (chat Seattle↔Montana).
+            // No direct path → also relay this message over the pipe.
             let relay_to = if contact.validated_path.is_none() {
                 contact.relay_device_list()
             } else {
@@ -9773,7 +9773,7 @@ impl PhotonApp {
                     crate::logf!("CLUTCH: Sent proof to {} via status checker", contact_handle);
                 }
 
-                // Check if they already sent us their proof — but only a proof from OUR round counts. An early proof stored under a different ceremony_id is echo of a superseded attempt (offer churn / an unwiped peer replaying old state): discard it and await their current-round proof instead of manufacturing a mismatch (the peer-B/a peer permanent-Pending stall).
+                // Check if they already sent us their proof — but only a proof from OUR round counts. An early proof stored under a different ceremony_id is echo of a superseded attempt (offer churn / an unwiped peer replaying old state): discard it and await their current-round proof instead of manufacturing a mismatch (a permanent-Pending stall).
                 let round_ok = contact.clutch_their_proof_ceremony == Some(result.ceremony_id);
                 let their_early_proof = match (their_early_proof, round_ok) {
                     (Some(p), true) => Some(p),
@@ -9802,7 +9802,7 @@ impl PhotonApp {
                         // We're Complete, but the peer may not have our proof yet — we got theirs first, and our single send (just above) might have dropped. Keep the proof and the resend budget so ping_contacts keeps delivering it for a few more cycles; that's exactly what stops the peer from hanging in AwaitingProof.
                         contact.clutch_their_eggs_proof = None;
                     } else {
-                        // SAME round, different eggs — the transcripts genuinely diverged (a KEM decapsulated against a superseded key silently yields a wrong secret; nothing upstream authenticates which offer generation a KEM targeted). A bare state reset CANNOT heal this: the ceremony re-runs deterministically from the same poisoned in-memory slots and re-derives the identical disagreement forever (peer-B proved it — byte-identical mismatch pairs 10.5h apart). TORCH the round: drop every ceremony input on our side (slots, provenances, round id, queued KEM, our keypairs) so keygen re-mints, a fresh-provenance offer goes out, and both sides converge on a genuinely new round.
+                        // SAME round, different eggs — the transcripts genuinely diverged (a KEM decapsulated against a superseded key silently yields a wrong secret; nothing upstream authenticates which offer generation a KEM targeted). A bare state reset CANNOT heal this: the ceremony re-runs deterministically from the same poisoned in-memory slots and re-derives the identical disagreement forever (observed as byte-identical mismatch pairs many hours apart). TORCH the round: drop every ceremony input on our side (slots, provenances, round id, queued KEM, our keypairs) so keygen re-mints, a fresh-provenance offer goes out, and both sides converge on a genuinely new round.
                         let our_hex = hex::encode(&result.eggs_proof);
                         let their_hex = hex::encode(&their_proof);
                         crate::logf!("CLUTCH: ⚠ PROOF MISMATCH with {} (same round {}…)! ours={}... theirs={}... — torching the round, re-keying fresh", contact_handle, hex::encode(&result.ceremony_id[..4]), &our_hex[..16], &their_hex[..16]);
@@ -10274,7 +10274,7 @@ impl PhotonApp {
                     .map(|c| c.addr)
                     .collect(),
             };
-            // Belt-and-suspenders: the peer's public address MUST be probed even if the candidate gather missed it (two-device fleet keying, a stale endpoint set). For a remote peer behind NAT — reached via 464XLAT when we're IPv6-only — this WAN address is frequently the ONLY viable path, and a bug that dropped it stranded the whole ceremony (Seattle↔Montana: peer-B never sent one packet to mom's real public v4). Log the exact probe set so a stuck ceremony is diagnosable at a glance.
+            // Belt-and-suspenders: the peer's public address MUST be probed even if the candidate gather missed it (two-device fleet keying, a stale endpoint set). For a remote peer behind NAT — reached via 464XLAT when we're IPv6-only — this WAN address is frequently the ONLY viable path, and a bug that dropped it stranded the whole ceremony (the IPv6-only side never sent one packet to the other's real public v4). Log the exact probe set so a stuck ceremony is diagnosable at a glance.
             if contact.validated_path.is_none() {
                 if let Some(ip) = contact.ip {
                     if !punch.contains(&ip) {
@@ -10287,9 +10287,7 @@ impl PhotonApp {
                 }
             }
             let mut sent = false;
-            // No direct path proven → also ping over the relay pipe so PRESENCE works for a relay-only peer
-            // (Seattle↔Montana). Taken once per cycle so we don't relay the same ping three times (once
-            // per candidate address). A validated path means direct pings suffice — no relay ping needed.
+            // No direct path proven → also ping over the relay pipe so PRESENCE works for a relay-only peer. Taken once per cycle so we don't relay the same ping three times (once per candidate address). A validated path means direct pings suffice — no relay ping needed.
             let mut relay_ping = if contact.validated_path.is_none() {
                 contact.relay_device_list()
             } else {
@@ -10452,7 +10450,7 @@ impl PhotonApp {
         }
     }
 
-    /// Re-fire our full CLUTCH offer to `self.contacts[idx]`, outside the pong-driven send block. The normal driver re-sends only when a pong flips the contact online — useless when the peer's pongs don't flow (2026-07-19 peer-B↔a peer: presence sat TIMEOUT for twenty minutes while punch keepalives validated a perfectly good direct path, and the ceremony stayed parked in Pending because the offer's single PT transfer had died racing a dead carrier-NAT address). `race_addrs` routes the re-send over the validated path first; the receiver's ceremony-round scoping makes a crossed duplicate free. Callers reset `clutch_offer_sent` first — this sets it back on a successful hand-off to the checker.
+    /// Re-fire our full CLUTCH offer to `self.contacts[idx]`, outside the pong-driven send block. The normal driver re-sends only when a pong flips the contact online — useless when the peer's pongs don't flow (observed: presence sat TIMEOUT for twenty minutes while punch keepalives validated a perfectly good direct path, and the ceremony stayed parked in Pending because the offer's single PT transfer had died racing a dead carrier-NAT address). `race_addrs` routes the re-send over the validated path first; the receiver's ceremony-round scoping makes a crossed duplicate free. Callers reset `clutch_offer_sent` first — this sets it back on a successful hand-off to the checker.
     fn resend_clutch_offer(&mut self, idx: usize) {
         use crate::network::fgtw::protocol::build_clutch_offer_vsf;
         use crate::network::status::ClutchOfferRequest;
@@ -10521,12 +10519,34 @@ impl PhotonApp {
         let now_osc = vsf::eagle_time_oscillations();
 
         // Snapshot (friendship_id → primary + alt addr + recipient pubkey) from contacts so we don't hold a contacts borrow across the mutable chains sweep. Only Complete contacts with a known address. Carry BOTH addresses — a retransmit that only re-hit the primary would keep blackholing an off-LAN peer for the whole retry budget (observed: 8 attempts all to a dead LAN IPv4).
+        // OUR own LAN v4 (if any) decides whether a peer's private-v4 address is a same-subnet fast path or a
+        // foreign black hole. Computed ONCE for the whole sweep — it's a syscall.
+        let our_lan_v4 = crate::network::udp::get_local_ip();
         let routes: Vec<(crate::types::FriendshipId, std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32], Vec<[u8; 32]>)> = self
             .contacts
             .iter()
             .filter_map(|c| {
                 let fid = c.friendship_id?;
-                let (primary, alt) = c.race_addrs()?;
+                let (mut primary, mut alt) = c.race_addrs()?;
+                // Drop a FOREIGN peer LAN — a peer's private address on a subnet that isn't ours, which PT retransmits into a black hole forever. If the primary is foreign, promote a reachable alt into its place; if both are foreign, this route has NO direct target and survives ONLY on the relay fan-out below (relay_to). A same-subnet peer LAN is kept — that's a real fast path.
+                use crate::network::traverse::gather::is_foreign_peer_lan;
+                if is_foreign_peer_lan(&primary, our_lan_v4) {
+                    match alt.take().filter(|a| !is_foreign_peer_lan(a, our_lan_v4)) {
+                        Some(reachable) => primary = reachable,
+                        None => {
+                            // No reachable direct address at all. Keep the route only if the relay can carry it.
+                            let relay_to = if c.validated_path.is_none() { c.relay_device_list() } else { Vec::new() };
+                            if relay_to.is_empty() {
+                                crate::logf!("CHAT: {} retransmit has no reachable path (foreign LAN {}, no relay) — skipping", crate::fp(&c.handle_proof), primary);
+                                return None;
+                            }
+                            // peer_addr is unused for delivery here (both direct addrs were foreign); hand the sentinel so the send drain UDP-sends nowhere harmlessly and the relay_to carries it.
+                            return Some((fid, crate::network::status::RELAY_ADDR, None, *c.public_identity.as_bytes(), relay_to));
+                        }
+                    }
+                } else if alt.map_or(false, |a| is_foreign_peer_lan(&a, our_lan_v4)) {
+                    alt = None; // primary reachable, but drop a foreign alt so PT doesn't race a black hole
+                }
                 // No direct path → carry the peer's relay device list so the retransmit also rides the pipe.
                 let relay_to = if c.validated_path.is_none() { c.relay_device_list() } else { Vec::new() };
                 Some((fid, primary, alt, *c.public_identity.as_bytes(), relay_to))
@@ -11190,8 +11210,16 @@ impl PhotonApp {
                             };
                             // Note: ceremony_id is now computed from offer_provenances, not ping provenances. Offer provenances are collected when ClutchOfferReceived messages arrive.
 
-                            // PER-DEVICE addressing: the pong updates the SENDING device's endpoint (public/LAN split by source privacy), and only the ACTIVE device's pong may move the contact-level `ip`/`local_*` slot. A friend's other devices each keep their own endpoint — the old any-device-writes-the-one-slot rule made three-device fleets flip-flop the slot every cycle, which broke presence (pings chased the last ponger) AND cancelled mid-flight CLUTCH offer transfers ("address changed — cancelling"). First pong with no active device adopts the sender (bootstrap); inbound DATA (chat/CLUTCH) re-elects it (the device in their hand).
-                            if let Some(addr) = peer_addr {
+                            // Relay vs direct is the FIRST question a pong answers, and now it's answered from
+                            // ground truth: a pong injected off the pipe carries the RELAY_ADDR sentinel because
+                            // the pipe task already verified its authenticated relay envelope (peel_relay_envelope).
+                            // A relayed pong proves the peer is reachable — but ONLY via the relay — so mark the
+                            // link relay-only (→ lime-yellow) and DO NOT learn its address (storing 0.0.0.0:0 as an
+                            // endpoint would poison direct sends, and a relayed pong carries no reachable address
+                            // anyway). A direct pong clears the flag: a real UDP path always wins over the relay.
+                            let via_relay = peer_addr == Some(crate::network::status::RELAY_ADDR);
+                            // PER-DEVICE addressing: a DIRECT pong updates the SENDING device's endpoint (public/LAN split by source privacy), and only the ACTIVE device's pong may move the contact-level `ip`/`local_*` slot. A friend's other devices each keep their own endpoint — the old any-device-writes-the-one-slot rule made three-device fleets flip-flop the slot every cycle, which broke presence (pings chased the last ponger) AND cancelled mid-flight CLUTCH offer transfers ("address changed — cancelling"). First pong with no active device adopts the sender (bootstrap); inbound DATA (chat/CLUTCH) re-elects it (the device in their hand).
+                            if let Some(addr) = peer_addr.filter(|_| !via_relay) {
                                 let private = is_private_addr(&addr.ip());
                                 {
                                     let ep = contact.endpoint_mut(&peer_pubkey.key);
@@ -11218,6 +11246,22 @@ impl PhotonApp {
                                         crate::logf!("Status: Updated {} public IP from active-device pong: {} -> {}", crate::fp(&contact.handle_proof), format!("{:?}", contact.ip), addr);
                                         contact.ip = Some(addr);
                                     }
+                                }
+                            }
+                            // Set the relay flag from THIS pong only when it's a positive report (is_online). A
+                            // TIMEOUT flows thru this same arm with is_online=false and peer_addr=None — silence
+                            // must not flip the flag either way; the last real pong's verdict stands until the next.
+                            // A direct pong wins: if ANY device answered directly this cycle, the identity is
+                            // direct (green). Relay-only when the only answer came over the pipe (yellow).
+                            if is_online {
+                                if via_relay {
+                                    // Don't override a direct verdict already set this cycle by a sibling device's
+                                    // direct pong; only claim relay if we're not already known-direct-and-online.
+                                    if !contact.is_online || contact.reached_via_relay {
+                                        contact.reached_via_relay = true;
+                                    }
+                                } else {
+                                    contact.reached_via_relay = false;
                                 }
                             }
 
@@ -11262,7 +11306,7 @@ impl PhotonApp {
                             if came_online && contact.is_sibling {
                                 fleet_sweep_due = true;
                             }
-                            // Bootstrap un-deadlock (docs/lifecycle.md aftermath, observed live 2026-07-17): a roster-merged contact starts with ONE bootstrap device (public_identity) as its ping target — if THAT device is asleep, pings chase a corpse forever while the friend's live devices sit in the fold. On the offline edge, rotate the ACTIVE device to the next fleet member with a known endpoint and retarget the contact-level address; the sweep pings it next cycle (round-robin until one answers — a pong or inbound DATA re-elects the real active device).
+                            // Bootstrap un-deadlock (docs/lifecycle.md aftermath, observed): a roster-merged contact starts with ONE bootstrap device (public_identity) as its ping target — if THAT device is asleep, pings chase a corpse forever while the friend's live devices sit in the fold. On the offline edge, rotate the ACTIVE device to the next fleet member with a known endpoint and retarget the contact-level address; the sweep pings it next cycle (round-robin until one answers — a pong or inbound DATA re-elects the real active device).
                             if !identity_online && !is_online {
                                 let cur = contact.active_device;
                                 let next = contact
@@ -11420,7 +11464,7 @@ impl PhotonApp {
                     sender_addr,
                 } => {
                     // Get our handle_hash for chain lookups
-                    let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {  // PARTY ID: the friendship chain + slots are keyed on party ids (from_clutch + send both use our_party_id); matching on the raw seed here dropped every incoming message/probe as "not a participant" and hung the weave (2026-07-17).
+                    let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {  // PARTY ID: the friendship chain + slots are keyed on party ids (from_clutch + send both use our_party_id); matching on the raw seed here dropped every incoming message/probe as "not a participant" and hung the weave.
                         Some(h) => h,
                         None => {
                             crate::log("CHAT: No user_identity_seed - cannot decrypt");
@@ -11796,7 +11840,7 @@ impl PhotonApp {
                     plaintext_hash,
                 } => {
                     // Get our handle_hash
-                    let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {  // PARTY ID: the friendship chain + slots are keyed on party ids (from_clutch + send both use our_party_id); matching on the raw seed here dropped every incoming message/probe as "not a participant" and hung the weave (2026-07-17).
+                    let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {  // PARTY ID: the friendship chain + slots are keyed on party ids (from_clutch + send both use our_party_id); matching on the raw seed here dropped every incoming message/probe as "not a participant" and hung the weave.
                         Some(h) => h,
                         None => {
                             crate::log("CHAT: No user_identity_seed - cannot process ACK");
@@ -12003,7 +12047,7 @@ impl PhotonApp {
                         std::net::SocketAddr::new(raw_sender_addr.ip(), crate::PHOTON_PORT);
 
                     // Get our handle_hash
-                    let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {  // PARTY ID (not raw seed): the conversation token + slots key on party ids on the SEND side; the receive path must match or every friend ceremony stalls at "unknown conversation_token" (2026-07-16).
+                    let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {  // PARTY ID (not raw seed): the conversation token + slots key on party ids on the SEND side; the receive path must match or every friend ceremony stalls at "unknown conversation_token".
                         Some(h) => h,
                         None => {
                             #[cfg(feature = "development")]
@@ -12616,7 +12660,7 @@ impl PhotonApp {
                         std::net::SocketAddr::new(raw_sender_addr.ip(), crate::PHOTON_PORT);
 
                     // Get our handle_hash
-                    let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {  // PARTY ID (not raw seed): the conversation token + slots key on party ids on the SEND side; the receive path must match or every friend ceremony stalls at "unknown conversation_token" (2026-07-16).
+                    let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {  // PARTY ID (not raw seed): the conversation token + slots key on party ids on the SEND side; the receive path must match or every friend ceremony stalls at "unknown conversation_token".
                         Some(h) => h,
                         None => {
                             #[cfg(feature = "development")]
@@ -12903,7 +12947,7 @@ impl PhotonApp {
                                 crate::logf!("Status: {} is now ONLINE (CLUTCH complete)", crate::fp(&contact.handle_proof));
                             }
 
-                            // ROUND SCOPING (the peer-B/a peer permanent-Pending stall, 2026-07-17): a proof is only meaningful within ITS ceremony round — the wire carries ceremony_id for exactly this, but it was parsed and discarded, so a proof from a superseded round (offer churn, address change, an unwiped peer replaying old state) got compared against OUR round and manufactured "PROOF MISMATCH" out of ordinary echo. If we know our round and theirs differs, drop it here: never stored, never compared. Their CURRENT round's proof rides the resend budget and arrives on its own.
+                            // ROUND SCOPING (a permanent-Pending stall): a proof is only meaningful within ITS ceremony round — the wire carries ceremony_id for exactly this, but it was parsed and discarded, so a proof from a superseded round (offer churn, address change, an unwiped peer replaying old state) got compared against OUR round and manufactured "PROOF MISMATCH" out of ordinary echo. If we know our round and theirs differs, drop it here: never stored, never compared. Their CURRENT round's proof rides the resend budget and arrives on its own.
                             if let Some(our_cid) = contact.ceremony_id {
                                 if received_ceremony_id != our_cid {
                                     crate::logf!("CLUTCH: proof from {} is for round {}… ours is {}… — cross-round echo dropped", crate::fp(&contact.handle_proof), hex::encode(&received_ceremony_id[..4]), hex::encode(&our_cid[..4]));
@@ -13804,7 +13848,7 @@ impl PhotonApp {
                         .enumerate()
                         .find(|(_, c)| c.knows_device(&peer_pubkey.key))
                     {
-                        // Never validate the unspecified sentinel (0.0.0.0 / ::) — that's the RELAY_ADDR a relayed message carries, and a punch to it round-trips locally. Validating it poisons addressing: sends go nowhere and relay_to empties out because validated_path looks Some (mom's proof vanished exactly this way). Bail before touching any state.
+                        // Never validate the unspecified sentinel (0.0.0.0 / ::) — that's the RELAY_ADDR a relayed message carries, and a punch to it round-trips locally. Validating it poisons addressing: sends go nowhere and relay_to empties out because validated_path looks Some (a peer's proof vanished exactly this way). Bail before touching any state.
                         if remote.ip().is_unspecified() {
                             continue;
                         }
@@ -14213,7 +14257,7 @@ impl PhotonApp {
             pks.clear();
         }
         self.storage = None; // next attest re-opens a fresh vault
-        // EVERY identity-flavoured RAM slot dies here (2026-07-17: a peer's avatar surfaced under peer-B after a wipe — the in-place reset only cleared what it knew about, and the settings cache kept feeding the OLD identity's avatar pin + name into the new session's pongs and wall sync). Desktop re-execs below anyway; Android's in-place reset is exactly this list, so the list must be COMPLETE.
+        // EVERY identity-flavoured RAM slot dies here (observed: one identity's avatar surfaced under a different identity after a wipe — the in-place reset only cleared what it knew about, and the settings cache kept feeding the OLD identity's avatar pin + name into the new session's pongs and wall sync). Desktop re-execs below anyway; Android's in-place reset is exactly this list, so the list must be COMPLETE.
         self.fleet_settings = None; // the big one: cached profile.avatar_pin / profile.name of the OLD identity
         self.device_avatar_pixels = None;
         self.device_avatar_scaled = None;
@@ -14232,7 +14276,7 @@ impl PhotonApp {
         self.refocus_handle_select_all();
         crate::storage::device_binding::clear();
         crate::logf!("CLEAN: wiped {} vault file(s) + cleared session — device is a blank slate, ready to attest fresh or join another fleet", count);
-        // Full process restart (desktop): the in-place reset leaves launch half-initialized (the wordmark went missing after a shred, 2026-07-17) and a wiped process still holds freed secrets in reachable memory anyway — exec into a pristine self via the same machinery a self-update uses. Android can't exec; its in-place reset stands.
+        // Full process restart (desktop): the in-place reset leaves launch half-initialized (the wordmark went missing after a shred) and a wiped process still holds freed secrets in reachable memory anyway — exec into a pristine self via the same machinery a self-update uses. Android can't exec; its in-place reset stands.
         #[cfg(not(target_os = "android"))]
         {
             if let Ok(exe) = std::env::current_exe() {
@@ -14396,7 +14440,7 @@ fn rect_center_dims(r: PixelRect) -> (Coord, Coord, Coord, Coord) {
 
 /// Bounding box of a [`Button`]'s pill rect in pixel coords, returned as `(x0, y0, x1, y1)`. Used by the overlay re-stamp pass for the contacts-page plus button — see the `render` flow where the button paints topmost but its hit stamp gets clobbered by the textbox painting under it.
 
-/// True if `ip` is a private / non-routable address that must NOT be stored as a contact's public (`ip`) address — it belongs in `local_ip` instead. Covers IPv4 RFC1918 (10/8, 172.16/12, 192.168/16), link-local (169.254/16), loopback; IPv6 loopback, link-local (fe80::/10), unique-local (fc00::/7); and IPv4-mapped IPv6 (`::ffff:a.b.c.d`) by unwrapping to the embedded v4 (the ping/pong path reports LAN sources in exactly this mapped form, e.g. `::ffff:<lan-ip>`).
+/// True if `ip` is a private / non-routable address that must NOT be stored as a contact's public (`ip`) address — it belongs in `local_ip` instead. Covers IPv4 RFC1918 (10/8, 172.16/12, 192.168/16), link-local (169.254/16), loopback; IPv6 loopback, link-local (fe80::/10), unique-local (fc00::/7); and IPv4-mapped IPv6 (`::ffff:a.b.c.d`) by unwrapping to the embedded v4 (the ping/pong path reports LAN sources in exactly this mapped form, e.g. `::ffff:a.b.c.d`).
 fn is_private_addr(ip: &std::net::IpAddr) -> bool {
     fn v4_private(o: [u8; 4]) -> bool {
         o[0] == 10

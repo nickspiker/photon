@@ -627,12 +627,12 @@ impl HandleQuery {
                         {
                             use num_bigint::BigUint;
                             let handle_seed = vault_seed;
-                            // device_secret is NEVER logged: the identity/handle seeds are handle-derivable anyway (no new capability in the log), but the device secret is fingerprint-derived and the log is SUBMITTABLE — writing it would hand fleet-membership keys to anyone who can pull the blob (which only needs the handle). Leak shipped 2026-07-17, scrubbed same day.
+                            // device_secret is NEVER logged: the identity/handle seeds are handle-derivable anyway (no new capability in the log), but the device secret is fingerprint-derived and the log is SUBMITTABLE — writing it would hand fleet-membership keys to anyone who can pull the blob (which only needs the handle).
                             crate::logf!("Development: identity_seed = {}  handle_seed = {}", voca::encode(BigUint::from_bytes_be(&identity_seed)), voca::encode(BigUint::from_bytes_be(&handle_seed)));
                         }
 
                         // Initialize FlatStorage for this session. A bare `return` here would silently strand the UI on the Attesting spinner because the result channel never gets a verdict — the worker has already proven FGTW says the handle is ours, but with no local vault we can't reach Ready. Surface the failure as a QueryResult::Error so the Launch screen flips to its error state and the user sees what happened.
-                        // open_shared, NEVER new: on a resume the UI thread already holds this vault's engine and is writing to it (CLUTCH chains, avatars, presence state). A second independent engine here is two in-RAM states racing one file — the exact corruption that bricked a live vault on 2026-07-12 ("seal verification failed" on every open after the stale engine's commit).
+                        // open_shared, NEVER new: on a resume the UI thread already holds this vault's engine and is writing to it (CLUTCH chains, avatars, presence state). A second independent engine here is two in-RAM states racing one file — the exact corruption that bricks a live vault ("seal verification failed" on every open after the stale engine's commit).
                         let storage = match crate::storage::FlatStorage::open_shared(
                             crate::storage::APP,
                             vault_seed,

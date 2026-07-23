@@ -628,7 +628,7 @@ pub fn log_at(level: LogLevel, msg: &str) {
     append_log_record(level, msg, &[]);
 }
 
-// ── Structured logging (numbers-binary-at-rest, 2026-07-16): the record stores the message TEMPLATE as pure text and every interpolated value as a TYPED `val` field beside it — a number never stringifies into storage; photonlog/vsfinfo choose the display base at READ time. Use `logf!`/`logf_at!` (format!-shaped) instead of `log(&format!(...))`. ──
+// ── Structured logging (numbers-binary-at-rest): the record stores the message TEMPLATE as pure text and every interpolated value as a TYPED `val` field beside it — a number never stringifies into storage; photonlog/vsfinfo choose the display base at READ time. Use `logf!`/`logf_at!` (format!-shaped) instead of `log(&format!(...))`. ──
 
 /// One captured log value, typed — becomes a native VSF field in the record.
 pub enum LogValue {

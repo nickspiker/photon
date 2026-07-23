@@ -87,6 +87,14 @@ pub fn is_usable_lan_ipv4(ip: std::net::Ipv4Addr) -> bool {
     !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified() && !is_service_continuity
 }
 
+/// True for the RFC 1918 private ranges (10/8, 172.16/12, 192.168/16) — the addresses that are only reachable
+/// on a shared LAN. Used to decide whether a peer's v4 candidate is a routable public address (send freely)
+/// or a private one that's only worth trying when we're on the SAME subnet (see gather::is_foreign_peer_lan).
+pub fn is_private_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    let o = ip.octets();
+    o[0] == 10 || (o[0] == 172 && (16..=31).contains(&o[1])) || (o[0] == 192 && o[1] == 168)
+}
+
 /// Get LAN broadcast address for the interface that routes to internet Returns (broadcast_addr, local_ip) or None if unable to determine
 ///
 /// On Linux: parses `ip addr` output to find actual broadcast address Fallback: assumes /24 subnet and computes broadcast from local IP
@@ -101,7 +109,7 @@ pub fn get_broadcast_addr() -> Option<(std::net::Ipv4Addr, std::net::Ipv4Addr)> 
         }
     }
 
-    // Fallback: assume /24 subnet (most common home/office network) e.g., a.b.c.d -> 192.168.1.255
+    // Fallback: assume /24 subnet (most common home/office network) e.g., a.b.c.d -> a.b.c.255
     let octets = local_ip.octets();
     let broadcast = std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255);
     Some((broadcast, local_ip))
@@ -117,7 +125,7 @@ fn get_broadcast_from_system(local_ip: &std::net::Ipv4Addr) -> Option<std::net::
     let stdout = String::from_utf8_lossy(&output.stdout);
     let local_str = local_ip.to_string();
 
-    // Find line containing our local IP and extract broadcast address Format: "inet <lan-ip>/24 brd 192.168.0.255 scope global ..."
+    // Find line containing our local IP and extract broadcast address Format: "inet a.b.c.d/24 brd a.b.c.255 scope global ..."
     for line in stdout.lines() {
         if line.contains(&local_str) && line.contains("brd") {
             // Parse: inet IP/prefix brd BROADCAST ...
