@@ -10,7 +10,8 @@ android_build() {
     [ "$profile" = "dev" ] && features="--features logging,fluor/amber"
 
     echo "Building Photon for Android (arm64) — $profile..."
-    PHOTON_ALLOW_RELEASE=1 cargo build --release --lib --target aarch64-linux-android $features
+    # Build the .so from deploy.sh's reflink snapshot when SNAP_DIR is exported (edit-safe release); standalone dev-adb builds the live tree.
+    ( cd "${SNAP_DIR:-.}" && PHOTON_ALLOW_RELEASE=1 cargo build --release --lib --target aarch64-linux-android $features )
 
     local so="target/aarch64-linux-android/release/libphoton_messenger.so"
     if [ ! -f "$so" ]; then

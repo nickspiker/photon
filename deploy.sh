@@ -65,12 +65,27 @@ R2_URL="https://brobdingnagian.holdmyoscilloscope.com/$R2_PATH"
 # manifest-build failure stranded already-public binaries with no matching manifest — that's what this fixes.
 # ════════════════════════════════════════════════════════════════════════════════════════════════════
 
+# SOURCE FREEZE (edit-safe release): reflink-snapshot photon + its whole path-dep closure the instant the build phase starts, then build every target from the FROZEN tree — so editing the live tree while a multi-minute cross-platform deploy runs can't tear a build (the "Read theme.rs (lines 86-89)" corruption a mid-edit deploy hit).
+# CARGO_TARGET_DIR stays the REAL ./target (snap + live units carry different unit hashes, so both coexist), so every `./target/release/...` signer call and every artefact path below is untouched.
+# Off-btrfs / any snapshot failure → SNAP_DIR stays "." and the live tree builds exactly as before.
+source "$(dirname "$0")/scripts/lib/snapbuild.sh"
+SNAP_DIR="."
+if snapbuild_take; then
+    SNAP_DIR="$SNAPBUILD_ROOT/photon"
+    export CARGO_TARGET_DIR="$(pwd)/target"
+    echo "Source frozen (reflink snapshot) — edit away, this deploy builds from the frozen tree"
+fi
+# Run a cargo build from the frozen source (falls back to the live tree if the snapshot didn't take).
+# Env vars set inline by the caller (cross sysroots, osxcross wrappers) pass through the subshell unchanged.
+snap_cargo() { ( cd "$SNAP_DIR" && cargo "$@" ); }
+
 # The two release TOOLS first — a failure to build the signer or the manifest tool must abort before any
 # platform binary is even built, let alone uploaded.
 echo "Building release tools (signer + manifest)..."
-cargo build --release --bin photon-signature-signer --bin photon-manifest
+snap_cargo build --release --bin photon-signature-signer --bin photon-manifest
 
-# Build and sign Linux x86_64 (native)
+# Build and sign Linux x86_64 (native). SNAP_DIR is exported so build-release.sh builds from the frozen tree too.
+export SNAP_DIR
 ./build-release.sh
 
 # Build Linux ARM64 (cross-compile)
@@ -80,7 +95,7 @@ CFLAGS_aarch64_unknown_linux_gnu="--sysroot=/usr/aarch64-redhat-linux/sys-root/f
 PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-redhat-linux/sys-root/fc42 \
 PKG_CONFIG_PATH=/usr/aarch64-redhat-linux/sys-root/fc42/usr/lib64/pkgconfig \
 PKG_CONFIG_ALLOW_CROSS=1 \
-cargo build --release --target aarch64-unknown-linux-gnu
+snap_cargo build --release --target aarch64-unknown-linux-gnu
 
 echo ""
 echo "Signing Linux ARM64 binary..."
@@ -89,7 +104,7 @@ echo "Signing Linux ARM64 binary..."
 # Build Windows
 echo ""
 echo "Building Windows release..."
-cargo build --release --target x86_64-pc-windows-gnu
+snap_cargo build --release --target x86_64-pc-windows-gnu
 
 echo ""
 echo "Signing Windows binary..."
@@ -98,7 +113,7 @@ echo "Signing Windows binary..."
 # Build Redox
 echo ""
 echo "Building Redox release..."
-cargo build --release --target x86_64-unknown-redox
+snap_cargo build --release --target x86_64-unknown-redox
 
 echo ""
 echo "Signing Redox binary..."
@@ -109,7 +124,7 @@ echo ""
 echo "Building macOS Intel release..."
 CC_x86_64_apple_darwin=/mnt/Octopus/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
 CXX_x86_64_apple_darwin=/mnt/Octopus/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
-cargo build --release --target x86_64-apple-darwin
+snap_cargo build --release --target x86_64-apple-darwin
 
 echo ""
 echo "Signing macOS Intel binary..."
@@ -121,7 +136,7 @@ echo "Building macOS ARM64 release..."
 CC_aarch64_apple_darwin=/mnt/Octopus/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
 CXX_aarch64_apple_darwin=/mnt/Octopus/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
 CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/mnt/Octopus/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
-cargo build --release --target aarch64-apple-darwin
+snap_cargo build --release --target aarch64-apple-darwin
 
 echo ""
 echo "Signing macOS ARM64 binary..."

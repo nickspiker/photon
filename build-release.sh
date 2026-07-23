@@ -12,9 +12,14 @@ cd "$(dirname "$0")"
 
 export PHOTON_ALLOW_RELEASE=1
 
+# Source-freeze aware: when deploy.sh exported SNAP_DIR (its reflink snapshot), build from the frozen tree so a live edit mid-deploy can't tear this build.
+# CARGO_TARGET_DIR was already pinned to the real ./target by deploy.sh, so the signer paths below are unchanged.
+# Run standalone (SNAP_DIR unset) → builds the live tree exactly as before.
+snap_cargo() { ( cd "${SNAP_DIR:-.}" && cargo "$@" ); }
+
 # Native: x86_64-unknown-linux-gnu (this box).
 echo "Building x86_64 release binary..."
-cargo build --release
+snap_cargo build --release
 echo "Signing x86_64 binary..."
 ./target/release/photon-signature-signer target/release/photon-messenger
 
@@ -42,7 +47,7 @@ PKG_CONFIG_ALLOW_CROSS=1 \
 PKG_CONFIG_PATH_aarch64_unknown_linux_gnu=/mnt/Octopus/Code/photon/cross-libs/aarch64/pkgconfig \
 PKG_CONFIG_LIBDIR_aarch64_unknown_linux_gnu=/mnt/Octopus/Code/photon/cross-libs/aarch64/pkgconfig \
 PKG_CONFIG_SYSROOT_DIR_aarch64_unknown_linux_gnu=/ \
-    cargo build --release --target aarch64-unknown-linux-gnu
+    snap_cargo build --release --target aarch64-unknown-linux-gnu
 
 echo "Signing aarch64 binary..."
 ./target/release/photon-signature-signer target/aarch64-unknown-linux-gnu/release/photon-messenger
