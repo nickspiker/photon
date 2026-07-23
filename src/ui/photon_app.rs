@@ -3325,7 +3325,14 @@ impl FluorApp for PhotonApp {
                 (AppState::Settings(a), AppState::Settings(b)) => a == b,
                 _ => false,
             };
-            if !same_screen && self.change_focus(None) {
+            if !same_screen {
+                if self.change_focus(None) {
+                    needs_redraw = true;
+                }
+                // A screen swap must also re-raster the CACHED bg layer — it's dirty-gated and nothing else invalidates it on navigation, so the previous screen's backdrop stayed baked beneath the new one (the launch chromatic wave + wordmark showing thru the settings panel; the settings divider-split noise lingering after Back). One noise re-raster per screen change is cheap.
+                if let Some(chrome) = self.chrome.as_mut() {
+                    chrome.invalidate_bg();
+                }
                 needs_redraw = true;
             }
             self.last_screen = self.state.clone();
