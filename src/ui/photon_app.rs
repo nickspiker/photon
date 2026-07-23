@@ -6,7 +6,7 @@ use super::launch_layout::{AttestBlockLayout, LaunchLayout};
 use super::photon_logo::paint_photon_logo;
 use super::ready_layout::ReadyLayout;
 use super::settings_layout::SettingsLayout;
-use super::state::{AppState, LaunchState, SettingsPage};
+use super::state::{AppState, ContactPage, LaunchState, SettingsPage};
 use super::theme;
 use super::PhotonEvent;
 #[cfg(not(target_os = "android"))]
@@ -917,6 +917,8 @@ pub struct PhotonApp {
     settings_nav_base: HitId,
     /// Contact-panel action pills (slot 0 = Boot). Allocated alongside the settings blocks.
     contact_panel_btn_base: HitId,
+    /// Contact-panel nav-rail rows. Row `i` (page `ContactPage::ALL[i]`) stamps `contact_nav_base + i`.
+    contact_nav_base: HitId,
     /// Boot two-tap arm (event-shown, interaction-cleared — any other press on the panel disarms).
     contact_boot_armed: bool,
     /// One-shot residency bypass: Shift+Escape sets it so the next close-requested actually exits instead of hiding.
@@ -1192,6 +1194,7 @@ impl PhotonApp {
             click_streak: 0,
             settings_nav_base: HIT_NONE,
             contact_panel_btn_base: HIT_NONE,
+            contact_nav_base: HIT_NONE,
             contact_boot_armed: false,
             exit_requested: false,
             settings_btn_base: HIT_NONE,
@@ -1813,6 +1816,9 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.contact_panel_btn_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(3); // contact-panel pills 0..=3 (0 = Boot)
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.contact_nav_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(3); // contact-panel rail rows 0..=3
         self.settings_theme_dropdown = Some(fluor::widgets::Dropdown::new(
             &mut self.hit_counter,
             0.,
@@ -2230,7 +2236,7 @@ impl FluorApp for PhotonApp {
         if hit_id == self.back_btn_hit_id && self.back_btn_hit_id != HIT_NONE {
             // Leaving a screen deselects whatever textbox held focus (clears its glow + selection) — page changes never carry focus across.
             self.change_focus(None);
-            if matches!(self.state, AppState::ContactPanel) {
+            if matches!(self.state, AppState::ContactPanel(_)) {
                 self.contact_boot_armed = false;
                 self.state = AppState::Conversation;
                 ctx.window.request_redraw();
@@ -2263,12 +2269,26 @@ impl FluorApp for PhotonApp {
             }
         }
 
-        // Settings nav rail + stub action pills — hit-id ranges owned by the panel. Rail rows switch the page; pills are inert stubs (log only), except Fleet's "Add device" pill which opens the pairing-words flow.
-        if matches!(self.state, AppState::ContactPanel) {
+        // Contact panel: nav rail rows switch the page (settings-mirror), pills act (slot 0 = Boot).
+        if matches!(self.state, AppState::ContactPanel(_)) {
             // Any press that isn't the Boot pill disarms it (event-shown, interaction-cleared).
             if self.contact_boot_armed && hit_id != self.contact_panel_btn_base {
                 self.contact_boot_armed = false;
                 ctx.window.request_redraw();
+            }
+            if self.contact_nav_base != HIT_NONE
+                && hit_id >= self.contact_nav_base
+                && hit_id < self.contact_nav_base.wrapping_add(4)
+            {
+                let idx = (hit_id - self.contact_nav_base) as usize;
+                if let Some(p) = ContactPage::ALL.get(idx).copied() {
+                    self.change_focus(None);
+                    // Fresh page starts at the top, same rule as settings.
+                    self.settings_content_scroll = 0.0;
+                    self.state = AppState::ContactPanel(p);
+                    ctx.window.request_redraw();
+                }
+                return EventResponse::Handled;
             }
             if self.contact_panel_btn_base != HIT_NONE
                 && hit_id >= self.contact_panel_btn_base
@@ -2742,8 +2762,8 @@ impl FluorApp for PhotonApp {
                             reach,
                         )
                         .round() as isize;
-                    } else if matches!(self.state, AppState::Settings(_)) {
-                        // Settings: the wheel scrolls the nav rail when the cursor is over it, else the content pane. Down-scroll (negative dy) reveals lower rows → add.
+                    } else if matches!(self.state, AppState::Settings(_) | AppState::ContactPanel(_)) {
+                        // Settings + the contact panel (its structural mirror): the wheel scrolls the nav rail when the cursor is over it, else the content pane. Down-scroll (negative dy) reveals lower rows → add.
                         let over_rail = {
                             let sl = SettingsLayout::compute(&ctx.viewport);
                             (ctx.cursor_x as f32) < sl.content.x
@@ -3037,7 +3057,7 @@ impl FluorApp for PhotonApp {
                             self.exit_requested = true;
                             return EventResponse::Close;
                         }
-                        if matches!(self.state, AppState::ContactPanel) {
+                        if matches!(self.state, AppState::ContactPanel(_)) {
                             self.contact_boot_armed = false;
                             self.state = AppState::Conversation;
                             ctx.window.request_redraw();
@@ -3542,7 +3562,7 @@ impl FluorApp for PhotonApp {
             && (self.zoom_hint || (cfg!(target_os = "android") && (ctx.viewport.ru - 1.0).abs() > 0.001));
 
         // Title-bar text by screen, computed BEFORE the chrome borrow (peer count reads `self.handle_query` / `self.session`). Launch/attest shows the "← Network" affordance; once attested (Ready) it shows the peer count — distinct identities in the store EXCLUDING our own: peers are PEOPLE, so the FGTW seed is not a peer (the old `+1` when online) and neither are our own fleet siblings (their records ride the same store for direct routing). `set_title` only re-rasterizes chrome when the string actually changes, so this is cheap to recompute each frame.
-        let title_text: String = if matches!(self.state, AppState::Conversation | AppState::ContactPanel) {
+        let title_text: String = if matches!(self.state, AppState::Conversation | AppState::ContactPanel(_)) {
             self.active_contact
                 .and_then(|ci| self.contacts.get(ci))
                 .map(|c| c.display_name())
@@ -3625,6 +3645,13 @@ impl FluorApp for PhotonApp {
                 self.settings_content_scroll = self.settings_content_extent;
             }
             (self.settings_rail_scroll, self.settings_content_scroll)
+        } else if let AppState::ContactPanel(cpage) = self.state {
+            // The contact panel rides the SAME scroll fields + extents machinery as settings (it's the structural mirror). Rail = pinned Back + 3 page rows; content rows are fixed per page (About carries the avatar block's extra height as virtual rows).
+            let sl = SettingsLayout::compute(&ctx.viewport);
+            self.settings_rail_extent = (sl.nav_row_h() * (ContactPage::ALL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0);
+            let n = contact_page_rows(cpage);
+            self.settings_content_extent = (sl.content_line_h() * n as Coord - sl.content_inset().h).max(0.0);
+            (self.settings_rail_scroll, self.settings_content_scroll)
         } else {
             (0.0, 0.0)
         };
@@ -3656,7 +3683,7 @@ impl FluorApp for PhotonApp {
         let shimmer = bg_scroll as usize;
         let scroll_offset = 0; // Launch only for now.
         // Background texture origin + per-half scroll. On Settings the noise mirror-axis sits ON the rail|content divider (1/3 width), and each half scrolls with ITS pane — rail-scroll drives the left half, content-scroll the right — so the background tracks the scroll of whatever you're reading. Every other screen keeps the centred origin with both halves locked together (unified scroll).
-        let (bg_split_x, bg_left_scroll, bg_right_scroll) = if matches!(self.state, AppState::Settings(_)) {
+        let (bg_split_x, bg_left_scroll, bg_right_scroll) = if matches!(self.state, AppState::Settings(_) | AppState::ContactPanel(_)) {
             let sl = SettingsLayout::compute(&ctx.viewport);
             (
                 Some(sl.content.x as usize),
@@ -4418,38 +4445,23 @@ impl FluorApp for PhotonApp {
         }
 
         // Conversation screen — shows the selected contact's name, clutch state, and (eventually) messages.
-        // Contact panel — the friend, mirrored in the settings screen's visual language: avatar header, then About (what they shared with us + identity/trust detail), then the conversation in numbers (the sync-test instrument: these rows should CONVERGE across fleet devices), then Boot. Immediate-mode rows only, no widgets, no scroll (fits at sane zooms; the settings-grade rail arrives if the panel grows pages).
-        if matches!(self.state, AppState::ContactPanel) {
+        // Contact panel — the Settings screen's exact structure, contact-scoped: same SettingsLayout, pinned-Back nav rail with page rows (About / Between you / Manage), hairline divider, scrolled natural-height content. Rides the SAME scroll fields/extents as settings.
+        if let AppState::ContactPanel(cpage) = self.state {
+            let layout = SettingsLayout::compute(&ctx.viewport);
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             if let Some(ci) = self.active_contact.filter(|&ci| ci < self.contacts.len()) {
-                let ru = ctx.viewport.ru;
-                let conv_layout = ReadyLayout::compute(buf_w, buf_h, ru);
-                let unit = conv_layout.unit_height;
-                // Back arrow, same vocabulary as the conversation header.
-                let back_y = buf_h as f32 * 0.06 + unit;
-                let back_size = unit * 1.15;
-                let back_text = "\u{2039} Conversation";
-                let back_pressed = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
-                let back_hovered = back_pressed || (ctx.pressed_hit == HIT_NONE && self.hover_hit == self.back_btn_hit_id);
-                let back_weight = if back_hovered { 700 } else { 500 };
-                ctx.text.draw_text_left(&mut canvas, back_text, unit, back_y, &TextStyle::new(back_size, theme::CONTACT_NAME_COLOUR).weight(back_weight).font("Oxanium"), None, None);
-                let back_w = ctx.text.measure_text(back_text, &TextStyle::new(back_size, 0).weight(back_weight).font("Oxanium"));
+                // Clear the panel region's hit stamps before re-stamping this frame (immediate-mode stamps must not linger across page switches).
                 restamp_hit_rect(
-                    &mut chrome.hit_test_map,
-                    buf_w,
-                    buf_h,
-                    unit as isize,
-                    (back_y - back_size) as isize,
-                    back_w as isize,
-                    (back_size * 2.0) as isize,
-                    self.back_btn_hit_id,
+                    &mut chrome.hit_test_map, buf_w, buf_h,
+                    0, layout.rail.y as isize, buf_w as isize, buf_h as isize,
+                    HIT_NONE,
                 );
-                // Header: avatar + tier ring + name, centred — the conversation header's shape.
-                let avatar_r = unit * 2.2;
+
+                // Avatar cache at the About-page diameter, rebuilt BEFORE the immutable contact borrow.
+                let avatar_r = layout.unit * 2.0;
                 let diam = (avatar_r * 2.0) as usize;
-                let cx = buf_w as f32 * 0.5;
-                let cy = back_y + back_size + avatar_r + unit;
-                if self.contacts[ci].avatar_pixels.is_some()
+                if cpage == ContactPage::About
+                    && self.contacts[ci].avatar_pixels.is_some()
                     && (self.contacts[ci].avatar_scaled.is_none() || self.contacts[ci].avatar_scaled_diameter != diam)
                 {
                     let base = self.contacts[ci].avatar_pixels.as_ref().unwrap();
@@ -4458,103 +4470,189 @@ impl FluorApp for PhotonApp {
                     self.contacts[ci].avatar_scaled_diameter = diam;
                 }
                 let contact = &self.contacts[ci];
-                let ring = if contact.is_online {
-                    if contact.reached_via_relay { theme::RING_RELAY_COLOUR } else { theme::RING_ONLINE_COLOUR }
-                } else {
-                    theme::RING_OFFLINE_COLOUR
-                };
-                paint::draw_circle(&mut canvas, cx, cy, avatar_r + (avatar_r * 0.0375).max(1.0), ring, None);
-                if let Some(scaled) = contact.avatar_scaled.as_ref() {
-                    crate::ui::avatar_render::draw_avatar(&mut canvas, cx, cy, avatar_r, scaled, diam, None);
-                } else {
-                    let gd = diam.max(1);
-                    let seed = proof_gradient_seed(&contact.handle_proof);
-                    crate::ui::avatar_render::draw_avatar(&mut canvas, cx, cy, avatar_r, &gradient_avatar_rgb(seed, gd), gd, None);
-                }
                 let our_hh = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
-                let name_colour = if contact.handle_hash == our_hh { self_colour() } else { party_colour(&relationship_digest(&contact.handle_hash, &our_hh)) };
-                let name_y = cy + avatar_r + unit;
-                ctx.text.draw_text_center(&mut canvas, &contact.display_name_or_pending(), cx, name_y, &TextStyle::new(unit * 1.3, name_colour).weight(600).font("Oxanium"), None, None);
-
-                // Display doctrine (matches clutch_status_detail): dozenal is the acclimation surface for VERSION + REPUTATION only — counters stay in current mixed arabic units for now.
-                let doz = |n: usize| n.to_string();
-                let sent = contact.messages.iter().filter(|m| m.is_outgoing).count();
-                let recv = contact.messages.len() - sent;
-                let delivered = contact.messages.iter().filter(|m| m.is_outgoing && m.delivered).count();
-                let span_days = {
-                    let first = contact.messages.iter().map(|m| m.timestamp).min();
-                    let last = contact.messages.iter().map(|m| m.timestamp).max();
-                    match (first, last) {
-                        (Some(a), Some(b)) if b > a => ((b - a) / (vsf::OSCILLATIONS_PER_SECOND as i64 * 86_400)).max(0) as usize,
-                        _ => 0,
-                    }
-                };
                 let is_self = contact.handle_hash == our_hh;
-                let shared_name = if contact.published_name.is_empty() { "name: not shared".to_string() } else { format!("name: \u{201c}{}\u{201d}", contact.published_name) };
-                let shared_avatar = if contact.avatar_pin == [0u8; 64] { "avatar: not shared" } else { "avatar: shared" };
-                let identity_line = if contact.identity_superseded {
-                    "\u{26a0} this name was re-claimed by someone else \u{2014} rendering a stranger".to_string()
-                } else if contact.identity_ended {
-                    "identity ended by its owner".to_string()
-                } else if contact.pinned_genesis != [0u8; 32] {
-                    format!("identity pinned \u{00b7} {} device(s) in their fleet", doz(contact.fleet_members.len().max(1)))
-                } else {
-                    "identity not yet folded (first contact still settling)".to_string()
-                };
-                let chain_line = if is_self {
-                    "your own notes \u{2014} no chain, rows ride the fleet key".to_string()
-                } else if contact.chain_woven {
-                    "chain woven \u{2014} secured end-to-end".to_string()
-                } else {
-                    contact.clutch_status_detail()
-                };
-                let connection_line = if is_self {
-                    "always reachable (this is you)".to_string()
-                } else if contact.is_online {
-                    if contact.reached_via_relay { "connected \u{00b7} via relay".to_string() } else { "connected \u{00b7} direct".to_string() }
-                } else {
-                    "offline".to_string()
-                };
-                let history_line = match contact.history_recovery.as_ref().map(|r| r.complete) {
-                    Some(true) => "history: complete on this device".to_string(),
-                    Some(false) => "history: still syncing".to_string(),
-                    None => "history: idle (no sweep this session)".to_string(),
-                };
-                let mut rows: Vec<(String, u32, u16)> = vec![
-                    ("About".to_string(), theme::CONTACT_NAME_COLOUR, 600),
-                    (shared_name, theme::LABEL_COLOUR, 400),
-                    (shared_avatar.to_string(), theme::LABEL_COLOUR, 400),
-                    (identity_line, theme::LABEL_COLOUR, 400),
-                    (String::new(), 0, 400),
-                    ("Between you".to_string(), theme::CONTACT_NAME_COLOUR, 600),
-                    (format!("{} message(s) \u{00b7} {} sent \u{00b7} {} received", doz(contact.messages.len()), doz(sent), doz(recv)), theme::LABEL_COLOUR, 400),
-                    (format!("{} of your messages delivered", doz(delivered)), theme::LABEL_COLOUR, 400),
-                    (format!("chatting across {} day(s)", doz(span_days)), theme::LABEL_COLOUR, 400),
-                    (history_line, theme::LABEL_COLOUR, 400),
-                    (chain_line, theme::LABEL_COLOUR, 400),
-                    (connection_line, theme::LABEL_COLOUR, 400),
-                ];
-                if is_self {
-                    rows.retain(|(s, _, _)| !s.starts_with("avatar:") && !s.starts_with("name:"));
+
+                // --- Header: the contact's name, centred on the rail|content divider — the panel's "Settings" slot. ---
+                let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
+                let name_colour = if is_self { self_colour() } else { party_colour(&relationship_digest(&contact.handle_hash, &our_hh)) };
+                ctx.text.draw_text_center(&mut canvas, &contact.display_name_or_pending(), layout.content.x, layout.header.center_y(), &TextStyle::new(hspan, name_colour).weight(600).font("Oxanium"), None, None);
+
+                // --- Nav rail: pinned Back (returns to the conversation), then the page rows scrolling below — the settings rail verbatim. ---
+                let rail_inset = layout.rail_inset();
+                let nav_h = layout.nav_row_h();
+                let rspan = (layout.unit * 0.58).max(9.0);
+                {
+                    let r = fluor::region::Region::new(rail_inset.x, rail_inset.y, rail_inset.w, nav_h);
+                    let back_held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
+                    ctx.text.draw_text_left(&mut canvas, "\u{2039} Back", r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
+                    let fill = if back_held { fluor::theme::BUTTON_HELD } else { 0x80_FF_FF_FF };
+                    paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fill, None, None);
+                    restamp_hit_rect(
+                        &mut chrome.hit_test_map, buf_w, buf_h,
+                        r.x as isize, r.y as isize, r.right() as isize, r.bottom() as isize,
+                        self.back_btn_hit_id,
+                    );
                 }
-                let line_h = unit * 1.35;
-                let text_size = unit * 0.85;
-                let mut y = name_y + unit * 1.8;
-                for (s, colour, weight) in &rows {
-                    if !s.is_empty() {
-                        let row = fluor::region::Region::new(buf_w as f32 * 0.12, y - line_h * 0.5, buf_w as f32 * 0.76, line_h);
-                        settings_line(&mut canvas, ctx.text, row, s, text_size, *colour, *weight);
+                let pages_top = rail_inset.y + nav_h;
+                let pages_clip = fluor::paint::Clip::new(
+                    layout.rail.x.max(0.0) as usize,
+                    pages_top.max(layout.rail.y).max(0.0) as usize,
+                    layout.rail.right().max(0.0) as usize,
+                    layout.rail.bottom().max(0.0) as usize,
+                );
+                for (i, p) in ContactPage::ALL.iter().enumerate() {
+                    let r = fluor::region::Region::new(
+                        rail_inset.x,
+                        pages_top - settings_rail_scroll + i as Coord * nav_h,
+                        rail_inset.w,
+                        nav_h,
+                    );
+                    if r.bottom() <= pages_top || r.y >= layout.rail.bottom() {
+                        continue;
                     }
-                    y += line_h;
+                    let active = *p == cpage;
+                    let held = ctx.pressed_hit != HIT_NONE
+                        && ctx.pressed_hit == self.contact_nav_base.wrapping_add(i as HitId);
+                    let colour = if active { theme::CONTACT_NAME_COLOUR } else { theme::LABEL_COLOUR };
+                    ctx.text.draw_text_left(&mut canvas, p.label(), r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, colour).weight(if active { 600 } else { 400 }).font("Oxanium"), Some(pages_clip), None);
+                    if held {
+                        paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fluor::theme::BUTTON_HELD, Some(pages_clip), None);
+                    } else if active {
+                        paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, theme::SEPARATOR_COLOUR, Some(pages_clip), None);
+                    }
+                    restamp_hit_rect(
+                        &mut chrome.hit_test_map, buf_w, buf_h,
+                        r.x as isize, r.y.max(pages_top) as isize,
+                        r.right() as isize, r.bottom().min(layout.rail.bottom()) as isize,
+                        self.contact_nav_base.wrapping_add(i as HitId),
+                    );
                 }
-                // Boot pill — red family like the destructive security pills; two-tap.
-                if !is_self && !contact.is_sibling {
-                    let pill_w = (unit * 9.0).min(buf_w as f32 * 0.6);
-                    let pill = fluor::region::Region::new(cx - pill_w * 0.5, y + unit * 0.5, pill_w, unit * 1.6);
-                    let label = if self.contact_boot_armed { "Tap again \u{2014} boot them" } else { "Boot" };
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill, label, self.contact_panel_btn_base, ctx.pressed_hit);
-                    if self.contact_boot_armed {
-                        settings_line(&mut canvas, ctx.text, fluor::region::Region::new(buf_w as f32 * 0.12, pill.y + pill.h + unit * 0.3, buf_w as f32 * 0.76, line_h), "removes them from every device of YOUR fleet \u{2014} they are not told, their records stay theirs", text_size * 0.85, theme::LABEL_COLOUR, 400);
+                paint::fill_rect(
+                    &mut canvas, layout.content.x as isize, layout.content.y as isize,
+                    1, layout.content.h as isize, theme::SEPARATOR_COLOUR, None, None,
+                );
+
+                // --- Selected page body: natural-height rows over the shared content scroll, clipped to the reading column. ---
+                let inset = layout.content_inset();
+                let content_clip = fluor::paint::Clip::new(
+                    inset.x.max(0.0) as usize,
+                    inset.y.max(0.0) as usize,
+                    inset.right().max(0.0) as usize,
+                    inset.bottom().max(0.0) as usize,
+                );
+                let tspan = (layout.unit * 0.72).max(8.0);
+                let hspan2 = tspan * 0.75;
+                // Display doctrine (matches clutch_status_detail): dozenal is the acclimation surface for VERSION + REPUTATION only — counters stay in current mixed arabic units for now.
+                match cpage {
+                    ContactPage::About => {
+                        let n = contact_page_rows(ContactPage::About);
+                        let rows = layout.content_scrolled(n, settings_content_scroll).split_v([1.0; 12]);
+                        // Avatar block spans the first 5 rows: presence-tier ring under the picture, centred in the column.
+                        let block = fluor::region::Region::new(rows[0].x, rows[0].y, rows[0].w, rows[0].h * 5.0);
+                        let (cx, cy) = (block.center_x(), block.center_y());
+                        let ring = if contact.is_online {
+                            if contact.reached_via_relay { theme::RING_RELAY_COLOUR } else { theme::RING_ONLINE_COLOUR }
+                        } else {
+                            theme::RING_OFFLINE_COLOUR
+                        };
+                        if let Some(scaled) = contact.avatar_scaled.as_ref() {
+                            crate::ui::avatar_render::draw_avatar(&mut canvas, cx, cy, avatar_r, scaled, diam, Some(content_clip));
+                        } else {
+                            let gd = diam.max(1);
+                            let seed = proof_gradient_seed(&contact.handle_proof);
+                            crate::ui::avatar_render::draw_avatar(&mut canvas, cx, cy, avatar_r, &gradient_avatar_rgb(seed, gd), gd, Some(content_clip));
+                        }
+                        paint::draw_circle(&mut canvas, cx, cy, avatar_r + (avatar_r * 0.0375).max(1.0), ring, Some(content_clip));
+                        let shared_name = if is_self {
+                            "your own notes-to-self conversation".to_string()
+                        } else if contact.published_name.is_empty() {
+                            "name: not shared yet".to_string()
+                        } else {
+                            format!("name: \u{201c}{}\u{201d} (their published name)", contact.published_name)
+                        };
+                        let shared_avatar = if is_self {
+                            String::new()
+                        } else if contact.avatar_pin == [0u8; 64] {
+                            "avatar: not shared yet".to_string()
+                        } else {
+                            "avatar: shared with you".to_string()
+                        };
+                        let identity_line = if is_self {
+                            "no ceremony, no chain \u{2014} rows ride your fleet key".to_string()
+                        } else if contact.identity_superseded {
+                            "\u{26a0} this name was re-claimed by someone else \u{2014} rendering a stranger".to_string()
+                        } else if contact.identity_ended {
+                            "identity ended by its owner".to_string()
+                        } else if contact.pinned_genesis != [0u8; 32] {
+                            format!("identity pinned since first fold \u{00b7} {} device(s) in their fleet", contact.fleet_members.len().max(1))
+                        } else {
+                            "identity not yet folded (first contact still settling)".to_string()
+                        };
+                        settings_line(&mut canvas, ctx.text, rows[5], "What they share with you", tspan, theme::CONTACT_NAME_COLOUR, 600);
+                        settings_line(&mut canvas, ctx.text, rows[6], &shared_name, hspan2, theme::LABEL_COLOUR, 400);
+                        if !shared_avatar.is_empty() {
+                            settings_line(&mut canvas, ctx.text, rows[7], &shared_avatar, hspan2, theme::LABEL_COLOUR, 400);
+                        }
+                        settings_line(&mut canvas, ctx.text, rows[9], "Identity", tspan, theme::CONTACT_NAME_COLOUR, 600);
+                        settings_line(&mut canvas, ctx.text, rows[10], &identity_line, hspan2, theme::LABEL_COLOUR, 400);
+                    }
+                    ContactPage::Stats => {
+                        let n = contact_page_rows(ContactPage::Stats);
+                        let rows = layout.content_scrolled(n, settings_content_scroll).split_v([1.0; 9]);
+                        let sent = contact.messages.iter().filter(|m| m.is_outgoing).count();
+                        let recv = contact.messages.len() - sent;
+                        let delivered = contact.messages.iter().filter(|m| m.is_outgoing && m.delivered).count();
+                        let span_days = {
+                            let first = contact.messages.iter().map(|m| m.timestamp).min();
+                            let last = contact.messages.iter().map(|m| m.timestamp).max();
+                            match (first, last) {
+                                (Some(a), Some(b)) if b > a => ((b - a) / (vsf::OSCILLATIONS_PER_SECOND as i64 * 86_400)).max(0) as usize,
+                                _ => 0,
+                            }
+                        };
+                        let history_line = match contact.history_recovery.as_ref().map(|r| r.complete) {
+                            Some(true) => "history: complete on this device".to_string(),
+                            Some(false) => "history: still syncing".to_string(),
+                            None => "history: idle (no sweep this session)".to_string(),
+                        };
+                        let chain_line = if is_self {
+                            "no chain \u{2014} delivered by definition".to_string()
+                        } else if contact.chain_woven {
+                            "chain woven \u{2014} secured end-to-end".to_string()
+                        } else {
+                            contact_status_line(contact, self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()), self.session.as_ref().map(|se| &se.identity_seed))
+                        };
+                        let connection_line = if is_self {
+                            "always reachable (this is you)".to_string()
+                        } else if contact.is_online {
+                            if contact.reached_via_relay { "connected \u{00b7} via relay".to_string() } else { "connected \u{00b7} direct".to_string() }
+                        } else {
+                            "offline".to_string()
+                        };
+                        // These rows should CONVERGE across your fleet devices — two devices showing different numbers here IS the sync bug, made visible.
+                        settings_line(&mut canvas, ctx.text, rows[0], "Between you", tspan, theme::CONTACT_NAME_COLOUR, 600);
+                        settings_line(&mut canvas, ctx.text, rows[1], &format!("{} message(s) \u{00b7} {} sent \u{00b7} {} received", contact.messages.len(), sent, recv), hspan2, theme::LABEL_COLOUR, 400);
+                        settings_line(&mut canvas, ctx.text, rows[2], &format!("{} of your messages delivered", delivered), hspan2, theme::LABEL_COLOUR, 400);
+                        settings_line(&mut canvas, ctx.text, rows[3], &format!("chatting across {} day(s)", span_days), hspan2, theme::LABEL_COLOUR, 400);
+                        settings_line(&mut canvas, ctx.text, rows[4], &history_line, hspan2, theme::LABEL_COLOUR, 400);
+                        settings_line(&mut canvas, ctx.text, rows[5], &chain_line, hspan2, theme::LABEL_COLOUR, 400);
+                        settings_line(&mut canvas, ctx.text, rows[6], &connection_line, hspan2, theme::LABEL_COLOUR, 400);
+                        settings_line(&mut canvas, ctx.text, rows[8], "these rows should match on every one of your devices", hspan2 * 0.9, theme::LABEL_COLOUR, 400);
+                    }
+                    ContactPage::Manage => {
+                        let n = contact_page_rows(ContactPage::Manage);
+                        let rows = layout.content_scrolled(n, settings_content_scroll).split_v([1.0; 6]);
+                        settings_line(&mut canvas, ctx.text, rows[0], "Manage", tspan, theme::CONTACT_NAME_COLOUR, 600);
+                        if is_self || contact.is_sibling {
+                            settings_line(&mut canvas, ctx.text, rows[1], if is_self { "your own notes can\u{2019}t be booted" } else { "a fleet device signs itself out \u{2014} see Settings \u{2192} Fleet" }, hspan2, theme::LABEL_COLOUR, 400);
+                        } else {
+                            let pill = fluor::region::Region::new(rows[2].x + rows[2].w * 0.1, rows[2].y, rows[2].w * 0.5, rows[2].h * 0.95);
+                            let label = if self.contact_boot_armed { "Tap again \u{2014} boot them" } else { "Boot" };
+                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill, label, self.contact_panel_btn_base, ctx.pressed_hit);
+                            settings_line(&mut canvas, ctx.text, rows[3], "removes them from every device of YOUR fleet", hspan2, theme::LABEL_COLOUR, 400);
+                            settings_line(&mut canvas, ctx.text, rows[4], "they are not told \u{2014} their records stay theirs (ostracism, not erasure)", hspan2, theme::LABEL_COLOUR, 400);
+                        }
                     }
                 }
             }
@@ -4719,7 +4817,7 @@ impl FluorApp for PhotonApp {
                         ("notes to self".to_string(), theme::SEARCH_FOUND_COLOUR)
                     } else {
                         (
-                            format!("CLUTCH: {}", contact.clutch_status_detail()),
+                            format!("CLUTCH: {}", contact_status_line(contact, self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()), self.session.as_ref().map(|se| &se.identity_seed))),
                             if contact.clutch_state == crate::types::ClutchState::Complete {
                                 theme::SEARCH_FOUND_COLOUR
                             } else {
@@ -6574,7 +6672,7 @@ impl PhotonApp {
             AppState::Conversation => {
                 self.change_focus(None);
                 self.contact_boot_armed = false;
-                self.state = AppState::ContactPanel;
+                self.state = AppState::ContactPanel(ContactPage::About);
                 true
             }
             // Settings / AddDevice / ContactPanel fall thru: navigation off those screens is a dedicated control (back button), never the orb.
@@ -7091,6 +7189,9 @@ impl PhotonApp {
                 added: c.added,
                 updated: c.roster_updated,
                 tombstone: false,
+                // §4.2 one-ceremony claim rides the entry. Woven carries whichever truth we hold: OUR chain woven (we're the owner) or the owner's roster-adopted completion.
+                ceremony_owner: c.ceremony_owner.unwrap_or([0u8; 32]),
+                woven: c.chain_woven || c.owner_woven,
             })
             .collect()
     }
@@ -7113,9 +7214,27 @@ impl PhotonApp {
                 if e.tombstone {
                     let gone = self.contacts.remove(pos);
                     crate::logf!("FLEET: roster tombstone — removed contact {}", crate::fp(&gone.handle_proof).as_str());
+                    // Index fixup: the remove shifts every later contact down one. If the REMOVED contact's conversation (or panel) is open on THIS device, pop to the contact list — rendering a shifted index would silently show someone else's conversation.
+                    match self.active_contact {
+                        Some(ci) if ci == pos => {
+                            self.active_contact = None;
+                            self.contact_boot_armed = false;
+                            if matches!(self.state, AppState::Conversation | AppState::ContactPanel(_)) {
+                                self.state = AppState::Ready;
+                            }
+                        }
+                        Some(ci) if ci > pos => self.active_contact = Some(ci - 1),
+                        _ => {}
+                    }
                     if let Some(storage) = self.storage.as_ref() {
                         if let Err(err) = crate::storage::contacts::delete_contact(&gone.handle_hash, storage) {
                             crate::logf!("FLEET: tombstoned contact state delete failed: {}", err);
+                        }
+                        if let Some(fid) = gone.friendship_id {
+                            self.friendship_chains.retain(|(id, _)| *id != fid);
+                            if let Err(err) = crate::storage::friendship::delete_friendship_chains(&fid, storage) {
+                                crate::logf!("FLEET: tombstoned contact chain delete failed: {}", err);
+                            }
                         }
                     }
                     removed += 1;
@@ -7130,6 +7249,9 @@ impl PhotonApp {
                     c.avatar_pin = e.avatar_pin;
                     c.avatar_pin_dirty = true; // post-drain sweep persists the index + refetches the avatar
                 }
+                // §4.2 claim + the owner's completion, newest entry wins (same LWW as the fields above).
+                c.ceremony_owner = (e.ceremony_owner != [0u8; 32]).then_some(e.ceremony_owner);
+                c.owner_woven = e.woven;
                 c.roster_updated = e.updated;
                 if let Some(storage) = self.storage.as_ref() {
                     if let Err(err) = crate::storage::contacts::save_contact(&self.contacts[pos], storage) {
@@ -7146,6 +7268,9 @@ impl PhotonApp {
             let mut contact = crate::types::Contact::from_pin(e.name.clone(), e.avatar_pin, e.handle_proof, e.handle_hash, device_pubkey);
             contact.added = e.added;
             contact.roster_updated = e.updated;
+            // §4.2: the entry names the fleet device running this friendship's ceremony — adopt the claim so THIS device parks instead of racing its own round at the friend.
+            contact.ceremony_owner = (e.ceremony_owner != [0u8; 32]).then_some(e.ceremony_owner);
+            contact.owner_woven = e.woven;
             self.contacts.push(contact);
             added += 1;
         }
@@ -8671,10 +8796,18 @@ impl PhotonApp {
             });
             crate::log("HISTORY: recovery kicked off (head page next tick)");
         }
+        let is_sibling = c.is_sibling;
         if let Some(storage) = self.storage.as_ref() {
             if let Err(e) = crate::storage::contacts::save_contact(c, storage) {
                 crate::logf!("CHAIN-PROBE: failed to persist woven contact: {}", e);
             }
+        }
+        // §4.2: the seal is the moment `woven` becomes true in OUR roster entry — push it so parked siblings flip from "weaving on <device>…" to "secured on <device>". Bump the LWW clock so the woven entry actually wins the merge.
+        if !is_sibling {
+            if let Some(c) = self.contacts.get_mut(contact_idx) {
+                c.roster_updated = vsf::eagle_time_oscillations();
+            }
+            self.spawn_roster_push();
         }
     }
 
@@ -9001,6 +9134,8 @@ impl PhotonApp {
                 )
                 .with_ip(peer.ip)
                 .with_local_ip(peer.local_ip, peer.ip.port());
+                // §4.2 one-ceremony claim: the ADDING device owns this friendship's CLUTCH. The claim rides the roster entry this add is about to push, so siblings park instead of racing their own rounds at the friend.
+                contact.ceremony_owner = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
                 // Self-contact: same identity, no key exchange needed.
                 let is_self =
                     self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) == Some(contact.handle_hash);
@@ -9141,18 +9276,53 @@ impl PhotonApp {
         // Eagle-time gate on re-key: a round whose keys read `None` but that STARTED recently is not a failure to re-key — it's a transient loss (a resume that hadn't restored yet, an in-flight round). Re-keying it mints a divergent round the peer never agreed to; instead wait, and only re-key once the round is genuinely stale. A contact that never started a round (`clutch_round_started == None`) is the legitimate initial-keygen case and fires immediately.
         let now = vsf::eagle_time_oscillations();
         const ROUND_TTL_OSC: i64 = 300 * vsf::OSCILLATIONS_PER_SECOND as i64; // 5 min: a relay ceremony (offer+KEM+proof, each a 5-30s store-and-forward hop) can run 1-2 min, and the round's keys must stay valid the whole time
+        let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+        // §4.2 one-CLUTCH-per-friendship: a friend claimed by ANOTHER of our devices PARKS here while that device is present — its ceremony is the fleet's ceremony. An ABSENT owner (died mid-weave) is presence-driven takeover: the contact re-enters the queue and the pickup below re-claims it. Sibling weaves are per-device-pair by design — never parked.
+        let parked = |c: &crate::types::Contact| -> bool {
+            if c.is_sibling {
+                return false;
+            }
+            match c.ceremony_owner {
+                Some(owner) if Some(owner) != our_device => self
+                    .contacts
+                    .iter()
+                    .any(|s| s.is_sibling && s.public_identity.key == owner && s.is_online),
+                _ => false,
+            }
+        };
         let next_idx = self.contacts.iter().position(|c| {
             c.handle_hash != our_seed
                 && c.clutch_state == crate::types::ClutchState::Pending
                 && c.clutch_our_keypairs.is_none()
                 && !c.clutch_keygen_in_progress
                 && c.clutch_round_started.map_or(true, |t| now - t >= ROUND_TTL_OSC)
+                && !parked(c)
         });
         if let Some(i) = next_idx {
             // Party id per contact: identity seed for friends, device-derived pid for fleet siblings.
             let Some(our_pid) = self.our_party_id(&self.contacts[i]) else {
                 return false;
             };
+            // Claim on pickup (unclaimed legacy contact, or takeover from an absent owner): the claim rides the next roster push so siblings park. LWW settles simultaneous claims; the loser's round dies parked.
+            if !self.contacts[i].is_sibling {
+                if let Some(ours) = our_device {
+                    if self.contacts[i].ceremony_owner != Some(ours) {
+                        let taking_over = self.contacts[i].ceremony_owner.is_some();
+                        let c = &mut self.contacts[i];
+                        c.ceremony_owner = Some(ours);
+                        c.roster_updated = now;
+                        crate::logf!(
+                            "CLUTCH: {} this friendship's ceremony ({})",
+                            if taking_over { "taking over" } else { "claiming" },
+                            crate::fp(&c.handle_proof).as_str()
+                        );
+                        if let Some(storage) = self.storage.as_ref() {
+                            let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
+                        }
+                        self.spawn_roster_push();
+                    }
+                }
+            }
             let c = &mut self.contacts[i];
             c.clutch_keygen_in_progress = true;
             let (cid, their_hh) = (c.id.clone(), c.handle_hash);
@@ -10521,6 +10691,8 @@ impl PhotonApp {
                 added: 0,
                 updated: vsf::eagle_time_oscillations(),
                 tombstone: true,
+                ceremony_owner: [0u8; 32],
+                woven: false,
             };
             std::thread::spawn(move || {
                 match crate::network::fgtw::fleet::push_roster(&hp, &kp, &fleet_key, &[entry]) {
@@ -10543,6 +10715,23 @@ impl PhotonApp {
             }
         }
         crate::logf!("BOOT: contact {} removed (ostracism, not erasure — their side keeps its own records)", crate::fp(&gone.handle_proof).as_str());
+        // Rewrite the contact index too (same as the tombstone-receive path) — or the next launch resurrects the row from the list until the next roster pull re-tombstones it.
+        if let Some(storage) = self.storage.as_ref() {
+            let index: Vec<crate::storage::contacts::ContactIdentity> = self
+                .contacts
+                .iter()
+                .filter(|c| !c.is_sibling)
+                .map(|c| crate::storage::contacts::ContactIdentity {
+                    handle_proof: c.handle_proof,
+                    party_id: c.handle_hash,
+                    name: c.petname.clone(),
+                    avatar_pin: c.avatar_pin,
+                })
+                .collect();
+            if let Err(e) = crate::storage::contacts::save_contact_list(&index, storage) {
+                crate::logf!("BOOT: index rewrite failed: {}", e);
+            }
+        }
         self.active_contact = None;
         self.reseed_contact_pubkeys();
         self.update_sync_records();
@@ -14985,6 +15174,38 @@ fn settings_page_rows(page: SettingsPage) -> usize {
         SettingsPage::Security => 11,
         _ => 8,
     }
+}
+
+/// Natural row count per contact-panel page — the scroll-extent input, mirroring [`settings_page_rows`]. About's first rows are consumed by the avatar block (drawn at row height ×N, not text).
+fn contact_page_rows(page: ContactPage) -> usize {
+    match page {
+        ContactPage::About => 12,
+        ContactPage::Stats => 9,
+        ContactPage::Manage => 6,
+    }
+}
+
+/// The status line for a friend's ceremony, fleet-aware: if ANOTHER of our devices owns the ceremony (§4.2 claim), say so — "weaving on <device>…" / "secured on <device>" — instead of showing our own deliberately-parked round. Falls thru to the contact's own step detail otherwise. Free function (not a method) so render arms can call it while `chrome` holds the &mut self borrow.
+fn contact_status_line(
+    c: &crate::types::Contact,
+    our_device: Option<[u8; 32]>,
+    identity_seed: Option<&[u8; 32]>,
+) -> String {
+    if !c.is_sibling && !c.chain_woven {
+        if let Some(owner) = c.ceremony_owner {
+            if Some(owner) != our_device {
+                let name = identity_seed
+                    .map(|seed| crate::network::fgtw::fleet::device_name_default(&owner, seed))
+                    .unwrap_or_else(|| "another device".to_string());
+                return if c.owner_woven {
+                    format!("secured on {name} \u{2014} replies visible here; send from there (for now)")
+                } else {
+                    format!("weaving on {name}\u{2026}")
+                };
+            }
+        }
+    }
+    c.clutch_status_detail()
 }
 
 fn settings_line(
