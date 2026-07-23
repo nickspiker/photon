@@ -817,6 +817,11 @@ pub struct PhotonApp {
     add_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Session-long fleet-event subscription (hub WebSocket): receiver of event kinds ("fstate" / "fleet") filtered to OUR identity. Drained in tick — fstate triggers a roster pull (a friend added on a sibling device appears here in ~a second), fleet triggers a key/membership sync. `None` until the first attest/resume succeeds.
     fleet_evt_rx: Option<std::sync::mpsc::Receiver<(&'static str, [u8; 32])>>,
+    /// One-heal-at-a-time latch for the removal-rotates flow (braid.md §14.2), shared with the key-sync thread and cleared on its exit. Guards both the duplicate-rotation race and the stale-cache window (a plain key sync running mid-heal would re-cache the pre-rotation key over the fresh one).
+    fleet_heal_busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Heal thread → tick: a removal rotation WE won landed; the drain runs the winner-only UI-thread follow-up (avatar bearer-pin rotate). Losers adopt the winner's key off-thread and send nothing.
+    fleet_rotated_tx: std::sync::mpsc::Sender<()>,
+    fleet_rotated_rx: std::sync::mpsc::Receiver<()>,
     /// Stop flag for the fleet-event subscription task (dropped app / de-attest).
     fleet_evt_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Off-thread contact-fleet refresh results: (contact handle_proof, current member pubkeys folded from their chain, chain-tip eagle time). Drained in tick into the matching contact's `fleet_members`, gated on the tip being fresher than the last adopted one, then `reseed_contact_pubkeys`. Lets a friend's NEW device be honoured — and a REMOVED device revoked — without waiting for our next launch.
@@ -1064,6 +1069,12 @@ impl PhotonApp {
                 tx
             },
             avatar_dl_rx: std::sync::mpsc::channel().1,
+            fleet_heal_busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            fleet_rotated_tx: {
+                let (tx, _) = std::sync::mpsc::channel();
+                tx
+            },
+            fleet_rotated_rx: std::sync::mpsc::channel().1,
             avatar_dl_started: std::collections::HashSet::new(),
             avatar_req_pending: std::collections::HashMap::new(),
             history_serve: std::collections::HashMap::new(),
@@ -1912,6 +1923,9 @@ impl FluorApp for PhotonApp {
             let (atx, arx) = std::sync::mpsc::channel();
             self.avatar_dl_tx = atx;
             self.avatar_dl_rx = arx;
+            let (frtx, frrx) = std::sync::mpsc::channel();
+            self.fleet_rotated_tx = frtx;
+            self.fleet_rotated_rx = frrx;
             let (cctx, ccrx) = std::sync::mpsc::channel();
             self.clock_check_tx = cctx;
             self.clock_check_rx = ccrx;
@@ -5760,6 +5774,11 @@ impl PhotonApp {
             self.spawn_roster_pull();
         }
 
+        // Removal-heal follow-up, winner only (braid.md §14.2): our heal thread won a rotation, so revoke the one fleet-held bearer credential OUTSIDE the fstate slot — the avatar pin. Losers adopted the winner's key off-thread and have nothing to do here.
+        if self.fleet_rotated_rx.try_iter().count() > 0 {
+            self.rotate_avatar_pin();
+        }
+
         // Fleet roster pull result: merge into the contact list (re-CLUTCH happens via the serialized keygen kick inside merge_roster_entries). Fleet-event push: a sibling device changed the shared roster (fstate) or the membership chain (fleet) — pull the change NOW instead of at our next attest. This is what makes a friend added on one device appear on the rest of the fleet in about a second.
         let fleet_evts: Vec<(&'static str, [u8; 32])> = self
             .fleet_evt_rx
@@ -6698,6 +6717,10 @@ impl PhotonApp {
                 }
             }
         }
+        if !removed.is_empty() {
+            // Removal rotates (braid.md §14.2): a shrink in OUR OWN fold is the live trigger — any surviving member mints the next epoch so the leaver's cached fleet key goes stale. The sentinel inside re-checks against server state (fold + fan-out), so a stale local cache can't force a bogus rotation.
+            self.spawn_fleet_key_sync();
+        }
 
         if changed {
             self.reseed_contact_pubkeys();
@@ -6710,6 +6733,7 @@ impl PhotonApp {
         }
     }
 
+    /// Also the removal-rotates sentinel (braid.md §14.2 / §14.12-1): before recovering, the thread folds our chain (genesis-verified) and fetches the fan-out; a fan-out wrapping MORE devices than the fold holds means a departed member's wrap lingers, so this device — any surviving member, never the leaver — mints the next epoch and re-seals the fstate slot across the re-key (pull under the OLD cached key first, push the CRDT merge under the new; skipping the pull would let `push_roster`'s AEAD fallback silently drop the settings layer). One heal at a time (`fleet_heal_busy`, also parking plain syncs so they can't re-cache the pre-rotation key mid-heal); concurrent siblings converge on the worker's monotonic epoch guard — a `stale` loser adopts the winner's key and pushes nothing. The winner's UI-thread follow-up (avatar bearer-pin rotate) rides `fleet_rotated_tx`.
     fn spawn_fleet_key_sync(&self) {
         use crate::network::fgtw::fleet;
         let (Some(hp), Some(device_key), Some(storage), Some(session)) = (
@@ -6720,9 +6744,62 @@ impl PhotonApp {
         ) else {
             return;
         };
+        let identity_seed = session.identity_seed;
         let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
-        std::thread::spawn(
-            move || match fleet::recover_or_establish_fleet_key(&hp, &device_key) {
+        let busy = self.fleet_heal_busy.clone();
+        let rotated_tx = self.fleet_rotated_tx.clone();
+        let wake = self.event_proxy.clone();
+        // This device's shareable state, snapshotted on the UI thread — the heal's re-seal push carries it even when the old-key pull comes up empty.
+        let ours = fgtw::fstate::FleetState {
+            roster: self.current_roster(),
+            global_settings: self.fleet_settings.as_ref().map(|fs| fs.global.clone()).unwrap_or_default(),
+            device_settings: self.fleet_settings.as_ref().map(|fs| fs.devices.clone()).unwrap_or_default(),
+        };
+        std::thread::spawn(move || {
+            use std::sync::atomic::Ordering;
+            if busy.load(Ordering::Acquire) {
+                return; // a heal is mid-flight; it caches the freshest key itself, and its fanout_put fires a fresh `fleet` bump for a clean re-sync
+            }
+            // Fail toward no-rotate: any fetch/verify miss here just falls thru to the plain recover path.
+            let heal_members = (|| {
+                let members = fleet::current_members_verified(&hp, &identity_seed).ok()?;
+                let (_, wraps) = fleet::fetch_fanout(&hp).ok().flatten()?;
+                fleet::fanout_needs_rotation(wraps.len(), members.len()).then_some(members)
+            })();
+            if let Some(members) = heal_members {
+                if busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+                    return;
+                }
+                // Preserve the slot BEFORE the re-key makes it unopenable. A racing sibling's re-push can already have re-sealed it (AEAD miss → default) — then our push carries `ours` alone, and whatever the slot uniquely held rides back on that sibling's next write (CRDT union, no tombstone loss).
+                let old_key = storage.read_addr(&addr).ok().flatten().and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
+                let preserved = old_key.and_then(|k| fleet::pull_fstate(&hp, &k).ok().flatten()).unwrap_or_default();
+                match fleet::rotate_fleet_key(&hp, &device_key, &members) {
+                    Ok((epoch, new_key)) => {
+                        if let Err(e) = storage.write_addr(&addr, &new_key) {
+                            crate::logf!("FLEET: rotated key cache failed: {}", e);
+                        }
+                        let merged = fgtw::fstate::merge_fstate(preserved, ours);
+                        match fleet::push_fstate(&hp, &device_key, &new_key, &merged) {
+                            Ok(()) => crate::logf!("FLEET: removal heal — rotated to epoch {} ({} member(s)), fstate re-sealed", epoch, members.len()),
+                            Err(e) => crate::logf!("FLEET: removal heal — rotated to epoch {} but the re-seal push failed ({}); the next roster/settings write re-seals", epoch, e),
+                        }
+                        let _ = rotated_tx.send(());
+                        if let Some(w) = wake.as_ref() {
+                            let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                        }
+                    }
+                    Err(e) => {
+                        // Lost the race (or the write failed): a sibling's rotation is the live epoch — adopt it.
+                        crate::logf!("FLEET: removal heal — rotation not ours ({}); adopting the current fan-out", e);
+                        if let Ok(Some(k)) = fleet::recover_fleet_key(&hp, &device_key) {
+                            let _ = storage.write_addr(&addr, &k);
+                        }
+                    }
+                }
+                busy.store(false, Ordering::Release);
+                return;
+            }
+            match fleet::recover_or_establish_fleet_key(&hp, &device_key) {
                 Ok(Some(k)) => {
                     if let Err(e) = storage.write_addr(&addr, &k) {
                         crate::logf!("FLEET: fleet key cache failed: {}", e);
@@ -6732,8 +6809,8 @@ impl PhotonApp {
                 }
                 Ok(None) => {}
                 Err(e) => crate::logf!("FLEET: fleet key sync failed: {}", e),
-            },
-        );
+            }
+        });
     }
 
     /// After binding a new device (which rotated the fan-out epoch), recover the CURRENT fleet key and re-seal our contact roster under it — in ONE ordered thread so the push can't race the async cache write and seal under the stale epoch. Without this the roster slot stays sealed under the pre-rotation key, and the freshly-joined device's pulls fail `aead::Error` forever (it correctly holds the new key). The roster entries are snapshotted on the UI thread (needs `&self`); the recover+cache+push run off-thread.
@@ -7230,6 +7307,64 @@ impl PhotonApp {
         if let Some(pin) = self.ensure_avatar_pin() {
             crate::network::status::set_avatar_pin(&pin);
         }
+    }
+
+    /// Rotate the avatar bearer pin WITHOUT a new image — the removal-heal follow-up (braid.md §14.2). The pin is a bearer credential (AES key ‖ wall lookup) held at rest by friends and the whole fleet, and it otherwise rotates only on an avatar CHANGE — so a departed device would keep fetching + decrypting the avatar forever. Mirrors `set_avatar_from_file`'s rotate-on-set half: mint + set + publish + stamp-bump on the UI thread (the stamp makes siblings refetch, since the old wall slot is about to die), then re-upload the vault-cached avatar under the new pin and delete the old slot off-thread. Skips — pin left standing — when there's no pin at rest (nothing to revoke) or no vault copy to re-upload (deleting the wall blob without a replacement would blank the avatar fleet-wide; the next avatar set/sync closes it). Same accepted ordering as set: the new pin is announced before the upload lands, so an upload failure leaves a dangling pin that heals on the next set.
+    fn rotate_avatar_pin(&mut self) {
+        let Some(identity_seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+            return;
+        };
+        let (Some(storage), Some(kp), Some(hp)) = (
+            self.storage.clone(),
+            self.device_keypair.clone(),
+            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+        ) else {
+            return;
+        };
+        let Some(old_pin) = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("profile.avatar_pin"))
+            .filter(|v| v.len() == 64)
+            .map(|v| {
+                let mut p = [0u8; 64];
+                p.copy_from_slice(&v);
+                p
+            })
+        else {
+            return; // no pin at rest = no bearer credential to revoke
+        };
+        let have_local = matches!(
+            storage.read_addr(&crate::storage::vault_key("avatar", &identity_seed)),
+            Ok(Some(_))
+        );
+        if !have_local {
+            crate::log("AVATAR: pin rotate skipped — no vault copy to re-upload yet (next avatar set/sync closes it)");
+            return;
+        }
+        let mut new_pin = [0u8; 64];
+        {
+            use rand::RngCore;
+            rand::thread_rng().fill_bytes(&mut new_pin);
+        }
+        self.settings_set("profile.avatar_pin", new_pin.to_vec());
+        self.publish_avatar_pin();
+        self.settings_set("profile.avatar_ts", vsf::eagle_time_oscillations().to_le_bytes().to_vec());
+        std::thread::spawn(move || {
+            #[cfg(not(target_os = "redox"))]
+            let _ = thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min);
+            match crate::ui::avatar::upload_avatar_from_seed(&kp.secret, &identity_seed, &new_pin, &hp, &storage) {
+                Ok(_) => {
+                    crate::log("AVATAR: re-uploaded under the rotated pin (removal heal)");
+                    let sk = ed25519_dalek::SigningKey::from_bytes(kp.secret.as_bytes());
+                    match crate::ui::avatar::delete_avatar_blocking(&sk, &identity_seed, &old_pin) {
+                        Ok(()) => crate::log("AVATAR: old wall slot deleted — departed device's pin is dead"),
+                        Err(e) => crate::logf!("AVATAR: old slot delete failed (orphan blob remains): {}", e),
+                    }
+                }
+                Err(e) => crate::logf!("AVATAR: pin-rotate upload failed (old slot left serving, pin dangling until the next set): {}", e),
+            }
+        });
     }
 
     /// Push our `profile.name` into the status thread's pong slot, so every friend's next ping cycle carries the current name (the always-granted slot). Called on settings load, on Update, and when a sibling's merged edit lands.

@@ -679,7 +679,7 @@ The fleet key is **not** a chain of keys each sealed under the previous — that
 
 - Each epoch mints a **fresh CSPRNG fleet key**, wrapped **separately to each current member device's public key** (X25519 derived from the same `ihi`; the pubkeys are already in the folded `MembershipBlob`). The wraps sit in the always-online slot.
 - **Recovery needs no live sibling.** A returning/wiped device unwraps *its own* copy with its `ihi` — so "always-online" finally means "always-**recoverable** for current members." This is the single fix that dissolves the stranding cases in §14.7.
-- **Removal removes.** On a device Remove, the fleet rotates (new fresh key, re-fanned-out to the *remaining* members, and the current slot content re-sealed under it). The removed device is simply not a wrap target. **⚠ Live gap:** today `unbind_device` only drops write-membership and the key never rotates — a removed device keeps reading. Fixing this *is* the fan-out (v2 build item).
+- **Removal removes.** On a device Remove, the fleet rotates (new fresh key, re-fanned-out to the *remaining* members, and the current slot content re-sealed under it). The removed device is simply not a wrap target. **Shipped 2026-07-23:** any surviving member's key sync doubles as the removal sentinel (`fanout_needs_rotation`: the fan-out wrapping MORE devices than the fold holds = a leaver's wrap lingers) and heals — pull the fstate slot under the old key, rotate to the survivors, re-push the CRDT merge under the new epoch, then rotate the avatar bearer pin. Sibling-triggered only (the leaver minting the next key would know it); strictly shrink-triggered (the wraps<members state is the two-phase ADD window, where auto-rotating would release the key before the sponsor's confirm). Rotation cuts FORWARD access only — pre-rotation reads are already in the leaver's hands — and waits for a surviving member to be online (the §14.7 coalescing doctrine).
 - **The pairing hand-off (`fkey`) is the *first-join* case only, and is single-use + expiring** (shipped: `fkey_ack` + 5-minute GET expiry) so the pairing-secret-wrapped key never lingers as an escrow. Steady-state key delivery is the fan-out, not the pairing wrap.
 
 This is the MLS / sender-keys shape: fan-out to current members, rotate on membership change.
@@ -771,13 +771,14 @@ R2 delete/overwrite is best-effort; a provider can retain overwritten bytes, and
 - **G4 — decided:** the rotating fleet key is folded into re-expand (§14.3) so membership change is a PCS boundary. Chosen over silently accepting the downgrade.
 - **G5 — trailing-K exposure.** The since-checkpoint tail (≤ one checkpoint of messages) is decryptable-if-key-obtained by construction; keep the checkpoint cadence tight; resync is fetch-then-shred.
 - **G6 — same-tick on the wire.** The strict total order `(eagle_time, content_hash, device_tag)` requires `content_hash` carried on the wire (§13 stored it but didn't carry it). Mandatory for the fleet plane; the friend-facing sort may stay `eagle_time`-only.
+- **G7 — equal-counts shadow.** Fan-out wraps carry no plaintext target (recipients self-select by key-commitment), so the removal sentinel is a count comparison — a simultaneous depart+bind leaves wraps == members with a leaver's wrap still inside, invisible until the next shrink or the sponsor's confirm rotation heals it. Narrow window, self-healing, stated.
 
 ### 14.12 Implementation status
 
-Live today: single static fleet key, roster CRDT, pairing hand-off (now single-use + expiring). Everything else in §14 is unbuilt. Ordered build:
+Live today: per-member fan-out key slot + `ihi`-recovery (items 1–2), roster + settings CRDT, pairing hand-off (single-use + expiring). The rest of §14 is unbuilt. Ordered build:
 
-1. **Removal rotates** (§14.2 fan-out) — closes the live "removed device still reads" gap; foundation for everything.
-2. Per-member fan-out key slot + `ihi`-recovery.
+1. **Removal rotates** (§14.2 fan-out) — ✅ shipped 2026-07-23: sibling-triggered shrink sentinel in the key sync, fstate preserved across the re-seal, avatar bearer pin rotated by the winner.
+2. Per-member fan-out key slot + `ihi`-recovery — ✅ live (shipped with device-ADD v1: `post_fanout`/`recover_fleet_key`, epoch-monotonic worker guard, recovery on attest + every `fleet` bump).
 3. Union-merge per-conversation sync channel (§14.5) with anti-entropy.
 4. Checkpoint spine (§14.4, CAS) + the reservoir burn (§14.3).
 5. Cursor-based horizon + crypto-shred (§14.7–14.8).
