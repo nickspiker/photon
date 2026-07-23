@@ -1,6 +1,6 @@
 # The braid: explicit-hash weave (design)
 
-Status: **IMPLEMENTED** (commit 9bf1193) — this file is the design rationale; the authoritative spec of what shipped is [braid.md](braid.md) ("The Braid", v0.1). Written 2026-06-28 from live both-sides logs (peer-B ↔ phone p) to fix the message-chain desync that survived the `34fc92d` weave-snapshot fix.
+Status: **IMPLEMENTED** (commit 9bf1193) — this file is the design rationale; the authoritative spec of what shipped is [braid.md](braid.md) ("The Braid", v0.1). Written from live both-sides logs (desktop peer ↔ phone peer) to fix the message-chain desync that survived the `34fc92d` weave-snapshot fix.
 The implementation diverged from this design in two ways worth noting: the weave reference is **eagle_time** (not msg_hp), and the "last 256" window is the **message-DB tail** (no separate ring).
 
 ## Name: the braid (not a ratchet)
@@ -25,7 +25,7 @@ For a message to decrypt, BOTH sides must agree on (a) `their_plaintext` (the wo
 Live logs after the `34fc92d` weave-snapshot fix showed it advanced the failure from "msg 2 garbage" to "msg 3 garbage" — real progress (msg 2 now decrypts, weave was correct) — but two residual bugs remain:
 
 1. **Weave selection is still implicit/"latest".** The sender picks which peer-plaintext to weave by an implicit "most recent" rule; under messages crossing in flight the two sides disagree on what "latest" is.
-2. **Advance is ACK-timing-gated → stale-key reuse.** peer-B's log showed the SAME key+salt (`ef1f5e04`/`561e2363`) reused for TWO consecutive received messages — the chain did not advance between them. Advancement is gated on ACK ordering (`CHAT: Chain advanced (ACK verified)`); when multiple peer messages arrive before the chain advances, message N+1 is decrypted with message N's stale key → garbage.
+2. **Advance is ACK-timing-gated → stale-key reuse.** the desktop peer's log showed the SAME key+salt (`ef1f5e04`/`561e2363`) reused for TWO consecutive received messages — the chain did not advance between them. Advancement is gated on ACK ordering (`CHAT: Chain advanced (ACK verified)`); when multiple peer messages arrive before the chain advances, message N+1 is decrypted with message N's stale key → garbage.
 
 ## The fix (user's vision): explicit-hash weave, deterministic per-message
 
@@ -108,4 +108,4 @@ Randomness helps the sender; the explicit hash makes it free for the receiver.
 
 ## Sequencing
 Design only for now.
-Implementation is a real ratchet change — do it with the live peer-B↔p repro to validate every message N decrypts, including rapid-fire and crossed-in-flight, not just the happy 1-at-a-time path.
+Implementation is a real ratchet change — do it with the live two-device repro to validate every message N decrypts, including rapid-fire and crossed-in-flight, not just the happy 1-at-a-time path.

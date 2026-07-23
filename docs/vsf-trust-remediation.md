@@ -49,8 +49,8 @@ vsf::verification::is_original(&body).map_err(...)?;
   - *Codec auditor:* BOTH taken-sites are ALREADY error-frame-aware, so bug 1 is **stale server state / Cloudflare KV read-lag** serving the pre-wipe chain (matches the keyring OPS TRAP: deterministic device keys + a surviving chain). Fix: verify the wipe covers the `fleet_get` keyspace + peer table; dev-log the raw fetch body on Taken.
   - *Resolution:* not mutually exclusive — the peer-echo inference IS a real false-positive bug worth deleting, AND KV lag could feed it. **Action: do both — delete the unverified inference (correctness regardless) + dev-log the raw body on Taken (settles KV-lag).** The session-clearing rework is the one destructive change → confirm before shipping.
 
-- **Bug 3 (one-way presence: a peer can't see peer-B) — STRONG CANDIDATES, not pinned to one.**
-  - A: `bootstrap.rs:524` `parse_peer_from_field(field)?` — **one bad record aborts the WHOLE peer list** → a peer gets zero peers → never dials peer-B. Fix: per-record skip + loud log.
+- **Bug 3 (one-way presence: peer A can't see peer B) — STRONG CANDIDATES, not pinned to one.**
+  - A: `bootstrap.rs:524` `parse_peer_from_field(field)?` — **one bad record aborts the WHOLE peer list** → peer A gets zero peers → never dials peer B. Fix: per-record skip + loud log.
   - B: 2048-byte UDP RX buffer (status.rs:1088) truncates sync-record-laden pongs → parse error, asymmetric by conversation count. Fix: raise to 65536.
   - C: `add_peer` (unverified, admits) vs `merge_peer` (verify-gated, drops unsigned gossip) admission asymmetry — who sees whom depends on announce ordering.
   - All three fixes are safe read-side improvements regardless of which is THE cause.
@@ -71,7 +71,7 @@ vsf::verification::is_original(&body).map_err(...)?;
 - `FromVsfType`/`IntoVsfType` for `EtType` (every reader hand-pins `EtType::e6`).
 - `official::error_schema()`; the fgtw frame schemas.
 - `SectionBuilder::parse_document(schema, doc)` — the missing whole-doc entry point (decode header → locate section → parse) that composes the recipe so callers stop skipping steps.
-- **`SectionBuilder::parse` fix:** it currently HARD-FAILS on an unknown named field (contradicts its own doc) — a cross-build wire hazard while peer-B/a peer/a peer run mixed builds. Store unknown named fields un-validated instead. (Read-side; no wire change.)
+- **`SectionBuilder::parse` fix:** it currently HARD-FAILS on an unknown named field (contradicts its own doc) — a cross-build wire hazard while peers run mixed builds. Store unknown named fields un-validated instead. (Read-side; no wire change.)
 - Do NOT change the existing `Vec<u8> → hb` writer impl mid-test (add a `Bytes` newtype instead if an honest bytes type is wanted).
 
 ### Phase B — photon read-side fixes (all zero wire byte-output change)

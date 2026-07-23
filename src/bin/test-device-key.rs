@@ -26,6 +26,6 @@ fn main() {
     let kp = derive_device_keypair(&fp);
     println!("\nDerived pubkey: {}", hex::encode(kp.public.as_bytes()));
 
-    println!("\nExpected (registered with FGTW): <dev>...");
-    println!("Current (from FGTW error):       <dev>...");
+    println!("\nExpected (registered with FGTW): <expected-pubkey-prefix>");
+    println!("Current (from FGTW error):       <observed-pubkey-prefix>");
 }
