@@ -10108,7 +10108,16 @@ impl PhotonApp {
                         // them trip the premature "pending relay" threshold on the new one.
                         contact.punch_unvalidated_cycles = 0;
                     }
+                    // ONLY cancel when a VALIDATED direct path is what the offer was riding: then a real address
+                    // move means the transfer is hitting a dead endpoint and must restart. With NO validated path
+                    // the offer rides the RELAY (address-independent) — and the routine FGTW registry refresh
+                    // flip-flops contact.ip between a v4/v6-split friend's records every cycle, so cancelling here
+                    // reset clutch_offer_sent and re-sent the whole 548 KB offer every few minutes, forever, never
+                    // converging (observed: a friend's ceremony churned 'address changed — cancelling' for hours
+                    // while the relay was carrying it fine). No validated path ⇒ leave the offer alone; the relay
+                    // delivers it and the peer's KEM comes back over the relay.
                     if addr_changed
+                        && contact.validated_path.is_some()
                         && contact.clutch_offer_sent
                         && contact.clutch_state == crate::types::ClutchState::Pending
                     {
@@ -10116,7 +10125,7 @@ impl PhotonApp {
                             stale_addrs.push(stale);
                         }
                         contact.clutch_offer_sent = false;
-                        crate::logf!("CLUTCH: {} address changed — cancelling stale offer transfer, will re-send to fresh address", crate::fp(&contact.handle_proof));
+                        crate::logf!("CLUTCH: {} validated path address changed — cancelling stale offer transfer, will re-send to fresh address", crate::fp(&contact.handle_proof));
                     }
                     break;
                 }
