@@ -4132,7 +4132,12 @@ impl FluorApp for PhotonApp {
                 .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
                 .unwrap_or([0u8; 32]);
             for (vis, &ci) in matching.iter().enumerate() {
-                let row_top = rows.y0 as isize + vis as isize * row_h - self.contacts_scroll;
+                // Use the SAME `scroll` snapshot the avatar / hint / search box / separator read (captured up
+                // top, before the down-scroll clamp below mutated `self.contacts_scroll`). Reading the live
+                // field here made the rows lag the rest of the block by the clamp delta: on an up-scroll past
+                // rest the avatar + textbox dragged with the rubber-band overshoot (they read the snapshot) but
+                // the names sat still (they read the post-clamp value). One block, one offset.
+                let row_top = rows.y0 as isize + vis as isize * row_h - scroll as isize;
                 if row_top + row_h <= 0 || row_top >= buf_h as isize {
                     continue; // fully outside the visible content area (rows now scroll up to the top, not just `rows.y0`)
                 }
@@ -4140,7 +4145,7 @@ impl FluorApp for PhotonApp {
                 let row_hit_here = self.contact_hit_base.wrapping_add(ci as HitId);
                 let row_pressed = ci < 256 && ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == row_hit_here;
                 let row_hovered = row_pressed || (ci < 256 && ctx.pressed_hit == HIT_NONE && self.hover_hit == row_hit_here);
-                let cy = (row_top + row_h / 2) as f32;                let cy = (row_top + row_h / 2) as f32;
+                let cy = (row_top + row_h / 2) as f32;
                 let online = self.contacts[ci].is_online;
                 let online_via_relay = self.contacts[ci].reached_via_relay;
 

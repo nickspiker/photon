@@ -18,11 +18,17 @@ const FGTW_URL: &str = "https://fgtw.org";
 pub fn peel_relay_envelope(bytes: &[u8]) -> Option<([u8; 32], Vec<u8>)> {
     use vsf::file_format::{VsfHeader, VsfSection};
 
-    // Verify the sender's canonical whole-file signature (ge over BLAKE3(file, ge zeroed)) and get the header.
-    // read_verified with None trusts no pinned key — it checks the self-signature is internally valid and
-    // returns the signer; authorization (is this a friend's device?) is applied downstream by the dispatch,
-    // exactly as for a directly-received message.
-    let (header, header_end) = vsf::verification::read_verified(bytes, None).ok()?;
+    // Verify the sender's whole-file signature with `verify_file_signature`, NOT `read_verified`.
+    // `read_verified` additionally enforces `is_original` (the header `hp` must equal the content hash), but
+    // build_signed_vsf uses `signed_only(ke)` + `sign_file`, and the same waiver every CLUTCH/chat parser
+    // takes applies here: the signature covers the ENTIRE file (authorship + integrity are proven), only the
+    // content-hp self-attestation is not asserted. Using read_verified rejected every real envelope — the
+    // "not a valid signed relay envelope" drop that black-holed the whole pipe data plane.
+    match vsf::verification::verify_file_signature(bytes) {
+        Ok(true) => {}
+        _ => return None,
+    }
+    let (header, header_end) = VsfHeader::decode(bytes).ok()?;
 
     // Signer device key from the header (the sender that built + signed this envelope).
     let sender_key: [u8; 32] = match &header.signer_pubkey {
