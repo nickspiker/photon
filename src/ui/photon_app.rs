@@ -9356,12 +9356,13 @@ impl PhotonApp {
                                     contact.handle_hash,
                                 ]);
 
-                                // Build VSF and capture our offer_provenance
+                                // Build VSF and capture our offer_provenance. The pinned send-time (clutch_round_started) makes the provenance stable across re-sends so the clutch never rotates.
                                 match build_clutch_offer_vsf(
                                     &conv_token,
                                     &offer,
                                     &device_pubkey,
                                     &device_secret,
+                                    contact.clutch_round_started.unwrap_or_else(vsf::eagle_time_oscillations),
                                 ) {
                                     Ok((vsf_bytes, our_offer_provenance)) => {
                                         // Store our offer provenance (for ceremony_id derivation)
@@ -9803,21 +9804,14 @@ impl PhotonApp {
                         // We're Complete, but the peer may not have our proof yet — we got theirs first, and our single send (just above) might have dropped. Keep the proof and the resend budget so ping_contacts keeps delivering it for a few more cycles; that's exactly what stops the peer from hanging in AwaitingProof.
                         contact.clutch_their_eggs_proof = None;
                     } else {
-                        // SAME round, different eggs — the transcripts genuinely diverged (a KEM decapsulated against a superseded key silently yields a wrong secret; nothing upstream authenticates which offer generation a KEM targeted). A bare state reset CANNOT heal this: the ceremony re-runs deterministically from the same poisoned in-memory slots and re-derives the identical disagreement forever (observed as byte-identical mismatch pairs many hours apart). TORCH the round: drop every ceremony input on our side (slots, provenances, round id, queued KEM, our keypairs) so keygen re-mints, a fresh-provenance offer goes out, and both sides converge on a genuinely new round.
+                        // SAME round, different eggs. We NO LONGER torch (re-key) here — the clutch does not rotate. Torching re-minted keys → a new time-based provenance → a new ceremony_id the peer had to chase, and over the relay both sides torched on the same transient faster than the round-trip, so they stayed one generation apart forever (the "clutch toggling"). With the clutch pinned (stable keys + pinned send-time), the ONLY reason to reach here is a TRANSIENT: we computed eggs before the full KEM exchange landed, or a proof crossed in flight. Keep every ceremony input intact; the resend machinery redelivers the peer's KEM/proof and the next completion recomputes matching eggs from the stable slots. If a genuine deterministic mismatch survives a full stable exchange, that's a real bug to chase in the log — not a re-key trigger.
                         let our_hex = hex::encode(&result.eggs_proof);
                         let their_hex = hex::encode(&their_proof);
-                        crate::logf!("CLUTCH: ⚠ PROOF MISMATCH with {} (same round {}…)! ours={}... theirs={}... — torching the round, re-keying fresh", contact_handle, hex::encode(&result.ceremony_id[..4]), &our_hex[..16], &their_hex[..16]);
-                        contact.clutch_state = ClutchState::Pending;
-                        contact.clutch_our_eggs_proof = None;
+                        crate::logf!("CLUTCH: ⚠ PROOF MISMATCH with {} (same round {}…) ours={}... theirs={}... — NOT re-keying (clutch pinned); awaiting their correct proof", contact_handle, hex::encode(&result.ceremony_id[..4]), &our_hex[..16], &their_hex[..16]);
+                        // Discard THEIR mismatched early proof (a transient — crossed in flight, or computed before the full stable KEM exchange). Keep OUR proof + all keys/slots/provenances/ceremony_id pinned, go AwaitingProof: we keep re-sending our stable proof and wait for theirs to land correct. Deterministic stable inputs → their proof matches ours once the exchange completes.
                         contact.clutch_their_eggs_proof = None;
                         contact.clutch_their_proof_ceremony = None;
-                        contact.clutch_slots.clear();
-                        contact.offer_provenances.clear();
-                        contact.ceremony_id = None;
-                        contact.clutch_pending_kem = None;
-                        contact.clutch_our_keypairs = None;
-                        contact.clutch_round_started = None;
-                        contact.clutch_offer_sent = false;
+                        contact.clutch_state = ClutchState::AwaitingProof;
                     }
                 } else {
                     // Set state to AwaitingProof - wait for their proof
@@ -10485,7 +10479,7 @@ impl PhotonApp {
         let payload = crate::crypto::clutch::ClutchOfferPayload::from_keypairs(keypairs);
         let conversation_token =
             crate::crypto::clutch::derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
-        match build_clutch_offer_vsf(&conversation_token, &payload, &device_pubkey, &device_secret) {
+        match build_clutch_offer_vsf(&conversation_token, &payload, &device_pubkey, &device_secret, contact.clutch_round_started.unwrap_or_else(vsf::eagle_time_oscillations)) {
             Ok((vsf_bytes, our_offer_provenance)) => {
                 crate::logf!("CLUTCH: re-sending full offer to {} (prov={}...)", crate::fp(&contact.handle_proof), hex::encode(&our_offer_provenance[..4]));
                 if !contact.offer_provenances.contains(&our_offer_provenance) {
@@ -11386,6 +11380,7 @@ impl PhotonApp {
                                                 .expect("device_keypair set in init")
                                                 .secret
                                                 .as_bytes(),
+                                            contact.clutch_round_started.unwrap_or_else(vsf::eagle_time_oscillations),
                                         ) {
                                             Ok((vsf_bytes, our_offer_provenance)) => {
                                                 crate::logf!("CLUTCH: Sending full offer to {} (prov={}...)", crate::fp(&contact.handle_proof), hex::encode(&our_offer_provenance[..4]));
@@ -12366,6 +12361,7 @@ impl PhotonApp {
                                             .expect("device_keypair set in init")
                                             .secret
                                             .as_bytes(),
+                                        contact.clutch_round_started.unwrap_or_else(vsf::eagle_time_oscillations),
                                     ) {
                                         Ok((vsf_bytes, our_offer_provenance)) => {
                                             // Store our offer provenance
@@ -13015,19 +13011,9 @@ impl PhotonApp {
                                                 }
                                             }
                                         } else {
-                                            // Proof mismatch — NEVER panic; it's not an attack signal (a forged proof can't pass the read_verified signature gate that got us here). The cross-round case is already dropped above (ceremony_id gate), so reaching here means SAME round, diverged transcripts — and a bare state reset re-derives the identical disagreement from the same poisoned slots forever. TORCH the round (identical to the mismatch handling in check_clutch_ceremonies): fresh keypairs, fresh offer, fresh provenance, genuinely new round.
-                                            crate::logf!("CLUTCH: ⚠ PROOF MISMATCH with {} (same round)! ours={}... theirs={}... — torching the round, re-keying fresh", crate::fp(&contact.handle_proof), hex::encode(&our_proof[..8]), hex::encode(&payload.eggs_proof[..8]));
-                                            contact.clutch_state = ClutchState::Pending;
-                                            contact.clutch_our_eggs_proof = None;
-                                            contact.clutch_their_eggs_proof = None;
-                                            contact.clutch_their_proof_ceremony = None;
-                                            contact.clutch_slots.clear();
-                                            contact.offer_provenances.clear();
-                                            contact.ceremony_id = None;
-                                            contact.clutch_pending_kem = None;
-                                            contact.clutch_our_keypairs = None;
-                                            contact.clutch_round_started = None;
-                                            contact.clutch_offer_sent = false;
+                                            // Proof mismatch — NEVER panic; not an attack signal (a forged proof can't pass the read_verified gate). We NO LONGER torch here — the clutch does not rotate (see the matching handler in check_clutch_ceremonies). Torching re-keyed → new time-based provenance → new ceremony_id the peer chased, and over the relay both sides torched faster than the round-trip, staying one generation apart forever. With the clutch pinned, reaching here means a TRANSIENT (eggs computed before the full KEM exchange, or a proof crossed in flight). Keep every ceremony input; the resend redelivers and the next completion recomputes matching eggs from the stable slots.
+                                            crate::logf!("CLUTCH: ⚠ PROOF MISMATCH with {} (same round) ours={}... theirs={}... — NOT re-keying (clutch pinned); awaiting their correct proof", crate::fp(&contact.handle_proof), hex::encode(&our_proof[..8]), hex::encode(&payload.eggs_proof[..8]));
+                                            // Discard their mismatched proof (transient — crossed in flight, or computed before the full stable exchange). Keep OUR proof + all pinned inputs and STAY AwaitingProof: we keep re-sending our stable proof; theirs matches once the exchange completes. Deterministic stable inputs can't produce a persistent mismatch — if one survives, the log surfaces the real bug instead of a re-key spiral.
                                             changed = true;
                                         }
                                     } else {

@@ -491,6 +491,22 @@ pub fn derive_conversation_provenance(
     *hasher.finalize().as_bytes()
 }
 
+/// Domain separator for the time-based clutch offer provenance.
+const CLUTCH_OFFER_PROV_DOMAIN: &[u8] = b"PHOTON_CLUTCH_OFFER_PROV_v2";
+
+/// Each party's offer provenance = BLAKE3(domain, sender device pubkey, send-time oscillations).
+/// This is the ORIGINAL design (see CeremonyId::derive doc: "BLAKE3(sender_pubkey || timestamp)"); an earlier drift derived it from the offer PUBKEYS, which changed on every re-key.
+/// A key-based provenance made the clutch rotate: any re-key minted new pubkeys, new provenance, new ceremony_id — so over the relay both sides re-keyed on a transient egg mismatch and chased each other's moving IDs forever.
+/// Time-based provenance is STABLE: the clutch does not rotate, so a party pins its send-time once (Contact::clutch_round_started), and every re-send of the same offer carries the identical time and provenance.
+/// Two parties send at distinct times, so the two provenances differ and CeremonyId::derive sorts them — both sides derive the identical ceremony_id from the same sorted pair regardless of who is who.
+pub fn clutch_offer_provenance(device_pubkey: &[u8; 32], send_time_osc: i64) -> [u8; 32] {
+    let mut hasher = Hasher::new();
+    hasher.update(CLUTCH_OFFER_PROV_DOMAIN);
+    hasher.update(device_pubkey);
+    hasher.update(&send_time_osc.to_le_bytes());
+    *hasher.finalize().as_bytes()
+}
+
 /// Compute the handshake message that both parties sign.
 ///
 /// This is signed by each party with their device private key. The signatures become part of the provenance derivation.
@@ -1823,6 +1839,32 @@ mod tests {
     }
 
     // ======================================================================== PROVENANCE TESTS ========================================================================
+
+    /// The time-based offer provenance: each party derives its own from (its device key, its pinned send-time), and both parties feed the two provenances into CeremonyId::derive, which SORTS them — so both sides compute the identical ceremony_id regardless of who is A and who is B, and regardless of whose time is larger. This is what makes the clutch converge without rotation.
+    #[test]
+    fn clutch_offer_provenance_sorts_to_same_ceremony_id() {
+        use crate::types::friendship::CeremonyId;
+        let a_device = [0x11u8; 32];
+        let b_device = [0x22u8; 32];
+        let a_handle = *blake3::hash(b"party-a").as_bytes();
+        let b_handle = *blake3::hash(b"party-b").as_bytes();
+        // Two DISTINCT send-times (mine and yours), as in a real exchange.
+        let a_time: i64 = 1_000_000_000;
+        let b_time: i64 = 1_000_050_000;
+
+        let a_prov = clutch_offer_provenance(&a_device, a_time);
+        let b_prov = clutch_offer_provenance(&b_device, b_time);
+        assert_ne!(a_prov, b_prov, "distinct parties/times → distinct provenances");
+
+        // A collected [its own, then B's]; B collected [its own, then A's] — opposite order. derive() sorts, so both land on the same id.
+        let id_from_a = CeremonyId::derive(&[a_handle, b_handle], &[a_prov, b_prov]);
+        let id_from_b = CeremonyId::derive(&[b_handle, a_handle], &[b_prov, a_prov]);
+        assert_eq!(id_from_a.as_bytes(), id_from_b.as_bytes(), "both sides derive the SAME ceremony_id from the sorted provenance pair");
+
+        // Re-sending the SAME offer (same pinned time) yields the SAME provenance → same id → no rotation.
+        let a_prov_resend = clutch_offer_provenance(&a_device, a_time);
+        assert_eq!(a_prov, a_prov_resend, "a re-send with the pinned time is byte-identical — the clutch does not rotate");
+    }
 
     #[test]
     fn test_provenance_deterministic_both_parties() {
