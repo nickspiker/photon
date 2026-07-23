@@ -6,9 +6,25 @@ use photon_messenger::types::Handle;
 
 fn main() {
     let Some(handle) = std::env::args().nth(1) else {
-        eprintln!("usage: pid-probe <handle>");
+        eprintln!("usage: pid-probe <handle>  |  pid-probe --hp <64-hex>  (chain-only: fold an arbitrary handle_proof's fleet)");
         std::process::exit(2);
     };
+    // --hp mode: no handle, no seed — just fold the chain for a raw handle_proof (whose devices are these?).
+    if handle == "--hp" {
+        let hex_hp = std::env::args().nth(2).expect("--hp needs a 64-hex handle_proof");
+        let bytes = (0..64).step_by(2).map(|i| u8::from_str_radix(&hex_hp[i..i + 2], 16).expect("bad hex")).collect::<Vec<u8>>();
+        let hp: [u8; 32] = bytes.try_into().unwrap();
+        match photon_messenger::network::fgtw::fleet::current_members(&hp) {
+            Ok(members) => {
+                println!("hp {}…  fleet members: {}", &hex_hp[..8], members.len());
+                for m in &members {
+                    println!("  device {}…", hex::encode(&m[..4]));
+                }
+            }
+            Err(e) => println!("hp {}…  chain fetch failed: {}", &hex_hp[..8], e),
+        }
+        return;
+    }
     let seed = photon_messenger::storage::contacts::derive_identity_seed(&handle);
     println!("identity_seed        = {}…", hex::encode(&seed[..8]));
     let hp = Handle::username_to_handle_proof(&handle);

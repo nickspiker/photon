@@ -23,6 +23,9 @@ pub enum AppState {
     /// Settings / About / Help panel — the orb's real destination on Ready. Carries the currently-selected page so the render + layout know which page body to draw. STUB: every page + control renders, but no behaviour is wired.
     Settings(SettingsPage),
 
+    /// Per-contact panel — the orb's destination inside a Conversation (where it already wears the friend's avatar): what they've shared, the conversation in numbers (the sync-test instrument), and Boot. The active contact rides `active_contact`, same as Conversation; Back returns to the conversation.
+    ContactPanel,
+
     /// Active P2P conversation (legacy - may remove)
     Connected { peer_handle: String },
 }
