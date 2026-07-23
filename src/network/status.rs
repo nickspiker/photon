@@ -1300,16 +1300,8 @@ async fn run_checker(
         // This node's own reflexive (public) address, learned from peer-echoed reflection (pong `observed_addr` + `ReflectResponse`). Local to the long-lived receiver task; each adoption change is pushed to the app as `StatusUpdate::ReflexiveLearned`.
         let mut reflexive = crate::network::traverse::reflexive::ReflexiveState::new();
         loop {
-            // Take the next datagram from EITHER the real UDP socket OR the relay pipe. A pipe frame is handed
-            // `RELAY_ADDR` as its source, so everything below this line — the entire ~900-line dispatch — cannot
-            // tell a relayed message from a directly-received one, except that RELAY_ADDR tells the app to skip
-            // address-learning and mark reached_via_relay. This is the whole reason the pipe is one select! arm
-            // and not a parallel dispatch: presence, chat, acks and CLUTCH all reuse the proven receive path.
-            // A UDP datagram lands in the fixed 64 KiB `buf`; an injected pipe frame is held in `injected_holder`
-            // (owned Vec) because it can be a whole ~548 KB CLUTCH offer — FAR larger than `buf`. Copying it into
-            // `buf` truncated it to 64 KiB and the offer never parsed ("Not enough data"), which is why the
-            // ceremony stalled over the relay: the offer was injected but chopped to 12% of itself. `msg_bytes`
-            // points at whichever holds this iteration's frame.
+            // Take the next datagram from EITHER the real UDP socket OR the relay pipe. A pipe frame is handed `RELAY_ADDR` as its source, so everything below this line — the entire ~900-line dispatch — cannot tell a relayed message from a directly-received one, except that RELAY_ADDR tells the app to skip address-learning and mark reached_via_relay. This is the whole reason the pipe is one select! arm and not a parallel dispatch: presence, chat, acks and CLUTCH all reuse the proven receive path.
+            // A UDP datagram lands in the fixed 64 KiB `buf`; an injected pipe frame is held in `injected_holder` (owned Vec) because it can be a whole ~548 KB CLUTCH offer — FAR larger than `buf`. Copying it into `buf` truncated it to 64 KiB and the offer never parsed ("Not enough data"), which is why the ceremony stalled over the relay: the offer was injected but chopped to 12% of itself. `msg_bytes` points at whichever holds this iteration's frame.
             let mut injected_holder: Option<Vec<u8>> = None;
             let recv_result: std::io::Result<(usize, SocketAddr)> = tokio::select! {
                 r = socket_recv.recv_from(&mut buf) => r,
@@ -1650,16 +1642,11 @@ async fn run_checker(
                     {
                         use crate::network::fgtw::protocol::parse_clutch_complete_vsf_without_recipient_check;
 
-                        // ClutchComplete (the proof) is ~300 bytes and its parser verifies the whole-file
-                        // signature internally, so parse it UNCONDITIONALLY — no contact-allowlist pre-gate.
-                        // The old gate keyed on `contacts_recv`, which is a race for a freshly-reconciled
-                        // SIBLING device: its key isn't in the allowlist the instant its proof arrives, so the
-                        // proof fell thru to FgtwMessage::from_vsf_bytes — which does NOT handle clutch_* and
-                        // emitted "Parse error: got 'clutch_complete'", dropping the proof. The sender then
-                        // retransmitted 5× and gave up, and the sibling weave sat "pending" forever. The gate
-                        // was a DoS pre-filter meant for the ~500KB offer (which arrives via PT, not here), so
-                        // it bought nothing on a 300-byte frame while breaking sibling completion. Trust is
-                        // still applied downstream: the app's CLUTCH handler gates on fold-respecting knows_device.
+                        // ClutchComplete (the proof) is ~300 bytes and its parser verifies the whole-file signature internally, so parse it UNCONDITIONALLY — no contact-allowlist pre-gate.
+                        // The old gate keyed on `contacts_recv`, which is a race for a freshly-reconciled SIBLING device: its key isn't in the allowlist the instant its proof arrives, so the proof fell thru to FgtwMessage::from_vsf_bytes — which does NOT handle clutch_* and emitted "Parse error: got 'clutch_complete'", dropping the proof.
+                        // The sender then retransmitted 5× and gave up, and the sibling weave sat "pending" forever.
+                        // The gate was a DoS pre-filter meant for the ~500KB offer (which arrives via PT, not here), so it bought nothing on a 300-byte frame while breaking sibling completion.
+                        // Trust is still applied downstream: the app's CLUTCH handler gates on fold-respecting knows_device.
                         {
                             if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
                                 parse_clutch_complete_vsf_without_recipient_check(msg_bytes)
@@ -1686,15 +1673,10 @@ async fn run_checker(
                             );
                             continue;
                             }
-                            // ClutchOffer (~548KB) and ClutchKemResponse (~32KB) arriving as a WHOLE frame — this
-                            // is the RELAY-INJECTED path. Direct sends shard these through PT and parse them in
-                            // the PT-transfer-complete branch above, but a relayed message is injected as one
-                            // datagram tagged RELAY_ADDR, so it never touches PT and only clutch_complete was
-                            // parsed here — the offer + KEM were silently dropped, so the ceremony never got past
-                            // the offer over the relay (presence worked, but no KEM ever came back). Parse them
-                            // here too. The parsers verify the signature internally; the app's CLUTCH handler
-                            // gates action on fold-respecting knows_device. No packet-ack: unlike a PT-carried
-                            // frame, a relayed one isn't in a stop-and-wait queue awaiting one.
+                            // ClutchOffer (~548KB) and ClutchKemResponse (~32KB) arriving as a WHOLE frame — this is the RELAY-INJECTED path.
+                            // Direct sends shard these through PT and parse them in the PT-transfer-complete branch above, but a relayed message is injected as one datagram tagged RELAY_ADDR, so it never touches PT and only clutch_complete was parsed here — the offer + KEM were silently dropped, so the ceremony never got past the offer over the relay (presence worked, but no KEM ever came back).
+                            // Parse them here too. The parsers verify the signature internally; the app's CLUTCH handler gates action on fold-respecting knows_device.
+                            // No packet-ack: unlike a PT-carried frame, a relayed one isn't in a stop-and-wait queue awaiting one.
                             if let Ok((payload, sender_pubkey, offer_provenance, conversation_token)) =
                                 crate::network::fgtw::protocol::parse_clutch_offer_vsf_without_recipient_check(msg_bytes)
                             {
