@@ -210,7 +210,7 @@ pub struct Contact {
     pub clutch_our_eggs_proof: Option<[u8; 32]>,
     /// Peer's eggs_proof if received before we computed ours
     pub clutch_their_eggs_proof: Option<[u8; 32]>,
-    /// The ceremony round the stored early proof belongs to (the wire ceremony_id it arrived under). A proof may only ever be COMPARED within its own round — cross-round comparison manufactures "PROOF MISMATCH" out of offer churn (the peer-B/a peer permanent-Pending stall, 2026-07-17). Ceremony scratch like the slots: never persisted.
+    /// The ceremony round the stored early proof belongs to (the wire ceremony_id it arrived under). A proof may only ever be COMPARED within its own round — cross-round comparison manufactures "PROOF MISMATCH" out of ordinary offer churn (a permanent-Pending stall). Ceremony scratch like the slots: never persisted.
     pub clutch_their_proof_ceremony: Option<[u8; 32]>,
     /// Bounded retransmit budget for our ClutchComplete proof. The proof is a small single-packet UDP send with no PT retransmit, so one drop would strand the peer in AwaitingProof forever (the asymmetric-completion bug: we go Complete via early-proof, null our state, and never resend). Set to a small N when we compute our eggs proof; ping_contacts re-sends the proof and decrements each cycle until it hits 0, so both sides converge even on a lossy or just-refreshed path. Runtime-only — not persisted (a resumed Complete contact needs no further proof sends).
     pub clutch_proof_resends_left: u8,
@@ -262,7 +262,7 @@ pub struct Contact {
     pub last_heard: Option<std::time::Instant>,
     /// Runtime-only: when we last rang this contact's doorbell — the client-side debounce above the worker's per-target guard. One wake per re-ring window no matter how much traffic queues behind it.
     pub last_ring: Option<std::time::Instant>,
-    /// Runtime-only stall counter: consecutive ping cycles spent in `Pending` with our offer sent, a validated direct path up, and still no offer from the peer. The ping cycle re-fires our offer each time this crosses its threshold (then zeroes it) — the pong-driven offer re-send never triggers for a peer whose pongs don't flow, and a one-shot offer whose PT transfer died leaves the ceremony parked forever (2026-07-19 peer-B↔a peer). Reset whenever the stall condition doesn't hold.
+    /// Runtime-only stall counter: consecutive ping cycles spent in `Pending` with our offer sent, a validated direct path up, and still no offer from the peer. The ping cycle re-fires our offer each time this crosses its threshold (then zeroes it) — the pong-driven offer re-send never triggers for a peer whose pongs don't flow, and a one-shot offer whose PT transfer died leaves the ceremony parked forever. Reset whenever the stall condition doesn't hold.
     pub clutch_offer_stall_cycles: u8,
     /// Friend-assisted history recovery state machine (newest-first cursor pagination from the friend's copy). `None` = no recovery running/known. Runtime struct; the durable cursor + complete flag persist as `hist_oldest` / `hist_complete` in contact state.
     pub history_recovery: Option<HistoryRecovery>,
@@ -498,7 +498,7 @@ impl Contact {
             return Some((validated, alt));
         }
 
-        // No proven path yet: try candidates in priority order — global IPv6 host first (no NAT, no punch), then IPv6 reflexive, then IPv4 LAN, then IPv4 reflexive (the punched WAN path). This is the v6-first send order; it replaces the old LAN-first-then-public choice, so a reachable v6 address is tried before a v4 LAN address that may belong to a foreign network (the Seattle↔Montana `192.168.0.x` collision). Falls back to nothing only when we know no address at all.
+        // No proven path yet: try candidates in priority order — global IPv6 host first (no NAT, no punch), then IPv6 reflexive, then IPv4 LAN, then IPv4 reflexive (the punched WAN path). This is the v6-first send order; it replaces the old LAN-first-then-public choice, so a reachable v6 address is tried before a v4 LAN address that may belong to a foreign network (the common `192.168.0.x` collision between two default home routers). Falls back to nothing only when we know no address at all.
         crate::network::traverse::gather::gather_peer_candidates(self).best_pair()
     }
 
@@ -588,7 +588,7 @@ impl Contact {
 
     /// Where the CLUTCH ceremony actually is, as `step/total · what's happening (which eggs)` — for the conversation status line and asymmetric-completion debugging. The fraction is monotonic toward `secured`; the label names the crypto in flight (the egg families) instead of a flat "pending".
     pub fn clutch_status_detail(&self) -> String {
-        // Display doctrine (2026-07-16): dozenal is the acclimation surface for VERSION + REPUTATION only; a step counter stays in current mixed arabic units.
+        // Display doctrine: dozenal is the acclimation surface for VERSION + REPUTATION only; a step counter stays in current mixed arabic units.
         let n = Self::CLUTCH_STEPS;
         let eggs = Self::CLUTCH_EGGS;
         match self.clutch_state {
