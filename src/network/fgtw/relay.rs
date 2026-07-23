@@ -40,12 +40,11 @@ pub fn peel_relay_envelope(bytes: &[u8]) -> Option<([u8; 32], Vec<u8>)> {
         _ => return None,
     };
 
-    // Parse the `relay` section and pull the inner payload (v'r').
-    let mut ptr = header_end;
-    let section = VsfSection::parse(bytes, &mut ptr).ok()?;
-    if section.name != "relay" {
-        return None;
-    }
+    // Resolve the section via `primary_section`, NOT a bare `VsfSection::parse`: the section NAME lives in the
+    // header TOC (near-form), so a body parse returns `section.name == ""` and a hand-rolled `== "relay"` check
+    // silently fails — the trap that black-holed the pipe (and, historically, the hub push accelerator). Pull
+    // the inner payload (v'r') off the resolved primary section.
+    let section = header.primary_section(bytes, header_end).ok()?;
     let payload = section
         .get_field("payload")
         .and_then(|f| f.values.first())
@@ -175,5 +174,31 @@ pub fn send_via_relay_sync(
     }
     crate::logf!("RELAY: Stored message for {}...", hex::encode(&recipient_pubkey[..4]));
     Ok(())
+}
+
+#[cfg(test)]
+mod peel_tests {
+    use super::*;
+
+    /// A `send_via_relay` envelope must round-trip through `peel_relay_envelope`. This guards the TOC-name trap
+    /// specifically: the section name lives in the header near-form, so a bare body parse sees `name == ""` and
+    /// any `== "relay"` check fails — which silently black-holed the whole pipe data plane until caught in a log.
+    #[test]
+    fn peel_roundtrip() {
+        let kp = crate::network::fgtw::Keypair::from_seed(&[3u8; 32]);
+        let inner = vec![9u8; 179];
+        let envelope = build_signed_vsf(
+            &kp,
+            "relay",
+            vec![
+                ("recipient".to_string(), VsfType::kx([7u8; 32].to_vec())),
+                ("payload".to_string(), VsfType::v(b'r', inner.clone())),
+            ],
+        )
+        .expect("build envelope");
+        let (sender, payload) = peel_relay_envelope(&envelope).expect("peel must succeed");
+        assert_eq!(sender, kp.public.to_bytes(), "sender key must be the signer");
+        assert_eq!(payload, inner, "inner payload must round-trip byte-identical");
+    }
 }
 
