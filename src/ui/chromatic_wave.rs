@@ -11,7 +11,7 @@ use std::f32::consts::TAU;
 /// Paint a chromatic wave covering `rect` of `canvas`. `phase` is the wave's horizontal phase shift in radians (advance over time to animate); `period_scale` multiplies the base waves-per-region (`1.` = legacy density, `>1.` = more waves, `<1.` = fewer waves).
 pub fn chromatic_wave(canvas: &mut Canvas, rect: PixelRect, phase: f32, period_scale: f32) {
     let buf_w = canvas.width;
-    let buf_h = canvas.height;
+    let _buf_h = canvas.height;
     let PixelRect { x0, y0, x1, y1 } = rect;
     let region_w = x1 - x0;
     let region_h = y1 - y0;

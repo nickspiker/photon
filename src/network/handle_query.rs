@@ -91,6 +91,8 @@ pub struct HandleQuery {
     // Shared state
     transport: Arc<Mutex<Option<Arc<Mutex<PeerStore>>>>>,
     last_handle_proof: Arc<Mutex<Option<[u8; 32]>>>,
+    // Written into the attest/search worker threads via clones; the field itself is the shared holder, never read directly (the clones carry it). Kept as the owning slot.
+    #[allow(dead_code)]
     last_identity_seed: Arc<Mutex<Option<[u8; 32]>>>,
 
     // UDP socket for P2P and StatusChecker (bound to PHOTON_PORT 4383)
