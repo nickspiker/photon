@@ -314,19 +314,16 @@ fn relationship_digest(p: &[u8; 32], other: &[u8; 32]) -> [u8; 32] {
     ihi::spaghettify(&input)
 }
 
-/// Encode a linear VSF RGB triple for the framebuffer: linear sRGB (caller guarantees in-gamut; clamp mops up f32 dust) → OETF → stored α+darkness.
+/// Encode a LINEAR VSF RGB triple (party/relationship colours arrive already-linear, not γ2-encoded) for the framebuffer, matching theme.rs's display doctrine: macOS ships raw into its VSF-ICC-tagged surface; every other platform converts VSF→Rec.2020 primaries with a sqrt (γ2) transfer — never the sRGB OETF. Then fluor's α+darkness storage.
 fn vsf_rgb_to_stored(rgb_vsf: [f32; 3]) -> u32 {
-    use vsf::colour::{srgb_oetf, VSF_RGB2SRGB};
-    let m = &VSF_RGB2SRGB;
-    let lin = [
-        m[0] * rgb_vsf[0] + m[3] * rgb_vsf[1] + m[6] * rgb_vsf[2],
-        m[1] * rgb_vsf[0] + m[4] * rgb_vsf[1] + m[7] * rgb_vsf[2],
-        m[2] * rgb_vsf[0] + m[5] * rgb_vsf[1] + m[8] * rgb_vsf[2],
-    ];
-    let r = (srgb_oetf(lin[0].clamp(0.0, 1.0)) * 255.0).round() as u32;
-    let g = (srgb_oetf(lin[1].clamp(0.0, 1.0)) * 255.0).round() as u32;
-    let b = (srgb_oetf(lin[2].clamp(0.0, 1.0)) * 255.0).round() as u32;
-    fluor::theme::dark(fluor::theme::fmt((r << 16) | (g << 8) | b))
+    // macOS: surface is ICC-tagged VSF RGB, so sqrt-encode the raw linear value (γ2) with no matrix.
+    #[cfg(target_os = "macos")]
+    let out = rgb_vsf;
+    // Android + Linux/Windows: VSF → Rec.2020 primaries (E→D65 baked in), then sqrt.
+    #[cfg(not(target_os = "macos"))]
+    let out = vsf::colour::convert::apply_matrix_3x3_f32(&vsf::colour::VSF_RGB2REC2020, &rgb_vsf);
+    let e = |x: f32| (x.clamp(0.0, 1.0).sqrt() * 255.0).round() as u32;
+    fluor::theme::dark(fluor::theme::fmt((e(out[0]) << 16) | (e(out[1]) << 8) | e(out[2])))
 }
 
 /// Self renders in the system's achromatic anchor: VSF grey (0.5, 0.5, 0.5) — photopic Y = 0.5 like every contact colour, zero chroma. It is literally the chroma-0 point of every party's colour ray (Illuminant-E neutral, so a hair warm on a D65 display — that's equal-energy white, the pipeline's honest neutral).
@@ -339,7 +336,8 @@ fn self_colour() -> u32 {
 /// Brightness is locked at photopic Y = 0.5 LINEAR via the spectral pipeline (Stockman & Sharpe 2000 10° cone fundamentals, LMS2PHOTOPIC): photopic Y is linear in linear RGB, so the legal colours form a plane slicing the gamut cube thru grey (0.5, 0.5, 0.5). "colour hue" picks a direction in that plane (⊥ the luminance gradient), "colour chroma" (√-biased toward saturated) walks from grey toward the wall. The walk is clipped against BOTH the VSF RGB cube and the preimage of the linear sRGB cube, so the displayed colour is never gamut-clipped — the 50% promise holds on the actual screen. Returns fluor stored α+darkness.
 fn party_colour(digest: &[u8; 32]) -> u32 {
     use vsf::colour::convert::vsf_rgb_to_photopic_f32;
-    use vsf::colour::VSF_RGB2SRGB;
+    // Display gamut for the ray clip is Rec.2020 now (colour doctrine: assume wide-gamut, tag BT.2020) — clipping against sRGB needlessly muted saturated party colours a wide panel can actually show. macOS ships raw VSF so its own gamut IS the VSF cube (the first clip already covers it); Rec.2020 is the honest shared display target for the rest.
+    use vsf::colour::VSF_RGB2REC2020;
 
     // Luminance gradient w: photopic Y is linear in rgb, so evaluating the canonical pipeline on the three axes yields the plane normal. Tracks any future vsf observer changes automatically.
     let w = [
@@ -389,11 +387,11 @@ fn party_colour(digest: &[u8; 32]) -> u32 {
     };
 
     let t_vsf = ray_box_t(grey, dir);
-    // The same ray expressed in linear sRGB (linear map ⇒ still a ray): clip against the display cube too.
-    let grey_s = apply(&VSF_RGB2SRGB, grey);
-    let dir_s = apply(&VSF_RGB2SRGB, dir);
-    let t_srgb = ray_box_t(grey_s, dir_s);
-    let t_max = t_vsf.min(t_srgb);
+    // The same ray expressed in linear Rec.2020 (linear map ⇒ still a ray): clip against the display cube too, so the colour never clips on a wide-gamut panel.
+    let grey_s = apply(&VSF_RGB2REC2020, grey);
+    let dir_s = apply(&VSF_RGB2REC2020, dir);
+    let t_rec = ray_box_t(grey_s, dir_s);
+    let t_max = t_vsf.min(t_rec);
 
     // √ bias: uniform chroma draws cluster greyish; sqrt pushes the population toward saturated.
     let chroma = aesthetic_channel_unit("colour chroma", digest).sqrt() * t_max;
@@ -848,8 +846,6 @@ pub struct PhotonApp {
     roster_pull_rx: Option<std::sync::mpsc::Receiver<Result<fgtw::fstate::FleetState, String>>>,
     /// The linked-settings cache (per-device maps + link-to-global; docs/global-vault.md). Lazily loaded from the vault once storage + device key exist; merged from every fstate pull; every local set persists + pushes.
     fleet_settings: Option<crate::storage::fleet_settings::FleetSettings>,
-    /// True once at least one fstate pull has MERGED this session — the "probe" half of avatar-pin probe-then-generate. `ensure_avatar_pin` must not MINT a fresh pin before this: a fresh/cleared device starts with empty local settings, so an early generate clobbers the fleet's real pin over LWW (both devices minting seconds apart = the "avatars don't sync" bug). Lookup of an already-present pin is always allowed; only generation waits.
-    fleet_state_pulled: bool,
     /// Set on each attest/resume: "do one roster pull as soon as the fleet key is available." The key is written by an ASYNC fan-out sync, so an immediate pull races it and loses — this flag makes tick fire the pull the moment `fleet_key_cached()` goes Some, which is the wake-up catch-up that brings a friend added on a sibling device onto this one.
     needs_initial_roster_pull: bool,
     /// Retry budget for the initial roster pull. A fresh device's pairing-recovered key is a PRE-rotation generation (adding a device rotates the fleet key via the fan-out re-key), so the first pull decrypts the current roster with a stale key and fails `aead::Error`. The in-flight `spawn_fleet_key_sync` writes the current key within ~150ms, so on a failed pull we re-arm `needs_initial_roster_pull` and retry — the pull's own ~150ms round-trip naturally spaces attempts, and this budget caps them so a genuinely-undecryptable roster gives up instead of spinning (next fleet event / relaunch re-tries).
@@ -945,7 +941,8 @@ pub struct PhotonApp {
     resident_mode: bool,
     /// The tray icon exists (once per process — a re-spawn would park a second orb). Set on the resident-at-launch spawn or the first toggle-on; toggle-off leaves the icon until exit (v1 — despawn needs a service handle plumb-thru).
     tray_spawned: bool,
-    /// The bell string this session last published to the worker (Android: `fcm:<project>:<token>`), so the ping-cycle publish is a no-op until the token rotates. `None` = nothing published yet.
+    /// The bell string this session last published to the worker (Android: `fcm:<project>:<token>`), so the ping-cycle publish is a no-op until the token rotates. `None` = nothing published yet. Read+written only on Android (the doorbell publish is `#[cfg(target_os = "android")]`); the field exists on every platform to keep the struct shape uniform.
+    #[allow(dead_code)]
     published_bell: Option<String>,
     /// Launched with `--background` (the login-item invocation): the host creates the window invisible (`FluorApp::start_hidden`) and nothing shows until a ShowWindow surfaces it.
     start_in_background: bool,
@@ -1162,7 +1159,6 @@ impl PhotonApp {
             roster_pull_rx: None,
             fleet_settings: None,
             needs_initial_roster_pull: false,
-            fleet_state_pulled: false,
             last_peers: Vec::new(),
             roster_pull_retries_left: 0,
             device_avatar_pixels: None,
@@ -6221,9 +6217,6 @@ impl PhotonApp {
             Some(Ok(Ok(state))) => {
                 self.roster_pull_rx = None;
                 self.roster_pull_retries_left = 0;
-                // A pull LANDED — the avatar-pin probe is complete (even an empty result proves the fleet has no pin yet, so minting is now safe, not a clobber). Ungates ensure_avatar_pin's generate path.
-                let first_pull = !self.fleet_state_pulled;
-                self.fleet_state_pulled = true;
                 // Settings layers fold in first (global LWW + device newest-copy-wins); a change persists and takes effect on the next read of each key — a sibling's toggle lands here.
                 if self.ensure_fleet_settings() {
                     let changed = self
@@ -6246,10 +6239,6 @@ impl PhotonApp {
                         self.spawn_avatar_sync();
                         crate::log("SETTINGS: adopted fleet changes");
                     }
-                }
-                // First pull complete: NOW it's safe to ensure our avatar pin — either the fleet's real pin just merged in (we adopt it) or the fleet genuinely has none (we mint the first, no clobber). Doing this pre-pull was the "avatars don't sync" bug: every device minted its own before seeing the shared one.
-                if first_pull {
-                    self.publish_avatar_pin();
                 }
                 // Reconcile check BEFORE the merge consumes the pulled roster: do we hold contacts the slot lacks (added while a sibling was the last pusher, or pre-CRDT) or newer LWW stamps? Only then push back — an all-covered pull must NOT push, or the push's fstate event re-pulls every sibling in a ping-pong.
                 let our_pid = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
@@ -7634,15 +7623,11 @@ impl PhotonApp {
                 return Some(p);
             }
         }
-        // PROBE-THEN-generate: never mint before a fleet-state pull has landed. A fresh/cleared device's local settings are empty, so minting pre-pull clobbers the fleet's real pin over LWW (both devices minting seconds apart = "avatars don't sync"). Wait; the pull that lands calls publish_avatar_pin again, which either adopts the merged pin or mints safely once the probe proves the fleet has none.
-        if !self.fleet_state_pulled {
-            return None;
-        }
         use rand::RngCore;
         let mut pin = [0u8; 64];
         rand::thread_rng().fill_bytes(&mut pin);
         self.settings_set("profile.avatar_pin", pin.to_vec());
-        crate::log("AVATAR: generated a fresh random pin (fleet-synced) — post-pull, no clobber");
+        crate::log("AVATAR: generated a fresh random pin (fleet-synced)");
         Some(pin)
     }
 
