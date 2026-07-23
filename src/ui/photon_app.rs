@@ -4132,11 +4132,7 @@ impl FluorApp for PhotonApp {
                 .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
                 .unwrap_or([0u8; 32]);
             for (vis, &ci) in matching.iter().enumerate() {
-                // Use the SAME `scroll` snapshot the avatar / hint / search box / separator read (captured up
-                // top, before the down-scroll clamp below mutated `self.contacts_scroll`). Reading the live
-                // field here made the rows lag the rest of the block by the clamp delta: on an up-scroll past
-                // rest the avatar + textbox dragged with the rubber-band overshoot (they read the snapshot) but
-                // the names sat still (they read the post-clamp value). One block, one offset.
+                // Use the SAME `scroll` snapshot the avatar / hint / search box / separator read (captured up top, before the down-scroll clamp below mutated `self.contacts_scroll`). Reading the live field here made the rows lag the rest of the block by the clamp delta: on an up-scroll past rest the avatar + textbox dragged with the rubber-band overshoot (they read the snapshot) but the names sat still (they read the post-clamp value). One block, one offset.
                 let row_top = rows.y0 as isize + vis as isize * row_h - scroll as isize;
                 if row_top + row_h <= 0 || row_top >= buf_h as isize {
                     continue; // fully outside the visible content area (rows now scroll up to the top, not just `rows.y0`)
@@ -10108,14 +10104,9 @@ impl PhotonApp {
                         // them trip the premature "pending relay" threshold on the new one.
                         contact.punch_unvalidated_cycles = 0;
                     }
-                    // ONLY cancel when a VALIDATED direct path is what the offer was riding: then a real address
-                    // move means the transfer is hitting a dead endpoint and must restart. With NO validated path
-                    // the offer rides the RELAY (address-independent) — and the routine FGTW registry refresh
-                    // flip-flops contact.ip between a v4/v6-split friend's records every cycle, so cancelling here
-                    // reset clutch_offer_sent and re-sent the whole 548 KB offer every few minutes, forever, never
-                    // converging (observed: a friend's ceremony churned 'address changed — cancelling' for hours
-                    // while the relay was carrying it fine). No validated path ⇒ leave the offer alone; the relay
-                    // delivers it and the peer's KEM comes back over the relay.
+                    // ONLY cancel when a VALIDATED direct path is what the offer was riding: then a real address move means the transfer is hitting a dead endpoint and must restart.
+                    // With NO validated path the offer rides the RELAY (address-independent) — and the routine FGTW registry refresh flip-flops contact.ip between a v4/v6-split friend's records every cycle, so cancelling here reset clutch_offer_sent and re-sent the whole 548 KB offer every few minutes, forever, never converging (observed: a friend's ceremony churned 'address changed — cancelling' for hours while the relay was carrying it fine).
+                    // No validated path ⇒ leave the offer alone; the relay delivers it and the peer's KEM comes back over the relay.
                     if addr_changed
                         && contact.validated_path.is_some()
                         && contact.clutch_offer_sent
