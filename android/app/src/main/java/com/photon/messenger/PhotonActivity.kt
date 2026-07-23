@@ -636,6 +636,12 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             }
         }
 
+        // 3-button-nav back key: claim it so we can distinguish a LONG press (the real close — Shift+Escape's desktop twin) from a tap (one back level / hide). Gesture navigation never delivers this key — it arrives via onBackPressed with no long-press concept, so gesture users only get tap semantics.
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            event?.startTracking()
+            return true
+        }
+
         // Handle text input
         event?.let {
             val unicodeChar = it.unicodeChar
@@ -649,14 +655,38 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         return super.onKeyDown(keyCode, event)
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
+    override fun onKeyLongPress(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            // Long-press back = the deliberate quit (desktop's Shift+Escape): remove the task, but the foreground service stays — the network + doorbell survive; only the UI is gone.
+            PhotonLog.d(TAG, "Back long-press — real close (task removed, service stays)")
+            finishAndRemoveTask()
+            return true
+        }
+        return super.onKeyLongPress(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            // A completed TAP (not canceled by the long-press firing): normal back semantics.
+            if (event != null && !event.isCanceled) {
+                backOneLevel()
+            }
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
+    // One back step: Rust pops a level (friend panel → chat → contacts, settings → contacts, …); at the top of the stack it declines and we HIDE, never exit — the app is resident (foreground service keeps the network alive; desktop parity is close-to-tray). The Activity stays warm for an instant resume.
+    private fun backOneLevel() {
         if (nativePtr != 0L && nativeOnBackPressed(nativePtr)) {
-            // Rust handled it (e.g., navigated from chat to contacts)
             return
         }
-        // Not handled - let system handle (exit app)
-        @Suppress("DEPRECATION")
-        super.onBackPressed()
+        moveTaskToBack(true)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        // Gesture-nav back (no key events) lands here.
+        backOneLevel()
     }
 }
