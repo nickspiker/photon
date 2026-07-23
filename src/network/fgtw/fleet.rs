@@ -110,7 +110,7 @@ pub fn depart_device(device_key: &Keypair, handle_proof: &[u8; 32]) -> Result<()
     fgtw::client::depart_device(&PhotonTransport, device_key, handle_proof)
 }
 
-/// Devices the chain shows were once ours but are no longer current members — signed out, hardware brand still held (brands survive departure; identity never dies, 2026-07-17). The chain is the only truth source the client has: a brand the owner already released still lists here, and re-releasing it is an idempotent ack — so these rows are "retired" whether or not the registry claim is technically gone.
+/// Devices the chain shows were once ours but are no longer current members — signed out, hardware brand still held (brands survive departure; identity never dies). The chain is the only truth source the client has: a brand the owner already released still lists here, and re-releasing it is an idempotent ack — so these rows are "retired" whether or not the registry claim is technically gone.
 pub fn retired_devices(handle_proof: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
     let Some(blob) = fetch(handle_proof)? else {
         return Ok(Vec::new());

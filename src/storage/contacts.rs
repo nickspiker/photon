@@ -158,7 +158,7 @@ fn contact_state_schema() -> SectionSchema {
         .field("added", TypeConstraint::Any) // Eagle Time
         .field("id", TypeConstraint::AnyHash)
         // Optional fields
-        .field("ip", TypeConstraint::Any) // binary socketaddr bytes (6 = v4, 18 = v6) — an address is a NUMBER, never digit text (numbers-binary-at-rest, 2026-07-16)
+        .field("ip", TypeConstraint::Any) // binary socketaddr bytes (6 = v4, 18 = v6) — an address is a NUMBER, never digit text (numbers-binary-at-rest)
         .field("seed", TypeConstraint::AnyHash)
         .field("friendship_id", TypeConstraint::AnyHash) // Links to friendship storage
         .field("last_seen", TypeConstraint::Any) // f64 Eagle Time

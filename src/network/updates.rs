@@ -2,7 +2,7 @@
 //!
 //! Two channels, two manifests on the same R2 the installers serve from: `manifest-release.vsf` (ONE version, every platform section, written by deploy.sh) and `manifest-dev.vsf` (per-platform sections — dev pushes are ad hoc per platform — each rewritten by its scripts/publish/dev-*.sh). Both are COMPLETE VSF files signed by the release key ([`crate::crypto::self_verify::AUTHOR_PUBKEY`]); `read_verified(_, Some(AUTHOR_PUBKEY))` is the trust gate — an unsigned or wrong-signer manifest is noise, exactly like a bad binary.
 //!
-//! Manifest shape (agreed 2026-07-16): ONE SECTION PER ARTEFACT, each named `manifest.photon.<channel>` (the app + channel scoped in the label itself), fields all NAMED and semantically TYPED — `platform: x`, `arch: x`, `major/minor/patch: z` (native version numbers, no arabic digit strings; `major` omitted while 0, `patch` omitted on releases so its PRESENCE means "dev build"), `commit: hs` (the full 20-byte git SHA-1, raw), `url: nu` (VSF's network-URL type), `hash: hb` (BLAKE3 of the artefact). No positional parsing, no numbered field names.
+//! Manifest shape: ONE SECTION PER ARTEFACT, each named `manifest.photon.<channel>` (the app + channel scoped in the label itself), fields all NAMED and semantically TYPED — `platform: x`, `arch: x`, `major/minor/patch: z` (native version numbers, no arabic digit strings; `major` omitted while 0, `patch` omitted on releases so its PRESENCE means "dev build"), `commit: hs` (the full 20-byte git SHA-1, raw), `url: nu` (VSF's network-URL type), `hash: hb` (BLAKE3 of the artefact). No positional parsing, no numbered field names.
 //!
 //! The apply path re-uses the binary self-verify: every published binary carries a 64-byte appended Ed25519 signature over BLAKE3(rest), so a download is verified ON DISK (`self_verify::verify_file`) before anything execs — plus the manifest's own BLAKE3 must match first. Desktop then swaps atomically and the app re-execs; Android hands the verified APK to the system installer (the OS owns package installs — that's the second click).
 
@@ -260,7 +260,7 @@ fn download_verified(
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|e| format!("http client: {e}"))?;
-    // Cache-bust by the CONTENT HASH: the artefact lives at a FIXED url per platform, so after a new build is uploaded the CDN (Cloudflare) can keep serving the stale cached binary while the freshly-fetched manifest already carries the new hash — the "hash mismatch vs signed manifest" a Windows update hit (2026-07-17). `?v=<hash>` makes the URL change exactly when the content does: a new version misses the cache (fresh fetch), an unchanged one stays cacheable. The hash is the integrity anchor either way; this only defeats stale edges.
+    // Cache-bust by the CONTENT HASH: the artefact lives at a FIXED url per platform, so after a new build is uploaded the CDN (Cloudflare) can keep serving the stale cached binary while the freshly-fetched manifest already carries the new hash — the "hash mismatch vs signed manifest" a Windows update hit. `?v=<hash>` makes the URL change exactly when the content does: a new version misses the cache (fresh fetch), an unchanged one stays cacheable. The hash is the integrity anchor either way; this only defeats stale edges.
     let url = format!("{}?v={}", row.url, hex::encode(row.hash));
     let mut resp = client
         .get(&url)

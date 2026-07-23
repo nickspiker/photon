@@ -147,7 +147,7 @@ impl OutboundTransfer {
         self.created_at.elapsed() >= Duration::from_secs(1)
     }
 
-    /// Check if we should fall back to relay (UDP + TCP tried, no ACK). Trigger at SPEC_MAX_RETRIES (~31s with 1/2/4/8/16s jittered backoff), NOT 2× that: the old ~90s / 10-retry threshold was never reached because a re-firing CLUTCH ceremony supersedes the transfer first (field logs topped out at attempt 7), so relay NEVER engaged for the peers that needed it most (asymmetric reachability, no direct path — Seattle↔Montana). The relayed copy is redundant if a direct path ACKs in the meantime, so an earlier trigger only costs one best-effort store on fgtw.org.
+    /// Check if we should fall back to relay (UDP + TCP tried, no ACK). Trigger at SPEC_MAX_RETRIES (~31s with 1/2/4/8/16s jittered backoff), NOT 2× that: the old ~90s / 10-retry threshold was never reached because a re-firing CLUTCH ceremony supersedes the transfer first (field logs topped out at attempt 7), so relay NEVER engaged for the peers that needed it most (asymmetric reachability, no direct path). The relayed copy is redundant if a direct path ACKs in the meantime, so an earlier trigger only costs one best-effort store on fgtw.org.
     pub fn should_relay_fallback(&self) -> bool {
         self.spec_retry_count >= Self::SPEC_MAX_RETRIES && self.spec_tcp_fallback
     }
@@ -240,7 +240,7 @@ impl OutboundTransfer {
         if self.send_buffer.mark_acked(ack.sequence) {
             self.window.on_ack();
             self.last_activity = Instant::now();
-            // `retries` counts CONSECUTIVE no-progress timeout rounds, not lifetime losses — so any real progress refunds the whole stale budget. Without this, a blast into a path whose RTT hovers near the RTO (cellular: every tick finds SOME packet older than the ACK-recomputed RTO) bumps `retries` past the `is_stale` cap in under a second and kills a transfer that is actively ACKing (2026-07-19: both sides of a 536-packet offer exchange self-killed ~1s after locking a working path).
+            // `retries` counts CONSECUTIVE no-progress timeout rounds, not lifetime losses — so any real progress refunds the whole stale budget. Without this, a blast into a path whose RTT hovers near the RTO (cellular: every tick finds SOME packet older than the ACK-recomputed RTO) bumps `retries` past the `is_stale` cap in under a second and kills a transfer that is actively ACKing (observed: both sides of a multi-hundred-packet offer exchange self-killed about a second after locking a working path).
             self.retries = 0;
         }
 

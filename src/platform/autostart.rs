@@ -1,9 +1,9 @@
 //! Login-item management — the per-user, no-elevation autostart artifact on each desktop OS.
 //! The artifact IS the setting: `enabled()` reads the OS state directly, `enable()`/`disable()` write/remove it, and nothing is stored in the vault — so the toggle survives reinstalls, can't desync from reality, and stays visible/revocable in the OS's own UI (macOS Login Items, Windows Task Manager Startup, GNOME Tweaks).
-//! Every path here is user-owned (HKCU / ~/Library/LaunchAgents / ~/.config/autostart): no sudo, no UAC, no prompts — see the 2026-07-19 design discussion.
+//! Every path here is user-owned (HKCU / ~/Library/LaunchAgents / ~/.config/autostart): no sudo, no UAC, no prompts.
 //! The registered command is `<current_exe> --background`, so a login launch comes up RESIDENT (hidden window, network up) rather than opening a window over the fresh session.
 
-// ───────── Default-ON policy (2026-07-19 user mandate) ─────────
+// ───────── Default-ON policy (user mandate) ─────────
 // Background residency + launch-at-login are ON unless the user explicitly turned them off. The OS artifact alone can't carry that: auto-enrolling every launch would resurrect a login item the user deleted, so the explicit "no" lives in a marker file — present = user opted out, absent = default-on. The artifact stays the OS-visible truth for WHAT runs at login; the marker is only the user's veto.
 
 fn optout_path() -> Option<std::path::PathBuf> {

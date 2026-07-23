@@ -86,7 +86,7 @@ fn main() {
     }
     rows.sort_by(|a, b| (&a.platform, &a.arch).cmp(&(&b.platform, &b.arch)));
 
-    // Signing key: $PHOTON_SIGNING_KEY first, then the same known-locations ladder photon-signature-signer walks — the two tools must find the ONE release key identically or a publish half-succeeds (binary signed, manifest not; happened 2026-07-16).
+    // Signing key: $PHOTON_SIGNING_KEY first, then the same known-locations ladder photon-signature-signer walks — the two tools must find the ONE release key identically or a publish half-succeeds (binary signed, manifest not).
     let key_path = std::env::var("PHOTON_SIGNING_KEY").ok().or_else(|| {
         let home = std::env::var("HOME").unwrap_or_default();
         [
