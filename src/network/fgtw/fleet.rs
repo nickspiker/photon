@@ -5,7 +5,8 @@
 //! What's left here is the *binding*: [`PhotonTransport`] (FGTW's HTTP over photon's warm-TLS pool + short error UX) and [`PhotonSealer`] (roster AEAD over `kete`), plus thin same-signature wrappers that inject them — so the crate stays reqwest-free and photon keeps its own network stack.
 
 pub use fgtw::fanout::{
-    fanout_from_bytes, fanout_open, fanout_seal, fanout_to_bytes, new_fleet_key, FanoutWrap,
+    fanout_from_bytes, fanout_needs_rotation, fanout_open, fanout_seal, fanout_to_bytes,
+    new_fleet_key, FanoutWrap,
 };
 pub use fgtw::fleet::{
     bindreq_signing_bytes, et_to_osc, scheme, BindRequest, Egg, FleetOp, FoldError, MembershipBlob,
@@ -340,6 +341,55 @@ mod tests {
         // A stale rotation (epoch ≤ stored) is rejected by the worker's monotonic guard.
         let stale = fanout_seal(&handle_proof, 3, &new_fleet_key(), &members3).unwrap();
         assert!(post_fanout(&handle_proof, &a, 3, &stale).is_err());
+    }
+
+    /// End-to-end removal HEAL against LIVE fgtw.org — the §14.12-1 recipe `spawn_fleet_key_sync` runs when a departure lands: the shrink sentinel fires (fan-out wraps > folded members), the survivor preserves the fstate slot under the OLD key, rotates, re-pushes the merge under the NEW epoch — settings intact, the leaver locked out of both the fan-out and the re-sealed slot.
+    #[test]
+    #[ignore = "hits live fgtw.org"]
+    fn live_removal_heal_round_trip() {
+        use fgtw::fstate::{merge_fstate, FleetState, SettingEntry};
+        let handle_proof: [u8; 32] = rand::random();
+        let identity_seed: [u8; 32] = rand::random();
+        let a = Keypair::from_seed(&rand::random::<[u8; 32]>());
+        let b = Keypair::from_seed(&rand::random::<[u8; 32]>());
+
+        // Two-member fleet at epoch 2, with a settings marker sealed into the slot under k2.
+        ensure_member(&a, &handle_proof, &identity_seed).expect("genesis");
+        let (e1, _) = rotate_fleet_key(&handle_proof, &a, &[pk(&a)]).expect("establish");
+        assert_eq!(e1, 1);
+        bindreq_put(&b, &identity_seed, &handle_proof, &[0u8; 32]).expect("B posts request");
+        let reqs = bindreq_list(&a, &handle_proof, &identity_seed).expect("list");
+        let req_b = reqs.iter().find(|r| r.device_pubkey == pk(&b)).expect("B's request");
+        bind_device(&a, &handle_proof, req_b).expect("bind B");
+        let (e2, k2) = rotate_fleet_key(&handle_proof, &a, &current_members(&handle_proof).unwrap()).expect("rotate to A,B");
+        assert_eq!(e2, 2);
+        let marker = SettingEntry { key: "test.heal_marker".into(), value: b"survives".to_vec(), updated: 700, tombstone: false };
+        let state = FleetState { roster: vec![roster_entry(7, 500, false)], global_settings: vec![marker], device_settings: Vec::new() };
+        push_fstate(&handle_proof, &a, &k2, &state).expect("seed the slot under k2");
+
+        // B departs. The sentinel condition A's next key sync sees: the fan-out still wraps 2 devices, the fold holds 1.
+        depart_device(&b, &handle_proof).expect("B departs");
+        let members = current_members(&handle_proof).unwrap();
+        assert_eq!(members, vec![pk(&a)]);
+        let (_, wraps) = fetch_fanout(&handle_proof).expect("fetch").expect("a fan-out");
+        assert!(fanout_needs_rotation(wraps.len(), members.len()), "shrink must trip the sentinel");
+
+        // The heal, in spawn_fleet_key_sync's exact order: preserve under the old key, rotate to the survivors, re-push the merge under the new epoch.
+        let preserved = pull_fstate(&handle_proof, &k2).expect("pull").expect("slot readable under the old key");
+        let (e3, k3) = rotate_fleet_key(&handle_proof, &a, &members).expect("heal rotation");
+        assert_eq!(e3, 3);
+        push_fstate(&handle_proof, &a, &k3, &merge_fstate(preserved, FleetState::default())).expect("re-seal under k3");
+
+        // The survivor recovers the new epoch and the marker survived the re-seal; the leaver recovers nothing and its old key no longer opens the slot.
+        assert_eq!(recover_fleet_key(&handle_proof, &a).unwrap().unwrap(), k3);
+        let healed = pull_fstate(&handle_proof, &k3).expect("pull under k3").expect("re-sealed slot");
+        assert!(healed.global_settings.iter().any(|s| s.key == "test.heal_marker" && s.value == b"survives"), "settings must survive the re-seal");
+        assert_eq!(healed.roster.len(), 1, "roster must survive the re-seal");
+        assert!(recover_fleet_key(&handle_proof, &b).unwrap().is_none(), "the leaver must not recover the healed epoch");
+        assert!(pull_fstate(&handle_proof, &k2).is_err(), "the leaver's cached key must not open the re-sealed slot");
+        // Post-heal steady state: the sentinel is quiet again.
+        let (_, wraps) = fetch_fanout(&handle_proof).expect("fetch").expect("a fan-out");
+        assert!(!fanout_needs_rotation(wraps.len(), members.len()));
     }
 
     #[test]
