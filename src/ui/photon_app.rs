@@ -915,6 +915,12 @@ pub struct PhotonApp {
     // --- Settings panel (STUB) ---
     /// Base hit id for the settings nav-rail rows. Row `i` (page `SettingsPage::ALL[i]`) stamps `settings_nav_base + i`. Allocated in `init`.
     settings_nav_base: HitId,
+    /// Contact-panel action pills (slot 0 = Boot). Allocated alongside the settings blocks.
+    contact_panel_btn_base: HitId,
+    /// Boot two-tap arm (event-shown, interaction-cleared — any other press on the panel disarms).
+    contact_boot_armed: bool,
+    /// One-shot residency bypass: Shift+Escape sets it so the next close-requested actually exits instead of hiding.
+    exit_requested: bool,
     /// Base hit id for the settings stub action pills (immediate-mode Buttons — Add device, Lock, Shred, Snapshot, …). Each page draws its pills over a small contiguous slice of this range; clicks land here and log a stub line. Allocated in `init` with a fixed span.
     settings_btn_base: HitId,
     /// Appearance-page theme selector — a real fluor `Dropdown`. Only in the widget walk while the Settings/Appearance page is up.
@@ -1185,6 +1191,9 @@ impl PhotonApp {
             last_click_time: None,
             click_streak: 0,
             settings_nav_base: HIT_NONE,
+            contact_panel_btn_base: HIT_NONE,
+            contact_boot_armed: false,
+            exit_requested: false,
             settings_btn_base: HIT_NONE,
             settings_theme_dropdown: None,
             settings_zoom_slider: None,
@@ -1666,6 +1675,11 @@ impl FluorApp for PhotonApp {
     }
 
     fn on_close_requested(&mut self) -> bool {
+        // Shift+Escape's one-shot exit override: the user asked for the REAL close, so decline residency this once and let the host exit.
+        if self.exit_requested {
+            crate::log("EXIT: deliberate quit (Shift+Escape) — bypassing resident hide");
+            return false;
+        }
         // Resident mode: close = hide, keep running (network, timers, notifications). The host does the set_visible(false); we track "nobody's looking" for the notification gate. Non-resident closes exit as ever.
         if self.resident_mode {
             #[cfg(not(target_os = "android"))]
@@ -1796,6 +1810,9 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.settings_btn_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(31); // pills 0..=31
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.contact_panel_btn_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(3); // contact-panel pills 0..=3 (0 = Boot)
         self.settings_theme_dropdown = Some(fluor::widgets::Dropdown::new(
             &mut self.hit_counter,
             0.,
@@ -2107,7 +2124,8 @@ impl FluorApp for PhotonApp {
                         if self.device_avatar_pixels.is_none() {
                             self.spawn_self_avatar_recover(remembered.identity_seed);
                         }
-                        // Force any self-contact Complete before re-keying so it's excluded (a self-contact has no peer to key with).
+                        // Bootstrap the notes-to-self contact on THIS device (register-derived, no handle needed), then force any self-contact Complete before re-keying so it's excluded (a self-contact has no peer to key with).
+                        self.ensure_self_contact();
                         self.settle_self_contacts();
                         // Re-key Pending contacts that still lack keypairs after the rehydrate — but ONE AT A TIME (spawn_next_pending_keygen, repeated each tick), never all at once: parallel McEliece keygens on launch starved the UI thread.
                         self.spawn_next_pending_keygen();
@@ -2208,10 +2226,16 @@ impl FluorApp for PhotonApp {
             }
         }
 
-        // Back button — Conversation and Add-device both return to the contact list. Navigation is a dedicated control; the orb is settings-only.
+        // Back button — Conversation and Add-device both return to the contact list; the contact panel returns to its conversation. Navigation is a dedicated control; the orb is settings-only.
         if hit_id == self.back_btn_hit_id && self.back_btn_hit_id != HIT_NONE {
             // Leaving a screen deselects whatever textbox held focus (clears its glow + selection) — page changes never carry focus across.
             self.change_focus(None);
+            if matches!(self.state, AppState::ContactPanel) {
+                self.contact_boot_armed = false;
+                self.state = AppState::Conversation;
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
             if matches!(self.state, AppState::Conversation) {
                 self.state = AppState::Ready;
                 self.active_contact = None;
@@ -2240,6 +2264,32 @@ impl FluorApp for PhotonApp {
         }
 
         // Settings nav rail + stub action pills — hit-id ranges owned by the panel. Rail rows switch the page; pills are inert stubs (log only), except Fleet's "Add device" pill which opens the pairing-words flow.
+        if matches!(self.state, AppState::ContactPanel) {
+            // Any press that isn't the Boot pill disarms it (event-shown, interaction-cleared).
+            if self.contact_boot_armed && hit_id != self.contact_panel_btn_base {
+                self.contact_boot_armed = false;
+                ctx.window.request_redraw();
+            }
+            if self.contact_panel_btn_base != HIT_NONE
+                && hit_id >= self.contact_panel_btn_base
+                && hit_id < self.contact_panel_btn_base.wrapping_add(4)
+            {
+                let slot = hit_id - self.contact_panel_btn_base;
+                if slot == 0 {
+                    // Boot (two-tap): first press arms, second fires. Removal is unilateral and local-plus-fleet only — ostracism, not erasure.
+                    if self.contact_boot_armed {
+                        self.contact_boot_armed = false;
+                        self.boot_active_contact();
+                    } else {
+                        self.contact_boot_armed = true;
+                    }
+                    self.scene_dirty = true;
+                    ctx.window.request_redraw();
+                }
+                return EventResponse::Handled;
+            }
+        }
+
         if let AppState::Settings(page) = self.state {
             if self.settings_nav_base != HIT_NONE
                 && hit_id >= self.settings_nav_base
@@ -2980,11 +3030,29 @@ impl FluorApp for PhotonApp {
                         }
                         EventResponse::Handled
                     }
-                    // Esc clears focus. Also cancels an in-flight attestation back to Fresh — without this the user is stuck on the "Attesting…" indicator with no way out if the FGTW response never lands (offline FGTW, peer worker stall, etc.). Android back routes here via `nativeOnBackPressed` → Escape.
+                    // Esc = BACK, one level per press; at the top of the stack it hides the app (resident) on every platform. Shift+Esc = the real exit, from anywhere. Also cancels an in-flight attestation back to Fresh — without this the user is stuck on the "Attesting…" indicator with no way out if the FGTW response never lands. Android's hardware/gesture back routes here via `nativeOnBackPressed` → Escape (long-press back on 3-button nav = the Activity's real close).
                     Key::Named(NamedKey::Escape) => {
+                        if ctx.modifiers.shift_key() {
+                            // The deliberate quit chord: bypasses residency for ONE close so the host actually exits.
+                            self.exit_requested = true;
+                            return EventResponse::Close;
+                        }
+                        if matches!(self.state, AppState::ContactPanel) {
+                            self.contact_boot_armed = false;
+                            self.state = AppState::Conversation;
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
                         if matches!(self.state, AppState::Conversation) {
                             self.state = AppState::Ready;
                             self.active_contact = None;
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
+                        if matches!(self.state, AppState::Settings(_)) {
+                            // Mirror the panel's Back affordance: Settings closes to the contacts screen (post-attest) or the launch screen.
+                            self.change_focus(None);
+                            self.state = if self.session.is_some() { AppState::Ready } else { AppState::Launch(LaunchState::Fresh) };
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
@@ -3014,8 +3082,10 @@ impl FluorApp for PhotonApp {
                         }
                         if self.change_focus(None) {
                             ctx.window.request_redraw();
+                            return EventResponse::Handled;
                         }
-                        EventResponse::Handled
+                        // Top of the stack (contacts screen / idle launch, nothing focused): Escape = the close button. Resident desktop → the host hides the window; Android → the shell reports unhandled and the Activity moveTaskToBack()s. Either way: hidden, still running, never an exit.
+                        EventResponse::Close
                     }
                     // Enter submits the handle when the textbox is focused — intercepted before delivery so the textbox doesn't insert a literal newline. When the attest button is focused, route to its on_key (Button activates on Enter / Space and we observe via take_click in tick / on_event Release path). Both Launch and Ready screens follow the same shape with their respective widgets.
                     Key::Named(NamedKey::Enter) => {
@@ -3472,7 +3542,7 @@ impl FluorApp for PhotonApp {
             && (self.zoom_hint || (cfg!(target_os = "android") && (ctx.viewport.ru - 1.0).abs() > 0.001));
 
         // Title-bar text by screen, computed BEFORE the chrome borrow (peer count reads `self.handle_query` / `self.session`). Launch/attest shows the "← Network" affordance; once attested (Ready) it shows the peer count — distinct identities in the store EXCLUDING our own: peers are PEOPLE, so the FGTW seed is not a peer (the old `+1` when online) and neither are our own fleet siblings (their records ride the same store for direct routing). `set_title` only re-rasterizes chrome when the string actually changes, so this is cheap to recompute each frame.
-        let title_text: String = if matches!(self.state, AppState::Conversation) {
+        let title_text: String = if matches!(self.state, AppState::Conversation | AppState::ContactPanel) {
             self.active_contact
                 .and_then(|ci| self.contacts.get(ci))
                 .map(|c| c.display_name())
@@ -4348,6 +4418,148 @@ impl FluorApp for PhotonApp {
         }
 
         // Conversation screen — shows the selected contact's name, clutch state, and (eventually) messages.
+        // Contact panel — the friend, mirrored in the settings screen's visual language: avatar header, then About (what they shared with us + identity/trust detail), then the conversation in numbers (the sync-test instrument: these rows should CONVERGE across fleet devices), then Boot. Immediate-mode rows only, no widgets, no scroll (fits at sane zooms; the settings-grade rail arrives if the panel grows pages).
+        if matches!(self.state, AppState::ContactPanel) {
+            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+            if let Some(ci) = self.active_contact.filter(|&ci| ci < self.contacts.len()) {
+                let ru = ctx.viewport.ru;
+                let conv_layout = ReadyLayout::compute(buf_w, buf_h, ru);
+                let unit = conv_layout.unit_height;
+                // Back arrow, same vocabulary as the conversation header.
+                let back_y = buf_h as f32 * 0.06 + unit;
+                let back_size = unit * 1.15;
+                let back_text = "\u{2039} Conversation";
+                let back_pressed = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
+                let back_hovered = back_pressed || (ctx.pressed_hit == HIT_NONE && self.hover_hit == self.back_btn_hit_id);
+                let back_weight = if back_hovered { 700 } else { 500 };
+                ctx.text.draw_text_left(&mut canvas, back_text, unit, back_y, &TextStyle::new(back_size, theme::CONTACT_NAME_COLOUR).weight(back_weight).font("Oxanium"), None, None);
+                let back_w = ctx.text.measure_text(back_text, &TextStyle::new(back_size, 0).weight(back_weight).font("Oxanium"));
+                restamp_hit_rect(
+                    &mut chrome.hit_test_map,
+                    buf_w,
+                    buf_h,
+                    unit as isize,
+                    (back_y - back_size) as isize,
+                    back_w as isize,
+                    (back_size * 2.0) as isize,
+                    self.back_btn_hit_id,
+                );
+                // Header: avatar + tier ring + name, centred — the conversation header's shape.
+                let avatar_r = unit * 2.2;
+                let diam = (avatar_r * 2.0) as usize;
+                let cx = buf_w as f32 * 0.5;
+                let cy = back_y + back_size + avatar_r + unit;
+                if self.contacts[ci].avatar_pixels.is_some()
+                    && (self.contacts[ci].avatar_scaled.is_none() || self.contacts[ci].avatar_scaled_diameter != diam)
+                {
+                    let base = self.contacts[ci].avatar_pixels.as_ref().unwrap();
+                    let scaled = crate::ui::avatar_render::update_avatar_scaled(base, crate::ui::avatar::AVATAR_SIZE, diam);
+                    self.contacts[ci].avatar_scaled = Some(scaled);
+                    self.contacts[ci].avatar_scaled_diameter = diam;
+                }
+                let contact = &self.contacts[ci];
+                let ring = if contact.is_online {
+                    if contact.reached_via_relay { theme::RING_RELAY_COLOUR } else { theme::RING_ONLINE_COLOUR }
+                } else {
+                    theme::RING_OFFLINE_COLOUR
+                };
+                paint::draw_circle(&mut canvas, cx, cy, avatar_r + (avatar_r * 0.0375).max(1.0), ring, None);
+                if let Some(scaled) = contact.avatar_scaled.as_ref() {
+                    crate::ui::avatar_render::draw_avatar(&mut canvas, cx, cy, avatar_r, scaled, diam, None);
+                } else {
+                    let gd = diam.max(1);
+                    let seed = proof_gradient_seed(&contact.handle_proof);
+                    crate::ui::avatar_render::draw_avatar(&mut canvas, cx, cy, avatar_r, &gradient_avatar_rgb(seed, gd), gd, None);
+                }
+                let our_hh = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
+                let name_colour = if contact.handle_hash == our_hh { self_colour() } else { party_colour(&relationship_digest(&contact.handle_hash, &our_hh)) };
+                let name_y = cy + avatar_r + unit;
+                ctx.text.draw_text_center(&mut canvas, &contact.display_name_or_pending(), cx, name_y, &TextStyle::new(unit * 1.3, name_colour).weight(600).font("Oxanium"), None, None);
+
+                // Display doctrine (matches clutch_status_detail): dozenal is the acclimation surface for VERSION + REPUTATION only — counters stay in current mixed arabic units for now.
+                let doz = |n: usize| n.to_string();
+                let sent = contact.messages.iter().filter(|m| m.is_outgoing).count();
+                let recv = contact.messages.len() - sent;
+                let delivered = contact.messages.iter().filter(|m| m.is_outgoing && m.delivered).count();
+                let span_days = {
+                    let first = contact.messages.iter().map(|m| m.timestamp).min();
+                    let last = contact.messages.iter().map(|m| m.timestamp).max();
+                    match (first, last) {
+                        (Some(a), Some(b)) if b > a => ((b - a) / (vsf::OSCILLATIONS_PER_SECOND as i64 * 86_400)).max(0) as usize,
+                        _ => 0,
+                    }
+                };
+                let is_self = contact.handle_hash == our_hh;
+                let shared_name = if contact.published_name.is_empty() { "name: not shared".to_string() } else { format!("name: \u{201c}{}\u{201d}", contact.published_name) };
+                let shared_avatar = if contact.avatar_pin == [0u8; 64] { "avatar: not shared" } else { "avatar: shared" };
+                let identity_line = if contact.identity_superseded {
+                    "\u{26a0} this name was re-claimed by someone else \u{2014} rendering a stranger".to_string()
+                } else if contact.identity_ended {
+                    "identity ended by its owner".to_string()
+                } else if contact.pinned_genesis != [0u8; 32] {
+                    format!("identity pinned \u{00b7} {} device(s) in their fleet", doz(contact.fleet_members.len().max(1)))
+                } else {
+                    "identity not yet folded (first contact still settling)".to_string()
+                };
+                let chain_line = if is_self {
+                    "your own notes \u{2014} no chain, rows ride the fleet key".to_string()
+                } else if contact.chain_woven {
+                    "chain woven \u{2014} secured end-to-end".to_string()
+                } else {
+                    contact.clutch_status_detail()
+                };
+                let connection_line = if is_self {
+                    "always reachable (this is you)".to_string()
+                } else if contact.is_online {
+                    if contact.reached_via_relay { "connected \u{00b7} via relay".to_string() } else { "connected \u{00b7} direct".to_string() }
+                } else {
+                    "offline".to_string()
+                };
+                let history_line = match contact.history_recovery.as_ref().map(|r| r.complete) {
+                    Some(true) => "history: complete on this device".to_string(),
+                    Some(false) => "history: still syncing".to_string(),
+                    None => "history: idle (no sweep this session)".to_string(),
+                };
+                let mut rows: Vec<(String, u32, u16)> = vec![
+                    ("About".to_string(), theme::CONTACT_NAME_COLOUR, 600),
+                    (shared_name, theme::LABEL_COLOUR, 400),
+                    (shared_avatar.to_string(), theme::LABEL_COLOUR, 400),
+                    (identity_line, theme::LABEL_COLOUR, 400),
+                    (String::new(), 0, 400),
+                    ("Between you".to_string(), theme::CONTACT_NAME_COLOUR, 600),
+                    (format!("{} message(s) \u{00b7} {} sent \u{00b7} {} received", doz(contact.messages.len()), doz(sent), doz(recv)), theme::LABEL_COLOUR, 400),
+                    (format!("{} of your messages delivered", doz(delivered)), theme::LABEL_COLOUR, 400),
+                    (format!("chatting across {} day(s)", doz(span_days)), theme::LABEL_COLOUR, 400),
+                    (history_line, theme::LABEL_COLOUR, 400),
+                    (chain_line, theme::LABEL_COLOUR, 400),
+                    (connection_line, theme::LABEL_COLOUR, 400),
+                ];
+                if is_self {
+                    rows.retain(|(s, _, _)| !s.starts_with("avatar:") && !s.starts_with("name:"));
+                }
+                let line_h = unit * 1.35;
+                let text_size = unit * 0.85;
+                let mut y = name_y + unit * 1.8;
+                for (s, colour, weight) in &rows {
+                    if !s.is_empty() {
+                        let row = fluor::region::Region::new(buf_w as f32 * 0.12, y - line_h * 0.5, buf_w as f32 * 0.76, line_h);
+                        settings_line(&mut canvas, ctx.text, row, s, text_size, *colour, *weight);
+                    }
+                    y += line_h;
+                }
+                // Boot pill — red family like the destructive security pills; two-tap.
+                if !is_self && !contact.is_sibling {
+                    let pill_w = (unit * 9.0).min(buf_w as f32 * 0.6);
+                    let pill = fluor::region::Region::new(cx - pill_w * 0.5, y + unit * 0.5, pill_w, unit * 1.6);
+                    let label = if self.contact_boot_armed { "Tap again \u{2014} boot them" } else { "Boot" };
+                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill, label, self.contact_panel_btn_base, ctx.pressed_hit);
+                    if self.contact_boot_armed {
+                        settings_line(&mut canvas, ctx.text, fluor::region::Region::new(buf_w as f32 * 0.12, pill.y + pill.h + unit * 0.3, buf_w as f32 * 0.76, line_h), "removes them from every device of YOUR fleet \u{2014} they are not told, their records stay theirs", text_size * 0.85, theme::LABEL_COLOUR, 400);
+                    }
+                }
+            }
+        }
+
         if matches!(self.state, AppState::Conversation) {
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             if let Some(ci) = self.active_contact {
@@ -6358,7 +6570,14 @@ impl PhotonApp {
                 self.state = AppState::Settings(SettingsPage::About);
                 true
             }
-            // Settings / AddDevice / Conversation fall thru: the orb is settings-only, and navigation off those screens is a dedicated control (back button), never the orb.
+            // In a Conversation the orb wears the friend's avatar — it opens the friend panel (same doctrine: the orb is a panel entry, never a direct action).
+            AppState::Conversation => {
+                self.change_focus(None);
+                self.contact_boot_armed = false;
+                self.state = AppState::ContactPanel;
+                true
+            }
+            // Settings / AddDevice / ContactPanel fall thru: navigation off those screens is a dedicated control (back button), never the orb.
             _ => false,
         }
     }
@@ -8697,6 +8916,8 @@ impl PhotonApp {
                     }
                     self.spawn_contact_fleet_refresh(vec![data.handle_proof]);
                 }
+                // Bootstrap the notes-to-self contact on every attest path too (JOIN-flow first attest, re-attest after a clear) — register-derived, so it needs nothing the resume loader had.
+                self.ensure_self_contact();
                 self.hints_dismissed = false;
                 // Only flip to Ready on the INITIAL attest (we were still on the Launch screen). This Success branch also fires on every recurring background resume refresh — if the user has already navigated in-app (Ready, or inside a Conversation), forcing Ready here would yank them out of an open chat back to the contact list each sweep.
                 if !in_app {
@@ -10273,6 +10494,89 @@ impl PhotonApp {
     }
 
     /// Force every self-contact in the list to CLUTCH-Complete and clear any in-flight CLUTCH work. Applied after contacts load on resume and after cloud/FGTW merges, since those paths build contacts as Pending by default. Returns true if any contact changed.
+    /// Boot the open contact — THE first roster-tombstone writer (the receive side has honoured tombstones since the roster CRDT shipped; nothing ever minted one until now). Ostracism, not erasure: WE drop the contact + chains locally and push a sticky tombstone so every device of OUR fleet drops it too — the other side is never signalled and keeps its own records (device-sovereignty doctrine). A tombstone outranks any concurrent re-add by LWW stamp, and re-adding later mints a fresh entry with a newer stamp, so boot→re-add works.
+    fn boot_active_contact(&mut self) {
+        let Some(ci) = self.active_contact else {
+            return;
+        };
+        if ci >= self.contacts.len() {
+            return;
+        }
+        if self.contacts[ci].is_sibling {
+            return; // device removal is chain consent (self-departure), never a contact boot
+        }
+        // Sticky tombstone into the fleet roster slot — off-thread, same shape as every roster push. push_roster pull-merges, so the tombstone joins the slot without clobbering concurrent sibling writes.
+        if let (Some(hp), Some(kp), Some(fleet_key)) = (
+            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.device_keypair.clone(),
+            self.fleet_key_cached(),
+        ) {
+            let c = &self.contacts[ci];
+            let entry = crate::network::fgtw::fleet::RosterEntry {
+                handle_proof: c.handle_proof,
+                handle_hash: c.handle_hash,
+                public_identity: *c.public_identity.as_bytes(),
+                name: String::new(),
+                avatar_pin: [0u8; 64],
+                added: 0,
+                updated: vsf::eagle_time_oscillations(),
+                tombstone: true,
+            };
+            std::thread::spawn(move || {
+                match crate::network::fgtw::fleet::push_roster(&hp, &kp, &fleet_key, &[entry]) {
+                    Ok(()) => crate::log("BOOT: roster tombstone pushed — every fleet device drops the contact"),
+                    Err(e) => crate::logf!("BOOT: tombstone push failed ({}); local removal stands, the tombstone rides the next roster push", e),
+                }
+            });
+        }
+        // Local removal, mirroring the tombstone-receive path, plus chain cleanup.
+        let gone = self.contacts.remove(ci);
+        if let Some(storage) = self.storage.as_ref() {
+            if let Err(e) = crate::storage::contacts::delete_contact(&gone.handle_hash, storage) {
+                crate::logf!("BOOT: contact state delete failed: {}", e);
+            }
+            if let Some(fid) = gone.friendship_id {
+                self.friendship_chains.retain(|(id, _)| *id != fid);
+                if let Err(e) = crate::storage::friendship::delete_friendship_chains(&fid, storage) {
+                    crate::logf!("BOOT: chain delete failed: {}", e);
+                }
+            }
+        }
+        crate::logf!("BOOT: contact {} removed (ostracism, not erasure — their side keeps its own records)", crate::fp(&gone.handle_proof).as_str());
+        self.active_contact = None;
+        self.reseed_contact_pubkeys();
+        self.update_sync_records();
+        self.state = AppState::Ready;
+    }
+
+    /// Notes-to-self bootstrap: every device of the fleet deterministically holds the self-contact, not just the device where the user first typed their own handle (vaults converge — notes follow the identity). Everything derives from the session registers alone — party id, conversation token, handle_proof — so NO handle string, NO ceremony, and NO outgoing chain exist for it: the send path stores rows directly ("delivered by definition") and the rows travel between siblings under the FLEET key via the history sweep/live push, which both already serve the [our_pid, our_pid] conversation. Created settled (Complete + online, same shape as the manual add-friend self path); `settle_self_contacts` re-applies the settle on every reload. Idempotent by pid.
+    fn ensure_self_contact(&mut self) {
+        let (Some(session), Some(kp)) = (self.session.as_ref(), self.device_keypair.as_ref()) else {
+            return;
+        };
+        let our_pid = crate::crypto::clutch::identity_party_id(&session.identity_seed);
+        if self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == our_pid) {
+            return;
+        }
+        let device_pubkey = crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes());
+        let mut contact = crate::types::Contact::from_pin(
+            String::new(),
+            [0u8; 64],
+            session.handle_proof,
+            our_pid,
+            device_pubkey,
+        );
+        contact.clutch_state = crate::types::ClutchState::Complete;
+        contact.is_online = true; // notes-to-self is always reachable — no pong will ever flip it
+        crate::log("SELF: notes-to-self contact created (register-derived — no handle, no ceremony, no outgoing chain; rows ride the fleet key)");
+        self.contacts.push(contact);
+        if let (Some(c), Some(storage)) = (self.contacts.last(), self.storage.as_ref()) {
+            if let Err(e) = crate::storage::contacts::save_contact(c, storage) {
+                crate::logf!("SELF: failed to persist self-contact: {}", e);
+            }
+        }
+    }
+
     fn settle_self_contacts(&mut self) -> bool {
         let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
             return false;
