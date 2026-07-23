@@ -23,8 +23,8 @@ pub enum AppState {
     /// Settings / About / Help panel — the orb's real destination on Ready. Carries the currently-selected page so the render + layout know which page body to draw. STUB: every page + control renders, but no behaviour is wired.
     Settings(SettingsPage),
 
-    /// Per-contact panel — the orb's destination inside a Conversation (where it already wears the friend's avatar): what they've shared, the conversation in numbers (the sync-test instrument), and Boot. The active contact rides `active_contact`, same as Conversation; Back returns to the conversation.
-    ContactPanel,
+    /// Per-contact panel — the orb's destination inside a Conversation (where it already wears the friend's avatar). Mirrors the Settings screen exactly: same layout, nav rail with pages, scrolling content. Carries the selected page; the active contact rides `active_contact`, same as Conversation; the rail's pinned Back returns to the conversation.
+    ContactPanel(ContactPage),
 
     /// Active P2P conversation (legacy - may remove)
     Connected { peer_handle: String },
@@ -85,6 +85,31 @@ impl SettingsPage {
             SettingsPage::Updates => "Updates",
             SettingsPage::Diagnostics => "Diagnostics",
             SettingsPage::About => "About",
+        }
+    }
+}
+
+/// Pages of the per-contact panel — the Settings screen's structure, contact-scoped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContactPage {
+    /// Avatar + everything they've shared with us + identity/trust detail (pinned genesis, their fleet, the loud superseded/ended states).
+    About,
+    /// The conversation in numbers — counts, span, delivery, history/chain/connection state. These rows should CONVERGE across our fleet devices; divergence is a sync bug made visible.
+    Stats,
+    /// Actions on the relationship: Boot (remove + fleet-wide tombstone; ostracism, not erasure). Petname edit and friends land here later.
+    Manage,
+}
+
+impl ContactPage {
+    /// All pages in rail order.
+    pub const ALL: [ContactPage; 3] = [ContactPage::About, ContactPage::Stats, ContactPage::Manage];
+
+    /// Human-readable rail label for this page.
+    pub fn label(self) -> &'static str {
+        match self {
+            ContactPage::About => "About",
+            ContactPage::Stats => "Between you",
+            ContactPage::Manage => "Manage",
         }
     }
 }
