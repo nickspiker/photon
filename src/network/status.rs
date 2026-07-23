@@ -1681,6 +1681,49 @@ async fn run_checker(
                             );
                             continue;
                             }
+                            // ClutchOffer (~548KB) and ClutchKemResponse (~32KB) arriving as a WHOLE frame — this
+                            // is the RELAY-INJECTED path. Direct sends shard these through PT and parse them in
+                            // the PT-transfer-complete branch above, but a relayed message is injected as one
+                            // datagram tagged RELAY_ADDR, so it never touches PT and only clutch_complete was
+                            // parsed here — the offer + KEM were silently dropped, so the ceremony never got past
+                            // the offer over the relay (presence worked, but no KEM ever came back). Parse them
+                            // here too. The parsers verify the signature internally; the app's CLUTCH handler
+                            // gates action on fold-respecting knows_device. No packet-ack: unlike a PT-carried
+                            // frame, a relayed one isn't in a stop-and-wait queue awaiting one.
+                            if let Ok((payload, sender_pubkey, offer_provenance, conversation_token)) =
+                                crate::network::fgtw::protocol::parse_clutch_offer_vsf_without_recipient_check(msg_bytes)
+                            {
+                                crate::log("RELAY-INJECT: Received ClutchOffer (VSF verified)");
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::ClutchOfferReceived {
+                                        conversation_token,
+                                        offer_provenance,
+                                        sender_pubkey,
+                                        payload,
+                                        sender_addr: src_addr,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
+                                crate::network::fgtw::protocol::parse_clutch_kem_response_vsf_without_recipient_check(msg_bytes)
+                            {
+                                crate::log("RELAY-INJECT: Received ClutchKemResponse (VSF verified)");
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::ClutchKemResponseReceived {
+                                        conversation_token,
+                                        ceremony_id,
+                                        sender_pubkey,
+                                        payload,
+                                        sender_addr: src_addr,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
                             // History request (hist_req, ~200B — always rides this small-frame path). MUST packet-ack: it's sent via send_with_pubkey's reliable stop-and-wait queue; an un-acked type retransmits forever and head-of-line-blocks chat.
                             if let Ok((payload, sender_pubkey)) =
                                 crate::network::fgtw::protocol::parse_history_request_vsf(msg_bytes)
