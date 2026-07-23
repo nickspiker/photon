@@ -1300,21 +1300,23 @@ async fn run_checker(
         // This node's own reflexive (public) address, learned from peer-echoed reflection (pong `observed_addr` + `ReflectResponse`). Local to the long-lived receiver task; each adoption change is pushed to the app as `StatusUpdate::ReflexiveLearned`.
         let mut reflexive = crate::network::traverse::reflexive::ReflexiveState::new();
         loop {
-            // Take the next datagram from EITHER the real UDP socket OR the relay pipe. A pipe frame is
-            // copied into `buf` and handed `RELAY_ADDR` as its source, so everything below this line — the
-            // entire ~900-line dispatch — cannot tell a relayed message from a directly-received one, except
-            // that RELAY_ADDR tells the app to skip address-learning and mark reached_via_relay. This is the
-            // whole reason the pipe is one select! arm and not a parallel dispatch: presence, chat, acks and
-            // CLUTCH all reuse the proven receive path.
+            // Take the next datagram from EITHER the real UDP socket OR the relay pipe. A pipe frame is handed
+            // `RELAY_ADDR` as its source, so everything below this line — the entire ~900-line dispatch — cannot
+            // tell a relayed message from a directly-received one, except that RELAY_ADDR tells the app to skip
+            // address-learning and mark reached_via_relay. This is the whole reason the pipe is one select! arm
+            // and not a parallel dispatch: presence, chat, acks and CLUTCH all reuse the proven receive path.
+            // A UDP datagram lands in the fixed 64 KiB `buf`; an injected pipe frame is held in `injected_holder`
+            // (owned Vec) because it can be a whole ~548 KB CLUTCH offer — FAR larger than `buf`. Copying it into
+            // `buf` truncated it to 64 KiB and the offer never parsed ("Not enough data"), which is why the
+            // ceremony stalled over the relay: the offer was injected but chopped to 12% of itself. `msg_bytes`
+            // points at whichever holds this iteration's frame.
+            let mut injected_holder: Option<Vec<u8>> = None;
             let recv_result: std::io::Result<(usize, SocketAddr)> = tokio::select! {
                 r = socket_recv.recv_from(&mut buf) => r,
                 injected = inject_rx.recv() => match injected {
                     Some(bytes) => {
-                        let n = bytes.len().min(buf.len());
-                        if n < bytes.len() {
-                            crate::logf!("PIPE: injected frame {} > RX buf {} — truncated (should not happen; worker caps at 1 MiB)", bytes.len(), buf.len());
-                        }
-                        buf[..n].copy_from_slice(&bytes[..n]);
+                        let n = bytes.len();
+                        injected_holder = Some(bytes);
                         Ok((n, RELAY_ADDR))
                     }
                     None => {
@@ -1325,7 +1327,10 @@ async fn run_checker(
             };
             match recv_result {
                 Ok((len, src_addr)) => {
-                    let msg_bytes = &buf[..len];
+                    let msg_bytes: &[u8] = match &injected_holder {
+                        Some(v) => &v[..len],
+                        None => &buf[..len],
+                    };
 
                     // Check for PT DATA packets first (start with 'd') NOTE: Individual DATA packets not logged - only completion/failure
                     if is_pt_data(msg_bytes) {
