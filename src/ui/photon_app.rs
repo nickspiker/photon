@@ -848,6 +848,8 @@ pub struct PhotonApp {
     roster_pull_rx: Option<std::sync::mpsc::Receiver<Result<fgtw::fstate::FleetState, String>>>,
     /// The linked-settings cache (per-device maps + link-to-global; docs/global-vault.md). Lazily loaded from the vault once storage + device key exist; merged from every fstate pull; every local set persists + pushes.
     fleet_settings: Option<crate::storage::fleet_settings::FleetSettings>,
+    /// True once at least one fstate pull has MERGED this session — the "probe" half of avatar-pin probe-then-generate. `ensure_avatar_pin` must not MINT a fresh pin before this: a fresh/cleared device starts with empty local settings, so an early generate clobbers the fleet's real pin over LWW (both devices minting seconds apart = the "avatars don't sync" bug). Lookup of an already-present pin is always allowed; only generation waits.
+    fleet_state_pulled: bool,
     /// Set on each attest/resume: "do one roster pull as soon as the fleet key is available." The key is written by an ASYNC fan-out sync, so an immediate pull races it and loses — this flag makes tick fire the pull the moment `fleet_key_cached()` goes Some, which is the wake-up catch-up that brings a friend added on a sibling device onto this one.
     needs_initial_roster_pull: bool,
     /// Retry budget for the initial roster pull. A fresh device's pairing-recovered key is a PRE-rotation generation (adding a device rotates the fleet key via the fan-out re-key), so the first pull decrypts the current roster with a stale key and fails `aead::Error`. The in-flight `spawn_fleet_key_sync` writes the current key within ~150ms, so on a failed pull we re-arm `needs_initial_roster_pull` and retry — the pull's own ~150ms round-trip naturally spaces attempts, and this budget caps them so a genuinely-undecryptable roster gives up instead of spinning (next fleet event / relaunch re-tries).
@@ -1160,6 +1162,7 @@ impl PhotonApp {
             roster_pull_rx: None,
             fleet_settings: None,
             needs_initial_roster_pull: false,
+            fleet_state_pulled: false,
             last_peers: Vec::new(),
             roster_pull_retries_left: 0,
             device_avatar_pixels: None,
@@ -6220,6 +6223,9 @@ impl PhotonApp {
             Some(Ok(Ok(state))) => {
                 self.roster_pull_rx = None;
                 self.roster_pull_retries_left = 0;
+                // A pull LANDED — the avatar-pin probe is complete (even an empty result proves the fleet has no pin yet, so minting is now safe, not a clobber). Ungates ensure_avatar_pin's generate path.
+                let first_pull = !self.fleet_state_pulled;
+                self.fleet_state_pulled = true;
                 // Settings layers fold in first (global LWW + device newest-copy-wins); a change persists and takes effect on the next read of each key — a sibling's toggle lands here.
                 if self.ensure_fleet_settings() {
                     let changed = self
@@ -6242,6 +6248,10 @@ impl PhotonApp {
                         self.spawn_avatar_sync();
                         crate::log("SETTINGS: adopted fleet changes");
                     }
+                }
+                // First pull complete: NOW it's safe to ensure our avatar pin — either the fleet's real pin just merged in (we adopt it) or the fleet genuinely has none (we mint the first, no clobber). Doing this pre-pull was the "avatars don't sync" bug: every device minted its own before seeing the shared one.
+                if first_pull {
+                    self.publish_avatar_pin();
                 }
                 // Reconcile check BEFORE the merge consumes the pulled roster: do we hold contacts the slot lacks (added while a sibling was the last pusher, or pre-CRDT) or newer LWW stamps? Only then push back — an all-covered pull must NOT push, or the push's fstate event re-pulls every sibling in a ping-pong.
                 let our_pid = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
@@ -7626,11 +7636,15 @@ impl PhotonApp {
                 return Some(p);
             }
         }
+        // PROBE-THEN-generate: never mint before a fleet-state pull has landed. A fresh/cleared device's local settings are empty, so minting pre-pull clobbers the fleet's real pin over LWW (both devices minting seconds apart = "avatars don't sync"). Wait; the pull that lands calls publish_avatar_pin again, which either adopts the merged pin or mints safely once the probe proves the fleet has none.
+        if !self.fleet_state_pulled {
+            return None;
+        }
         use rand::RngCore;
         let mut pin = [0u8; 64];
         rand::thread_rng().fill_bytes(&mut pin);
         self.settings_set("profile.avatar_pin", pin.to_vec());
-        crate::log("AVATAR: generated a fresh random pin (fleet-synced)");
+        crate::log("AVATAR: generated a fresh random pin (fleet-synced) — post-pull, no clobber");
         Some(pin)
     }
 
@@ -9210,6 +9224,17 @@ impl PhotonApp {
         self.device_keypair
             .as_ref()
             .map(|kp| crate::crypto::clutch::sibling_party_id(kp.public.as_bytes()))
+    }
+
+    /// CLUTCH-gate trust for a `sender_pubkey` offering/KEMing/proving against the contact resolved by conversation-token. For a FRIEND that contact is asked `knows_device` (fold-respecting: first-met pre-fold, any current fleet member post-fold). For a SIBLING it's different in kind: a sibling contact only knows its OWN device, so `knows_device` on one sibling can NEVER recognize a DIFFERENT sibling's offer (the "untrusted/removed device — dropping" braid-in stall). The right question for a sibling target is "is the sender any device of OUR OWN fleet" — the sibling set is exactly our other devices, so accept a sender that is another of our siblings (or, defensively, our own device echoed back over the relay).
+    fn sender_trusted_for(&self, contact: &crate::types::Contact, sender_pubkey: &[u8; 32]) -> bool {
+        if contact.is_sibling {
+            let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+            our_device == Some(*sender_pubkey)
+                || self.contacts.iter().any(|c| c.is_sibling && c.public_identity.key == *sender_pubkey)
+        } else {
+            contact.knows_device(sender_pubkey)
+        }
     }
 
     /// OUR party id in a ceremony with `contact`: the identity PUBKEY for friends (the value they pin at first-met — never the seed, which must not travel or be stored anywhere but our own registers), the device-derived sibling pid for fleet siblings. Every slot lookup, conversation token, ceremony id, and chain index in a ceremony must use THIS, not `session.identity_seed` directly.
@@ -12722,10 +12747,9 @@ impl PhotonApp {
                         .contacts
                         .iter()
                         .find(|c| c.handle_hash == their_handle_hash)
-                        .map(|c| c.knows_device(&sender_pubkey));
+                        .map(|c| self.sender_trusted_for(c, &sender_pubkey));
                     match sender_known {
                         None => {
-                            #[cfg(feature = "development")]
                             #[cfg(feature = "development")]
                             crate::log("CLUTCH: Received offer from unknown contact");
                             continue;
@@ -13336,7 +13360,7 @@ impl PhotonApp {
                         .contacts
                         .iter()
                         .find(|c| c.handle_hash == their_handle_hash)
-                        .map(|c| c.knows_device(&sender_pubkey));
+                        .map(|c| self.sender_trusted_for(c, &sender_pubkey));
                     match sender_known {
                         None => {
                             #[cfg(feature = "development")]
@@ -13537,7 +13561,7 @@ impl PhotonApp {
                         .contacts
                         .iter()
                         .find(|c| c.handle_hash == their_handle_hash)
-                        .map(|c| c.knows_device(&sender_pubkey));
+                        .map(|c| self.sender_trusted_for(c, &sender_pubkey));
                     match sender_known {
                         None => {
                             #[cfg(feature = "development")]
