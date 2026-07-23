@@ -1827,6 +1827,7 @@ impl FluorApp for PhotonApp {
             12.,
             true,
         ));
+        // DEFAULTS OFF (user mandate): "presence" is the rich self-disclosure broadcast (busy, now-playing, mood) — NOT the online indicator, which is the avatar ring and is never gated by this. Deliberate disclosure is opt-in.
         self.settings_presence_check = Some(crate::ui::settings_widgets::Checkbox::new(
             &mut self.hit_counter,
             "Show my presence to contacts",
@@ -1835,7 +1836,7 @@ impl FluorApp for PhotonApp {
             1.,
             1.,
             12.,
-            true,
+            false,
         ));
         self.settings_autoupdate_check = Some(crate::ui::settings_widgets::Checkbox::new(
             &mut self.hit_counter,
