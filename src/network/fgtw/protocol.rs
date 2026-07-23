@@ -1215,6 +1215,7 @@ pub fn build_clutch_offer_vsf(
     payload: &ClutchOfferPayload,
     device_pubkey: &[u8; 32],
     device_secret: &[u8; 32],
+    send_time_osc: i64,
 ) -> Result<(Vec<u8>, [u8; 32]), String> {
     use vsf::VsfBuilder;
 
@@ -1239,8 +1240,9 @@ pub fn build_clutch_offer_vsf(
         ],
     );
 
+    // Stamp the PINNED send-time (Contact::clutch_round_started), NOT a fresh clock read — every re-send of this offer carries the identical time so the provenance is stable and the clutch never rotates.
     let unsigned = VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .creation_time_oscillations(send_time_osc)
         .signature_ed25519(*device_pubkey, [0u8; 64])
         .add_section_direct(section)
         .build()
@@ -1249,19 +1251,9 @@ pub fn build_clutch_offer_vsf(
     // Sign the file (computes file hash, signs it, patches ge)
     let signed = vsf::verification::sign_file(unsigned, device_secret)?;
 
-    // Compute offer_provenance from keys (deterministic, no timestamp) Hash all pubkeys in fixed order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
-    let offer_provenance = {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&payload.x25519_public);
-        hasher.update(&payload.p384_public);
-        hasher.update(&payload.secp256k1_public);
-        hasher.update(&payload.p256_public);
-        hasher.update(&payload.frodo976_public);
-        hasher.update(&payload.ntru701_public);
-        hasher.update(&payload.mceliece_public);
-        hasher.update(&payload.hqc256_public);
-        *hasher.finalize().as_bytes()
-    };
+    // TIME-based provenance (this party's device key + its pinned send-time), the shared helper the receiver mirrors from the offer's creation_time header. Restores the original design; the old key-based hash rotated the ceremony on every re-key.
+    let offer_provenance =
+        crate::crypto::clutch::clutch_offer_provenance(device_pubkey, send_time_osc);
 
     Ok((signed, offer_provenance))
 }
@@ -1393,19 +1385,10 @@ pub fn parse_clutch_offer_vsf(
         hqc256_public,
     };
 
-    // Compute offer_provenance from keys (deterministic, no timestamp) Hash all pubkeys in fixed order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
-    let offer_provenance = {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&payload.x25519_public);
-        hasher.update(&payload.p384_public);
-        hasher.update(&payload.secp256k1_public);
-        hasher.update(&payload.p256_public);
-        hasher.update(&payload.frodo976_public);
-        hasher.update(&payload.ntru701_public);
-        hasher.update(&payload.mceliece_public);
-        hasher.update(&payload.hqc256_public);
-        *hasher.finalize().as_bytes()
-    };
+    // TIME-based provenance: mirror the sender's build formula from the offer's creation_time header + its signer device key. Must match crate::crypto::clutch::clutch_offer_provenance exactly or the two sides derive different ceremony_ids.
+    let send_time_osc = extract_header_timestamp(&header)?;
+    let offer_provenance =
+        crate::crypto::clutch::clutch_offer_provenance(&sender_pubkey, send_time_osc);
 
     #[cfg(feature = "development")]
     {
@@ -1813,19 +1796,10 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
         hqc256_public,
     };
 
-    // Compute offer_provenance from keys (deterministic, no timestamp) Hash all pubkeys in fixed order: x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc
-    let offer_provenance = {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&payload.x25519_public);
-        hasher.update(&payload.p384_public);
-        hasher.update(&payload.secp256k1_public);
-        hasher.update(&payload.p256_public);
-        hasher.update(&payload.frodo976_public);
-        hasher.update(&payload.ntru701_public);
-        hasher.update(&payload.mceliece_public);
-        hasher.update(&payload.hqc256_public);
-        *hasher.finalize().as_bytes()
-    };
+    // TIME-based provenance: mirror the sender's build formula from the offer's creation_time header + its signer device key. Must match crate::crypto::clutch::clutch_offer_provenance exactly or the two sides derive different ceremony_ids.
+    let send_time_osc = extract_header_timestamp(&header)?;
+    let offer_provenance =
+        crate::crypto::clutch::clutch_offer_provenance(&sender_pubkey, send_time_osc);
 
     #[cfg(feature = "development")]
     crate::logf!("CLUTCH: Parsed offer (no recipient check) HQC pub[..8]={} provenance={}...", // `.min(8)` guards a short field so a truncated/forged public key can't panic the receiver (offer_provenance is a fixed [u8;32], so its slice is always in-bounds).
