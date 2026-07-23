@@ -1645,15 +1645,17 @@ async fn run_checker(
                     {
                         use crate::network::fgtw::protocol::parse_clutch_complete_vsf_without_recipient_check;
 
-                        // Contact-allowlist gate BEFORE the ~500KB CLUTCH parse, parity with the TCP/PT branches (which had a gate; this UDP-direct path had none, so it adopted — and even acked — a CLUTCH proof from any pubkey). The signer is a cheap header extraction, so reject untrusted senders before parsing. A non-contact (or a non-signed frame) falls thru to the general message path below; this branch is opportunistic for small direct UDP CLUTCH.
-                        let signer_known = vsf::verification::extract_signer_pubkey(msg_bytes)
-                            .map(|signer| {
-                                let sender = DevicePubkey::from_bytes(signer);
-                                let contact_list = contacts_recv.lock().unwrap();
-                                contact_list.iter().any(|p| *p == sender)
-                            })
-                            .unwrap_or(false);
-                        if signer_known {
+                        // ClutchComplete (the proof) is ~300 bytes and its parser verifies the whole-file
+                        // signature internally, so parse it UNCONDITIONALLY — no contact-allowlist pre-gate.
+                        // The old gate keyed on `contacts_recv`, which is a race for a freshly-reconciled
+                        // SIBLING device: its key isn't in the allowlist the instant its proof arrives, so the
+                        // proof fell thru to FgtwMessage::from_vsf_bytes — which does NOT handle clutch_* and
+                        // emitted "Parse error: got 'clutch_complete'", dropping the proof. The sender then
+                        // retransmitted 5× and gave up, and the sibling weave sat "pending" forever. The gate
+                        // was a DoS pre-filter meant for the ~500KB offer (which arrives via PT, not here), so
+                        // it bought nothing on a 300-byte frame while breaking sibling completion. Trust is
+                        // still applied downstream: the app's CLUTCH handler gates on fold-respecting knows_device.
+                        {
                             if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
                                 parse_clutch_complete_vsf_without_recipient_check(msg_bytes)
                             {

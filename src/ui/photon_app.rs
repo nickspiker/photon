@@ -11218,8 +11218,16 @@ impl PhotonApp {
                             // endpoint would poison direct sends, and a relayed pong carries no reachable address
                             // anyway). A direct pong clears the flag: a real UDP path always wins over the relay.
                             let via_relay = peer_addr == Some(crate::network::status::RELAY_ADDR);
+                            // An UNSPECIFIED address (0.0.0.0 / ::) is never a reachable peer endpoint — it's the
+                            // relay sentinel, OR a pong whose observed_addr echo is our own not-yet-learned
+                            // reflexive (a sibling on a fresh device pongs back the 0.0.0.0 it saw). Adopting it as
+                            // the contact's `ip` sends the next CLUTCH offer to 0.0.0.0 (a black hole), which is
+                            // exactly why a freshly-paired sibling's weave never completes — the offer is fired at
+                            // nowhere. Treat it like a relayed pong: proves liveness, carries no address to learn.
+                            let addr_unspecified = peer_addr.map_or(false, |a| a.ip().is_unspecified());
+                            let learn_addr = !via_relay && !addr_unspecified;
                             // PER-DEVICE addressing: a DIRECT pong updates the SENDING device's endpoint (public/LAN split by source privacy), and only the ACTIVE device's pong may move the contact-level `ip`/`local_*` slot. A friend's other devices each keep their own endpoint — the old any-device-writes-the-one-slot rule made three-device fleets flip-flop the slot every cycle, which broke presence (pings chased the last ponger) AND cancelled mid-flight CLUTCH offer transfers ("address changed — cancelling"). First pong with no active device adopts the sender (bootstrap); inbound DATA (chat/CLUTCH) re-elects it (the device in their hand).
-                            if let Some(addr) = peer_addr.filter(|_| !via_relay) {
+                            if let Some(addr) = peer_addr.filter(|_| learn_addr) {
                                 let private = is_private_addr(&addr.ip());
                                 {
                                     let ep = contact.endpoint_mut(&peer_pubkey.key);
