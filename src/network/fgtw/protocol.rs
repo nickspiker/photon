@@ -1,7 +1,6 @@
 use crate::types::DevicePubkey;
 use std::net::{IpAddr, SocketAddr};
 use vsf::schema::FromVsfType;
-use vsf::types::Vector;
 use vsf::VsfType;
 
 /// FGTW protocol messages (VSF serialized)
