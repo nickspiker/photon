@@ -53,6 +53,23 @@ echo "Dozenal version: $DOZENAL_VERSION"
 # Allow release builds (bypasses build.rs safety check)
 export PHOTON_ALLOW_RELEASE=1
 
+R2_BUCKET="holdmyoscilloscope"
+R2_PATH="photon"
+R2_URL="https://brobdingnagian.holdmyoscilloscope.com/$R2_PATH"
+
+# ════════════════════════════════════════════════════════════════════════════════════════════════════
+# BUILD PHASE — produce + sign every artefact AND the signed manifest. NOTHING is public yet.
+# A failure anywhere in here aborts (set -e / the ERR trap rolls back the release commit) BEFORE the first
+# wrangler put, so a half-built release can never reach R2 (some platforms new, others stale, manifest
+# pointing at absent binaries). The old order built the manifest tool + manifest AFTER the uploads, so a
+# manifest-build failure stranded already-public binaries with no matching manifest — that's what this fixes.
+# ════════════════════════════════════════════════════════════════════════════════════════════════════
+
+# The two release TOOLS first — a failure to build the signer or the manifest tool must abort before any
+# platform binary is even built, let alone uploaded.
+echo "Building release tools (signer + manifest)..."
+cargo build --release --bin photon-signature-signer --bin photon-manifest
+
 # Build and sign Linux x86_64 (native)
 ./build-release.sh
 
@@ -110,17 +127,40 @@ echo ""
 echo "Signing macOS ARM64 binary..."
 ./target/release/photon-signature-signer target/aarch64-apple-darwin/release/photon-messenger
 
-# Build Android APK (build-only; this script does its own R2 upload below)
+# Build Android APK
 echo ""
 echo "Building Android release..."
 ./scripts/android/build.sh
 
-# R2 bucket for releases (flat structure with release type in filename)
-R2_BUCKET="holdmyoscilloscope"
-R2_PATH="photon"
-
-# Get Windows SHA256 for install script
+# Every binary exists + is signed. Read the Windows hash (for the .ps1 installer) and BUILD the signed
+# manifest now — it only reads local files + hashes them, so it belongs in the build phase. Publishing it is
+# the last upload in the publish phase, so a running client never sees a manifest whose binaries aren't up yet.
 WINDOWS_SHA256=$(cat target/x86_64-pc-windows-gnu/release/photon-messenger.exe.sha256)
+
+echo ""
+echo "Building signed release manifest..."
+MANIFEST_TOOL=target/release/photon-manifest
+b3() { b3sum "$1" | cut -d' ' -f1; }
+COMMIT=$(git rev-parse HEAD)
+"$MANIFEST_TOOL" --channel release --out /tmp/manifest-release.vsf \
+    --artefact Linux   x86_64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-linux-x86_64-release"  "$(b3 target/release/photon-messenger)" "$(stat -c %s target/release/photon-messenger)" \
+    --artefact Linux   arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-linux-arm64-release"   "$(b3 target/aarch64-unknown-linux-gnu/release/photon-messenger)" "$(stat -c %s target/aarch64-unknown-linux-gnu/release/photon-messenger)" \
+    --artefact Windows x86_64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-windows-release.exe"   "$(b3 target/x86_64-pc-windows-gnu/release/photon-messenger.exe)" "$(stat -c %s target/x86_64-pc-windows-gnu/release/photon-messenger.exe)" \
+    --artefact macOS   x86_64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-macos-intel-release"   "$(b3 target/x86_64-apple-darwin/release/photon-messenger)" "$(stat -c %s target/x86_64-apple-darwin/release/photon-messenger)" \
+    --artefact macOS   arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-macos-arm64-release"   "$(b3 target/aarch64-apple-darwin/release/photon-messenger)" "$(stat -c %s target/aarch64-apple-darwin/release/photon-messenger)" \
+    --artefact Android arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-android-release.apk"   "$(b3 android/app/build/outputs/apk/release/app-release.apk)" "$(stat -c %s android/app/build/outputs/apk/release/app-release.apk)"
+
+# Patch the Windows installer with the correct hash NOW (a build-phase transform, no upload).
+sed "s/\$expectedHash = \"[A-F0-9]*\"/\$expectedHash = \"$WINDOWS_SHA256\"/" installers/install-release.ps1 > /tmp/install-release.ps1
+
+echo ""
+echo "BUILD PHASE complete — all 7 platforms + signed manifest built. Nothing public yet."
+
+# ════════════════════════════════════════════════════════════════════════════════════════════════════
+# PUBLISH PHASE — everything below goes OUTWARD. Every artefact already exists locally, so the uploads are
+# the first irreversible outward step. (The GitHub mirror / website / notice further down are best-effort
+# once R2 is live, as noted at each.)
+# ════════════════════════════════════════════════════════════════════════════════════════════════════
 
 echo ""
 echo "Uploading to R2 ($R2_BUCKET/$R2_PATH)..."
@@ -149,33 +189,16 @@ wrangler r2 object put "$R2_BUCKET/$R2_PATH/icon-1024.png" \
     --file assets/icon-1024.png --content-type image/png --remote
 wrangler r2 object put "$R2_BUCKET/$R2_PATH/app.png" \
     --file assets/icon-256.png --content-type image/png --remote
-
-# Patch and upload install-release.ps1 with correct hash
-sed "s/\$expectedHash = \"[A-F0-9]*\"/\$expectedHash = \"$WINDOWS_SHA256\"/" installers/install-release.ps1 > /tmp/install-release.ps1
 wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-release.ps1" \
     --file /tmp/install-release.ps1 --content-type text/plain --remote
 
-echo ""
-echo "Linux ARM64, Linux x86_64, Windows, Redox, macOS Intel, macOS ARM64, Android binaries deployed to R2"
-
-# ── Signed update manifest (docs/updates.md): one signed VSF, every platform row, so running clients see this release + one-click update to it. Built with the SAME release key as the binaries. ──
-echo ""
-echo "Building signed release manifest..."
-cargo build --release --bin photon-manifest
-MANIFEST_TOOL=target/release/photon-manifest
-R2_URL="https://brobdingnagian.holdmyoscilloscope.com/$R2_PATH"
-b3() { b3sum "$1" | cut -d' ' -f1; }
-COMMIT=$(git rev-parse HEAD)
-"$MANIFEST_TOOL" --channel release --out /tmp/manifest-release.vsf \
-    --artefact Linux   x86_64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-linux-x86_64-release"  "$(b3 target/release/photon-messenger)" "$(stat -c %s target/release/photon-messenger)" \
-    --artefact Linux   arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-linux-arm64-release"   "$(b3 target/aarch64-unknown-linux-gnu/release/photon-messenger)" "$(stat -c %s target/aarch64-unknown-linux-gnu/release/photon-messenger)" \
-    --artefact Windows x86_64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-windows-release.exe"   "$(b3 target/x86_64-pc-windows-gnu/release/photon-messenger.exe)" "$(stat -c %s target/x86_64-pc-windows-gnu/release/photon-messenger.exe)" \
-    --artefact macOS   x86_64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-macos-intel-release"   "$(b3 target/x86_64-apple-darwin/release/photon-messenger)" "$(stat -c %s target/x86_64-apple-darwin/release/photon-messenger)" \
-    --artefact macOS   arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-macos-arm64-release"   "$(b3 target/aarch64-apple-darwin/release/photon-messenger)" "$(stat -c %s target/aarch64-apple-darwin/release/photon-messenger)" \
-    --artefact Android arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-android-release.apk"   "$(b3 android/app/build/outputs/apk/release/app-release.apk)" "$(stat -c %s android/app/build/outputs/apk/release/app-release.apk)"
+# Manifest LAST: publish it only after every binary it references is live, so a client that polls the fresh
+# manifest never fetches a URL that isn't up yet.
 wrangler r2 object put "$R2_BUCKET/$R2_PATH/manifest-release.vsf" \
     --file /tmp/manifest-release.vsf --content-type application/octet-stream --remote
-echo "Release manifest published."
+
+echo ""
+echo "Linux ARM64, Linux x86_64, Windows, Redox, macOS Intel, macOS ARM64, Android binaries + manifest deployed to R2"
 echo "  Windows SHA256: $WINDOWS_SHA256"
 
 # Mirror the identical signed artefacts to a GitHub Release `v<n>` (redundant fallback behind R2).
