@@ -64,3 +64,5 @@ ios/**/.generated/
 
 # Stray dev artifacts
 /rust_out
+android log.txt
+*.vsf
