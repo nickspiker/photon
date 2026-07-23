@@ -59,7 +59,7 @@ The 30 s UDP ping treadmill (presence + NAT-binding warmth today) is the expensi
 
 So it splits exactly by device power-state:
 
-- **Always-scheduled devices** (desktop / laptop — peer-B, the ring/NDK tier): no Doze, socket stays open, 10-min keepalive is trivial. **TCP-keepalive is the complete answer here — no doorbell, no FCM, ever.**
+- **Always-scheduled devices** (desktop / laptop, the ring/NDK tier): no Doze, socket stays open, 10-min keepalive is trivial. **TCP-keepalive is the complete answer here — no doorbell, no FCM, ever.**
 - **Android, backgrounded-but-warm** (recent use, charging, screen-off-but-not-deep): TCP-keepalive on the foreground service works well and is meaningfully cheaper than the 30 s UDP treadmill.
 - **Android, deep Doze** (pocket, screen off 30+ min, aggressive OEM): the socket idles, the keepalive misses, the process won't wake. **This — and only this — is what FCM rescues.** TCP does not reach it.
 

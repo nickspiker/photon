@@ -1,13 +1,13 @@
 # Background tick — advancing the protocol while the screen is off
 
-> Status: **IMPLEMENTED 2026-07-08** (Pixel 8 Pro + peer-B desktop). Verified: with the app backgrounded and screen on, `Status: pinged` and the full protocol drain keep firing on cadence — before the fix they stopped dead at `onPause`.
+> Status: **IMPLEMENTED** (Android phone + desktop). Verified: with the app backgrounded and screen on, `Status: pinged` and the full protocol drain keep firing on cadence — before the fix they stopped dead at `onPause`.
 > This is the near-term, no-FCM half of the reachability story; the FCM/wake-from-deep-Doze half is [reachability-doorbell.md](reachability-doorbell.md).
 
 ## The symptom
 
 Observed: "the phone doesn't complete CLUTCH until it's on and being stared at," plus a burst of duplicate ACKs when it finally wakes.
 
-The duplicate-ACK burst is **not a bug** — traced end-to-end in the logs, it is the sender (peer-B) correctly retransmitting an un-ACKed message on its exponential backoff (attempts 2–6 at +1s/+2s/+4s/+8s/+16s over 31s) while the phone was unreachable, then all six retransmits landing at once when the phone foregrounded and each being faithfully re-ACKed by the self-heal path (commit `5bcf2bd`). The mechanism works. The *reason the phone was unreachable for 31s* is the real bug, and it is the same one behind "won't complete CLUTCH until stared at."
+The duplicate-ACK burst is **not a bug** — traced end-to-end in the logs, it is the sender (the desktop peer) correctly retransmitting an un-ACKed message on its exponential backoff (attempts 2–6 at +1s/+2s/+4s/+8s/+16s over 31s) while the phone was unreachable, then all six retransmits landing at once when the phone foregrounded and each being faithfully re-ACKed by the self-heal path (commit `5bcf2bd`). The mechanism works. The *reason the phone was unreachable for 31s* is the real bug, and it is the same one behind "won't complete CLUTCH until stared at."
 
 ## The one physical fact
 
