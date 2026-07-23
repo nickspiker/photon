@@ -801,6 +801,18 @@ impl FgtwMessage {
             });
         }
 
+        // clutch_* sections are NOT parsed here — they have dedicated parsers (parse_clutch_offer /
+        // _kem_response / _complete) the receive loop tries directly. If one reaches this general parser it
+        // means an upstream branch didn't claim it; say so plainly instead of the misleading "unexpected
+        // section" error, which read as corruption when it was really just mis-routing (a sibling's
+        // clutch_complete proof falling thru the recv dispatch — the bug that stalled fleet weaves).
+        if section_name.starts_with("clutch_") {
+            return Err(format!(
+                "{} is parsed by its dedicated parser, not FgtwMessage::from_vsf_bytes (recv-dispatch mis-route)",
+                section_name
+            ));
+        }
+
         // Original fgtw section handling
         if section_name != "fgtw" {
             return Err(format!(
