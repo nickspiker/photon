@@ -12978,6 +12978,8 @@ impl PhotonApp {
                                 .get_slot(&their_handle_hash)
                                 .and_then(|slot| slot.offer.as_ref())
                                 .map(|o| o.hqc256_public.clone());
+                            // PRE-ARRIVAL snapshot for the AwaitingProof branch far below: the fallthrough between here and there STORES this arrival's offer into the slot, so a late re-read compares the offer to ITSELF (always "same keys") — which is exactly how the AwaitingProof wedge ate fresh offers forever.
+                            let pre_arrival_hqc = stored_hqc_pub.clone();
 
                             if let Some(stored_keys) = stored_hqc_pub {
                                 if stored_keys == their_offer.hqc256_public {
@@ -13374,37 +13376,33 @@ impl PhotonApp {
                                         rekey_request =
                                             Some((contact.id.clone(), contact.handle_hash));
                                     } else if contact.clutch_state == ClutchState::AwaitingProof {
-                                        // We're waiting for their proof, but they sent an offer. Check if same keys (retransmit) or different (peer reset)
-                                        let their_slot = contact.get_slot(&their_handle_hash);
-                                        let stored_hqc = their_slot
-                                            .and_then(|s| s.offer.as_ref())
-                                            .map(|o| &o.hqc256_public);
-                                        let is_same_keys = stored_hqc
-                                            .map(|h| h == &their_offer.hqc256_public)
+                                        // We're waiting for their proof, but they sent an offer. Retransmit-vs-fresh MUST be judged against the PRE-ARRIVAL keys: the fallthrough above already stored this arrival's offer in the slot, so the old slot re-read here compared the offer to ITSELF — every offer (fresh keys included) logged "Ignoring retransmit" and the reset recovery below was unreachable dead code. That plus the give-up latch (proof destroyed at the lifetime cap) was the esme↔zeno permanent wedge.
+                                        let is_same_keys = pre_arrival_hqc
+                                            .as_ref()
+                                            .map(|h| *h == their_offer.hqc256_public)
                                             .unwrap_or(false);
-
-                                        if is_same_keys {
-                                            crate::logf!("CLUTCH: Ignoring retransmit from {} (already AwaitingProof)", crate::fp(&contact.handle_proof));
+                                        // Zombie gate: no keypairs (this branch) AND no proof left to send (gave up / budget drained / lost at resume) = this round can never conclude on our side, and the peer still offering means theirs can't either. Any offer — same keys or fresh — is the exit ramp.
+                                        let unrecoverable = contact.clutch_our_eggs_proof.is_none()
+                                            && contact.clutch_proof_resends_left == 0;
+                                        if is_same_keys && !unrecoverable {
+                                            crate::logf!("CLUTCH: Ignoring retransmit from {} (already AwaitingProof, proof still in flight)", crate::fp(&contact.handle_proof));
                                             break;
                                         }
-
-                                        // Different keys = peer reset. Clear their slot and reset to Pending.
-                                        crate::logf!("CLUTCH: Peer {} reset while we were AwaitingProof - resetting", crate::fp(&contact.handle_proof));
+                                        crate::logf!("CLUTCH: {} offered while we're AwaitingProof {} — discarding the wedged round and adopting their offer", crate::fp(&contact.handle_proof), if is_same_keys { "and we hold no proof to send" } else { "with fresh keys (peer reset)" });
+                                        contact.discard_clutch_round();
+                                        contact.clutch_proof_retry_lifetime = 0;
+                                        contact.clutch_proof_gave_up = false;
+                                        contact.init_clutch_slots(our_handle_hash);
                                         if let Some(slot) = contact.get_slot_mut(&their_handle_hash)
                                         {
-                                            slot.offer = None;
-                                            slot.kem_secrets_from_them = None;
+                                            slot.offer = Some(their_offer.clone());
                                         }
-                                        contact.clutch_state = ClutchState::Pending;
-                                        contact.clutch_offer_sent = false;
-                                        contact.ceremony_id = None;
-                                        contact.clutch_our_eggs_proof = None;
-                                        contact.clutch_their_eggs_proof = None;
-                                        // Remove their old provenance (keep ours)
-                                        contact
-                                            .offer_provenances
-                                            .retain(|p| p != &offer_provenance);
-                                        // Fall thru - normal flow will store new offer and trigger keygen
+                                        if !contact.offer_provenances.contains(&offer_provenance) {
+                                            contact.offer_provenances.push(offer_provenance);
+                                        }
+                                        contact.clutch_keygen_in_progress = true;
+                                        rekey_request =
+                                            Some((contact.id.clone(), contact.handle_hash));
                                     } else {
                                         crate::logf!("CLUTCH: Received offer from {} but no keypairs (state={}) - triggering keygen", crate::fp(&contact.handle_proof), format!("{:?}", contact.clutch_state));
                                         contact.clutch_keygen_in_progress = true;
