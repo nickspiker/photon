@@ -6125,6 +6125,8 @@ impl PhotonApp {
             .unwrap_or_default();
         if !member_updates.is_empty() {
             let our_hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
+            let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+            let siblings = sibling_presence_snapshot(&self.contacts);
             let mut changed = false;
             let mut to_persist: Vec<usize> = Vec::new();
             for (hp, members, tip_ts, genesis, existed) in member_updates {
@@ -6190,8 +6192,13 @@ impl PhotonApp {
                     }
                     // Fold-race self-heal: a peer's NEW device can drive the ceremony before we folded it — its CLUTCH SPEC was rejected as "not in contacts", and it gives up before our fold lands. Now that the fold makes that sibling answerable, re-arm our offer so the ceremony re-fires to it (prompting its KEM, which the PT gate now accepts). Only for an unfinished ceremony that grew a member — never disturb a Complete one.
                     if grew && c.clutch_state != crate::types::ClutchState::Complete {
-                        c.clutch_offer_sent = false;
-                        crate::logf!("CLUTCH: {} fleet grew mid-ceremony — re-arming offer to reach the folded device", crate::fp(&hp));
+                        // §4.2: only the ceremony owner re-arms — a parked sibling re-arming here would revive its competing round.
+                        if ceremony_parked_by(c, our_device, &siblings) {
+                            crate::logf!("CLUTCH: {} fleet grew but ceremony is parked — owner re-arms, not us", crate::fp(&hp));
+                        } else {
+                            c.clutch_offer_sent = false;
+                            crate::logf!("CLUTCH: {} fleet grew mid-ceremony — re-arming offer to reach the folded device", crate::fp(&hp));
+                        }
                     }
                 }
             }
@@ -7185,6 +7192,7 @@ impl PhotonApp {
         let mut added = 0usize;
         let mut adopted = 0usize;
         let mut removed = 0usize;
+        let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
         for e in entries {
             // Match FRIEND contacts only — sibling contacts carry OUR handle_proof and must not suppress a roster entry (nor be treated as its holder).
             if let Some(pos) = self
@@ -7234,7 +7242,22 @@ impl PhotonApp {
                     c.avatar_pin_dirty = true; // post-drain sweep persists the index + refetches the avatar
                 }
                 // §4.2 claim + the owner's completion, newest entry wins (same LWW as the fields above).
-                c.ceremony_owner = (e.ceremony_owner != [0u8; 32]).then_some(e.ceremony_owner);
+                let new_owner = (e.ceremony_owner != [0u8; 32]).then_some(e.ceremony_owner);
+                // DISCARD-ON-PARK (fleet-sync.md §4.2: "a sibling DISCARDS its own parked offer toward the friend"): another device now owns this friendship's ceremony, so any round WE hold must die here — otherwise its keypairs/offer keep re-sending and the friend receives COMPETING ceremony instances (the "unknown conversation_token" stall). Also the takeover-LOSER path: a newer LWW claim only reaches this arm past the e.updated gate above. Never bumps roster_updated / never pushes — the winner's entry must stay newest.
+                let owner_is_other = matches!(new_owner, Some(o) if Some(o) != our_device);
+                let holds_round = c.clutch_our_keypairs.is_some()
+                    || c.clutch_offer_sent
+                    || !c.clutch_slots.is_empty()
+                    || c.ceremony_id.is_some();
+                if owner_is_other && c.clutch_state != crate::types::ClutchState::Complete && holds_round {
+                    crate::logf!(
+                        "CLUTCH §4.2: discarding parked round for {} — ceremony owner is {}",
+                        crate::fp(&c.handle_proof).as_str(),
+                        hex::encode(&e.ceremony_owner[..4])
+                    );
+                    c.discard_clutch_round();
+                }
+                c.ceremony_owner = new_owner;
                 c.owner_woven = e.woven;
                 c.roster_updated = e.updated;
                 if let Some(storage) = self.storage.as_ref() {
@@ -7252,7 +7275,7 @@ impl PhotonApp {
             let mut contact = crate::types::Contact::from_pin(e.name.clone(), e.avatar_pin, e.handle_proof, e.handle_hash, device_pubkey);
             contact.added = e.added;
             contact.roster_updated = e.updated;
-            // §4.2: the entry names the fleet device running this friendship's ceremony — adopt the claim so THIS device parks instead of racing its own round at the friend.
+            // §4.2: the entry names the fleet device running this friendship's ceremony — adopt the claim so THIS device parks instead of racing its own round at the friend. No discard hook needed here: a fresh from_pin contact holds no round state.
             contact.ceremony_owner = (e.ceremony_owner != [0u8; 32]).then_some(e.ceremony_owner);
             contact.owner_woven = e.woven;
             self.contacts.push(contact);
@@ -9211,6 +9234,12 @@ impl PhotonApp {
             .map(|kp| crate::crypto::clutch::sibling_party_id(kp.public.as_bytes()))
     }
 
+    /// `&self` convenience over [`ceremony_parked_by`] for sites that aren't mid-mutable-walk.
+    fn ceremony_parked(&self, c: &crate::types::Contact) -> bool {
+        let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+        ceremony_parked_by(c, our_device, &sibling_presence_snapshot(&self.contacts))
+    }
+
     /// CLUTCH-gate trust for a `sender_pubkey` offering/KEMing/proving against the contact resolved by conversation-token. For a FRIEND that contact is asked `knows_device` (fold-respecting: first-met pre-fold, any current fleet member post-fold). For a SIBLING it's different in kind: a sibling contact only knows its OWN device, so `knows_device` on one sibling can NEVER recognize a DIFFERENT sibling's offer (the "untrusted/removed device — dropping" braid-in stall). The right question for a sibling target is "is the sender any device of OUR OWN fleet" — the sibling set is exactly our other devices, so accept a sender that is another of our siblings (or, defensively, our own device echoed back over the relay).
     fn sender_trusted_for(&self, contact: &crate::types::Contact, sender_pubkey: &[u8; 32]) -> bool {
         if contact.is_sibling {
@@ -9274,45 +9303,44 @@ impl PhotonApp {
         let now = vsf::eagle_time_oscillations();
         const ROUND_TTL_OSC: i64 = 300 * vsf::OSCILLATIONS_PER_SECOND as i64; // 5 min: a relay ceremony (offer+KEM+proof, each a 5-30s store-and-forward hop) can run 1-2 min, and the round's keys must stay valid the whole time
         let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
-        // §4.2 one-CLUTCH-per-friendship: a friend claimed by ANOTHER of our devices PARKS here while that device is present — its ceremony is the fleet's ceremony. An ABSENT owner (died mid-weave) is presence-driven takeover: the contact re-enters the queue and the pickup below re-claims it. Sibling weaves are per-device-pair by design — never parked.
-        let parked = |c: &crate::types::Contact| -> bool {
-            if c.is_sibling {
-                return false;
-            }
-            match c.ceremony_owner {
-                Some(owner) if Some(owner) != our_device => self
-                    .contacts
-                    .iter()
-                    .any(|s| s.is_sibling && s.public_identity.key == owner && s.is_online),
-                _ => false,
-            }
-        };
+        // §4.2 one-CLUTCH-per-friendship: a friend claimed by ANOTHER of our devices PARKS here — its ceremony is the fleet's ceremony (see ceremony_parked_by for the full rules incl. the woven guard and the probed-before-takeover boot-race fix). An owner that is PROBED-offline is presence-driven takeover: the contact re-enters the queue and the pickup below re-claims it. Sibling weaves are per-device-pair by design — never parked.
+        let siblings = sibling_presence_snapshot(&self.contacts);
         let next_idx = self.contacts.iter().position(|c| {
             c.handle_hash != our_seed
                 && c.clutch_state == crate::types::ClutchState::Pending
                 && c.clutch_our_keypairs.is_none()
                 && !c.clutch_keygen_in_progress
                 && c.clutch_round_started.map_or(true, |t| now - t >= ROUND_TTL_OSC)
-                && !parked(c)
+                && !ceremony_parked_by(c, our_device, &siblings)
         });
         if let Some(i) = next_idx {
             // Party id per contact: identity seed for friends, device-derived pid for fleet siblings.
             let Some(our_pid) = self.our_party_id(&self.contacts[i]) else {
                 return false;
             };
-            // Claim on pickup (unclaimed legacy contact, or takeover from an absent owner): the claim rides the next roster push so siblings park. LWW settles simultaneous claims; the loser's round dies parked.
+            // Claim on pickup (unclaimed legacy contact, or takeover from a probed-absent owner): the claim rides the next roster push so siblings park + discard. LWW settles simultaneous claims; the loser adopts the winner's entry, discards its round, and parks.
             if !self.contacts[i].is_sibling {
                 if let Some(ours) = our_device {
                     if self.contacts[i].ceremony_owner != Some(ours) {
-                        let taking_over = self.contacts[i].ceremony_owner.is_some();
+                        // Belt-and-braces: never take over a WOVEN friendship even if a caller reaches here with one (ceremony_parked_by already excludes them) — the chain lives on the owner and a re-clutch clobbers the friend's side.
+                        if self.contacts[i].ceremony_owner.is_some() && self.contacts[i].owner_woven {
+                            return false;
+                        }
+                        let old_owner = self.contacts[i].ceremony_owner;
                         let c = &mut self.contacts[i];
                         c.ceremony_owner = Some(ours);
                         c.roster_updated = now;
-                        crate::logf!(
-                            "CLUTCH: {} this friendship's ceremony ({})",
-                            if taking_over { "taking over" } else { "claiming" },
-                            crate::fp(&c.handle_proof).as_str()
-                        );
+                        match old_owner {
+                            Some(prev) => crate::logf!(
+                                "CLUTCH: taking over this friendship's ceremony from absent owner {} ({})",
+                                hex::encode(&prev[..4]),
+                                crate::fp(&c.handle_proof).as_str()
+                            ),
+                            None => crate::logf!(
+                                "CLUTCH: claiming this friendship's ceremony ({})",
+                                crate::fp(&c.handle_proof).as_str()
+                            ),
+                        }
                         if let Some(storage) = self.storage.as_ref() {
                             let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
                         }
@@ -9812,6 +9840,7 @@ impl PhotonApp {
             let result_id_hex = hex::encode(&result.contact_id.as_bytes()[..4]);
             crate::logf!("CLUTCH: Processing keygen result for contact_id {}...", result_id_hex);
 
+            let siblings = sibling_presence_snapshot(&self.contacts);
             let mut found = false;
             for (idx, contact) in self.contacts.iter_mut().enumerate() {
                 if contact.id == result.contact_id {
@@ -9826,6 +9855,14 @@ impl PhotonApp {
 
                     // Clear the in-progress flag now that keygen is complete
                     contact.clutch_keygen_in_progress = false;
+
+                    // §4.2: a claim landed while keygen was running (roster merge parked this contact mid-flight) — installing the result would resurrect the parked round and re-send a competing offer. Drop it on the floor.
+                    if ceremony_parked_by(contact, Some(device_pubkey), &siblings) {
+                        crate::logf!("CLUTCH §4.2: dropping keygen result for {} — round was parked while keygen ran", crate::fp(&contact.handle_proof));
+                        contact.discard_clutch_round();
+                        changed = true;
+                        break;
+                    }
 
                     // Store keypairs (ceremony_id computed on-demand when provenances available)
                     contact.clutch_our_keypairs = Some(result.keypairs);
@@ -10592,6 +10629,8 @@ impl PhotonApp {
         // address and punches at once, instead of the other side punching into a peer that never
         // punches back.
         let mut any_addr_changed = false;
+        let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+        let siblings = sibling_presence_snapshot(&self.contacts);
         for peer in peers {
             // Seed the per-device endpoint for EVERY matching device row — this is how a friend's OTHER fleet devices become individually pingable (the pong path only updates a device we already ping).
             for contact in self.contacts.iter_mut() {
@@ -10631,6 +10670,7 @@ impl PhotonApp {
                         && contact.validated_path.is_some()
                         && contact.clutch_offer_sent
                         && contact.clutch_state == crate::types::ClutchState::Pending
+                        && !ceremony_parked_by(contact, our_device, &siblings)
                     {
                         if let Some(stale) = old_ip {
                             stale_addrs.push(stale);
@@ -10820,6 +10860,8 @@ impl PhotonApp {
         // Expire stale validated paths (no keepalive ack within TTL → the NAT mapping is likely dead): clear so `race_addrs` falls back to LAN/public and this cycle re-punches. Track the symmetric↔symmetric case: an online contact we keep punching but never validate is direct-unreachable — bump the graceful-failure counter (the hook M2's relay reads) and log the state once at the threshold.
         let mut stalled_offers: Vec<usize> = Vec::new();
         let mut dozed_rings: Vec<usize> = Vec::new();
+        let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+        let siblings = sibling_presence_snapshot(&self.contacts);
         for (i, c) in self.contacts.iter_mut().enumerate() {
             if let Some((_, at)) = c.validated_path {
                 if at.elapsed() >= PATH_TTL {
@@ -10833,12 +10875,13 @@ impl PhotonApp {
                 }
             }
             // Parked-ceremony safety net: our offer went out, a direct path is PROVEN up, and the peer's offer still hasn't arrived — so ours (or theirs) died in transit and nothing pong-driven will ever retry it. Re-fire ours every few cycles until the exchange moves; bounded to one half-MB transfer per threshold-crossing, self-terminating the moment their offer lands.
-            let parked = !c.is_sibling
+            let stalled = !c.is_sibling
                 && c.clutch_state == crate::types::ClutchState::Pending
                 && c.clutch_offer_sent
                 && c.validated_path.is_some()
-                && c.get_slot(&c.handle_hash).map_or(true, |s| s.offer.is_none());
-            if parked {
+                && c.get_slot(&c.handle_hash).map_or(true, |s| s.offer.is_none())
+                && !ceremony_parked_by(c, our_device, &siblings);
+            if stalled {
                 c.clutch_offer_stall_cycles = c.clutch_offer_stall_cycles.saturating_add(1);
                 if c.clutch_offer_stall_cycles >= OFFER_STALL_CYCLES {
                     c.clutch_offer_stall_cycles = 0;
@@ -10853,6 +10896,7 @@ impl PhotonApp {
                 && c.validated_path.is_none()
                 && c.last_heard.map_or(true, |t| t.elapsed() >= std::time::Duration::from_secs(90))
                 && c.last_ring.map_or(true, |t| t.elapsed() >= std::time::Duration::from_secs(300))
+                && !ceremony_parked_by(c, our_device, &siblings)
             {
                 c.last_ring = Some(std::time::Instant::now());
                 dozed_rings.push(i);
@@ -11086,6 +11130,11 @@ impl PhotonApp {
         use crate::network::fgtw::protocol::build_clutch_offer_vsf;
         use crate::network::status::ClutchOfferRequest;
 
+        // §4.2: a parked ceremony never re-fires its offer — the owner drives; our re-send would hand the friend a competing instance.
+        if self.ceremony_parked(&self.contacts[idx]) {
+            crate::logf!("CLUTCH: not re-sending offer to {} — ceremony is parked (owner drives)", crate::fp(&self.contacts[idx].handle_proof));
+            return;
+        }
         let Some(our_handle_hash) = self.session.as_ref().map(|s| s.identity_seed) else {
             return;
         };
@@ -11830,6 +11879,9 @@ impl PhotonApp {
                             }
                         }
                     }
+                    // §4.2 snapshot: taken per-update so verdicts drained earlier this pass are already reflected.
+                    let our_device_pk = Some(our_device_pubkey);
+                    let siblings = sibling_presence_snapshot(&self.contacts);
                     // Find matching contact and update status
                     for contact in &mut self.contacts {
                         if contact.knows_device(&peer_pubkey.key) {
@@ -11929,6 +11981,8 @@ impl PhotonApp {
                                 let ep = contact.endpoint_mut(&peer_pubkey.key);
                                 ep.online = is_online;
                             }
+                            // §4.2 takeover boot-race fix: a VERDICT landed for this contact — pong (is_online=true) or 3-consecutive-timeout (false, same arm). Until this is set, "owner absent" means nothing and takeover stays parked.
+                            contact.presence_probed = true;
                             // Reachability clock: only the POSITIVE report counts (a TIMEOUT arrives thru this same arm with is_online=false — silence is exactly what the clock measures).
                             if is_online {
                                 contact.last_heard = Some(std::time::Instant::now());
@@ -11975,6 +12029,7 @@ impl PhotonApp {
                                 && contact.clutch_state == ClutchState::Pending
                                 && contact.clutch_pending_kem.is_some()
                                 && contact.clutch_offer_sent
+                                && !ceremony_parked_by(contact, our_device_pk, &siblings)
                             {
                                 crate::logf!("CLUTCH: still waiting for offer from {} (their KEM is queued) — re-requesting by re-sending our offer", crate::fp(&contact.handle_proof));
                                 contact.clutch_offer_sent = false;
@@ -11984,6 +12039,7 @@ impl PhotonApp {
                             if is_online
                                 && contact.clutch_state == ClutchState::Pending
                                 && !contact.clutch_offer_sent
+                                && !ceremony_parked_by(contact, our_device_pk, &siblings)
                             {
                                 if let Some(ref keypairs) = contact.clutch_our_keypairs {
                                     use crate::network::fgtw::protocol::build_clutch_offer_vsf;
@@ -12854,27 +12910,15 @@ impl PhotonApp {
                                         rekey_request =
                                             Some((contact.id.clone(), contact.handle_hash));
                                     } else {
-                                        // Not Complete - just update their offer, don't regenerate our keys
-                                        crate::logf!("CLUTCH: {} sent new keys but we're mid-ceremony (state={}) - updating their offer, keeping our keys", crate::fp(&contact.handle_proof), format!("{:?}", contact.clutch_state));
-                                        // Clear their old offer data so we use the new one
-                                        if let Some(slot) = contact.get_slot_mut(&their_handle_hash)
-                                        {
-                                            slot.offer = None;
-                                            slot.kem_secrets_from_them = None;
+                                        // Not Complete and they minted NEW keys — their side is running a FRESH ceremony instance (their §4.2 ceremony owner changed, or they discarded and restarted). The old "keep our keys, swap their offer" splice welded half of OUR round onto half of THEIRS: the friend then held offers/completes from mixed instances and dropped the odd one out as "unknown conversation_token" forever. Adopt their new round wholesale instead — discard ours completely; the fallthrough below re-inits slots and stores their fresh offer + provenance; fresh keys of ours arrive via keygen and the drain sends our offer.
+                                        crate::logf!("CLUTCH: {} sent new keys mid-ceremony (state={}) — discarding our round and adopting theirs", crate::fp(&contact.handle_proof), format!("{:?}", contact.clutch_state));
+                                        contact.discard_clutch_round();
+                                        // GUARDED re-trigger: a keygen already in flight will complete this round (the drain stores + sends our offer) — spawning another here would ping-pong re-keys when both sides discard simultaneously.
+                                        if !contact.clutch_keygen_in_progress {
+                                            contact.clutch_keygen_in_progress = true;
+                                            rekey_request =
+                                                Some((contact.id.clone(), contact.handle_hash));
                                         }
-                                        // Clear our old KEM encap - it was for their OLD keys! We need fresh encapsulation against their new pubkeys.
-                                        if let Some(slot) = contact.get_slot_mut(&our_handle_hash) {
-                                            slot.kem_secrets_to_them = None;
-                                            slot.kem_response_for_resend = None;
-                                        }
-                                        contact.clutch_kem_encap_in_progress = false;
-                                        // Clear ceremony_id so it gets recomputed with new provenance
-                                        contact.ceremony_id = None;
-                                        contact.offer_provenances.retain(|p| {
-                                            // Keep our provenance, remove their old one Our provenance is computed from our handle_hash This is a bit hacky but works for 2-party
-                                            p != &offer_provenance
-                                        });
-                                        // Don't trigger rekey_request - we keep our keys
                                     }
                                 }
                             }
@@ -13159,19 +13203,9 @@ impl PhotonApp {
                                         if let Some(fid) = contact.friendship_id {
                                             chains_to_remove.push(fid);
                                         }
-                                        // Reset ALL CLUTCH state for new ceremony
-                                        contact.clutch_state = ClutchState::Pending;
+                                        // Reset ALL CLUTCH state for new ceremony (canonical discard + the Complete-rekey-only friendship clear)
+                                        contact.discard_clutch_round();
                                         contact.friendship_id = None;
-                                        contact.completed_their_hqc_prefix = None;
-                                        contact.clutch_our_keypairs = None;
-                                        contact.clutch_round_started = None;
-                                        contact.clutch_slots.clear();
-                                        contact.ceremony_id = None;
-                                        contact.offer_provenances.clear(); // Clear for fresh ceremony nonce
-                                        contact.clutch_pending_kem = None;
-                                        contact.clutch_offer_sent = false;
-                                        contact.clutch_our_eggs_proof = None;
-                                        contact.clutch_their_eggs_proof = None;
                                         // Re-initialize slots and store their offer (was stored earlier but we just cleared)
                                         contact.init_clutch_slots(our_handle_hash);
                                         if let Some(slot) = contact.get_slot_mut(&their_handle_hash)
@@ -15197,6 +15231,48 @@ fn contact_page_rows(page: ContactPage) -> usize {
         ContactPage::About => 12,
         ContactPage::Stats => 9,
         ContactPage::Manage => 6,
+    }
+}
+
+/// Snapshot of one fleet sibling's presence for §4.2 parking decisions: (device pubkey, is_online, presence_probed).
+type SiblingPresence = ([u8; 32], bool, bool);
+
+/// Collect every sibling's presence snapshot — taken BEFORE a mutable walk over `self.contacts` so [`ceremony_parked_by`] can be consulted mid-loop without a second borrow.
+fn sibling_presence_snapshot(contacts: &[crate::types::Contact]) -> Vec<SiblingPresence> {
+    contacts
+        .iter()
+        .filter(|c| c.is_sibling)
+        .map(|c| (c.public_identity.key, c.is_online, c.presence_probed))
+        .collect()
+}
+
+/// §4.2: true when this FRIEND contact's ceremony belongs to another fleet device and this device must not run — or keep alive — a round toward it. Encodes the takeover-hardening rules:
+/// - sibling contacts are never parked (sibling weaves are per-device-pair by design);
+/// - unclaimed or self-owned → not parked (the winner proceeds; claim-on-pickup handles None);
+/// - `owner_woven` → ALWAYS parked — never re-clutch a completed friendship: the chain lives on the owner, and a takeover would clobber the friend's chain (the live-diagnosed fork);
+/// - owner sibling present → parked (its ceremony is the fleet's);
+/// - owner sibling NOT YET PROBED this session → parked (boot race: every sibling starts is_online=false before the first sweep, which made a freshly-booted device "take over" from a live owner);
+/// - owner probed-offline, or owner device unknown (revoked) → NOT parked — takeover-eligible.
+fn ceremony_parked_by(
+    c: &crate::types::Contact,
+    our_device: Option<[u8; 32]>,
+    siblings: &[SiblingPresence],
+) -> bool {
+    if c.is_sibling {
+        return false;
+    }
+    let Some(owner) = c.ceremony_owner else {
+        return false;
+    };
+    if Some(owner) == our_device {
+        return false;
+    }
+    if c.owner_woven {
+        return true;
+    }
+    match siblings.iter().find(|(pk, _, _)| *pk == owner) {
+        Some((_, online, probed)) => *online || !*probed,
+        None => false,
     }
 }
 
