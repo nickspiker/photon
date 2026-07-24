@@ -2,28 +2,96 @@
 
 ![Photon Messenger Screenshot](app.png)
 
-**Decentralized messenger with passless authentication and rolling-chain encryption**
+**A messenger where your identity is yours — not a row in someone's database.**
 
-No servers. No passwords. No phone numbers. No corporate data harvesting.
+No servers holding your account. No passwords to steal. No phone numbers, no SIM, no carrier. No company that can lock you out, hand you over, or shut you down.
 
 ---
 
-## What This Is
+## The idea in one breath
 
-Photon is a peer-to-peer messaging application that replaces traditional authentication (passwords, PINs, biometrics, recovery emails) with **social attestation**—your identity is verified by trusted humans, not by servers or credentials. Messages use **rolling-chain encryption**, where each message cryptographically depends on all previous messages, creating an immutable, tamper-evident communication history.
+In every system you use today, someone else owns your identity. The bank, the platform, the carrier, the "sign in with…" button — each of them holds the key that actually *is* you, and you hold a contract that lets you ask them to act on your behalf. A contract can be revoked, subpoenaed, sold, or breached. In cryptography, whoever holds the private key **is** the owner; everyone else is a tenant.
 
-**Key Properties:**
-- **A = 1**: Authentication happens once when you create your identity. All subsequent access uses cryptographic proofs from that single event.
-- **True P2P**: No message servers. Peers connect directly after DHT-based discovery.
-- **Device-bound identity**: Device keys derived deterministically from a platform identifier, never stored on disk. On commodity hardware the identifier is written by the OS vendor and, on desktop, is readable by any local code—so this is device-binding against *remote* attackers, not a hardware secret. See [what this actually protects](#what-this-actually-protects-and-what-it-does-not-read-before-shipping-on-commodity-hardware); PIPE silicon is the endgame that makes it a real hardware lock.
-- **Social recovery**: Lose your devices? Trusted contacts hold encrypted key shards for threshold reconstruction.
-- **Message immutability**: Editing or deleting messages breaks cryptographic chain—tampering is detectable.
+Photon gives you the key.
+
+Your identity is a **handle** you choose — any text at all: `purple octopus`, `∫∂x`, `ℕƐρ⊤∪ηǝ`, `slow tide`. From that handle, and from a secret burned into each of your devices, your identity is derived by math. No authority issues it. No authority can withdraw it. A service either can verify you or it can't — there's no account for anyone to freeze.
+
+This buys you three things:
+
+- **One identity.** Chosen once, for life. It works on every device, every network, everywhere — no re-registration, ever.
+- **One action to move.** Pick up a new device, confirm once, and your whole world is there — every conversation, every contact, immediately. No re-login, no per-app setup.
+- **No one in the middle.** No password to phish, no SIM to swap, no support line to social-engineer, no central store to breach. There is simply nothing of yours sitting in someone else's vault to take.
+
+The full design — credential ownership, threshold recovery, billing you alone can authorize, physics-anchored time — is written up as the **TOKEN** patent family (part of a stack with **PIPE** hardware, **ISOMEM** memory isolation, and **SPIRIX** deterministic arithmetic). Photon is the messenger built on it: the first working piece.
+
+---
+
+## Read this before you start — four things that matter
+
+Photon hands you real ownership, and ownership means the responsibility comes with it. Four things are worth understanding up front. None is hard; all four save you grief.
+
+### 1. Choose your handle with care
+
+Your handle **is** your identity — the root everything else grows from. It's the thing you hand to people out of band (say it out loud, write it on paper) so they can reach you.
+
+- **It is not a username and not your name.** Don't use your legal name or an email address. A handle like `paper kite` or `slow tide` is distinctive, memorable, and doesn't collide with everyone who shares your first name.
+- **Anything routes.** Because the network only ever sees a *hash* of your handle, the handle itself can be any Unicode at all — spaces, emoji, math, any script. `omega cyan` and `omega_cyan` are entirely different handles, so use the real space you'd actually say.
+- **Case and spacing matter.** `omega cyan`, `Omega cyan`, and `Omega Cyan` are three different identities. Lowercase with real spaces is easiest to dictate.
+- **First to claim it, owns it.** Claiming is deliberately cheap once and expensive in bulk (a ~1-second proof-of-work rations it), so squatting a namespace is uneconomic — but if two people pick the same handle, the first to finish claiming keeps it. Pick something distinctive.
+- **Disclosing your handle is safe.** Unlike a password, you *can* hand your handle to people. Knowing it lets no one act as you and — because reaching you requires *both* sides to add each other — it doesn't even let someone contact you unless you add them back. There's no directory and no unilateral "just message this handle." Contact is always two-sided and consented.
+
+Your handle names you; it never authorizes anyone. Acting as you additionally requires one of *your* devices. That's what the next three points are about.
+
+### 2. Never be down to your last device — and don't lose it
+
+Your identity lives across the devices you've added to it. Any one of them is fully you; losing one is losing *a device*, not your identity — the others carry on untouched, and you revoke the lost one remotely.
+
+The danger is being down to **one** device and losing *it*. Today, if that last device is gone and you haven't set up recovery, your identity is gone with it — there's no company to call, which is the whole point, but it also means **there's no company to call.** So:
+
+- **Add a second device the day you start** (next point). Two is the floor; more is better.
+- **Recovery through people is coming** (point 4) — trusted friends who can vouch you back onto a fresh device after *total* loss. Until that's fully wired, treat your devices as the only copies of your identity, because they are.
+
+A wiped device (factory reset, reinstall) is a special case: it keeps the one secret that proves it's yours, so it can rejoin your fleet without recovery — *as long as the app's signing key hasn't changed under it.* (If you reinstall from a differently-signed build, the OS hands the app a new hardware fingerprint and the device reads as new. Re-add it like any new device.)
+
+### 3. Add several devices — it's one tap
+
+Adding a device is a single deliberate act, and it needs no carrier, no store, no account, no cloud:
+
+- **In person:** hold an existing device near the new one and confirm on the old one. Done.
+- **Apart:** the new device shows a short pairing phrase; type it into a device you already own, which signs the newcomer into your fleet.
+
+The moment it's in, the new device *is* you — every conversation and contact already present, nothing to re-enter. One identity can be live on your watch, phone, laptop, and car at once; each device speaks as you, and you can revoke any of them from any other.
+
+Spread across a few devices, you're resilient by default: lose one, you've lost nothing that matters.
+
+*(Coming: an NFC tap to add a device — hold them together, tap, and the same ceremony runs underneath, the tap carrying only a public key. Physical invite cards that carry a handle are on the same track.)*
+
+### 4. Recovery is people, not passwords
+
+When recovery lands, this is how a *total* loss (every device gone) comes back: you choose a handful of trusted people — **custodians** — ahead of time. To come back you re-enter your handle on a new device, and a threshold of them recognize you (your face, your voice, a shared history) and each approve. No company, no reset link, no security questions.
+
+The design requires **at least three** custodians and a threshold of at least three, so no single person — and no pair — can ever reconstitute you against your will, and you pick more than the threshold so ordinary life (a friend loses *their* phone, moves, drifts) never locks you out. Choose people who know you and whom you'd trust with this. Set them up early.
+
+> **Status:** device fleet (add/remove/rejoin) and encrypted messaging are working today. Full people-based recovery is designed and in progress — see [What Works](#current-status) below. Until it's complete, **your devices are your only backup.** Add more than one.
+
+---
+
+## What This Is, precisely
+
+Photon is a peer-to-peer messenger. Your identity is a handle you own, derived from your own entropy and never issued by anyone. Messages use **rolling-chain encryption** — each message cryptographically depends on the last, so the history is tamper-evident and forward-secret. There are no message servers: peers find each other through a distributed hash table and then talk directly.
+
+**Key properties:**
+- **Authenticate once.** You prove who you are a single time, when you create your identity. Everything after is *verification* — cheap, repeated confirmation that a signature came from the same key — not a fresh login. There's no session to expire and re-establish.
+- **You hold the key.** Your private credential never leaves your devices in any form that can be read, copied, or exported. Services hold only your public key, which is safe by definition. A breach of any service exposes nothing of yours.
+- **Device-bound.** Acting as you requires one of your devices, whose secret is derived from a hardware identifier and never stored on disk. On commodity hardware that identifier is written by the OS vendor and, on desktop, readable by local code — so today this binds against *remote* attackers, not a true hardware secret. See [what this actually protects](#what-this-actually-protects-and-what-it-does-not-read-before-shipping-on-commodity-hardware). Dedicated **PIPE** silicon is the endgame that makes it a real hardware lock.
+- **Contact is mutual.** No directory, no unilateral reachability. Two people can reach each other only after each adds the other — being contactable is itself a consented, two-sided relationship.
+- **Recovery is human.** Lose everything and trusted people — not a company — vouch you back. (In progress.)
 
 ---
 
 ## Current Status
 
-**Early Development** — Core infrastructure functional, messaging implementation in progress.
+**🟢 Mainnet is live.** The network is open and permissionless — [install](#installation), pick a handle, and you're on. No invite, no waitlist, no approval. It's early and rough in places (see below), but it's real and running.
 
 ### What Works
 - ✅ Cross-platform GUI (Windows, Linux, macOS, Android)
@@ -36,16 +104,19 @@ Photon is a peer-to-peer messaging application that replaces traditional authent
 - ✅ Avatar upload/download to FGTW storage with rate limiting
 - ✅ Contact storage (local encrypted + cloud backup to FGTW)
 - ✅ Deterministic device identity (keys derived from hardware)
-- ✅ CLUTCH key exchange (8-algorithm parallel ceremony with deterministic ceremony ID)
-- ✅ Friendship-based chain encryption (256-link chains, 8KB per participant)
+- ✅ CLUTCH key exchange (8-algorithm parallel ceremony across four mathematical families, quantum-resistant by construction)
+- ✅ Rolling-chain encryption (256-link chains, forward-secret, tamper-evident)
+- ✅ Encrypted P2P messaging over the chain, verified device-to-device
+- ✅ Multi-device fleet: add a device (near-tap or pairing phrase), remove/revoke, and rejoin after a wipe via the surviving device secret
+- ✅ Fleet sync: contacts and settings converge across your devices under the fleet key
 - ✅ LAN peer discovery (NAT hairpinning workaround via broadcast)
 - ✅ Android build pipeline (tested on device)
 - ✅ Signed binary distribution with self-verification
 
 ### What Doesn't Work Yet
-- ⚠️ Encrypted message exchange (hash chains implemented, end-to-end testing in progress)
-- ❌ Identity validation and key recovery flows
-- ❌ Full social attestation (2-human requirement not enforced)
+- ⚠️ Custodian recovery (all-devices-lost): threshold reconstruction is designed and partially built — **not yet a backstop you can rely on.** Keep more than one device.
+- ⚠️ NFC device-add and physical invite cards (designed; typing/near-tap is the path today)
+- ⚠️ The wider TOKEN surface — billing you alone authorize, portable reputation, physics-anchored time — is specified in the patent and not yet in Photon
 
 ### Platform Support
 
@@ -361,57 +432,20 @@ For regional connections (Seattle–LA), video frames arrive **before the next f
 
 ---
 
-### Passless Authentication
+### Passless Identity
 
-**Authentication Count: A = 1**
+**You authenticate once — when you create your identity.** Everything after is verification: a cheap, repeated check that a signature came from the same key. There is no password, no session that expires, no "prove you're you" loop. A service either holds your public key and recognizes you, or it doesn't.
 
-You authenticate once when creating your identity. All subsequent access uses cryptographic proofs derived from that single authentication event.
+Traditional login asks you to prove identity and then accepts a *password* — which proves only knowledge of a secret, not who you are, and not even that you're human. Reset flows are worse: whoever reaches your email or phone can take the account. Photon replaces the whole model with the one humans have always used — **the key is yours, and trusted people vouch for you** — so there's no company, no support line, and no "click to reset."
 
-**Identity recovery mechanisms:**
+**How your handle becomes an identity.** Your handle is hashed to a routing address (the handle itself never travels the network — that's why any Unicode works). Claiming an unclaimed handle costs a ~1-second memory-hard proof-of-work: trivial to do once, expensive to do in bulk, which prices out namespace-squatting without any authority deciding who's allowed a name. First to finish claiming owns it. See [choosing your handle](#1-choose-your-handle-with-care) above and [AUTH.md](AUTH.md) for the full specification.
 
-0. **Device enrollment** (you still hold a device): The new device displays a 23-word code—its full 256-bit pairing key, not a truncated fingerprint—and you type it into a device you already own, which verifies and signs the newcomer into your fleet's membership chain. The full key travels one direction thru you, so there is no short-code comparison for an attacker to grind against. (A planned NFC tap replaces the typing with the same ceremony underneath: the tap carries only a public key, and your new device's screen confirms end-to-end that *it* was the one enrolled—if someone else tapped first, your device stays red and says so. See [docs/device-lifecycle.md](docs/device-lifecycle.md).)
+> **Optional vouching (not the default):** a particular *community* may choose to require that new handles be vouched for by existing members before it recognizes them — a group's freedom to choose who it admits. This never gates whether a handle can *exist*; the base namespace is always permissionless. The power to deny existence is exactly the institutional-capture failure Photon is built to eliminate, so the sovereign namespace holds no such power for anyone to seize or be compelled at.
 
-1. **Social recovery** (all devices lost): Trusted contacts hold encrypted shards of your private key. Threshold reconstruction typically requires 5 friends—your security boundary is the number of trusted contacts who would need to collude to compromise your identity.
+**Getting onto more devices, and getting back after loss** — the two paths, covered above:
 
-**Handle attestation:**
-
-Identity is tied to your handle—any Unicode string of any length (e.g., `fractal decoder`, `ℕƐρ⊤∪ηǝ`, `∫∂x`, or `☢⚡☃`). The handle is hashed to derive a network address. Claiming a handle requires **two human attestations**—existing users vouch for your identity. This is invite-only by design.
-
-**What makes a good handle:**
-
-Your handle is a personal identifier you share out-of-band with people you want to reach you like family, friends, or colleagues. It's not a username assigned by a platform, and it shouldn't be your name or email address. It's whatever feels like you to the people who know you.
-
-Because FGTW routes by a hash of your handle, the handle itself is never transmitted on the network. This means your handle can be anything, including characters no traditional system would accept. ☃, polar bear, ∫∂x, and ℕƐρ⊤∪ηǝ are all equally valid and equally routable. Spaces are fine — `omega cyan` and `omega_cyan` hash to entirely different addresses, so there's no reason to substitute underscores for the space you'd actually say out loud.
-
-Conventions worth following:
-
-- Prefer lowercase — `omega cyan` is easier to dictate than `Omega Cyan`, and `omega cyan` and `Omega cyan` are different handles
-- Use real spaces, not underscores or dots — your handle should read like something you'd say, not something you'd type into a login form
-- Pick something that isn't a name — two-word phrases like `purple octopus`, `slow tide`, or `paper kite` are distinctive, memorable, and don't collide with the person you happen to share a first name with
-- Don't use your real name or email — your handle isn't a directory entry, it's a shared secret
-- Pick something memorable enough to hand to someone verbally or write on paper
-- If two people independently choose the same handle, the first to complete attestation owns it — choose something distinctive
-- You can have one handle per identity; choose with care
-
-The handle is the thing you give someone so they can find you. Nothing more, nothing less. The crypto does the rest.
-
-**Attestation flow** (see [AUTH.md](AUTH.md) for full specification):
-
-0. User requests handle (e.g., `Wayne`)
-1. System queries DHT: is `Wayne` already claimed?
-2. If unclaimed, user requests attestations from 2 trusted people
-3. Attesters see: device type, approximate location, timestamp
-4. Attesters verify out-of-band (phone call, video, in-person)
-5. Both attestations required within 24 hours
-6. Handle cryptographically bound to user's public key
-
-**Why attestation?**
-
-Traditional authentication asks "prove you are you" then accepts a password—which proves nothing about identity, only knowledge of a secret. It doesn't even prove you're human. Password reset flows are worse: anyone with access to your email or phone can claim your account.
-
-Photon uses the security model humans have used for millennia: trusted relationships. Your friends vouch for you, hold shards of your identity, and verify recovery requests. No company, no customer support, no "click this link to reset."
-
-See [AUTH.md](AUTH.md) for detailed specification.
+- **Add a device** (you still hold one): near-tap in person, or type a short pairing phrase across a gap. The newcomer is signed into your fleet and is immediately, fully you. → [Add several devices](#3-add-several-devices--its-one-tap)
+- **Recover** (everything lost): trusted custodians recognize you and vouch you back onto a fresh device. No company in the loop. → [Recovery is people](#4-recovery-is-people-not-passwords) *(in progress)*
 
 ---
 
