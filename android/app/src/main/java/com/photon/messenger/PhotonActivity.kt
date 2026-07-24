@@ -171,6 +171,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativePollAvatarPicker(contextPtr: Long): Int  // Per-frame poll for the avatar image-picker request — 1=launch ACTION_GET_CONTENT, 0=no change
     private external fun nativePollSessionBroadcast(contextPtr: Long): Int  // 1=send sticky broadcast, -1=clear, 0=no change
     private external fun nativePollApkInstall(contextPtr: Long): String?  // Per-frame poll: staged self-update APK path (one-shot) — fire the system installer with it
+    private external fun nativePollClipboardCopy(contextPtr: Long): String?  // Per-frame poll: text to place on the OS clipboard (one-shot) — copy-words / copy-name affordances
     private external fun nativeSetDisplayColorSpace(rgbToXyz: FloatArray, primaries: FloatArray)  // Display panel's RGB→XYZ_D50 (9 floats) + chromaticity primaries [Rx,Ry,Gx,Gy,Bx,By] (6 floats)
     private external fun nativeSetAvatarFromFile(contextPtr: Long, fileBytes: ByteArray)  // Raw image file bytes (preserves ICC profile)
     private external fun nativeRestoreSessionFromVsf(vsfBytes: ByteArray): Int  // Restore session from sticky broadcast VSF capsule — call before nativeInitWithNetwork; returns 1 on success
@@ -556,14 +557,61 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                 nativePollApkInstall(nativePtr)?.let { apkPath ->
                     installApk(apkPath)
                 }
+                // Clipboard hand-off (copy-words / copy-name): Android 13+ shows its own "copied" overlay.
+                nativePollClipboardCopy(nativePtr)?.let { text ->
+                    val cm = getSystemService(android.content.ClipboardManager::class.java)
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("photon", text))
+                }
             }
             // Schedule next frame
             Choreographer.getInstance().postFrameCallback(this)
         }
     }
 
-    /** Fire the system installer on a staged self-update APK (docs/updates.md, Android path). The file sits in our app-private files dir, so it's exposed via FileProvider; REQUEST_INSTALL_PACKAGES gates the intent. */
+    /** Install a staged self-update APK (docs/updates.md, Android path). PackageInstaller SESSION first: on Android 12+ with photon as its own installer-of-record the install is UNATTENDED (USER_ACTION_NOT_REQUIRED) — no dialog, the OS swaps the package and restarts us. The first session install (or an OEM that refuses unattended) surfaces the one system confirm via STATUS_PENDING_USER_ACTION, which is also the bootstrap that TRANSFERS installer-of-record to photon — silent from then on. The classic ACTION_VIEW intent stays as the last-ditch fallback. */
     private fun installApk(path: String) {
+        try {
+            installApkSession(path)
+        } catch (e: Exception) {
+            PhotonLog.e("Update", "session install failed (${e.message}) — falling back to system installer intent")
+            installApkIntent(path)
+        }
+    }
+
+    private fun installApkSession(path: String) {
+        val installer = packageManager.packageInstaller
+        val params = android.content.pm.PackageInstaller.SessionParams(
+            android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL
+        ).apply {
+            setAppPackageName(packageName)
+            if (android.os.Build.VERSION.SDK_INT >= 31) {
+                setRequireUserAction(android.content.pm.PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+            }
+        }
+        val sessionId = installer.createSession(params)
+        installer.openSession(sessionId).use { session ->
+            java.io.File(path).inputStream().use { input ->
+                session.openWrite("photon-update.apk", 0, -1).use { out ->
+                    input.copyTo(out)
+                    session.fsync(out)
+                }
+            }
+            // MUTABLE on purpose: the installer fills EXTRA_INTENT/EXTRA_STATUS into this PendingIntent.
+            val intent = android.content.Intent(this, PhotonInstallReceiver::class.java).apply {
+                action = "com.photon.messenger.INSTALL_RESULT"
+            }
+            val flags = if (android.os.Build.VERSION.SDK_INT >= 31) {
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_MUTABLE
+            } else {
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            val pi = android.app.PendingIntent.getBroadcast(this, sessionId, intent, flags)
+            PhotonLog.i("Update", "committing install session $sessionId (unattended where permitted)")
+            session.commit(pi.intentSender)
+        }
+    }
+
+    private fun installApkIntent(path: String) {
         try {
             val file = java.io.File(path)
             val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fileprovider", file)

@@ -364,6 +364,26 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollApkInstall<
     }
 }
 
+/// Per-frame poll: text the app wants on the OS clipboard, or null. One-shot (same pattern as the APK-install poll); Kotlin hands it to ClipboardManager.setPrimaryClip — Android 13+ shows the system "copied" overlay itself.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollClipboardCopy<'a>(
+    env: JNIEnv<'a>,
+    _class: JClass<'a>,
+    context_ptr: jlong,
+) -> jni::sys::jstring {
+    let Some(ctx) = get_context(context_ptr) else {
+        return std::ptr::null_mut();
+    };
+    match ctx.shell.app().pending_clipboard_copy.take() {
+        Some(text) => match env.new_string(&text) {
+            Ok(s) => s.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        },
+        None => std::ptr::null_mut(),
+    }
+}
+
 /// Per-frame poll: `1` when the app just cleared its compose box (a message was sent) and the Activity should `InputMethodManager.restartInput` to drop the IME's stale composing buffer, else `0`. One-shot.
 #[cfg(target_os = "android")]
 #[no_mangle]
