@@ -12419,8 +12419,9 @@ impl PhotonApp {
                             sibling_push = Some((contact_idx, msg));
 
                             // Per-contact notification chime: the sender's relationship digest → deterministic modal bell (chirp crate) — the SAME digest that colours their handle and messages, so ears and eyes agree. The handle TEXT never touches the session store by design; the pre-PoW hashes are the canonical identity material. Synthesis (~a second of f64 modal math) + playback run on a detached thread so the receive loop never blocks; desktop-only (Android gets platform notifications).
+                            // Only ding for a real human message from a friend: a chain-weave probe (hidden ceremony frame) and a sibling/fleet-sync frame (our own devices propagating a conversation) both arrive as ChatMessages, and neither is something a person sent us — so neither should ring. Interim gate ahead of the full unnotified-flag + focus-claim design; that lands with the sync-testing work.
                             #[cfg(not(any(target_os = "redox", target_os = "android")))]
-                            {
+                            if !is_chain_probe && !self.contacts[contact_idx].is_sibling {
                                 let digest = relationship_digest(&from_handle_hash, &our_handle_hash);
                                 std::thread::spawn(move || {
                                     chirp::Chirp::from_hash(digest).play_blocking().unwrap_or_else(|e| crate::logf!("CHIME: {}", e));
