@@ -11081,6 +11081,41 @@ impl PhotonApp {
             }
         }
 
+        // PROACTIVE zombie-round expiry: AwaitingProof with NOTHING left to send — the proof was destroyed (give-up latch), drained, or lost at resume. The offer-arrival exit ramp can't save this shape when the peer has MOVED ON (completed its side and stopped offering — observed esme↔zeno 2026-07-24: zeno Complete and silent, esme AwaitingProof holding fresh idle keys that no send path fires because every offer-send gates on Pending). While the peer is online, a provably-unrecoverable round (gave up outright, or empty-handed AND stale) discards to Pending; the keygen queue then mints a fresh round and our new offer goes out — a Complete peer accepts it as a re-key, an in-flight peer adopts it wholesale. Staleness guards the normal post-completion window where the proof budget has drained but the peer's proof is seconds away; the fresh round_started restamp is the natural rate limit.
+        {
+            const ZOMBIE_ROUND_STALE_OSC: i64 = 600 * vsf::OSCILLATIONS_PER_SECOND as i64;
+            let now_osc = vsf::eagle_time_oscillations();
+            let mut expired: Vec<usize> = Vec::new();
+            for (i, contact) in self.contacts.iter().enumerate() {
+                if !contact.is_online
+                    || contact.clutch_state != crate::types::ClutchState::AwaitingProof
+                {
+                    continue;
+                }
+                if ceremony_parked_by(contact, our_device, &siblings) {
+                    continue;
+                }
+                let empty_handed = contact.clutch_our_eggs_proof.is_none()
+                    && contact.clutch_proof_resends_left == 0;
+                let stale = contact
+                    .clutch_round_started
+                    .map_or(true, |t| now_osc.saturating_sub(t) > ZOMBIE_ROUND_STALE_OSC);
+                if contact.clutch_proof_gave_up || (empty_handed && stale) {
+                    expired.push(i);
+                }
+            }
+            for i in expired {
+                crate::logf!("CLUTCH: {} zombie round expired — AwaitingProof with nothing left to send and the peer silent; discarding for a fresh ceremony", crate::fp(&self.contacts[i].handle_proof));
+                let c = &mut self.contacts[i];
+                c.discard_clutch_round();
+                c.clutch_proof_retry_lifetime = 0;
+                c.clutch_proof_gave_up = false;
+                if let Some(storage) = self.storage.as_ref() {
+                    let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
+                }
+            }
+        }
+
         // Retransmit the ClutchComplete proof for any contact with budget left. The proof is a lone unreliable UDP packet, so a single drop (or a send to a since-refreshed address) would strand the peer in AwaitingProof. Re-sending it for a few ping cycles converges both sides regardless of which completed first or which packet was lost. Self-terminates as the budget drains; a peer already Complete re-arms its own resend on the duplicate.
         self.retransmit_pending_clutch_proofs();
     }
