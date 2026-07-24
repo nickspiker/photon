@@ -229,6 +229,8 @@ strip = "none"             # Keep symbols + the line tables above (dev's strip=t
 
 [patch.crates-io]
 softbuffer = { git = "https://github.com/nickspiker/softbuffer", branch = "main" }
+# Vendored winit with the Windows dark-mode integration NEUTRALIZED (src/platform_impl/windows/dark_mode.rs): stock winit fires SetWindowTheme + the undocumented SetWindowCompositionAttribute/uxtheme-ordinal calls on every window creation and OS theme change, and that family corrupted testers' system dark-theme Search text (white-on-white until a light/dark toggle rebuilt it — reproduced on two machines). fluor owns every pixel and has no non-client area, so photon wants ZERO Windows theme reads or writes. The patch resolves workspace-wide, so fluor's winit rides it too.
+winit = { path = "../winit-patched" }
 
 [profile.release]
 lto = true                 # Full LTO for final builds
