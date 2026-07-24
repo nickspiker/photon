@@ -11187,7 +11187,8 @@ impl PhotonApp {
         use crate::crypto::clutch::{derive_conversation_token, ClutchCompletePayload};
         use crate::network::status::ClutchCompleteRequest;
 
-        let Some(our_handle_hash) = self.session.as_ref().map(|s| s.identity_seed) else {
+        // PARTY ID (not raw seed): the last un-migrated seam site. First-completion sends derived the token from party ids; this retransmit path used the raw identity seed, so every friend-proof RETRANSMIT rode a token no receiver recognizes ("unknown conversation_token" forever at the peer) — a proof lost once could never land, and stalls that needed a proof retransmit never converged (zeno↔NTS 2026-07-24: proofs for round 933db663 arriving under acbaf3c9 instead of 8586b07e).
+        let Some(our_handle_hash) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
             return;
         };
         let Some(kp) = self.device_keypair.as_ref() else {
@@ -11252,8 +11253,17 @@ impl PhotonApp {
             crate::logf!("CLUTCH: not re-sending offer to {} — ceremony is parked (owner drives)", crate::fp(&self.contacts[idx].handle_proof));
             return;
         }
-        let Some(our_handle_hash) = self.session.as_ref().map(|s| s.identity_seed) else {
+        // PARTY ID (not raw seed) + the sibling seam: the fresh-send paths derive the token from party ids, but this RE-SEND path used the raw identity seed — every re-fired offer (stall re-fire, queued-KEM recovery, addr-change re-arm) rode a token the peer can't place, which is exactly the "offers under an unknown token" storms in the field logs (esme's 0d9b7fc0 flood was OUR re-sends, not a ghost device).
+        let Some(our_handle_hash) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
             return;
+        };
+        let our_handle_hash = if self.contacts[idx].is_sibling {
+            match self.device_keypair.as_ref() {
+                Some(kp) => crate::crypto::clutch::sibling_party_id(kp.public.as_bytes()),
+                None => return,
+            }
+        } else {
+            our_handle_hash
         };
         let Some((device_pubkey, device_secret)) = self
             .device_keypair
