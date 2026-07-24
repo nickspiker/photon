@@ -169,6 +169,9 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Gdi",
     "Win32_UI_ColorSystem",
     "Win32_System_Console",
+    # Tray orb (Shell_NotifyIcon) + the tray thread's message-only window module handle.
+    "Win32_UI_Shell",
+    "Win32_System_LibraryLoader",
     # Pairing v2 beacon ADVERTISER (new-device role) — WinRT BluetoothLEAdvertisementPublisher (docs/pairing-v2.md). Win32_System_Com for the CoInitializeEx apartment its activation thread needs; Storage_Streams for the DataWriter that fills the manufacturer-data buffer (Windows publishers may ONLY emit manufacturer data — service UUIDs are refused with 0x80070057).
     "Devices_Bluetooth_Advertisement",
     "Foundation_Collections",
