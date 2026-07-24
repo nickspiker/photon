@@ -44,13 +44,15 @@ static MESSAGE_NOTIFIER: std::sync::OnceLock<(jni::JavaVM, jni::objects::GlobalR
 #[cfg(target_os = "android")]
 static LAST_NOTIFIED_MSG: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
 
-/// Fire the Android "new message" notification for the message identified by `msg_hp` (its `prev_msg_hp` chain position), sounding + buzzing the SENDER's per-contact chirp. Deduplicated: a repeat of the same `msg_hp` (a retransmit) is a no-op, so one logical message dings once.
+/// Fire the Android "new message" notification for the decrypted message identified by `msg_hp` (its chain-derived hash pointer), sounding + buzzing the SENDER's per-contact chirp. Deduplicated: a repeat of the same `msg_hp` (a retransmit) is a no-op, so one logical message dings once.
 ///
-/// The sound/haptic are the sender's deterministic chirp (`chirp::Chirp::from_hash(blake3(sender_pubkey))`) rendered here to a WAV + the matching amplitude-envelope haptic, and handed to Kotlin, which plays them itself (silent channel + MediaPlayer + VibrationEffect) — the "app plays it after wake" path, so the OS default tone never fires and the sound is per-contact even from deep Doze. Sender identity stays in-process: only the rendered audio/haptic cross to Kotlin, never the pubkey or plaintext, and the notification text stays a generic "New message" (handle off the lock screen).
+/// Called POST-DECRYPT from the UI receive path (which still runs while backgrounded via the service tick), so `sender` (display name) and `text` (the message) cross to Kotlin as the notification title/content BY DESIGN — hiding content on the lock screen is the OS's job now. The pre-decrypt RX worker carries nothing because it no longer notifies (it couldn't tell a probe or sibling frame from a real message, and over-dinged on both).
+///
+/// The sound/haptic are the sender's deterministic chirp (`chirp::Chirp::from_hash(blake3(sender_pubkey))`) rendered here to a WAV + the matching amplitude-envelope haptic, and handed to Kotlin, which plays them itself (silent channel + AudioTrack + VibrationEffect) — the "app plays it after wake" path, so the OS default tone never fires and the sound is per-contact even from deep Doze. The pubkey itself never crosses: only the rendered audio/haptic do.
 ///
 /// Kotlin decides visibility/foreground suppression. No-op if the service never registered. Callable from any thread — attaches to the JVM as needed.
 #[cfg(target_os = "android")]
-pub fn notify_new_message(msg_hp: &[u8; 32], sender_pubkey: &[u8]) {
+pub fn notify_new_message(msg_hp: &[u8; 32], sender_pubkey: &[u8], sender: &str, text: &str) {
     // Dedup: skip if this is the same message we most recently notified for (a retransmit).
     {
         let mut last = LAST_NOTIFIED_MSG.lock().unwrap();
@@ -101,16 +103,33 @@ pub fn notify_new_message(msg_hp: &[u8; 32], sender_pubkey: &[u8]) {
                     return;
                 }
             };
+            // Sender name + message text as jstrings — Kotlin puts them straight into the notification title/content (post-decrypt by design; see the fn doc).
+            let sender_js = match env.new_string(sender) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("notify_new_message: sender string alloc failed: {:?}", e);
+                    return;
+                }
+            };
+            let text_js = match env.new_string(text) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("notify_new_message: text string alloc failed: {:?}", e);
+                    return;
+                }
+            };
 
             if env
                 .call_method(
                     svc.as_obj(),
                     "postMessageNotification",
-                    "([B[J[I)V",
+                    "([B[J[ILjava/lang/String;Ljava/lang/String;)V",
                     &[
                         (&wav_arr).into(),
                         (&timings_arr).into(),
                         (&amps_arr).into(),
+                        (&sender_js).into(),
+                        (&text_js).into(),
                     ],
                 )
                 .is_err()

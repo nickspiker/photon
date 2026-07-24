@@ -2051,10 +2051,6 @@ async fn run_checker(
                                         recent_chat_frames.push((key, now));
                                     }
 
-                                    // Capture the sender's key bytes before the Online update moves sender_pubkey — the Android notification below seeds the per-contact chirp from them.
-                                    #[cfg(target_os = "android")]
-                                    let sender_key_bytes = *sender_pubkey.as_bytes();
-
                                     // A chat IS liveness proof — stronger than a pong. Clear the sender's ping-failure counter and mark them online, so the ping-timeout can't flip a peer offline while they're actively messaging us (the "shows offline but receives messages" bug).
                                     {
                                         let mut failures = failed_pings_recv.lock().unwrap();
@@ -2073,13 +2069,7 @@ async fn run_checker(
                                         &event_proxy_recv,
                                     );
 
-                                    // Android: fire the system notification from HERE — this RX worker lives in the foreground service and keeps running while the Activity is paused/dead, which is exactly when a notification matters. Signature already verified above; Kotlin suppresses it when the app is visible. (No plaintext available at this layer, and none needed — the notification is a generic "new message".) Deduped on prev_msg_hp so a retransmit of the same message doesn't re-ding. sender_pubkey seeds the per-contact chirp sound + haptic (derived + rendered in notify_new_message; only the audio/haptic cross to Kotlin, never the key).
-                                    #[cfg(target_os = "android")]
-                                    crate::platform::jni_android::notify_new_message(&prev_msg_hp, &sender_key_bytes);
-
-                                    // Desktop mirror: same RX-worker vantage, same generic-text privacy stance, same prev_msg_hp dedup — gated inside on the window being hidden/unfocused (resident mode makes "app running, nobody looking" the common case).
-                                    #[cfg(not(target_os = "android"))]
-                                    crate::platform::desktop_notify::notify_new_message(&prev_msg_hp);
+                                    // NO notification from here: this layer sees only ciphertext, so it can't tell a real friend message from a chain probe or a sibling fleet-sync frame (the over-ding bug), and it can't name the sender. Notifications now fire POST-DECRYPT from the UI receive path (photon_app's ChatMessage handling) with real sender + text — the pre-decrypt path carries nothing because it no longer notifies. On Android that path still runs while backgrounded via the service tick, so the "notification matters exactly when the Activity is dead" property is preserved.
 
                                     // Forward to UI for decryption
                                     send_status_update(
