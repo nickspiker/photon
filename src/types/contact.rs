@@ -268,6 +268,8 @@ pub struct Contact {
     pub punch_unvalidated_cycles: u8,
     /// Runtime-only reachability clock (docs/reachability-doorbell.md): the last time ANY signed traffic from this contact's devices reached us — pong, punch ack, chat frame. "The guard's eyes are open." `None` since boot = never heard. Drives the dozed classification: silence past the dozed threshold plus undeliverable traffic = ring the doorbell.
     pub last_heard: Option<std::time::Instant>,
+    /// Runtime-only: this contact has received at least one presence VERDICT this session — a pong OR a 3-consecutive-timeout — via the StatusUpdate::Online drain. Fixes the §4.2 takeover boot race: siblings start `is_online = false` before the first sweep, so "owner absent" is meaningless until probed. Never persisted.
+    pub presence_probed: bool,
     /// Runtime-only: when we last rang this contact's doorbell — the client-side debounce above the worker's per-target guard. One wake per re-ring window no matter how much traffic queues behind it.
     pub last_ring: Option<std::time::Instant>,
     /// Runtime-only stall counter: consecutive ping cycles spent in `Pending` with our offer sent, a validated direct path up, and still no offer from the peer. The ping cycle re-fires our offer each time this crosses its threshold (then zeroes it) — the pong-driven offer re-send never triggers for a peer whose pongs don't flow, and a one-shot offer whose PT transfer died leaves the ceremony parked forever. Reset whenever the stall condition doesn't hold.
@@ -400,6 +402,7 @@ impl Contact {
             punch_unvalidated_cycles: 0,  // No failed punch cycles yet
             clutch_offer_stall_cycles: 0, // No stalled-offer cycles yet
             last_heard: None,             // No signed traffic from them yet this session
+            presence_probed: false,       // No presence verdict yet this session
             last_ring: None,              // Doorbell never rung this session
             history_recovery: None,       // No history recovery running
             clutch_completed_at: None,         // Ceremony not yet complete
@@ -564,6 +567,24 @@ impl Contact {
         hashes.sort();
 
         self.clutch_slots = hashes.into_iter().map(PartySlot::new).collect();
+    }
+
+    /// §4.2 canonical round teardown: kill THIS device's in-flight CLUTCH round (parked loser, takeover adoption, or mid-ceremony new-round adoption). Resets every ephemeral round field so no keep-alive path can resurrect it.
+    /// Deliberately does NOT touch `friendship_id` / chain state / `roster_updated` — a discard is only legal for a non-Complete round, and the Complete-rekey path clears friendship state itself. Also leaves `clutch_keygen_in_progress` alone: the serialized keygen worker owns that flag, and the result drain drops a stale result for a parked round instead.
+    pub fn discard_clutch_round(&mut self) {
+        self.clutch_state = ClutchState::Pending;
+        self.completed_their_hqc_prefix = None;
+        self.clutch_our_keypairs = None;
+        self.clutch_round_started = None;
+        self.clutch_slots.clear();
+        self.ceremony_id = None;
+        self.offer_provenances.clear();
+        self.clutch_pending_kem = None;
+        self.clutch_offer_sent = false;
+        self.clutch_our_eggs_proof = None;
+        self.clutch_their_eggs_proof = None;
+        self.clutch_kem_encap_in_progress = false;
+        self.clutch_offer_stall_cycles = 0;
     }
 
     /// Get the slot index for a given handle_hash. Returns None if the handle_hash is not in the ceremony.
