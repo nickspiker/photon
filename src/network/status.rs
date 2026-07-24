@@ -150,6 +150,8 @@ pub struct HistorySendRequest {
     pub recipient_pubkey: [u8; 32],
     /// Pre-built + signed hist_req / hist_page VSF bytes.
     pub vsf_bytes: Vec<u8>,
+    /// Devices to ALSO send the whole frame to over the relay pipe (same rule as MessageRequest::relay_to: filled when no validated direct path, or when answering a request that itself arrived over the relay). PT's own relay fallback needs ~31s of failed retries to engage — longer than the requester's expiry — so a relay-only pair starved forever waiting on a ladder that never completed (mom↔zeno history recovery, 2026-07-24).
+    pub relay_to: Vec<[u8; 32]>,
 }
 
 /// Request to start a PT large transfer (e.g., full CLUTCH offer with all 8 pubkeys)
@@ -2642,18 +2644,28 @@ async fn run_checker(
 
         // Process history frames (hist_req / hist_page) — pre-built + signed on the UI thread; this loop just routes them thru PT (UDP → TCP after 1s → relay) and races the alt path with the SAME wire bytes, exactly like chat. Requester/server both dedup (rid), so redelivery is free.
         while let Ok(request) = history_rx.try_recv() {
-            let pt_bytes = {
-                let mut pt_mgr = pt.lock().unwrap();
-                pt_mgr.send_with_pubkey(
-                    request.peer_addr,
-                    request.vsf_bytes.clone(),
-                    Some(request.recipient_pubkey),
-                )
-            };
-            if !pt_bytes.is_empty() {
-                udp::send(&socket, &pt_bytes, request.peer_addr).await;
-                if let Some(alt) = request.alt_addr {
-                    udp::send(&socket, &pt_bytes, alt).await;
+            // A peer with no reachable direct address rides the relay IMMEDIATELY (whole frame down the pipe, like chat's relay_to) — PT's ladder-then-relay needs ~31s of failures, longer than the history requester's expiry, so relay-only pairs starved forever on it.
+            if !request.peer_addr.ip().is_unspecified() {
+                let pt_bytes = {
+                    let mut pt_mgr = pt.lock().unwrap();
+                    pt_mgr.send_with_pubkey(
+                        request.peer_addr,
+                        request.vsf_bytes.clone(),
+                        Some(request.recipient_pubkey),
+                    )
+                };
+                if !pt_bytes.is_empty() {
+                    udp::send(&socket, &pt_bytes, request.peer_addr).await;
+                    if let Some(alt) = request.alt_addr {
+                        udp::send(&socket, &pt_bytes, alt).await;
+                    }
+                }
+            }
+            for dev in &request.relay_to {
+                if let Err(e) =
+                    crate::network::fgtw::relay::send_via_relay(&keypair, dev, &request.vsf_bytes).await
+                {
+                    crate::logf!("RELAY: history to {} failed: {}", hex::encode(&dev[..4]), e);
                 }
             }
         }
