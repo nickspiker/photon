@@ -881,6 +881,10 @@ pub struct PhotonApp {
     back_btn_hit_id: HitId,
     /// Hit ID for the "Start fresh (wipe this device)" line on the JOIN words screen — a removed device's only self-clean path (it can't attest → can't reach Security).
     join_startfresh_hit_id: HitId,
+    /// "Copy words" tappable on the JOIN words screen — puts the space-separated pairing words on the clipboard so they can ride any channel (email, messenger) to the device that types them, instead of being read + retyped by hand.
+    join_copywords_hit_id: HitId,
+    /// Interaction-state for the copy affordance label ("copy words" → "copied — paste them on your other device"). Cleared when the flow ends, never by a timer (no time-based UI).
+    join_words_copied: bool,
     /// Two-tap arm for "Start fresh" on the JOIN screen (destructive → confirm).
     join_startfresh_armed: bool,
     /// Contact-list scroll offset in pixels (Ready screen). 0 = top; grows as the user scrolls down. The user section (avatar/search) stays fixed; only the rows below the separator scroll. Re-clamped to the list extent each render.
@@ -997,6 +1001,8 @@ pub struct PhotonApp {
     /// Android: a hash-verified APK is staged — the JNI poll hands this path to Kotlin, which fires the system installer (the second click).
     #[cfg(target_os = "android")]
     pub pending_apk_install: Option<String>,
+    /// One-shot clipboard hand-off to the Android shell (`nativePollClipboardCopy`): the Choreographer frame poll drains it into ClipboardManager. Desktop copies via arboard directly and never touches this.
+    pub pending_clipboard_copy: Option<String>,
     /// Rubber-band scroll extents, measured by the last render (the extents live in render-side geometry — text metrics, dynamic row counts — so render publishes them and the wheel handler + tick() read last frame's value; geometry is stable frame-to-frame). `tick()` relaxes any out-of-range scroll back to [0, extent] thru these.
     settings_rail_extent: f32,
     settings_content_extent: f32,
@@ -1174,6 +1180,8 @@ impl PhotonApp {
             contact_hit_base: HIT_NONE,
             back_btn_hit_id: HIT_NONE,
             join_startfresh_hit_id: HIT_NONE,
+            join_copywords_hit_id: HIT_NONE,
+            join_words_copied: false,
             join_startfresh_armed: false,
             pending_picker_request: false,
             pending_broadcast_signal: 0,
@@ -1230,6 +1238,7 @@ impl PhotonApp {
             update_toasted: None,
             #[cfg(target_os = "android")]
             pending_apk_install: None,
+            pending_clipboard_copy: None,
             settings_rail_extent: 0.0,
             settings_content_extent: 0.0,
             contacts_scroll_extent: 0,
@@ -1796,6 +1805,10 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.join_startfresh_hit_id = self.hit_counter;
 
+        // "Copy words" tappable on the JOIN words screen.
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.join_copywords_hit_id = self.hit_counter;
+
         // Green-confirm tappable on the AddDevice screen ("It's in — finish"): the two-phase press that releases the fleet-key rotation after the human sees the new device enrolled.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.add_confirm_hit_id = self.hit_counter;
@@ -2184,6 +2197,25 @@ impl FluorApp for PhotonApp {
             #[cfg(target_os = "android")]
             {
                 self.pending_picker_request = true;
+            }
+            ctx.window.request_redraw();
+            return EventResponse::Handled;
+        }
+
+        // "Copy words" on the JOIN words screen: space-separated (the AddDevice entry tokenizes either form; spaces read naturally in an email/messenger paste). The words are a short-lived pairing secret for OUR OWN fleet — sharing them over a channel the user trusts is their call; the bind still requires the sponsor device to confirm.
+        if hit_id == self.join_copywords_hit_id && self.join_copywords_hit_id != HIT_NONE {
+            if let Some(words) = self.add_join_words.clone() {
+                // camelCase → space-separated, same split the words screen renders.
+                let mut spaced = String::with_capacity(words.len() + 24);
+                for c in words.chars() {
+                    if c.is_ascii_uppercase() && !spaced.is_empty() {
+                        spaced.push(' ');
+                    }
+                    spaced.push(c);
+                }
+                if self.copy_to_clipboard(&spaced) {
+                    self.join_words_copied = true;
+                }
             }
             ctx.window.request_redraw();
             return EventResponse::Handled;
@@ -3904,13 +3936,36 @@ impl FluorApp for PhotonApp {
                         y += line_h * 0.4;
                         ctx.text.draw_text_center(&mut canvas, &format!("this device: {name}"), cx, y, &TextStyle::new(line_h * 0.8, fluor::theme::HINT_COLOUR).weight(500).font("Oxanium"), None, None);
                     }
+                    // "Copy words" tappable: puts the space-separated words on the clipboard so they can ride email/messenger to the sponsor device instead of being read + retyped. Label flips on interaction, never on a timer.
+                    {
+                        y += line_h * 0.9;
+                        let csize = line_h * 0.7;
+                        let (clabel, ccolour) = if self.join_words_copied {
+                            ("copied \u{2014} paste them on your other device", *theme::STATUS_TEXT_COLOUR)
+                        } else {
+                            ("copy words", *theme::CONTACT_NAME_COLOUR)
+                        };
+                        ctx.text.draw_text_center(&mut canvas, clabel, cx, y, &TextStyle::new(csize, ccolour).weight(600).font("Oxanium"), None, None);
+                        let half_w = buf_w as f32 * 0.4;
+                        restamp_hit_rect(
+                            &mut chrome.hit_test_map,
+                            buf_w,
+                            buf_h,
+                            (cx - half_w) as isize,
+                            (y - csize * 0.8) as isize,
+                            (cx + half_w) as isize,
+                            (y + csize * 0.8) as isize,
+                            self.join_copywords_hit_id,
+                        );
+                        y += csize * 0.9;
+                    }
                     // How-to guidance: the two ways the OTHER (already-in-fleet) device adds this one, plus the confirm. Small + dim so it reads as instructions, not chrome.
                     {
                         y += line_h * 0.9;
                         let gsize = line_h * 0.62;
                         for line in [
                             "On your other device: Settings \u{2192} Fleet \u{2192} Add",
-                            "Type these words there — or, if it's nearby,",
+                            "Type or paste these words there \u{2014} or, if it's nearby,",
                             "just tap this device in the list.",
                             "You'll confirm the add on that device.",
                         ] {
@@ -6535,14 +6590,20 @@ impl PhotonApp {
     }
 
     /// Copy `s` to the OS clipboard. Desktop uses arboard; Android has no clipboard JNI yet (returns false — a ClipboardManager bridge is a follow-up), Redox has no arboard backend. Returns true on success.
-    fn copy_to_clipboard(&self, s: &str) -> bool {
+    fn copy_to_clipboard(&mut self, s: &str) -> bool {
         #[cfg(all(not(target_os = "android"), not(target_os = "redox")))]
         {
             return arboard::Clipboard::new()
                 .and_then(|mut clip| clip.set_text(s.to_string()))
                 .is_ok();
         }
-        #[cfg(any(target_os = "android", target_os = "redox"))]
+        #[cfg(target_os = "android")]
+        {
+            // Poll-bridge to Kotlin (same one-shot pattern as pending_apk_install): the Choreographer frame callback drains this into ClipboardManager.setPrimaryClip; Android 13+ shows the system "copied" overlay on its own.
+            self.pending_clipboard_copy = Some(s.to_string());
+            return true;
+        }
+        #[cfg(target_os = "redox")]
         {
             let _ = s;
             crate::log("clipboard: copy not wired on this platform yet");
@@ -8341,6 +8402,7 @@ impl PhotonApp {
         self.add_device_candidates.clear();
         self.add_device_bound = None;
         self.add_device_bind_ble = false;
+        self.join_words_copied = false;
         self.add_device_wordcheck_text.clear();
         self.add_device_typo = None;
         self.add_device_checking = false;
