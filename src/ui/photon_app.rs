@@ -11559,6 +11559,7 @@ impl PhotonApp {
                 peer_addr: primary,
                 alt_addr: alt,
                 recipient_pubkey: *sib.public_identity.as_bytes(),
+                relay_to: if sib.validated_path.is_none() { sib.relay_device_list() } else { Vec::new() },
                 vsf_bytes: vsf_bytes.clone(),
             });
             pushed += 1;
@@ -11630,6 +11631,7 @@ impl PhotonApp {
                             peer_addr: primary,
                             alt_addr: alt,
                             recipient_pubkey: *self.contacts[idx].public_identity.as_bytes(),
+                            relay_to: if self.contacts[idx].validated_path.is_none() { self.contacts[idx].relay_device_list() } else { Vec::new() },
                             vsf_bytes,
                         });
                     }
@@ -11685,7 +11687,7 @@ impl PhotonApp {
     /// History-recovery driver (every tick): for each contact mid-backfill, expire a lost in-flight request and fire the next page request when due. Newest-first cursor pagination — `urgent` (weave-seal kickoff / scrollback) jumps the trickle interval; otherwise pages are rate-limited to one per HIST_TRICKLE_OSC so a 10-year backfill hums along in the background without competing with live traffic. Requests are idempotent (rid-correlated, merge dedups), so an expiry + re-request after a lost page is always safe. Each request routes to whichever SOURCE is available right now: the friend (woven chain, history key) or a fleet sibling (fleet key) — the cursor is conversation-level, so the walk continues seamlessly across sources.
     fn drive_history_recovery(&mut self) {
         const HIST_TRICKLE_OSC: i64 = 2 * crate::OSC_PER_SEC; // one page per ~2s in background
-        const HIST_INFLIGHT_TIMEOUT_OSC: i64 = 15 * crate::OSC_PER_SEC; // lost request/page
+        const HIST_INFLIGHT_TIMEOUT_OSC: i64 = 45 * crate::OSC_PER_SEC; // lost request/page — longer than PT's ~31s ladder-then-relay so the fallback can actually fire before the request is abandoned (15s starved it forever)
 
         let now_osc = vsf::eagle_time_oscillations();
 
@@ -11712,7 +11714,7 @@ impl PhotonApp {
             .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
 
         // Candidate pass (read-only): eligible contacts + the best available route. FRIEND route (woven keyed chain, friend online) is preferred — it's the authoritative two-party copy; otherwise the FLEET route asks an online sibling under the fleet key, which needs no chain at all (a roster-merged contact backfills before its first CLUTCH, and the self notes conversation only ever has this route).
-        let candidates: Vec<(usize, [u8; 32], std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32])> = self
+        let candidates: Vec<(usize, [u8; 32], std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32], Vec<[u8; 32]>)> = self
             .contacts
             .iter()
             .enumerate()
@@ -11727,12 +11729,15 @@ impl PhotonApp {
                         if let Some((_, chains)) = self.friendship_chains.iter().find(|(id, _)| *id == fid) {
                             if chains.history_key().is_some() {
                                 if let Some((primary, alt)) = c.race_addrs() {
+                                    // No validated direct path → the request ALSO rides the relay immediately (chat's relay_to rule); PT's own ladder-then-relay takes longer than the requester's expiry, so relay-only friends starved on it forever.
+                                    let relay_to = if c.validated_path.is_none() { c.relay_device_list() } else { Vec::new() };
                                     return Some((
                                         idx,
                                         chains.conversation_token,
                                         primary,
                                         alt,
                                         *c.public_identity.as_bytes(),
+                                        relay_to,
                                     ));
                                 }
                             }
@@ -11748,6 +11753,7 @@ impl PhotonApp {
                     primary,
                     alt,
                     sib_pk,
+                    Vec::new(),
                 ))
             })
             .collect();
@@ -11758,7 +11764,7 @@ impl PhotonApp {
             return;
         };
 
-        for (idx, token, primary, alt, recipient_pubkey) in candidates {
+        for (idx, token, primary, alt, recipient_pubkey, relay_to) in candidates {
             let Some(rec) = self.contacts[idx].history_recovery.as_mut() else {
                 continue;
             };
@@ -11795,6 +11801,7 @@ impl PhotonApp {
                         alt_addr: alt,
                         recipient_pubkey,
                         vsf_bytes,
+                        relay_to: relay_to.clone(),
                     });
                 }
                 Err(e) => crate::logf!("HISTORY: request build failed: {}", e),
@@ -11886,6 +11893,7 @@ impl PhotonApp {
                         peer_addr: primary,
                         alt_addr: alt,
                         recipient_pubkey: *contact.public_identity.as_bytes(),
+                        relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
                         vsf_bytes,
                     });
                 }
@@ -14326,6 +14334,7 @@ impl PhotonApp {
                                                     peer_addr: sender_addr,
                                                     alt_addr: None,
                                                     recipient_pubkey: *sender_pubkey.as_bytes(),
+                                                    relay_to: if sender_addr.ip().is_unspecified() { vec![*sender_pubkey.as_bytes()] } else { Vec::new() },
                                                     vsf_bytes,
                                                 },
                                             );
@@ -14614,6 +14623,7 @@ impl PhotonApp {
                                                     peer_addr: primary,
                                                     alt_addr: alt,
                                                     recipient_pubkey: sender_pubkey.key,
+                                                    relay_to: if primary.ip().is_unspecified() || self.contacts[idx].validated_path.is_none() { self.contacts[idx].relay_device_list() } else { Vec::new() },
                                                     vsf_bytes,
                                                 },
                                             );
@@ -14675,6 +14685,7 @@ impl PhotonApp {
                                                         peer_addr: primary,
                                                         alt_addr: alt,
                                                         recipient_pubkey: sender_pubkey.key,
+                                                        relay_to: if primary.ip().is_unspecified() || self.contacts[idx].validated_path.is_none() { self.contacts[idx].relay_device_list() } else { Vec::new() },
                                                         vsf_bytes,
                                                     },
                                                 );
@@ -14710,6 +14721,7 @@ impl PhotonApp {
                                                     peer_addr: primary,
                                                     alt_addr: alt,
                                                     recipient_pubkey: sender_pubkey.key,
+                                                    relay_to: if primary.ip().is_unspecified() || self.contacts[idx].validated_path.is_none() { self.contacts[idx].relay_device_list() } else { Vec::new() },
                                                     vsf_bytes,
                                                 },
                                             );
