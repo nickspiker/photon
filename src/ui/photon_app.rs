@@ -9940,10 +9940,21 @@ impl PhotonApp {
 
                     // §4.2: a claim landed while keygen was running (roster merge parked this contact mid-flight) — installing the result would resurrect the parked round and re-send a competing offer. Drop it on the floor.
                     if ceremony_parked_by(contact, Some(device_pubkey), &siblings) {
-                        crate::logf!("CLUTCH §4.2: dropping keygen result for {} — round was parked while keygen ran", crate::fp(&contact.handle_proof));
-                        contact.discard_clutch_round();
-                        changed = true;
-                        break;
+                        // RESPONDER EXCEPTION: the FRIEND initiated this round at THIS device (their offer sits in their slot) — parking here deadlocks when their build offers to one device only (observed mom v0.40 ↔ zeno: the drain dropped the responding keygen, her KEM/proofs then fell on a keyless Pending contact forever, both sides stalled). The friend's choice of device is the strongest signal of where the ceremony can actually complete, so ownership FOLLOWS it: claim, bump the LWW clock so siblings adopt + discard-on-park, and install the keys. A racing broadcast-offer claim converges the same way every §4.2 race does — newest claim wins, losers discard.
+                        let their_offer_waiting = contact
+                            .get_slot(&contact.handle_hash)
+                            .map_or(false, |s| s.offer.is_some());
+                        if their_offer_waiting {
+                            crate::logf!("CLUTCH §4.2: {} offered at THIS device while the roster names another owner — claiming the ceremony (ownership follows the friend's choice)", crate::fp(&contact.handle_proof));
+                            contact.ceremony_owner = Some(device_pubkey);
+                            contact.owner_woven = false;
+                            contact.roster_updated = vsf::eagle_time_oscillations();
+                        } else {
+                            crate::logf!("CLUTCH §4.2: dropping keygen result for {} — round was parked while keygen ran", crate::fp(&contact.handle_proof));
+                            contact.discard_clutch_round();
+                            changed = true;
+                            break;
+                        }
                     }
 
                     // Store keypairs (ceremony_id computed on-demand when provenances available)

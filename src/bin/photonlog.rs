@@ -168,6 +168,16 @@ fn main() {
         }
         eprintln!("photonlog: {} submitted log(s) for tag {}", keys.len(), hex::encode(&tag[..6]));
         for k in &keys {
+            // The submitter's note rides as a sealed `.note` sidecar next to the `.vsf` (absent when none was typed) — surface it ABOVE the log so the human context leads the dump.
+            let note_key = format!("{}.note", k.strip_suffix(".vsf").unwrap_or(k));
+            if let Ok(ct) = log_get_blocking(&note_key) {
+                if let Ok(plain) = photon_messenger::storage::decrypt_bytes(&ct, &key) {
+                    if let Ok(text) = String::from_utf8(plain) {
+                        println!("\n── {k} ──");
+                        println!("★ NOTE FROM SUBMITTER: {text}");
+                    }
+                }
+            }
             match log_get_blocking(k) {
                 Ok(ct) => match photon_messenger::storage::decrypt_bytes(&ct, &key) {
                     Ok(plain) => {
