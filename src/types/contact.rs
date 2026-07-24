@@ -272,6 +272,12 @@ pub struct Contact {
     pub presence_probed: bool,
     /// Runtime-only: when we last rang this contact's doorbell — the client-side debounce above the worker's per-target guard. One wake per re-ring window no matter how much traffic queues behind it.
     pub last_ring: Option<std::time::Instant>,
+    /// Runtime-only fork detector: consecutive inbound chat frames from this contact that passed signature + chain-link checks but decrypted to garbage (VSF parse failure) — the signature of a chain FORK (the two sides advanced different key material). Reset on any successful decrypt. At the threshold a SIBLING contact triggers the fleet-key chain_reset repair; a friend contact only logs (friend-side repair waits for the fleet-plane linearizer).
+    pub chain_fail_streak: u8,
+    /// Runtime-only: the last sibling chain-reset nonce APPLIED for this contact — dedups the echo (the responder bounces the same frame back so the initiator converges) and any retransmit. Never persisted: a restart mid-repair just lets the detector re-fire with a fresh nonce.
+    pub last_chain_reset_nonce: Option<[u8; 32]>,
+    /// Runtime-only rate limiter: when we last INITIATED a chain reset toward this contact, so a storm of garbage frames can't spam repair rounds. One initiation per window; the detector re-fires after it if the fork persists.
+    pub last_chain_reset_sent: Option<std::time::Instant>,
     /// Runtime-only stall counter: consecutive ping cycles spent in `Pending` with our offer sent, a validated direct path up, and still no offer from the peer. The ping cycle re-fires our offer each time this crosses its threshold (then zeroes it) — the pong-driven offer re-send never triggers for a peer whose pongs don't flow, and a one-shot offer whose PT transfer died leaves the ceremony parked forever. Reset whenever the stall condition doesn't hold.
     pub clutch_offer_stall_cycles: u8,
     /// Friend-assisted history recovery state machine (newest-first cursor pagination from the friend's copy). `None` = no recovery running/known. Runtime struct; the durable cursor + complete flag persist as `hist_oldest` / `hist_complete` in contact state.
@@ -404,6 +410,9 @@ impl Contact {
             last_heard: None,             // No signed traffic from them yet this session
             presence_probed: false,       // No presence verdict yet this session
             last_ring: None,              // Doorbell never rung this session
+            chain_fail_streak: 0,
+            last_chain_reset_nonce: None,
+            last_chain_reset_sent: None,
             history_recovery: None,       // No history recovery running
             clutch_completed_at: None,         // Ceremony not yet complete
             is_sibling: false,            // A friend, unless made via new_sibling

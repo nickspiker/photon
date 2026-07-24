@@ -247,6 +247,13 @@ pub enum StatusUpdate {
         timestamp: i64,
         sender_addr: SocketAddr,
     },
+    /// Sibling chain-reset frame received (fork repair): the fleet-sealed nonce blob rides opaque to the UI thread, which holds the fleet key + chains.
+    ChainResetReceived {
+        conversation_token: [u8; 32],
+        sealed: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+        sender_addr: SocketAddr,
+    },
     /// Message acknowledgment received (CHAIN format)
     MessageAck {
         /// Privacy-preserving conversation token (smear_hash of sorted participant seeds)
@@ -1299,6 +1306,9 @@ async fn run_checker(
         let mut buf = [0u8; 65536];
         // This node's own reflexive (public) address, learned from peer-echoed reflection (pong `observed_addr` + `ReflectResponse`). Local to the long-lived receiver task; each adoption change is pushed to the app as `StatusUpdate::ReflexiveLearned`.
         let mut reflexive = crate::network::traverse::reflexive::ReflexiveState::new();
+        // Ingress twin-collapse for chat frames: the SAME frame routinely arrives twice within milliseconds (direct UDP + relay pipe, or LAN + WAN race) and both copies queue toward the UI. The durable rarangi-row dedup catches reprocessing, but collapsing twins HERE cuts the redundant queue traffic and re-ACK spam at the source. TIME-bounded, never count-bounded: only twins inside a short window are collapsed, so a genuine later retransmit (sender's ACK was lost) still reaches the UI's re-ACK path.
+        const CHAT_TWIN_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+        let mut recent_chat_frames: Vec<(([u8; 8], i64, [u8; 8]), std::time::Instant)> = Vec::new();
         loop {
             // Take the next datagram from EITHER the real UDP socket OR the relay pipe. A pipe frame is handed `RELAY_ADDR` as its source, so everything below this line — the entire ~900-line dispatch — cannot tell a relayed message from a directly-received one, except that RELAY_ADDR tells the app to skip address-learning and mark reached_via_relay. This is the whole reason the pipe is one select! arm and not a parallel dispatch: presence, chat, acks and CLUTCH all reuse the proven receive path.
             // A UDP datagram lands in the fixed 64 KiB `buf`; an injected pipe frame is held in `injected_holder` (owned Vec) because it can be a whole ~548 KB CLUTCH offer — FAR larger than `buf`. Copying it into `buf` truncated it to 64 KiB and the offer never parsed ("Not enough data"), which is why the ceremony stalled over the relay: the offer was injected but chopped to 12% of itself. `msg_bytes` points at whichever holds this iteration's frame.
@@ -1763,6 +1773,29 @@ async fn run_checker(
                                 );
                                 continue;
                             }
+                            // Sibling chain-reset (fork repair, ~200B). Same mandatory packet-ack as hist_page — it rides the reliable queue.
+                            if let Ok(((conversation_token, sealed), sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_chain_reset_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::ChainResetReceived {
+                                        conversation_token,
+                                        sealed,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                        sender_addr: src_addr,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
                             // Blind frames (blind_put/ack/get/srv, ≤~400B — always this small-frame path). Same MANDATORY packet-ack: they ride send_with_pubkey's reliable queue; an un-acked type retransmits forever and head-of-line-blocks chat.
                             if let Some((kind, payload, sender_pubkey)) =
                                 crate::network::fgtw::protocol::parse_any_blind_frame(msg_bytes)
@@ -2000,6 +2033,22 @@ async fn run_checker(
                                         &signature,
                                     ) {
                                         continue;
+                                    }
+
+                                    // Twin collapse (see recent_chat_frames above): the same frame arriving via direct AND relay inside the window is one message, not two.
+                                    {
+                                        let now = std::time::Instant::now();
+                                        recent_chat_frames.retain(|(_, at)| now.duration_since(*at) < CHAT_TWIN_WINDOW);
+                                        let mut token8 = [0u8; 8];
+                                        token8.copy_from_slice(&conversation_token[..8]);
+                                        let mut ct8 = [0u8; 8];
+                                        ct8.copy_from_slice(&blake3::hash(&ciphertext).as_bytes()[..8]);
+                                        let key = (token8, timestamp, ct8);
+                                        if recent_chat_frames.iter().any(|(k, _)| *k == key) {
+                                            crate::logf!("Status: collapsed twin chat frame (eagle_time {}) from {}", timestamp, src_addr);
+                                            continue;
+                                        }
+                                        recent_chat_frames.push((key, now));
                                     }
 
                                     // Capture the sender's key bytes before the Online update moves sender_pubkey — the Android notification below seeds the per-contact chirp from them.
