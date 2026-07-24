@@ -179,6 +179,7 @@ fn contact_state_schema() -> SectionSchema {
         .field("pin_genesis", TypeConstraint::AnyHash) // The generation pin: genesis op hash of the friendship's chain (docs/lifecycle.md). Absent = not yet pinned.
         .field("identity_ended", TypeConstraint::AnyUnsigned) // bool: the chain vanished after a fold — owner ended the identity. Absent = false.
         .field("identity_superseded", TypeConstraint::AnyUnsigned) // bool: a different-genesis chain claimed this name — a stranger. Absent = false.
+        .field("unread", TypeConstraint::AnyUnsigned) // u32: inbound messages not yet seen (conversation wasn't the active view when they landed). Absent = 0 (legacy contacts load as read).
 }
 
 /// Save contact state (mutable data) with schema validation
@@ -341,6 +342,12 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
             .set("owner_woven", true)
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
+    if contact.unread_count > 0 {
+        // Unread counter — written only when non-zero (absent reads back as 0), so legacy vaults and freshly-read conversations stay field-free.
+        builder = builder
+            .set("unread", contact.unread_count)
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
 
     let vsf_bytes = builder
         .encode()
@@ -465,6 +472,8 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
             was_complete_before: complete,
         });
     }
+    // Unread counter — absent (legacy vaults, fully-read conversations) reads as 0.
+    contact.unread_count = section.get_value::<u32>("unread").unwrap_or(0);
     // Friend-side blind deposits: (device ke, blob tensor, at e6) per multi-value field.
     for field in section.get_fields("blind") {
         if field.values.len() >= 3 {

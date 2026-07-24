@@ -323,10 +323,12 @@ class PhotonConnectionService : Service() {
      * [amplitudes] (the matching amplitude envelope) via VibrationEffect.createWaveform. That's the
      * "app plays it after wake" path: the tone is per-contact, the OS default never fires, and it works
      * even from deep Doze once the process is scheduled. A fixed notification id collapses a burst into
-     * one entry. No content beyond "New message": plaintext never reaches this layer and the handle
-     * stays off the lock screen; only the rendered audio/haptic came from Rust, never the sender key.
+     * one entry. [sender] / [text] are the real display name and decrypted message BY DESIGN: Rust now
+     * fires this post-decrypt (the pre-decrypt worker no longer notifies at all), and hiding content on
+     * the lock screen is the OS's job via its per-app sensitive-content setting. The sender key still
+     * never crosses — only its rendered audio/haptic and the display name do.
      */
-    fun postMessageNotification(wav: ByteArray, timings: LongArray, amplitudes: IntArray) {
+    fun postMessageNotification(wav: ByteArray, timings: LongArray, amplitudes: IntArray, sender: String, text: String) {
         if (PhotonActivity.inForeground) return
 
         // The Activity normally creates the silent channel first, but be self-sufficient: creation is
@@ -352,8 +354,8 @@ class PhotonConnectionService : Service() {
             PendingIntent.FLAG_IMMUTABLE
         )
         val notification = NotificationCompat.Builder(this, PhotonActivity.CHANNEL_ID)
-            .setContentTitle("Photon")
-            .setContentText("New message")
+            .setContentTitle(sender)
+            .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
