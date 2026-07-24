@@ -2270,6 +2270,10 @@ impl FluorApp for PhotonApp {
             if matches!(self.state, AppState::ContactPanel(_)) {
                 self.contact_boot_armed = false;
                 self.state = AppState::Conversation;
+                // The conversation is the active view again — clear any unread that slipped in (no-op when already 0).
+                if let Some(ci) = self.active_contact {
+                    self.clear_unread(ci);
+                }
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
@@ -2604,6 +2608,8 @@ impl FluorApp for PhotonApp {
                 crate::logf!("contact-tap: opening conversation with '{}'", self.contacts[ci].display_name());
                 self.active_contact = Some(ci);
                 self.state = AppState::Conversation;
+                // Opening the conversation is the interaction that clears unread (ring + float drop away on the next contacts-list frame).
+                self.clear_unread(ci);
                 self.change_focus(None);
                 // Refresh this contact's presence on conversation-enter so the header reflects reality promptly.
                 self.ping_contact(ci);
@@ -3091,6 +3097,10 @@ impl FluorApp for PhotonApp {
                         if matches!(self.state, AppState::ContactPanel(_)) {
                             self.contact_boot_armed = false;
                             self.state = AppState::Conversation;
+                            // Same re-entry clear as the Back button — the conversation is front-of-eyes again.
+                            if let Some(ci) = self.active_contact {
+                                self.clear_unread(ci);
+                            }
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
@@ -4270,7 +4280,7 @@ impl FluorApp for PhotonApp {
                 .as_ref()
                 .map(|t| t.chars.iter().collect::<String>().to_lowercase())
                 .unwrap_or_default();
-            let matching: Vec<usize> = self
+            let mut matching: Vec<usize> = self
                 .contacts
                 .iter()
                 .enumerate()
@@ -4282,6 +4292,8 @@ impl FluorApp for PhotonApp {
                 })
                 .map(|(i, _)| i)
                 .collect();
+            // FLOAT: unread conversations surface to the top. `matching` is the ONE place display order exists — the row loop draws from it AND stamps each row's hit id with the TRUE contact index it holds, so the tap handler resolves taps with no knowledge of the permutation. Stable sort preserves vault order within each group (incl. the self contact's relative position).
+            matching.sort_by_key(|&ci| u8::from(self.contacts[ci].unread_count == 0));
 
             // Clamp scroll over the FULL block (user section + rows + version footer), hard-stop at both ends. Down-scroll stops when the version footer (one row past the last row) plus a row of bottom margin reaches the screen bottom; up-scroll stops at rest (0), with the avatar at its natural top. MUST match the pre-chrome clamp above (`block_end = block_bottom_at_zero + row_h*2`) so both passes agree within a frame.
             let block_bottom_at_zero = rows.y0 as isize + matching.len() as isize * row_h;
@@ -4357,17 +4369,7 @@ impl FluorApp for PhotonApp {
                         Some(rows_clip),
                     );
                 }
-                let ring = ring_tier_colour(&self.contacts[ci]);
-                paint::draw_circle(
-                    &mut canvas,
-                    avatar_cx,
-                    cy,
-                    avatar_r + ring_thickness + if row_hovered { 1.0 } else { 0.0 },
-                    ring,
-                    Some(rows_clip),
-                );
-
-                // Handle name, vertically centred in the row, clipped to the list region — in this contact's relationship colour. Self-as-contact rows get the neutral anchor (no other party, no relationship).
+                // The contact's relationship colour — computed ahead of the rings because the unread band below borrows it (ears and eyes and now the unread cue all agree on the one per-contact colour). Self-as-contact rows get the neutral anchor (no other party, no relationship).
                 let row_colour = if self.contacts[ci].handle_hash == our_handle_hash {
                     self_colour()
                 } else {
@@ -4376,8 +4378,35 @@ impl FluorApp for PhotonApp {
                         &our_handle_hash,
                     ))
                 };
-                // "Pending…" reads in SHEAR (the honest oblique — tan 12°): a name-shaped placeholder must not look like a name. Hover reads as WEIGHT (500 → 700), not a fill.
-                let row_weight = if row_hovered { 700 } else { 500 };
+                // Unread = the double ring: a relationship-coloured band painted right after the avatar (under-composite → it shows in the annulus just outside the rim), with the presence ring pushed outward past it so both read as concentric rings. Event-shown, interaction-cleared — the band exists exactly while unread_count > 0, no timers.
+                let unread = self.contacts[ci].unread_count > 0;
+                let unread_band = ring_thickness * 2.0;
+                if unread {
+                    paint::draw_circle(
+                        &mut canvas,
+                        avatar_cx,
+                        cy,
+                        avatar_r + unread_band,
+                        row_colour,
+                        Some(rows_clip),
+                    );
+                }
+                let ring = ring_tier_colour(&self.contacts[ci]);
+                paint::draw_circle(
+                    &mut canvas,
+                    avatar_cx,
+                    cy,
+                    avatar_r
+                        + if unread { unread_band } else { 0.0 }
+                        + ring_thickness
+                        + if row_hovered { 1.0 } else { 0.0 },
+                    ring,
+                    Some(rows_clip),
+                );
+
+                // Handle name, vertically centred in the row, clipped to the list region — in this contact's relationship colour (computed above).
+                // "Pending…" reads in SHEAR (the honest oblique — tan 12°): a name-shaped placeholder must not look like a name. Hover reads as WEIGHT (500 → 700), not a fill — and an unread row holds that same 700 weight until opened.
+                let row_weight = if row_hovered || unread { 700 } else { 500 };
                 let row_style = if self.contacts[ci].has_real_name() {
                     TextStyle::new(text_size, row_colour).weight(row_weight).font("Oxanium")
                 } else {
@@ -9525,6 +9554,20 @@ impl PhotonApp {
         });
     }
 
+    /// Zero this contact's unread counter — called at every site where their conversation becomes the active view (contact tap, panel back/Esc re-entry). Persists only on an actual change, so the common already-read path costs nothing. Interaction-cleared by doctrine: this is the ONLY way the counter ever goes down.
+    fn clear_unread(&mut self, ci: usize) {
+        if let Some(contact) = self.contacts.get_mut(ci) {
+            if contact.unread_count > 0 {
+                contact.unread_count = 0;
+                if let Some(storage) = self.storage.as_ref() {
+                    if let Err(e) = crate::storage::contacts::save_contact_state(contact, storage) {
+                        crate::logf!("STORAGE: Failed to save unread clear: {}", e);
+                    }
+                }
+            }
+        }
+    }
+
     /// half of the avatar feature — the self avatar loads from the local vault; peers fetch by handle.
     fn spawn_avatar_download(&mut self, ci: usize) {
         let Some(c) = self.contacts.get(ci) else { return };
@@ -12730,6 +12773,34 @@ impl PhotonApp {
                                     crate::logf!("STORAGE: Failed to save messages: {}", e);
                                 }
                             }
+
+                            // Unread gate: is the user plausibly looking at THIS conversation right now? "Looking" = this contact's conversation (or its contact-scoped panel) is the active view AND, on desktop, the window is visible + focused. Event-shown, interaction-cleared doctrine: the counter only ever moves on a message landing or the user opening the conversation — no timers anywhere.
+                            let conversation_open = matches!(self.state, AppState::Conversation | AppState::ContactPanel(_))
+                                && self.active_contact == Some(contact_idx);
+                            #[cfg(not(target_os = "android"))]
+                            let looking = conversation_open && crate::platform::desktop_notify::window_attended();
+                            // Android v1: conversation-open alone — the Activity's foreground truth lives Kotlin-side (PhotonActivity.inForeground, which already suppresses the system notification); the unread gate adopts that signal if it ever grows a JNI mirror.
+                            #[cfg(target_os = "android")]
+                            let looking = conversation_open;
+                            if !contact.is_sibling && !looking {
+                                // A real friend message landed while nobody was looking — bump the persistent unread counter (contacts-list inner ring + float-to-top; cleared at conversation-open).
+                                contact.unread_count += 1;
+                                if let Some(storage) = self.storage.as_ref() {
+                                    if let Err(e) = crate::storage::contacts::save_contact_state(contact, storage) {
+                                        crate::logf!("STORAGE: Failed to save unread state: {}", e);
+                                    }
+                                }
+                            }
+
+                            // System notification, POST-DECRYPT: real sender display name + message text BY DESIGN — hiding content on the lock screen is the OS's job, and the pre-decrypt RX worker no longer notifies at all (it over-dinged on probes and sibling fleet-sync frames it couldn't tell apart). Same friend-message gate as the chirp below; the notify fns themselves gate on window-hidden/unfocused (desktop) or Activity-foreground (Kotlin) and dedup on msg_hp, so an unconditional call here can't double-ding.
+                            if !contact.is_sibling {
+                                let sender_name = contact.display_name();
+                                #[cfg(target_os = "android")]
+                                crate::platform::jni_android::notify_new_message(&msg_hp, contact.public_identity.as_bytes(), &sender_name, &msg.content);
+                                #[cfg(not(target_os = "android"))]
+                                crate::platform::desktop_notify::notify_new_message(&msg_hp, &sender_name, &msg.content);
+                            }
+
                             // Live fleet propagation: the friend only delivered this to the device in hand — our other devices hear it from us (pushed after the `chains` borrow ends, below).
                             sibling_push = Some((contact_idx, msg));
 

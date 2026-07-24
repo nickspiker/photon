@@ -1,6 +1,7 @@
-//! Desktop system notifications — the "ding while you're not looking" analog of Android's `notify_new_message`, with the same privacy stance: the banner is a generic "New message"; no sender name, handle, pubkey, or plaintext ever reaches the OS notification daemon (which logs, previews on lock screens, and syncs to who-knows-where).
+//! Desktop system notifications — the "ding while you're not looking" analog of Android's `notify_new_message`.
+//! Fired POST-DECRYPT from the UI receive path, so the banner carries the sender's display name and the message text BY DESIGN — hiding content on the lock screen is the OS notification daemon's job, not ours. The pre-decrypt RX worker carries nothing because it no longer notifies (probes and sibling fleet-sync frames used to over-ding from there).
 //! Zero-dependency by shelling to each platform's stock notifier (`notify-send` / `osascript` / PowerShell's WinRT toast) — the processes are fire-and-forget and their absence (minimal server installs) degrades to silence, never an error.
-//! Gated on the window being HIDDEN or UNFOCUSED — a notification about the conversation you're looking at is noise. The two flags live here as atomics because the decision point (the status RX worker) is not the UI thread that owns the truth.
+//! Gated on the window being HIDDEN or UNFOCUSED — a notification about the conversation you're looking at is noise. The two flags live here as atomics because historically the decision point (the status RX worker) was not the UI thread that owns the truth, and any thread may still call in.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -17,12 +18,17 @@ pub fn set_window_focused(focused: bool) {
     WINDOW_FOCUSED.store(focused, Ordering::Relaxed);
 }
 
-/// The last message identity we notified for, mirroring the Android dedupe: a dozing peer's retransmits redeliver the SAME logical message many times, and each would otherwise re-ding. Keyed on the message's chain position (`prev_msg_hp`), unique per logical message.
+/// True when the window is both visible AND focused — someone is plausibly looking at the app. The unread-count gate reads this alongside "is this conversation the active view" so a message landing behind a hidden or unfocused window still marks unread.
+pub fn window_attended() -> bool {
+    WINDOW_VISIBLE.load(Ordering::Relaxed) && WINDOW_FOCUSED.load(Ordering::Relaxed)
+}
+
+/// The last message identity we notified for, mirroring the Android dedupe: a dozing peer's retransmits redeliver the SAME logical message many times, and each would otherwise re-ding. Keyed on the message's chain-derived hash pointer, unique per logical message.
 static LAST_NOTIFIED: std::sync::Mutex<[u8; 32]> = std::sync::Mutex::new([0u8; 32]);
 
-/// Fire the platform "New message" notification, if anyone could actually be missing the message (window hidden or unfocused) and this message hasn't already dinged. Callable from any thread.
-pub fn notify_new_message(msg_hp: &[u8; 32]) {
-    if WINDOW_VISIBLE.load(Ordering::Relaxed) && WINDOW_FOCUSED.load(Ordering::Relaxed) {
+/// Fire the platform notification for a decrypted message — title = the sender's display name, body = the message text — if anyone could actually be missing it (window hidden or unfocused) and this message hasn't already dinged. Callable from any thread.
+pub fn notify_new_message(msg_hp: &[u8; 32], sender: &str, text: &str) {
+    if window_attended() {
         return;
     }
     {
@@ -32,7 +38,7 @@ pub fn notify_new_message(msg_hp: &[u8; 32]) {
         }
         *last = *msg_hp;
     }
-    post("Photon", "New message");
+    post(sender, text);
 }
 
 #[cfg(target_os = "linux")]
@@ -47,6 +53,9 @@ fn post(title: &str, body: &str) {
 #[cfg(target_os = "macos")]
 fn post(title: &str, body: &str) {
     // `display notification` needs no bundle/signing/notarization; attribution shows as Script Editor until we ship a proper .app with UNUserNotificationCenter.
+    // Title/body are now real sender/message text interpolated into an AppleScript string literal, so backslashes and quotes MUST be escaped or a message containing them breaks (or injects into) the script.
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let (title, body) = (esc(title), esc(body));
     let script = format!("display notification \"{body}\" with title \"{title}\"");
     let _ = std::process::Command::new("osascript")
         .args(["-e", &script])
@@ -58,6 +67,9 @@ fn post(title: &str, body: &str) {
 #[cfg(target_os = "windows")]
 fn post(title: &str, body: &str) {
     // WinRT toast via PowerShell — attribution rides PowerShell's AppUserModelID until we register our own (needs a Start-menu shortcut with an AUMID; packaging-time work). -WindowStyle Hidden keeps the transient console from flashing.
+    // Title/body are now real sender/message text landing inside PowerShell single-quoted literals: double the single quotes so message content can't terminate the literal.
+    let esc = |s: &str| s.replace('\'', "''");
+    let (title, body) = (esc(title), esc(body));
     let ps = format!(
         "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; \
          $x = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \

@@ -297,6 +297,8 @@ pub struct Contact {
     pub blind_in_flight: Option<([u8; 32], i64, bool)>,
     /// Runtime-only: this friend answered our probe with `found=0` (no deposit for this device). When every online+woven friend has missed AND no probe is in flight, S genuinely doesn't exist and genesis may run (probe-before-generate — a reset device must RECOVER S, never regenerate it while a deposit is reachable).
     pub blind_probe_missed: bool,
+    /// Count of real inbound friend messages that landed while this conversation was NOT front-of-eyes (conversation screen not active for this contact, or the window hidden/unfocused). Drives the contacts-list unread treatment: the inner relationship-coloured ring + heavier name + float-to-top — never a count glyph, never a timer. Cleared (and re-persisted) the moment the conversation becomes the active view; persisted in contact state so unread survives a restart. Probes and sibling fleet-sync frames never bump it.
+    pub unread_count: u32,
 }
 
 /// Contact identifier - BLAKE3 hash of the contact's public identity key This provides deterministic, collision-resistant identification
@@ -423,6 +425,7 @@ impl Contact {
             blind_deposited: false,       // Our blind not confirmed at this friend yet
             blind_in_flight: None,        // No blind op in flight
             blind_probe_missed: false,    // No probe answered found=0 yet
+            unread_count: 0,              // Nothing unseen yet
         }
     }
 
