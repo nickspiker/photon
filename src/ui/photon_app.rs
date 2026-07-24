@@ -4592,12 +4592,14 @@ impl FluorApp for PhotonApp {
                     ContactPage::Stats => {
                         let n = contact_page_rows(ContactPage::Stats);
                         let rows = layout.content_scrolled(n, settings_content_scroll).split_v([1.0; 9]);
-                        let sent = contact.messages.iter().filter(|m| m.is_outgoing).count();
-                        let recv = contact.messages.len() - sent;
-                        let delivered = contact.messages.iter().filter(|m| m.is_outgoing && m.delivered).count();
+                        // Hidden probe rows are bookkeeping, not conversation — keep them out of every human-facing count.
+                        let human: Vec<&crate::types::ChatMessage> = contact.messages.iter().filter(|m| m.content != crate::types::CHAIN_PROBE_MARKER).collect();
+                        let sent = human.iter().filter(|m| m.is_outgoing).count();
+                        let recv = human.len() - sent;
+                        let delivered = human.iter().filter(|m| m.is_outgoing && m.delivered).count();
                         let span_days = {
-                            let first = contact.messages.iter().map(|m| m.timestamp).min();
-                            let last = contact.messages.iter().map(|m| m.timestamp).max();
+                            let first = human.iter().map(|m| m.timestamp).min();
+                            let last = human.iter().map(|m| m.timestamp).max();
                             match (first, last) {
                                 (Some(a), Some(b)) if b > a => ((b - a) / (vsf::OSCILLATIONS_PER_SECOND as i64 * 86_400)).max(0) as usize,
                                 _ => 0,
@@ -4624,7 +4626,7 @@ impl FluorApp for PhotonApp {
                         };
                         // These rows should CONVERGE across your fleet devices — two devices showing different numbers here IS the sync bug, made visible.
                         settings_line(&mut canvas, ctx.text, rows[0], "Between you", tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                        settings_line(&mut canvas, ctx.text, rows[1], &format!("{} message(s) \u{00b7} {} sent \u{00b7} {} received", contact.messages.len(), sent, recv), hspan2, *theme::LABEL_COLOUR, 400);
+                        settings_line(&mut canvas, ctx.text, rows[1], &format!("{} message(s) \u{00b7} {} sent \u{00b7} {} received", human.len(), sent, recv), hspan2, *theme::LABEL_COLOUR, 400);
                         settings_line(&mut canvas, ctx.text, rows[2], &format!("{} of your messages delivered", delivered), hspan2, *theme::LABEL_COLOUR, 400);
                         settings_line(&mut canvas, ctx.text, rows[3], &format!("chatting across {} day(s)", span_days), hspan2, *theme::LABEL_COLOUR, 400);
                         settings_line(&mut canvas, ctx.text, rows[4], &history_line, hspan2, *theme::LABEL_COLOUR, 400);
@@ -4835,13 +4837,19 @@ impl FluorApp for PhotonApp {
                         );
 
                         // Lay messages out bottom-up so the newest sits at list_bottom. Clamp scroll offset to the actual overscroll range so a stale offset from a previous (larger) window size can't push every message above list_top on resize.
-                        let n = contact.messages.len();
+                        // Probe rows (hidden chain-weave records, persisted for re-ACK durability) never render — filter before layout so the scroll height matches what's drawn.
+                        let visible: Vec<&crate::types::ChatMessage> = contact
+                            .messages
+                            .iter()
+                            .filter(|m| m.content != crate::types::CHAIN_PROBE_MARKER)
+                            .collect();
+                        let n = visible.len();
                         let content_h = n as f32 * line_h;
                         let view_h = (list_bottom - list_top).max(0.0);
                         let max_scroll = (content_h - view_h).max(0.0);
                         let scroll = contact.message_scroll_offset.clamp(0.0, max_scroll);
                         let mut y = list_bottom - msg_size + scroll;
-                        for msg in contact.messages.iter().rev() {
+                        for msg in visible.iter().rev() {
                             if y < list_top - line_h {
                                 break; // scrolled above the visible region
                             }
@@ -8626,7 +8634,8 @@ impl PhotonApp {
                     .messages
                     .iter()
                     .rev()
-                    .filter(|m| !m.is_outgoing)
+                    // Probe rows are excluded from weave eligibility: they persist locally for re-ACK durability, but the PEER stores no outgoing row for its probe, so a woven probe ref would be unresolvable on their side — a guaranteed strand miss and chain fork.
+                    .filter(|m| !m.is_outgoing && m.content != crate::types::CHAIN_PROBE_MARKER)
                     .take(256)
                     .collect();
                 use rand::Rng;
@@ -8784,6 +8793,17 @@ impl PhotonApp {
         c.chain_woven = true;
         c.clutch_completed_at = Some(std::time::Instant::now()); // refresh the re-key cooldown thru the weave (armed at completion; this extends it)
         c.clutch_proof_resends_left = 0;
+        // §4.2 owner backfill: a weave sealed HERE makes this device the friendship's chain holder — stamp the claim if none exists (pre-§4.2 ceremonies never claimed), so siblings' rosters learn a REAL owner device and their status lines can name where to send from instead of guessing.
+        if !c.is_sibling && c.ceremony_owner.is_none() {
+            if let Some(our_device) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) {
+                let c = &mut self.contacts[contact_idx];
+                c.ceremony_owner = Some(our_device);
+                c.roster_updated = vsf::eagle_time_oscillations();
+            }
+        }
+        let Some(c) = self.contacts.get_mut(contact_idx) else {
+            return;
+        };
         crate::log("CHAIN-PROBE: chain woven — end-to-end verified, ceremony rebroadcast cancelled");
         // A fresh weave re-opens the blind conversation with this friend: re-probe for a deposit (reset side) and allow a fresh put (their reset wiped nothing of ours, but a re-key on OUR side after []n starts from scratch).
         c.blind_probe_missed = false;
@@ -11383,6 +11403,90 @@ impl PhotonApp {
         }
     }
 
+    /// Sibling fork repair, the APPLY half: deterministically rebuild the sibling 1:1 chains from `nonce`, reset the weave, persist, optionally echo the frame (once — the nonce dedup in the drain stops the ping-pong), and re-probe. Both sides run exactly this from the same nonce and land on byte-identical chains: synthetic "eggs" = BLAKE3-XOF(domain ‖ fleet_key ‖ nonce ‖ sorted sibling pids), fed thru the SAME from_clutch path a real ceremony uses. Fleet-key-derived is sound here because a sibling 1:1 is between two devices of ONE owner — the chain provides transport integrity, not inter-device secrecy. Rarangi rows are untouched: history survives, only chain state re-anchors. The 2MB avalanche expand runs inline (~1s, rare repair event — same UI-thread cost as the known ceremony hitch).
+    fn apply_sibling_chain_reset(&mut self, idx: usize, nonce: [u8; 32], echo: bool) {
+        let (Some(fleet_key), Some(kp)) = (self.fleet_key_cached(), self.device_keypair.as_ref()) else {
+            crate::log("CHAIN-RESET: missing fleet key or device key — cannot apply");
+            return;
+        };
+        let our_pid = crate::crypto::clutch::sibling_party_id(kp.public.as_bytes());
+        let device_pub = *kp.public.as_bytes();
+        let device_sec = *kp.secret.as_bytes();
+        let their_pid = self.contacts[idx].handle_hash;
+        let mut sorted = [our_pid, their_pid];
+        sorted.sort();
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"PHOTON_SIBLING_CHAIN_RESET_v0");
+        hasher.update(&fleet_key);
+        hasher.update(&nonce);
+        hasher.update(&sorted[0]);
+        hasher.update(&sorted[1]);
+        let mut egg_bytes = [0u8; 640];
+        hasher.finalize_xof().fill(&mut egg_bytes);
+        let eggs: Vec<[u8; 32]> = egg_bytes.chunks_exact(32).map(|c| { let mut e = [0u8; 32]; e.copy_from_slice(c); e }).collect();
+        crate::logf!("CHAIN-RESET: rebuilding sibling chains with {} (nonce {})", crate::fp(&self.contacts[idx].handle_proof), hex::encode(&nonce[..4]));
+        let chains = crate::types::friendship::FriendshipChains::from_clutch(&[our_pid, their_pid], &eggs);
+        let fid = chains.friendship_id;
+        let conversation_token = chains.conversation_token;
+        self.friendship_chains.retain(|(id, _)| *id != fid);
+        self.friendship_chains.push((fid, chains));
+        if let Some(storage) = self.storage.as_ref() {
+            if let Some((_, c)) = self.friendship_chains.iter().find(|(id, _)| *id == fid) {
+                if let Err(e) = crate::storage::friendship::save_friendship_chains(c, storage) {
+                    crate::logf!("CHAIN-RESET: persist failed: {}", e);
+                }
+            }
+        }
+        {
+            let contact = &mut self.contacts[idx];
+            contact.friendship_id = Some(fid);
+            contact.probe_sent = false;
+            contact.their_probe_seen = false;
+            contact.chain_advanced_by_ack = false;
+            contact.chain_woven = false;
+            contact.chain_fail_streak = 0;
+            contact.last_chain_reset_nonce = Some(nonce);
+            if let Some(storage) = self.storage.as_ref() {
+                let _ = crate::storage::contacts::save_contact(contact, storage);
+            }
+        }
+        if echo {
+            let sealed = match kete::encrypt_bytes(&nonce, &fleet_key) {
+                Ok(s) => s,
+                Err(e) => {
+                    crate::logf!("CHAIN-RESET: seal failed: {}", e);
+                    return;
+                }
+            };
+            match crate::network::fgtw::protocol::build_chain_reset_vsf(&conversation_token, sealed, &device_pub, &device_sec) {
+                Ok(vsf_bytes) => {
+                    if let (Some(checker), Some((primary, alt))) = (self.status_checker.as_ref(), self.contacts[idx].race_addrs()) {
+                        checker.send_history(crate::network::status::HistorySendRequest {
+                            peer_addr: primary,
+                            alt_addr: alt,
+                            recipient_pubkey: *self.contacts[idx].public_identity.as_bytes(),
+                            vsf_bytes,
+                        });
+                    }
+                }
+                Err(e) => crate::logf!("CHAIN-RESET: frame build failed: {}", e),
+            }
+        }
+        // Fresh chain, fresh weave: fire the hidden probe so the repaired pair proves itself end-to-end and seals.
+        self.maybe_send_chain_probe(idx);
+    }
+
+    /// Sibling fork repair, the INITIATE half: rate-limited nonce mint + local apply + frame send (the apply's echo path IS the send). The responder applies on receipt and echoes once; the initiator's nonce dedup swallows the echo. A lost frame self-heals: the fork persists, the detector re-fires past the rate-limit window with a fresh nonce.
+    fn initiate_sibling_chain_reset(&mut self, idx: usize) {
+        const RESET_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
+        if self.contacts[idx].last_chain_reset_sent.is_some_and(|t| t.elapsed() < RESET_COOLDOWN) {
+            return;
+        }
+        self.contacts[idx].last_chain_reset_sent = Some(std::time::Instant::now());
+        let nonce: [u8; 32] = rand::random();
+        self.apply_sibling_chain_reset(idx, nonce, true);
+    }
+
     /// Fleet history sweep: (re-)arm history recovery for every friend/self conversation so the driver walks each one from the head — served by a sibling when the friend can't. Early-stop makes a re-sweep of an already-complete conversation cost ONE page (zero new rows → complete again), so this fires freely on sibling-online edges and roster merges; conversations mid-walk are left alone.
     fn kick_fleet_history_sweep(&mut self, reason: &str) {
         let mut kicked = 0usize;
@@ -11838,6 +11942,8 @@ impl PhotonApp {
 
         // Chain-weave probe deferrals — the loop holds an immutable `checker` borrow of `self`, so the `&mut self` seal/probe helpers can't run inline; collect contact indices and process them after the loop, like ceremony_completions / lan_ping_indices already do.
         let mut chain_seal_indices: Vec<usize> = Vec::new(); // seal_chain_if_ready after loop
+        let mut chain_reset_initiate: Vec<usize> = Vec::new(); // fork detector hits — repair fired after loop (checker borrow)
+        let mut chain_reset_apply: Vec<(usize, [u8; 32], bool)> = Vec::new(); // (contact idx, nonce, echo_back) from ChainResetReceived — applied after loop
         let mut chain_probe_indices: Vec<usize> = Vec::new(); // maybe_send_chain_probe after loop
         // Parked-ceremony offer re-fires on a path-up edge (resend_clutch_offer needs &mut self) — same deferral discipline.
         let mut offer_refire_indices: Vec<usize> = Vec::new();
@@ -12220,7 +12326,11 @@ impl PhotonApp {
                         };
 
                         // Deduplication: we've already processed this exact message (UDP duplicate, or — the important case — the sender RETRANSMITTED because our ACK was lost). Don't re-process (that would double-advance), but DO re-send the ACK if this is the most recently acked message, so the lost-ACK case heals instead of the sender retrying until it gives up and its chain stays frozen.
-                        if chains.is_duplicate(&from_handle_hash, timestamp) {
+                        // DURABLE second gate: is_duplicate lives inside the chain object, and a ceremony reset / braid-in mints a FRESH chain with last_received_times = None — so a frame arriving again post-reset (direct + relay dual-path, or an inbox-drain replay) sailed past it and was processed against the wrong chain state, forking the pair (the 2026-07-23 sibling desync). The rarangi row store keys on the same eagle_time, persists, and survives every chain reset — a stored inbound row at this timestamp means this exact frame was already processed, whatever the in-memory chain thinks.
+                        let row_dup = self.contacts.get(contact_idx).map_or(false, |c| {
+                            c.messages.iter().any(|m| !m.is_outgoing && m.timestamp == timestamp)
+                        });
+                        if chains.is_duplicate(&from_handle_hash, timestamp) || row_dup {
                             // Re-ACK from the stored message, looked up by its eagle_time. Unlike the old single-slot last_acked (which only remembered the MOST RECENT ack and so dropped any earlier duplicate → permanent sender stall), every received message persists its own ack_hash, so ANY duplicate self-heals a lost ACK.
                             let stored = self.contacts.get(contact_idx).and_then(|c| {
                                 let ack = c
@@ -12323,6 +12433,16 @@ impl PhotonApp {
                             Ok(f) => f,
                             Err(e) => {
                                 crate::logf!("CHAT: VsfField parse error: {}", e);
+                                // FORK DETECTOR: the frame passed signature + chain-link verification but decrypted to garbage — the two sides hold different key material at this position. One hit can be a stray; consecutive hits are a fork. Threshold 2 → sibling contacts trigger the fleet-key chain_reset repair (deferred past the checker borrow); friends only log until the linearizer owns friend-side repair.
+                                if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                                    contact.chain_fail_streak = contact.chain_fail_streak.saturating_add(1);
+                                    if contact.chain_fail_streak >= 2 {
+                                        crate::logf!("CHAIN FORK SUSPECTED: {} — {} consecutive garbage decrypts past chain-link verify{}", crate::fp(&contact.handle_proof), contact.chain_fail_streak, if contact.is_sibling { " — initiating sibling chain reset" } else { " (friend-side repair waits for the fleet plane)" });
+                                        if contact.is_sibling {
+                                            chain_reset_initiate.push(contact_idx);
+                                        }
+                                    }
+                                }
                                 continue;
                             }
                         };
@@ -12330,6 +12450,10 @@ impl PhotonApp {
                         if field.name != "message" {
                             crate::logf!("CHAT: Expected field name 'message', got '{}'", field.name);
                             continue;
+                        }
+                        // A clean decrypt+parse clears the fork detector.
+                        if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                            contact.chain_fail_streak = 0;
                         }
 
                         // Extract values by type marker (not position)
@@ -12441,10 +12565,23 @@ impl PhotonApp {
                             need_sync_records_update = true;
                         }
 
-                        // Add message to contact's message list and persist — UNLESS this is the hidden chain-weave probe, which advances/ACKs the chain but must never surface a bubble or chime. For the probe we only flip `their_probe_seen` (their TX / our RX proven) and try to seal the chain.
+                        // Add message to contact's message list and persist — UNLESS this is the hidden chain-weave probe, which advances/ACKs the chain but must never surface a bubble or chime. For the probe we flip `their_probe_seen` (their TX / our RX proven), PERSIST a hidden row, and try to seal the chain.
                         if is_chain_probe {
                             if let Some(contact) = self.contacts.get_mut(contact_idx) {
                                 contact.their_probe_seen = true;
+                                // Persist the probe as a HIDDEN rarangi row carrying its ack_hash: without a row the duplicate handler has nothing to re-ACK from, so a probe whose ACK was lost froze the sender's chain at the pre-probe position forever — the sibling weave fork of 2026-07-23. Every UI/history/preview path already filters CHAIN_PROBE_MARKER, so the row never surfaces; it exists purely as the durable dedup + re-ACK record. No chime, no sibling push (probes stay device-pair-local).
+                                let probe_row = ChatMessage::new_with_timestamp(
+                                    crate::types::CHAIN_PROBE_MARKER.to_string(),
+                                    false,
+                                    timestamp,
+                                )
+                                .with_ack_hash(plaintext_hash);
+                                contact.insert_message_sorted(probe_row);
+                                if let Some(storage) = self.storage.as_ref() {
+                                    if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
+                                        crate::logf!("STORAGE: Failed to save probe row: {}", e);
+                                    }
+                                }
                             }
                             crate::log("CHAIN-PROBE: received peer's chain-weave probe — RX chain proven");
                             recv_seal_idx = Some(contact_idx);
@@ -14014,6 +14151,44 @@ impl PhotonApp {
                     }
                 }
 
+                // Sibling fork repair: a chain_reset frame arrived. Trust gates: outer signature already verified in the RX worker; here the sender must be a known SIBLING device and the sealed nonce must open under OUR fleet key (only fleet members can mint one). Application + echo are deferred past the drain (the repair rebuilds chains and sends frames — both blocked by live borrows here).
+                StatusUpdate::ChainResetReceived {
+                    conversation_token,
+                    sealed,
+                    sender_pubkey,
+                    sender_addr: _,
+                } => {
+                    let Some(idx) = self.contacts.iter().position(|c| c.is_sibling && c.knows_device(&sender_pubkey.key)) else {
+                        crate::log("CHAIN-RESET: frame from a non-sibling or unknown device — dropped");
+                        continue;
+                    };
+                    let Some(fleet_key) = self.fleet_key_cached() else {
+                        crate::log("CHAIN-RESET: no fleet key in hand — dropped (will heal on a later frame)");
+                        continue;
+                    };
+                    let nonce: [u8; 32] = match kete::decrypt_bytes(&sealed, &fleet_key).ok().and_then(|p| p.try_into().ok()) {
+                        Some(n) => n,
+                        None => {
+                            crate::log("CHAIN-RESET: sealed nonce failed to open under the fleet key — dropped");
+                            continue;
+                        }
+                    };
+                    // Token sanity: the frame must name OUR sibling 1:1 with this device, not some other conversation.
+                    let expected_token = self.device_keypair.as_ref().map(|kp| {
+                        let our_pid = crate::crypto::clutch::sibling_party_id(kp.public.as_bytes());
+                        crate::crypto::clutch::derive_conversation_token(&[our_pid, self.contacts[idx].handle_hash])
+                    });
+                    if expected_token != Some(conversation_token) {
+                        crate::log("CHAIN-RESET: token mismatch — dropped");
+                        continue;
+                    }
+                    if self.contacts[idx].last_chain_reset_nonce == Some(nonce) {
+                        // The echo of a reset we already applied (or a retransmit) — converged, stop the ping-pong.
+                        continue;
+                    }
+                    chain_reset_apply.push((idx, nonce, true));
+                }
+
                 // A history page arrived. Route by SENDER: a page from one of our own fleet devices opens under the FLEET key and merges VERBATIM (the sibling's view IS our view — same identity, no direction flip); a page from the friend opens under the friendship history key with direction flipped to our perspective. Friend pages must match an in-flight request; sibling pages that don't are the LIVE PUSH — a conversation advancing on another of our devices.
                 StatusUpdate::HistoryPageReceived {
                     conversation_token,
@@ -14595,6 +14770,15 @@ impl PhotonApp {
         }
         for idx in chain_seal_indices {
             self.seal_chain_if_ready(idx);
+        }
+        // Sibling fork repair (deferred past the checker borrow): apply inbound resets first (each echoes once so the initiator converges), then fire any detector-initiated resets (mint nonce + apply + send).
+        for (idx, nonce, echo) in chain_reset_apply {
+            self.apply_sibling_chain_reset(idx, nonce, echo);
+            changed = true;
+        }
+        for idx in chain_reset_initiate {
+            self.initiate_sibling_chain_reset(idx);
+            changed = true;
         }
         if fleet_sweep_due {
             self.kick_fleet_history_sweep("sibling online");
@@ -15286,8 +15470,8 @@ fn contact_status_line(
         return "can\u{2019}t complete \u{2014} they answer as a different identity; remove & re-add".to_string();
     }
     if !c.is_sibling && !c.chain_woven {
-        if let Some(owner) = c.ceremony_owner {
-            if Some(owner) != our_device {
+        match c.ceremony_owner {
+            Some(owner) if Some(owner) != our_device => {
                 let name = identity_seed
                     .map(|seed| crate::network::fgtw::fleet::device_name_default(&owner, seed))
                     .unwrap_or_else(|| "another device".to_string());
@@ -15297,6 +15481,11 @@ fn contact_status_line(
                     format!("weaving on {name}\u{2026}")
                 };
             }
+            // A sibling's roster says the friendship is woven but no owner claim survived (pre-§4.2 ceremony) — still HONEST: it is secured elsewhere, not "weaving" here. The owner backfill in seal_chain_if_ready names the device once the owner pushes a fresh roster.
+            None if c.owner_woven => {
+                return "secured on another of your devices \u{2014} replies visible here; send from there (for now)".to_string();
+            }
+            _ => {}
         }
     }
     c.clutch_status_detail()

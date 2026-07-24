@@ -2379,6 +2379,66 @@ pub fn parse_history_page_vsf(
     Ok(((conversation_token, request_id, sealed), sender_pubkey))
 }
 
+/// Build a `chain_reset` frame — the sibling fork repair (plans/fleet-plane phase 0). `sealed_nonce` is the 32-byte reset nonce AEAD-sealed under the FLEET key (kete::encrypt_bytes), so only a fleet member can mint or read one; the outer frame is device-signed like every sibling frame. Receiver semantics live in the app: rebuild the sibling 1:1 chains deterministically from the nonce, echo the same frame once, re-probe.
+pub fn build_chain_reset_vsf(
+    conversation_token: &[u8; 32],
+    sealed_nonce: Vec<u8>,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+
+    let mut section = VsfSection::new("chain_reset");
+    section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    let blob_len = sealed_nonce.len();
+    section.add_field(
+        "data",
+        VsfType::t_u3(vsf::Tensor::new(vec![blob_len], sealed_nonce)),
+    );
+
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build chain_reset VSF: {}", e))?;
+
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse + verify a `chain_reset` frame. Returns ((conversation_token, sealed_nonce), sender_pubkey); the blob only opens with the fleet key (AEAD failure = drop, non-member noise).
+pub fn parse_chain_reset_vsf(
+    vsf_bytes: &[u8],
+) -> Result<(([u8; 32], Vec<u8>), [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("chain_reset verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "chain_reset" {
+        return Err(format!(
+            "Expected 'chain_reset' section, got '{}'",
+            section_name
+        ));
+    }
+    let fields = &section.fields;
+
+    let conversation_token = field_hash32(fields, "tok", |v| matches!(v, VsfType::hg(_)))
+        .ok_or("chain_reset missing tok")?;
+    let sealed = fields
+        .iter()
+        .find(|f| f.name == "data")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::t_u3(tensor) => Some(tensor.data.clone()),
+            _ => None,
+        })
+        .ok_or("chain_reset missing data")?;
+
+    Ok(((conversation_token, sealed), sender_pubkey))
+}
+
 // ── Blind frames: friend-held storage of the OTP-blinded private identity secret S (crypto::blind). Four small signed frames, same canonical scheme as hist_req/hist_page (sign_file build, read_verified parse — vsf-gate compliant). blind_put deposits our 64-byte blind with a friend; blind_ack is the friend's DISK-COMMITTED confirmation (sent only after the serve-gate passed and the state persisted — this is what flips S Provisional→Live, so packet-ack transport delivery is NOT enough); blind_get asks a friend to serve our deposit back; blind_srv answers it, with found=0 as the explicit miss that drives probe-before-generate. ──
 
 /// Which of the four blind frames arrived. One RX arm handles all four; the UI dispatches on this.
