@@ -11,6 +11,8 @@ pub struct PartySlot {
     pub handle_hash: [u8; 32],
     /// 8 public keys from ClutchOffer for this slot's party
     pub offer: Option<ClutchOfferPayload>,
+    /// The DEVICE that signed this slot's offer — the ceremony's actual participant. Eggs fold a device-pubkey pair, and deriving "their device" from the PINNED contact device (public_identity, re-elected by every pong) desynced multi-device fleets: the friend pins device A while device B wins the ceremony → one egg differs → PROOF MISMATCH on an otherwise perfect round (mom↔zeno 2026-07-24). Both sides using the offer SIGNER agree by construction — the ceremony id already binds the offer pair. None on legacy-persisted slots → completion falls back to the pinned device (correct for single-device friends).
+    pub offer_device: Option<[u8; 32]>,
     /// Secrets from encapsulation FROM this slot's party (they encapsulated to local, local decapsulated)
     pub kem_secrets_from_them: Option<ClutchKemSharedSecrets>,
     /// Secrets from encapsulation TO this slot's party (local encapsulated to them)
@@ -25,6 +27,7 @@ impl PartySlot {
         Self {
             handle_hash,
             offer: None,
+            offer_device: None,
             kem_secrets_from_them: None,
             kem_secrets_to_them: None,
             kem_response_for_resend: None,

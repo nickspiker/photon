@@ -10553,7 +10553,11 @@ impl PhotonApp {
         let contact_hp = contact.handle_proof;
         let contact_id = contact.id.clone();
         let contact_handle = contact.display_name();
-        let their_device_pub = *contact.public_identity.as_bytes();
+        // The eggs bind a device-pubkey pair: use the device that SIGNED their offer (the ceremony's actual participant), never the pinned public_identity — pongs re-elect the pin, so a multi-device friend answering from an unpinned device desynced one egg and the proofs mismatched on a perfect round (mom↔zeno 2026-07-24). Legacy-persisted slots lack the signer → fall back to the pin, which is exact for single-device friends.
+        let their_device_pub = contact
+            .get_slot(&contact.handle_hash)
+            .and_then(|s| s.offer_device)
+            .unwrap_or(*contact.public_identity.as_bytes());
 
         // Extract all needed data from slots (cloning to release borrow)
         let our_slot = match contact.get_slot(&our_handle_hash) {
@@ -13186,9 +13190,10 @@ impl PhotonApp {
                                 contact.init_clutch_slots(our_handle_hash);
                             }
 
-                            // Store their offer in their slot
+                            // Store their offer in their slot, with its SIGNING device — the eggs bind the offer-origin device pair, never the pinned one (PartySlot::offer_device).
                             if let Some(slot) = contact.get_slot_mut(&their_handle_hash) {
                                 slot.offer = Some(their_offer.clone());
+                                slot.offer_device = Some(sender_pubkey);
                                 crate::logf!("CLUTCH: Stored offer from {} in slot", crate::fp(&contact.handle_proof));
                             }
 
@@ -13468,6 +13473,7 @@ impl PhotonApp {
                                         if let Some(slot) = contact.get_slot_mut(&their_handle_hash)
                                         {
                                             slot.offer = Some(their_offer.clone());
+                                            slot.offer_device = Some(sender_pubkey);
                                         }
                                         // Store their offer_provenance (was cleared, need to re-add)
                                         if !contact.offer_provenances.contains(&offer_provenance) {
@@ -13514,6 +13520,7 @@ impl PhotonApp {
                                         if let Some(slot) = contact.get_slot_mut(&their_handle_hash)
                                         {
                                             slot.offer = Some(their_offer.clone());
+                                            slot.offer_device = Some(sender_pubkey);
                                         }
                                         if !contact.offer_provenances.contains(&offer_provenance) {
                                             contact.offer_provenances.push(offer_provenance);
