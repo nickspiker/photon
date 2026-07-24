@@ -262,7 +262,104 @@ pub fn spawn(proxy: std::sync::Arc<dyn fluor::host::WakeSender<crate::ui::Photon
     windows_tray::spawn(proxy);
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(target_os = "macos")]
+mod macos_tray {
+    use std::sync::Arc;
+    use std::sync::OnceLock;
+
+    use fluor::host::WakeSender;
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{define_class, msg_send, AllocAnyThread, MainThreadMarker, MainThreadOnly};
+    use objc2_app_kit::{NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem};
+    use objc2_foundation::{ns_string, NSData, NSObject, NSSize};
+
+    /// The wake proxy — a process singleton like the Windows backend; the target object reads it from here so it stays `'static` without threading lifetimes thru objc.
+    static PROXY: OnceLock<Arc<dyn WakeSender<crate::ui::PhotonEvent>>> = OnceLock::new();
+    /// The status item + target, retained for the process (v1 parks them forever, same as the SNI handle).
+    static PARKED: OnceLock<usize> = OnceLock::new();
+
+    define_class!(
+        // The action target for the status button + menu items — AppKit requires an objc object with selectors; this is the smallest one that can carry them.
+        #[unsafe(super(NSObject))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "PhotonTrayTarget"]
+        struct TrayTarget;
+
+        impl TrayTarget {
+            #[unsafe(method(showPhoton:))]
+            fn show_photon(&self, _sender: Option<&AnyObject>) {
+                if let Some(proxy) = PROXY.get() {
+                    let _ = proxy.send(crate::ui::PhotonEvent::ShowWindow);
+                }
+            }
+
+            #[unsafe(method(exitPhoton:))]
+            fn exit_photon(&self, _sender: Option<&AnyObject>) {
+                // Killswitch-compliant, same as the SNI + Shell_NotifyIcon backends.
+                crate::log("TRAY: exit");
+                std::process::exit(0);
+            }
+        }
+    );
+
+    pub fn spawn(proxy: Arc<dyn WakeSender<crate::ui::PhotonEvent>>) {
+        if PROXY.set(proxy).is_err() {
+            return; // One icon per process.
+        }
+        // NSStatusItem is AppKit — main-thread-bound. spawn() is called from the UI thread, which winit REQUIRES to be the main thread on macOS, so this marker always resolves; the guard is belt-and-braces against a future off-thread caller.
+        let Some(mtm) = MainThreadMarker::new() else {
+            crate::log("TRAY: not on the main thread — no tray this session");
+            return;
+        };
+        unsafe {
+            let bar = NSStatusBar::systemStatusBar();
+            // NSVariableStatusItemLength = -1.0; the square constant clips the orb on some bars.
+            let item: Retained<NSStatusItem> = bar.statusItemWithLength(-1.0);
+            let target = TrayTarget::alloc(mtm);
+            let target: Retained<TrayTarget> = msg_send![target, init];
+            if let Some(button) = item.button(mtm) {
+                let bytes = include_bytes!("../../assets/icon-64.png");
+                let data = NSData::with_bytes(bytes);
+                if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+                    // Menu-bar icons render at ~18pt; setting the drawn size keeps the orb from occupying a 64pt slab.
+                    image.setSize(NSSize { width: 18.0, height: 18.0 });
+                    button.setImage(Some(&image));
+                } else {
+                    button.setTitle(ns_string!("\u{25CF}"));
+                }
+                let _: () = msg_send![&*button, setTarget: &*target];
+                let _: () = msg_send![&*button, setAction: objc2::sel!(showPhoton:)];
+            }
+            let menu = NSMenu::new(mtm);
+            let show = NSMenuItem::new(mtm);
+            show.setTitle(ns_string!("Show Photon"));
+            let _: () = msg_send![&*show, setTarget: &*target];
+            let _: () = msg_send![&*show, setAction: objc2::sel!(showPhoton:)];
+            menu.addItem(&show);
+            menu.addItem(&NSMenuItem::separatorItem(mtm));
+            let exit = NSMenuItem::new(mtm);
+            exit.setTitle(ns_string!("Exit"));
+            let _: () = msg_send![&*exit, setTarget: &*target];
+            let _: () = msg_send![&*exit, setAction: objc2::sel!(exitPhoton:)];
+            menu.addItem(&exit);
+            // With a menu attached, LEFT click also opens it — macOS convention (there is no separate left-activate once a menu is set, and fighting that needs a click-mask dance not worth it for v1). "Show Photon" is the top item, so surfacing is two clicks.
+            item.setMenu(Some(&menu));
+            // Park the retained objects for the process lifetime.
+            let _ = PARKED.set(Retained::into_raw(item) as usize);
+            std::mem::forget(target);
+        }
+        crate::log("TRAY: orb parked in the menu bar (NSStatusItem)");
+    }
+}
+
+/// macOS: NSStatusItem in the menu bar — the icon opens a Show/Exit menu (macOS convention once a menu is attached); main-thread-bound, called from the UI thread which IS the main thread under winit.
+#[cfg(target_os = "macos")]
+pub fn spawn(proxy: std::sync::Arc<dyn fluor::host::WakeSender<crate::ui::PhotonEvent>>) {
+    macos_tray::spawn(proxy);
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 pub fn spawn(_proxy: std::sync::Arc<dyn fluor::host::WakeSender<crate::ui::PhotonEvent>>) {
-    crate::log("TRAY: no backend for this platform yet (macOS NSStatusItem pending) — residency still works via relaunch-to-surface");
+    crate::log("TRAY: no backend for this platform — residency still works via relaunch-to-surface");
 }
