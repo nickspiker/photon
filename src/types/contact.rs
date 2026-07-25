@@ -281,6 +281,8 @@ pub struct Contact {
     pub last_chain_reset_nonce: Option<[u8; 32]>,
     /// Runtime-only rate limiter: when we last INITIATED a chain reset toward this contact, so a storm of garbage frames can't spam repair rounds. One initiation per window; the detector re-fires after it if the fork persists.
     pub last_chain_reset_sent: Option<std::time::Instant>,
+    /// Runtime-only rate limiter for anti-entropy full-resync kicks (eagle time of the last digest-mismatch kick) — a peer that persistently can't serve re-fires at a polite cadence instead of every pong.
+    pub digest_kick_osc: i64,
     /// Runtime-only stall counter: consecutive ping cycles spent in `Pending` with our offer sent, a validated direct path up, and still no offer from the peer. The ping cycle re-fires our offer each time this crosses its threshold (then zeroes it) — the pong-driven offer re-send never triggers for a peer whose pongs don't flow, and a one-shot offer whose PT transfer died leaves the ceremony parked forever. Reset whenever the stall condition doesn't hold.
     pub clutch_offer_stall_cycles: u8,
     /// Friend-assisted history recovery state machine (newest-first cursor pagination from the friend's copy). `None` = no recovery running/known. Runtime struct; the durable cursor + complete flag persist as `hist_oldest` / `hist_complete` in contact state.
@@ -418,6 +420,7 @@ impl Contact {
             chain_fail_streak: 0,
             last_chain_reset_nonce: None,
             last_chain_reset_sent: None,
+            digest_kick_osc: 0,
             history_recovery: None,       // No history recovery running
             clutch_completed_at: None,         // Ceremony not yet complete
             is_sibling: false,            // A friend, unless made via new_sibling

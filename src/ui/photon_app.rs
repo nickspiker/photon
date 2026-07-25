@@ -9409,7 +9409,7 @@ impl PhotonApp {
         use crate::network::fgtw::protocol::SyncRecord;
 
         let mut records = Vec::new();
-        for (_fid, chains) in &self.friendship_chains {
+        for (fid, chains) in &self.friendship_chains {
             // Get the max last_received_time across all participants This is when we last received ANY message in this conversation
             let max_time = chains
                 .last_received_times()
@@ -9420,9 +9420,31 @@ impl PhotonApp {
                 });
 
             if let Some(last_received_osc) = max_time {
+                // Anti-entropy digest over the conversation's rows: order-free XOR fold of blake3(timestamp ‖ content_hash), probe rows excluded (they never sync) and DIRECTION excluded (both sides hold the same set with flipped flags). Digests equal ⇒ provably the same message set; the pong receiver full-walks recovery on mismatch.
+                let (row_count, row_digest) = self
+                    .contacts
+                    .iter()
+                    .find(|c| c.friendship_id == Some(*fid))
+                    .map(|c| {
+                        let mut fold = [0u8; 32];
+                        let mut n: u32 = 0;
+                        for m in c.messages.iter().filter(|m| m.content != crate::types::CHAIN_PROBE_MARKER) {
+                            let mut h = blake3::Hasher::new();
+                            h.update(&m.timestamp.to_le_bytes());
+                            h.update(blake3::hash(m.content.as_bytes()).as_bytes());
+                            for (f, b) in fold.iter_mut().zip(h.finalize().as_bytes()) {
+                                *f ^= b;
+                            }
+                            n += 1;
+                        }
+                        (n, fold)
+                    })
+                    .unwrap_or((0, [0u8; 32]));
                 records.push(SyncRecord {
                     conversation_token: chains.conversation_token,
                     last_received_osc,
+                    row_count,
+                    row_digest,
                 });
             }
         }
@@ -12218,7 +12240,7 @@ impl PhotonApp {
                     // Stall recovery (runs EVERY ping that carries sync records, not just the offline→online edge): each record is the peer's contiguous tip (last_received_osc = "I have everything in order up to here"). Re-arm any pending message of ours that's newer than that tip AND has exhausted its retransmit attempts — so a gap-filler the sender already gave up on gets resent, and a receiver stuck behind a permanently-lost message un-sticks. collect_due_retransmits (the tick path) then actually sends the revived messages.
                     let now_osc = vsf::eagle_time_oscillations();
                     for record in &sync_records {
-                        if let Some((_, chains)) = self
+                        if let Some((fid, chains)) = self
                             .friendship_chains
                             .iter_mut()
                             .find(|(_, c)| c.conversation_token == record.conversation_token)
@@ -12226,6 +12248,40 @@ impl PhotonApp {
                             let n = chains.rearm_pending_after(record.last_received_osc, now_osc);
                             if n > 0 {
                                 crate::logf!("CHAT: re-armed {} given-up pending msg(s) past peer tip {} (stall recovery)", n, record.last_received_osc);
+                            }
+                            // ANTI-ENTROPY: the pong carries the peer's (row_count, XOR-fold) for this conversation. A digest mismatch means the two sides provably hold DIFFERENT message sets — the heuristic cursor walk left a hole (the greyed sends peer_m never got, 2026-07-25) — so force a FULL recovery walk (early-stop disabled). Zero count+digest = legacy peer, no comparison. Cooldown per contact so a persistent mismatch (peer can't serve) re-fires at a polite cadence instead of every pong.
+                            if record.row_count != 0 || record.row_digest != [0u8; 32] {
+                                let fid = *fid;
+                                if let Some(c) = self.contacts.iter_mut().find(|c| c.friendship_id == Some(fid)) {
+                                    if !c.is_sibling && c.chain_woven {
+                                        let mut fold = [0u8; 32];
+                                        let mut n_rows: u32 = 0;
+                                        for m in c.messages.iter().filter(|m| m.content != crate::types::CHAIN_PROBE_MARKER) {
+                                            let mut h = blake3::Hasher::new();
+                                            h.update(&m.timestamp.to_le_bytes());
+                                            h.update(blake3::hash(m.content.as_bytes()).as_bytes());
+                                            for (f, b) in fold.iter_mut().zip(h.finalize().as_bytes()) {
+                                                *f ^= b;
+                                            }
+                                            n_rows += 1;
+                                        }
+                                        let mismatch = n_rows != record.row_count || fold != record.row_digest;
+                                        const DIGEST_KICK_COOLDOWN_OSC: i64 = 120 * vsf::OSCILLATIONS_PER_SECOND as i64;
+                                        let idle = c.history_recovery.as_ref().map_or(true, |r| r.complete);
+                                        if mismatch && idle && now_osc.saturating_sub(c.digest_kick_osc) > DIGEST_KICK_COOLDOWN_OSC {
+                                            c.digest_kick_osc = now_osc;
+                                            crate::logf!("HISTORY: digest mismatch with {} (ours {} rows, theirs {}) — full resync walk", crate::fp(&c.handle_proof), n_rows, record.row_count);
+                                            c.history_recovery = Some(crate::types::HistoryRecovery {
+                                                oldest_recovered_osc: i64::MAX,
+                                                complete: false,
+                                                in_flight: None,
+                                                next_request_osc: 0,
+                                                urgent: true,
+                                                was_complete_before: false,
+                                            });
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
