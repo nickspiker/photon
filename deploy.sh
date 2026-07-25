@@ -22,8 +22,8 @@ sed -i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${FULL_VERSION}\"
 cargo update --workspace --quiet 2>/dev/null || true
 git add Cargo.toml Cargo.lock
 git commit -q -m "release: v${SHIP_VERSION} (${FULL_VERSION})"
-# Any failure from here rolls the release commit back — the tree returns to its pre-deploy state and the next attempt re-bumps cleanly.
-trap 'echo ""; echo "DEPLOY FAILED — rolling back the release commit."; git reset --hard HEAD~1' ERR
+# Any failure from here undoes ONLY the version-bump commit — the tree returns to its pre-deploy version and the next attempt re-bumps cleanly. NEVER `reset --hard`: the reflink snapshot invites editing the live tree WHILE the deploy runs, so a hard reset would silently DESTROY that in-flight work (it did — lost edits on failed deploys). `--soft` drops the commit but keeps every change; `checkout HEAD -- Cargo.toml Cargo.lock` then reverts the ONLY two files the bump touched, leaving all other edits untouched. The failing line + command is named so a multi-target deploy doesn't leave you guessing WHICH build tore (the whole phase streams; the failing line just scrolls past otherwise).
+trap 'rc=$?; echo ""; echo "DEPLOY FAILED at line $LINENO (exit $rc): ${BASH_COMMAND}"; echo "undoing the version bump (working tree preserved)."; git reset --soft HEAD~1; git checkout HEAD -- Cargo.toml Cargo.lock' ERR
 echo "Deploying version: $FULL_VERSION (was $CURRENT_VERSION)"
 
 

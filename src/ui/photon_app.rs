@@ -77,10 +77,12 @@ fn version_dozenal_glyphs() -> String {
 }
 
 /// Spell `n` in dozenal digit names, most-significant first (e.g. dozenal `21` → "Zilor Zila"). The written-out companion to [`dozenal_glyphs`].
-/// Number of pips in each posture meter (Security / Recovery on the Ready strip): low / medium / high.
+/// Number of pips in each posture meter (Security / Recovery): low / medium / high. Kept for the dedicated Security page after the meters were pulled off the Ready strip (they read as ambient noise there).
+#[allow(dead_code)]
 const POSTURE_PIPS: usize = 3;
 
 /// Filled-pip colour for a meter showing `filled` of [`POSTURE_PIPS`].
+#[allow(dead_code)]
 fn posture_colour(filled: usize) -> u32 {
     match filled {
         0 | 1 => *theme::POSTURE_LOW_COLOUR,
@@ -93,6 +95,7 @@ fn posture_colour(filled: usize) -> u32 {
 /// * Recovery — how hard it is for the *owner* to lose this identity for good. For a single device it is whether the root survives a factory reset: macOS's IOPlatformUUID is firmware and re-derives after a wipe (2); Linux machine-id, Windows MachineGuid and Android's ANDROID_ID are software / reset-volatile (1). Device redundancy (Mirrored), a durable anchor (desktop/PIPE) and social vouching raise this toward 3.
 ///
 /// This is the single seam multi-device, vouching and PIPE plug into: they change what this returns and nothing else.
+#[allow(dead_code)]
 fn identity_posture() -> (usize, usize) {
     let security = 1; // readable root on every platform today
     #[cfg(target_os = "macos")]
@@ -756,6 +759,12 @@ pub struct PhotonApp {
     inbox_check_rx: std::sync::mpsc::Receiver<Vec<crate::network::fgtw::FleetInboxEvent>>,
     /// FGTW connectivity state — flipped by `HandleQuery::try_recv_online`. Drives the top-left chrome orb's colour (red offline / green online). Starts false; the background worker reports the first real status within the first second of launch.
     online: bool,
+    /// A clone of the Photon brand orb (chrome's default app_icon) kept so the orb can be RESTORED after a conversation swapped it for the peer's avatar. `None` if the orb asset failed to decode.
+    photon_orb: Option<fluor::host::icon::Icon>,
+    /// Which contact the top-left orb currently shows (its avatar + their presence-tier ring). `None` = the Photon orb + our own FGTW connectivity ring. Diffed each tick so the Icon rebuild happens only on a change, not every frame.
+    orb_contact: Option<usize>,
+    /// Whether the orb's current contact had an avatar when the orb was last built — part of the diff key so a mid-conversation avatar download upgrades the orb from the gradient placeholder.
+    orb_had_avatar: bool,
     /// Contacts-page handle search/add textbox (Ready state). Distinct from `textbox` so content doesn't bleed between Launch (handle being attested) and Ready (handle being added as a contact).
     contacts_textbox: Option<Textbox>,
     /// Plus button to the right of `contacts_textbox` — clicking it (or pressing Enter in the textbox) triggers the add-contact flow (`HandleQuery::search`). Will eventually carry an idle "+" glyph and an in-progress rotating-hourglass animation (legacy port from `compositing.rs`); that lands when `ProgressButton` gets extracted to fluor.
@@ -1127,6 +1136,9 @@ impl PhotonApp {
             },
             inbox_check_rx: std::sync::mpsc::channel().1,
             online: false,
+            photon_orb: None,
+            orb_contact: None,
+            orb_had_avatar: false,
             contacts_textbox: None,
             message_textbox: None,
             contacts_plus_btn: None,
@@ -1764,6 +1776,8 @@ impl FluorApp for PhotonApp {
         }
         // Top-left orb's ring doubles as the FGTW connectivity indicator. Initialize red/offline; `try_recv_online` flips to green once the FGTW reports the device is reachable.
         chrome.set_orb_tint(orb_tint_for(false));
+        // Keep a clone of the brand orb so a conversation can swap in the peer's avatar and this restores it on the way out.
+        self.photon_orb = chrome.app_icon.clone();
         self.chrome = Some(chrome);
 
         // Launch-screen widgets: handle textbox + attest button. Constructed with placeholder geometry; real geometry lands in `update_widget_layout` (called below and on every resize). Hit IDs are allocated from the shared counter AFTER chrome's four — chrome currently takes 1..=4, launch widgets get 5..=6, contacts widgets get 7..=8.
@@ -3375,6 +3389,9 @@ impl FluorApp for PhotonApp {
         let now = Instant::now();
         let mut needs_redraw = false;
 
+        // Point the top-left orb at the current subject (peer avatar + their presence ring in a conversation, else the Photon orb + our connectivity). Self-diffing — a no-op unless the contact / avatar / screen changed.
+        self.update_orb();
+
         // Toast screen-change watch: capture the screen the toast first renders on; a later mismatch (user navigated) clears it. Clicks/scrolls/zoom never clear a toast — see clear_toast.
         if self.ready_toast.is_some() {
             let here = std::mem::discriminant(&self.state);
@@ -4322,8 +4339,18 @@ impl FluorApp for PhotonApp {
                 })
                 .map(|(i, _)| i)
                 .collect();
-            // FLOAT: unread conversations surface to the top. `matching` is the ONE place display order exists — the row loop draws from it AND stamps each row's hit id with the TRUE contact index it holds, so the tap handler resolves taps with no knowledge of the permutation. Stable sort preserves vault order within each group (incl. the self contact's relative position).
-            matching.sort_by_key(|&ci| u8::from(self.contacts[ci].unread_count == 0));
+            // ORDER: unread conversations float to the top, then everyone sorts by MOST-RECENT activity (last message either way — a fresh reply or a fresh receipt lifts the contact). `matching` is the ONE place display order exists — the row loop draws from it AND stamps each row's hit id with the TRUE contact index it holds, so the tap handler resolves taps with no knowledge of the permutation. The key is (unread-first, newest-activity-first); i64::MIN for a contact with no messages sinks it below any conversation.
+            matching.sort_by_key(|&ci| {
+                let c = &self.contacts[ci];
+                let last_activity = c
+                    .messages
+                    .iter()
+                    .filter(|m| m.content != crate::types::CHAIN_PROBE_MARKER)
+                    .map(|m| m.timestamp)
+                    .max()
+                    .unwrap_or(i64::MIN);
+                (u8::from(c.unread_count == 0), std::cmp::Reverse(last_activity))
+            });
 
             // Clamp scroll over the FULL block (user section + rows + version footer), hard-stop at both ends. Down-scroll stops when the version footer (one row past the last row) plus a row of bottom margin reaches the screen bottom; up-scroll stops at rest (0), with the avatar at its natural top. MUST match the pre-chrome clamp above (`block_end = block_bottom_at_zero + row_h*2`) so both passes agree within a frame.
             let block_bottom_at_zero = rows.y0 as isize + matching.len() as isize * row_h;
@@ -4408,31 +4435,29 @@ impl FluorApp for PhotonApp {
                         &our_handle_hash,
                     ))
                 };
-                // Unread = the double ring: a relationship-coloured band painted right after the avatar (under-composite → it shows in the annulus just outside the rim), with the presence ring pushed outward past it so both read as concentric rings. Event-shown, interaction-cleared — the band exists exactly while unread_count > 0, no timers.
+                let _ = row_colour;
+                // Presence ring at the rim (connectivity tier), then — if unread — a MAGENTA ring OUTSIDE it (the new-message cue never overlaps or recolours the connectivity ring). Under-composite paints topmost-first, so the presence disc is drawn before the larger magenta disc and the magenta only shows in its outer annulus. Event-shown, cleared on conversation-open.
                 let unread = self.contacts[ci].unread_count > 0;
                 let unread_band = ring_thickness * 2.0;
-                if unread {
-                    paint::draw_circle(
-                        &mut canvas,
-                        avatar_cx,
-                        cy,
-                        avatar_r + unread_band,
-                        row_colour,
-                        Some(rows_clip),
-                    );
-                }
                 let ring = ring_tier_colour(&self.contacts[ci]);
                 paint::draw_circle(
                     &mut canvas,
                     avatar_cx,
                     cy,
-                    avatar_r
-                        + if unread { unread_band } else { 0.0 }
-                        + ring_thickness
-                        + if row_hovered { 1.0 } else { 0.0 },
+                    avatar_r + ring_thickness + if row_hovered { 1.0 } else { 0.0 },
                     ring,
                     Some(rows_clip),
                 );
+                if unread {
+                    paint::draw_circle(
+                        &mut canvas,
+                        avatar_cx,
+                        cy,
+                        avatar_r + ring_thickness + unread_band,
+                        *theme::RING_UNREAD_COLOUR,
+                        Some(rows_clip),
+                    );
+                }
 
                 // Handle name, vertically centred in the row, clipped to the list region — in this contact's relationship colour (computed above).
                 // "Pending…" reads in SHEAR (the honest oblique — tan 12°): a name-shaped placeholder must not look like a name. Hover reads as WEIGHT (500 → 700), not a fill — and an unread row holds that same 700 weight until opened.
@@ -4520,38 +4545,7 @@ impl FluorApp for PhotonApp {
                 ctx.text.draw_text_center(&mut canvas, &label, cx, cy, &TextStyle::new(font_size, CLOCK_TEXT).weight(600).font("Oxanium"), None, None);
             }
 
-            // Security & Recovery posture meters, bottom-right of the Ready strip (the dozenal version sits bottom-left). Two orthogonal axes — see `identity_posture`. Drawn into `target` at full opacity (unlike the watermark version) so they read as a real, glanceable status affordance, aligned to the version's baseline band. Read-only for now; the tap-to-device-sheet lands with the first modal primitive.
-            {
-                let (sec, rec) = identity_posture();
-                let label_size = version_size;
-                let pip_r = version_size * 0.30;
-                let pip_pitch = pip_r * 2.6;
-                let pips_span = pip_pitch * (POSTURE_PIPS as f32 - 1.0) + pip_r * 2.0;
-                let lp_gap = version_size * 0.5; // label → first pip
-                let group_gap = version_size * 1.2; // Sec group → Rec group
-                let w_sec = ctx
-                    .text
-                    .measure_text("Sec", &TextStyle::new(label_size, 0).weight(500).font("Oxanium"));
-                let w_rec = ctx
-                    .text
-                    .measure_text("Rec", &TextStyle::new(label_size, 0).weight(500).font("Oxanium"));
-                let total = w_sec + lp_gap + pips_span + group_gap + w_rec + lp_gap + pips_span;
-                // Inset by 2× the version's margin (right + bottom) to clear the now-2×-larger bottom-right squircle corner — the same move the top-left orb made for its enlarged corner. The bottom-left version stays put (it sits by the small BL corner).
-                let mut x = buf_w as f32 - version_size * 2.0 - total;
-                // Centre sits a clean 2·version_size up from the bottom — matching the 2·version_size right inset. Independent of `version_cy` (which carries the version's bottom-edge anchor offset); the pip rows + labels here are centre-anchored, so this is a direct centre inset.
-                let strip_cy = buf_h as f32 - version_size * 2.0;
-                for (label, w_label, filled) in [("Sec", w_sec, sec), ("Rec", w_rec, rec)] {
-                    ctx.text.draw_text_left(&mut canvas, label, x, strip_cy, &TextStyle::new(label_size, fluor::theme::HINT_COLOUR).weight(500).font("Oxanium"), None, None);
-                    x += w_label + lp_gap;
-                    let on = posture_colour(filled);
-                    for i in 0..POSTURE_PIPS {
-                        let pcx = x + pip_r + i as f32 * pip_pitch;
-                        let colour = if i < filled { on } else { *theme::POSTURE_OFF_COLOUR };
-                        paint::draw_circle(&mut canvas, pcx, strip_cy, pip_r, colour, None);
-                    }
-                    x += pips_span + group_gap;
-                }
-            }
+            // (The Security / Recovery posture meters that used to sit bottom-right were removed — the security posture belongs on a dedicated Security page, not as ambient bottom-strip dots that read as noise. identity_posture/posture_colour/POSTURE_PIPS stay defined for that page.)
         }
 
         // Conversation screen — shows the selected contact's name, clutch state, and (eventually) messages.
@@ -5933,8 +5927,11 @@ impl PhotonApp {
             }
             while let Some(online) = hq.try_recv_online() {
                 self.online = online;
-                if let Some(chrome) = self.chrome.as_mut() {
-                    chrome.set_orb_tint(orb_tint_for(online));
+                // Only drive the SELF-connectivity ring when the orb isn't currently a peer's avatar (a conversation owns the orb via update_orb); otherwise this would strobe our green/red over their presence ring.
+                if self.orb_contact.is_none() {
+                    if let Some(chrome) = self.chrome.as_mut() {
+                        chrome.set_orb_tint(orb_tint_for(online));
+                    }
                 }
                 needs_redraw = true;
             }
@@ -9389,8 +9386,68 @@ impl PhotonApp {
         self.ready_toast_screen = None;
     }
 
+    /// Point the top-left orb at the right subject: in a conversation it becomes the PEER's avatar with a ring in THEIR presence-tier colour (their online state, not ours); everywhere else it's the Photon brand orb with our own FGTW-connectivity ring. Diffed on (contact, has-avatar) so the Icon rebuild only fires on a real change, not every frame.
+    fn update_orb(&mut self) {
+        let target: Option<usize> = match self.state {
+            AppState::Conversation | AppState::ContactPanel(_) => self
+                .active_contact
+                .filter(|&ci| ci < self.contacts.len() && !self.contacts[ci].is_sibling),
+            _ => None,
+        };
+        // Fold "does this contact have an avatar yet" into the diff key so the orb upgrades from the gradient placeholder to the real avatar the moment it finishes downloading mid-conversation.
+        let has_avatar = target.map_or(false, |ci| self.contacts[ci].avatar_pixels.is_some());
+        if (target, has_avatar) == (self.orb_contact, self.orb_had_avatar) {
+            return;
+        }
+        self.orb_contact = target;
+        self.orb_had_avatar = has_avatar;
+        let Some(chrome) = self.chrome.as_mut() else { return };
+        match target {
+            Some(ci) => {
+                let c = &self.contacts[ci];
+                // VSF-RGB source (256² avatar, or the deterministic gradient placeholder) → α+darkness packed, exactly the brand orb's format, so the chrome renders it thru the identical pipeline.
+                let (src, diam): (Vec<u8>, usize) = match c.avatar_pixels.as_ref() {
+                    Some(px) if px.len() == crate::ui::avatar::AVATAR_SIZE * crate::ui::avatar::AVATAR_SIZE * 3 => {
+                        (px.clone(), crate::ui::avatar::AVATAR_SIZE)
+                    }
+                    _ => {
+                        let d = 64usize;
+                        (gradient_avatar_rgb(proof_gradient_seed(&c.handle_proof), d), d)
+                    }
+                };
+                let pixels: Vec<u32> = src
+                    .chunks_exact(3)
+                    .map(|p| {
+                        0xFF00_0000
+                            | (((255 - p[0]) as u32) << 16)
+                            | (((255 - p[1]) as u32) << 8)
+                            | ((255 - p[2]) as u32)
+                    })
+                    .collect();
+                let ring = ring_tier_colour(c);
+                let online = c.is_online;
+                chrome.app_icon = Some(fluor::host::icon::Icon {
+                    width: diam as u32,
+                    height: diam as u32,
+                    pixels,
+                });
+                chrome.set_orb_tint(fluor::host::chrome::OrbTint::Custom { ring, brighten: online });
+            }
+            None => {
+                chrome.app_icon = self.photon_orb.clone();
+                chrome.set_orb_tint(orb_tint_for(self.online));
+            }
+        }
+    }
+
     fn change_focus(&mut self, new: Option<HitId>) -> bool {
         if new == self.focused {
+            // No focus change — but a re-tap on the ALREADY-focused textbox must still re-raise the keyboard (dismissed by a back-press) and reset the IME buffer. Fire those one-shots and return; skip the focus-walk (nothing moved).
+            if self.is_textbox(new) {
+                self.pending_keyboard_request = Some(true);
+                self.pending_input_reset = true;
+                return true;
+            }
             return false;
         }
         let old = self.focused;
@@ -9398,8 +9455,13 @@ impl PhotonApp {
         let is_textbox = self.is_textbox(new);
         #[cfg(feature = "development")]
         crate::logf!("FOCUS: {} -> {} (textbox {} -> {})", format!("{:?}", old), format!("{:?}", new), was_textbox, is_textbox);
-        if was_textbox != is_textbox {
-            self.pending_keyboard_request = Some(is_textbox);
+        if is_textbox {
+            // ANY focus landing on a textbox raises the soft keyboard — not only the off→on transition. Tapping a textbox that's already focused (keyboard was dismissed by a back-press) must re-raise it; the old transition-only guard left the box focused with no keyboard and no way up. Leaving a textbox still requests hide.
+            self.pending_keyboard_request = Some(true);
+            // Entering a textbox also restarts IME input, dropping any stale composing buffer the soft keyboard held from a DIFFERENT screen's textbox (Samsung predictive keyboards resurrect it — "type 'the', switch screens, tap a box, 'the' reappears"). One-shot; the Activity calls InputMethodManager.restartInput.
+            self.pending_input_reset = true;
+        } else if was_textbox {
+            self.pending_keyboard_request = Some(false);
         }
         self.focused = new;
         widget::apply_focus_change(self, old, new);

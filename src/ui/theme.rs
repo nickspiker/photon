@@ -59,6 +59,8 @@ pub static RING_ONLINE_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_00_FF_00)
 pub static RING_OFFLINE_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_28_28_28));
 /// 0xFFB000 amber — the long-standing 0xB0FF00 lime was this value with its bytes swapped, never a deliberate lime.
 pub static RING_RELAY_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_FF_B0_00));
+/// Unread cue: a magenta ring on the OUTSIDE of the presence ring (a new-message badge that never competes with the connectivity tiers). Event-shown, cleared on conversation-open.
+pub static RING_UNREAD_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_FF_00_FF));
 pub static SEARCH_RELAY_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_FF_B0_00));
 /// Add-friend result text + the in-flight hourglass: green on success, red on not-found/error.
 pub static SEARCH_FOUND_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_40_E0_40));

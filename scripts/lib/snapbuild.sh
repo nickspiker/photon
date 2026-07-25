@@ -28,6 +28,11 @@ snapbuild_crates() {
 
 snapbuild_take() {
     command -v flock >/dev/null 2>&1 || return 1
+    # Refuse to operate on a degenerate root — an empty or non-`.build-snap` path would turn the `rm -rf` below into a foot-gun. The snapshot dir is ONLY ever `<code-root>/.build-snap`; anything else means the env is malformed, so bail to the live-tree fallback rather than delete something unexpected.
+    case "$SNAPBUILD_ROOT" in
+        */.build-snap) ;;
+        *) return 1 ;;
+    esac
     # One snapshot at a time per box; fd 8 stays open for the script's life (fd 9 is the publish lock).
     exec 8>>"$SNAPBUILD_ROOT.lock" 2>/dev/null || return 1
     flock 8 || return 1
