@@ -62,6 +62,8 @@ Ordered; land + 2-device-test each before the next, relay tier (above) is last. 
 - ~~**Colour emoji + monochrome symbols**~~ DONE 2026-07-25 @ fluor 4f8352a: Noto Color Emoji embedded (+10.8 MB), swash Content::Color RGBA-glyph blit branch folded into the darkness/under() domain; Noto Sans Symbols 2 already covered snowman/arrows/dingbats. No system-font reads (deterministic-bytes doctrine).
 - **Android multi-touch**: single-touch works; pinch-zoom (and the two-finger zoom hint) waits on a multi-touch `Touch` event in fluor's android host.
 - **Wayland drag-and-drop** (avatar upload): winit has no `HoveredFile`/`DroppedFile` on native Wayland (winit #1881 / PR #4504). Wait for upstream or a `wl_data_device` impl in fluor.
+- **macOS multi-monitor: window disappears on cross-monitor drag** (PINNED 2026-07-25, real-hardware test): dragging the window toward a second monitor vanishes it. Phase B/C spawn per-monitor surfaces + route by WindowId; suspects: the second surface never spawning on macOS (available_monitors timing), the involved()/dormancy flip hiding the home surface, or points-vs-pixels in the straddle math (`pixel_ratio` only on macOS). Needs a mac debug session; Linux single-monitor is unaffected.
+- **Linux black-taskbar: in-app defense against compositor unredirection** (root-caused 2026-07-25): Muffin 6.4 unredirects the monitor-sized surface DESPITE `_NET_WM_BYPASS_COMPOSITOR=2` (hint verified present on the live window) — unredirected = compositing off = our transparent pixels render opaque black over the panel; hide/show re-redirects, matching the observed temporary fix. Workaround applied on the dev box: `gsettings set org.cinnamon.muffin unredirect-fullscreen-windows false`. Principled fix candidates for everyone else: detect the WM via `_NET_SUPPORTING_WM_CHECK` and warn/instruct, or undersize the surface by 1px so the monitor-sized heuristic never matches (needs a straddle-safe audit), or a Muffin bug report with the hint-honoring case.
 
 ## Platform / misc
 
@@ -70,6 +72,7 @@ Ordered; land + 2-device-test each before the next, relay tier (above) is last. 
 - **Chrome downloads on Android** (website): serve the APK so Chrome offers install, not a mystery download; or rename to `.zip` + extract instructions. Website-side.
 - **macOS softbuffer present-on-clean**: legacy carried an untested "re-present even when clean or the window goes black" workaround for transparent windows; re-verify against fluor's renderer on a real Mac.
 - **dev-adb.sh stale rust builds**: the adb dev deploy sometimes reuses a stale-built .so — force the rust rebuild or hash-check before packaging.
+- **Android API 26-29 IME inset**: with `adjustNothing` (2026-07-25 keyboard model — surface never resizes), `WindowInsetsCompat.ime()` is only reliable on API 30+; pre-30 devices report 0 so the compose bar stays under the keyboard. All fleet devices are 30+; revisit only if an old device joins (fallback: popup-window height probe).
 
 ---
 

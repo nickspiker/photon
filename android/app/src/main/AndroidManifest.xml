@@ -57,7 +57,7 @@
             android:theme="@style/AppTheme"
             android:colorMode="wideColorGamut"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout"
-            android:windowSoftInputMode="adjustResize"
+            android:windowSoftInputMode="adjustNothing"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

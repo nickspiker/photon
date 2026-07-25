@@ -72,8 +72,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private var fingerprintResult: DeviceFingerprint.FingerprintResult? = null
 
     // Track full screen height (before keyboard)
-    private var fullHeight: Int = 0
-    private var keyboardVisible = false
+    // Last IME bottom inset reported to Rust — dedupes the insets listener's redundant dispatches.
+    private var lastImeInset = -1
 
     // Scale gesture detector for pinch-to-zoom
     private lateinit var scaleGestureDetector: ScaleGestureDetector
@@ -168,6 +168,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativeOnScale(contextPtr: Long, scaleFactor: Float)  // Pinch-to-zoom scale factor
     private external fun nativePollKeyboard(contextPtr: Long): Int  // Per-frame poll for show/hide soft IME — 1=show, -1=hide, 0=no change
     private external fun nativePollInputReset(contextPtr: Long): Int  // Per-frame poll: 1=restartInput (clear the IME's stale composing buffer after a send), 0=no change
+    private external fun nativeSetForeground(foreground: Boolean)  // onResume/onPause → Rust's foreground mirror (ptr-less: writes a process global; Rust gates unread + notify-suppression on it)
+    private external fun nativeImeInset(px: Int)  // insets listener → Rust's IME-height mirror (ptr-less); the surface never resizes for the keyboard, Rust lifts its bottom strips instead
     private external fun nativePollAvatarPicker(contextPtr: Long): Int  // Per-frame poll for the avatar image-picker request — 1=launch ACTION_GET_CONTENT, 0=no change
     private external fun nativePollSessionBroadcast(contextPtr: Long): Int  // 1=send sticky broadcast, -1=clear, 0=no change
     private external fun nativePollApkInstall(contextPtr: Long): String?  // Per-frame poll: staged self-update APK path (one-shot) — fire the system installer with it
@@ -326,26 +328,16 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             true
         }
 
-        // Listen for keyboard visibility changes via insets
-        ViewCompat.setOnApplyWindowInsetsListener(surfaceView) { view, insets ->
-            val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
+        // IME insets: the surface NEVER resizes for the keyboard (adjustNothing in the manifest, and
+        // no layoutParams surgery here — the old manual SurfaceView shrink is gone). The keyboard
+        // just composites over the bottom of the always-full-screen surface; we report its height to
+        // Rust, which lifts the compose bar + message list above it. This is what keeps the app's
+        // scale (the full-screen harmonic mean) rock-steady across keyboard open/close.
+        ViewCompat.setOnApplyWindowInsetsListener(surfaceView) { _, insets ->
             val imeHeight = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-
-            if (imeVisible && !keyboardVisible) {
-                keyboardVisible = true
-                // Keyboard appeared - resize SurfaceView to visible area
-                val visibleHeight = fullHeight - imeHeight
-                if (visibleHeight > 0) {
-                    val params = view.layoutParams as FrameLayout.LayoutParams
-                    params.height = visibleHeight
-                    view.layoutParams = params
-                }
-            } else if (!imeVisible && keyboardVisible) {
-                keyboardVisible = false
-                // Keyboard hidden - restore full height
-                val params = view.layoutParams as FrameLayout.LayoutParams
-                params.height = FrameLayout.LayoutParams.MATCH_PARENT
-                view.layoutParams = params
+            if (imeHeight != lastImeInset) {
+                lastImeInset = imeHeight
+                nativeImeInset(imeHeight)
             }
             insets
         }
@@ -486,10 +478,6 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     // SurfaceHolder.Callback
     override fun surfaceCreated(holder: SurfaceHolder) {
         surfaceReady = true
-        // Capture full height on first surface creation (before any keyboard)
-        if (fullHeight == 0) {
-            fullHeight = holder.surfaceFrame.height()
-        }
         initializeNativeIfReady()
 
         // Resume render loop if we already have a context (app resume case)
@@ -499,10 +487,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-        // Track full height only when keyboard is not visible AND height is larger (prevents capturing reduced height if surfaceChanged races with keyboard).
-        if (!keyboardVisible && height > fullHeight) {
-            fullHeight = height
-        }
+        // With adjustNothing + no manual layoutParams surgery, the surface only changes on creation,
+        // rotation, and real window resizes (split-screen) — the IME never touches it. Forward as-is.
         if (nativePtr != 0L) {
             nativeResize(nativePtr, width, height)
         }
@@ -642,6 +628,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     override fun onPause() {
         super.onPause()
         inForeground = false
+        nativeSetForeground(false)
         Choreographer.getInstance().removeFrameCallback(this)
         sensorManager.unregisterListener(gravityListener)
         contentResolver.unregisterContentObserver(rotationSettingObserver)
@@ -650,6 +637,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     override fun onResume() {
         super.onResume()
         inForeground = true
+        nativeSetForeground(true)
         // Entering the app clears any pending "new message" notification — the user is now looking at the message list.
         getSystemService(NotificationManager::class.java)
             ?.cancel(PhotonConnectionService.MESSAGE_NOTIFICATION_ID)

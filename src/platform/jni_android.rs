@@ -363,6 +363,48 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollKeyboard(
     ctx.shell.poll_keyboard() as jint
 }
 
+/// Activity foreground truth, mirrored from Kotlin's onResume/onPause so the RUST side can gate attention-dependent logic (the unread counter, the notify-suppress decision) — Kotlin no longer makes suppression calls of its own. `false` at boot: before the first onResume nothing is watched.
+#[cfg(target_os = "android")]
+static APP_FOREGROUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Read the mirrored Activity foreground state ("is the app the thing on screen right now").
+#[cfg(target_os = "android")]
+pub fn app_in_foreground() -> bool {
+    APP_FOREGROUND.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Kotlin onResume/onPause → the foreground mirror. Ptr-less: it writes a process-global, valid before/after the native context exists.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetForeground(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    foreground: jni::sys::jboolean,
+) {
+    APP_FOREGROUND.store(foreground != 0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Soft-keyboard bottom inset in surface pixels, mirrored from Kotlin's WindowInsets listener. The surface itself NEVER resizes for the IME (adjustNothing — the full-screen harmonic mean is the scale by construction); the app reads this to lift its bottom-anchored strips (compose bar + message list) above the keyboard. 0 = closed.
+#[cfg(target_os = "android")]
+static IME_INSET: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// Current soft-keyboard bottom inset in pixels (0 when closed).
+#[cfg(target_os = "android")]
+pub fn ime_inset_px() -> i32 {
+    IME_INSET.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Kotlin's inset listener → the IME-inset mirror. Ptr-less like the foreground mirror; the app's per-frame tick diffs the value and relayouts on change.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeImeInset(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    px: jint,
+) {
+    IME_INSET.store(px.max(0), std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Per-frame poll: the staged self-update APK path, or null. Non-null exactly once per staged update — Kotlin fires the system installer intent with it (the update flow's second click). Mirrors take_picker_request's one-shot pattern.
 #[cfg(target_os = "android")]
 #[no_mangle]

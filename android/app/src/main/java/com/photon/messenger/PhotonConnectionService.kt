@@ -353,7 +353,10 @@ class PhotonConnectionService : Service() {
      * never crosses — only its rendered audio/haptic and the display name do.
      */
     fun postMessageNotification(wav: ByteArray, timings: LongArray, amplitudes: IntArray, sender: String, text: String) {
-        if (PhotonActivity.inForeground) return
+        // No foreground bail here: RUST owns the suppression decision (it calls this only when the
+        // user is NOT looking at the sender's conversation — see photon_app's `looking` gate). The
+        // old blanket inForeground return silenced messages from everyone else while the app was
+        // open on any other screen.
 
         // The Activity normally creates the silent channel first, but be self-sufficient: creation is
         // idempotent, and it MUST match the Activity's silent definition (setSound(null)/no vibration)
