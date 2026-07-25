@@ -1021,6 +1021,8 @@ pub struct PhotonApp {
     /// Rubber-band scroll extents, measured by the last render (the extents live in render-side geometry — text metrics, dynamic row counts — so render publishes them and the wheel handler + tick() read last frame's value; geometry is stable frame-to-frame). `tick()` relaxes any out-of-range scroll back to [0, extent] thru these.
     settings_rail_extent: f32,
     settings_content_extent: f32,
+    /// The active conversation's message-scroll ceiling, captured each render (content height − viewport height). The render clamps a LOCAL copy for drawing but the stored `message_scroll_offset` must be clamped too — else it drifts past the ceiling when the viewport height changes (the soft keyboard opening/closing, exaggerated now that the width-pinned scale keeps line height constant while the surface height swings), and the list sticks at the top until you scroll back past the excess. The tick clamps the stored offset against this.
+    msg_max_scroll: f32,
     contacts_scroll_extent: isize,
     settings_shred_armed: bool,
     /// Two-tap confirm armed for the Security page's "Remove & shred" (self-departure from the fleet chain, then crypto-wipe). Mutually exclusive with `settings_shred_armed`; cleared on any page switch, like every destructive arm.
@@ -1264,6 +1266,7 @@ impl PhotonApp {
             pending_clipboard_copy: None,
             settings_rail_extent: 0.0,
             settings_content_extent: 0.0,
+            msg_max_scroll: 0.0,
             contacts_scroll_extent: 0,
             settings_shred_armed: false,
             settings_removeshred_armed: false,
@@ -3534,8 +3537,14 @@ impl FluorApp for PhotonApp {
                 }
             }
             if matches!(self.state, AppState::Conversation) {
+                let ceiling = self.msg_max_scroll;
                 if let Some(contact) = self.active_contact.and_then(|ci| self.contacts.get_mut(ci)) {
                     spring |= relax(&mut contact.message_scroll_offset, f32::INFINITY);
+                    // Clamp the STORED offset to the last-rendered ceiling: the 0-end rubber-bands (relax above, hi=∞), but drifting PAST the top (offset > max_scroll after the viewport shrank/grew) must snap back, else the list sticks above the oldest message until you scroll down through the excess. Only pull DOWN — never fight an active drag toward 0.
+                    if contact.message_scroll_offset > ceiling {
+                        contact.message_scroll_offset = ceiling;
+                        spring = true;
+                    }
                 }
             }
             if spring {
@@ -4961,6 +4970,8 @@ impl FluorApp for PhotonApp {
                         let content_h = n as f32 * line_h + header_block_h;
                         let view_h = (list_bottom - list_top).max(0.0);
                         let max_scroll = (content_h - view_h).max(0.0);
+                        // Publish the ceiling so the tick can clamp the STORED offset (this field write is disjoint from the `contact` borrow above); the local `scroll` only fixes THIS frame's draw.
+                        self.msg_max_scroll = max_scroll;
                         let scroll = contact.message_scroll_offset.clamp(0.0, max_scroll);
                         let mut y = list_bottom - msg_size + scroll;
                         for msg in visible.iter().rev() {
