@@ -12153,13 +12153,26 @@ impl PhotonApp {
         let device_pubkey = *kp.public.as_bytes();
         let device_secret = *kp.secret.as_bytes();
 
-        // Route material computed once: any online sibling serves fleet-route requests, and the fleet key gates them (the sibling seals under it).
-        let sibling_target: Option<(std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32])> =
+        // Route material computed once: a sibling serves fleet-route requests, and the fleet key gates them (the sibling seals under it). NOT gated on is_online — sibling presence has been unreliable (see the pong liveness salvage), and a pull gated on it starved the fleet backfill exactly like the push did: prefer an online sibling with a direct address, else ANY addressed sibling (relay fallback riding along), else relay-only.
+        let sibling_target: Option<(std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32], Vec<[u8; 32]>)> =
             if self.fleet_key_cached().is_some() {
+                let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
                 self.contacts
                     .iter()
                     .filter(|c| c.is_sibling && c.is_online)
-                    .find_map(|c| c.race_addrs().map(|(p, a)| (p, a, *c.public_identity.as_bytes())))
+                    .find_map(|c| c.race_addrs().map(|(p, a)| (p, a, *c.public_identity.as_bytes(), if c.validated_path.is_none() { c.relay_device_list() } else { Vec::new() })))
+                    .or_else(|| {
+                        self.contacts
+                            .iter()
+                            .filter(|c| c.is_sibling)
+                            .find_map(|c| c.race_addrs().map(|(p, a)| (p, a, *c.public_identity.as_bytes(), c.relay_device_list())))
+                    })
+                    .or_else(|| {
+                        self.contacts.iter().filter(|c| c.is_sibling).find_map(|c| {
+                            let relays = c.relay_device_list();
+                            if relays.is_empty() { None } else { Some((unspecified, None, *c.public_identity.as_bytes(), relays)) }
+                        })
+                    })
             } else {
                 None
             };
@@ -12199,8 +12212,8 @@ impl PhotonApp {
                         }
                     }
                 }
-                // Fleet route: derive the token from the participant party ids.
-                let (primary, alt, sib_pk) = sibling_target?;
+                // Fleet route: derive the token from the participant party ids; the relay list rides from the target pick so an unreachable-direct sibling still serves via its pipe.
+                let (primary, alt, sib_pk, sib_relay) = sibling_target.clone()?;
                 let pid = our_pid?;
                 Some((
                     idx,
@@ -12208,7 +12221,7 @@ impl PhotonApp {
                     primary,
                     alt,
                     sib_pk,
-                    Vec::new(),
+                    sib_relay,
                 ))
             })
             .collect();
