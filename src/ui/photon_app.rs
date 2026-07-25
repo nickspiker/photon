@@ -12934,6 +12934,10 @@ impl PhotonApp {
                         } else if let Some(contact) = self.contacts.get_mut(contact_idx) {
                             // Any real received message means the chain is demonstrably working end-to-end in at least the RX direction — belt-and-suspenders toward woven.
                             contact.their_probe_seen = true;
+                            // A real message that DECRYPTED and advanced the chain is DEFINITIVE proof the ratchet works — stronger than the hidden probe ever was. Seal here unconditionally on a Complete contact, WITHOUT waiting for chain_advanced_by_ack. That flag is runtime-only and resets on reload, so a chain that completed but never sealed before a restart (probe lost, or the seal raced) reloaded chain_woven=false with no way back: the compose box stayed hidden, so no outgoing message could ever set chain_advanced_by_ack, so it could never seal — a functional chain locked out of composing forever (peer_m↔peer_b after her re-attest, 2026-07-25). Receiving a decryptable message breaks that deadlock.
+                            if !contact.chain_woven && contact.clutch_state == crate::types::ClutchState::Complete {
+                                contact.chain_advanced_by_ack = true;
+                            }
                             // Use actual eagle_time and sorted insert for correct chronological order
                             let msg = ChatMessage::new_with_timestamp(
                                 message_text,
