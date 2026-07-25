@@ -37,7 +37,7 @@ Ordered; land + 2-device-test each before the next, relay tier (above) is last. 
 
 ## Updates
 
-- **Android update NOTIFICATION**: auto-check now toasts in-app once per version; the designed platform notification (→ `REQUEST_INSTALL_PACKAGES` → system installer) is Kotlin work, not started.
+- ~~**Android update NOTIFICATION / unattended install**~~ MOSTLY DONE 2026-07-25: the tap-to-install now rides a PackageInstaller SESSION with USER_ACTION_NOT_REQUIRED (@f2b21b9) — one system confirm to become installer-of-record, silent forever after (Android 12+). Remaining: wire the AUTOMATIC path to auto-download+install (today it toasts, then a tap installs silently) — GATED on unmetered/wifi detection first (metered-data safety; the updates-page label says "Check" not "Install" on Android until then).
 - **Push doorbell for releases**: the ~6–8h poll stands in; the designed push is a release notice riding the fleet inbox / hub events (docs/fleet-inbox.md — bind-attempt alerts already flow thru it, so the plumbing half-exists).
 - **Rollback**: keep `.prev` and auto-revert after N failed starts (the Windows `.old` shuffle is halfway there).
 - **Idle gating + in-flight textbox hand-off across the re-exec**: auto-apply currently swaps + re-execs whenever the gates clear; a mid-typing swap loses the compose box.
@@ -58,13 +58,14 @@ Ordered; land + 2-device-test each before the next, relay tier (above) is last. 
 
 ## fluor-side
 
-- **Italic text** (wanted: pending-contact label in italic). fluor's `TextRenderer::draw_text_*` family (~12 fns) takes only `(size, weight, colour, font)` — no style axis — and compiles in only Regular + Bold OpenSans faces; the Italic TTFs sit in photon's `assets/Open_Sans/static/` but are excluded from the package. Scope: bundle `OpenSans-Italic.ttf` (+ BoldItalic) into fluor, thread a `style`/`italic` param thru the API + call sites (or `_italic` variants), set `cosmic_text::Style::Italic` on the Attrs. Cheaper faux-italic alt: per-glyph x-shear in the blit (model on the existing `rotation` transform). Consumer waiting: `Contact::display_name_or_pending()` "Pending…".
+- ~~**Italic text**~~ DONE (faux-italic): `TextStyle::shear()` exists and the draw path threads `style.shear`; the pending-contact label uses `.shear(0.2126)`. True Style::Italic faces were the heavier alt and aren't needed.
+- ~~**Colour emoji + monochrome symbols**~~ DONE 2026-07-25 @ fluor 4f8352a: Noto Color Emoji embedded (+10.8 MB), swash Content::Color RGBA-glyph blit branch folded into the darkness/under() domain; Noto Sans Symbols 2 already covered snowman/arrows/dingbats. No system-font reads (deterministic-bytes doctrine).
 - **Android multi-touch**: single-touch works; pinch-zoom (and the two-finger zoom hint) waits on a multi-touch `Touch` event in fluor's android host.
 - **Wayland drag-and-drop** (avatar upload): winit has no `HoveredFile`/`DroppedFile` on native Wayland (winit #1881 / PR #4504). Wait for upstream or a `wl_data_device` impl in fluor.
 
 ## Platform / misc
 
-- **Android session capsule** (de-attest-on-restart): boot-locked capsule spec'd in docs/ (spaghettify(boot_id) wairua, kete AEAD, multi-tier); not built. Root cause = Samsung kills the sticky broadcast.
+- ~~**Android session capsule** (de-attest-on-restart)~~ CLOSED 2026-07-25 @ c40a3f2: real root cause was the wairua's boot secret reading /proc/sys/kernel/random/boot_id, which Samsung SELinux blocks from untrusted_app → boot_secret() None → session never persisted → re-attest every app restart. Kotlin now derives the boot secret from Settings.Global.BOOT_COUNT (per-boot-stable, no permission, every ROM) + pre-API-24 per-install-random fallback, handed to Rust via nativeNetworkInit before any session read. Survives app-restart-within-boot; re-attest only on genuine reboot.
 - **TOKEN session relay** (Android sticky-broadcast gossip across TOKEN apps): protocol spec'd — every TOKEN app re-broadcasts every TOKEN session sticky, `PACKAGE_FULLY_REMOVED` triggers the survivors to re-fill the gap, signature-level permission gates participation. Photon's send/clear/restore side is wired. **Deferred until a second TOKEN app exists to test with.**
 - **Chrome downloads on Android** (website): serve the APK so Chrome offers install, not a mystery download; or rename to `.zip` + extract instructions. Website-side.
 - **macOS softbuffer present-on-clean**: legacy carried an untested "re-present even when clean or the window goes black" workaround for transparent windows; re-verify against fluor's renderer on a real Mac.
