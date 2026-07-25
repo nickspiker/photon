@@ -886,6 +886,8 @@ pub struct PhotonApp {
     pending_picker_request: bool,
     /// One-shot signal for the Android sticky session broadcast: 1=send, -1=clear, 0=nothing. Set by attest success and []n nuke.
     pending_broadcast_signal: i8,
+    /// Android sticky-session-broadcast freshness timer. `None` = ensure on the next tick (fresh resume/attest); else the next eagle-time-jittered deadline to re-check. On each firing the poll signal goes to `2` ("ensure": Kotlin READS the sticky and re-posts ONLY if the OS evicted it — Samsung drops stickies aggressively, so this keeps the reinstall-survival capsule alive without churning a re-post every interval). Jittered 30–60 min so a fleet doesn't re-post in lockstep.
+    next_session_broadcast: Option<Instant>,
     /// Index of the contact currently open in Conversation view, or `None` when on the Ready (contacts list) screen.
     active_contact: Option<usize>,
     /// Base hit ID for contact rows. Row `i` gets `contact_hit_base + i`. Allocated in `init` after the other widget IDs.
@@ -1205,6 +1207,7 @@ impl PhotonApp {
             join_startfresh_armed: false,
             pending_picker_request: false,
             pending_broadcast_signal: 0,
+            next_session_broadcast: None,
             contacts_scroll: 0,
             settings_rail_scroll: 0.0,
             settings_content_scroll: 0.0,
@@ -3391,6 +3394,17 @@ impl FluorApp for PhotonApp {
 
         // Point the top-left orb at the current subject (peer avatar + their presence ring in a conversation, else the Photon orb + our connectivity). Self-diffing — a no-op unless the contact / avatar / screen changed.
         self.update_orb();
+
+        // Android sticky-session freshness: while signed in, on a fresh resume/attest (deadline None) and every jittered 30–60 min after, fire the "ensure" signal — Kotlin reads the sticky and only re-posts if the OS evicted it. Keeps the reinstall-survival capsule alive against Samsung's sticky eviction, cheaply (the read-then-skip means no churn when it's already there). Only overrides an idle signal so a fresh attest's force-post (1) or a nuke (-1) is never clobbered.
+        #[cfg(target_os = "android")]
+        if self.session.is_some() && self.pending_broadcast_signal == 0 {
+            let due = self.next_session_broadcast.map_or(true, |t| now >= t);
+            if due {
+                self.pending_broadcast_signal = 2;
+                self.next_session_broadcast =
+                    Some(now + std::time::Duration::from_secs(crate::jitter(3600).max(60) as u64));
+            }
+        }
 
         // Toast screen-change watch: capture the screen the toast first renders on; a later mismatch (user navigated) clears it. Clicks/scrolls/zoom never clear a toast — see clear_toast.
         if self.ready_toast.is_some() {
@@ -9131,6 +9145,8 @@ impl PhotonApp {
                     );
                 }
                 self.pending_broadcast_signal = 1;
+                // Re-anchor the sticky-freshness timer off this fresh post so the periodic ensure doesn't immediately double-fire (and so a re-attest after a logout re-schedules cleanly rather than riding a stale pre-logout deadline).
+                self.next_session_broadcast = Some(Instant::now() + std::time::Duration::from_secs(crate::jitter(3600).max(60) as u64));
                 self.vault_degraded = data.vault_degraded;
                 // The worker already loaded this device's avatar (keyed on identity_seed) into `data.avatar_pixels`; colour-convert it to BT.2020 γ=2.0 for the Ready screen. `None` = storage-miss → grey placeholder.
                 if let Some(vsf_rgb) = &data.avatar_pixels {

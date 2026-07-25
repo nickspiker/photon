@@ -509,7 +509,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetAvatarFromFi
     ctx.shell.app().set_avatar_from_file(bytes);
 }
 
-/// Per-frame poll for the sticky session broadcast signal. Returns `1` after a successful attest (Kotlin should call `service.sendSessionBroadcast()`), `-1` after a vault nuke (Kotlin should call `service.clearSessionBroadcast()`), `0` otherwise. One-shot.
+/// Per-frame poll for the sticky session broadcast signal. Returns `1` after a successful attest (Kotlin: `service.sendSessionBroadcast()` — force post), `2` on the periodic freshness tick (Kotlin: `service.ensureSessionBroadcast()` — read the sticky, re-post ONLY if the OS evicted it), `-1` after a vault nuke (Kotlin: `service.clearSessionBroadcast()`), `0` otherwise. One-shot.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollSessionBroadcast(
