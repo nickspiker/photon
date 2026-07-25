@@ -414,6 +414,48 @@ fn dim_colour(c: u32) -> u32 {
     (c & 0x00FF_FFFF) | (a << 24)
 }
 
+/// Greedy word-wrap for the message list: split `s` into lines that each measure ≤ `max_w` under `style`. Word widths are measured individually and summed (kerning across a space is negligible at chat sizes), so the cost is O(words), not O(words²) re-shapes. A single word wider than the line hard-breaks by chars — a pasted URL/hash must wrap, not vanish off-screen. Empty input yields one empty line so the row keeps its height.
+fn wrap_text_lines(tr: &mut fluor::text::TextRenderer, s: &str, style: &TextStyle, max_w: f32) -> Vec<String> {
+    let space_w = tr.measure_text(" ", style);
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_w = 0.0f32;
+    for word in s.split(' ') {
+        let ww = tr.measure_text(word, style);
+        if !cur.is_empty() && cur_w + space_w + ww > max_w {
+            lines.push(std::mem::take(&mut cur));
+            cur_w = 0.0;
+        }
+        if ww > max_w && cur.is_empty() {
+            // Over-long word: break by chars.
+            let mut pw = 0.0f32;
+            for ch in word.chars() {
+                let cw = tr.measure_text(ch.encode_utf8(&mut [0u8; 4]), style);
+                if !cur.is_empty() && pw + cw > max_w {
+                    lines.push(std::mem::take(&mut cur));
+                    pw = 0.0;
+                }
+                cur.push(ch);
+                pw += cw;
+            }
+            cur_w = pw;
+            continue;
+        }
+        if cur.is_empty() {
+            cur = word.to_string();
+            cur_w = ww;
+        } else {
+            cur.push(' ');
+            cur.push_str(word);
+            cur_w += space_w + ww;
+        }
+    }
+    if !cur.is_empty() || lines.is_empty() {
+        lines.push(cur);
+    }
+    lines
+}
+
 /// Debug chord bindings shown in the hint overlay while `[ + ]` are held. Keep in sync with the dispatch in `on_event`'s KeyboardInput arm — adding a row here without wiring its handler (or vice versa) silently drops the binding.
 const CHORD_HINTS: &[(&str, &str)] = &[
     ("h", "Hit-mask overlay"),
@@ -950,6 +992,8 @@ pub struct PhotonApp {
     msg_hit_rows: Vec<(i64, bool)>,
     /// The message whose details strip is open: (contact idx, timestamp, is_outgoing). Keyed by identity, not list index, so backfills can't shift the selection. `None` = no strip.
     selected_msg: Option<(usize, i64, bool)>,
+    /// Word-wrap cache for the conversation's message list: key (contact idx, message count, avail_w bits, msg_size bits) + per-visible-message wrapped line COUNTS (chronological order, probes excluded) + their sum. Rebuilt only when the key changes (resize / zoom / new message / conversation switch) — content_h needs every message's height each frame, and re-measuring the whole history per frame would swamp the shaper. The actual line STRINGS are re-wrapped per frame only for the handful of messages actually drawn.
+    msg_wrap: Option<((usize, usize, u32, u32), Vec<u16>, usize)>,
     /// Last IME inset applied to the layout (Android) — the tick diffs the JNI mirror against this and relayouts on change, since the keyboard no longer produces resize events.
     #[cfg(target_os = "android")]
     last_ime_inset: i32,
@@ -1247,6 +1291,7 @@ impl PhotonApp {
             msg_copy_id: HIT_NONE,
             msg_hit_rows: Vec::new(),
             selected_msg: None,
+            msg_wrap: None,
             #[cfg(target_os = "android")]
             last_ime_inset: 0,
             settings_btn_base: HIT_NONE,
@@ -5041,7 +5086,23 @@ impl FluorApp for PhotonApp {
                         let sel_key = self.selected_msg.filter(|(sci, _, _)| *sci == ci).map(|(_, ts, out)| (ts, out));
                         let detail_h = line_h;
                         let sel_in_stream = sel_key.is_some_and(|(ts, out)| visible.iter().any(|m| m.timestamp == ts && m.is_outgoing == out));
-                        let content_h = n as f32 * line_h + header_block_h + if sel_in_stream { detail_h } else { 0.0 };
+                        // WORD-WRAP: messages wrap to the pane width instead of trailing off-screen. Metrics style matches the draw style below minus colour (colour never changes glyph widths). `intra` = spacing between a message's own wrapped lines; the inter-message gap stays line_h on the last line, so single-line spacing is pixel-identical to the pre-wrap layout. The line-count CACHE (see msg_wrap) covers all of history for content_h; drawn messages re-wrap for their actual strings.
+                        let wrap_style = TextStyle::new(msg_size, 0).weight(500);
+                        let avail_w = (buf_w as f32 - pad_x * 2.0).max(msg_size);
+                        let intra = msg_size * 1.25;
+                        let wrap_key = (ci, n, avail_w.to_bits(), msg_size.to_bits());
+                        if self.msg_wrap.as_ref().map(|(k, _, _)| *k) != Some(wrap_key) {
+                            let mut counts: Vec<u16> = Vec::with_capacity(n);
+                            let mut total = 0usize;
+                            for m in &visible {
+                                let c = wrap_text_lines(ctx.text, &m.content, &wrap_style, avail_w).len().min(u16::MAX as usize) as u16;
+                                counts.push(c);
+                                total += c as usize;
+                            }
+                            self.msg_wrap = Some((wrap_key, counts, total));
+                        }
+                        let total_lines = self.msg_wrap.as_ref().map(|(_, _, t)| *t).unwrap_or(n);
+                        let content_h = n as f32 * line_h + (total_lines.saturating_sub(n)) as f32 * intra + header_block_h + if sel_in_stream { detail_h } else { 0.0 };
                         let view_h = (list_bottom - list_top).max(0.0);
                         let max_scroll = (content_h - view_h).max(0.0);
                         // Publish the ceiling so the tick can clamp the STORED offset (this field write is disjoint from the `contact` borrow above); the local `scroll` only fixes THIS frame's draw.
@@ -5051,8 +5112,11 @@ impl FluorApp for PhotonApp {
                         let mut y = list_bottom - msg_size + scroll;
                         for msg in visible.iter().rev() {
                             if y < list_top - line_h {
-                                break; // scrolled above the visible region
+                                break; // this block's BOTTOM line is above the visible region; wrapped lines extend upward, and older messages sit higher still
                             }
+                            // Wrapped lines for this drawn message; `y` is the LAST line's baseline, earlier lines stack upward at `intra` spacing.
+                            let lines = wrap_text_lines(ctx.text, &msg.content, &wrap_style, avail_w);
+                            let block_extra = (lines.len() as f32 - 1.0) * intra;
                             // Divider under this message (between it and the next-newer one).
                             paint::fill_rect(
                                 &mut canvas,
@@ -5115,12 +5179,16 @@ impl FluorApp for PhotonApp {
                             } else {
                                 their_colour
                             };
-                            if msg.is_outgoing || is_self_contact {
-                                ctx.text.draw_text_right(&mut canvas, &msg.content, buf_w as f32 - pad_x, y, &TextStyle::new(msg_size, colour).weight(500), Some(list_clip), None);
-                            } else {
-                                ctx.text.draw_text_left(&mut canvas, &msg.content, pad_x, y, &TextStyle::new(msg_size, colour).weight(500), Some(list_clip), None);
+                            let msg_style = TextStyle::new(msg_size, colour).weight(500);
+                            for (k, line) in lines.iter().enumerate() {
+                                let ly = y - (lines.len() - 1 - k) as f32 * intra;
+                                if msg.is_outgoing || is_self_contact {
+                                    ctx.text.draw_text_right(&mut canvas, line, buf_w as f32 - pad_x, ly, &msg_style, Some(list_clip), None);
+                                } else {
+                                    ctx.text.draw_text_left(&mut canvas, line, pad_x, ly, &msg_style, Some(list_clip), None);
+                                }
                             }
-                            // Stamp the row band so a tap selects this message (details strip). Clamped to the list region so header/compose never lose their own hits; capped at the 64-id span (a taller screen than that doesn't exist).
+                            // Stamp the row band — the WHOLE wrapped block — so a tap selects this message (details strip). Clamped to the list region so header/compose never lose their own hits; capped at the 64-id span (a taller screen than that doesn't exist).
                             if self.msg_hit_rows.len() < 64 {
                                 let row_hit = self.msg_hit_base.wrapping_add(self.msg_hit_rows.len() as HitId);
                                 restamp_hit_rect(
@@ -5128,14 +5196,14 @@ impl FluorApp for PhotonApp {
                                     buf_w,
                                     buf_h,
                                     0,
-                                    ((y - line_h * 0.5).max(list_top)) as isize,
+                                    ((y - block_extra - line_h * 0.5).max(list_top)) as isize,
                                     buf_w as isize,
                                     ((y + line_h * 0.5).min(list_bottom)) as isize,
                                     row_hit,
                                 );
                                 self.msg_hit_rows.push((msg.timestamp, msg.is_outgoing));
                             }
-                            y -= line_h;
+                            y -= line_h + block_extra;
                         }
                         // Top-of-stream avatar + name (woven chat): `y` now sits just above the oldest message, so the block draws here and scrolls off as you read down. Clipped to the list region — invisible unless you scroll to the very start.
                         if is_woven_chat && y > list_top - header_block_h - line_h {
@@ -6831,30 +6899,23 @@ impl PhotonApp {
     /// Clipboard chord handler (desktop only). `op` is the lowercased character — "c" copy, "x" cut, "v" paste — acting on whichever textbox holds focus (launch handle or contacts search). Returns `Handled` when a textbox owned the focus, `Pass` otherwise (so the chord doesn't get eaten on a non-text screen). Copy/cut read `selected_text`; cut only deletes after the OS `set_text` succeeds, so a clipboard failure never silently destroys the selection. Paste inserts the clipboard string at the cursor (replacing any selection via `insert_str`). A launch-textbox edit clears a stale `Error` back to `Fresh`; the cursor blink reset is the caller's job.
     #[cfg(not(any(target_os = "redox", target_os = "android")))]
     fn clipboard_chord(&mut self, op: &str, text: &mut fluor::text::TextRenderer) -> EventResponse {
-        // Resolve focus to exactly one editable textbox; bail to Pass if focus is elsewhere (button, avatar, nothing).
+        // Resolve focus thru the ONE textbox registry (`textbox_by_hit_mut`) — the old hand-list covered only the launch + contacts boxes, so Ctrl/Cmd+V silently no-oped in the compose box and every panel field (exactly the per-concern hand-list the registry doctrine forbids). Any focused textbox is a clipboard target; focus elsewhere (button, avatar, nothing) passes thru.
+        let Some(focus) = self.focused else {
+            return EventResponse::Pass;
+        };
+        // Captured BEFORE the registry's &mut self borrow: launch-error clearing + the AddDevice words filter both read state the borrow would lock.
         let on_launch = self
             .textbox
             .as_ref()
             .map(|t| Some(t.hit_id()) == self.focused)
             .unwrap_or(false);
-        let on_contacts = self
-            .contacts_textbox
-            .as_ref()
-            .map(|t| Some(t.hit_id()) == self.focused)
-            .unwrap_or(false);
-        if !on_launch && !on_contacts {
-            return EventResponse::Pass;
-        }
-        // A busy field can't be the clipboard target: `sync_busy_freeze` releases focus before disabling it, so `on_launch`/`on_contacts` (which key off `self.focused`) are already false above. No separate attesting/add-in-flight gate needed.
-        let tb = if on_launch {
-            self.textbox.as_mut()
-        } else {
-            self.contacts_textbox.as_mut()
-        };
-        let Some(tb) = tb else {
+        let words_filter = matches!(self.state, AppState::AddDevice);
+        // A busy field can't be the clipboard target: `sync_busy_freeze` releases focus before disabling it, so a frozen box never matches `self.focused` here.
+        let Some(tb) = self.textbox_by_hit_mut(focus) else {
             return EventResponse::Pass;
         };
 
+        let mut edited = false;
         match op {
             "c" => {
                 if let Some(sel) = tb.selected_text() {
@@ -6871,9 +6932,7 @@ impl PhotonApp {
                         .is_ok();
                     if copied {
                         tb.delete_selection(text);
-                        if on_launch {
-                            self.clear_launch_error();
-                        }
+                        edited = true;
                     } else {
                         crate::log("clipboard: copy failed, not cutting");
                     }
@@ -6883,21 +6942,22 @@ impl PhotonApp {
                 if let Ok(mut clip) = arboard::Clipboard::new() {
                     if let Ok(s) = clip.get_text() {
                         // Words entry accepts only letters and space — strip everything else from the paste (newlines/tabs become nothing; the camelCase/space tokenizer handles the rest).
-                        let s = if matches!(self.state, AppState::AddDevice) {
+                        let s: String = if words_filter {
                             s.chars().filter(|c| c.is_ascii_alphabetic() || *c == ' ').collect()
                         } else {
                             s
                         };
                         if !s.is_empty() {
                             tb.insert_str(&s, text);
-                            if on_launch {
-                                self.clear_launch_error();
-                            }
+                            edited = true;
                         }
                     }
                 }
             }
             _ => {}
+        }
+        if edited && on_launch {
+            self.clear_launch_error();
         }
         EventResponse::Handled
     }
