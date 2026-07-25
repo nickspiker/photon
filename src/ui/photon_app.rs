@@ -940,6 +940,11 @@ pub struct PhotonApp {
     contact_boot_armed: bool,
     /// One-shot residency bypass: Shift+Escape sets it so the next close-requested actually exits instead of hiding.
     exit_requested: bool,
+    /// Live shift-key mirror (refreshed each `on_event`) so `on_close_requested` — which gets no Context — can honor "shift+close = real exit".
+    shift_held: bool,
+    /// Last IME inset applied to the layout (Android) — the tick diffs the JNI mirror against this and relayouts on change, since the keyboard no longer produces resize events.
+    #[cfg(target_os = "android")]
+    last_ime_inset: i32,
     /// Base hit id for the settings stub action pills (immediate-mode Buttons — Add device, Lock, Shred, Snapshot, …). Each page draws its pills over a small contiguous slice of this range; clicks land here and log a stub line. Allocated in `init` with a fixed span.
     settings_btn_base: HitId,
     /// Appearance-page theme selector — a real fluor `Dropdown`. Only in the widget walk while the Settings/Appearance page is up.
@@ -1229,6 +1234,9 @@ impl PhotonApp {
             contact_nav_base: HIT_NONE,
             contact_boot_armed: false,
             exit_requested: false,
+            shift_held: false,
+            #[cfg(target_os = "android")]
+            last_ime_inset: 0,
             settings_btn_base: HIT_NONE,
             settings_theme_dropdown: None,
             settings_zoom_slider: None,
@@ -1712,9 +1720,9 @@ impl FluorApp for PhotonApp {
     }
 
     fn on_close_requested(&mut self) -> bool {
-        // Shift+Escape's one-shot exit override: the user asked for the REAL close, so decline residency this once and let the host exit.
-        if self.exit_requested {
-            crate::log("EXIT: deliberate quit (Shift+Escape) — bypassing resident hide");
+        // Deliberate-quit overrides: Shift+Escape's one-shot flag, or shift held on the close itself (shift+✕, shift+Alt-F4). Either way the user asked for the REAL exit — decline residency this once and let the host exit.
+        if self.exit_requested || self.shift_held {
+            crate::log("EXIT: deliberate quit (shift+close / Shift+Escape) — bypassing resident hide");
             return false;
         }
         // Resident mode: close = hide, keep running (network, timers, notifications). The host does the set_visible(false); we track "nobody's looking" for the notification gate. Non-resident closes exit as ever.
@@ -2668,6 +2676,8 @@ impl FluorApp for PhotonApp {
     fn on_event(&mut self, event: &Event, ctx: &mut Context) -> EventResponse {
         // Any event is user engagement — reset the presence-sweep idle clock so the cadence returns to the active (5s) tier. Cheap (just a timestamp); the immediate-sweep-on-focus is handled in the Focused arm below.
         self.last_interaction = Some(Instant::now());
+        // Live shift mirror for `on_close_requested` (which has no Context): a shift-held close — the chrome ✕, Alt-F4, anything — means the REAL exit, not the resident hide. Refreshed on every event so the click that lands on the close button has already stamped it.
+        self.shift_held = ctx.modifiers.shift_key();
         // Every event except cursor movement may move immediate-mode content, so it claims a full-viewport frame. CursorMoved's effects are all narrow-tracked: hover tints live in the host overlay pass, drag-select is the textbox's own damage, and the one content-flavoured hover (the Ready avatar hint) sets `scene_dirty` at its flip site.
         if !matches!(event, Event::CursorMoved { .. }) {
             self.scene_dirty = true;
@@ -3398,6 +3408,18 @@ impl FluorApp for PhotonApp {
         // Point the top-left orb at the current subject (peer avatar + their presence ring in a conversation, else the Photon orb + our connectivity). Self-diffing — a no-op unless the contact / avatar / screen changed.
         self.update_orb();
 
+        // IME-inset watch (Android): the surface never resizes for the keyboard, so an inset change arrives with NO resize event — diff it here and relayout the bottom-anchored widgets + repaint. Cheap atomic read per tick.
+        #[cfg(target_os = "android")]
+        {
+            let ime = crate::platform::jni_android::ime_inset_px();
+            if ime != self.last_ime_inset {
+                self.last_ime_inset = ime;
+                self.update_widget_layout(ctx);
+                self.scene_dirty = true;
+                needs_redraw = true;
+            }
+        }
+
         // Android sticky-session freshness: while signed in, on a fresh resume/attest (deadline None) and every jittered 30–60 min after, fire the "ensure" signal — Kotlin reads the sticky and only re-posts if the OS evicted it. Keeps the reinstall-survival capsule alive against Samsung's sticky eviction, cheaply (the read-then-skip means no churn when it's already there). Only overrides an idle signal so a fresh attest's force-post (1) or a nuke (-1) is never clobbered.
         #[cfg(target_os = "android")]
         if self.session.is_some() && self.pending_broadcast_signal == 0 {
@@ -3788,6 +3810,8 @@ impl FluorApp for PhotonApp {
 
         // Capture the settings page set BEFORE the chrome mutable-borrow — it returns &'static data (reads only self.session), so the local outlives the borrow and the render loop can't re-borrow self.
         let settings_pages = self.settings_pages();
+        // Same hoist for the IME inset (Android keyboard height): read it before the chrome borrow so the conversation block can use it without re-borrowing self.
+        let ime_lift = self.ime_lift();
 
         let Some(chrome) = self.chrome.as_mut() else {
             return;
@@ -4944,10 +4968,10 @@ impl FluorApp for PhotonApp {
                         let pad_x = unit; // left/right inset
                         // Woven chat reclaims the whole header strip for the message list (the avatar/name ride the scroll-top instead, drawn below); pre-woven keeps the status header space.
                         let list_top = if is_woven_chat { back_y + unit } else { clutch_y + unit * 1.2 };
-                        // Compose bar reserves the bottom strip, lifted off the bottom edge by `compose_margin`. The list lives between list_top and list_bottom. Must match the layout pass's `compose_h`/`compose_margin` below.
+                        // Compose bar reserves the bottom strip, lifted off the bottom edge by `compose_margin` — and above the soft keyboard (`ime_lift`; the surface never resizes for the IME). The list lives between list_top and list_bottom. Must match the layout pass's `compose_h`/`compose_margin` below.
                         let compose_h = unit * 1.8;
                         let compose_margin = unit * 0.8;
-                        let list_bottom = buf_h as f32 - compose_h - compose_margin - unit * 0.5;
+                        let list_bottom = buf_h as f32 - ime_lift - compose_h - compose_margin - unit * 0.5;
                         // Clamp so a short window (tall header) can never invert the clip (list_top > list_bottom) — that's what made every message vanish on resize. When there's no room, list_bottom collapses to list_top and the list is simply empty rather than drawing with a negative-height (inverted) clip.
                         let list_bottom = list_bottom.max(list_top);
                         let list_clip = fluor::paint::Clip::new(
@@ -6487,7 +6511,8 @@ impl PhotonApp {
         let compose_margin = unit * 0.8;
         let compose_w = buf_w as f32 - unit * 2.0;
         let compose_cx = buf_w as f32 * 0.5;
-        let compose_cy = buf_h as f32 - compose_margin - compose_h * 0.5;
+        // `ime_lift` rides the anchor so the compose bar (and its overlaid send button) sits above the soft keyboard — same term the render's list_bottom subtracts.
+        let compose_cy = buf_h as f32 - self.ime_lift() - compose_margin - compose_h * 0.5;
         if let Some(tb) = self.message_textbox.as_mut() {
             tb.set_rect(compose_cx, compose_cy, compose_w, compose_h);
             tb.set_font_size(font_size, ctx.text);
@@ -9411,6 +9436,18 @@ impl PhotonApp {
     fn clear_toast(&mut self) {
         self.ready_toast = None;
         self.ready_toast_screen = None;
+    }
+
+    /// Pixels of the screen bottom currently covered by the Android soft keyboard (0 elsewhere / closed). The surface NEVER resizes for the IME (adjustNothing — so the full-screen harmonic mean IS the scale, by construction, no pinning); bottom-anchored interactive strips (the conversation compose bar + message list) subtract this to ride above the keyboard.
+    fn ime_lift(&self) -> f32 {
+        #[cfg(target_os = "android")]
+        {
+            crate::platform::jni_android::ime_inset_px() as f32
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            0.0
+        }
     }
 
     /// Point the top-left orb at the right subject: in a conversation it becomes the PEER's avatar with a ring in THEIR presence-tier colour (their online state, not ours); everywhere else it's the Photon brand orb with our own FGTW-connectivity ring. Diffed on (contact, has-avatar) so the Icon rebuild only fires on a real change, not every frame.
@@ -13050,9 +13087,9 @@ impl PhotonApp {
                                 && self.active_contact == Some(contact_idx);
                             #[cfg(not(target_os = "android"))]
                             let looking = conversation_open && crate::platform::desktop_notify::window_attended();
-                            // Android v1: conversation-open alone — the Activity's foreground truth lives Kotlin-side (PhotonActivity.inForeground, which already suppresses the system notification); the unread gate adopts that signal if it ever grows a JNI mirror.
+                            // Android: conversation-open AND the Activity actually on screen (the onResume/onPause JNI mirror). Either alone is not "looking": app foregrounded on ANOTHER screen must still alert (the silent-message hole), and app backgrounded while parked ON this conversation must too.
                             #[cfg(target_os = "android")]
-                            let looking = conversation_open;
+                            let looking = conversation_open && crate::platform::jni_android::app_in_foreground();
                             if !contact.is_sibling && !looking {
                                 // A real friend message landed while nobody was looking — bump the persistent unread counter (contacts-list inner ring + float-to-top; cleared at conversation-open).
                                 contact.unread_count += 1;
@@ -13063,8 +13100,8 @@ impl PhotonApp {
                                 }
                             }
 
-                            // System notification, POST-DECRYPT: real sender display name + message text BY DESIGN — hiding content on the lock screen is the OS's job, and the pre-decrypt RX worker no longer notifies at all (it over-dinged on probes and sibling fleet-sync frames it couldn't tell apart). Same friend-message gate as the chirp below; the notify fns themselves gate on window-hidden/unfocused (desktop) or Activity-foreground (Kotlin) and dedup on msg_hp, so an unconditional call here can't double-ding.
-                            if !contact.is_sibling {
+                            // System notification, POST-DECRYPT: real sender display name + message text BY DESIGN — hiding content on the lock screen is the OS's job, and the pre-decrypt RX worker no longer notifies at all (it over-dinged on probes and sibling fleet-sync frames it couldn't tell apart). RUST is the one suppression decision now: `looking` (this conversation active + app/window attended) gates the call — Kotlin's old blanket Activity-foreground bail is gone, so a message from anyone whose conversation ISN'T open dings even with the app on screen. Desktop's notify keeps its own visual gate (no toast while attended) + both dedup on msg_hp.
+                            if !contact.is_sibling && !looking {
                                 let sender_name = contact.display_name();
                                 #[cfg(target_os = "android")]
                                 crate::platform::jni_android::notify_new_message(&msg_hp, contact.public_identity.as_bytes(), &sender_name, &msg.content);
@@ -13076,9 +13113,9 @@ impl PhotonApp {
                             sibling_push = Some((contact_idx, msg));
 
                             // Per-contact notification chime: the sender's relationship digest → deterministic modal bell (chirp crate) — the SAME digest that colours their handle and messages, so ears and eyes agree. The handle TEXT never touches the session store by design; the pre-PoW hashes are the canonical identity material. Synthesis (~a second of f64 modal math) + playback run on a detached thread so the receive loop never blocks; desktop-only (Android gets platform notifications).
-                            // Only ding for a real human message from a friend: a chain-weave probe (hidden ceremony frame) and a sibling/fleet-sync frame (our own devices propagating a conversation) both arrive as ChatMessages, and neither is something a person sent us — so neither should ring. Interim gate ahead of the full unnotified-flag + focus-claim design; that lands with the sync-testing work.
+                            // Only ding for a real human message from a friend: a chain-weave probe (hidden ceremony frame) and a sibling/fleet-sync frame (our own devices propagating a conversation) both arrive as ChatMessages, and neither is something a person sent us — so neither should ring. And only when NOT looking at this conversation (`!looking`): watching the message land IS the alert; the chirp is for everyone else's messages (the user ask: "ding when I get a message from anyone and I'm not in a conversation with them"). The old unconditional chirp over-dinged in-conversation.
                             #[cfg(not(any(target_os = "redox", target_os = "android")))]
-                            if !is_chain_probe && !self.contacts[contact_idx].is_sibling {
+                            if !is_chain_probe && !self.contacts[contact_idx].is_sibling && !looking {
                                 let digest = relationship_digest(&from_handle_hash, &our_handle_hash);
                                 std::thread::spawn(move || {
                                     chirp::Chirp::from_hash(digest).play_blocking().unwrap_or_else(|e| crate::logf!("CHIME: {}", e));
