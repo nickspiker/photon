@@ -333,7 +333,11 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         // just composites over the bottom of the always-full-screen surface; we report its height to
         // Rust, which lifts the compose bar + message list above it. This is what keeps the app's
         // scale (the full-screen harmonic mean) rock-steady across keyboard open/close.
-        ViewCompat.setOnApplyWindowInsetsListener(surfaceView) { _, insets ->
+        // Listen on the DECOR view, not the SurfaceView: Samsung's One UI consumes the IME inset
+        // before it reaches child views under adjustNothing, so a child listener reported 0 there —
+        // keyboard up, compose box buried (Samsung-only report 2026-07-25). The decor gets the raw
+        // insets on every ROM; we only read, never consume, so nothing else changes.
+        ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
             val imeHeight = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
             if (imeHeight != lastImeInset) {
                 lastImeInset = imeHeight
