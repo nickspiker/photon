@@ -285,6 +285,12 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
+    /// Fleet chain-state replication (chain_sync): a sibling's fleet-sealed chains snapshot, opaque to this layer — the UI thread opens with the fleet key, decodes, and adopts iff its mutated_osc is newer than the local copy's.
+    ChainSyncReceived {
+        conversation_token: [u8; 32],
+        sealed: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+    },
     /// Message acknowledgment received (CHAIN format)
     MessageAck {
         /// Privacy-preserving conversation token (smear_hash of sorted participant seeds)
@@ -1808,6 +1814,28 @@ async fn run_checker(
                                         sealed,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                         sender_addr: src_addr,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            // Fleet chain-state replication (chain_sync — a sibling pushing its advanced chains). Same mandatory packet-ack.
+                            if let Ok(((conversation_token, sealed), sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_chain_sync_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::ChainSyncReceived {
+                                        conversation_token,
+                                        sealed,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                     },
                                     &event_proxy_recv,
                                 );

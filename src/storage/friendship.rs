@@ -44,6 +44,8 @@ fn chains_schema() -> SectionSchema {
         .field("last_received_time", TypeConstraint::Any) // i64 oscillations, one per participant
         // Friend-history bulk key (v6) — spaghettify-derived at ceremony birth, seals history-recovery pages outside the ratchet. Optional: absent = pre-feature chains (recovery unavailable until re-key).
         .field("history_key", TypeConstraint::AnyHash)
+        // Mutation stamp (v7) — fleet chain-replication ordering key (adopt iff newer). Optional: absent = pre-feature file, treated as 0.
+        .field("mutated_osc", TypeConstraint::Any)
 }
 
 /// Vault address for a friendship's chain state — `vault_key("chains", friendship_id)`. The conversation id is the scope (already `blake3` of the sorted participant seeds, so 1/2/N participants all resolve here); "chains" names the entry.
@@ -57,12 +59,19 @@ pub fn save_friendship_chains(
     storage: &FlatStorage,
 ) -> Result<(), StorageError> {
     let friendship_id = chains.id();
+    let vsf_bytes = chains_to_vsf_bytes(chains)?;
+    storage.write_addr(&chains_key(&friendship_id), &vsf_bytes)
+}
+
+/// Encode FriendshipChains to their canonical VSF bytes — the SAME encoding save_friendship_chains persists, reused verbatim by the fleet chain-replication push (the bytes are sealed under the fleet key and shipped to siblings, whose decoder is chains_from_vsf_bytes).
+pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, StorageError> {
+    let friendship_id = chains.id();
 
     // Build VSF section
     let schema = chains_schema();
     let mut builder = schema
         .build()
-        .set("version", 6u8) // v6: adds the optional history_key (v5 = last_received_times)
+        .set("version", 7u8) // v7: adds mutated_osc (v6 = history_key)
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set(
             "friendship_id",
@@ -189,11 +198,14 @@ pub fn save_friendship_chains(
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
-    let vsf_bytes = builder
-        .encode()
+    // Mutation stamp (v7) — the replication ordering key.
+    builder = builder
+        .set("mutated_osc", VsfType::e(vsf::types::EtType::e6(chains.mutated_osc)))
         .map_err(|e| StorageError::Parse(e.to_string()))?;
 
-    storage.write_addr(&chains_key(friendship_id), &vsf_bytes)
+    builder
+        .encode()
+        .map_err(|e| StorageError::Parse(e.to_string()))
 }
 
 /// Load FriendshipChains from disk
@@ -201,8 +213,6 @@ pub fn load_friendship_chains(
     friendship_id: &FriendshipId,
     storage: &FlatStorage,
 ) -> Result<FriendshipChains, StorageError> {
-    use crate::types::friendship::PendingMessage;
-
     let vsf_bytes = storage
         .read_addr(&chains_key(friendship_id))?
         .ok_or_else(|| {
@@ -214,6 +224,13 @@ pub fn load_friendship_chains(
 
     #[cfg(feature = "development")]
     crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "friendship/chains");
+
+    chains_from_vsf_bytes(&vsf_bytes)
+}
+
+/// Decode FriendshipChains from their canonical VSF bytes — the inverse of chains_to_vsf_bytes, shared by the vault loader and the fleet chain-replication adopt path.
+pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, StorageError> {
+    use crate::types::friendship::PendingMessage;
 
     // Schema-validated parse — the same chains_schema the writer encodes with, so reader and writer can no longer drift.
     let section = vsf::schema::SectionBuilder::parse(chains_schema(), &vsf_bytes)
@@ -405,9 +422,18 @@ pub fn load_friendship_chains(
     // === History key (v6) — optional; absent (pre-v6 file) leaves None ===
     let history_key: Option<[u8; 32]> = section.get_value::<[u8; 32]>("history_key").ok();
 
+    // === Mutation stamp (v7) — optional; absent (pre-v7 file) = 0, so any stamped replica beats it ===
+    let mutated_osc: i64 = section.get_value::<i64>("mutated_osc").unwrap_or(0);
+
+    // The id rides IN the bytes (the encoder always writes it), so the decoder is self-contained — required by the replication path, where the bytes arrive off the wire with no vault address.
+    let fid_bytes: [u8; 32] = section
+        .get_value::<[u8; 32]>("friendship_id")
+        .map_err(|e| StorageError::Parse(format!("friendship_id: {}", e)))?;
+    let friendship_id = crate::types::friendship::FriendshipId::from_bytes(fid_bytes);
+
     // Reconstruct chains with full v5 state, then install the optional v6 key
     let mut chains = FriendshipChains::from_storage_v5(
-        *friendship_id,
+        friendship_id,
         participants,
         &chain_bytes,
         last_sent_hash,
@@ -421,6 +447,7 @@ pub fn load_friendship_chains(
     )
     .ok_or_else(|| StorageError::Parse("Failed to reconstruct chains".to_string()))?;
     chains.set_history_key(history_key);
+    chains.mutated_osc = mutated_osc;
     Ok(chains)
 }
 

@@ -228,6 +228,9 @@ pub struct FriendshipChains {
 
     /// Friend-history bulk key: seals history-recovery pages between the participants, OUTSIDE the ratchet. Derived once at ceremony birth (`from_clutch`) via spaghettify over the pristine active chains — identical on both sides exactly then, divergent after any advance. `None` for chains loaded from pre-feature vaults (recovery unavailable until their next re-key, which is the recovery scenario anyway). Persisted with the chains; zeroized on supersede.
     history_key: Option<[u8; 32]>,
+
+    /// Eagle-time of the last LOCAL mutation of this chain state (send prepare, ACK advance, receive advance, plaintext update). The fleet chain-replication ordering key: a sibling's pushed copy is adopted iff its stamp is NEWER than ours — "if another device is ahead, I just catch up". Persisted (schema v7); 0 for pre-feature vaults (any replicated copy beats an unstamped one).
+    pub mutated_osc: i64,
 }
 
 /// A message buffered due to a gap in the hash chain (out-of-order delivery). Held until its predecessor arrives and the gap fills. Buffered BEFORE decrypt, so the message's own `msg_hp` is not yet known (it needs the plaintext hash); we key purely on the `prev_msg_hp` it awaits. When a successful decrypt advances `last_received_hash` to some `H`, every buffered entry with `prev_msg_hp == H` becomes contiguous and is reprocessed (which can cascade).
@@ -427,6 +430,7 @@ impl FriendshipChains {
             last_incorporated_hp: None,
             gap_buffer: Vec::new(),
             history_key: Some(history_key),
+            mutated_osc: 0,
         }
     }
 
@@ -495,6 +499,7 @@ impl FriendshipChains {
             last_incorporated_hp,
             gap_buffer: Vec::new(), // Gap buffer is transient, not persisted
             history_key: None,      // pre-v6 file: no history key (set by the loader when present)
+            mutated_osc: 0,
         })
     }
 
@@ -597,6 +602,7 @@ impl FriendshipChains {
             last_incorporated_hp,
             gap_buffer: Vec::new(), // Gap buffer is transient, not persisted
             history_key: None,      // pre-v6 file default: loader sets it when the field is present
+            mutated_osc: 0,
         })
     }
 
@@ -661,6 +667,8 @@ impl FriendshipChains {
         our_plaintext: &[u8],
         their_plaintexts: &[&[u8]],
     ) -> bool {
+        // Fleet chain-replication ordering key: every local mutation stamps NOW (see mutated_osc).
+        self.mutated_osc = vsf::eagle_time_oscillations();
         if let Some(idx) = self.participant_index(sender_handle_hash) {
             self.chains[idx].advance(eagle_time, our_plaintext, their_plaintexts);
             true
@@ -710,6 +718,8 @@ impl FriendshipChains {
 
     /// Update last plaintext for a participant's chain after successful decrypt/send.
     pub fn set_last_plaintext(&mut self, handle_hash: &[u8; 32], plaintext: Vec<u8>) {
+        // Fleet chain-replication ordering key: every local mutation stamps NOW (see mutated_osc).
+        self.mutated_osc = vsf::eagle_time_oscillations();
         if let Some(idx) = self.participant_index(handle_hash) {
             self.last_plaintexts[idx] = plaintext;
         }
@@ -794,6 +804,8 @@ impl FriendshipChains {
 
     /// Update hash chain state after successfully receiving and decrypting a message. Call this AFTER verify_chain_link succeeds and decrypt succeeds.
     pub fn update_received_hash(&mut self, sender_handle_hash: &[u8; 32], msg_hp: [u8; 32]) {
+        // Fleet chain-replication ordering key: every local mutation stamps NOW (see mutated_osc).
+        self.mutated_osc = vsf::eagle_time_oscillations();
         if let Some(idx) = self.participant_index(sender_handle_hash) {
             self.last_received_hashes[idx] = Some(msg_hp);
         }
@@ -965,6 +977,8 @@ impl FriendshipChains {
         eagle_time: i64,
         woven_strands: Vec<Vec<u8>>,
     ) -> Option<(Vec<u8>, [u8; 32], [u8; 32], [u8; 32])> {
+        // Fleet chain-replication ordering key: every local mutation stamps NOW (see mutated_osc).
+        self.mutated_osc = vsf::eagle_time_oscillations();
         use crate::crypto::chain::{derive_salt, encrypt_layers, generate_scratch};
 
         let our_idx = self.participant_index(our_handle_hash)?;
@@ -1008,6 +1022,8 @@ impl FriendshipChains {
         acked_eagle_time: i64,
         acked_plaintext_hash: &[u8; 32],
     ) -> bool {
+        // Fleet chain-replication ordering key: every local mutation stamps NOW (see mutated_osc).
+        self.mutated_osc = vsf::eagle_time_oscillations();
         // Find the pending message by eagle_time and plaintext_hash (exact i64 match)
         let pos = self.pending_messages.iter().position(|m| {
             m.eagle_time == acked_eagle_time && &m.plaintext_hash == acked_plaintext_hash
@@ -1100,6 +1116,8 @@ impl FriendshipChains {
         msg_hp: [u8; 32],
         plaintext: &[u8],
     ) {
+        // Fleet chain-replication ordering key: every local mutation stamps NOW (see mutated_osc).
+        self.mutated_osc = vsf::eagle_time_oscillations();
         let weave = derive_weave_hash(eagle_time, &msg_hp, plaintext);
         self.last_received_weave = Some(weave);
         self.last_incorporated_hp = Some(msg_hp);

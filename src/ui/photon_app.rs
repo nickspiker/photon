@@ -999,6 +999,8 @@ pub struct PhotonApp {
     last_ime_inset: i32,
     /// Last periodic fleet-history-sweep kick. The edge-triggered kicks (roster merge, sibling-online) cover the common cases, but edges get missed (presence flaps, app-in-background misses); this jittered ~5 min re-arm is the convergence backstop — cheap because a complete conversation early-stops after ONE page.
     last_fleet_sweep: Option<Instant>,
+    /// Fleet chain-replication bookkeeping: per-friendship, the `mutated_osc` we last PUSHED to siblings (or last ADOPTED from one — recording the adopted stamp stops the echo). The per-tick `drive_chain_replication` sweep pushes any chain whose live stamp is newer; comparing stamps instead of hooking every mutation site coalesces bursts and covers every path (send, ACK, receive, ceremony completion, reset) for free.
+    chain_pushed_osc: std::collections::HashMap<[u8; 32], i64>,
     /// Base hit id for the settings stub action pills (immediate-mode Buttons — Add device, Lock, Shred, Snapshot, …). Each page draws its pills over a small contiguous slice of this range; clicks land here and log a stub line. Allocated in `init` with a fixed span.
     settings_btn_base: HitId,
     /// Appearance-page theme selector — a real fluor `Dropdown`. Only in the widget walk while the Settings/Appearance page is up.
@@ -1297,6 +1299,7 @@ impl PhotonApp {
             #[cfg(target_os = "android")]
             last_ime_inset: 0,
             last_fleet_sweep: None,
+            chain_pushed_osc: std::collections::HashMap::new(),
             settings_btn_base: HIT_NONE,
             settings_theme_dropdown: None,
             settings_zoom_slider: None,
@@ -3501,6 +3504,9 @@ impl FluorApp for PhotonApp {
 
         // Point the top-left orb at the current subject (peer avatar + their presence ring in a conversation, else the Photon orb + our connectivity). Self-diffing — a no-op unless the contact / avatar / screen changed.
         self.update_orb();
+
+        // Fleet chain replication push: any friendship chain that mutated since its last push ships to the siblings. Constant-time no-op when nothing changed.
+        self.drive_chain_replication();
 
         // Periodic fleet-sweep backstop (~5 min, jittered): re-arm history recovery for every conversation so devices converge even when the edge-triggered kicks (roster merge, sibling-online) were missed. Signed-in only; a complete conversation costs one early-stop page.
         if self.session.is_some() {
@@ -11928,6 +11934,95 @@ impl PhotonApp {
         })
     }
 
+    /// Fleet chain replication, the PUSH half ("if another device is ahead, I just catch up" — the catch-up is the ChainSyncReceived adopt arm). Per tick: any FRIEND chain whose mutated_osc is newer than the last push ships to EVERY sibling as a fleet-sealed chain_sync frame (canonical chains VSF bytes, kete-sealed under the fleet key, device-signed). Sibling 1:1 chains never replicate (device-pair-local by definition). The receiving sibling adopts iff the stamp is newer than its copy — so after any device advances a friendship (send ACK, receive), the whole fleet converges on the new head within transport latency, and any device can transmit next. Concurrent same-instant sends from two devices can still fork the braid (the §14 linearizer is the real serializer); catch-up shrinks that window to transport latency, and the fork-repair machinery (reset + re-key streak) is the backstop.
+    fn drive_chain_replication(&mut self) {
+        let Some(fleet_key) = self.fleet_key_cached() else {
+            return;
+        };
+        let (Some(kp), Some(checker)) = (self.device_keypair.as_ref(), self.status_checker.as_ref()) else {
+            return;
+        };
+        let has_sibling = self.contacts.iter().any(|c| c.is_sibling);
+        if !has_sibling {
+            return;
+        }
+        // Sibling 1:1 chains stay pair-local.
+        let sibling_fids: std::collections::HashSet<[u8; 32]> = self
+            .contacts
+            .iter()
+            .filter(|c| c.is_sibling)
+            .filter_map(|c| c.friendship_id.map(|f| *f.as_bytes()))
+            .collect();
+        // Collect due frames first (read-only pass over the chains), send after.
+        let mut frames: Vec<([u8; 32], i64, Vec<u8>)> = Vec::new();
+        for (fid, chains) in &self.friendship_chains {
+            let fid_bytes = *fid.as_bytes();
+            if sibling_fids.contains(&fid_bytes) {
+                continue;
+            }
+            let pushed = self.chain_pushed_osc.get(&fid_bytes).copied().unwrap_or(0);
+            if chains.mutated_osc <= pushed {
+                continue;
+            }
+            let bytes = match crate::storage::friendship::chains_to_vsf_bytes(chains) {
+                Ok(b) => b,
+                Err(e) => {
+                    crate::logf!("CHAIN-SYNC: encode failed: {}", e);
+                    continue;
+                }
+            };
+            let sealed = match kete::encrypt_bytes(&bytes, &fleet_key) {
+                Ok(s) => s,
+                Err(e) => {
+                    crate::logf!("CHAIN-SYNC: seal failed: {}", e);
+                    continue;
+                }
+            };
+            let frame = match crate::network::fgtw::protocol::build_chain_sync_vsf(
+                &chains.conversation_token,
+                sealed,
+                kp.public.as_bytes(),
+                kp.secret.as_bytes(),
+            ) {
+                Ok(f) => f,
+                Err(e) => {
+                    crate::logf!("CHAIN-SYNC: frame build failed: {}", e);
+                    continue;
+                }
+            };
+            frames.push((fid_bytes, chains.mutated_osc, frame));
+        }
+        if frames.is_empty() {
+            return;
+        }
+        for (fid_bytes, osc, frame) in frames {
+            let mut pushed_to = 0usize;
+            let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
+            for sib in self.contacts.iter().filter(|c| c.is_sibling) {
+                let (primary, alt, relay_to) = match sib.race_addrs() {
+                    Some((p, a)) => (p, a, if sib.validated_path.is_none() { sib.relay_device_list() } else { Vec::new() }),
+                    None => {
+                        let relays = sib.relay_device_list();
+                        if relays.is_empty() {
+                            continue;
+                        }
+                        (unspecified, None, relays)
+                    }
+                };
+                checker.send_history(crate::network::status::HistorySendRequest {
+                    peer_addr: primary,
+                    alt_addr: alt,
+                    recipient_pubkey: *sib.public_identity.as_bytes(),
+                    relay_to,
+                    vsf_bytes: frame.clone(),
+                });
+                pushed_to += 1;
+            }
+            self.chain_pushed_osc.insert(fid_bytes, osc);
+            crate::logf!("CHAIN-SYNC: pushed chain state ({}) to {} sibling(s)", crate::fp(&fid_bytes), pushed_to);
+        }
+    }
+
     /// Live fleet propagation: push just-written conversation rows for the friend/self contact at `idx` to EVERY sibling (reachable-or-not — direct legs race, relay covers the rest) as an unsolicited hist_page under the FLEET key. The receiving sibling merges them verbatim (an unmatched rid from a sibling IS the push signature) and re-pushes anything genuinely fresh, so a message hops the whole fleet even when only one device can reach its origin. Probe rows are filtered; a lost push self-heals via the sibling-online history sweep. `exclude_device` keeps a gossip hop from echoing straight back at its sender.
     fn push_rows_to_siblings(
         &self,
@@ -14912,6 +15007,77 @@ impl PhotonApp {
                 }
 
                 // Sibling fork repair: a chain_reset frame arrived. Trust gates: outer signature already verified in the RX worker; here the sender must be a known SIBLING device and the sealed nonce must open under OUR fleet key (only fleet members can mint one). Application + echo are deferred past the drain (the repair rebuilds chains and sends frames — both blocked by live borrows here).
+                StatusUpdate::ChainSyncReceived {
+                    conversation_token,
+                    sealed,
+                    sender_pubkey,
+                } => {
+                    // Trust gate: only a fold-verified sibling device may replace chain state.
+                    if !self.contacts.iter().any(|c| c.is_sibling && c.knows_device(&sender_pubkey.key)) {
+                        crate::log("CHAIN-SYNC: frame from a non-sibling or unknown device — dropped");
+                        continue;
+                    }
+                    let Some(fleet_key) = self.fleet_key_cached() else {
+                        continue;
+                    };
+                    let Ok(plain) = kete::decrypt_bytes(&sealed, &fleet_key) else {
+                        crate::log("CHAIN-SYNC: blob failed to open under the fleet key — dropped (stale key generation?)");
+                        continue;
+                    };
+                    let incoming = match crate::storage::friendship::chains_from_vsf_bytes(&plain) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            crate::logf!("CHAIN-SYNC: decode failed: {} — dropped", e);
+                            continue;
+                        }
+                    };
+                    if incoming.conversation_token != conversation_token {
+                        crate::log("CHAIN-SYNC: inner token mismatch — dropped");
+                        continue;
+                    }
+                    let fid = incoming.friendship_id;
+                    let fid_bytes = *fid.as_bytes();
+                    let local_osc = self
+                        .friendship_chains
+                        .iter()
+                        .find(|(id, _)| *id == fid)
+                        .map(|(_, c)| c.mutated_osc);
+                    // Adopt iff STRICTLY newer — "another device is ahead, I just catch up". Equal or older = ours wins (no regression, no echo churn).
+                    if local_osc.is_some_and(|l| l >= incoming.mutated_osc) {
+                        continue;
+                    }
+                    let adopted_osc = incoming.mutated_osc;
+                    self.friendship_chains.retain(|(id, _)| *id != fid);
+                    self.friendship_chains.push((fid, incoming));
+                    if let Some(storage) = self.storage.as_ref() {
+                        if let Some((_, c)) = self.friendship_chains.iter().find(|(id, _)| *id == fid) {
+                            if let Err(e) = crate::storage::friendship::save_friendship_chains(c, storage) {
+                                crate::logf!("CHAIN-SYNC: adopt persist failed: {}", e);
+                            }
+                        }
+                    }
+                    // Recording the ADOPTED stamp as "pushed" stops the echo (we didn't mutate; nothing to announce).
+                    self.chain_pushed_osc.insert(fid_bytes, adopted_osc);
+                    // Wire the contact: a device that never ran this ceremony gains the chain here — flip it sendable (Complete + woven; the owner proved the ratchet end-to-end before the state ever replicated).
+                    if let Some(ci) = self.contact_idx_for_conversation_token(&conversation_token) {
+                        let contact = &mut self.contacts[ci];
+                        let newly_enabled = contact.friendship_id != Some(fid) || contact.clutch_state != crate::types::ClutchState::Complete;
+                        contact.friendship_id = Some(fid);
+                        if newly_enabled {
+                            contact.clutch_state = crate::types::ClutchState::Complete;
+                            contact.chain_woven = true;
+                            if let Some(storage) = self.storage.as_ref() {
+                                let _ = crate::storage::contacts::save_contact(&self.contacts[ci], storage);
+                            }
+                            crate::logf!("CHAIN-SYNC: adopted chain for {} — this device can now transmit directly", crate::fp(&self.contacts[ci].handle_proof));
+                        } else {
+                            crate::logf!("CHAIN-SYNC: caught up chain for {} (sibling was ahead)", crate::fp(&self.contacts[ci].handle_proof));
+                        }
+                    } else {
+                        crate::log("CHAIN-SYNC: adopted chain state for a conversation with no matching contact yet (roster lag) — chain parked under its fid");
+                    }
+                    changed = true;
+                }
                 StatusUpdate::ChainResetReceived {
                     conversation_token,
                     sealed,

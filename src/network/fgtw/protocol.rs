@@ -2459,6 +2459,66 @@ pub fn parse_history_page_vsf(
     Ok(((conversation_token, request_id, sealed), sender_pubkey))
 }
 
+/// Build a `chain_sync` frame — fleet chain-state replication ("if another device is ahead, I just catch up"). `sealed_chains` = the friendship's canonical chains VSF bytes (storage::friendship::chains_to_vsf_bytes) AEAD-sealed under the FLEET key; only fleet members can read or forge one, and the outer frame is device-signed like every sibling frame. Receiver: open, decode, adopt iff the embedded mutated_osc is NEWER than the local copy's.
+pub fn build_chain_sync_vsf(
+    conversation_token: &[u8; 32],
+    sealed_chains: Vec<u8>,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+
+    let mut section = VsfSection::new("chain_sync");
+    section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    let blob_len = sealed_chains.len();
+    section.add_field(
+        "data",
+        VsfType::t_u3(vsf::Tensor::new(vec![blob_len], sealed_chains)),
+    );
+
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build chain_sync VSF: {}", e))?;
+
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse + verify a `chain_sync` frame. Returns ((conversation_token, sealed_chains), sender_pubkey). The blob is opaque here; the receiver opens it with the fleet key (AEAD failure = drop).
+pub fn parse_chain_sync_vsf(
+    vsf_bytes: &[u8],
+) -> Result<(([u8; 32], Vec<u8>), [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("chain_sync verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "chain_sync" {
+        return Err(format!(
+            "Expected 'chain_sync' section, got '{}'",
+            section_name
+        ));
+    }
+    let fields = &section.fields;
+
+    let conversation_token = field_hash32(fields, "tok", |v| matches!(v, VsfType::hg(_)))
+        .ok_or("chain_sync missing tok")?;
+    let sealed = fields
+        .iter()
+        .find(|f| f.name == "data")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::t_u3(tensor) => Some(tensor.data.clone()),
+            _ => None,
+        })
+        .ok_or("chain_sync missing data")?;
+
+    Ok(((conversation_token, sealed), sender_pubkey))
+}
+
 /// Build a `chain_reset` frame — the sibling fork repair (plans/fleet-plane phase 0). `sealed_nonce` is the 32-byte reset nonce AEAD-sealed under the FLEET key (kete::encrypt_bytes), so only a fleet member can mint or read one; the outer frame is device-signed like every sibling frame. Receiver semantics live in the app: rebuild the sibling 1:1 chains deterministically from the nonce, echo the same frame once, re-probe.
 pub fn build_chain_reset_vsf(
     conversation_token: &[u8; 32],
@@ -2899,7 +2959,8 @@ mod phonebook_tests {
         let addr: SocketAddr = ip.parse().unwrap();
         let mut r = PeerRecord::new([handle; 32], pubkey, addr);
         r.last_seen = last_seen;
-        r.local_ip = Some("<lan-ip>".parse().unwrap());
+        // A real RFC1918 literal — this briefly read "<lan-ip>" (the log scrubber's token pasted into SOURCE), which can never parse; the test was permanently red.
+        r.local_ip = Some("192.168.1.7".parse().unwrap());
         r.sign(&sk);
         assert!(r.verify());
         r
