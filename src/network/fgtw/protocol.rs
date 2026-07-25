@@ -185,6 +185,10 @@ pub struct SyncRecord {
     pub conversation_token: [u8; 32],
     /// Eagle time oscillations of last message received from peer in this conversation Peer should retransmit any pending messages with eagle_time > this value
     pub last_received_osc: i64,
+    /// Anti-entropy digest half 1: how many rows this side holds for the conversation (probe rows excluded — they never sync). 0 with a zero digest = legacy peer, no comparison.
+    pub row_count: u32,
+    /// Anti-entropy digest half 2: order-free XOR fold of blake3(timestamp ‖ content_hash) over the same rows. Digests equal ⇒ both sides provably hold the same message set; a mismatch triggers a FULL history walk (early-stop disabled) — heuristic cursor recovery left holes (the two greyed sends peer_m never got, 2026-07-25).
+    pub row_digest: [u8; 32],
 }
 
 /// Convert SocketAddr to binary format for VSF Format:
@@ -363,6 +367,9 @@ impl FgtwMessage {
                         vec![
                             VsfType::hb(record.conversation_token.to_vec()),
                             VsfType::e(vsf::types::EtType::e6(record.last_received_osc)),
+                            // Anti-entropy digest (type-marker matched like the rest of the row; legacy parsers skip unknown markers): u5 row count + hg XOR-fold.
+                            VsfType::u5(record.row_count),
+                            VsfType::hg(record.row_digest.to_vec()),
                         ],
                     );
                 }
@@ -1083,10 +1090,14 @@ fn extract_sync_records(section: &vsf::VsfSection) -> Result<Vec<SyncRecord>, St
     for field in section.get_fields("sync") {
         let mut token: Option<[u8; 32]> = None;
         let mut osc: Option<i64> = None;
+        let mut count: u32 = 0;
+        let mut digest = [0u8; 32];
         for v in &field.values {
             match v {
                 VsfType::hb(h) if h.len() == 32 => token = h.as_slice().try_into().ok(),
                 VsfType::e(vsf::types::EtType::e6(t)) => osc = Some(*t),
+                VsfType::u5(c) => count = *c,
+                VsfType::hg(d) if d.len() == 32 => digest.copy_from_slice(d),
                 _ => {}
             }
         }
@@ -1094,6 +1105,8 @@ fn extract_sync_records(section: &vsf::VsfSection) -> Result<Vec<SyncRecord>, St
             (Some(conversation_token), Some(last_received_osc)) => records.push(SyncRecord {
                 conversation_token,
                 last_received_osc,
+                row_count: count,
+                row_digest: digest,
             }),
             _ => return Err("sync row missing token or timestamp".to_string()),
         }
