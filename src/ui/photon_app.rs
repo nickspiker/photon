@@ -738,6 +738,8 @@ pub struct PhotonApp {
     vault_degraded: bool,
     /// Green confirmation band on the Ready screen ("Device added \u{221a}"). Event-shown, interaction-cleared (clear_hints), NEVER time-based. Stacks above the amber warning bands.
     ready_toast: Option<String>,
+    /// The screen (AppState discriminant) the toast was first RENDERED on — captured lazily by the tick; a later mismatch means the user navigated, which clears the toast (screen change = acknowledgement).
+    ready_toast_screen: Option<std::mem::Discriminant<AppState>>,
     /// nunc-time clock sanity check: result channel + drain. The worker (one-shot, off-thread) posts the consensus-vs-system offset here; `drain_clock_check` reads it and updates `clock_off`.
     clock_check_tx: std::sync::mpsc::Sender<crate::network::ClockCheckResult>,
     clock_check_rx: std::sync::mpsc::Receiver<crate::network::ClockCheckResult>,
@@ -1104,6 +1106,7 @@ impl PhotonApp {
             private_s: crate::crypto::blind::PrivateS::None,
             vault_degraded: false,
             ready_toast: None,
+            ready_toast_screen: None,
             clock_check_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
                 tx
@@ -3024,6 +3027,10 @@ impl FluorApp for PhotonApp {
             Event::KeyboardInput { event: kev, .. } => {
                 // Any keystroke dismisses the standing hints (event-driven — never hover or time).
                 self.clear_hints();
+                // A PLAIN keystroke also acknowledges the toast — but zoom chords (Ctrl/Cmd + anything) don't, so the user can zoom in to read it (fluor host handles the zoom itself; the modifier guard covers any chords that fall thru to us).
+                if !(ctx.modifiers.control_key() || ctx.modifiers.super_key()) {
+                    self.clear_toast();
+                }
                 // Bracket chord first — tracks Press/Release timestamps regardless of focus so the debug overlay arms as soon as both brackets are held, and the chord action runs before delivery to the focused widget (so an action letter like 'h' doesn't also type into the textbox).
                 if let Key::Character(c) = &kev.logical_key {
                     let cs = c.as_str();
@@ -3280,6 +3287,8 @@ impl FluorApp for PhotonApp {
             Event::Ime(Ime::Commit(s)) => {
                 // IME typing also dismisses the standing hints (event-driven — never hover or time).
                 self.clear_hints();
+                // Soft-keyboard input is a keystroke: it acknowledges the toast too (Android has no zoom chords to guard).
+                self.clear_toast();
                 // Android: soft IME committed `s` (typing, swipe, autocomplete). Route it to whichever textbox holds focus — the attest handle field OR the contacts search box. (This used to be hardcoded to the attest box, so typing on the contacts screen was silently dropped on Android even though focus + the soft keyboard were correct; desktop never hit this because physical keys go thru the focus-generic `widget::dispatch_key`.) Backspace arrives as the literal "\b" character from PhotonSurfaceView's deleteSurroundingText / composing-text replacement path, so peel those off and route to `backspace`; everything else inserts verbatim. No-op when no textbox is focused (focus might sit on the attest button via Tab).
                 let mut handled = false;
                 let words_screen = matches!(self.state, AppState::AddDevice);
@@ -3357,6 +3366,19 @@ impl FluorApp for PhotonApp {
     fn tick(&mut self, ctx: &mut Context) -> bool {
         let now = Instant::now();
         let mut needs_redraw = false;
+
+        // Toast screen-change watch: capture the screen the toast first renders on; a later mismatch (user navigated) clears it. Clicks/scrolls/zoom never clear a toast — see clear_toast.
+        if self.ready_toast.is_some() {
+            let here = std::mem::discriminant(&self.state);
+            match self.ready_toast_screen {
+                None => self.ready_toast_screen = Some(here),
+                Some(d) if d != here => {
+                    self.clear_toast();
+                    needs_redraw = true;
+                }
+                _ => {}
+            }
+        }
 
         // Page-change focus drop (see `last_screen`): a screen swap must never leave the previous screen's textbox focused — the orphaned box kept its blinkey firing and its focus glow lit after navigating away. `change_focus(None)` also lowers the Android IME via the pending-keyboard signal.
         if self.state != self.last_screen {
@@ -4879,6 +4901,8 @@ impl FluorApp for PhotonApp {
                     // CLUTCH state (compact, under the name). Show the base state PLUS a behind-the-scenes detail (slot fill, keygen / KEM / proof stage) so a stuck handshake reads as "what's it waiting on" instead of a flat "pending" — see Contact::clutch_status_detail. Self-contact (notes-to-self) has no peer + no ceremony: the weave probe is skipped, so chain_woven never seals and clutch_status_detail would read "testing · weaving the chain" forever — show a plain reachability line instead.
                     let clutch_y = name_y + unit * 1.5;
                     // End-of-identity states outrank the ceremony line (docs/lifecycle.md): a superseded name is a STRANGER wearing it — say so in red; an ended identity reads as the archive it is.
+                    // A WOVEN chain shows NO ceremony line at all — once the parties can chat, "CLUTCH: secured" is machinery noise; the working conversation is its own proof.
+                    let show_status = contact.identity_superseded || contact.identity_ended || is_self_contact || !contact.chain_woven;
                     let (clutch_label, clutch_colour) = if contact.identity_superseded {
                         ("name re-claimed by someone new \u{2014} this is NOT them".to_string(), (*theme::ERROR_TEXT_COLOUR))
                     } else if contact.identity_ended {
@@ -4895,7 +4919,9 @@ impl FluorApp for PhotonApp {
                             },
                         )
                     };
-                    ctx.text.draw_text_center(&mut canvas, &clutch_label, buf_w as f32 * 0.5, clutch_y, &TextStyle::new(unit * 0.6, clutch_colour).weight(500).font("Oxanium"), None, None);
+                    if show_status {
+                        ctx.text.draw_text_center(&mut canvas, &clutch_label, buf_w as f32 * 0.5, clutch_y, &TextStyle::new(unit * 0.6, clutch_colour).weight(500).font("Oxanium"), None, None);
+                    }
 
                     // Message history + compose box only exist once CLUTCH is Complete — before that there's no chain to encrypt on, and sending no-ops. Until then the screen shows just the avatar + "CLUTCH: …" status (above), so the user isn't presented a dead input box for a contact they can't message yet.
                     if contact.clutch_state == crate::types::ClutchState::Complete {
@@ -9313,8 +9339,13 @@ impl PhotonApp {
     fn clear_hints(&mut self) {
         self.hints_dismissed = true;
         self.search_status = None;
-        // The "Device added" confirmation follows the house rule for every transient banner: event-shown, INTERACTION-cleared — never time-based. It sits until the user's next click or keystroke acknowledges it.
+        // Toasts deliberately DON'T clear here (clicks and scrolls reach this path): the user may want to click around or zoom to READ the toast. Toasts clear on a keystroke/IME commit (clear_toast at those arms) or a screen change (the tick's discriminant watch) — still interaction-cleared, never time-based.
+    }
+
+    /// Clear the transient toast + its screen snapshot. Fired by plain keystrokes, IME commits, and the tick's screen-change watch — NEVER by clicks, scrolls, or zoom chords, so the toast survives the user zooming in to read it.
+    fn clear_toast(&mut self) {
         self.ready_toast = None;
+        self.ready_toast_screen = None;
     }
 
     fn change_focus(&mut self, new: Option<HitId>) -> bool {
@@ -12500,8 +12531,9 @@ impl PhotonApp {
 
                         // Deduplication: we've already processed this exact message (UDP duplicate, or — the important case — the sender RETRANSMITTED because our ACK was lost). Don't re-process (that would double-advance), but DO re-send the ACK if this is the most recently acked message, so the lost-ACK case heals instead of the sender retrying until it gives up and its chain stays frozen.
                         // DURABLE second gate: is_duplicate lives inside the chain object, and a ceremony reset / braid-in mints a FRESH chain with last_received_times = None — so a frame arriving again post-reset (direct + relay dual-path, or an inbox-drain replay) sailed past it and was processed against the wrong chain state, forking the pair (the 2026-07-23 sibling desync). The rarangi row store keys on the same eagle_time, persists, and survives every chain reset — a stored inbound row at this timestamp means this exact frame was already processed, whatever the in-memory chain thinks.
+                        // RECOVERED rows are excluded from the gate: a friend-attested backfill row was never chain-processed and carries no ack_hash, so treating it as "already processed" deadlocked the sender — recovery raced live delivery and mom's retransmits were skipped un-ACKably forever while her chain waited (2026-07-24). The wire frame must process normally; insert_message_sorted upgrades the recovered row in place.
                         let row_dup = self.contacts.get(contact_idx).map_or(false, |c| {
-                            c.messages.iter().any(|m| !m.is_outgoing && m.timestamp == timestamp)
+                            c.messages.iter().any(|m| !m.is_outgoing && !m.recovered && m.timestamp == timestamp)
                         });
                         if chains.is_duplicate(&from_handle_hash, timestamp) || row_dup {
                             // Re-ACK from the stored message, looked up by its eagle_time. Unlike the old single-slot last_acked (which only remembered the MOST RECENT ack and so dropped any earlier duplicate → permanent sender stall), every received message persists its own ack_hash, so ANY duplicate self-heals a lost ACK.
