@@ -680,6 +680,15 @@ impl Contact {
 
     /// Insert a message in sorted order by timestamp (oldest first). Uses binary search for O(log n) position finding.
     pub fn insert_message_sorted(&mut self, msg: ChatMessage) {
+        // A witnessed wire frame UPGRADES a friend-recovered copy of the same message (same timestamp) in place — recovery can race live delivery, and keeping both would double the row and leave the recovered one un-ACKable.
+        if let Some(existing) = self
+            .messages
+            .iter_mut()
+            .find(|m| m.timestamp == msg.timestamp && m.recovered && !msg.recovered)
+        {
+            *existing = msg;
+            return;
+        }
         // Binary search for insertion point (maintains ascending timestamp order)
         let pos = self
             .messages
