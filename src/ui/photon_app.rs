@@ -942,6 +942,14 @@ pub struct PhotonApp {
     exit_requested: bool,
     /// Live shift-key mirror (refreshed each `on_event`) so `on_close_requested` — which gets no Context — can honor "shift+close = real exit".
     shift_held: bool,
+    /// Base hit id for the conversation's visible message rows (fixed span 64). The render stamps `msg_hit_base + visible_row` per drawn row and rebuilds [`Self::msg_hit_rows`] in lockstep, so a tap resolves to the message with no knowledge of scroll or backfill. Tap = select (details strip: direction, age, delivery, copy); tap the same again = deselect.
+    msg_hit_base: HitId,
+    /// Hit id for the selected message's "copy" pill inside the details strip.
+    msg_copy_id: HitId,
+    /// Visible-row → message identity map, rebuilt each conversation render, parallel to the `msg_hit_base` stamps. The identity is (timestamp, is_outgoing) — index-free so a mid-frame history backfill can't redirect a tap.
+    msg_hit_rows: Vec<(i64, bool)>,
+    /// The message whose details strip is open: (contact idx, timestamp, is_outgoing). Keyed by identity, not list index, so backfills can't shift the selection. `None` = no strip.
+    selected_msg: Option<(usize, i64, bool)>,
     /// Last IME inset applied to the layout (Android) — the tick diffs the JNI mirror against this and relayouts on change, since the keyboard no longer produces resize events.
     #[cfg(target_os = "android")]
     last_ime_inset: i32,
@@ -1235,6 +1243,10 @@ impl PhotonApp {
             contact_boot_armed: false,
             exit_requested: false,
             shift_held: false,
+            msg_hit_base: HIT_NONE,
+            msg_copy_id: HIT_NONE,
+            msg_hit_rows: Vec::new(),
+            selected_msg: None,
             #[cfg(target_os = "android")]
             last_ime_inset: 0,
             settings_btn_base: HIT_NONE,
@@ -1867,6 +1879,11 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.contact_nav_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(3); // contact-panel rail rows 0..=3
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.msg_hit_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(63); // message rows 0..=63
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.msg_copy_id = self.hit_counter;
         self.settings_theme_dropdown = Some(fluor::widgets::Dropdown::new(
             &mut self.hit_counter,
             0.,
@@ -2655,6 +2672,35 @@ impl FluorApp for PhotonApp {
                 // Fetch the peer's avatar (once/session) so the conversation header shows it instead of the grey placeholder. Cache-first, network on miss; off-thread. Keyed by the pin-set (hp + party id + avatar key) — no handle.
                 self.spawn_avatar_download(ci);
                 ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+        }
+
+        // Message-row tap (conversation) — toggle that message's details strip (direction, age, delivery, copy). The copy pill copies the message text via the platform clipboard (arboard / Kotlin poll bridge).
+        if matches!(self.state, AppState::Conversation) && self.msg_hit_base != HIT_NONE {
+            if hit_id == self.msg_copy_id && hit_id != HIT_NONE {
+                if let Some((sci, ts, out)) = self.selected_msg {
+                    let text_opt = self.contacts.get(sci).and_then(|c| {
+                        c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out).map(|m| m.content.clone())
+                    });
+                    if let Some(text) = text_opt {
+                        if self.copy_to_clipboard(&text) {
+                            crate::log("msg-details: message text copied");
+                        }
+                    }
+                }
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+            if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(64) {
+                let vis = (hit_id - self.msg_hit_base) as usize;
+                if let (Some(ci), Some(&(ts, out))) = (self.active_contact, self.msg_hit_rows.get(vis)) {
+                    let key = (ci, ts, out);
+                    // Toggle: same message deselects; another message moves the strip. Event-shown, interaction-cleared — no timers.
+                    self.selected_msg = if self.selected_msg == Some(key) { None } else { Some(key) };
+                    self.scene_dirty = true;
+                    ctx.window.request_redraw();
+                }
                 return EventResponse::Handled;
             }
         }
@@ -4991,12 +5037,17 @@ impl FluorApp for PhotonApp {
                         let n = visible.len();
                         // The avatar/name block is the oldest item in the stream: its height joins content_h so you can scroll up far enough to reveal it, and it draws above the oldest message. Only for a woven chat (pre-woven still has the fixed header).
                         let header_block_h = if is_woven_chat { avatar_r * 2.0 + unit * 3.0 } else { 0.0 };
-                        let content_h = n as f32 * line_h + header_block_h;
+                        // Details-strip selection for THIS conversation (identity-keyed): one strip line joins content_h so the stream shifts to make room rather than overdrawing a neighbour row.
+                        let sel_key = self.selected_msg.filter(|(sci, _, _)| *sci == ci).map(|(_, ts, out)| (ts, out));
+                        let detail_h = line_h;
+                        let sel_in_stream = sel_key.is_some_and(|(ts, out)| visible.iter().any(|m| m.timestamp == ts && m.is_outgoing == out));
+                        let content_h = n as f32 * line_h + header_block_h + if sel_in_stream { detail_h } else { 0.0 };
                         let view_h = (list_bottom - list_top).max(0.0);
                         let max_scroll = (content_h - view_h).max(0.0);
                         // Publish the ceiling so the tick can clamp the STORED offset (this field write is disjoint from the `contact` borrow above); the local `scroll` only fixes THIS frame's draw.
                         self.msg_max_scroll = max_scroll;
                         let scroll = contact.message_scroll_offset.clamp(0.0, max_scroll);
+                        self.msg_hit_rows.clear();
                         let mut y = list_bottom - msg_size + scroll;
                         for msg in visible.iter().rev() {
                             if y < list_top - line_h {
@@ -5013,6 +5064,47 @@ impl FluorApp for PhotonApp {
                                 Some(list_clip),
                                 None,
                             );
+                            // Details strip for the SELECTED message: occupies this slot (directly under the message, above the newer row + divider); the message itself shifts up by detail_h. Direction + age + delivery on the left, the copy pill on the right (stamped msg_copy_id).
+                            if sel_key.is_some_and(|(ts, out)| msg.timestamp == ts && msg.is_outgoing == out) {
+                                let secs = ((vsf::eagle_time_oscillations() - msg.timestamp) / crate::OSC_PER_SEC).max(0);
+                                let age = if secs >= 86400 {
+                                    format!("{}d ago", secs / 86400)
+                                } else if secs >= 3600 {
+                                    format!("{}h ago", secs / 3600)
+                                } else if secs >= 60 {
+                                    format!("{}m ago", secs / 60)
+                                } else {
+                                    format!("{}s ago", secs)
+                                };
+                                let mut detail = if msg.is_outgoing {
+                                    format!("sent · {} · {}", age, if msg.delivered { "delivered" } else { "sending" })
+                                } else {
+                                    format!("received · {}", age)
+                                };
+                                if msg.recovered {
+                                    detail.push_str(" · recovered");
+                                }
+                                let detail_size = msg_size * 0.75;
+                                let detail_style = TextStyle::new(detail_size, *theme::LABEL_COLOUR).weight(500).font("Oxanium");
+                                ctx.text.draw_text_left(&mut canvas, &detail, pad_x, y, &detail_style, Some(list_clip), None);
+                                // Copy pill, right-aligned on the strip line. Stamped with padding so it's a comfortable tap target.
+                                let copy_style = TextStyle::new(detail_size, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium");
+                                let copy_w = ctx.text.measure_text("copy", &copy_style);
+                                let copy_x = buf_w as f32 - pad_x - copy_w;
+                                ctx.text.draw_text_left(&mut canvas, "copy", copy_x, y, &copy_style, Some(list_clip), None);
+                                let pad_hit = detail_size;
+                                restamp_hit_rect(
+                                    &mut chrome.hit_test_map,
+                                    buf_w,
+                                    buf_h,
+                                    (copy_x - pad_hit) as isize,
+                                    ((y - line_h * 0.5).max(list_top)) as isize,
+                                    (copy_x + copy_w + pad_hit) as isize,
+                                    ((y + line_h * 0.5).min(list_bottom)) as isize,
+                                    self.msg_copy_id,
+                                );
+                                y -= detail_h;
+                            }
                             // Dim outgoing until delivered; incoming always full. Self-as-contact: every message is ours (there is no other party), so everything sits on the right in the neutral grey — their_colour is already the anchor in that case, and the loopback "incoming" copy renders like a delivered outgoing.
                             let colour = if msg.is_outgoing {
                                 if msg.delivered {
@@ -5027,6 +5119,21 @@ impl FluorApp for PhotonApp {
                                 ctx.text.draw_text_right(&mut canvas, &msg.content, buf_w as f32 - pad_x, y, &TextStyle::new(msg_size, colour).weight(500), Some(list_clip), None);
                             } else {
                                 ctx.text.draw_text_left(&mut canvas, &msg.content, pad_x, y, &TextStyle::new(msg_size, colour).weight(500), Some(list_clip), None);
+                            }
+                            // Stamp the row band so a tap selects this message (details strip). Clamped to the list region so header/compose never lose their own hits; capped at the 64-id span (a taller screen than that doesn't exist).
+                            if self.msg_hit_rows.len() < 64 {
+                                let row_hit = self.msg_hit_base.wrapping_add(self.msg_hit_rows.len() as HitId);
+                                restamp_hit_rect(
+                                    &mut chrome.hit_test_map,
+                                    buf_w,
+                                    buf_h,
+                                    0,
+                                    ((y - line_h * 0.5).max(list_top)) as isize,
+                                    buf_w as isize,
+                                    ((y + line_h * 0.5).min(list_bottom)) as isize,
+                                    row_hit,
+                                );
+                                self.msg_hit_rows.push((msg.timestamp, msg.is_outgoing));
                             }
                             y -= line_h;
                         }
