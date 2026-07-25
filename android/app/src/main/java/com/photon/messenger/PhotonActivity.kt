@@ -552,6 +552,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                 when (nativePollSessionBroadcast(nativePtr)) {
                     1 -> connectionService?.sendSessionBroadcast()
                     -1 -> connectionService?.clearSessionBroadcast()
+                    2 -> connectionService?.ensureSessionBroadcast()  // periodic freshness: re-post only if evicted
                 }
                 // Self-update: a hash-verified APK is staged — hand it to the system installer (the OS owns package installs; its prompt is the second click).
                 nativePollApkInstall(nativePtr)?.let { apkPath ->

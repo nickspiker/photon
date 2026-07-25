@@ -183,6 +183,19 @@ class PhotonConnectionService : Service() {
     }
 
     /**
+     * Re-post the sticky session broadcast ONLY if the OS has evicted it (Samsung drops stickies
+     * aggressively). Reads it first and skips the re-post when it's still present, so the periodic
+     * freshness check never churns a broadcast that's already there. Safe when signed out: the
+     * native send no-ops when tohu::session() is None.
+     */
+    fun ensureSessionBroadcast() {
+        if (readSessionBroadcast() == null) {
+            PhotonLog.d(TAG, "session sticky missing — re-posting")
+            sendSessionBroadcast()
+        }
+    }
+
+    /**
      * Remove the sticky session broadcast. Called on logout / vault nuke.
      */
     fun clearSessionBroadcast() {
