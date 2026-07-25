@@ -4957,8 +4957,8 @@ impl FluorApp for PhotonApp {
                         ctx.text.draw_text_center(&mut canvas, &clutch_label, buf_w as f32 * 0.5, clutch_y, &TextStyle::new(unit * 0.6, clutch_colour).weight(500).font("Oxanium"), None, None);
                     }
 
-                    // Message history + compose box only exist once CLUTCH is Complete — before that there's no chain to encrypt on, and sending no-ops. Until then the screen shows just the avatar + "CLUTCH: …" status (above), so the user isn't presented a dead input box for a contact they can't message yet.
-                    if contact.clutch_state == crate::types::ClutchState::Complete {
+                    // Message history renders whenever HISTORY EXISTS — a re-key/re-clutch (fork recovery, peer_m↔peer_b livelock 2026-07-25) drops clutch_state out of Complete, and hiding the entire woven archive behind the ceremony screen read as "my messages completely disappeared". The vaulted history is real regardless of ceremony state; only the COMPOSE box stays gated (chain_woven below) because sending genuinely needs a live chain. A fresh contact with no history keeps the pure ceremony screen.
+                    if contact.clutch_state == crate::types::ClutchState::Complete || !contact.messages.is_empty() {
                         // ── Message list ─────────────────────────────────────────── Text-only, right-aligned (outgoing) / left-aligned (incoming), one thin white divider after every message. Newest at the bottom, just above the compose bar; older scroll up off-screen.
                         // Our text is the neutral-grey anchor (same Y = 0.5, zero chroma); theirs is the relationship colour computed above.
                         let our_colour = self_colour();
@@ -5053,7 +5053,7 @@ impl FluorApp for PhotonApp {
                                 .as_ref()
                                 .map(|t| Some(t.hit_id()) == self.focused)
                                 .unwrap_or(false);
-                            let compose_cy = buf_h as f32 - compose_margin - compose_h * 0.5;
+                            let compose_cy = buf_h as f32 - ime_lift - compose_margin - compose_h * 0.5;
                             if compose_empty && !compose_focused {
                                 ctx.text.draw_text_left(&mut canvas, "message", pad_x * 1.2, compose_cy, &TextStyle::new(msg_size, *theme::LABEL_COLOUR), None, None);
                             }
@@ -6499,6 +6499,8 @@ impl PhotonApp {
         if let Some(tb) = self.contacts_textbox.as_mut() {
             tb.set_rect(tb_cx, tb_cy, slot_w, slot_h);
             tb.set_font_size(font_size, ctx.text);
+            // The overlaid + button's footprint (size + its inset from the pill edge) is excluded from the text area so a long search string never slides under it.
+            tb.set_right_inset(plus_size + plus_inset);
         }
         if let Some(btn) = self.contacts_plus_btn.as_mut() {
             btn.set_rect(plus_cx, plus_cy, plus_size, plus_size);
@@ -6516,6 +6518,8 @@ impl PhotonApp {
         if let Some(tb) = self.message_textbox.as_mut() {
             tb.set_rect(compose_cx, compose_cy, compose_w, compose_h);
             tb.set_font_size(font_size, ctx.text);
+            // Exclude the overlaid send button's footprint (7/8-height square + 1/16 inset, matching the button block below) so typing never runs under the arrow.
+            tb.set_right_inset(compose_h * 7.0 / 8.0 + compose_h / 16.0);
         }
         if let Some(btn) = self.message_send_btn.as_mut() {
             let send_size = compose_h * 7.0 / 8.0;
@@ -13551,6 +13555,13 @@ impl PhotonApp {
                                             Some((contact.id.clone(), contact.handle_hash));
                                     } else {
                                         // Not Complete and they minted NEW keys — their side is running a FRESH ceremony instance (their §4.2 ceremony owner changed, or they discarded and restarted). The old "keep our keys, swap their offer" splice welded half of OUR round onto half of THEIRS: the friend then held offers/completes from mixed instances and dropped the odd one out as "unknown conversation_token" forever. Adopt their new round wholesale instead — discard ours completely; the fallthrough below re-inits slots and stores their fresh offer + provenance; fresh keys of ours arrive via keygen and the drain sends our offer.
+                                        // ADOPTION COOLDOWN: a peer that can't HEAR our responses (one-way reachability) re-offers with fresh keys every ~25s; unthrottled adoption re-ran keygen+encap per round (a UI-thread hitch storm, peer_m↔peer_b livelock 2026-07-25). Hold the recently-adopted round instead — our response to it is already in flight/on the relay, and the peer only needs one to land. A genuinely new ceremony attempt survives the ignore (it persists past the window).
+                                        const ADOPTION_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
+                                        if contact.clutch_last_adoption.is_some_and(|t| t.elapsed() < ADOPTION_COOLDOWN) {
+                                            crate::logf!("CLUTCH: {} re-offered fresh keys {}s after the last adoption — holding our round (adoption cooldown; their receive path is likely down)", crate::fp(&contact.handle_proof), contact.clutch_last_adoption.map(|t| t.elapsed().as_secs()).unwrap_or(0));
+                                            continue;
+                                        }
+                                        contact.clutch_last_adoption = Some(std::time::Instant::now());
                                         crate::logf!("CLUTCH: {} sent new keys mid-ceremony (state={}) — discarding our round and adopting theirs", crate::fp(&contact.handle_proof), format!("{:?}", contact.clutch_state));
                                         contact.discard_clutch_round();
                                         // GUARDED re-trigger: a keygen already in flight will complete this round (the drain stores + sends our offer) — spawning another here would ping-pong re-keys when both sides discard simultaneously.
