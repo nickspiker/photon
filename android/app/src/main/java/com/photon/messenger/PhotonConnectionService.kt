@@ -88,7 +88,7 @@ class PhotonConnectionService : Service() {
     }
 
     // Native methods for network operations
-    private external fun nativeNetworkInit(fingerprint: ByteArray, dataDir: String, shadowDir: String): Long
+    private external fun nativeNetworkInit(fingerprint: ByteArray, dataDir: String, shadowDir: String, bootSecret: ByteArray): Long
     private external fun nativeSetFcmToken(token: String, projectId: String)
     private external fun nativeNetworkDestroy(networkPtr: Long)
     private external fun nativeNetworkPoll(networkPtr: Long)  // Check for incoming messages, refresh peers
@@ -116,8 +116,19 @@ class PhotonConnectionService : Service() {
         val shadowDir = intent?.getStringExtra("shadowDir") ?: ""
 
         if (fingerprint != null && dataDir != null && networkPtr == 0L) {
+            // Per-boot secret for the session capsule's boot-lock (wairua): the app-private session file is FBE-sandbox-protected, so this value only needs to be per-boot-STABLE, not secret. Settings.Global.BOOT_COUNT is exactly that — constant during a boot, incremented on reboot — and readable with no permission on every ROM, unlike /proc/sys/kernel/random/boot_id which locked-down Samsung SELinux blocks from untrusted_app (which silently broke session persistence there: re-attest on every app restart). Prefix-tagged so it can never collide with a raw boot_id string.
+            val bootSecret = try {
+                val bc = android.provider.Settings.Global.getInt(contentResolver, "boot_count", 0)
+                "bootcount:$bc".toByteArray()
+            } catch (e: Exception) {
+                // No BOOT_COUNT (pre-API-24 or a stripped ROM): fall back to a per-install random persisted in prefs. Stable across restarts AND reboots (so a reboot won't force re-attest), which is a weaker forward-secrecy posture than the boot-lock but strictly better than being logged out constantly.
+                val prefs = getSharedPreferences("photon_boot", MODE_PRIVATE)
+                var s = prefs.getString("secret", null)
+                if (s == null) { s = java.util.UUID.randomUUID().toString(); prefs.edit().putString("secret", s).apply() }
+                "installsecret:$s".toByteArray()
+            }
             // Initialize network stack
-            networkPtr = nativeNetworkInit(fingerprint, dataDir, shadowDir)
+            networkPtr = nativeNetworkInit(fingerprint, dataDir, shadowDir, bootSecret)
             if (networkPtr != 0L) {
                 devicePubkeyHex = nativeGetDevicePubkey(networkPtr)
                 PhotonLog.d(TAG, "Network initialized, device: ${devicePubkeyHex.take(16)}...")

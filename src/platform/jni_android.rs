@@ -929,10 +929,20 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetwor
     fingerprint: JByteArray<'_>,
     data_dir: JString<'_>,
     shadow_dir: JString<'_>,
+    boot_secret: JByteArray<'_>,
 ) -> jlong {
     // FIRST log line on Android: which build is this? Ends the "is this phone even on the new APK?" guesswork.
     crate::log_version();
     info!("PhotonConnectionService: Initializing network stack");
+
+    // Set the session-capsule boot secret BEFORE anything reads or writes the session (NetworkContext::new wires the session dir, and query_resume reads it). Kotlin derives it from Settings.Global.BOOT_COUNT — per-boot-stable and readable on every ROM — so a device whose SELinux blocks /proc/sys/kernel/random/boot_id (Samsung, chiefly) no longer loses its session on every app restart. Without this override tohu falls back to the blocked /proc read, boot_secret() returns None, the wairua can't derive, and the session never persists (the recurring "not signed in").
+    match env.convert_byte_array(&boot_secret) {
+        Ok(bytes) if !bytes.is_empty() => {
+            tohu::set_boot_secret_override(&bytes);
+            info!("session boot-secret override set ({} bytes)", bytes.len());
+        }
+        _ => error!("nativeNetworkInit: empty/unreadable boot secret — session may not persist on this ROM"),
+    }
 
     // Register the service as the message-notification sink. nativeNetworkInit is an INSTANCE method on the Kotlin side, so the second JNI parameter is the service `this` — a global ref of it (+ the JavaVM) lets the RX thread post "new message" notifications up thru Kotlin regardless of Activity lifecycle (the Choreographer poll bridge stops when the app backgrounds, which is exactly when notifications matter).
     match (env.get_java_vm(), env.new_global_ref(&service)) {
