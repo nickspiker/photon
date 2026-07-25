@@ -997,6 +997,8 @@ pub struct PhotonApp {
     /// Last IME inset applied to the layout (Android) — the tick diffs the JNI mirror against this and relayouts on change, since the keyboard no longer produces resize events.
     #[cfg(target_os = "android")]
     last_ime_inset: i32,
+    /// Last periodic fleet-history-sweep kick. The edge-triggered kicks (roster merge, sibling-online) cover the common cases, but edges get missed (presence flaps, app-in-background misses); this jittered ~5 min re-arm is the convergence backstop — cheap because a complete conversation early-stops after ONE page.
+    last_fleet_sweep: Option<Instant>,
     /// Base hit id for the settings stub action pills (immediate-mode Buttons — Add device, Lock, Shred, Snapshot, …). Each page draws its pills over a small contiguous slice of this range; clicks land here and log a stub line. Allocated in `init` with a fixed span.
     settings_btn_base: HitId,
     /// Appearance-page theme selector — a real fluor `Dropdown`. Only in the widget walk while the Settings/Appearance page is up.
@@ -1294,6 +1296,7 @@ impl PhotonApp {
             msg_wrap: None,
             #[cfg(target_os = "android")]
             last_ime_inset: 0,
+            last_fleet_sweep: None,
             settings_btn_base: HIT_NONE,
             settings_theme_dropdown: None,
             settings_zoom_slider: None,
@@ -3499,6 +3502,15 @@ impl FluorApp for PhotonApp {
         // Point the top-left orb at the current subject (peer avatar + their presence ring in a conversation, else the Photon orb + our connectivity). Self-diffing — a no-op unless the contact / avatar / screen changed.
         self.update_orb();
 
+        // Periodic fleet-sweep backstop (~5 min, jittered): re-arm history recovery for every conversation so devices converge even when the edge-triggered kicks (roster merge, sibling-online) were missed. Signed-in only; a complete conversation costs one early-stop page.
+        if self.session.is_some() {
+            let due = self.last_fleet_sweep.map_or(true, |t| t.elapsed() > std::time::Duration::from_secs(crate::jitter(600).max(60) as u64));
+            if due {
+                self.last_fleet_sweep = Some(now);
+                self.kick_fleet_history_sweep("periodic backstop");
+            }
+        }
+
         // IME-inset watch (Android): the surface never resizes for the keyboard, so an inset change arrives with NO resize event — diff it here and relayout the bottom-anchored widgets + repaint. Cheap atomic read per tick.
         #[cfg(target_os = "android")]
         {
@@ -5216,8 +5228,9 @@ impl FluorApp for PhotonApp {
                         let _ = n;
 
                         // ── Compose box (pinned bottom) ────────────────────────────
-                        // Hidden until the chain-weave probe seals BOTH directions (chain_woven: their probe seen + our ACK-advanced) — Complete alone only proves the ceremony, not the ratchet, and a message typed into an unproven chain can desync it. The status line above reads "testing · weaving the chain" for exactly this window. Self-contacts are exempt (loopback, no peer to weave with, probe deliberately skipped).
-                        if is_self_contact || contact.chain_woven {
+                        // Shown when THIS device can dispatch: a locally-woven chain (direct send), self (loopback), or COMPOSE-ANYWHERE — a friend conversation with history while a fleet exists (the send fleet-forwards to the chain-owning sibling; delivered tick follows its ACK back thru the sync). A truly fresh un-clutched contact still hides it (nothing anywhere can transmit yet).
+                        let can_fleet_forward = !contact.is_sibling && !contact.messages.is_empty() && self.contacts.iter().any(|c| c.is_sibling);
+                        if is_self_contact || contact.chain_woven || can_fleet_forward {
                             let compose_empty = self
                                 .message_textbox
                                 .as_ref()
@@ -8943,8 +8956,6 @@ impl PhotonApp {
 
     /// Encrypt + send + persist one chat message to `contact_idx` over the friendship chain, appending an outgoing bubble only when `!suppress_bubble`. Returns `true` if the message was dispatched to the network (so callers like the chain-weave probe only latch `probe_sent` on an actual send, and retry next cycle if the contact had no address yet). This is the reusable core factored out of the old open-contact send: it works for ANY contact index (not just `active_contact`), so the hidden chain-weave probe can ride the exact same ratchet path with its UI suppressed. Chain math (`prepare_send`, salt/advance) is untouched — the probe is a normal message whose only difference is a reserved marker content and a hidden bubble.
     fn send_chain_message(&mut self, contact_idx: usize, text: &str, suppress_bubble: bool) -> bool {
-        use vsf::schema::section::FieldValue;
-
         let ci = contact_idx;
         let text = text.to_string();
 
@@ -8970,6 +8981,51 @@ impl PhotonApp {
             return true;
         }
 
+        let eagle_time = vsf::eagle_time_oscillations();
+        // The wire half (weave + braid advance + persist + PT dispatch) lives in chain_transmit so the fleet-forward drain can transmit sibling-merged rows thru the identical path.
+        if !self.chain_transmit(ci, &text, eagle_time) {
+            // FLEET-FORWARD (compose anywhere): THIS device holds no usable chain for the friendship, but a sibling does — insert the bubble locally (delivered=false) and push it thru the fleet; the chain-owning sibling's merge drain transmits it on the braid with THIS timestamp (one row identity fleet-wide), and the delivered upgrade flows back thru the same sync. Probes never forward (they prove THIS device's chain, which doesn't exist here).
+            let has_fleet = self.contacts.iter().any(|c| c.is_sibling);
+            let is_friend = self.contacts.get(ci).map_or(false, |c| !c.is_sibling);
+            if !suppress_bubble && has_fleet && is_friend {
+                let msg = ChatMessage::new_with_timestamp(text, true, eagle_time);
+                if let Some(contact) = self.contacts.get_mut(ci) {
+                    contact.insert_message_sorted(msg.clone());
+                    contact.message_scroll_offset = 0.0;
+                    if let Some(storage) = self.storage.as_ref() {
+                        if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
+                            crate::logf!("STORAGE: failed to save forwarded message: {}", e);
+                        }
+                    }
+                }
+                self.push_rows_to_siblings(ci, std::slice::from_ref(&msg), None);
+                crate::log("CHAT: no local chain — fleet-forwarded to the chain-owning sibling (delivered tick follows its ACK)");
+                return true;
+            }
+            return false;
+        }
+
+        // Append the outgoing bubble (delivered=false until the ACK lands) and persist — unless this is a suppressed send (the hidden chain-weave probe: it must ride the chain but show no UI).
+        if !suppress_bubble && self.contacts.get(ci).is_some() {
+            let msg = ChatMessage::new_with_timestamp(text, true, eagle_time);
+            if let Some(contact) = self.contacts.get_mut(ci) {
+                contact.insert_message_sorted(msg.clone());
+                contact.message_scroll_offset = 0.0;
+                if let Some(storage) = self.storage.as_ref() {
+                    if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
+                        crate::logf!("STORAGE: failed to save messages: {}", e);
+                    }
+                }
+            }
+            // Live fleet propagation: our own outgoing message exists ONLY on this device until a sibling hears about it — push it now so the conversation follows the user across their devices.
+            self.push_rows_to_siblings(ci, std::slice::from_ref(&msg), None);
+        }
+        return true;
+    }
+
+    /// The WIRE half of a chain send — weave selection, braid advance (prepare_send), chains persist, PT dispatch — with NO row bookkeeping: callers own the bubble. `send_chain_message` inserts its fresh bubble after; the fleet-forward drain transmits rows a sibling already merged (with their ORIGINAL timestamps, so the row identity — and therefore delivered-upgrades and digests — stays one fleet-wide). Returns false quietly when this device holds no usable chain (not Complete, no friendship chain, no party id, no address).
+    fn chain_transmit(&mut self, ci: usize, text: &str, eagle_time: i64) -> bool {
+        use vsf::schema::section::FieldValue;
         // Contact must be CLUTCH-Complete with a friendship chain.
         let (friendship_id, recipient_pubkey, addr_pair, our_handle_hash, msg_relay_to) = {
             let Some(contact) = self.contacts.get(ci) else {
@@ -8999,8 +9055,6 @@ impl PhotonApp {
             crate::log("CHAT: cannot send — no known address for contact");
             return false;
         };
-
-        let eagle_time = vsf::eagle_time_oscillations();
 
         // The braid: choose up to TWO distinct prior PEER messages to weave into this chain step. Eligible = incoming messages (is_outgoing == false) in the last ≤256 of this conversation — any stored incoming row is one the receive path already ACKed, so the sender knows the peer holds it (both-held → identical strands → lockstep). The weave ingredient is the message's x-text (`content`), recoverable identically on both sides from the message DB. Each chosen message's eagle_time goes on the wire so the receiver resolves the SAME content. 0 eligible → weave nothing (anchor). 1 → single strand. ≥2 → two distinct (a true braid). Pick with gen_range (bounded, bias-free) — NEVER modulo. Strands are sorted by eagle_time so both peers frame derive_fresh_link identically regardless of pick order.
         let (woven_strands, woven_times): (Vec<Vec<u8>>, Vec<i64>) = {
@@ -9052,7 +9106,7 @@ impl PhotonApp {
                 .map(|h| *h)
                 .unwrap_or([0u8; 32]);
             let mut values = vec![
-                vsf::VsfType::x(text.clone()),
+                vsf::VsfType::x(text.to_string()),
                 vsf::VsfType::hp(incorporated_hp.to_vec()),
             ];
             // The braid: name each woven peer message by its eagle_time (e6). 0, 1, or 2 of these.
@@ -9072,7 +9126,7 @@ impl PhotonApp {
             let payload = FieldValue::new("message", values).flatten();
 
             // Chain ingredient = the bare x-text only (the hp/hR pad are siblings of x in the field, not part of it, and are never chain-key material). The full `payload` is what's encrypted onto the wire; `text` is what salts/advances the chain.
-            let salt_text = text.clone().into_bytes();
+            let salt_text = text.to_string().into_bytes();
 
             let conv_token = chains.conversation_token;
             match chains.prepare_send(&our_handle_hash, payload, salt_text, eagle_time, woven_strands) {
@@ -9113,21 +9167,6 @@ impl PhotonApp {
             crate::logf!("CHAT: sent message ({} chars) to contact", text.len());
         }
 
-        // Append the outgoing bubble (delivered=false until the ACK lands) and persist — unless this is a suppressed send (the hidden chain-weave probe: it must ride the chain but show no UI).
-        if !suppress_bubble && self.contacts.get(ci).is_some() {
-            let msg = ChatMessage::new_with_timestamp(text, true, eagle_time);
-            if let Some(contact) = self.contacts.get_mut(ci) {
-                contact.insert_message_sorted(msg.clone());
-                contact.message_scroll_offset = 0.0;
-                if let Some(storage) = self.storage.as_ref() {
-                    if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
-                        crate::logf!("STORAGE: failed to save messages: {}", e);
-                    }
-                }
-            }
-            // Live fleet propagation: our own outgoing message exists ONLY on this device until a sibling hears about it — push it now so the conversation follows the user across their devices.
-            self.push_rows_to_siblings(ci, std::slice::from_ref(&msg), None);
-        }
         true
     }
 
@@ -12566,6 +12605,8 @@ impl PhotonApp {
 
         let mut changed = false;
         let mut ceremony_completions: Vec<usize> = Vec::new(); // Contact indices to complete after loop
+        // Fleet-forwarded rows to transmit on OUR chain (collected in the drain, executed after the checker borrow releases — chain_transmit needs &mut self).
+        let mut fleet_tx_rows: Vec<(usize, String, i64)> = Vec::new();
         let mut lan_ping_indices: Vec<usize> = Vec::new(); // Contact indices to ping immediately on new LAN discovery
                                                            // Collect pending message retransmit requests (friendship_id, ip, handle, device_pubkey, last_received_ef6) to process after loop last_received_ef6 from pong tells us what they already have - only retransmit newer
         let mut retransmit_requests: Vec<(
@@ -15044,6 +15085,12 @@ impl PhotonApp {
                                     if !fresh.is_empty() {
                                         self.push_rows_to_siblings(idx, &fresh, Some(sender_pubkey.key));
                                     }
+                                    // FLEET-FORWARD DRAIN (compose anywhere): outgoing UNDELIVERED rows arriving from a SIBLING are messages a chain-less device composed and forwarded — if THIS device holds the woven chain, transmit them on the braid with their ORIGINAL timestamps (one row identity fleet-wide, so the friend's dedup + the delivered upgrade all cohere; a retransmit after a crash is re-ACKed harmlessly from the friend's stored ack_hash). Only FRESH rows drain — known rows were transmitted before or sit in the retransmit machinery. Deferred past the checker borrow like every other &mut-self action in this drain. v1 assumption (pre-§14): exactly ONE device holds each friendship's woven chain.
+                                    if from_sibling && self.contacts[idx].chain_woven {
+                                        for m in fresh.iter().filter(|m| m.is_outgoing && !m.delivered) {
+                                            fleet_tx_rows.push((idx, m.content.clone(), m.timestamp));
+                                        }
+                                    }
                                     changed = true;
                                 }
                                 Err(e) => {
@@ -15508,6 +15555,13 @@ impl PhotonApp {
         }
         if fleet_sweep_due {
             self.kick_fleet_history_sweep("sibling online");
+        }
+        // Fleet-forward drain (deferred): transmit sibling-composed rows on our woven chain, original timestamps preserved.
+        for (idx, fwd_text, fwd_ts) in fleet_tx_rows {
+            if self.chain_transmit(idx, &fwd_text, fwd_ts) {
+                crate::log("CHAT: fleet-forwarded row transmitted on the local chain");
+                changed = true;
+            }
         }
 
         // Retransmit pending messages to contacts that just came online Use last_received_ef6 from pong to only retransmit messages they don't have
