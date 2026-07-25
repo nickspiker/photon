@@ -691,6 +691,8 @@ pub struct PhotonApp {
     contact_pubkeys: crate::network::status::ContactPubkeys,
     /// Last-received-message markers per conversation, for retransmit. Inert in v1 (messaging not yet ported) — an empty shared vec the checker reads and never finds anything in.
     sync_records: crate::network::status::SyncRecordsProvider,
+    /// Pairwise pong-seal keys (peer DEVICE pubkey → key), shared with the checker thread: it seals each outgoing pong's sensitive tail (sync rows + name + avatar pin) to the pinging device and opens inbound tails with the responder's entry. Derived HERE on the UI thread — friend keys from the static identity DH, sibling keys from the shared identity seed + the sorted device pair — so the identity seed itself never enters the RX worker (secret-memory hygiene). Kept in lockstep with `contact_pubkeys`: the same reseed walk refills both.
+    pong_seal_keys: crate::network::status::PongSealKeys,
     /// Background CLUTCH keypair-generation results (the 8 ephemeral keypairs per ceremony). Drained in `tick` → stores keypairs on the contact + flips it to a ready-to-offer state.
     clutch_keygen_tx: std::sync::mpsc::Sender<crate::network::ClutchKeygenResult>,
     clutch_keygen_rx: std::sync::mpsc::Receiver<crate::network::ClutchKeygenResult>,
@@ -1064,6 +1066,9 @@ impl PhotonApp {
             status_checker: None,
             contact_pubkeys: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             sync_records: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            pong_seal_keys: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             clutch_keygen_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
                 tx
@@ -1991,6 +1996,7 @@ impl FluorApp for PhotonApp {
                 .expect("device_keypair set above"),
             self.contact_pubkeys.clone(),
             self.sync_records.clone(),
+            self.pong_seal_keys.clone(),
             proxy.clone(),
             peer_store.clone(),
         );
@@ -2002,6 +2008,7 @@ impl FluorApp for PhotonApp {
                 .expect("device_keypair set above"),
             self.contact_pubkeys.clone(),
             self.sync_records.clone(),
+            self.pong_seal_keys.clone(),
             peer_store.clone(),
         );
         match checker_result {
@@ -8434,7 +8441,7 @@ impl PhotonApp {
         }
     }
 
-    /// Rebuild the status checker's answerable-pubkey set from every contact's FULL fleet (`answerable_pubkeys` = first-met device union folded members). Idempotent — clears and refills, so it's safe after any change to contacts or their fleet_members. This is the single seam that makes presence + CLUTCH honour a friend's every device: seed here, and the offer/KEM/complete/SPEC gates (all of which read this one set) open for the whole fleet at once.
+    /// Rebuild the status checker's answerable-pubkey set from every contact's FULL fleet (`answerable_pubkeys` = first-met device union folded members). Idempotent — clears and refills, so it's safe after any change to contacts or their fleet_members. This is the single seam that makes presence + CLUTCH honour a friend's every device: seed here, and the offer/KEM/complete/SPEC gates (all of which read this one set) open for the whole fleet at once. The pong-seal key map reseeds from the same walk, so every call site — contacts load, roster merge, fold adoption, sibling reconcile — keeps both in lockstep for free.
     fn reseed_contact_pubkeys(&self) {
         if let Ok(mut pks) = self.contact_pubkeys.lock() {
             pks.clear();
@@ -8444,6 +8451,43 @@ impl PhotonApp {
                     if !pks.contains(&dk) {
                         pks.push(dk);
                     }
+                }
+            }
+        }
+        self.reseed_pong_seal_keys();
+    }
+
+    /// Rebuild the pairwise pong-seal key map from the same contact walk as `reseed_contact_pubkeys` — one entry per answerable DEVICE pubkey, so the checker can seal a pong to whichever fleet device pinged. Friends: one key per friendship off the static identity DH ([`crate::crypto::clutch::identity_friendship_secret`]), inserted under each of their devices. Siblings — including a self-contact, whose party id IS our own — share the identity seed instead (their party ids aren't curve points, so the DH would come back None anyway) and key per sorted device pair. Runs on the UI thread only: the checker receives finished keys, never the seed.
+    fn reseed_pong_seal_keys(&self) {
+        use zeroize::Zeroize;
+        let Ok(mut keys) = self.pong_seal_keys.lock() else {
+            return;
+        };
+        keys.clear();
+        // No session (pre-attest / post-logout) or no device key = nothing derivable; the cleared map makes every pong go out tail-less, which is the safe direction.
+        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+            return;
+        };
+        let Some(our_device) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else {
+            return;
+        };
+        let our_party = crate::crypto::clutch::identity_party_id(&seed);
+        for c in &self.contacts {
+            if c.is_sibling || c.handle_hash == our_party {
+                for pk in c.answerable_pubkeys() {
+                    keys.insert(
+                        pk,
+                        crate::network::status::sibling_pong_seal_key(&seed, &our_device, &pk),
+                    );
+                }
+            } else if let Some(mut fs) =
+                crate::crypto::clutch::identity_friendship_secret(&seed, &c.handle_hash)
+            {
+                let key = crate::network::status::friend_pong_seal_key(&fs);
+                // The DH output is live pairwise secret material — scrub the intermediate once the derived key exists.
+                fs.zeroize();
+                for pk in c.answerable_pubkeys() {
+                    keys.insert(pk, key);
                 }
             }
         }
@@ -15456,6 +15500,10 @@ impl PhotonApp {
         if let Ok(mut pks) = self.contact_pubkeys.lock() {
             pks.clear();
         }
+        // Pairwise pong-seal keys are identity-flavoured too — the old identity's derived keys must not seal or open anything under the next one.
+        if let Ok(mut keys) = self.pong_seal_keys.lock() {
+            keys.clear();
+        }
         self.storage = None; // next attest re-opens a fresh vault
         // EVERY identity-flavoured RAM slot dies here (observed: one identity's avatar surfaced under a different identity after a wipe — the in-place reset only cleared what it knew about, and the settings cache kept feeding the OLD identity's avatar pin + name into the new session's pongs and wall sync). Desktop re-execs below anyway; Android's in-place reset is exactly this list, so the list must be COMPLETE.
         self.fleet_settings = None; // the big one: cached profile.avatar_pin / profile.name of the OLD identity
@@ -15591,6 +15639,10 @@ impl PhotonApp {
                 self.friendship_chains.clear();
                 if let Ok(mut pks) = self.contact_pubkeys.lock() {
                     pks.clear();
+                }
+                // Contacts are gone, so their pairwise pong-seal keys go with them (a re-add re-derives).
+                if let Ok(mut keys) = self.pong_seal_keys.lock() {
+                    keys.clear();
                 }
                 // Drop S too (zeroized) — the reset-recovery E2E is exactly "[]n then reconstitute from a friend's blind"; keeping it in RAM would fake the recovery.
                 self.private_s = crate::crypto::blind::PrivateS::None;

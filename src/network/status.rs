@@ -32,6 +32,35 @@ pub type ContactPubkeys = Arc<Mutex<Vec<DevicePubkey>>>;
 /// Shared sync records - UI updates this, background thread reads it for pong responses Maps conversation_token to last_received_ef6 (when we last received a message)
 pub type SyncRecordsProvider = Arc<Mutex<Vec<SyncRecord>>>;
 
+/// Shared pairwise pong-seal keys — peer DEVICE pubkey → the 32-byte key that seals/opens that device's pong sensitive tail (sync rows + name + avatar pin). The UI derives and reseeds these on ITS thread (friend: static identity DH; sibling: shared identity seed + sorted device pair) in lockstep with `ContactPubkeys`, so the RX worker holds finished per-peer keys only and the identity seed never enters this module (secret-memory hygiene). No entry for a device = its pongs go out with no sensitive tail and inbound sealed tails from it stay unopened.
+pub type PongSealKeys = Arc<Mutex<std::collections::HashMap<[u8; 32], [u8; 32]>>>;
+
+/// Pairwise pong-seal key for a FRIEND's devices: one derive over the static identity DH secret ([`crate::crypto::clutch::identity_friendship_secret`]), computable by exactly the two identity holders — the pong tail becomes end-to-end between the identities, opaque to the relay worker and every on-path observer. One key per friendship, inserted under each of the friend's device pubkeys.
+pub fn friend_pong_seal_key(friendship_secret: &[u8; 32]) -> [u8; 32] {
+    blake3::derive_key("photon.pong.seal.v0", friendship_secret)
+}
+
+/// Pairwise pong-seal key for a fleet SIBLING device pair (self-contact devices included — they are our own fleet). Siblings share the identity seed itself (their party ids aren't curve points, so no DH exists), so the key binds the seed to the SORTED device-pubkey pair — symmetric by construction, distinct per pair. The material buffer holds the live identity seed, so it is scrubbed after the derive.
+pub fn sibling_pong_seal_key(
+    identity_seed: &[u8; 32],
+    our_device: &[u8; 32],
+    their_device: &[u8; 32],
+) -> [u8; 32] {
+    use zeroize::Zeroize;
+    let (lo, hi) = if our_device <= their_device {
+        (our_device, their_device)
+    } else {
+        (their_device, our_device)
+    };
+    let mut material = [0u8; 96];
+    material[..32].copy_from_slice(identity_seed);
+    material[32..64].copy_from_slice(lo);
+    material[64..].copy_from_slice(hi);
+    let key = blake3::derive_key("photon.pong.seal.sib.v0", &material);
+    material.zeroize();
+    key
+}
+
 /// Get current Eagle Time as i64 oscillations
 fn eagle_time_now() -> i64 {
     vsf::eagle_time_oscillations()
@@ -391,13 +420,14 @@ pub struct StatusChecker {
 impl StatusChecker {
     /// Create a new status checker using a shared socket (Desktop version with a fluor wake sender)
     ///
-    /// `socket` is the shared UDP socket from HandleQuery (same port announced to FGTW). `keypair` is the device keypair (same one used for FGTW registration). `contacts` is shared with UI - only respond to pings from pubkeys in this list. `sync_records` is shared with UI - provides last_received_ef6 for each conversation. `event_proxy` is the fluor `WakeSender` used to wake the UI thread when network data arrives (was winit's `EventLoopProxy` pre-migration; HandleQuery took the same path).
+    /// `socket` is the shared UDP socket from HandleQuery (same port announced to FGTW). `keypair` is the device keypair (same one used for FGTW registration). `contacts` is shared with UI - only respond to pings from pubkeys in this list. `sync_records` is shared with UI - provides last_received_ef6 for each conversation. `pong_seal_keys` is shared with UI - the pairwise keys that seal/open each pong's sensitive tail. `event_proxy` is the fluor `WakeSender` used to wake the UI thread when network data arrives (was winit's `EventLoopProxy` pre-migration; HandleQuery took the same path).
     #[cfg(not(target_os = "android"))]
     pub fn new(
         socket: Arc<UdpSocket>,
         keypair: Keypair,
         contacts: ContactPubkeys,
         sync_records: SyncRecordsProvider,
+        pong_seal_keys: PongSealKeys,
         event_proxy: Arc<dyn WakeSender<PhotonEvent>>,
         peer_store: Arc<Mutex<crate::network::fgtw::PeerStore>>,
     ) -> Result<Self, String> {
@@ -459,6 +489,7 @@ impl StatusChecker {
                     status_tx,
                     contacts,
                     sync_records,
+                    pong_seal_keys,
                     Some(event_proxy),
                     phonebook_req_rx,
                     peer_store,
@@ -508,6 +539,7 @@ impl StatusChecker {
         keypair: Keypair,
         contacts: ContactPubkeys,
         sync_records: SyncRecordsProvider,
+        pong_seal_keys: PongSealKeys,
         peer_store: Arc<Mutex<crate::network::fgtw::PeerStore>>,
     ) -> Result<Self, String> {
         let (ping_tx, ping_rx) = channel::<PingRequest>();
@@ -568,6 +600,7 @@ impl StatusChecker {
                     status_tx,
                     contacts,
                     sync_records,
+                    pong_seal_keys,
                     None,
                     phonebook_req_rx,
                     peer_store,
@@ -788,6 +821,7 @@ async fn run_checker(
     status_tx: Sender<StatusUpdate>,
     contacts: ContactPubkeys,
     sync_records_provider: SyncRecordsProvider,
+    pong_seal_keys: PongSealKeys,
     event_proxy: OptionalEventProxy,
     phonebook_req_rx: Receiver<SocketAddr>,
     peer_store: Arc<Mutex<crate::network::fgtw::PeerStore>>,
@@ -870,6 +904,8 @@ async fn run_checker(
     let status_tx_recv = status_tx.clone();
     let contacts_recv = contacts.clone();
     let sync_records_recv = sync_records_provider.clone();
+    // Both uses of the seal-key map live in the receiver task (pongs are BUILT there answering pings, and OPENED there parsing answers), so the map moves in whole — the `_recv` name just keeps the capture-list idiom.
+    let pong_seal_keys_recv = pong_seal_keys;
     let event_proxy_recv = event_proxy.clone();
     let pt_recv = pt.clone();
     let failed_pings_recv = failed_pings.clone();
@@ -1311,6 +1347,8 @@ async fn run_checker(
         // Ingress twin-collapse for chat frames: the SAME frame routinely arrives twice within milliseconds (direct UDP + relay pipe, or LAN + WAN race) and both copies queue toward the UI. The durable rarangi-row dedup catches reprocessing, but collapsing twins HERE cuts the redundant queue traffic and re-ACK spam at the source. TIME-bounded, never count-bounded: only twins inside a short window are collapsed, so a genuine later retransmit (sender's ACK was lost) still reaches the UI's re-ACK path.
         const CHAT_TWIN_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
         let mut recent_chat_frames: Vec<(([u8; 8], i64, [u8; 8]), std::time::Instant)> = Vec::new();
+        // Devices whose sealed pong tail we could not open (no key seeded yet, or a stale key across their re-attest) — logged ONCE per device, not per pong: pongs arrive every cycle and a still-loading key map would otherwise spam a line every few seconds. An entry clears on the first successful open, so a key change that breaks again re-logs.
+        let mut pong_open_failed: Vec<[u8; 32]> = Vec::new();
         loop {
             // Take the next datagram from EITHER the real UDP socket OR the relay pipe. A pipe frame is handed `RELAY_ADDR` as its source, so everything below this line — the entire ~900-line dispatch — cannot tell a relayed message from a directly-received one, except that RELAY_ADDR tells the app to skip address-learning and mark reached_via_relay. This is the whole reason the pipe is one select! arm and not a parallel dispatch: presence, chat, acks and CLUTCH all reuse the proven receive path.
             // A UDP datagram lands in the fixed 64 KiB `buf`; an injected pipe frame is held in `injected_holder` (owned Vec) because it can be a whole ~548 KB CLUTCH offer — FAR larger than `buf`. Copying it into `buf` truncated it to 64 KiB and the offer never parsed ("Not enough data"), which is why the ceremony stalled over the relay: the offer was injected but chopped to 12% of itself. `msg_bytes` points at whichever holds this iteration's frame.
@@ -1897,22 +1935,41 @@ async fn run_checker(
                                     let mut sig_bytes = [0u8; 64];
                                     sig_bytes.copy_from_slice(&sig.to_bytes());
 
-                                    // Get sync records from the provider (populated by app.rs)
-                                    let sync_records = {
-                                        let records = sync_records_recv.lock().unwrap();
-                                        records.clone()
+                                    // Seal the sensitive tail — sync rows, name, avatar pin — to the PINGING device: the pong answers this specific ping, so it seals under exactly that device's pairwise key. No key yet (contact still loading, or a legacy/unknown device) → the pong carries NO sensitive tail at all: presence still works, and the tail arrives once the UI seeds the key. The inputs come from the same places as ever (provider for sync records, statics for own name/pin) — only the wire encoding changed.
+                                    let seal_key = {
+                                        let keys = pong_seal_keys_recv.lock().unwrap();
+                                        keys.get(sender_pubkey.as_bytes()).copied()
                                     };
+                                    let sealed = seal_key.and_then(|key| {
+                                        let records = {
+                                            let records = sync_records_recv.lock().unwrap();
+                                            records.clone()
+                                        };
+                                        match crate::network::fgtw::protocol::seal_pong_sensitive(
+                                            &records,
+                                            profile_name().as_deref(),
+                                            avatar_pin().as_ref(),
+                                            &key,
+                                        ) {
+                                            Ok(blob) => Some(blob),
+                                            Err(e) => {
+                                                crate::logf!("Status: pong tail seal failed for {} — sending tail-less: {}", crate::fp(sender_pubkey.as_bytes()), e);
+                                                None
+                                            }
+                                        }
+                                    });
 
-                                    // Reflexive echo: tell the pinger the source address we saw its ping arrive from (canonicalised out of the dual-stack `::ffff:` form). This is the peer-echoed STUN primitive — the pinger learns its own public address on the exact UDP socket data flows over.
+                                    // Reflexive echo: tell the pinger the source address we saw its ping arrive from (canonicalised out of the dual-stack `::ffff:` form). This is the peer-echoed STUN primitive — the pinger learns its own public address on the exact UDP socket data flows over. Stays plaintext on purpose: it is the pinger's own address bootstrapping information, useful before any pairing exists.
                                     let pong = FgtwMessage::StatusPong {
                                         timestamp: eagle_time_now(),
                                         responder_pubkey: our_pubkey_recv.clone(),
                                         provenance_hash,
                                         signature: sig_bytes,
-                                        sync_records,
+                                        sync_records: Vec::new(),
                                         observed_addr: Some(udp::canon_socketaddr(src_addr)),
-                                        display_name: profile_name(),
-                                        avatar_pin: avatar_pin(),
+                                        display_name: None,
+                                        avatar_pin: None,
+                                        sealed,
                                     };
 
                                     let pong_bytes = pong.to_vsf_bytes();
@@ -1939,6 +1996,7 @@ async fn run_checker(
                                     observed_addr,
                                     display_name,
                                     avatar_pin,
+                                    sealed,
                                 } => {
                                     // Find and remove matching pending ping
                                     let pending_ping = {
@@ -2001,6 +2059,33 @@ async fn run_checker(
                                         let mut list = pending_recv.lock().unwrap();
                                         list.retain(|p| p.recipient_pubkey != responder_pubkey);
                                     }
+
+                                    // Sensitive tail: an updated peer sends it ONLY sealed — open with the RESPONDING device's pairwise key (the signer, verified just above). A failed open (key not seeded yet, or a stale key across their re-attest) degrades to a tail-less pong: presence still lands, name/pin/sync simply wait for keys — and it logs once per device, not per pong. A legacy peer still sends the plaintext fields; keep honouring them until it updates.
+                                    let (sync_records, display_name, avatar_pin) = match sealed {
+                                        Some(blob) => {
+                                            let key = {
+                                                let keys = pong_seal_keys_recv.lock().unwrap();
+                                                keys.get(responder_pubkey.as_bytes()).copied()
+                                            };
+                                            let opened = key.and_then(|k| {
+                                                crate::network::fgtw::protocol::open_pong_sensitive(&blob, &k).ok()
+                                            });
+                                            match opened {
+                                                Some(tail) => {
+                                                    pong_open_failed.retain(|d| d != responder_pubkey.as_bytes());
+                                                    tail
+                                                }
+                                                None => {
+                                                    if !pong_open_failed.contains(responder_pubkey.as_bytes()) {
+                                                        pong_open_failed.push(*responder_pubkey.as_bytes());
+                                                        crate::logf!("Status: sealed pong tail from {} unopenable ({}) — treating as tail-less until keys agree", crate::fp(responder_pubkey.as_bytes()), if key.is_some() { "key mismatch" } else { "no pairwise key seeded yet" });
+                                                    }
+                                                    (Vec::new(), None, None)
+                                                }
+                                            }
+                                        }
+                                        None => (sync_records, display_name, avatar_pin),
+                                    };
 
                                     // Send status update with sync_records for retransmit handling
                                     send_status_update(

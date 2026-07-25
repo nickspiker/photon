@@ -49,12 +49,14 @@ pub enum FgtwMessage {
     },
     /// P2P status pong - "yes I'm online"
     ///
-    /// Format: RÅ< z4 y2 ef6[timestamp] hp[SAME provenance] ke[pubkey] ge[signature] n1 (pong) > [pong (sync_count: N) (sync_0_tok: hb) (sync_0_ef6: f6) ...]
+    /// Format: RÅ< z4 y2 ef6[timestamp] hp[SAME provenance] ke[pubkey] ge[signature] n1 (pong) > [pong (obs: hb) (enc: t_u3)]
     ///
     /// - Echoes same provenance_hash from ping (proves we saw it)
     /// - ke = responder's Ed25519 public key (for signature verification)
     /// - ge = signature of provenance_hash (proves we processed it)
-    /// - sync records: Per-conversation last_received_ef6 for efficient resync Peer can retransmit everything after that timestamp
+    /// - enc = the pairwise-sealed sensitive tail (sync records + display name + avatar pin); see [`seal_pong_sensitive`]
+    ///
+    /// The outer signature authenticates the frame but the frame used to be PLAINTEXT, leaking the display name, the 64-byte avatar pin (a bearer capability — key ‖ lookup, enough to fetch AND decrypt the avatar), and the per-conversation sync rows (conversation tokens + last-received times + counts + digests = who-talks-to-whom metadata) to any on-path observer and to the relay worker. The sensitive tail now rides ONLY inside `enc`, sealed under a pairwise key the two identities derive locally (friend: static identity DH; sibling: shared identity seed + device pair) — opaque to the relay and the path either way.
     ///
     /// Note: Avatar is fetched by handle, not exchanged in ping/pong. Storage key = BLAKE3(BLAKE3(handle) || "avatar")
     StatusPong {
@@ -63,13 +65,16 @@ pub enum FgtwMessage {
         provenance_hash: [u8; 32],      // Same hash from ping (proves we received it)
         signature: [u8; 64],            // Ed25519 signature of provenance_hash
         /// Per-conversation sync records: (conversation_token, last_received_osc) Tells peer: "For this conversation, your last message I received was at time X" Peer retransmits any pending messages with eagle_time > X
+        /// PARSE-SIDE LEGACY ONLY: filled from the old plaintext `sync` rows of a not-yet-updated peer. This build NEVER emits plaintext sync rows — outbound they travel inside `sealed`.
         sync_records: Vec<SyncRecord>,
-        /// The source address the responder observed this pong's ping arriving from — i.e. the requester's reflexive (public) address on the live UDP data socket. `None` from legacy peers. This is the peer-echoed STUN primitive: a node learns its own public address from any node whose pong it receives (see the traversal plan, P0), on the exact socket the data flows over — unlike fgtw.org's `cf-connecting-ip`, which only sees the TLS flow and is thus cone-NAT-only.
+        /// The source address the responder observed this pong's ping arriving from — i.e. the requester's reflexive (public) address on the live UDP data socket. `None` from legacy peers. This is the peer-echoed STUN primitive: a node learns its own public address from any node whose pong it receives (see the traversal plan, P0), on the exact socket the data flows over — unlike fgtw.org's `cf-connecting-ip`, which only sees the TLS flow and is thus cone-NAT-only. Deliberately PLAINTEXT: it is the PINGER'S own address bootstrapping information and predates any pairing.
         observed_addr: Option<SocketAddr>,
-        /// The responder's chosen display name (the contact-system ALWAYS-GRANTED `name` slot) — riding the pong means a friend's name reaches every peer within one ping cycle of being set/changed, self-healing, no extra message type. Pongs only go to authenticated contacts, so disclosure stays friend-scoped. `None`/empty = unset (receiver keeps its stored value).
+        /// The responder's chosen display name (the contact-system ALWAYS-GRANTED `name` slot) — riding the pong means a friend's name reaches every peer within one ping cycle of being set/changed, self-healing, no extra message type. `None`/empty = unset (receiver keeps its stored value). PARSE-SIDE LEGACY ONLY, like `sync_records` — outbound it travels inside `sealed`.
         display_name: Option<String>,
-        /// The responder's avatar PIN (64 = random AES key ‖ FGTW lookup): the friend-gated capability to fetch + decrypt the avatar blob. Rides the pong for the SAME reason as the name — only authenticated contacts get pongs, so only they receive the pin. Neither half is handle-derivable, so knowing the handle no longer yields the avatar. `None` = unset (no avatar / receiver keeps its stored pin).
+        /// The responder's avatar PIN (64 = random AES key ‖ FGTW lookup): the friend-gated BEARER capability to fetch + decrypt the avatar blob. Neither half is handle-derivable, so knowing the handle no longer yields the avatar. `None` = unset (no avatar / receiver keeps its stored pin). PARSE-SIDE LEGACY ONLY, like `sync_records` — outbound it travels inside `sealed`.
         avatar_pin: Option<[u8; 64]>,
+        /// The pairwise-sealed sensitive tail, both directions of the new wire form. EMIT: `Some` = the pre-sealed [`seal_pong_sensitive`] blob to ride as `enc` (the builder holds the pairwise key, this codec stays key-free); `None` = no key for the pinging device yet, so the pong goes out with NO sensitive tail at all (presence still works; name/pin/sync arrive once keys are seeded). PARSE: `Some` = the raw `enc` blob for the caller to open with the RESPONDING device's key via [`open_pong_sensitive`]; `None` = legacy plaintext pong (fields above carry whatever it sent openly).
+        sealed: Option<Vec<u8>>,
     },
     // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED Full 8-primitive CLUTCH uses ClutchOffer and ClutchKemResponse which are handled via build_clutch_offer_vsf() and parse_clutch_offer_vsf() See docs/clutch.md Section 4.2 for the slot-based ceremony protocol.
     /// Encrypted chat message
@@ -179,7 +184,7 @@ pub struct PeerRecord {
 }
 
 /// Sync record for pong - tells peer our last received message timestamp per conversation Used for efficient resync: peer retransmits pending messages with eagle_time > last_received_ef6
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncRecord {
     /// Privacy-preserving conversation token (smear_hash of sorted participant seeds)
     pub conversation_token: [u8; 32],
@@ -354,38 +359,24 @@ impl FgtwMessage {
                 responder_pubkey,
                 provenance_hash,
                 signature,
-                sync_records,
+                sync_records: _,
                 observed_addr,
-                display_name,
-                avatar_pin,
+                display_name: _,
+                avatar_pin: _,
+                sealed,
             } => {
-                // Pong: one native multi-value `sync` row per conversation record — (hb token, e6 last_received). No counts, no numbered names.
+                // Pong: the reflexive echo stays plaintext (it is the PINGER'S own address, bootstrapping information that predates any pairing); the sensitive tail — sync rows, name, avatar pin — rides ONLY inside `enc` (see seal_pong_sensitive). The plaintext sync/name/apin fields are parse-side legacy: this build never emits them, so a new build stops leaking immediately regardless of what the peer runs.
                 let mut section = vsf::VsfSection::new("pong");
-                for record in sync_records {
-                    section.add_field_multi(
-                        "sync",
-                        vec![
-                            VsfType::hb(record.conversation_token.to_vec()),
-                            VsfType::e(vsf::types::EtType::e6(record.last_received_osc)),
-                            // Anti-entropy digest (type-marker matched like the rest of the row; legacy parsers skip unknown markers): u5 row count + hg XOR-fold.
-                            VsfType::u5(record.row_count),
-                            VsfType::hg(record.row_digest.to_vec()),
-                        ],
-                    );
-                }
                 // Peer-echoed reflexive address: the src we saw the ping come from, so the requester learns its own public address on the data socket. Absent → legacy/unknown, parses back to None.
                 if let Some(addr) = observed_addr {
                     section.add_field_multi("obs", vec![VsfType::hb(socketaddr_to_bytes(addr))]);
                 }
-                // Always-granted display name — only when set (absent parses back to None).
-                if let Some(name) = display_name {
-                    if !name.is_empty() {
-                        section.add_field_multi("name", vec![VsfType::x(name.clone())]);
-                    }
-                }
-                // Always-granted avatar pin (random key ‖ lookup, 64 bytes) — only when set.
-                if let Some(pin) = avatar_pin {
-                    section.add_field_multi("apin", vec![VsfType::hR(pin.to_vec())]);
+                // The pairwise-sealed tail, as an opaque tensor (the sealed-blob idiom hist_page uses). None = no key for the pinging device yet — presence still works, the tail arrives once keys are seeded.
+                if let Some(blob) = sealed {
+                    section.add_field_multi(
+                        "enc",
+                        vec![VsfType::t_u3(vsf::Tensor::new(vec![blob.len()], blob.clone()))],
+                    );
                 }
                 builder
                     .creation_time_oscillations(*timestamp)
@@ -621,20 +612,14 @@ impl FgtwMessage {
                     signature,
                 });
             } else {
-                // Pong - parse sync records + optional observed_addr + optional display name from section body
+                // Pong - parse the plaintext body: observed_addr + the sealed tail from an updated peer, plus the legacy plaintext sync/name/apin an old peer still emits (they keep working until updated; the caller opens `sealed` with the responder's pairwise key).
                 let fields = section_fields_to_tuples(&section);
                 let sync_records = extract_sync_records(&section)?;
                 let observed_addr = extract_observed_addr(&fields);
-                let display_name = fields.iter().find_map(|(n, v)| match (n.as_str(), v) {
-                    ("name", VsfType::x(s)) if !s.is_empty() => Some(s.clone()),
-                    _ => None,
-                });
-                let avatar_pin = fields.iter().find_map(|(n, v)| match (n.as_str(), v) {
-                    ("apin", VsfType::hR(b)) if b.len() == 64 => {
-                        let mut p = [0u8; 64];
-                        p.copy_from_slice(b);
-                        Some(p)
-                    }
+                let display_name = extract_pong_name(&fields);
+                let avatar_pin = extract_pong_apin(&fields);
+                let sealed = fields.iter().find_map(|(n, v)| match (n.as_str(), v) {
+                    ("enc", VsfType::t_u3(tensor)) => Some(tensor.data.clone()),
                     _ => None,
                 });
 
@@ -647,6 +632,7 @@ impl FgtwMessage {
                     observed_addr,
                     display_name,
                     avatar_pin,
+                    sealed,
                 });
             }
         }
@@ -1120,6 +1106,87 @@ fn extract_observed_addr(fields: &[(String, VsfType)]) -> Option<SocketAddr> {
         Some(VsfType::hb(bytes)) => bytes_to_socketaddr(bytes),
         _ => None,
     }
+}
+
+/// Read the display-name field (`name`, x text) from pong-shaped fields — shared by the legacy plaintext body and the sealed `pongsec` section, so both wire forms parse thru ONE reader.
+fn extract_pong_name(fields: &[(String, VsfType)]) -> Option<String> {
+    fields.iter().find_map(|(n, v)| match (n.as_str(), v) {
+        ("name", VsfType::x(s)) if !s.is_empty() => Some(s.clone()),
+        _ => None,
+    })
+}
+
+/// Read the avatar-pin field (`apin`, hR 64 bytes) from pong-shaped fields — shared like [`extract_pong_name`].
+fn extract_pong_apin(fields: &[(String, VsfType)]) -> Option<[u8; 64]> {
+    fields.iter().find_map(|(n, v)| match (n.as_str(), v) {
+        ("apin", VsfType::hR(b)) if b.len() == 64 => {
+            let mut p = [0u8; 64];
+            p.copy_from_slice(b);
+            Some(p)
+        }
+        _ => None,
+    })
+}
+
+/// Add the sensitive pong fields — sync multi-rows + name + apin — to `section`, in exactly the shape the pong body used to carry them openly. The sole writer is now the sealed `pongsec` inner section, but keeping the row shape means the legacy plaintext parse path and the sealed path share [`extract_sync_records`] / [`extract_pong_name`] / [`extract_pong_apin`] unchanged.
+fn add_pong_sensitive_fields(
+    section: &mut vsf::VsfSection,
+    sync_records: &[SyncRecord],
+    display_name: Option<&str>,
+    avatar_pin: Option<&[u8; 64]>,
+) {
+    // One native multi-value `sync` row per conversation record — (hb token, e6 last_received). No counts, no numbered names.
+    for record in sync_records {
+        section.add_field_multi(
+            "sync",
+            vec![
+                VsfType::hb(record.conversation_token.to_vec()),
+                VsfType::e(vsf::types::EtType::e6(record.last_received_osc)),
+                // Anti-entropy digest (type-marker matched like the rest of the row; legacy parsers skip unknown markers): u5 row count + hg XOR-fold.
+                VsfType::u5(record.row_count),
+                VsfType::hg(record.row_digest.to_vec()),
+            ],
+        );
+    }
+    // Always-granted display name — only when set (absent parses back to None).
+    if let Some(name) = display_name {
+        if !name.is_empty() {
+            section.add_field_multi("name", vec![VsfType::x(name.to_string())]);
+        }
+    }
+    // Always-granted avatar pin (random key ‖ lookup, 64 bytes) — only when set.
+    if let Some(pin) = avatar_pin {
+        section.add_field_multi("apin", vec![VsfType::hR(pin.to_vec())]);
+    }
+}
+
+/// Build + AEAD-seal a pong's sensitive tail under the PAIRWISE pong key: the per-conversation sync rows (who-talks-to-whom metadata), the display name, and the 64-byte avatar pin (a bearer capability). Plaintext is an inner `pongsec` VSF section (encode_encrypted — the headerless form made for exactly this), sealed with kete ChaCha20-Poly1305 like history pages and the log seal. The key comes from the caller's PongSealKeys map, derived on the UI thread — this codec never sees an identity seed.
+pub fn seal_pong_sensitive(
+    sync_records: &[SyncRecord],
+    display_name: Option<&str>,
+    avatar_pin: Option<&[u8; 64]>,
+    key: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    let mut inner = vsf::VsfSection::new("pongsec");
+    add_pong_sensitive_fields(&mut inner, sync_records, display_name, avatar_pin);
+    kete::encrypt_bytes(&inner.encode_encrypted(), key)
+}
+
+/// AEAD-open + parse a pong's sealed sensitive tail: `(sync_records, display_name, avatar_pin)`. Wrong key (not yet seeded / re-attested peer), tamper, or malformed plaintext → `Err`; the caller treats that as a pong with no sensitive tail — presence still lands, nothing sensitive is trusted.
+pub fn open_pong_sensitive(
+    sealed: &[u8],
+    key: &[u8; 32],
+) -> Result<(Vec<SyncRecord>, Option<String>, Option<[u8; 64]>), String> {
+    let plain = kete::decrypt_bytes(sealed, key)?;
+    let mut ptr = 0;
+    let section = vsf::VsfSection::parse(&plain, &mut ptr)
+        .map_err(|e| format!("pongsec parse: {}", e))?;
+    if section.name != "pongsec" {
+        return Err(format!("pongsec name mismatch: {}", section.name));
+    }
+    let sync_records = extract_sync_records(&section)?;
+    let fields = section_fields_to_tuples(&section);
+    Ok((sync_records, extract_pong_name(&fields), extract_pong_apin(&fields)))
 }
 
 // Helper functions to extract from VsfHeader for simplified ping/pong format
@@ -2925,6 +2992,130 @@ mod phonebook_tests {
                 assert_eq!(got, avatar_vsf, "avatar payload must round-trip byte-for-byte");
             }
             other => panic!("expected AvatarResponse, got {:?}", other),
+        }
+    }
+}
+
+#[cfg(test)]
+mod pong_seal_tests {
+    use super::*;
+    use crate::types::DevicePubkey;
+
+    fn sample_records() -> Vec<SyncRecord> {
+        vec![
+            SyncRecord {
+                conversation_token: [0xA7u8; 32],
+                last_received_osc: 123_456_789,
+                row_count: 42,
+                row_digest: [0x5Cu8; 32],
+            },
+            SyncRecord {
+                conversation_token: [0xB8u8; 32],
+                last_received_osc: 987_654_321,
+                row_count: 0,
+                row_digest: [0u8; 32],
+            },
+        ]
+    }
+
+    fn sealed_pong(sealed: Option<Vec<u8>>) -> FgtwMessage {
+        FgtwMessage::StatusPong {
+            timestamp: 55_555,
+            responder_pubkey: DevicePubkey::from_bytes([9u8; 32]),
+            provenance_hash: [0xEEu8; 32],
+            signature: [0xDDu8; 64],
+            sync_records: Vec::new(),
+            observed_addr: Some("203.0.113.9:4383".parse().unwrap()),
+            display_name: None,
+            avatar_pin: None,
+            sealed,
+        }
+    }
+
+    #[test]
+    fn sealed_pong_round_trips_and_wire_never_leaks() {
+        let key = [0x42u8; 32];
+        let records = sample_records();
+        let name = "Ada Lovelace";
+        let pin = [0x77u8; 64];
+        let blob = seal_pong_sensitive(&records, Some(name), Some(&pin), &key).unwrap();
+        let bytes = sealed_pong(Some(blob)).to_vsf_bytes();
+        assert!(!bytes.is_empty());
+
+        // The leak this fix exists for: none of the sensitive material may appear in the wire bytes — not the pin, not the name, not a conversation token.
+        assert!(!bytes.windows(pin.len()).any(|w| w == &pin[..]), "avatar pin leaked in plaintext");
+        assert!(!bytes.windows(name.len()).any(|w| w == name.as_bytes()), "display name leaked in plaintext");
+        for r in &records {
+            assert!(!bytes.windows(32).any(|w| w == &r.conversation_token[..]), "conversation token leaked in plaintext");
+        }
+
+        match FgtwMessage::from_vsf_bytes(&bytes).expect("parse sealed pong") {
+            FgtwMessage::StatusPong { sync_records, observed_addr, display_name, avatar_pin, sealed, .. } => {
+                // Plaintext tail fields stay empty on the new wire form; the obs echo survives openly.
+                assert!(sync_records.is_empty());
+                assert!(display_name.is_none());
+                assert!(avatar_pin.is_none());
+                assert_eq!(observed_addr, Some("203.0.113.9:4383".parse().unwrap()));
+                // The right pairwise key recovers everything.
+                let (rec, dn, ap) = open_pong_sensitive(&sealed.expect("sealed tail present"), &key).expect("open with right key");
+                assert_eq!(rec, records);
+                assert_eq!(dn.as_deref(), Some(name));
+                assert_eq!(ap, Some(pin));
+            }
+            other => panic!("expected StatusPong, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sealed_pong_wrong_key_yields_absent_fields_not_error() {
+        let blob = seal_pong_sensitive(&sample_records(), Some("Ada"), Some(&[0x77u8; 64]), &[0x42u8; 32]).unwrap();
+        let bytes = sealed_pong(Some(blob)).to_vsf_bytes();
+        // The pong itself still parses (presence must land) — only the tail refuses.
+        match FgtwMessage::from_vsf_bytes(&bytes).expect("pong parse must not fail on an unopenable tail") {
+            FgtwMessage::StatusPong { sealed, .. } => {
+                assert!(open_pong_sensitive(&sealed.expect("tail rode the wire"), &[0x43u8; 32]).is_err(), "wrong key must not open the tail");
+            }
+            other => panic!("expected StatusPong, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tail_less_pong_round_trips() {
+        // No pairwise key for the pinger → the pong goes out with no sensitive tail at all; presence still works.
+        let bytes = sealed_pong(None).to_vsf_bytes();
+        match FgtwMessage::from_vsf_bytes(&bytes).expect("parse tail-less pong") {
+            FgtwMessage::StatusPong { sync_records, display_name, avatar_pin, sealed, .. } => {
+                assert!(sync_records.is_empty());
+                assert!(display_name.is_none());
+                assert!(avatar_pin.is_none());
+                assert!(sealed.is_none());
+            }
+            other => panic!("expected StatusPong, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn legacy_plaintext_pong_still_parses() {
+        // A not-yet-updated peer still emits the old open body — hand-built here with the SAME field helper the sealed inner section uses, which is exactly the wire shape the old emit arm produced.
+        let records = sample_records();
+        let pin = [0x66u8; 64];
+        let mut section = vsf::VsfSection::new("pong");
+        add_pong_sensitive_fields(&mut section, &records, Some("Grace"), Some(&pin));
+        let bytes = vsf::VsfBuilder::new()
+            .creation_time_oscillations(44_444)
+            .provenance_hash([0xCCu8; 32])
+            .signature_ed25519([7u8; 32], [8u8; 64])
+            .add_section_direct(section)
+            .build()
+            .expect("legacy pong build");
+        match FgtwMessage::from_vsf_bytes(&bytes).expect("parse legacy pong") {
+            FgtwMessage::StatusPong { sync_records, display_name, avatar_pin, sealed, .. } => {
+                assert_eq!(sync_records, records);
+                assert_eq!(display_name.as_deref(), Some("Grace"));
+                assert_eq!(avatar_pin, Some(pin));
+                assert!(sealed.is_none());
+            }
+            other => panic!("expected StatusPong, got {:?}", other),
         }
     }
 }
