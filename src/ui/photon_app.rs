@@ -9640,6 +9640,13 @@ impl PhotonApp {
         }
         self.focused = new;
         widget::apply_focus_change(self, old, new);
+        // A textbox focus EDGE re-rasters the full bg layer: the focus glow rays extend past the pill into the noise backdrop, and the dirty-gated bg cache never repaints under them on its own — a deselected box's glow lingered baked into the background (the contacts search box "un-deselectable" look). One noise re-raster per focus change, same cost precedent as a screen change.
+        if was_textbox || is_textbox {
+            if let Some(chrome) = self.chrome.as_mut() {
+                chrome.invalidate_bg();
+            }
+            self.scene_dirty = true;
+        }
         // Restart blink so the cursor lands solid on the newly-focused textbox instead of mid-cycle dark. `start` resets the phase to the start of the visible half whether the timer was already running or not.
         self.blink_timer.start(Instant::now());
         true
