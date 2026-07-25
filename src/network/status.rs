@@ -2015,14 +2015,55 @@ async fn run_checker(
                                     let pending_ping = match pending_ping {
                                         Some(p) => p,
                                         None => {
-                                            crate::logf!("Status: pong from {} ({}) dropped — no pending ping matches its provenance (late, replayed, or already-answered race twin)", crate::fp(responder_pubkey.as_bytes()), src_addr);
+                                            // LIVENESS SALVAGE: an unmatched pong (doze-delayed past expiry, an answered race twin, a fan-out duplicate) still PROVES the signing device is alive — discarding that fact kept siblings "offline" for whole sessions (hundreds of dropped pongs per day, the fleet-push killswitch + the amber/green ring flap). Verify the signature and count presence ONLY: no address adoption (the source isn't freshness-proven without the nonce match — a replayed pong from an attacker's address could poison the contact's ip), no sync/name/pin (those ride matched pongs). Strikes reset like any live verdict so dead-address fan-out pings can't out-vote a living device.
+                                            if verify_provenance_signature(&provenance_hash, &responder_pubkey, &signature) {
+                                                {
+                                                    let mut failures = failed_pings_recv.lock().unwrap();
+                                                    failures.retain(|(k, _)| k != responder_pubkey.as_bytes());
+                                                }
+                                                crate::logf!("Status: unmatched pong from {} ({}) — liveness only (late/twin; no addr adoption)", crate::fp(responder_pubkey.as_bytes()), src_addr);
+                                                send_status_update(
+                                                    &status_tx_recv,
+                                                    StatusUpdate::Online {
+                                                        peer_pubkey: responder_pubkey,
+                                                        is_online: true,
+                                                        peer_addr: None,
+                                                        sync_records: Vec::new(),
+                                                        display_name: None,
+                                                        avatar_pin: None,
+                                                    },
+                                                    &event_proxy_recv,
+                                                );
+                                            } else {
+                                                crate::logf!("Status: pong from {} ({}) dropped — unmatched provenance AND unverifiable signature", crate::fp(responder_pubkey.as_bytes()), src_addr);
+                                            }
                                             continue;
                                         }
                                     };
 
                                     // Verify responder matches who we pinged
                                     if responder_pubkey != pending_ping.recipient_pubkey {
-                                        crate::logf!("Status: pong dropped — responder {} is not the {} we pinged (another fleet device answered, or a stale contact record)", crate::fp(responder_pubkey.as_bytes()), crate::fp(pending_ping.recipient_pubkey.as_bytes()));
+                                        // Another device answered this provenance (a fleet sibling heard the fan-out, or a stale contact record routed the ping). The RESPONDER is provably alive if its signature holds — salvage that as presence-only, same terms as the unmatched arm. And the consumed pending entry still belongs to its intended recipient: put it back so their answer (or honest timeout) isn't silently voided.
+                                        crate::logf!("Status: pong answered by {} but we pinged {} — responder counted alive (liveness only), ping re-armed for its recipient", crate::fp(responder_pubkey.as_bytes()), crate::fp(pending_ping.recipient_pubkey.as_bytes()));
+                                        if verify_provenance_signature(&provenance_hash, &responder_pubkey, &signature) {
+                                            {
+                                                let mut failures = failed_pings_recv.lock().unwrap();
+                                                failures.retain(|(k, _)| k != responder_pubkey.as_bytes());
+                                            }
+                                            send_status_update(
+                                                &status_tx_recv,
+                                                StatusUpdate::Online {
+                                                    peer_pubkey: responder_pubkey,
+                                                    is_online: true,
+                                                    peer_addr: None,
+                                                    sync_records: Vec::new(),
+                                                    display_name: None,
+                                                    avatar_pin: None,
+                                                },
+                                                &event_proxy_recv,
+                                            );
+                                        }
+                                        pending_recv.lock().unwrap().push(pending_ping);
                                         continue;
                                     }
 
