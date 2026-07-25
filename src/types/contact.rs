@@ -221,6 +221,8 @@ pub struct Contact {
     pub clutch_proof_retry_lifetime: u16,
     /// Latched once proof retransmission gave up (lifetime cap hit) — the peer answered but can never place our proof (token mismatch: a stale-identity ghost, or an interrupted re-genesis). Freezes the resend storm; the UI reads it as "can't complete — remove and re-add". Runtime-only; a fresh session re-tries once (the peer may have re-attested correctly).
     pub clutch_proof_gave_up: bool,
+    /// When we last DISCARDED our round to adopt a peer's fresh-keyed mid-ceremony offer (§4.2 wholesale adoption). Rate-limits adoption: a peer that can't hear our responses (one-way reachability — peer_m↔peer_b 2026-07-25) re-offers with new keys every ~25s, and unthrottled adoption re-ran keygen+encap on the UI thread each time (a hitch storm). While the last adoption is fresh we hold our round and ignore further re-offers; the peer only needs ONE of our responses to land. Runtime-only, never persisted.
+    pub clutch_last_adoption: Option<std::time::Instant>,
     /// Flag to prevent multiple concurrent keygens (race condition guard)
     pub clutch_keygen_in_progress: bool,
     /// Flag to prevent multiple concurrent KEM encapsulations
@@ -384,6 +386,7 @@ impl Contact {
             clutch_proof_resends_left: 0, // Bounded proof-retransmit budget (runtime only)
             clutch_proof_retry_lifetime: 0, // Lifetime re-arm counter (runtime only)
             clutch_proof_gave_up: false, // Latched when the lifetime cap is hit (runtime only)
+            clutch_last_adoption: None,
             clutch_keygen_in_progress: false, // No keygen running yet
             clutch_kem_encap_in_progress: false, // No KEM encap running yet
             clutch_ceremony_in_progress: false, // No ceremony completion running yet
