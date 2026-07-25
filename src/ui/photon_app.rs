@@ -11822,7 +11822,7 @@ impl PhotonApp {
         })
     }
 
-    /// Live fleet propagation: push just-written conversation rows for the friend/self contact at `idx` to every ONLINE sibling as an unsolicited hist_page under the FLEET key. The receiving sibling merges them verbatim (an unmatched rid from a sibling IS the push signature) and re-pushes anything genuinely fresh, so a message hops the whole fleet even when only one device can reach its origin. Probe rows are filtered; a lost push self-heals via the sibling-online history sweep. `exclude_device` keeps a gossip hop from echoing straight back at its sender.
+    /// Live fleet propagation: push just-written conversation rows for the friend/self contact at `idx` to EVERY sibling (reachable-or-not — direct legs race, relay covers the rest) as an unsolicited hist_page under the FLEET key. The receiving sibling merges them verbatim (an unmatched rid from a sibling IS the push signature) and re-pushes anything genuinely fresh, so a message hops the whole fleet even when only one device can reach its origin. Probe rows are filtered; a lost push self-heals via the sibling-online history sweep. `exclude_device` keeps a gossip hop from echoing straight back at its sender.
     fn push_rows_to_siblings(
         &self,
         idx: usize,
@@ -11879,22 +11879,40 @@ impl PhotonApp {
             }
         };
         let mut pushed = 0usize;
-        for sib in self.contacts.iter().filter(|c| c.is_sibling && c.is_online) {
+        let mut skipped = 0usize;
+        // EVERY sibling, not just is_online ones: sibling presence has proven unreliable (pong-provenance drops kept siblings "offline" for whole sessions), and gating delivery on it turned the entire fleet plane into a silent no-op — zero FLEET-HIST lines in a full day's desktop log while messages flowed. Direct legs race as before; a sibling with no validated path (or no address at all) rides the relay, which delivers whenever that device next drains its pipe.
+        for sib in self.contacts.iter().filter(|c| c.is_sibling) {
             if exclude_device.is_some_and(|d| *sib.public_identity.as_bytes() == d) {
                 continue;
             }
-            let Some((primary, alt)) = sib.race_addrs() else {
-                continue;
+            let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
+            let (primary, alt, relay_to) = match sib.race_addrs() {
+                Some((p, a)) => (
+                    p,
+                    a,
+                    if sib.validated_path.is_none() { sib.relay_device_list() } else { Vec::new() },
+                ),
+                // No known address: relay-only (the unspecified primary skips the direct legs in the send worker).
+                None => {
+                    let relays = sib.relay_device_list();
+                    if relays.is_empty() {
+                        skipped += 1;
+                        continue;
+                    }
+                    (unspecified, None, relays)
+                }
             };
             checker.send_history(crate::network::status::HistorySendRequest {
                 peer_addr: primary,
                 alt_addr: alt,
                 recipient_pubkey: *sib.public_identity.as_bytes(),
-                relay_to: if sib.validated_path.is_none() { sib.relay_device_list() } else { Vec::new() },
+                relay_to,
                 vsf_bytes: vsf_bytes.clone(),
             });
             pushed += 1;
         }
+        // ALWAYS log, zero included — a silently-no-op fleet push is exactly how this path shipped broken.
+        crate::logf!("FLEET-HIST: live push {} row(s) for {} → {} sibling(s) ({} unreachable)", rows.len(), crate::fp(&self.contacts[idx].handle_proof), pushed, skipped);
         if pushed > 0 {
             crate::logf!("FLEET-HIST: pushed {} row(s) to {} sibling device(s)", page.rows.len(), pushed);
         }
