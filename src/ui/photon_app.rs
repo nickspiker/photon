@@ -4841,45 +4841,28 @@ impl FluorApp for PhotonApp {
                         self.back_btn_hit_id,
                     );
 
-                    // Avatar FIRST, then the handle below it. Sized to MATCH our own avatar on the Ready/contacts screen, so the friend's avatar here reads at the same scale. Both derive their radius from `ReadyLayout::avatar_center_radius` (a pure fn of viewport + zoom), so they stay identical across resize/zoom. Only the centre placement differs (centred on this screen vs. the Ready slot).
+                    // Avatar geometry (matches the Ready/contacts scale). WHERE it draws depends on ceremony state: once Complete the avatar + name are the TOP-OF-STREAM header inside the scrollable message list (they scroll away as you read — the orb already identifies who you're talking to, so a fixed header just ate half the screen); before Complete they stay a fixed centred header on the "waiting for the ceremony" screen (there's no list yet).
                     let (_, _, avatar_r) = conv_layout.avatar_center_radius();
                     let avatar_diam = (avatar_r * 2.0) as usize;
                     let avatar_cx = buf_w as f32 * 0.5;
+                    let is_woven_chat = contact.clutch_state == crate::types::ClutchState::Complete;
+                    // Closure to stamp the avatar disc + tier ring at a given centre-y — called either as the fixed header (pre-ceremony) or at the scroll-top of the stream (woven).
+                    let draw_conv_avatar = |canvas: &mut Canvas, cy: f32| {
+                        if let Some(scaled) = contact.avatar_scaled.as_ref() {
+                            crate::ui::avatar_render::draw_avatar(canvas, avatar_cx, cy, avatar_r, scaled, avatar_diam, None);
+                        } else {
+                            let gd = (avatar_r * 2.0).max(1.0) as usize;
+                            let seed = proof_gradient_seed(&contact.handle_proof);
+                            crate::ui::avatar_render::draw_avatar(canvas, avatar_cx, cy, avatar_r, &gradient_avatar_rgb(seed, gd), gd, None);
+                        }
+                        let ring = ring_tier_colour(contact);
+                        let ring_thick = (avatar_r * 0.0375).max(1.0);
+                        paint::draw_circle(canvas, avatar_cx, cy, avatar_r + ring_thick, ring, None);
+                    };
                     let avatar_y = back_y + unit * 1.5 + avatar_r;
-                    if let Some(scaled) = contact.avatar_scaled.as_ref() {
-                        crate::ui::avatar_render::draw_avatar(
-                            &mut canvas,
-                            avatar_cx,
-                            avatar_y,
-                            avatar_r,
-                            scaled,
-                            avatar_diam,
-                            None,
-                        );
-                    } else {
-                        // Default unset avatar: the contact's deterministic gradient (their public proof).
-                        let gd = (avatar_r * 2.0).max(1.0) as usize;
-                        let seed = proof_gradient_seed(&contact.handle_proof);
-                        crate::ui::avatar_render::draw_avatar(
-                            &mut canvas,
-                            avatar_cx,
-                            avatar_y,
-                            avatar_r,
-                            &gradient_avatar_rgb(seed, gd),
-                            gd,
-                            None,
-                        );
+                    if !is_woven_chat {
+                        draw_conv_avatar(&mut canvas, avatar_y);
                     }
-                    let ring = ring_tier_colour(contact);
-                    let ring_thick = (avatar_r * 0.0375).max(1.0);
-                    paint::draw_circle(
-                        &mut canvas,
-                        avatar_cx,
-                        avatar_y,
-                        avatar_r + ring_thick,
-                        ring,
-                        None,
-                    );
 
                     // Relationship colour for this contact: everything handle-specific on this screen (name, their message text) renders in it. Self is the neutral-grey anchor.
                     let our_handle_hash = self
@@ -4895,7 +4878,7 @@ impl FluorApp for PhotonApp {
                         party_colour(&relationship_digest(&contact.handle_hash, &our_handle_hash))
                     };
 
-                    // Contact name, centred BELOW the avatar, in their relationship colour.
+                    // Contact name, centred BELOW the avatar, in their relationship colour. Drawn as the fixed header only pre-ceremony; woven chats render it at the scroll-top of the stream (below).
                     let name_size = unit * 1.2;
                     let name_y = avatar_y + avatar_r + unit * 1.2;
                     let header_style = if contact.has_real_name() {
@@ -4903,7 +4886,9 @@ impl FluorApp for PhotonApp {
                     } else {
                         TextStyle::new(name_size, their_colour).weight(600).font("Oxanium").shear(0.2126)
                     };
-                    ctx.text.draw_text_center(&mut canvas, &contact.display_name_or_pending(), buf_w as f32 * 0.5, name_y, &header_style, None, None);
+                    if !is_woven_chat {
+                        ctx.text.draw_text_center(&mut canvas, &contact.display_name_or_pending(), buf_w as f32 * 0.5, name_y, &header_style, None, None);
+                    }
 
                     // CLUTCH state (compact, under the name). Show the base state PLUS a behind-the-scenes detail (slot fill, keygen / KEM / proof stage) so a stuck handshake reads as "what's it waiting on" instead of a flat "pending" — see Contact::clutch_status_detail. Self-contact (notes-to-self) has no peer + no ceremony: the weave probe is skipped, so chain_woven never seals and clutch_status_detail would read "testing · weaving the chain" forever — show a plain reachability line instead.
                     let clutch_y = name_y + unit * 1.5;
@@ -4939,7 +4924,8 @@ impl FluorApp for PhotonApp {
                         let msg_size = unit * 0.62;
                         let line_h = msg_size * 1.6; // text + breathing room per message
                         let pad_x = unit; // left/right inset
-                        let list_top = clutch_y + unit * 1.2;
+                        // Woven chat reclaims the whole header strip for the message list (the avatar/name ride the scroll-top instead, drawn below); pre-woven keeps the status header space.
+                        let list_top = if is_woven_chat { back_y + unit } else { clutch_y + unit * 1.2 };
                         // Compose bar reserves the bottom strip, lifted off the bottom edge by `compose_margin`. The list lives between list_top and list_bottom. Must match the layout pass's `compose_h`/`compose_margin` below.
                         let compose_h = unit * 1.8;
                         let compose_margin = unit * 0.8;
@@ -4961,7 +4947,9 @@ impl FluorApp for PhotonApp {
                             .filter(|m| m.content != crate::types::CHAIN_PROBE_MARKER)
                             .collect();
                         let n = visible.len();
-                        let content_h = n as f32 * line_h;
+                        // The avatar/name block is the oldest item in the stream: its height joins content_h so you can scroll up far enough to reveal it, and it draws above the oldest message. Only for a woven chat (pre-woven still has the fixed header).
+                        let header_block_h = if is_woven_chat { avatar_r * 2.0 + unit * 3.0 } else { 0.0 };
+                        let content_h = n as f32 * line_h + header_block_h;
                         let view_h = (list_bottom - list_top).max(0.0);
                         let max_scroll = (content_h - view_h).max(0.0);
                         let scroll = contact.message_scroll_offset.clamp(0.0, max_scroll);
@@ -4997,6 +4985,14 @@ impl FluorApp for PhotonApp {
                                 ctx.text.draw_text_left(&mut canvas, &msg.content, pad_x, y, &TextStyle::new(msg_size, colour).weight(500), Some(list_clip), None);
                             }
                             y -= line_h;
+                        }
+                        // Top-of-stream avatar + name (woven chat): `y` now sits just above the oldest message, so the block draws here and scrolls off as you read down. Clipped to the list region — invisible unless you scroll to the very start.
+                        if is_woven_chat && y > list_top - header_block_h - line_h {
+                            let block_name_y = y - unit * 0.2;
+                            let block_avatar_cy = block_name_y - unit * 1.2 - avatar_r;
+                            // draw_conv_avatar ignores the list clip (disc + ring are opaque and the block only renders near the top anyway); the name honours it.
+                            draw_conv_avatar(&mut canvas, block_avatar_cy);
+                            ctx.text.draw_text_center(&mut canvas, &contact.display_name_or_pending(), buf_w as f32 * 0.5, block_name_y, &header_style, Some(list_clip), None);
                         }
                         let _ = n;
 
@@ -15892,15 +15888,17 @@ fn ring_tier_colour(c: &crate::types::Contact) -> u32 {
     if !c.is_online {
         return *theme::RING_OFFLINE_COLOUR;
     }
-    if c.reached_via_relay {
-        return *theme::RING_RELAY_COLOUR;
+    // A LIVE validated direct path is authoritative and wins over reached_via_relay. That flag tracks how the LAST frame happened to arrive, and a peer reachable BOTH ways (good direct path + the relay pipe still delivering redundant copies) flips it every cycle — the amber/green flicker. validated_path is held state with a TTL, so it doesn't flap; relay only colours the ring when there is genuinely no direct path.
+    if let Some((addr, _)) = c.validated_path.as_ref() {
+        let lan = match addr.ip() {
+            std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+            std::net::IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80 || (v6.segments()[0] & 0xfe00) == 0xfc00,
+        };
+        return if lan { *theme::RING_LAN_COLOUR } else { *theme::RING_ONLINE_COLOUR };
     }
-    let lan = c.validated_path.as_ref().is_some_and(|(a, _)| match a.ip() {
-        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
-        std::net::IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80 || (v6.segments()[0] & 0xfe00) == 0xfc00,
-    });
-    if lan {
-        *theme::RING_LAN_COLOUR
+    // No validated direct path: relay if that's how we're reaching them, else online-but-still-punching (green, the direct attempt is in flight).
+    if c.reached_via_relay {
+        *theme::RING_RELAY_COLOUR
     } else {
         *theme::RING_ONLINE_COLOUR
     }
