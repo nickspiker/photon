@@ -1883,7 +1883,8 @@ impl FluorApp for PhotonApp {
         ));
         self.settings_autoupdate_check = Some(crate::ui::settings_widgets::Checkbox::new(
             &mut self.hit_counter,
-            "Install updates automatically",
+            // Platform-honest: desktop release builds self-apply + re-exec, so "install" is literal. Android auto-CHECKS and notifies but deliberately doesn't auto-DOWNLOAD the APK in the background (metered-data safety — the tap-to-install then rides the unattended session installer, silent after the one-time confirm), so the label there says "check", not "install".
+            if cfg!(target_os = "android") { "Check for updates automatically" } else { "Install updates automatically" },
             0.,
             0.,
             1.,
