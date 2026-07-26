@@ -992,6 +992,8 @@ pub struct PhotonApp {
     msg_hit_rows: Vec<(i64, bool)>,
     /// The message whose details strip is open: (contact idx, timestamp, is_outgoing). Keyed by identity, not list index, so backfills can't shift the selection. `None` = no strip.
     selected_msg: Option<(usize, i64, bool)>,
+    /// The open strip's copy pill has fired (text on the clipboard): pill turns green + reads "copied". Event-cleared — reset whenever the selection moves or closes, never on a timer.
+    selected_msg_copied: bool,
     /// Word-wrap cache for the conversation's message list: key (contact idx, message count, avail_w bits, msg_size bits) + per-visible-message wrapped line COUNTS (chronological order, probes excluded) + their sum. Rebuilt only when the key changes (resize / zoom / new message / conversation switch) — content_h needs every message's height each frame, and re-measuring the whole history per frame would swamp the shaper. The actual line STRINGS are re-wrapped per frame only for the handful of messages actually drawn.
     msg_wrap: Option<((usize, usize, u32, u32), Vec<u16>, usize)>,
     /// Last IME inset applied to the layout (Android) — the tick diffs the JNI mirror against this and relayouts on change, since the keyboard no longer produces resize events.
@@ -1295,6 +1297,7 @@ impl PhotonApp {
             msg_copy_id: HIT_NONE,
             msg_hit_rows: Vec::new(),
             selected_msg: None,
+            selected_msg_copied: false,
             msg_wrap: None,
             #[cfg(target_os = "android")]
             last_ime_inset: 0,
@@ -2740,6 +2743,9 @@ impl FluorApp for PhotonApp {
                     if let Some(text) = text_opt {
                         if self.copy_to_clipboard(&text) {
                             crate::log("msg-details: message text copied");
+                            // Pill flips green + "copied" — event-cleared when the selection moves/closes.
+                            self.selected_msg_copied = true;
+                            self.scene_dirty = true;
                         }
                     }
                 }
@@ -2752,6 +2758,8 @@ impl FluorApp for PhotonApp {
                     let key = (ci, ts, out);
                     // Toggle: same message deselects; another message moves the strip. Event-shown, interaction-cleared — no timers.
                     self.selected_msg = if self.selected_msg == Some(key) { None } else { Some(key) };
+                    // A fresh selection (or a close) resets the copy pill to its ready state.
+                    self.selected_msg_copied = false;
                     self.scene_dirty = true;
                     ctx.window.request_redraw();
                 }
@@ -5171,11 +5179,16 @@ impl FluorApp for PhotonApp {
                                 let detail_size = msg_size * 0.75;
                                 let detail_style = TextStyle::new(detail_size, *theme::LABEL_COLOUR).weight(500).font("Oxanium");
                                 ctx.text.draw_text_left(&mut canvas, &detail, pad_x, y, &detail_style, Some(list_clip), None);
-                                // Copy pill, right-aligned on the strip line. Stamped with padding so it's a comfortable tap target.
-                                let copy_style = TextStyle::new(detail_size, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium");
-                                let copy_w = ctx.text.measure_text("copy", &copy_style);
+                                // Copy pill, right-aligned on the strip line: cyan "copy" ready state → green "copied" once the clipboard holds the text (selected_msg_copied; event-cleared with the selection, never a timer). Stamped with padding so it's a comfortable tap target.
+                                let (copy_label, copy_colour) = if self.selected_msg_copied {
+                                    ("copied", *theme::SEARCH_FOUND_COLOUR)
+                                } else {
+                                    ("copy", *theme::COPY_PILL_COLOUR)
+                                };
+                                let copy_style = TextStyle::new(detail_size, copy_colour).weight(600).font("Oxanium");
+                                let copy_w = ctx.text.measure_text(copy_label, &copy_style);
                                 let copy_x = buf_w as f32 - pad_x - copy_w;
-                                ctx.text.draw_text_left(&mut canvas, "copy", copy_x, y, &copy_style, Some(list_clip), None);
+                                ctx.text.draw_text_left(&mut canvas, copy_label, copy_x, y, &copy_style, Some(list_clip), None);
                                 let pad_hit = detail_size;
                                 restamp_hit_rect(
                                     &mut chrome.hit_test_map,
