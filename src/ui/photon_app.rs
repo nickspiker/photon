@@ -5033,21 +5033,22 @@ impl FluorApp for PhotonApp {
                     let is_woven_chat = contact.clutch_state == crate::types::ClutchState::Complete
                         || self.session.as_ref().map(|se| crate::crypto::clutch::identity_party_id(&se.identity_seed)) == Some(contact.handle_hash);
                     // Closure to stamp the avatar disc + tier ring at a given centre-y — called either as the fixed header (pre-ceremony) or at the scroll-top of the stream (woven).
-                    let draw_conv_avatar = |canvas: &mut Canvas, cy: f32| {
+                    // Clip rides in as a parameter: the STREAM-TOP call must clip to the list region exactly like every message — the old hardcoded None let the avatar disc paint THROUGH the list's top boundary while the name + messages clipped, visually detaching it onto its own layer during scroll (the "ONE LAYER" bug). The fixed pre-woven header passes None (nothing to clip against).
+                    let draw_conv_avatar = |canvas: &mut Canvas, cy: f32, clip: Option<fluor::paint::Clip>| {
                         if let Some(scaled) = contact.avatar_scaled.as_ref() {
-                            crate::ui::avatar_render::draw_avatar(canvas, avatar_cx, cy, avatar_r, scaled, avatar_diam, None);
+                            crate::ui::avatar_render::draw_avatar(canvas, avatar_cx, cy, avatar_r, scaled, avatar_diam, clip);
                         } else {
                             let gd = (avatar_r * 2.0).max(1.0) as usize;
                             let seed = proof_gradient_seed(&contact.handle_proof);
-                            crate::ui::avatar_render::draw_avatar(canvas, avatar_cx, cy, avatar_r, &gradient_avatar_rgb(seed, gd), gd, None);
+                            crate::ui::avatar_render::draw_avatar(canvas, avatar_cx, cy, avatar_r, &gradient_avatar_rgb(seed, gd), gd, clip);
                         }
                         let ring = ring_tier_colour(contact);
                         let ring_thick = (avatar_r * 0.0375).max(1.0);
-                        paint::draw_circle(canvas, avatar_cx, cy, avatar_r + ring_thick, ring, None);
+                        paint::draw_circle(canvas, avatar_cx, cy, avatar_r + ring_thick, ring, clip);
                     };
                     let avatar_y = back_y + unit * 1.5 + avatar_r;
                     if !is_woven_chat {
-                        draw_conv_avatar(&mut canvas, avatar_y);
+                        draw_conv_avatar(&mut canvas, avatar_y, None);
                     }
 
                     // Relationship colour for this contact: everything handle-specific on this screen (name, their message text) renders in it. Self is the neutral-grey anchor.
@@ -5272,8 +5273,8 @@ impl FluorApp for PhotonApp {
                         if is_woven_chat && reached_oldest && y > list_top - header_block_h - line_h {
                             let block_name_y = y - unit * 0.2;
                             let block_avatar_cy = block_name_y - unit * 1.2 - avatar_r;
-                            // draw_conv_avatar ignores the list clip (disc + ring are opaque and the block only renders near the top anyway); the name honours it.
-                            draw_conv_avatar(&mut canvas, block_avatar_cy);
+                            // The avatar clips to the SAME list region as the name and every message — one strip, one layer, one boundary.
+                            draw_conv_avatar(&mut canvas, block_avatar_cy, Some(list_clip));
                             ctx.text.draw_text_center(&mut canvas, &contact.display_name_or_pending(), buf_w as f32 * 0.5, block_name_y, &header_style, Some(list_clip), None);
                         }
                         let _ = n;
