@@ -13239,6 +13239,23 @@ impl PhotonApp {
                             chains.verify_chain_link(&from_handle_hash, &prev_msg_hp)
                         {
                             crate::logf!("CHAT: Hash chain gap from {} - expected prev {}..., got {}... — buffering (ahead of us)", handle, hex::encode(&expected[..8]), hex::encode(&prev_msg_hp[..8]));
+                            // PERSISTENT-GAP FORK DETECTOR: the same expected/got pair repeating means the predecessor is never coming (both heads committed — the 07-23 sibling wedge, live again desktop↔phone 2026-07-26). The decrypt-fail streak can't see it (buffering isn't a failure), so repair fires from HERE: sibling → deterministic chain reset; friend → re-key streak path. Deferred past the checker borrow via the existing vecs.
+                            {
+                                let key = u64::from_le_bytes(expected[..8].try_into().unwrap())
+                                    ^ u64::from_le_bytes(prev_msg_hp[..8].try_into().unwrap());
+                                let c = &mut self.contacts[contact_idx];
+                                if c.gap_streak.0 == key { c.gap_streak.1 = c.gap_streak.1.saturating_add(1); } else { c.gap_streak = (key, 1); }
+                                if c.gap_streak.1 == 6 {
+                                    c.gap_streak.1 = 0;
+                                    if c.is_sibling {
+                                        crate::logf!("CHAT: gap from {} repeated 6× identically — FORK, initiating sibling chain reset", handle);
+                                        chain_reset_initiate.push(contact_idx);
+                                    } else {
+                                        crate::logf!("CHAT: gap from {} repeated 6× identically — FORK, initiating friend re-key", handle);
+                                        friend_rekey_initiate.push(contact_idx);
+                                    }
+                                }
+                            }
                             chains.buffer_for_gap(
                                 prev_msg_hp,
                                 from_handle_hash,
@@ -13505,8 +13522,12 @@ impl PhotonApp {
                             // System notification, POST-DECRYPT: real sender display name + message text BY DESIGN — hiding content on the lock screen is the OS's job, and the pre-decrypt RX worker no longer notifies at all (it over-dinged on probes and sibling fleet-sync frames it couldn't tell apart). RUST is the one suppression decision now: `looking` (this conversation active + app/window attended) gates the call — Kotlin's old blanket Activity-foreground bail is gone, so a message from anyone whose conversation ISN'T open dings even with the app on screen. Desktop's notify keeps its own visual gate (no toast while attended) + both dedup on msg_hp.
                             if !contact.is_sibling && !looking {
                                 let sender_name = contact.display_name();
+                                // The notification chirp seeds from the RELATIONSHIP DIGEST — the same value the desktop in-app chirp and the contact's colours use — so peer_m sounds like peer_m on EVERY device. It seeded from the pinned device key before, which differs per device (each pins its own first-met device) and per platform: "messages from peer_m sound different on each device".
                                 #[cfg(target_os = "android")]
-                                crate::platform::jni_android::notify_new_message(&msg_hp, contact.public_identity.as_bytes(), &sender_name, &msg.content);
+                                {
+                                    let chirp_seed = relationship_digest(&contact.handle_hash, &our_handle_hash);
+                                    crate::platform::jni_android::notify_new_message(&msg_hp, &chirp_seed, &sender_name, &msg.content);
+                                }
                                 #[cfg(not(target_os = "android"))]
                                 crate::platform::desktop_notify::notify_new_message(&msg_hp, &sender_name, &msg.content);
                             }

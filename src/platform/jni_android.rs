@@ -52,7 +52,7 @@ static LAST_NOTIFIED_MSG: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex:
 ///
 /// Kotlin decides visibility/foreground suppression. No-op if the service never registered. Callable from any thread — attaches to the JVM as needed.
 #[cfg(target_os = "android")]
-pub fn notify_new_message(msg_hp: &[u8; 32], sender_pubkey: &[u8], sender: &str, text: &str) {
+pub fn notify_new_message(msg_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str, text: &str) {
     // Dedup: skip if this is the same message we most recently notified for (a retransmit).
     {
         let mut last = LAST_NOTIFIED_MSG.lock().unwrap();
@@ -65,9 +65,8 @@ pub fn notify_new_message(msg_hp: &[u8; 32], sender_pubkey: &[u8], sender: &str,
         return;
     };
 
-    // Derive the sender's chirp → WAV bytes + haptic (timings, amplitudes). blake3(pubkey) gives a clean 32-byte seed; same sender → same chirp every time. 60 Hz bins the envelope into ~16.7ms steps.
-    let seed: [u8; 32] = *blake3::hash(sender_pubkey).as_bytes();
-    let chirp = chirp::Chirp::from_hash(seed);
+    // The chirp seed IS the relationship digest, passed in verbatim — identical to the desktop in-app chirp's seed, so one sender = one song across every device and platform (seeding from the per-device pinned pubkey made peer_m sound different everywhere). 60 Hz bins the envelope into ~16.7ms steps.
+    let chirp = chirp::Chirp::from_hash(*chirp_seed);
     let wav = chirp.to_wav();
     let (timings, amplitudes) = chirp.haptic_waveform(60);
 
