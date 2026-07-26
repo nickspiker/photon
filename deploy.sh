@@ -121,6 +121,16 @@ echo ""
 echo "Signing Redox binary..."
 ./target/release/photon-signature-signer target/x86_64-unknown-redox/release/photon-messenger
 
+# Apple code signature with a STABLE identity (self-signed 10-yr cert in the keys dir, identifier org.fgtw.photon): macOS TCC keys privacy grants (Local Network etc.) on this identity, so an updated binary keeps its permissions instead of re-prompting every release (the linker's ad-hoc signature had no identity and a per-build identifier). MUST run BEFORE photon-signature-signer — rcodesign rewrites the Mach-O, which would strip an already-appended Ed25519 tail. Gatekeeper is unaffected either way: the curl installer never sets the quarantine xattr.
+MACOS_CODESIGN_CERT="/mnt/Octopus/Code/keys/photon-macos-codesign"
+apple_sign() {
+    rcodesign sign \
+        --pem-file "$MACOS_CODESIGN_CERT.crt" \
+        --pem-file "$MACOS_CODESIGN_CERT.key" \
+        --binary-identifier org.fgtw.photon \
+        "$1"
+}
+
 # Build macOS Intel
 echo ""
 echo "Building macOS Intel release..."
@@ -129,7 +139,8 @@ CXX_x86_64_apple_darwin=/mnt/Octopus/Code/osxcross/target/bin/x86_64-apple-darwi
 snap_cargo build --release --target x86_64-apple-darwin
 
 echo ""
-echo "Signing macOS Intel binary..."
+echo "Signing macOS Intel binary (Apple identity, then photon Ed25519)..."
+apple_sign target/x86_64-apple-darwin/release/photon-messenger
 ./target/release/photon-signature-signer target/x86_64-apple-darwin/release/photon-messenger
 
 # Build macOS Apple Silicon
@@ -141,7 +152,8 @@ CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/mnt/Octopus/Code/osxcross/target/bin/a
 snap_cargo build --release --target aarch64-apple-darwin
 
 echo ""
-echo "Signing macOS ARM64 binary..."
+echo "Signing macOS ARM64 binary (Apple identity, then photon Ed25519)..."
+apple_sign target/aarch64-apple-darwin/release/photon-messenger
 ./target/release/photon-signature-signer target/aarch64-apple-darwin/release/photon-messenger
 
 # Build Android APK

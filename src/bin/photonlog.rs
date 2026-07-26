@@ -167,10 +167,35 @@ fn main() {
             return;
         }
         eprintln!("photonlog: {} submitted log(s) for tag {}", keys.len(), hex::encode(&tag[..6]));
+        // Local ciphertext cache: submitted logs are IMMUTABLE (each submission is a fresh eagle-stamped key), so anything already on disk never needs re-fetching — a pull that used to re-download the whole history (minutes) now only fetches the new submissions. Cache the CIPHERTEXT, so the at-rest copy stays as sealed as R2's; the seed still gates reading.
+        let cache_dir = std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join(".cache/photon-logs")).unwrap_or_else(|_| std::path::PathBuf::from(".photon-log-cache"));
+        let _ = std::fs::create_dir_all(&cache_dir);
+        let cache_path = |k: &str| cache_dir.join(k.replace('/', "_"));
+        let mut fetched = 0usize;
+        let mut cached = 0usize;
+        // A cached empty file = a prior "note absent" verdict (notes are optional; most logs have none) — skips the per-log round-trip that dominated pull time.
+        let mut get_cached = |k: &str| -> Option<Vec<u8>> {
+            let path = cache_path(k);
+            if let Ok(bytes) = std::fs::read(&path) {
+                cached += 1;
+                return if bytes.is_empty() { None } else { Some(bytes) };
+            }
+            match log_get_blocking(k) {
+                Ok(ct) => {
+                    fetched += 1;
+                    let _ = std::fs::write(&path, &ct);
+                    Some(ct)
+                }
+                Err(_) => {
+                    let _ = std::fs::write(&path, b"");
+                    None
+                }
+            }
+        };
         for k in &keys {
             // The submitter's note rides as a sealed `.note` sidecar next to the `.vsf` (absent when none was typed) — surface it ABOVE the log so the human context leads the dump.
             let note_key = format!("{}.note", k.strip_suffix(".vsf").unwrap_or(k));
-            if let Ok(ct) = log_get_blocking(&note_key) {
+            if let Some(ct) = get_cached(&note_key) {
                 if let Ok(plain) = photon_messenger::storage::decrypt_bytes(&ct, &key) {
                     if let Ok(text) = String::from_utf8(plain) {
                         println!("\n── {k} ──");
@@ -178,17 +203,18 @@ fn main() {
                     }
                 }
             }
-            match log_get_blocking(k) {
-                Ok(ct) => match photon_messenger::storage::decrypt_bytes(&ct, &key) {
+            match get_cached(k) {
+                Some(ct) => match photon_messenger::storage::decrypt_bytes(&ct, &key) {
                     Ok(plain) => {
                         println!("\n── {k} ──");
                         print_records(&plain, &filter);
                     }
                     Err(e) => eprintln!("photonlog: {k}: decrypt failed ({e})"),
                 },
-                Err(e) => eprintln!("photonlog: {k}: fetch failed ({e})"),
+                None => eprintln!("photonlog: {k}: fetch failed (and not cached)"),
             }
         }
+        eprintln!("photonlog: {} fetched, {} from cache ({})", fetched, cached, cache_dir.display());
         return;
     }
 
