@@ -1005,6 +1005,10 @@ pub struct PhotonApp {
     /// Last IME inset applied to the layout (Android) — the tick diffs the JNI mirror against this and relayouts on change, since the keyboard no longer produces resize events.
     #[cfg(target_os = "android")]
     last_ime_inset: i32,
+    /// One-shot per session: the settings + roster re-push once hp/keypair/fleet-key are ALL available. Saves made before the keys settled bailed silently (see spawn_settings_push), and nothing ever retried — so the fleet slot could sit stale/empty forever (the empty-profile restore, 2026-07-26).
+    settings_repushed: bool,
+    /// Rate limit for the pong-seal reseed triggered by unopenable tails (self-heal for ordering races on a fresh device).
+    last_seal_reseed: Option<Instant>,
     /// Last periodic fleet-history-sweep kick. The edge-triggered kicks (roster merge, sibling-online) cover the common cases, but edges get missed (presence flaps, app-in-background misses); this jittered ~5 min re-arm is the convergence backstop — cheap because a complete conversation early-stops after ONE page.
     last_fleet_sweep: Option<Instant>,
     /// Fleet chain-replication bookkeeping: per-friendship, the `mutated_osc` we last PUSHED to siblings (or last ADOPTED from one — recording the adopted stamp stops the echo). The per-tick `drive_chain_replication` sweep pushes any chain whose live stamp is newer; comparing stamps instead of hooking every mutation site coalesces bursts and covers every path (send, ACK, receive, ceremony completion, reset) for free.
@@ -1310,6 +1314,8 @@ impl PhotonApp {
             msg_wrap: None,
             #[cfg(target_os = "android")]
             last_ime_inset: 0,
+            settings_repushed: false,
+            last_seal_reseed: None,
             last_fleet_sweep: None,
             chain_pushed_osc: std::collections::HashMap::new(),
             settings_btn_base: HIT_NONE,
@@ -3639,6 +3645,19 @@ impl FluorApp for PhotonApp {
 
         // Fleet chain replication push: any friendship chain that mutated since its last push ships to the siblings. Constant-time no-op when nothing changed.
         self.drive_chain_replication();
+
+        // One-shot settled re-push: the fleet slot only ever gets our settings/roster when a SAVE happens after the keys settle — pushes before that bailed silently and nothing retried. Fire once per session as soon as everything's derivable.
+        if !self.settings_repushed
+            && self.session.is_some()
+            && self.fleet_key_cached().is_some()
+            && self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()).is_some()
+            && self.device_keypair.is_some()
+        {
+            self.settings_repushed = true;
+            crate::log("SETTINGS: session re-push (settings + roster) — keys settled");
+            self.spawn_settings_push();
+            self.spawn_roster_push();
+        }
 
         // Periodic fleet-sweep backstop (~5 min, jittered): re-arm history recovery for every conversation so devices converge even when the edge-triggered kicks (roster merge, sibling-online) were missed. Signed-in only; a complete conversation costs one early-stop page.
         if self.session.is_some() {
@@ -8598,6 +8617,8 @@ impl PhotonApp {
             self.device_keypair.clone(),
             self.fleet_key_cached(),
         ) else {
+            // TORCH the bail: this silent return ate every profile push made before the fleet key/hp settled — the worker slot sat at ONE global setting while the You page looked saved, and a nuked device restored to an empty profile (2026-07-26). The per-session re-push in tick retries once the keys exist.
+            crate::log("SETTINGS: push skipped — hp/keypair/fleet key not ready yet (will re-push when settled)");
             return;
         };
         std::thread::spawn(move || {
@@ -15210,6 +15231,15 @@ impl PhotonApp {
                 }
 
                 // Sibling fork repair: a chain_reset frame arrived. Trust gates: outer signature already verified in the RX worker; here the sender must be a known SIBLING device and the sealed nonce must open under OUR fleet key (only fleet members can mint one). Application + echo are deferred past the drain (the repair rebuilds chains and sends frames — both blocked by live borrows here).
+                StatusUpdate::PongSealMissing { device } => {
+                    // Reseed the pong-seal map (rate-limited): the sender's tail will open on its next pong. Also retries the failed-open dedup by virtue of the RX worker clearing it on success.
+                    const RESEED_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10);
+                    if self.last_seal_reseed.is_none_or(|t| t.elapsed() > RESEED_COOLDOWN) {
+                        self.last_seal_reseed = Some(Instant::now());
+                        crate::logf!("Status: reseeding pong-seal keys (tail from {} unopenable)", crate::fp(&device.key));
+                        self.reseed_contact_pubkeys();
+                    }
+                }
                 StatusUpdate::ChainSyncReceived {
                     conversation_token,
                     sealed,
