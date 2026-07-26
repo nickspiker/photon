@@ -24,6 +24,8 @@ git add Cargo.toml Cargo.lock
 git commit -q -m "release: v${SHIP_VERSION} (${FULL_VERSION})"
 # Any failure from here undoes ONLY the version-bump commit — the tree returns to its pre-deploy version and the next attempt re-bumps cleanly. NEVER `reset --hard`: the reflink snapshot invites editing the live tree WHILE the deploy runs, so a hard reset would silently DESTROY that in-flight work (it did — lost edits on failed deploys). `--soft` drops the commit but keeps every change; `checkout HEAD -- Cargo.toml Cargo.lock` then reverts the ONLY two files the bump touched, leaving all other edits untouched. The failing line + command is named so a multi-target deploy doesn't leave you guessing WHICH build tore (the whole phase streams; the failing line just scrolls past otherwise).
 trap 'rc=$?; echo ""; echo "DEPLOY FAILED at line $LINENO (exit $rc): ${BASH_COMMAND}"; echo "undoing the version bump (working tree preserved)."; git reset --soft HEAD~1; git checkout HEAD -- Cargo.toml Cargo.lock' ERR
+# Ctrl-C skips the ERR trap entirely (SIGINT is not a command failure), which left an unshipped release commit at HEAD — "git log shows release: vN with no dev-line-open after it" (bit us on the aborted v49, 2026-07-25). Same rollback, then exit with the conventional 130.
+trap 'echo ""; echo "DEPLOY INTERRUPTED — undoing the version bump (working tree preserved)."; git reset --soft HEAD~1; git checkout HEAD -- Cargo.toml Cargo.lock; exit 130' INT TERM
 echo "Deploying version: $FULL_VERSION (was $CURRENT_VERSION)"
 
 
@@ -253,8 +255,8 @@ echo "Deploying website..."
 (cd /mnt/Chiton/MEGA/holdmyoscilloscope && ./deploy.sh)
 
 # Everything succeeded — release v$SHIP_VERSION ($FULL_VERSION) is public and its commit (made up
-# top, before the builds) is now permanent: disarm the rollback.
-trap - ERR
+# top, before the builds) is now permanent: disarm the rollback (the Ctrl-C one too — an interrupt past this point must NOT undo a published release's commit).
+trap - ERR INT TERM
 
 # Ring the release notice: the worker broadcasts "release" over the WS hub (every RUNNING client
 # polls the signed manifest now instead of at its 6-8h cadence) and fires the FCM `updates` topic
