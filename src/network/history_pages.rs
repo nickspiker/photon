@@ -17,6 +17,8 @@ pub struct HistoryRow {
     pub content: String,
     pub sender_outgoing: bool,
     pub delivered: bool,
+    /// Tombstone flag — deleted-for-everyone, monotonic true-wins on merge. Content still rides (braid weave dependency; see ChatMessage::deleted).
+    pub deleted: bool,
 }
 
 /// A decoded (pre-seal / post-open) history page.
@@ -39,6 +41,7 @@ fn page_schema() -> SectionSchema {
         .field("m_text", TypeConstraint::Utf8Text) // x, one per row
         .field("m_out", TypeConstraint::AnyUnsigned) // bool, one per row (sender's is_outgoing)
         .field("m_del", TypeConstraint::AnyUnsigned) // bool, one per row
+        .field("m_tomb", TypeConstraint::AnyUnsigned) // bool, one per row: the deleted-for-everyone tombstone (absent on pre-feature pages → all false)
 }
 
 /// Encode + AEAD-seal a page under `key`. Key-agnostic: friendship history key today, fleet key later.
@@ -61,6 +64,8 @@ pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<
             .append_multi("m_out", vec![VsfType::u3(row.sender_outgoing as u8)])
             .map_err(|e| e.to_string())?
             .append_multi("m_del", vec![VsfType::u3(row.delivered as u8)])
+            .map_err(|e| e.to_string())?
+            .append_multi("m_tomb", vec![VsfType::u3(row.deleted as u8)])
             .map_err(|e| e.to_string())?;
     }
     let plain = builder.encode().map_err(|e| e.to_string())?;
@@ -115,6 +120,14 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
         .filter_map(vsf_bool)
         .collect();
 
+    // Tombstones (optional field — absent on pre-feature pages ⇒ all false).
+    let tombs: Vec<bool> = section
+        .get_fields("m_tomb")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(vsf_bool)
+        .collect();
+
     // Zip the parallel arrays; a malformed page (mismatched lengths) yields the common prefix.
     let n = times.len().min(texts.len()).min(outs.len()).min(dels.len());
     let mut rows = Vec::with_capacity(n);
@@ -124,6 +137,7 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
             content: texts[i].clone(),
             sender_outgoing: outs[i],
             delivered: dels[i],
+            deleted: tombs.get(i).copied().unwrap_or(false),
         });
     }
     Ok(HistoryPagePlain {
@@ -156,18 +170,21 @@ mod tests {
                     content: "oldest in page 👋 unicode".to_string(),
                     sender_outgoing: true,
                     delivered: true,
+                    deleted: false,
                 },
                 HistoryRow {
                     timestamp: 2_000,
                     content: "".to_string(), // empty content is a legal row
                     sender_outgoing: false,
                     delivered: false,
+                    deleted: false,
                 },
                 HistoryRow {
                     timestamp: 3_000,
                     content: "newest".to_string(),
                     sender_outgoing: true,
                     delivered: false,
+                    deleted: false,
                 },
             ],
             oldest_osc: 1_000,

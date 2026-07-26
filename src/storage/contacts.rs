@@ -847,6 +847,10 @@ pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), Sto
         if msg.recovered {
             rec = rec.set("recovered", 1u64);
         }
+        // deleted: tombstone flag — written only when true (absent = false), same optional-field idiom.
+        if msg.deleted {
+            rec = rec.set("deleted", 1u64);
+        }
         db.put_row_in(&table, Pk::Int(msg.timestamp as u64), &rec)
             .map_err(|e| StorageError::Vault(e.to_string()))?;
     }
@@ -899,6 +903,7 @@ pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(),
             delivered: rec.uint("delivered").unwrap_or(0) != 0,
             ack_hash,
             recovered: rec.uint("recovered").unwrap_or(0) != 0,
+            deleted: rec.uint("deleted").unwrap_or(0) != 0,
         });
     }
 
@@ -932,6 +937,10 @@ pub fn save_messages_page(
         }
         if msg.recovered {
             rec = rec.set("recovered", 1u64);
+        }
+        // deleted: tombstone flag — written only when true (absent = false), same optional-field idiom.
+        if msg.deleted {
+            rec = rec.set("deleted", 1u64);
         }
         db.put_row_in(&table, Pk::Int(msg.timestamp as u64), &rec)
             .map_err(|e| StorageError::Vault(e.to_string()))?;
@@ -991,6 +1000,7 @@ pub fn load_message_page_before(
             delivered: rec.uint("delivered").unwrap_or(0) != 0,
             ack_hash: None, // never leaves this device; not part of a served page
             recovered: rec.uint("recovered").unwrap_or(0) != 0,
+            deleted: rec.uint("deleted").unwrap_or(0) != 0,
         });
         taken += 1;
     }
@@ -1078,6 +1088,7 @@ mod tests {
                 delivered: true,
                 ack_hash: None,
                 recovered: false,
+                deleted: false,
             },
             ChatMessage {
                 content: "hey".to_string(),
@@ -1086,6 +1097,7 @@ mod tests {
                 delivered: false,
                 ack_hash: Some([0x7Au8; 32]), // received msg: its ACK hash must survive the round-trip
                 recovered: false,
+                deleted: false,
             },
             ChatMessage {
                 content: "👋 unicode".to_string(),
@@ -1093,7 +1105,8 @@ mod tests {
                 is_outgoing: true,
                 delivered: false,
                 ack_hash: None,
-                recovered: true, // friend-attested provenance must survive the round-trip
+                recovered: true, // friend-attested provenance must survive the round-trip,
+                deleted: false,
             },
         ];
 
@@ -1305,6 +1318,7 @@ mod tests {
             delivered: t % 2 == 0,
             ack_hash: None,
             recovered: t <= 60, // the "older, recovered" half
+            deleted: false,
         };
         let newer: Vec<ChatMessage> = (61..=120).map(make).collect();
         let older: Vec<ChatMessage> = (1..=60).map(make).collect();
