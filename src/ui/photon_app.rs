@@ -988,6 +988,8 @@ pub struct PhotonApp {
     msg_hit_base: HitId,
     /// Hit id for the selected message's "copy" pill inside the details strip.
     msg_copy_id: HitId,
+    /// Base hit id for the rest of the details-strip action pills (span 8): 0=reply, 1=edit, 2=resend, 3=delete. Copy keeps its own id above.
+    msg_action_base: HitId,
     /// Visible-row → message identity map, rebuilt each conversation render, parallel to the `msg_hit_base` stamps. The identity is (timestamp, is_outgoing) — index-free so a mid-frame history backfill can't redirect a tap.
     msg_hit_rows: Vec<(i64, bool)>,
     /// The message whose details strip is open: (contact idx, timestamp, is_outgoing). Keyed by identity, not list index, so backfills can't shift the selection. `None` = no strip.
@@ -1297,6 +1299,7 @@ impl PhotonApp {
             shift_held: false,
             msg_hit_base: HIT_NONE,
             msg_copy_id: HIT_NONE,
+            msg_action_base: HIT_NONE,
             msg_hit_rows: Vec::new(),
             selected_msg: None,
             selected_msg_copied: false,
@@ -1944,6 +1947,9 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(63); // message rows 0..=63
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.msg_copy_id = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.msg_action_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(8); // reply/edit/resend/delete + room
         self.settings_theme_dropdown = Some(fluor::widgets::Dropdown::new(
             &mut self.hit_counter,
             0.,
@@ -2754,6 +2760,74 @@ impl FluorApp for PhotonApp {
                     }
                 }
                 ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+            // Details-strip action row: reply / edit / resend / delete on the selected message.
+            if self.msg_action_base != HIT_NONE
+                && hit_id >= self.msg_action_base
+                && hit_id < self.msg_action_base.wrapping_add(8)
+            {
+                let slot = hit_id - self.msg_action_base;
+                if let Some((sci, ts, out)) = self.selected_msg {
+                    match slot {
+                        // REPLY: quote-prefill the compose box and focus it — works today with no wire change; true reply threading (a reply_to field) rides the message-format rework.
+                        0 => {
+                            let excerpt: Option<String> = self.contacts.get(sci).and_then(|c| {
+                                c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out).map(|m| {
+                                    let mut e: String = m.content.chars().take(40).collect();
+                                    if m.content.chars().count() > 40 { e.push('\u{2026}'); }
+                                    e
+                                })
+                            });
+                            if let (Some(e), Some(tb)) = (excerpt, self.message_textbox.as_mut()) {
+                                tb.clear();
+                                tb.insert_str(&format!("\u{21a9} \u{201c}{}\u{201d} \u{2014} ", e), ctx.text);
+                                let id = tb.hit_id();
+                                self.change_focus(Some(id));
+                            }
+                        }
+                        // EDIT: honest stub — the braid is append-only; a real edit op (supersede-by-reference) lands with the message-format rework.
+                        1 => {
+                            self.ready_toast = Some("editing arrives with the message rework \u{2014} for now, send a correction".to_string());
+                            self.ready_toast_screen = None;
+                        }
+                        // RESEND: manually re-fire an undelivered outgoing on the chain with its ORIGINAL timestamp (identity preserved — the friend dedups + re-ACKs, so this is always safe); chainless devices re-push thru the fleet instead.
+                        2 => {
+                            let text_opt = self.contacts.get(sci).and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out && !m.delivered).map(|m| m.content.clone()));
+                            if let Some(text) = text_opt {
+                                if self.chain_transmit(sci, &text, ts) {
+                                    self.ready_toast = Some("re-sent on the chain".to_string());
+                                } else {
+                                    let row = self.contacts.get(sci).and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out).cloned());
+                                    if let Some(row) = row {
+                                        self.push_rows_to_siblings(sci, std::slice::from_ref(&row), None);
+                                        self.ready_toast = Some("re-pushed thru the fleet (no chain on this device)".to_string());
+                                    }
+                                }
+                                self.ready_toast_screen = None;
+                            }
+                        }
+                        // DELETE: local removal + persist. HONEST CAVEAT until tombstone rows exist: fleet sync (sibling push / sweep / digest walk) can resurrect the row from another device's copy — durable fleet-wide delete is ticketed.
+                        3 => {
+                            if let Some(c) = self.contacts.get_mut(sci) {
+                                let before = c.messages.len();
+                                c.messages.retain(|m| !(m.timestamp == ts && m.is_outgoing == out));
+                                if c.messages.len() != before {
+                                    if let Some(storage) = self.storage.as_ref() {
+                                        let _ = crate::storage::contacts::save_messages(c, storage);
+                                    }
+                                    crate::log("msg-details: message deleted locally (fleet tombstones pending — sync may resurrect it)");
+                                }
+                            }
+                            self.selected_msg = None;
+                            self.selected_msg_copied = false;
+                            self.msg_wrap = None; // row set changed — drop the wrap cache outright
+                        }
+                        _ => {}
+                    }
+                    self.scene_dirty = true;
+                    ctx.window.request_redraw();
+                }
                 return EventResponse::Handled;
             }
             if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(64) {
@@ -5123,7 +5197,7 @@ impl FluorApp for PhotonApp {
                         let header_block_h = avatar_r * 2.0 + unit * 3.0 + if status_in_stream.is_some() { unit * 1.0 } else { 0.0 };
                         // Details-strip selection for THIS conversation (identity-keyed): one strip line joins content_h so the stream shifts to make room rather than overdrawing a neighbour row.
                         let sel_key = self.selected_msg.filter(|(sci, _, _)| *sci == ci).map(|(_, ts, out)| (ts, out));
-                        let detail_h = line_h;
+                        let detail_h = line_h * 2.0; // two strip lines: meta (sent/age/state) + the action row (reply · edit · copy · resend · delete)
                         let sel_in_stream = sel_key.is_some_and(|(ts, out)| visible.iter().any(|m| m.timestamp == ts && m.is_outgoing == out));
                         // WORD-WRAP: messages wrap to the pane width instead of trailing off-screen. Metrics style matches the draw style below minus colour (colour never changes glyph widths). `intra` = spacing between a message's own wrapped lines; the inter-message gap stays line_h on the last line, so single-line spacing is pixel-identical to the pre-wrap layout. The line-count CACHE (see msg_wrap) covers all of history for content_h; drawn messages re-wrap for their actual strings.
                         let wrap_style = TextStyle::new(msg_size, 0).weight(500);
@@ -5197,28 +5271,43 @@ impl FluorApp for PhotonApp {
                                 }
                                 let detail_size = msg_size * 0.75;
                                 let detail_style = TextStyle::new(detail_size, *theme::LABEL_COLOUR).weight(500).font("Oxanium");
-                                ctx.text.draw_text_left(&mut canvas, &detail, pad_x, y, &detail_style, Some(list_clip), None);
-                                // Copy pill, right-aligned on the strip line: cyan "copy" ready state → green "copied" once the clipboard holds the text (selected_msg_copied; event-cleared with the selection, never a timer). Stamped with padding so it's a comfortable tap target.
+                                // Upper strip line: the meta text.
+                                ctx.text.draw_text_left(&mut canvas, &detail, pad_x, y - line_h, &detail_style, Some(list_clip), None);
+                                // Lower strip line: the ACTION ROW — reply · edit · copy/copied · resend · delete. Conditional pills: edit only for outgoing (stub until the message-format rework), resend only for undelivered outgoing (manual re-fire on the chain), delete always (LOCAL until tombstones — fleet sync may resurrect it), reply always. Each pill stamps its own hit id with generous padding.
                                 let (copy_label, copy_colour) = if self.selected_msg_copied {
                                     ("copied", *theme::SEARCH_FOUND_COLOUR)
                                 } else {
                                     ("copy", *theme::COPY_PILL_COLOUR)
                                 };
-                                let copy_style = TextStyle::new(detail_size, copy_colour).weight(600).font("Oxanium");
-                                let copy_w = ctx.text.measure_text(copy_label, &copy_style);
-                                let copy_x = buf_w as f32 - pad_x - copy_w;
-                                ctx.text.draw_text_left(&mut canvas, copy_label, copy_x, y, &copy_style, Some(list_clip), None);
+                                let mut pills: Vec<(&str, u32, HitId)> = vec![
+                                    ("reply", *theme::COPY_PILL_COLOUR, self.msg_action_base),
+                                ];
+                                if msg.is_outgoing {
+                                    pills.push(("edit", *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(1)));
+                                }
+                                pills.push((copy_label, copy_colour, self.msg_copy_id));
+                                if msg.is_outgoing && !msg.delivered {
+                                    pills.push(("resend", *theme::HOURGLASS_COLOUR, self.msg_action_base.wrapping_add(2)));
+                                }
+                                pills.push(("delete", *theme::ERROR_TEXT_COLOUR, self.msg_action_base.wrapping_add(3)));
                                 let pad_hit = detail_size;
-                                restamp_hit_rect(
-                                    &mut chrome.hit_test_map,
-                                    buf_w,
-                                    buf_h,
-                                    (copy_x - pad_hit) as isize,
-                                    ((y - line_h * 0.5).max(list_top)) as isize,
-                                    (copy_x + copy_w + pad_hit) as isize,
-                                    ((y + line_h * 0.5).min(list_bottom)) as isize,
-                                    self.msg_copy_id,
-                                );
+                                let mut px_cursor = pad_x;
+                                for (label, colour, hid) in pills {
+                                    let style = TextStyle::new(detail_size, colour).weight(600).font("Oxanium");
+                                    let w = ctx.text.measure_text(label, &style);
+                                    ctx.text.draw_text_left(&mut canvas, label, px_cursor, y, &style, Some(list_clip), None);
+                                    restamp_hit_rect(
+                                        &mut chrome.hit_test_map,
+                                        buf_w,
+                                        buf_h,
+                                        (px_cursor - pad_hit * 0.5) as isize,
+                                        ((y - line_h * 0.5).max(list_top)) as isize,
+                                        (px_cursor + w + pad_hit * 0.5) as isize,
+                                        ((y + line_h * 0.5).min(list_bottom)) as isize,
+                                        hid,
+                                    );
+                                    px_cursor += w + pad_hit * 2.0;
+                                }
                                 y -= detail_h;
                             }
                             // Dim outgoing until delivered; incoming always full. Self-as-contact: every message is ours (there is no other party), so everything sits on the right in the neutral grey — their_colour is already the anchor in that case, and the loopback "incoming" copy renders like a delivered outgoing.
