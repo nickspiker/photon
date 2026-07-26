@@ -285,6 +285,10 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
+    /// A sealed pong tail failed to open (no pairwise key for that device yet) — the UI thread reseeds the pong-seal map (rate-limited): on a freshly-restored device the map fills in fold/roster order, and a pong racing ahead of the reseed walk stayed tail-less forever (names + avatar pins ride the tail — the blank-restore of 2026-07-26).
+    PongSealMissing {
+        device: DevicePubkey,
+    },
     /// Fleet chain-state replication (chain_sync): a sibling's fleet-sealed chains snapshot, opaque to this layer — the UI thread opens with the fleet key, decodes, and adopts iff its mutated_osc is newer than the local copy's.
     ChainSyncReceived {
         conversation_token: [u8; 32],
@@ -2148,6 +2152,12 @@ async fn run_checker(
                                                     if !pong_open_failed.contains(responder_pubkey.as_bytes()) {
                                                         pong_open_failed.push(*responder_pubkey.as_bytes());
                                                         crate::logf!("Status: sealed pong tail from {} unopenable ({}) — treating as tail-less until keys agree", crate::fp(responder_pubkey.as_bytes()), if key.is_some() { "key mismatch" } else { "no pairwise key seeded yet" });
+                                                        // Ask the UI thread to reseed the seal map — self-heal for the fresh-device ordering race (the map fills in fold order; a pong racing ahead stayed tail-less forever).
+                                                        send_status_update(
+                                                            &status_tx_recv,
+                                                            StatusUpdate::PongSealMissing { device: responder_pubkey.clone() },
+                                                            &event_proxy_recv,
+                                                        );
                                                     }
                                                     (Vec::new(), None, None)
                                                 }
