@@ -994,8 +994,8 @@ pub struct PhotonApp {
     selected_msg: Option<(usize, i64, bool)>,
     /// The open strip's copy pill has fired (text on the clipboard): pill turns green + reads "copied". Event-cleared — reset whenever the selection moves or closes, never on a timer.
     selected_msg_copied: bool,
-    /// Conversation top bar ("‹ Contacts") auto-hide: scrolling INTO history hides it (reading reclaims the strip), any scroll back toward the newest brings it back. Direction-reactive and event-driven — no timers; reset on conversation open.
-    conv_topbar_hidden: bool,
+    /// Conversation top-bar slide-off in PIXELS (0 = fully shown): the "‹ Contacts" strip slides out/in WITH the scroll gesture, browser-toolbar style — pure scroll-delta accumulation, no timers, clamped to the bar height in the wheel arm and at render. Reset on conversation open.
+    conv_topbar_off: f32,
     /// Word-wrap cache for the conversation's message list: key (contact idx, message count, avail_w bits, msg_size bits) + per-visible-message wrapped line COUNTS (chronological order, probes excluded) + their sum. Rebuilt only when the key changes (resize / zoom / new message / conversation switch) — content_h needs every message's height each frame, and re-measuring the whole history per frame would swamp the shaper. The actual line STRINGS are re-wrapped per frame only for the handful of messages actually drawn.
     msg_wrap: Option<((usize, usize, u32, u32), Vec<u16>, usize)>,
     /// Last IME inset applied to the layout (Android) — the tick diffs the JNI mirror against this and relayouts on change, since the keyboard no longer produces resize events.
@@ -1300,7 +1300,7 @@ impl PhotonApp {
             msg_hit_rows: Vec::new(),
             selected_msg: None,
             selected_msg_copied: false,
-            conv_topbar_hidden: false,
+            conv_topbar_off: 0.0,
             msg_wrap: None,
             #[cfg(target_os = "android")]
             last_ime_inset: 0,
@@ -2724,7 +2724,7 @@ impl FluorApp for PhotonApp {
                 crate::logf!("contact-tap: opening conversation with '{}'", self.contacts[ci].display_name());
                 self.active_contact = Some(ci);
                 self.state = AppState::Conversation;
-                self.conv_topbar_hidden = false;
+                self.conv_topbar_off = 0.0;
                 // Opening the conversation is the interaction that clears unread (ring + float drop away on the next contacts-list frame).
                 self.clear_unread(ci);
                 self.change_focus(None);
@@ -2984,11 +2984,15 @@ impl FluorApp for PhotonApp {
                                     f32::INFINITY,
                                     reach,
                                 );
-                                // Direction-reactive top bar: scrolling into history hides "‹ Contacts" (the strip becomes reading room), any scroll back toward the newest restores it. Gated on the conversation actually being scrollable so a wheel jiggle on a short chat can't strand the bar hidden.
+                                // Top-bar slide: the strip rides the SAME deltas as the content, sliding off as you scroll one way and back on with the other — position-tied like a browser toolbar, no snap, no timers. Only when the conversation can actually scroll.
                                 if self.msg_max_scroll > 0.0 {
-                                    let hide = dy > 0;
-                                    if self.conv_topbar_hidden != hide {
-                                        self.conv_topbar_hidden = hide;
+                                    let unit_b = ReadyLayout::compute(ctx.viewport.width_px as usize, ctx.viewport.height_px as usize, ctx.viewport.ru).unit_height;
+                                    let bar_h = ctx.viewport.height_px as f32 * 0.06 + unit_b * 2.15;
+                                    // Sign: scrolling toward the NEWEST slides the bar off; heading back into history brings it with you (the first mapping shipped inverted — user: "the contacts thing is backwards").
+                                    let step = -(dy as f32) * if is_pixel_delta { 1.0 } else { (1 << 3) as f32 };
+                                    let off = (self.conv_topbar_off + step).clamp(0.0, bar_h);
+                                    if (off - self.conv_topbar_off).abs() > 0.01 {
+                                        self.conv_topbar_off = off;
                                         self.scene_dirty = true;
                                     }
                                 }
@@ -4969,16 +4973,18 @@ impl FluorApp for PhotonApp {
                     let conv_layout = ReadyLayout::compute(buf_w, buf_h, ru);
                     let unit = conv_layout.unit_height;
 
-                    // Back arrow (top-left) — below the chrome title bar area. Auto-hides while scrolled into history (conv_topbar_hidden): the strip becomes reading room and the hit rect stamps HIT_NONE so a stale stamp can't eat taps.
-                    let back_y = buf_h as f32 * 0.06 + unit;
+                    // Back arrow (top-left) — below the chrome title bar area. Slides off vertically by conv_topbar_off (scroll-tied, browser-toolbar style); the hit rect follows and stamps HIT_NONE once mostly gone so a ghost tap can't fire it.
                     let back_size = unit * 1.15;
+                    let bar_h = buf_h as f32 * 0.06 + unit + back_size;
+                    let bar_off = self.conv_topbar_off.min(bar_h);
+                    let back_y = buf_h as f32 * 0.06 + unit - bar_off;
                     let back_text = "\u{2039} Contacts";
-                    let topbar_visible = !self.conv_topbar_hidden;
+                    let topbar_visible = bar_off < bar_h * 0.75;
                     // Same hover/press vocabulary as the contact rows: hover = weight 500 → 700, press = the wordmark's glow behind the label (composited AFTER the text — under() layers beneath).
                     let back_pressed = topbar_visible && ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
                     let back_hovered = back_pressed || (topbar_visible && ctx.pressed_hit == HIT_NONE && self.hover_hit == self.back_btn_hit_id);
                     let back_weight = if back_hovered { 700 } else { 500 };
-                    if topbar_visible {
+                    if back_y > -back_size {
                         ctx.text.draw_text_left(&mut canvas, back_text, unit, back_y, &TextStyle::new(back_size, *theme::CONTACT_NAME_COLOUR).weight(back_weight).font("Oxanium"), None, None);
                     }
                     if back_pressed {
@@ -5105,7 +5111,7 @@ impl FluorApp for PhotonApp {
                         let line_h = msg_size * 1.6; // text + breathing room per message
                         let pad_x = unit; // left/right inset
                         // Woven chat reclaims the whole header strip for the message list (the avatar/name ride the scroll-top instead, drawn below); pre-woven keeps the status header space.
-                        let list_top = if is_woven_chat { if self.conv_topbar_hidden { unit * 0.6 } else { back_y + unit } } else { clutch_y + unit * 1.2 };
+                        let list_top = if is_woven_chat { (back_y + unit).max(unit * 0.6) } else { clutch_y + unit * 1.2 };
                         // Compose bar reserves the bottom strip, lifted off the bottom edge by `compose_margin` — and above the soft keyboard (`ime_lift`; the surface never resizes for the IME). The list lives between list_top and list_bottom. Must match the layout pass's `compose_h`/`compose_margin` below.
                         let compose_h = unit * 1.8;
                         let compose_margin = unit * 0.8;
@@ -5156,7 +5162,8 @@ impl FluorApp for PhotonApp {
                         self.msg_max_scroll = max_scroll;
                         let scroll = contact.message_scroll_offset.clamp(0.0, max_scroll);
                         self.msg_hit_rows.clear();
-                        let mut y = list_bottom - msg_size + scroll;
+                        // TOP-ANCHOR while the conversation fits the view: the stream reads avatar/name → msg 1 → msg 2 from the top, ONE strip — bottom-anchoring a short history floated the header block mid-screen above a clump of bottom messages ("rendered in a different layer"). Once content outgrows the view the min() saturates and the classic newest-at-bottom anchor takes over seamlessly.
+                        let mut y = (list_top + content_h).min(list_bottom) - msg_size + scroll;
                         // Whether the walk reached the conversation's FIRST message (no early break): the scroll-top avatar/name block may only draw then — drawing it at the break position floated it mid-stream over recent messages in any long conversation ("the avatar and petname are rendered in a different block").
                         let mut reached_oldest = true;
                         for msg in visible.iter().rev() {
