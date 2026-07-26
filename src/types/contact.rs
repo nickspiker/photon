@@ -551,6 +551,10 @@ impl Contact {
     /// Post-fold (`fleet_folded_once == true`): the friend's chain has authoritatively spoken, so trust ONLY current folded members. `public_identity` keeps its pass iff it's still a member (the device we met is still in their fleet), and loses it if the fold excluded it — that device was removed, which is what makes revocation real.
     /// A fold FAILURE never reaches here (it doesn't arm the flag), so a network outage keeps the last-known behaviour, never trust-nobody.
     pub fn knows_device(&self, device_pubkey: &[u8; 32]) -> bool {
+        // A SIBLING contact knows exactly its ONE device — by contract its fleet_members stays EMPTY and the fold flags never apply. Enforce that here: a stray fold that marked a sibling folded_once turned the membership check into always-false and BLACK-HOLED every fleet frame from that device (the 2026-07-26 self-sync black hole: the desktop dropping its own phone's pages as "not a fold-trusted sibling").
+        if self.is_sibling {
+            return self.public_identity.key == *device_pubkey;
+        }
         if self.fleet_folded_once {
             self.fleet_members.contains(device_pubkey)
         } else {
