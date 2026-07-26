@@ -338,7 +338,13 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         // keyboard up, compose box buried (Samsung-only report 2026-07-25). The decor gets the raw
         // insets on every ROM; we only read, never consume, so nothing else changes.
         ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
-            val imeHeight = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            // The decor-measured IME inset includes the region the keyboard shares with the nav bar,
+            // but our surface already sits ABOVE the nav bar (the window fits system bars) — passing
+            // the raw value overshot the lift by the nav-bar height, leaving a dead gap between the
+            // compose box and the keyboard. Subtract the overlap; clamp at zero for gesture nav.
+            val rawIme = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            val navBar = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+            val imeHeight = if (rawIme > 0) maxOf(0, rawIme - navBar) else 0
             if (imeHeight != lastImeInset) {
                 lastImeInset = imeHeight
                 nativeImeInset(imeHeight)
