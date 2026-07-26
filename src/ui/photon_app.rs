@@ -994,6 +994,8 @@ pub struct PhotonApp {
     selected_msg: Option<(usize, i64, bool)>,
     /// The open strip's copy pill has fired (text on the clipboard): pill turns green + reads "copied". Event-cleared — reset whenever the selection moves or closes, never on a timer.
     selected_msg_copied: bool,
+    /// Conversation top bar ("‹ Contacts") auto-hide: scrolling INTO history hides it (reading reclaims the strip), any scroll back toward the newest brings it back. Direction-reactive and event-driven — no timers; reset on conversation open.
+    conv_topbar_hidden: bool,
     /// Word-wrap cache for the conversation's message list: key (contact idx, message count, avail_w bits, msg_size bits) + per-visible-message wrapped line COUNTS (chronological order, probes excluded) + their sum. Rebuilt only when the key changes (resize / zoom / new message / conversation switch) — content_h needs every message's height each frame, and re-measuring the whole history per frame would swamp the shaper. The actual line STRINGS are re-wrapped per frame only for the handful of messages actually drawn.
     msg_wrap: Option<((usize, usize, u32, u32), Vec<u16>, usize)>,
     /// Last IME inset applied to the layout (Android) — the tick diffs the JNI mirror against this and relayouts on change, since the keyboard no longer produces resize events.
@@ -1298,6 +1300,7 @@ impl PhotonApp {
             msg_hit_rows: Vec::new(),
             selected_msg: None,
             selected_msg_copied: false,
+            conv_topbar_hidden: false,
             msg_wrap: None,
             #[cfg(target_os = "android")]
             last_ime_inset: 0,
@@ -2721,6 +2724,7 @@ impl FluorApp for PhotonApp {
                 crate::logf!("contact-tap: opening conversation with '{}'", self.contacts[ci].display_name());
                 self.active_contact = Some(ci);
                 self.state = AppState::Conversation;
+                self.conv_topbar_hidden = false;
                 // Opening the conversation is the interaction that clears unread (ring + float drop away on the next contacts-list frame).
                 self.clear_unread(ci);
                 self.change_focus(None);
@@ -2980,6 +2984,14 @@ impl FluorApp for PhotonApp {
                                     f32::INFINITY,
                                     reach,
                                 );
+                                // Direction-reactive top bar: scrolling into history hides "‹ Contacts" (the strip becomes reading room), any scroll back toward the newest restores it. Gated on the conversation actually being scrollable so a wheel jiggle on a short chat can't strand the bar hidden.
+                                if self.msg_max_scroll > 0.0 {
+                                    let hide = dy > 0;
+                                    if self.conv_topbar_hidden != hide {
+                                        self.conv_topbar_hidden = hide;
+                                        self.scene_dirty = true;
+                                    }
+                                }
                                 // Scrollback jumps the history-backfill queue: the user is heading toward the old edge, so the next page request fires on the next tick instead of waiting out the trickle interval.
                                 if dy > 0 {
                                     if let Some(rec) = contact.history_recovery.as_mut() {
@@ -4957,15 +4969,18 @@ impl FluorApp for PhotonApp {
                     let conv_layout = ReadyLayout::compute(buf_w, buf_h, ru);
                     let unit = conv_layout.unit_height;
 
-                    // Back arrow (top-left) — below the chrome title bar area.
+                    // Back arrow (top-left) — below the chrome title bar area. Auto-hides while scrolled into history (conv_topbar_hidden): the strip becomes reading room and the hit rect stamps HIT_NONE so a stale stamp can't eat taps.
                     let back_y = buf_h as f32 * 0.06 + unit;
                     let back_size = unit * 1.15;
                     let back_text = "\u{2039} Contacts";
+                    let topbar_visible = !self.conv_topbar_hidden;
                     // Same hover/press vocabulary as the contact rows: hover = weight 500 → 700, press = the wordmark's glow behind the label (composited AFTER the text — under() layers beneath).
-                    let back_pressed = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
-                    let back_hovered = back_pressed || (ctx.pressed_hit == HIT_NONE && self.hover_hit == self.back_btn_hit_id);
+                    let back_pressed = topbar_visible && ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
+                    let back_hovered = back_pressed || (topbar_visible && ctx.pressed_hit == HIT_NONE && self.hover_hit == self.back_btn_hit_id);
                     let back_weight = if back_hovered { 700 } else { 500 };
-                    ctx.text.draw_text_left(&mut canvas, back_text, unit, back_y, &TextStyle::new(back_size, *theme::CONTACT_NAME_COLOUR).weight(back_weight).font("Oxanium"), None, None);
+                    if topbar_visible {
+                        ctx.text.draw_text_left(&mut canvas, back_text, unit, back_y, &TextStyle::new(back_size, *theme::CONTACT_NAME_COLOUR).weight(back_weight).font("Oxanium"), None, None);
+                    }
                     if back_pressed {
                         let band_top = (back_y - back_size).max(0.) as usize;
                         let band_h = (((back_y + back_size) as usize).min(buf_h)).saturating_sub(band_top);
@@ -5001,7 +5016,7 @@ impl FluorApp for PhotonApp {
                         (back_y - back_size) as isize,
                         (unit + back_w + unit) as isize,
                         (back_y + back_size) as isize,
-                        self.back_btn_hit_id,
+                        if topbar_visible { self.back_btn_hit_id } else { HIT_NONE },
                     );
 
                     // Avatar geometry (matches the Ready/contacts scale). WHERE it draws depends on ceremony state: once Complete the avatar + name are the TOP-OF-STREAM header inside the scrollable message list (they scroll away as you read — the orb already identifies who you're talking to, so a fixed header just ate half the screen); before Complete they stay a fixed centred header on the "waiting for the ceremony" screen (there's no list yet).
@@ -5090,7 +5105,7 @@ impl FluorApp for PhotonApp {
                         let line_h = msg_size * 1.6; // text + breathing room per message
                         let pad_x = unit; // left/right inset
                         // Woven chat reclaims the whole header strip for the message list (the avatar/name ride the scroll-top instead, drawn below); pre-woven keeps the status header space.
-                        let list_top = if is_woven_chat { back_y + unit } else { clutch_y + unit * 1.2 };
+                        let list_top = if is_woven_chat { if self.conv_topbar_hidden { unit * 0.6 } else { back_y + unit } } else { clutch_y + unit * 1.2 };
                         // Compose bar reserves the bottom strip, lifted off the bottom edge by `compose_margin` — and above the soft keyboard (`ime_lift`; the surface never resizes for the IME). The list lives between list_top and list_bottom. Must match the layout pass's `compose_h`/`compose_margin` below.
                         let compose_h = unit * 1.8;
                         let compose_margin = unit * 0.8;
