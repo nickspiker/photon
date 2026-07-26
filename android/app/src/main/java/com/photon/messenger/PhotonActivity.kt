@@ -169,7 +169,10 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativePollKeyboard(contextPtr: Long): Int  // Per-frame poll for show/hide soft IME — 1=show, -1=hide, 0=no change
     private external fun nativePollInputReset(contextPtr: Long): Int  // Per-frame poll: 1=restartInput (clear the IME's stale composing buffer after a send), 0=no change
     private external fun nativeSetForeground(foreground: Boolean)  // onResume/onPause → Rust's foreground mirror (ptr-less: writes a process global; Rust gates unread + notify-suppression on it)
-    private external fun nativeImeInset(px: Int)  // insets listener → Rust's IME-height mirror (ptr-less); the surface never resizes for the keyboard, Rust lifts its bottom strips instead
+    private external fun nativeImeInset(px: Int)
+    private external fun nativeImeEditorText(contextPtr: Long): String  // honest-IME mirror: focused textbox's full text
+    private external fun nativeImeEditorCursor(contextPtr: Long): Int   // honest-IME mirror: cursor in CHARS (code points)
+    private external fun nativeImeReplace(contextPtr: Long, start: Int, end: Int, text: String)  // honest-IME write: TRUE range replace (char offsets)  // insets listener → Rust's IME-height mirror (ptr-less); the surface never resizes for the keyboard, Rust lifts its bottom strips instead
     private external fun nativePollAvatarPicker(contextPtr: Long): Int  // Per-frame poll for the avatar image-picker request — 1=launch ACTION_GET_CONTENT, 0=no change
     private external fun nativePollSessionBroadcast(contextPtr: Long): Int  // 1=send sticky broadcast, -1=clear, 0=no change
     private external fun nativePollApkInstall(contextPtr: Long): String?  // Per-frame poll: staged self-update APK path (one-shot) — fire the system installer with it
@@ -242,17 +245,25 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
 
         // Create custom SurfaceView with InputConnection for IME text input
         val container = FrameLayout(this)
-        surfaceView = PhotonSurfaceView(this) { text ->
-            // Callback for committed text from IME (voice, swipe, autocomplete)
-            if (nativePtr != 0L) {
-                if (text == "\b") {
-                    // Backspace from deleteSurroundingText
-                    nativeOnKeyEvent(nativePtr, KeyEvent.KEYCODE_DEL)
-                } else {
-                    nativeOnTextInput(nativePtr, text)
+        surfaceView = PhotonSurfaceView(
+            this,
+            onTextInput = { text ->
+                // Legacy commit path (hardware keys etc.)
+                if (nativePtr != 0L) {
+                    if (text == "\b") {
+                        nativeOnKeyEvent(nativePtr, KeyEvent.KEYCODE_DEL)
+                    } else {
+                        nativeOnTextInput(nativePtr, text)
+                    }
+                }
+            },
+            onImeReplace = { start, end, text ->
+                // Honest-IME path: TRUE range replacement on the focused Rust textbox (char offsets).
+                if (nativePtr != 0L) {
+                    nativeImeReplace(nativePtr, start, end, text)
                 }
             }
-        }
+        )
         container.addView(surfaceView, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.MATCH_PARENT
@@ -540,6 +551,13 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                 // After a send the app cleared its compose box; restart IME input so a predictive keyboard's stale composing buffer doesn't re-materialise the just-sent text on the next keystroke.
                 if (nativePollInputReset(nativePtr) == 1) {
                     restartImeInput()
+                }
+                // Honest-IME mirror: feed the focused textbox's REAL text + cursor to the InputConnection each frame (refreshEditorMirror no-ops when unchanged and fires updateSelection when not) — voice typing reads the field back continuously and aborts against an editor that lies.
+                run {
+                    val t = nativeImeEditorText(nativePtr)
+                    val cChars = nativeImeEditorCursor(nativePtr)
+                    val c16 = try { t.offsetByCodePoints(0, cChars.coerceIn(0, t.codePointCount(0, t.length))) } catch (_: Exception) { t.length }
+                    surfaceView.refreshEditorMirror(t, c16)
                 }
                 // Avatar tap (Ready screen) → launch the system image picker. App-driven, not touch-driven, so it polls alongside the keyboard signal instead of riding the nativeOnTouch return like the legacy 2-code path did.
                 if (nativePollAvatarPicker(nativePtr) == 1) {

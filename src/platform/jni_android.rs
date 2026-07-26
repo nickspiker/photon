@@ -393,6 +393,53 @@ pub fn ime_inset_px() -> i32 {
     IME_INSET.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Honest-IME read, text half: the focused textbox's full contents as a jstring ("" when nothing editable is focused). Polled per frame by the Activity, which mirrors it into the InputConnection so surrounding-text queries answer truthfully (Google voice typing reads the field back continuously and aborts against an editor that claims to be empty).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeImeEditorText<'a>(
+    env: JNIEnv<'a>,
+    _class: JClass<'a>,
+    context_ptr: jlong,
+) -> jni::sys::jstring {
+    let text = get_context(context_ptr)
+        .map(|ctx| ctx.shell.ime_editor_state().0)
+        .unwrap_or_default();
+    env.new_string(text)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Honest-IME read, cursor half: the focused textbox's cursor position in CHARS (code points — Kotlin converts to UTF-16 with offsetByCodePoints).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeImeEditorCursor(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    context_ptr: jlong,
+) -> jint {
+    get_context(context_ptr)
+        .map(|ctx| ctx.shell.ime_editor_state().1 as jint)
+        .unwrap_or(0)
+}
+
+/// Honest-IME write: replace the focused textbox's char range [start, end) with `text` — the TRUE range edit commitText/setComposingText/setComposingRegion/deleteSurroundingText compile down to. Offsets arrive in CHARS (Kotlin converts from UTF-16 before calling).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeImeReplace(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    context_ptr: jlong,
+    start: jint,
+    end: jint,
+    text: JString<'_>,
+) {
+    let Some(ctx) = get_context(context_ptr) else {
+        return;
+    };
+    let s: String = env.get_string(&text).map(|j| j.into()).unwrap_or_default();
+    ctx.shell.ime_replace_chars(start.max(0) as usize, end.max(0) as usize, &s);
+}
+
 /// Kotlin's inset listener → the IME-inset mirror. Ptr-less like the foreground mirror; the app's per-frame tick diffs the value and relayouts on change.
 #[cfg(target_os = "android")]
 #[no_mangle]
