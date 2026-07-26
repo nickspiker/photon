@@ -996,6 +996,8 @@ pub struct PhotonApp {
     selected_msg: Option<(usize, i64, bool)>,
     /// The open strip's copy pill has fired (text on the clipboard): pill turns green + reads "copied". Event-cleared — reset whenever the selection moves or closes, never on a timer.
     selected_msg_copied: bool,
+    /// Deferred delete: ((contact idx, timestamp, is_outgoing), painted). The press only ARMS this and repaints — the strip shows "deleting…" on that frame — and the tick performs the actual removal + mirror-verified persist AFTER the feedback frame painted (the synchronous save blocked the UI for a beat, reading as stuck).
+    pending_delete: Option<((usize, i64, bool), bool)>,
     /// Conversation top-bar slide-off in PIXELS (0 = fully shown): the "‹ Contacts" strip slides out/in WITH the scroll gesture, browser-toolbar style — pure scroll-delta accumulation, no timers, clamped to the bar height in the wheel arm and at render. Reset on conversation open.
     conv_topbar_off: f32,
     /// Word-wrap cache for the conversation's message list: key (contact idx, message count, avail_w bits, msg_size bits) + the wrapped line STRINGS per visible message (chronological, probes excluded) + the total line count. Rebuilt only when the key changes (resize / zoom / new message / conversation switch). Caching the STRINGS (not just counts) means scroll frames do ZERO text shaping — the per-frame re-wrap of drawn messages was the "glitches and sticks" scroll regression.
@@ -1303,6 +1305,7 @@ impl PhotonApp {
             msg_hit_rows: Vec::new(),
             selected_msg: None,
             selected_msg_copied: false,
+            pending_delete: None,
             conv_topbar_off: 0.0,
             msg_wrap: None,
             #[cfg(target_os = "android")]
@@ -2807,21 +2810,9 @@ impl FluorApp for PhotonApp {
                                 self.ready_toast_screen = None;
                             }
                         }
-                        // DELETE: local removal + persist. HONEST CAVEAT until tombstone rows exist: fleet sync (sibling push / sweep / digest walk) can resurrect the row from another device's copy — durable fleet-wide delete is ticketed.
+                        // DELETE: arm the deferred delete — the strip repaints "deleting…" THIS frame, and the tick performs the removal + mirror-verified persist after that frame painted (doing it synchronously here blocked the UI for the save's duration, reading as stuck). Tombstone caveat unchanged: until they exist, fleet sync can resurrect the row.
                         3 => {
-                            if let Some(c) = self.contacts.get_mut(sci) {
-                                let before = c.messages.len();
-                                c.messages.retain(|m| !(m.timestamp == ts && m.is_outgoing == out));
-                                if c.messages.len() != before {
-                                    if let Some(storage) = self.storage.as_ref() {
-                                        let _ = crate::storage::contacts::save_messages(c, storage);
-                                    }
-                                    crate::log("msg-details: message deleted locally (fleet tombstones pending — sync may resurrect it)");
-                                }
-                            }
-                            self.selected_msg = None;
-                            self.selected_msg_copied = false;
-                            self.msg_wrap = None; // row set changed — drop the wrap cache outright
+                            self.pending_delete = Some(((sci, ts, out), false));
                         }
                         _ => {}
                     }
@@ -3607,6 +3598,26 @@ impl FluorApp for PhotonApp {
 
         // Point the top-left orb at the current subject (peer avatar + their presence ring in a conversation, else the Photon orb + our connectivity). Self-diffing — a no-op unless the contact / avatar / screen changed.
         self.update_orb();
+
+        // Deferred message delete: runs only AFTER the "deleting…" frame painted (see pending_delete) — the mirror-verified save can take a beat, and the user must see the press landed first.
+        if let Some(((sci, ts, out), true)) = self.pending_delete {
+            self.pending_delete = None;
+            if let Some(c) = self.contacts.get_mut(sci) {
+                let before = c.messages.len();
+                c.messages.retain(|m| !(m.timestamp == ts && m.is_outgoing == out));
+                if c.messages.len() != before {
+                    if let Some(storage) = self.storage.as_ref() {
+                        let _ = crate::storage::contacts::save_messages(c, storage);
+                    }
+                    crate::log("msg-details: message deleted locally (fleet tombstones pending — sync may resurrect it)");
+                }
+            }
+            self.selected_msg = None;
+            self.selected_msg_copied = false;
+            self.msg_wrap = None; // row set changed — drop the wrap cache outright
+            self.scene_dirty = true;
+            needs_redraw = true;
+        }
 
         // Fleet chain replication push: any friendship chain that mutated since its last push ships to the siblings. Constant-time no-op when nothing changed.
         self.drive_chain_replication();
@@ -5289,7 +5300,14 @@ impl FluorApp for PhotonApp {
                                 if msg.is_outgoing && !msg.delivered {
                                     pills.push(("resend", *theme::HOURGLASS_COLOUR, self.msg_action_base.wrapping_add(2)));
                                 }
-                                pills.push(("delete", *theme::ERROR_TEXT_COLOUR, self.msg_action_base.wrapping_add(3)));
+                                let deleting = self.pending_delete.as_ref().is_some_and(|(k, _)| *k == (ci, msg.timestamp, msg.is_outgoing));
+                                pills.push((if deleting { "deleting\u{2026}" } else { "delete" }, *theme::ERROR_TEXT_COLOUR, self.msg_action_base.wrapping_add(3)));
+                                if deleting {
+                                    // The feedback frame is on screen — the tick may do the heavy lift now.
+                                    if let Some((_, painted)) = self.pending_delete.as_mut() {
+                                        *painted = true;
+                                    }
+                                }
                                 let pad_hit = detail_size;
                                 let mut px_cursor = pad_x;
                                 for (label, colour, hid) in pills {
