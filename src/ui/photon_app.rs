@@ -2928,9 +2928,10 @@ impl FluorApp for PhotonApp {
             }
             Event::MouseWheel { delta } => {
                 // Bg-noise scroll. Vertical-only for now — horizontal trackpad gestures and shift-modified wheel both fold into the same `bg_scroll` axis. Discrete wheel notches (`Lines`) get multiplied to feel like a normal scroll step; continuous trackpad pixels (`Pixels`) are used directly. The scroll value feeds both `scroll_offset` (translates the noise pattern up/down on screens that want it) and `shimmer` (colour-bias cycle on every screen) in `render`.
-                let dy = match delta {
-                    MouseScrollDelta::Lines(_, y) => (*y as isize) * 8,
-                    MouseScrollDelta::Pixels(_, y) => *y as isize,
+                // Pixel deltas (touch drag, trackpads) are REAL distances — they must track 1:1 (Android touch was riding the conversation arm's extra ×8 and outran the finger 8-fold). Discrete notches keep their synthetic step.
+                let (dy, is_pixel_delta) = match delta {
+                    MouseScrollDelta::Lines(_, y) => ((*y as isize) * 8, false),
+                    MouseScrollDelta::Pixels(_, y) => (*y as isize, true),
                 };
                 if dy != 0 {
                     // A live textbox pan owns the gesture: the finger is carrying the TEXT, so the pane must not also scroll under it (Android's touch-drag synthesizes wheel events alongside the CursorMoved the pan rides).
@@ -2974,7 +2975,8 @@ impl FluorApp for PhotonApp {
                             if let Some(contact) = self.contacts.get_mut(ci) {
                                 contact.message_scroll_offset = rubber_step(
                                     contact.message_scroll_offset,
-                                    dy as f32 * (1 << 3) as f32,
+                                    // Notches get the wheel step-up; pixel sources are already distances.
+                                    dy as f32 * if is_pixel_delta { 1.0 } else { (1 << 3) as f32 },
                                     f32::INFINITY,
                                     reach,
                                 );
@@ -5006,7 +5008,9 @@ impl FluorApp for PhotonApp {
                     let (_, _, avatar_r) = conv_layout.avatar_center_radius();
                     let avatar_diam = (avatar_r * 2.0) as usize;
                     let avatar_cx = buf_w as f32 * 0.5;
-                    let is_woven_chat = contact.clutch_state == crate::types::ClutchState::Complete;
+                    // Self (notes-to-self) always takes the WOVEN layout: the avatar/name belong at the scroll-top of the stream, not as a fixed centre header clobbering the messages — there's no ceremony to wait on with yourself.
+                    let is_woven_chat = contact.clutch_state == crate::types::ClutchState::Complete
+                        || self.session.as_ref().map(|se| crate::crypto::clutch::identity_party_id(&se.identity_seed)) == Some(contact.handle_hash);
                     // Closure to stamp the avatar disc + tier ring at a given centre-y — called either as the fixed header (pre-ceremony) or at the scroll-top of the stream (woven).
                     let draw_conv_avatar = |canvas: &mut Canvas, cy: f32| {
                         if let Some(scaled) = contact.avatar_scaled.as_ref() {
@@ -5055,7 +5059,7 @@ impl FluorApp for PhotonApp {
                     let clutch_y = name_y + unit * 1.5;
                     // End-of-identity states outrank the ceremony line (docs/lifecycle.md): a superseded name is a STRANGER wearing it — say so in red; an ended identity reads as the archive it is.
                     // A WOVEN chain shows NO ceremony line at all — once the parties can chat, "CLUTCH: secured" is machinery noise; the working conversation is its own proof.
-                    let show_status = contact.identity_superseded || contact.identity_ended || is_self_contact || !contact.chain_woven;
+                    let show_status = contact.identity_superseded || contact.identity_ended || (is_self_contact && contact.messages.is_empty()) || (!is_self_contact && !contact.chain_woven);
                     let (clutch_label, clutch_colour) = if contact.identity_superseded {
                         ("name re-claimed by someone new \u{2014} this is NOT them".to_string(), (*theme::ERROR_TEXT_COLOUR))
                     } else if contact.identity_ended {
@@ -5146,13 +5150,14 @@ impl FluorApp for PhotonApp {
                             let lines = wrap_text_lines(ctx.text, &msg.content, &wrap_style, avail_w);
                             let block_extra = (lines.len() as f32 - 1.0) * intra;
                             // Divider under this message (between it and the next-newer one).
+                            // Full-bleed divider at the version-watermark treatment: pure white, α=1/8 (VERSION_COLOUR is exactly that, and darkness-0 white is channel-order invariant).
                             paint::fill_rect(
                                 &mut canvas,
-                                pad_x as isize,
+                                0,
                                 (y + msg_size * 0.5) as isize,
-                                (buf_w as f32 - pad_x * 2.0) as isize,
+                                buf_w as isize,
                                 (ru.max(1.0)) as isize,
-                                *theme::DIVIDER_COLOUR,
+                                theme::VERSION_COLOUR,
                                 Some(list_clip),
                                 None,
                             );
