@@ -785,8 +785,8 @@ pub struct PhotonApp {
     vault_degraded: bool,
     /// Green confirmation band on the Ready screen ("Device added \u{221a}"). Event-shown, interaction-cleared (clear_hints), NEVER time-based. Stacks above the amber warning bands.
     ready_toast: Option<String>,
-    /// The screen (AppState discriminant) the toast was first RENDERED on — captured lazily by the tick; a later mismatch means the user navigated, which clears the toast (screen change = acknowledgement).
-    ready_toast_screen: Option<std::mem::Discriminant<AppState>>,
+    /// The FULL screen state the toast was first RENDERED on — captured lazily by the tick; any mismatch means the user navigated, which clears the toast (screen change = acknowledgement). The whole AppState VALUE, not its discriminant: every Settings page shares one discriminant, so page-to-page navigation inside the panel never cleared ("changing from page to page in settings doesn't clear the toast").
+    ready_toast_screen: Option<AppState>,
     /// nunc-time clock sanity check: result channel + drain. The worker (one-shot, off-thread) posts the consensus-vs-system offset here; `drain_clock_check` reads it and updates `clock_off`.
     clock_check_tx: std::sync::mpsc::Sender<crate::network::ClockCheckResult>,
     clock_check_rx: std::sync::mpsc::Receiver<crate::network::ClockCheckResult>,
@@ -1655,18 +1655,21 @@ impl PhotonApp {
             }
         }
         if matches!(self.state, AppState::Conversation) {
-            // The compose box is the only focusable widget in a conversation; yielding it here wires click-to-focus, Tab, and key dispatch. Only once the chain is PROVEN (chain_woven — both probe directions sealed; self-contacts exempt, they never probe) — before that the box isn't rendered, so it must not be focusable either (otherwise a click or Tab could land focus on an invisible dead input). Must mirror the render gate exactly.
+            // The compose box is the only focusable widget in a conversation; yielding it here wires click-to-focus, Tab, and key dispatch. MUST MIRROR THE RENDER GATE EXACTLY (the render's compose block): woven chain, self-contact, or COMPOSE-ANYWHERE (friend convo with history + a fleet to forward thru). The first unification build extended only the render gate — the box painted but wasn't in this walk, so clicks never focused it and no blinkey appeared ("textbox appears but can't type", desktop 2026-07-26).
             let our_handle_hash = self
                 .session
                 .as_ref()
                 .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
                 .unwrap_or([0u8; 32]);
+            let has_fleet = self.contacts.iter().any(|c| c.is_sibling);
             let compose_ready = self
                 .active_contact
                 .and_then(|ci| self.contacts.get(ci))
                 .map(|c| {
-                    c.clutch_state == crate::types::ClutchState::Complete
-                        && (c.chain_woven || c.handle_hash == our_handle_hash)
+                    let is_self = c.handle_hash == our_handle_hash;
+                    let can_fleet_forward = !c.is_sibling && !c.messages.is_empty() && has_fleet;
+                    // Literally the render gate's expression: is_self || chain_woven || can_fleet_forward.
+                    is_self || c.chain_woven || can_fleet_forward
                 })
                 .unwrap_or(false);
             if compose_ready {
@@ -3540,12 +3543,11 @@ impl FluorApp for PhotonApp {
             }
         }
 
-        // Toast screen-change watch: capture the screen the toast first renders on; a later mismatch (user navigated) clears it. Clicks/scrolls/zoom never clear a toast — see clear_toast.
+        // Toast screen-change watch: capture the screen the toast first renders on; a later mismatch (user navigated — INCLUDING settings page-to-page, hence the full AppState value not the discriminant) clears it. Clicks/scrolls/zoom never clear a toast — see clear_toast.
         if self.ready_toast.is_some() {
-            let here = std::mem::discriminant(&self.state);
-            match self.ready_toast_screen {
-                None => self.ready_toast_screen = Some(here),
-                Some(d) if d != here => {
+            match &self.ready_toast_screen {
+                None => self.ready_toast_screen = Some(self.state.clone()),
+                Some(s) if *s != self.state => {
                     self.clear_toast();
                     needs_redraw = true;
                 }
