@@ -5164,11 +5164,11 @@ impl FluorApp for PhotonApp {
                             let lines: &Vec<String> = wrap_cache.get(vi).unwrap_or(&EMPTY_LINES);
                             let block_extra = (lines.len() as f32 - 1.0) * intra;
                             // Divider under this message (between it and the next-newer one).
-                            // Full-bleed divider at the version-watermark treatment: pure white, α=1/8 (VERSION_COLOUR is exactly that, and darkness-0 white is channel-order invariant).
+                            // Full-bleed divider at the version-watermark treatment: pure white, α=1/8 (VERSION_COLOUR is exactly that, and darkness-0 white is channel-order invariant). Positioned at the MIDPOINT of the inter-message gap (0.8·msg_size below the baseline centre): at 0.5 it sat flush against the descenders — good padding above, none below.
                             paint::fill_rect(
                                 &mut canvas,
                                 0,
-                                (y + msg_size * 0.5) as isize,
+                                (y + msg_size * 0.8) as isize,
                                 buf_w as isize,
                                 (ru.max(1.0)) as isize,
                                 theme::VERSION_COLOUR,
