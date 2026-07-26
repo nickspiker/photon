@@ -5112,7 +5112,9 @@ impl FluorApp for PhotonApp {
                         let line_h = msg_size * 1.6; // text + breathing room per message
                         let pad_x = unit; // left/right inset
                         // Woven chat reclaims the whole header strip for the message list (the avatar/name ride the scroll-top instead, drawn below); pre-woven keeps the status header space.
-                        let list_top = if is_woven_chat { (back_y + unit).max(unit * 0.6) } else { clutch_y + unit * 1.2 };
+                        // The bar-hidden floor must clear the CHROME title strip on desktop — a floor of bare unit*0.6 let the stream's top (the avatar) ride up UNDER the title bar and get bisected by it. Android draws no strip (full-edge), so the small margin stands there.
+                        let top_floor = if cfg!(target_os = "android") { unit * 0.6 } else { fluor::host::chrome::strip_height(ctx.viewport) + unit * 0.4 };
+                        let list_top = if is_woven_chat { (back_y + unit).max(top_floor) } else { clutch_y + unit * 1.2 };
                         // Compose bar reserves the bottom strip, lifted off the bottom edge by `compose_margin` — and above the soft keyboard (`ime_lift`; the surface never resizes for the IME). The list lives between list_top and list_bottom. Must match the layout pass's `compose_h`/`compose_margin` below.
                         let compose_h = unit * 1.8;
                         let compose_margin = unit * 0.8;
