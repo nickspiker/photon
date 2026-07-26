@@ -54,6 +54,8 @@ pub struct ChatMessage {
     pub ack_hash: Option<[u8; 32]>,
     /// `true` when this row was RECOVERED from a friend's copy of the conversation (history recovery after a client reset) rather than witnessed by this device as a signed wire frame. Friend-attested provenance: the friend could in principle have altered it. Persisted so phase-2 fleet recovery (self-attested rows) can supersede friend-attested ones, and so a UI cue can exist later. No UI treatment yet.
     pub recovered: bool,
+    /// TOMBSTONE: the message is deleted-for-everyone — hidden from every UI, propagated monotonically (true wins) thru fleet sync AND to the friend via the hidden delete marker. The CONTENT IS PRESERVED internally on purpose: the braid weaves prior message content into future keys, so blanking it would fork chains that later weave this row — true content shredding needs a braid-safe redaction design (ticketed). Persisted.
+    pub deleted: bool,
 }
 
 impl ChatMessage {
@@ -65,6 +67,7 @@ impl ChatMessage {
             delivered: false,
             ack_hash: None,
             recovered: false,
+            deleted: false,
         }
     }
 
@@ -77,6 +80,7 @@ impl ChatMessage {
             delivered: false,
             ack_hash: None,
             recovered: false,
+            deleted: false,
         }
     }
 
@@ -132,6 +136,14 @@ impl std::fmt::Display for HandleText {
 
 /// Reserved sentinel content for the hidden chain-weave probe message. After CLUTCH reaches Complete, each device sends exactly one message with this exact content to validate the ratchet end-to-end. The receive path recognises it, advances/ACKs the chain like any message, but suppresses the chat bubble. The control bytes (SOH/STX around the tag) make a collision with a real user message effectively impossible.
 pub const CHAIN_PROBE_MARKER: &str = "\u{1}\u{2}photon-chain-probe\u{2}\u{1}";
+
+/// Prefix for the hidden DELETE marker message: `{prefix}{timestamp}` — a normal chain message (ACKed, retransmitted, re-ACK-durable via its stored hidden row, exactly the probe pattern) instructing the peer to tombstone the row with that eagle timestamp. Control bytes make user-content collision effectively impossible.
+pub const DELETE_MARKER_PREFIX: &str = "\u{1}\u{2}photon-delete\u{2}\u{1}";
+
+/// True for any CONTROL message content (chain probe, delete marker) — machinery rows that no UI, digest, weave window, or history page may surface.
+pub fn is_control_content(content: &str) -> bool {
+    content == CHAIN_PROBE_MARKER || content.starts_with(DELETE_MARKER_PREFIX)
+}
 
 /// State of the CLUTCH key ceremony for a contact
 ///

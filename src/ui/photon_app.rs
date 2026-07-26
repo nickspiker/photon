@@ -3623,18 +3623,38 @@ impl FluorApp for PhotonApp {
         // Point the top-left orb at the current subject (peer avatar + their presence ring in a conversation, else the Photon orb + our connectivity). Self-diffing — a no-op unless the contact / avatar / screen changed.
         self.update_orb();
 
-        // Deferred message delete: runs only AFTER the "deleting…" frame painted (see pending_delete) — the mirror-verified save can take a beat, and the user must see the press landed first.
+        // Deferred message delete: runs only AFTER the "deleting…" frame painted (see pending_delete). TOMBSTONE, not removal: the flag propagates monotonically thru fleet sync (push + sweep + merge true-wins), and a hidden DELETE marker rides the chain to the FRIEND so their side tombstones too — delete-for-everyone. Content is preserved internally (braid weave dependency — see ChatMessage::deleted).
         if let Some(((sci, ts, out), true)) = self.pending_delete {
             self.pending_delete = None;
+            let mut tombstoned: Option<ChatMessage> = None;
             if let Some(c) = self.contacts.get_mut(sci) {
-                let before = c.messages.len();
-                c.messages.retain(|m| !(m.timestamp == ts && m.is_outgoing == out));
-                if c.messages.len() != before {
+                if let Some(m) = c.messages.iter_mut().find(|m| m.timestamp == ts && m.is_outgoing == out) {
+                    if !m.deleted {
+                        m.deleted = true;
+                        tombstoned = Some(m.clone());
+                    }
+                }
+                if tombstoned.is_some() {
                     if let Some(storage) = self.storage.as_ref() {
                         let _ = crate::storage::contacts::save_messages(c, storage);
                     }
-                    crate::log("msg-details: message deleted locally (fleet tombstones pending — sync may resurrect it)");
                 }
+            }
+            if let Some(row) = tombstoned {
+                // Fleet-wide: the tombstoned row rides the ordinary sibling push (merge upgrades true-wins).
+                self.push_rows_to_siblings(sci, std::slice::from_ref(&row), None);
+                // Cross-party: the hidden delete marker on the chain (friend conversations with a local chain; a chainless device's fleet tombstone still reaches the chain owner, which is where a follow-up marker could ride — v1 logs the gap).
+                let is_self = self.session.as_ref().map(|se| crate::crypto::clutch::identity_party_id(&se.identity_seed)) == self.contacts.get(sci).map(|c| c.handle_hash);
+                let is_sib = self.contacts.get(sci).map(|c| c.is_sibling).unwrap_or(true);
+                if !is_self && !is_sib {
+                    let marker = format!("{}{}", crate::types::DELETE_MARKER_PREFIX, ts);
+                    if self.send_chain_message(sci, &marker, true) {
+                        crate::log("msg-details: delete marker sent to the friend (delete-for-everyone)");
+                    } else {
+                        crate::log("msg-details: no local chain for the delete marker — fleet tombstone propagates; the friend keeps their copy until a chain-holding device re-sends");
+                    }
+                }
+                crate::log("msg-details: message tombstoned (deleted-for-everyone)");
             }
             self.selected_msg = None;
             self.selected_msg_copied = false;
@@ -4651,7 +4671,7 @@ impl FluorApp for PhotonApp {
                 let last_activity = c
                     .messages
                     .iter()
-                    .filter(|m| m.content != crate::types::CHAIN_PROBE_MARKER)
+                    .filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted)
                     .map(|m| m.timestamp)
                     .max()
                     .unwrap_or(i64::MIN);
@@ -5007,7 +5027,7 @@ impl FluorApp for PhotonApp {
                         let n = contact_page_rows(ContactPage::Stats);
                         let rows = layout.content_scrolled(n, settings_content_scroll).split_v([1.0; 9]);
                         // Hidden probe rows are bookkeeping, not conversation — keep them out of every human-facing count.
-                        let human: Vec<&crate::types::ChatMessage> = contact.messages.iter().filter(|m| m.content != crate::types::CHAIN_PROBE_MARKER).collect();
+                        let human: Vec<&crate::types::ChatMessage> = contact.messages.iter().filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted).collect();
                         let sent = human.iter().filter(|m| m.is_outgoing).count();
                         let recv = human.len() - sent;
                         let delivered = human.iter().filter(|m| m.is_outgoing && m.delivered).count();
@@ -5238,7 +5258,7 @@ impl FluorApp for PhotonApp {
                         let visible: Vec<&crate::types::ChatMessage> = contact
                             .messages
                             .iter()
-                            .filter(|m| m.content != crate::types::CHAIN_PROBE_MARKER)
+                            .filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted)
                             .collect();
                         let n = visible.len();
                         // Stream entry #0 (avatar + petname + optional status) is the oldest item: its height joins content_h so scrolling to genesis reveals it above message 1. Unconditional — every conversation has entry #0.
@@ -9257,7 +9277,7 @@ impl PhotonApp {
                     .iter()
                     .rev()
                     // Probe rows are excluded from weave eligibility: they persist locally for re-ACK durability, but the PEER stores no outgoing row for its probe, so a woven probe ref would be unresolvable on their side — a guaranteed strand miss and chain fork.
-                    .filter(|m| !m.is_outgoing && m.content != crate::types::CHAIN_PROBE_MARKER)
+                    .filter(|m| !m.is_outgoing && !crate::types::is_control_content(&m.content))
                     .take(256)
                     .collect();
                 use rand::Rng;
@@ -10004,7 +10024,7 @@ impl PhotonApp {
                     .map(|c| {
                         let mut fold = [0u8; 32];
                         let mut n: u32 = 0;
-                        for m in c.messages.iter().filter(|m| m.content != crate::types::CHAIN_PROBE_MARKER) {
+                        for m in c.messages.iter().filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted) {
                             let mut h = blake3::Hasher::new();
                             h.update(&m.timestamp.to_le_bytes());
                             h.update(blake3::hash(m.content.as_bytes()).as_bytes());
@@ -12239,12 +12259,13 @@ impl PhotonApp {
         };
         let hist_rows: Vec<HistoryRow> = rows
             .iter()
-            .filter(|m| m.content != crate::types::CHAIN_PROBE_MARKER)
+            .filter(|m| !crate::types::is_control_content(&m.content))
             .map(|m| HistoryRow {
                 timestamp: m.timestamp,
                 content: m.content.clone(),
                 sender_outgoing: m.is_outgoing,
                 delivered: m.delivered,
+                deleted: m.deleted,
             })
             .collect();
         if hist_rows.is_empty() {
@@ -12971,7 +12992,7 @@ impl PhotonApp {
                                     if !c.is_sibling && c.chain_woven {
                                         let mut fold = [0u8; 32];
                                         let mut n_rows: u32 = 0;
-                                        for m in c.messages.iter().filter(|m| m.content != crate::types::CHAIN_PROBE_MARKER) {
+                                        for m in c.messages.iter().filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted) {
                                             let mut h = blake3::Hasher::new();
                                             h.update(&m.timestamp.to_le_bytes());
                                             h.update(blake3::hash(m.content.as_bytes()).as_bytes());
@@ -13600,7 +13621,33 @@ impl PhotonApp {
                         }
 
                         // Add message to contact's message list and persist — UNLESS this is the hidden chain-weave probe, which advances/ACKs the chain but must never surface a bubble or chime. For the probe we flip `their_probe_seen` (their TX / our RX proven), PERSIST a hidden row, and try to seal the chain.
-                        if is_chain_probe {
+                        // Hidden DELETE marker: the friend tombstoned a message — apply it here (either direction, matched by timestamp), persist a HIDDEN marker row for re-ACK durability (the probe pattern), and gossip the tombstoned row to our siblings. No bubble, no chime, no notify.
+                        if let Some(ts_str) = message_text.strip_prefix(crate::types::DELETE_MARKER_PREFIX) {
+                            let target_ts: i64 = ts_str.trim().parse().unwrap_or(0);
+                            if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                                let mut tombstoned: Option<ChatMessage> = None;
+                                if let Some(m) = contact.messages.iter_mut().find(|m| m.timestamp == target_ts && !crate::types::is_control_content(&m.content)) {
+                                    if !m.deleted {
+                                        m.deleted = true;
+                                        tombstoned = Some(m.clone());
+                                    }
+                                }
+                                // The marker row itself (hidden, ack_hash-bearing) — a lost ACK re-ACKs from it.
+                                let marker_row = ChatMessage::new_with_timestamp(message_text.clone(), false, timestamp).with_ack_hash(plaintext_hash);
+                                contact.insert_message_sorted(marker_row);
+                                if let Some(storage) = self.storage.as_ref() {
+                                    let _ = crate::storage::contacts::save_messages(contact, storage);
+                                }
+                                if let Some(row) = tombstoned {
+                                    crate::logf!("CHAT: friend deleted a message (ts {}) — tombstone applied + gossiped", target_ts);
+                                    sibling_push = Some((contact_idx, row));
+                                } else {
+                                    crate::logf!("CHAT: friend delete marker for ts {} — no matching live row (already tombstoned or never held)", target_ts);
+                                }
+                                changed = true;
+                            }
+                            recv_seal_idx = Some(contact_idx);
+                        } else if is_chain_probe {
                             if let Some(contact) = self.contacts.get_mut(contact_idx) {
                                 contact.their_probe_seen = true;
                                 // Persist the probe as a HIDDEN rarangi row carrying its ack_hash: without a row the duplicate handler has nothing to re-ACK from, so a probe whose ACK was lost froze the sender's chain at the pre-probe position forever — the sibling weave fork of 2026-07-23. Every UI/history/preview path already filters CHAIN_PROBE_MARKER, so the row never surfaces; it exists purely as the durable dedup + re-ACK record. No chime, no sibling push (probes stay device-pair-local).
@@ -15169,12 +15216,13 @@ impl PhotonApp {
                                         rows.first().map(|m| m.timestamp).unwrap_or(before_osc);
                                     let hist_rows: Vec<HistoryRow> = rows
                                         .iter()
-                                        .filter(|m| m.content != crate::types::CHAIN_PROBE_MARKER)
+                                        .filter(|m| !crate::types::is_control_content(&m.content))
                                         .map(|m| HistoryRow {
                                             timestamp: m.timestamp,
                                             content: m.content.clone(),
                                             sender_outgoing: m.is_outgoing,
                                             delivered: m.delivered,
+                                            deleted: m.deleted,
                                         })
                                         .collect();
                                     let page = HistoryPagePlain {
@@ -15414,7 +15462,7 @@ impl PhotonApp {
                                     // Merge to OUR perspective: friend pages flip direction (their outgoing = our incoming); sibling pages ride verbatim (same identity, their flags ARE ours). Friend-recovered outgoing is delivered by definition (the friend has it); dedup on (timestamp, content) against what we already hold.
                                     let mut fresh: Vec<crate::types::ChatMessage> = Vec::new();
                                     for row in &page.rows {
-                                        if row.content == crate::types::CHAIN_PROBE_MARKER {
+                                        if crate::types::is_control_content(&row.content) {
                                             continue;
                                         }
                                         let (is_outgoing, delivered, recovered) = if from_sibling {
@@ -15430,9 +15478,17 @@ impl PhotonApp {
                                                     && m.content == row.content
                                             })
                                         {
-                                            // Delivered is monotonic: a copy that saw the ACK upgrades ours, so the tick shows on every device. The upgraded row rides `fresh` (persist + gossip) but is NOT re-inserted.
+                                            // Delivered AND deleted are monotonic (true wins): a copy that saw the ACK — or the tombstone — upgrades ours. Upgraded rows ride `fresh` (persist + gossip) but are NOT re-inserted.
+                                            let mut upgraded = false;
                                             if delivered && !existing.delivered && existing.is_outgoing == is_outgoing {
                                                 existing.delivered = true;
+                                                upgraded = true;
+                                            }
+                                            if row.deleted && !existing.deleted {
+                                                existing.deleted = true;
+                                                upgraded = true;
+                                            }
+                                            if upgraded {
                                                 fresh.push(existing.clone());
                                             }
                                             continue;
@@ -15444,6 +15500,7 @@ impl PhotonApp {
                                             delivered,
                                             ack_hash: None,
                                             recovered,
+                                            deleted: row.deleted,
                                         };
                                         contact.insert_message_sorted(msg.clone());
                                         fresh.push(msg);
