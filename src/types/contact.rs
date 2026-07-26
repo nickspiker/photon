@@ -279,6 +279,8 @@ pub struct Contact {
     pub last_ring: Option<std::time::Instant>,
     /// Runtime-only fork detector: consecutive inbound chat frames from this contact that passed signature + chain-link checks but decrypted to garbage (VSF parse failure) — the signature of a chain FORK (the two sides advanced different key material). Reset on any successful decrypt. At the threshold a SIBLING contact triggers the fleet-key chain_reset repair; a friend contact only logs (friend-side repair waits for the fleet-plane linearizer).
     pub chain_fail_streak: u8,
+    /// Persistent-gap fork detector: (key = XOR of the repeating expected/got prev-hash pair, repeat count). A hash-chain gap that repeats IDENTICALLY is a committed fork, not latency — the missing predecessor will never arrive, and the decrypt-failure streak never sees it because buffering isn't a failure. At threshold the repair fires (sibling reset / friend re-key). Runtime-only.
+    pub gap_streak: (u64, u16),
     /// Runtime-only: the last sibling chain-reset nonce APPLIED for this contact — dedups the echo (the responder bounces the same frame back so the initiator converges) and any retransmit. Never persisted: a restart mid-repair just lets the detector re-fire with a fresh nonce.
     pub last_chain_reset_nonce: Option<[u8; 32]>,
     /// Runtime-only rate limiter: when we last INITIATED a chain reset toward this contact, so a storm of garbage frames can't spam repair rounds. One initiation per window; the detector re-fires after it if the fork persists.
@@ -421,6 +423,7 @@ impl Contact {
             presence_probed: false,       // No presence verdict yet this session
             last_ring: None,              // Doorbell never rung this session
             chain_fail_streak: 0,
+            gap_streak: (0, 0),
             last_chain_reset_nonce: None,
             last_chain_reset_sent: None,
             digest_kick_osc: 0,
