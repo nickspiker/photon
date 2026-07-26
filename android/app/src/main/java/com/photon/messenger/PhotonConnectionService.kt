@@ -102,11 +102,23 @@ class PhotonConnectionService : Service() {
     private external fun nativeClearSessionBroadcast(context: android.content.Context)
 
 
+    // Held for the service's whole life: Android DROPS WiFi multicast in the radio firmware unless
+    // some app holds a MulticastLock — without it the LAN discovery beacons never reach Rust, so a
+    // phone sitting NEXT TO its sibling on the same network fell back to the relay ("one device on
+    // my network is going thru a relay", 2026-07-26). Battery cost is the multicast filter staying
+    // open — the price of same-room discovery actually working.
+    private var multicastLock: android.net.wifi.WifiManager.MulticastLock? = null
+
     override fun onCreate() {
         super.onCreate()
         live = this
         createNotificationChannel()
-        PhotonLog.d(TAG, "Service created")
+        val wifi = applicationContext.getSystemService(WIFI_SERVICE) as android.net.wifi.WifiManager
+        multicastLock = wifi.createMulticastLock("photon-lan").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+        PhotonLog.d(TAG, "Service created (multicast lock held)")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -165,6 +177,8 @@ class PhotonConnectionService : Service() {
     override fun onDestroy() {
         live = null
         PhotonLog.d(TAG, "Service destroying")
+        multicastLock?.release()
+        multicastLock = null
         stopNetworkPolling()
         if (networkPtr != 0L) {
             nativeNetworkDestroy(networkPtr)
