@@ -4047,6 +4047,10 @@ impl FluorApp for PhotonApp {
             // The You page is a dynamic form — its row count is the field set plus the fixed chrome rows, not a constant. The Diagnostics log viewer counts fractionally: two full-height header rows plus half-height record rows (matching diag_log_row_rect exactly, or the scroll bound and the drawn rows disagree).
             let content_rows_h = if page == SettingsPage::You {
                 sl.content_line_h() * you_rows_plan(&self.you_fields).len() as Coord
+            } else if page == SettingsPage::About {
+                // Logo(4) + gap + killswitch + passless + version ≈ 7.6 rows collapsed; the reveal adds the spelled line + "dozenal" header + 6 cheat rows ≈ 8.4.
+                let rows = 7.6 + if self.about_version_spelled { 8.4 } else { 0.0 };
+                sl.content_line_h() * rows
             } else if page == SettingsPage::Diagnostics && self.diag_log_view {
                 let n = match &self.diag_log_inspect {
                     Some((_, lines)) => lines.len(),
@@ -6089,26 +6093,58 @@ impl FluorApp for PhotonApp {
                     }
                 }
                 SettingsPage::About => {
-                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
-                    settings_line(&mut canvas, ctx.text, rows[0], "About Photon", tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], "No password. Your device is your key.", hspan2, *theme::CONTACT_NAME_COLOUR, 400);
-                    settings_line(&mut canvas, ctx.text, rows[2], "Stay signed in until power-off; reboot → re-enter your handle.", hspan2, *theme::LABEL_COLOUR, 400);
-                    settings_line(&mut canvas, ctx.text, rows[3], "No servers. No tracking. Your data is yours.", hspan2, *theme::LABEL_COLOUR, 400);
-                    // Version — dozenal, NEVER arabic. Default: normal-white dozenal glyphs (weight 400 → the Oxanium +glyphs face renders the reserved control-code bytes as dozenal digits). Tap → spell it out in voca words. Whole row is a tap target (btn_base + 3).
-                    let ver = if self.about_version_spelled {
-                        format!("Version {}{}", crate::dozenal_spell(deploy_version()), if dev_patch() > 0 { format!(" point {}", crate::dozenal_spell(dev_patch())) } else { String::new() })
-                    } else {
-                        format!("Version {}", version_dozenal_glyphs())
-                    };
-                    settings_line(&mut canvas, ctx.text, rows[5], &ver, hspan2, *theme::CONTACT_NAME_COLOUR, 400);
+                    // An About CARD, not a settings list: the Photon wordmark over its chromatic wave up top, then the two headline properties (killswitch-ready, passless), then the version — tap it to reveal both the spelled-out form AND the dozenal cheat sheet. No feedback line — photon is owned by everyone. All centred under the logo; a manual vertical cursor (elements are variable-height, not equal rows).
+                    let inset = layout.content_inset();
+                    let line_h = layout.content_line_h();
+                    let cx = inset.x + inset.w * 0.5;
+                    let mut y = inset.y - settings_content_scroll;
+                    // Chromatic wave + wordmark. Static spectrum (phase rides bg_scroll for a touch of life); reads the noise already in `target`. Skipped when scrolled fully off so a negative rect never misbehaves.
+                    let wave_phase = self.bg_scroll as f32 / ((1 << 7) as f32);
+                    let logo_h = line_h * 4.0;
+                    if y + logo_h > inset.y && y < inset.y + inset.h {
+                        let lx0 = inset.x.max(0.0) as usize;
+                        let ly0 = y.max(inset.y).max(0.0) as usize;
+                        let lx1 = (inset.x + inset.w).max(0.0) as usize;
+                        let ly1 = (y + logo_h).max(0.0) as usize;
+                        if lx1 > lx0 && ly1 > ly0 {
+                            let logo_rect = fluor::canvas::PixelRect::new(lx0, ly0, lx1, ly1);
+                            chromatic_wave(&mut canvas, logo_rect, wave_phase, 1.0);
+                            crate::ui::photon_logo::paint_photon_logo(&mut canvas, ctx.text, logo_rect);
+                        }
+                    }
+                    y += logo_h + line_h * 0.4;
+                    // The two headline properties — the whole pitch in two words each.
+                    ctx.text.draw_text_center(&mut canvas, "killswitch ready", cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
+                    y += line_h;
+                    ctx.text.draw_text_center(&mut canvas, "passless", cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
+                    y += line_h * 1.2;
+                    // Version — dozenal glyphs (weight 400 → the Oxanium +glyphs face draws the reserved control bytes as dozenal digits), NEVER arabic. Tap toggles the reveal (spelled form + cheat sheet). Whole row is the tap target (btn_base + 3).
+                    let ver = format!("Version {}", version_dozenal_glyphs());
+                    ctx.text.draw_text_center(&mut canvas, &ver, cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR).weight(400).font("Oxanium"), None, None);
                     restamp_hit_rect(
                         &mut chrome.hit_test_map, buf_w, buf_h,
-                        rows[5].x as isize, rows[5].y as isize,
-                        (rows[5].x + rows[5].w) as isize, (rows[5].y + rows[5].h) as isize,
+                        inset.x as isize, y as isize,
+                        (inset.x + inset.w) as isize, (y + line_h) as isize,
                         btn_base.wrapping_add(3),
                     );
-                    settings_line(&mut canvas, ctx.text, rows[6], "Feedback: fractaldecoder@proton.me", hspan2, *theme::LABEL_COLOUR, 400);
-                    settings_line(&mut canvas, ctx.text, rows[7], "Built on the TOKEN stack · licences under the hood.", hspan2, *theme::LABEL_COLOUR, 400);
+                    y += line_h;
+                    if self.about_version_spelled {
+                        // Spelled-out (voca words), then the dozenal cheat sheet: all twelve digits as GLYPH = name, two columns of six.
+                        let spelled = format!("{}{}", crate::dozenal_spell(deploy_version()), if dev_patch() > 0 { format!(" point {}", crate::dozenal_spell(dev_patch())) } else { String::new() });
+                        ctx.text.draw_text_center(&mut canvas, &spelled, cx, y + line_h * 0.5, &TextStyle::new(hspan2 * 0.85, *theme::LABEL_COLOUR).weight(400).font("Oxanium"), None, None);
+                        y += line_h * 1.4;
+                        ctx.text.draw_text_center(&mut canvas, "dozenal", cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium"), None, None);
+                        y += line_h;
+                        let col_l = inset.x + inset.w * 0.32;
+                        let col_r = inset.x + inset.w * 0.68;
+                        for d in 0..6usize {
+                            let cell = |digit: usize| format!("{}  {}", char::from(0x10 + digit as u8), crate::DOZENAL_NAMES[digit]);
+                            ctx.text.draw_text_center(&mut canvas, &cell(d), col_l, y + line_h * 0.5, &TextStyle::new(hspan2 * 0.85, *theme::LABEL_COLOUR).weight(400).font("Oxanium"), None, None);
+                            ctx.text.draw_text_center(&mut canvas, &cell(d + 6), col_r, y + line_h * 0.5, &TextStyle::new(hspan2 * 0.85, *theme::LABEL_COLOUR).weight(400).font("Oxanium"), None, None);
+                            y += line_h;
+                        }
+                    }
+                    let _ = tspan;
                 }
             }
         }
