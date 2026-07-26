@@ -996,8 +996,8 @@ pub struct PhotonApp {
     selected_msg_copied: bool,
     /// Conversation top-bar slide-off in PIXELS (0 = fully shown): the "‹ Contacts" strip slides out/in WITH the scroll gesture, browser-toolbar style — pure scroll-delta accumulation, no timers, clamped to the bar height in the wheel arm and at render. Reset on conversation open.
     conv_topbar_off: f32,
-    /// Word-wrap cache for the conversation's message list: key (contact idx, message count, avail_w bits, msg_size bits) + per-visible-message wrapped line COUNTS (chronological order, probes excluded) + their sum. Rebuilt only when the key changes (resize / zoom / new message / conversation switch) — content_h needs every message's height each frame, and re-measuring the whole history per frame would swamp the shaper. The actual line STRINGS are re-wrapped per frame only for the handful of messages actually drawn.
-    msg_wrap: Option<((usize, usize, u32, u32), Vec<u16>, usize)>,
+    /// Word-wrap cache for the conversation's message list: key (contact idx, message count, avail_w bits, msg_size bits) + the wrapped line STRINGS per visible message (chronological, probes excluded) + the total line count. Rebuilt only when the key changes (resize / zoom / new message / conversation switch). Caching the STRINGS (not just counts) means scroll frames do ZERO text shaping — the per-frame re-wrap of drawn messages was the "glitches and sticks" scroll regression.
+    msg_wrap: Option<((usize, usize, u32, u32), Vec<Vec<String>>, usize)>,
     /// Last IME inset applied to the layout (Android) — the tick diffs the JNI mirror against this and relayouts on change, since the keyboard no longer produces resize events.
     #[cfg(target_os = "android")]
     last_ime_inset: i32,
@@ -5025,15 +5025,18 @@ impl FluorApp for PhotonApp {
                         if topbar_visible { self.back_btn_hit_id } else { HIT_NONE },
                     );
 
-                    // Avatar geometry (matches the Ready/contacts scale). WHERE it draws depends on ceremony state: once Complete the avatar + name are the TOP-OF-STREAM header inside the scrollable message list (they scroll away as you read — the orb already identifies who you're talking to, so a fixed header just ate half the screen); before Complete they stay a fixed centred header on the "waiting for the ceremony" screen (there's no list yet).
+                    // TINY always-on contact name — the ONLY name in the fixed strip (with the orb's avatar). Never slides, never scrolls; centred so it clears the sliding "‹ Contacts" at left and the window controls at right.
+                    {
+                        let strip_floor = if cfg!(target_os = "android") { unit * 1.1 } else { fluor::host::chrome::strip_height(ctx.viewport) + unit * 0.9 };
+                        let tiny_y = (strip_floor - unit * 0.45).max(unit * 0.4);
+                        ctx.text.draw_text_center(&mut canvas, &contact.display_name_or_pending(), buf_w as f32 * 0.5, tiny_y, &TextStyle::new(unit * 0.55, *theme::LABEL_COLOUR).weight(500).font("Oxanium"), None, None);
+                    }
+
+                    // ONE LAYOUT, ONE LAYER (user spec, 2026-07-26): the conversation is a single scrolling stream whose ENTRY #0 is the avatar + petname (+ ceremony status while pending) — visible ONLY at the conversation GENESIS, at the literal top of the content area, scrolling like any message. The fixed centred header is DEAD for every state (its pre-woven survival was the root of the "different layer" saga). The fixed strip holds ONLY the tiny always-on name, the orb, and the sliding "‹ Contacts".
                     let (_, _, avatar_r) = conv_layout.avatar_center_radius();
                     let avatar_diam = (avatar_r * 2.0) as usize;
                     let avatar_cx = buf_w as f32 * 0.5;
-                    // Self (notes-to-self) always takes the WOVEN layout: the avatar/name belong at the scroll-top of the stream, not as a fixed centre header clobbering the messages — there's no ceremony to wait on with yourself.
-                    let is_woven_chat = contact.clutch_state == crate::types::ClutchState::Complete
-                        || self.session.as_ref().map(|se| crate::crypto::clutch::identity_party_id(&se.identity_seed)) == Some(contact.handle_hash);
-                    // Closure to stamp the avatar disc + tier ring at a given centre-y — called either as the fixed header (pre-ceremony) or at the scroll-top of the stream (woven).
-                    // Clip rides in as a parameter: the STREAM-TOP call must clip to the list region exactly like every message — the old hardcoded None let the avatar disc paint THROUGH the list's top boundary while the name + messages clipped, visually detaching it onto its own layer during scroll (the "ONE LAYER" bug). The fixed pre-woven header passes None (nothing to clip against).
+                    // Stamp the avatar disc + tier ring at a given centre-y — stream entry #0's avatar. Clip rides in as a parameter and the caller passes the LIST clip: the avatar obeys exactly the same boundary as every message (a hardcoded None once let it paint through the top edge onto its own visual layer).
                     let draw_conv_avatar = |canvas: &mut Canvas, cy: f32, clip: Option<fluor::paint::Clip>| {
                         if let Some(scaled) = contact.avatar_scaled.as_ref() {
                             crate::ui::avatar_render::draw_avatar(canvas, avatar_cx, cy, avatar_r, scaled, avatar_diam, clip);
@@ -5046,10 +5049,6 @@ impl FluorApp for PhotonApp {
                         let ring_thick = (avatar_r * 0.0375).max(1.0);
                         paint::draw_circle(canvas, avatar_cx, cy, avatar_r + ring_thick, ring, clip);
                     };
-                    let avatar_y = back_y + unit * 1.5 + avatar_r;
-                    if !is_woven_chat {
-                        draw_conv_avatar(&mut canvas, avatar_y, None);
-                    }
 
                     // Relationship colour for this contact: everything handle-specific on this screen (name, their message text) renders in it. Self is the neutral-grey anchor.
                     let our_handle_hash = self
@@ -5065,45 +5064,35 @@ impl FluorApp for PhotonApp {
                         party_colour(&relationship_digest(&contact.handle_hash, &our_handle_hash))
                     };
 
-                    // Contact name, centred BELOW the avatar, in their relationship colour. Drawn as the fixed header only pre-ceremony; woven chats render it at the scroll-top of the stream (below).
+                    // Petname style for stream entry #0 (pending names shear italic like everywhere else).
                     let name_size = unit * 1.2;
-                    let name_y = avatar_y + avatar_r + unit * 1.2;
                     let header_style = if contact.has_real_name() {
                         TextStyle::new(name_size, their_colour).weight(600).font("Oxanium")
                     } else {
                         TextStyle::new(name_size, their_colour).weight(600).font("Oxanium").shear(0.2126)
                     };
-                    if !is_woven_chat {
-                        ctx.text.draw_text_center(&mut canvas, &contact.display_name_or_pending(), buf_w as f32 * 0.5, name_y, &header_style, None, None);
-                    }
 
-                    // CLUTCH state (compact, under the name). Show the base state PLUS a behind-the-scenes detail (slot fill, keygen / KEM / proof stage) so a stuck handshake reads as "what's it waiting on" instead of a flat "pending" — see Contact::clutch_status_detail. Self-contact (notes-to-self) has no peer + no ceremony: the weave probe is skipped, so chain_woven never seals and clutch_status_detail would read "testing · weaving the chain" forever — show a plain reachability line instead.
-                    let clutch_y = name_y + unit * 1.5;
-                    // End-of-identity states outrank the ceremony line (docs/lifecycle.md): a superseded name is a STRANGER wearing it — say so in red; an ended identity reads as the archive it is.
-                    // A WOVEN chain shows NO ceremony line at all — once the parties can chat, "CLUTCH: secured" is machinery noise; the working conversation is its own proof.
+                    // CLUTCH/lifecycle status — computed here, DRAWN inside stream entry #0 (under the petname, at genesis). End-of-identity states outrank the ceremony line; a woven chain shows no line at all (the working conversation is its own proof); self shows one only while empty.
                     let show_status = contact.identity_superseded || contact.identity_ended || (is_self_contact && contact.messages.is_empty()) || (!is_self_contact && !contact.chain_woven);
-                    let (clutch_label, clutch_colour) = if contact.identity_superseded {
-                        ("name re-claimed by someone new \u{2014} this is NOT them".to_string(), (*theme::ERROR_TEXT_COLOUR))
-                    } else if contact.identity_ended {
-                        ("identity ended \u{2014} conversation frozen".to_string(), (*theme::LABEL_COLOUR))
-                    } else if is_self_contact {
-                        ("notes to self".to_string(), (*theme::SEARCH_FOUND_COLOUR))
+                    let status_in_stream: Option<(String, u32)> = if show_status {
+                        Some(if contact.identity_superseded {
+                            ("name re-claimed by someone new \u{2014} this is NOT them".to_string(), *theme::ERROR_TEXT_COLOUR)
+                        } else if contact.identity_ended {
+                            ("identity ended \u{2014} conversation frozen".to_string(), *theme::LABEL_COLOUR)
+                        } else if is_self_contact {
+                            ("notes to self".to_string(), *theme::SEARCH_FOUND_COLOUR)
+                        } else {
+                            (
+                                format!("CLUTCH: {}", contact_status_line(contact, self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()), self.session.as_ref().map(|se| &se.identity_seed))),
+                                if contact.clutch_state == crate::types::ClutchState::Complete { *theme::SEARCH_FOUND_COLOUR } else { *theme::HOURGLASS_COLOUR },
+                            )
+                        })
                     } else {
-                        (
-                            format!("CLUTCH: {}", contact_status_line(contact, self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()), self.session.as_ref().map(|se| &se.identity_seed))),
-                            if contact.clutch_state == crate::types::ClutchState::Complete {
-                                *theme::SEARCH_FOUND_COLOUR
-                            } else {
-                                *theme::HOURGLASS_COLOUR
-                            },
-                        )
+                        None
                     };
-                    if show_status {
-                        ctx.text.draw_text_center(&mut canvas, &clutch_label, buf_w as f32 * 0.5, clutch_y, &TextStyle::new(unit * 0.6, clutch_colour).weight(500).font("Oxanium"), None, None);
-                    }
 
-                    // Message history renders whenever HISTORY EXISTS — a re-key/re-clutch (fork recovery, peer_m↔peer_b livelock 2026-07-25) drops clutch_state out of Complete, and hiding the entire woven archive behind the ceremony screen read as "my messages completely disappeared". The vaulted history is real regardless of ceremony state; only the COMPOSE box stays gated (chain_woven below) because sending genuinely needs a live chain. A fresh contact with no history keeps the pure ceremony screen.
-                    if contact.clutch_state == crate::types::ClutchState::Complete || !contact.messages.is_empty() {
+                    // The stream renders for EVERY conversation state — an empty one is just entry #0 (avatar/petname/status) alone. Only the COMPOSE box stays gated below (sending needs a chain somewhere).
+                    {
                         // ── Message list ─────────────────────────────────────────── Text-only, right-aligned (outgoing) / left-aligned (incoming), one thin white divider after every message. Newest at the bottom, just above the compose bar; older scroll up off-screen.
                         // Our text is the neutral-grey anchor (same Y = 0.5, zero chroma); theirs is the relationship colour computed above.
                         let our_colour = self_colour();
@@ -5112,9 +5101,9 @@ impl FluorApp for PhotonApp {
                         let line_h = msg_size * 1.6; // text + breathing room per message
                         let pad_x = unit; // left/right inset
                         // Woven chat reclaims the whole header strip for the message list (the avatar/name ride the scroll-top instead, drawn below); pre-woven keeps the status header space.
-                        // The bar-hidden floor must clear the CHROME title strip on desktop — a floor of bare unit*0.6 let the stream's top (the avatar) ride up UNDER the title bar and get bisected by it. Android draws no strip (full-edge), so the small margin stands there.
-                        let top_floor = if cfg!(target_os = "android") { unit * 0.6 } else { fluor::host::chrome::strip_height(ctx.viewport) + unit * 0.4 };
-                        let list_top = if is_woven_chat { (back_y + unit).max(top_floor) } else { clutch_y + unit * 1.2 };
+                        // The floor clears the CHROME title strip on desktop plus the tiny always-on name; Android draws no strip (full-edge) so a slim margin stands.
+                        let top_floor = if cfg!(target_os = "android") { unit * 1.1 } else { fluor::host::chrome::strip_height(ctx.viewport) + unit * 0.9 };
+                        let list_top = (back_y + unit).max(top_floor);
                         // Compose bar reserves the bottom strip, lifted off the bottom edge by `compose_margin` — and above the soft keyboard (`ime_lift`; the surface never resizes for the IME). The list lives between list_top and list_bottom. Must match the layout pass's `compose_h`/`compose_margin` below.
                         let compose_h = unit * 1.8;
                         let compose_margin = unit * 0.8;
@@ -5136,8 +5125,8 @@ impl FluorApp for PhotonApp {
                             .filter(|m| m.content != crate::types::CHAIN_PROBE_MARKER)
                             .collect();
                         let n = visible.len();
-                        // The avatar/name block is the oldest item in the stream: its height joins content_h so you can scroll up far enough to reveal it, and it draws above the oldest message. Only for a woven chat (pre-woven still has the fixed header).
-                        let header_block_h = if is_woven_chat { avatar_r * 2.0 + unit * 3.0 } else { 0.0 };
+                        // Stream entry #0 (avatar + petname + optional status) is the oldest item: its height joins content_h so scrolling to genesis reveals it above message 1. Unconditional — every conversation has entry #0.
+                        let header_block_h = avatar_r * 2.0 + unit * 3.0 + if status_in_stream.is_some() { unit * 1.0 } else { 0.0 };
                         // Details-strip selection for THIS conversation (identity-keyed): one strip line joins content_h so the stream shifts to make room rather than overdrawing a neighbour row.
                         let sel_key = self.selected_msg.filter(|(sci, _, _)| *sci == ci).map(|(_, ts, out)| (ts, out));
                         let detail_h = line_h;
@@ -5148,14 +5137,14 @@ impl FluorApp for PhotonApp {
                         let intra = msg_size * 1.25;
                         let wrap_key = (ci, n, avail_w.to_bits(), msg_size.to_bits());
                         if self.msg_wrap.as_ref().map(|(k, _, _)| *k) != Some(wrap_key) {
-                            let mut counts: Vec<u16> = Vec::with_capacity(n);
+                            let mut all_lines: Vec<Vec<String>> = Vec::with_capacity(n);
                             let mut total = 0usize;
                             for m in &visible {
-                                let c = wrap_text_lines(ctx.text, &m.content, &wrap_style, avail_w).len().min(u16::MAX as usize) as u16;
-                                counts.push(c);
-                                total += c as usize;
+                                let lines = wrap_text_lines(ctx.text, &m.content, &wrap_style, avail_w);
+                                total += lines.len();
+                                all_lines.push(lines);
                             }
-                            self.msg_wrap = Some((wrap_key, counts, total));
+                            self.msg_wrap = Some((wrap_key, all_lines, total));
                         }
                         let total_lines = self.msg_wrap.as_ref().map(|(_, _, t)| *t).unwrap_or(n);
                         let content_h = n as f32 * line_h + (total_lines.saturating_sub(n)) as f32 * intra + header_block_h + if sel_in_stream { detail_h } else { 0.0 };
@@ -5169,13 +5158,16 @@ impl FluorApp for PhotonApp {
                         let mut y = (list_top + content_h).min(list_bottom) - msg_size + scroll;
                         // Whether the walk reached the conversation's FIRST message (no early break): the scroll-top avatar/name block may only draw then — drawing it at the break position floated it mid-stream over recent messages in any long conversation ("the avatar and petname are rendered in a different block").
                         let mut reached_oldest = true;
-                        for msg in visible.iter().rev() {
+                        // Hold the cached wrap strings for the whole walk (disjoint field from everything the loop mutates).
+                        let wrap_cache: &Vec<Vec<String>> = &self.msg_wrap.as_ref().expect("wrap cache built above").1;
+                        for (vi, msg) in visible.iter().enumerate().rev() {
                             if y < list_top - line_h {
                                 reached_oldest = false;
                                 break; // this block's BOTTOM line is above the visible region; wrapped lines extend upward, and older messages sit higher still
                             }
-                            // Wrapped lines for this drawn message; `y` is the LAST line's baseline, earlier lines stack upward at `intra` spacing.
-                            let lines = wrap_text_lines(ctx.text, &msg.content, &wrap_style, avail_w);
+                            // Cached wrapped lines — scroll frames do zero shaping. `y` is the LAST line's baseline, earlier lines stack upward at `intra` spacing.
+                            static EMPTY_LINES: Vec<String> = Vec::new();
+                            let lines: &Vec<String> = wrap_cache.get(vi).unwrap_or(&EMPTY_LINES);
                             let block_extra = (lines.len() as f32 - 1.0) * intra;
                             // Divider under this message (between it and the next-newer one).
                             // Full-bleed divider at the version-watermark treatment: pure white, α=1/8 (VERSION_COLOUR is exactly that, and darkness-0 white is channel-order invariant).
@@ -5271,13 +5263,19 @@ impl FluorApp for PhotonApp {
                             }
                             y -= line_h + block_extra;
                         }
-                        // Top-of-stream avatar + name (woven chat): drawn ONLY when the walk reached the first message — then `y` genuinely sits just above it and the block is the stream's first item, one continuous strip. Clipped to the list region — invisible unless you scroll to the very start.
-                        if is_woven_chat && reached_oldest && y > list_top - header_block_h - line_h {
-                            let block_name_y = y - unit * 0.2;
+                        // STREAM ENTRY #0 — avatar, petname, optional ceremony/lifecycle status: drawn ONLY when the walk reached message 1 (genesis on screen); `y` then sits just above it and the entry is the stream's literal first item. Ordinary stream content: same clip as every message, no pinning, no slide. Off-screen anywhere but genesis.
+                        if reached_oldest && y > list_top - header_block_h - line_h {
+                            let (block_status, status_h) = match &status_in_stream {
+                                Some((label, colour)) => (Some((label.clone(), *colour)), unit * 1.0),
+                                None => (None, 0.0),
+                            };
+                            let block_name_y = y - unit * 0.2 - status_h;
                             let block_avatar_cy = block_name_y - unit * 1.2 - avatar_r;
-                            // The avatar clips to the SAME list region as the name and every message — one strip, one layer, one boundary.
                             draw_conv_avatar(&mut canvas, block_avatar_cy, Some(list_clip));
                             ctx.text.draw_text_center(&mut canvas, &contact.display_name_or_pending(), buf_w as f32 * 0.5, block_name_y, &header_style, Some(list_clip), None);
+                            if let Some((label, colour)) = block_status {
+                                ctx.text.draw_text_center(&mut canvas, &label, buf_w as f32 * 0.5, y - unit * 0.2, &TextStyle::new(unit * 0.6, colour).weight(500).font("Oxanium"), Some(list_clip), None);
+                            }
                         }
                         let _ = n;
 
