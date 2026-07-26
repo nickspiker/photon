@@ -5025,13 +5025,6 @@ impl FluorApp for PhotonApp {
                         if topbar_visible { self.back_btn_hit_id } else { HIT_NONE },
                     );
 
-                    // TINY always-on contact name — the ONLY name in the fixed strip (with the orb's avatar). Never slides, never scrolls; centred so it clears the sliding "‹ Contacts" at left and the window controls at right.
-                    {
-                        let strip_floor = if cfg!(target_os = "android") { unit * 1.1 } else { fluor::host::chrome::strip_height(ctx.viewport) + unit * 0.9 };
-                        let tiny_y = (strip_floor - unit * 0.45).max(unit * 0.4);
-                        // Watermark treatment (user pick): pure white at 1/4 opacity — present without competing with the chrome title. Darkness-0 white is channel-order invariant, so the plain const needs no fmt.
-                        ctx.text.draw_text_center(&mut canvas, &contact.display_name_or_pending(), buf_w as f32 * 0.5, tiny_y, &TextStyle::new(unit * 0.55, 0x40_00_00_00).weight(500).font("Oxanium"), None, None);
-                    }
 
                     // ONE LAYOUT, ONE LAYER (user spec, 2026-07-26): the conversation is a single scrolling stream whose ENTRY #0 is the avatar + petname (+ ceremony status while pending) — visible ONLY at the conversation GENESIS, at the literal top of the content area, scrolling like any message. The fixed centred header is DEAD for every state (its pre-woven survival was the root of the "different layer" saga). The fixed strip holds ONLY the tiny always-on name, the orb, and the sliding "‹ Contacts".
                     let (_, _, avatar_r) = conv_layout.avatar_center_radius();
