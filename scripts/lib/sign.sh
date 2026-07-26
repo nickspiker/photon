@@ -21,6 +21,22 @@ sign_binary() {
         exit 1
     fi
 
+    # Apple targets first get the STABLE-identity Apple code signature (self-signed 10-yr cert, identifier org.fgtw.photon) — macOS TCC keys privacy grants on it, so updates stop re-prompting Local Network. Must precede the Ed25519 append (rcodesign rewrites the Mach-O). Skipped gracefully when the tooling/cert isn't on this box.
+    case "$target" in
+        *apple-darwin*)
+            local cert="/mnt/Octopus/Code/keys/photon-macos-codesign"
+            if command -v rcodesign >/dev/null && [ -f "$cert.crt" ]; then
+                rcodesign sign \
+                    --pem-file "$cert.crt" \
+                    --pem-file "$cert.key" \
+                    --binary-identifier org.fgtw.photon \
+                    "$bin"
+            else
+                echo "WARN: rcodesign/cert missing — shipping ad-hoc Apple signature (TCC will re-prompt per update)"
+            fi
+            ;;
+    esac
+
     # The signer is a host tool. Prefer the one this build already produced; otherwise build it once (release).
 
     local signer="target/$profile/photon-signature-signer"

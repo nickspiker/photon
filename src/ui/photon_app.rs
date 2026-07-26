@@ -11518,7 +11518,15 @@ impl PhotonApp {
             return;
         };
         let mut pinged = 0;
+        let our_pid = self
+            .session
+            .as_ref()
+            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
         for contact in &self.contacts {
+            // The SELF contact is this fleet, not a peer — pinging/punching it storms our own addresses (7ff3835f probe spam, wrong-responder pongs) and burns mobile radio for nothing. Sibling contacts carry our devices' presence.
+            if our_pid == Some(contact.handle_hash) {
+                continue;
+            }
             // Ping the LAN address AND the public address (when both are known) rather than preferring LAN and never falling back. Two devices that once shared a LAN have a stored `local_ip`; the moment one moves to a different network (e.g. phone → cellular) that LAN address is stale and unreachable, but the public address in the registry is correct — pinging only LAN strands them offline forever. Each ping is tracked by a unique provenance hash and a single pong clears the whole per-contact failure counter (see status.rs StatusPong handler), so the unreachable address simply times out harmlessly while the reachable one keeps the contact online. On-LAN the LAN ping wins (no router hairpin / AP isolation); off-LAN the public ping wins.
             let lan_addr = match (contact.local_ip, contact.local_port) {
                 (Some(ip), Some(port)) => {
@@ -12561,6 +12569,15 @@ impl PhotonApp {
         let Some(contact) = self.contacts.get(idx) else {
             return;
         };
+        // The SELF contact is this fleet, not a network peer: pinging it makes our own devices answer as "wrong responder", and the punch machinery then storms our own addresses forever (the 7ff3835f probe spam in every 2026-07-26 log). Presence for our devices rides the SIBLING contacts.
+        if self
+            .session
+            .as_ref()
+            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+            == Some(contact.handle_hash)
+        {
+            return;
+        }
         let addr = match (contact.local_ip, contact.local_port) {
             (Some(ip), Some(port)) => {
                 Some(std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port))
@@ -15174,6 +15191,10 @@ impl PhotonApp {
                         )
                     };
 
+                    if key.is_none() || contact_idx.is_none() {
+                        // Torch the drop: a page dying here is indistinguishable from "sync doesn't work" in the field ("fleet sync with self is not working", 2026-07-26 — every drop in this arm was silent).
+                        crate::logf!("HISTORY: page from {} DROPPED — {} (from_sibling={})", crate::fp(&sender_pubkey.key), if key.is_none() { "no key (fleet key missing, or no chain/history_key for this token)" } else { "token resolves to no contact" }, from_sibling);
+                    }
                     if let (Some(key), Some(idx)) = (key, contact_idx) {
                         // rid must match our in-flight request — a page we didn't ask for (or asked for long ago) is dropped; merging is idempotent so a raced duplicate that DOES match is harmless.
                         let rid_matches = self.contacts[idx]
@@ -15182,6 +15203,9 @@ impl PhotonApp {
                             .and_then(|r| r.in_flight.as_ref())
                             .is_some_and(|(rid, _, _)| *rid == request_id);
                         // A friend page must match our in-flight request (unsolicited friend pages are dropped). A sibling page without a matching rid is the live push — merge it, but leave the cursor alone.
+                        if !(rid_matches || from_sibling) {
+                            crate::logf!("HISTORY: page from {} DROPPED — rid unmatched and sender is not a fold-trusted sibling (self-sync black-hole suspect)", crate::fp(&sender_pubkey.key));
+                        }
                         if rid_matches || from_sibling {
                             match crate::network::history_pages::open_history_page(&sealed, &key) {
                                 Ok(page) => {
