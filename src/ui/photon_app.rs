@@ -5142,8 +5142,11 @@ impl FluorApp for PhotonApp {
                         let scroll = contact.message_scroll_offset.clamp(0.0, max_scroll);
                         self.msg_hit_rows.clear();
                         let mut y = list_bottom - msg_size + scroll;
+                        // Whether the walk reached the conversation's FIRST message (no early break): the scroll-top avatar/name block may only draw then — drawing it at the break position floated it mid-stream over recent messages in any long conversation ("the avatar and petname are rendered in a different block").
+                        let mut reached_oldest = true;
                         for msg in visible.iter().rev() {
                             if y < list_top - line_h {
+                                reached_oldest = false;
                                 break; // this block's BOTTOM line is above the visible region; wrapped lines extend upward, and older messages sit higher still
                             }
                             // Wrapped lines for this drawn message; `y` is the LAST line's baseline, earlier lines stack upward at `intra` spacing.
@@ -5243,8 +5246,8 @@ impl FluorApp for PhotonApp {
                             }
                             y -= line_h + block_extra;
                         }
-                        // Top-of-stream avatar + name (woven chat): `y` now sits just above the oldest message, so the block draws here and scrolls off as you read down. Clipped to the list region — invisible unless you scroll to the very start.
-                        if is_woven_chat && y > list_top - header_block_h - line_h {
+                        // Top-of-stream avatar + name (woven chat): drawn ONLY when the walk reached the first message — then `y` genuinely sits just above it and the block is the stream's first item, one continuous strip. Clipped to the list region — invisible unless you scroll to the very start.
+                        if is_woven_chat && reached_oldest && y > list_top - header_block_h - line_h {
                             let block_name_y = y - unit * 0.2;
                             let block_avatar_cy = block_name_y - unit * 1.2 - avatar_r;
                             // draw_conv_avatar ignores the list clip (disc + ring are opaque and the block only renders near the top anyway); the name honours it.
