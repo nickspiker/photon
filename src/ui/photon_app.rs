@@ -1774,6 +1774,24 @@ impl FluorApp for PhotonApp {
         self.pending_keyboard_request.take()
     }
 
+    /// Honest-IME read: the FOCUSED textbox's text + cursor (chars), thru the one registry — any box (compose, search, profile fields) mirrors truthfully to the Android InputConnection.
+    fn ime_editor_state(&mut self) -> Option<(String, usize)> {
+        let focus = self.focused?;
+        let tb = self.textbox_by_hit_mut(focus)?;
+        let text: String = tb.chars.iter().collect();
+        let cursor = tb.cursor.min(tb.chars.len());
+        Some((text, cursor))
+    }
+
+    /// Honest-IME write: TRUE range replacement on the focused textbox — how voice dictation rewrites earlier words (setComposingRegion) without the backspace-replay hack.
+    fn ime_replace_chars(&mut self, start: usize, end: usize, s: &str, text: &mut fluor::text::TextRenderer) {
+        let Some(focus) = self.focused else { return };
+        if let Some(tb) = self.textbox_by_hit_mut(focus) {
+            tb.replace_char_range(start, end, s, text);
+        }
+        self.scene_dirty = true;
+    }
+
     fn wants_input_reset(&mut self) -> bool {
         // One-shot: drained after a send so the Activity restarts IME input exactly once.
         std::mem::replace(&mut self.pending_input_reset, false)
