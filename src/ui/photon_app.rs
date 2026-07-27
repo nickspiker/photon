@@ -1467,6 +1467,15 @@ pub struct PhotonApp {
     attach_confirmed: std::collections::HashSet<[u8; 32]>,
     /// Android: set when the paperclip asks for the system file picker; drained by nativePollAttachPicker.
     pending_attach_picker: bool,
+    /// BRIDGE host: live remote-shell PTY sessions this device serves to fleet siblings. Desktop-only (real PTY). `None` until the first `term_open` while the remote-terminal toggle is on.
+    #[cfg(all(unix, not(target_os = "android")))]
+    bridge_host: Option<crate::network::bridge::BridgeHost>,
+    /// Channel the per-session PTY reader threads post shell output/exit onto; drained in tick and forwarded to the client as `term` DATA/EXIT frames. Built lazily with the host.
+    #[cfg(all(unix, not(target_os = "android")))]
+    bridge_out: Option<(std::sync::mpsc::Sender<crate::network::bridge::TermOut>, std::sync::mpsc::Receiver<crate::network::bridge::TermOut>)>,
+    /// Per-session client routing: session_id → (client device pubkey, their addr pair, relay list) so the reader-thread drain knows where to send output. Captured at `term_open`.
+    #[cfg(all(unix, not(target_os = "android")))]
+    bridge_clients: std::collections::HashMap<[u8; 16], ([u8; 32], (std::net::SocketAddr, Option<std::net::SocketAddr>), Vec<[u8; 32]>)>,
     /// Recovery-page "be a custodian" opt-in — a custom `Checkbox`.
     settings_custodian_check: Option<crate::ui::settings_widgets::Checkbox>,
     /// Notifications-page global chime on/off — a custom `Checkbox`.
@@ -1874,6 +1883,12 @@ impl PhotonApp {
             attach_progress: Vec::new(),
             attach_confirmed: std::collections::HashSet::new(),
             pending_attach_picker: false,
+            #[cfg(all(unix, not(target_os = "android")))]
+            bridge_host: None,
+            #[cfg(all(unix, not(target_os = "android")))]
+            bridge_out: None,
+            #[cfg(all(unix, not(target_os = "android")))]
+            bridge_clients: std::collections::HashMap::new(),
             settings_custodian_check: None,
             settings_chime_check: None,
             settings_presence_check: None,
@@ -4128,6 +4143,10 @@ impl FluorApp for PhotonApp {
                 _ => false,
             };
         if !matches!(event, Event::CursorMoved { .. }) && !compose_typing {
+            self.scene_dirty = true;
+        }
+        // EXCEPTION: while a full-screen immediate-mode MODAL is up, even a bare cursor move must full-repaint — otherwise the host's incremental hover pass tints the widgets UNDER the modal (which still hold hit rects) and those tints show through the card, and the card itself isn't recomposited. Force the whole scene so the modal repaints on top every frame.
+        if self.unattended_confirm.is_some() {
             self.scene_dirty = true;
         }
         match event {
@@ -10167,6 +10186,8 @@ impl FluorApp for PhotonApp {
             let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
             let (cx, cy, w, h) = attach_card_rect(buf_w, buf_h, unit);
             paint::fill_rect(&mut canvas, 0, 0, buf_w as isize, buf_h as isize, *theme::OVERLAY_DIM, None, None);
+            // Erase EVERY underlying hit id first: the modal is app-modal, so nothing beneath it may hover-tint or take a click. The textbox + pills re-stamp their own ids on top below.
+            restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, 0, 0, buf_w as isize, buf_h as isize, HIT_NONE);
             paint::fill_rect(&mut canvas, (cx - w * 0.5) as isize, (cy - h * 0.5) as isize, w as isize, h as isize, *theme::CARD_BG, None, None);
             let title = if target_on { "Arm auto-attest on reboot" } else { "Disarm auto-attest on reboot" };
             let title_style = TextStyle::new(unit * 0.64, *theme::ERROR_TEXT_COLOUR).weight(600).font("Oxanium");
