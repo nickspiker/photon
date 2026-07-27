@@ -3328,6 +3328,37 @@ impl FluorApp for PhotonApp {
         mods: fluor::event::ModifiersState,
         ctx: &mut Context,
     ) -> EventResponse {
+        // Unattended-confirm (Security page) ARM/DISARM/cancel — dispatched HERE, at the top of on_activate, BEFORE any state gate. (These pills previously sat inside the `AppState::Conversation` block and so never fired on the Settings page — the arm click reached on_activate but was skipped.)
+        if self.unattended_confirm.is_some() {
+            if self.unattended_confirm_base != HIT_NONE && hit_id == self.unattended_confirm_base {
+                let typed: String = self.unattended_confirm_tb.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
+                let typed_seed = crate::types::Handle::to_identity_seed(&typed);
+                let live_seed = self.session.as_ref().map(|s| s.identity_seed);
+                if Some(typed_seed) == live_seed {
+                    let target_on = self.unattended_confirm.take().unwrap_or(false);
+                    self.set_unattended(target_on);
+                    if let Some(cb) = self.settings_unattended_check.as_mut() {
+                        cb.set_checked(target_on);
+                    }
+                    self.change_focus(None);
+                    self.ready_toast = Some(if target_on { "Unattended auto-attest ARMED — this box reboots as you".to_string() } else { "Unattended auto-attest disarmed".to_string() });
+                    self.ready_toast_screen = None;
+                } else {
+                    self.unattended_confirm_failed = true;
+                }
+                self.scene_dirty = true;
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+            if self.unattended_confirm_base != HIT_NONE && hit_id == self.unattended_confirm_base.wrapping_add(1) {
+                self.unattended_confirm = None;
+                self.unattended_confirm_failed = false;
+                self.change_focus(None);
+                self.scene_dirty = true;
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+        }
         // Avatar tap on Ready dispatches to the image picker — not a Widget, just a hit-stamp in chrome.hit_test_map. Drops focus first because the picker overlays the whole UI.
         if hit_id == self.avatar_hit_id
             && matches!(self.state, AppState::Ready)
@@ -3846,36 +3877,6 @@ impl FluorApp for PhotonApp {
                         Some("drop a file on the conversation to attach".to_string());
                     self.ready_toast_screen = None;
                 }
-                self.scene_dirty = true;
-                ctx.window.request_redraw();
-                return EventResponse::Handled;
-            }
-            // Unattended-confirm modal: ARM/DISARM (verified) / cancel.
-            if self.unattended_confirm_base != HIT_NONE && hit_id == self.unattended_confirm_base && self.unattended_confirm.is_some() {
-                let typed: String = self.unattended_confirm_tb.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
-                let typed_seed = crate::types::Handle::to_identity_seed(&typed);
-                let live_seed = self.session.as_ref().map(|s| s.identity_seed);
-                crate::logf!("UNATTENDED confirm: typed {} chars, seed_match = {}, has_session = {}", typed.chars().count(), Some(typed_seed) == live_seed, live_seed.is_some());
-                if Some(typed_seed) == live_seed {
-                    let target_on = self.unattended_confirm.take().unwrap_or(false);
-                    self.set_unattended(target_on);
-                    if let Some(cb) = self.settings_unattended_check.as_mut() {
-                        cb.set_checked(target_on);
-                    }
-                    self.change_focus(None);
-                    self.ready_toast = Some(if target_on { "Unattended auto-attest ARMED — this box reboots as you".to_string() } else { "Unattended auto-attest disarmed".to_string() });
-                    self.ready_toast_screen = None;
-                } else {
-                    self.unattended_confirm_failed = true;
-                }
-                self.scene_dirty = true;
-                ctx.window.request_redraw();
-                return EventResponse::Handled;
-            }
-            if self.unattended_confirm_base != HIT_NONE && hit_id == self.unattended_confirm_base.wrapping_add(1) && self.unattended_confirm.is_some() {
-                self.unattended_confirm = None;
-                self.unattended_confirm_failed = false;
-                self.change_focus(None);
                 self.scene_dirty = true;
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
