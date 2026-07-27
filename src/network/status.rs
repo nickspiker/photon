@@ -363,6 +363,14 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
+    /// BRIDGE: a remote-terminal frame arrived (open/data/resize/close/exit/nuke). The payload is still fleet-sealed — the UI opens it, authorizes the signer as a sibling + checks the host opt-in, and drives the PTY host.
+    TermReceived {
+        session_id: [u8; 16],
+        kind: u8,
+        sealed_payload: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+        sender_addr: SocketAddr,
+    },
     /// Message acknowledgment received (CHAIN format)
     MessageAck {
         /// Privacy-preserving conversation token (smear_hash of sorted participant seeds)
@@ -2192,6 +2200,30 @@ async fn run_checker(
                                     StatusUpdate::AttachReqReceived {
                                         conversation_token,
                                         content_hash,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                        sender_addr: src_addr,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            // BRIDGE: a remote-terminal frame. Same mandatory packet-ack; the UI opens the payload + authorizes.
+                            if let Ok(((session_id, kind, sealed_payload), sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_term_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::TermReceived {
+                                        session_id,
+                                        kind,
+                                        sealed_payload,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                         sender_addr: src_addr,
                                     },

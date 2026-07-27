@@ -5089,6 +5089,10 @@ impl FluorApp for PhotonApp {
         // Fleet chain replication push: any friendship chain that mutated since its last push ships to the siblings. Constant-time no-op when nothing changed.
         self.drive_chain_replication();
 
+        // BRIDGE: flush any PTY shell output to its remote client. No-op when no sessions are live.
+        #[cfg(all(unix, not(target_os = "android")))]
+        self.drive_bridge_output();
+
         // SETTINGS ARE LOCAL-FIRST. A launch pushes NOTHING: settings live in this device's vault, and the fleet slot is consulted only when the vault has no value for a key. They travel outward exactly when the user adjusts one (`save_*_setting` → `persist_and_push_settings`) — never on a timer, never "just to be safe".
         // The old unconditional re-push here treated every launch as an edit. That is what made a launch able to damage the fleet: the push is pull-merge-push, so a pull that failed for ANY reason (network blip, AEAD failure across a key rotation, a roster tag the reader didn't know) rebased the whole slot on empty and the push overwrote everyone's settings with this device's view. Observed on the PRST2→PRST3 bump — "state pulled — 8 roster entries, 0 global settings, 0 device maps". A device that never edits anything must never be able to do that.
         // The ROSTER still re-pushes: it is a CRDT of contacts this device genuinely holds, its merge is union-by-handle_proof with per-entry LWW, and a fleet formed before roster-sync existed needs a seed. Settings have no such need — a value nobody changed is not news.
@@ -15362,6 +15366,154 @@ impl PhotonApp {
         Self::unattended_marker_path().map_or(false, |p| p.exists())
     }
 
+    /// BRIDGE host opt-in marker (`<config>/remote_terminal`). Presence = this device will SERVE remote shells to fleet siblings. Off by default; a durable file so a resident/headless host honours it with no UI.
+    #[cfg(all(unix, not(target_os = "android")))]
+    fn remote_terminal_marker_path() -> Option<std::path::PathBuf> {
+        crate::storage::photon_config_dir().ok().map(|d| d.join("remote_terminal"))
+    }
+
+    /// Whether this device serves remote shells (default OFF).
+    #[cfg(all(unix, not(target_os = "android")))]
+    fn remote_terminal_enabled() -> bool {
+        Self::remote_terminal_marker_path().map_or(false, |p| p.exists())
+    }
+
+    /// Handle one received `term` frame (HOST side). Authorizes the signer as a fold-verified sibling + checks the host opt-in, opens the fleet-sealed payload, and drives the PTY host. Fires a notification on the first OPEN of a session (ears-and-eyes: a shell opening here is never silent).
+    #[cfg(all(unix, not(target_os = "android")))]
+    fn on_term_frame(&mut self, session_id: [u8; 16], kind: u8, sealed_payload: Vec<u8>, sender_device: [u8; 32], sender_addr: std::net::SocketAddr) {
+        use crate::network::fgtw::protocol::term_kind;
+        // GATE 1: host opt-in.
+        if !Self::remote_terminal_enabled() {
+            crate::log("BRIDGE: term frame dropped — remote-terminal host is OFF");
+            return;
+        }
+        // GATE 2: the sender must be a fold-verified SIBLING (our own device), never a friend.
+        let is_sibling = self.contacts.iter().any(|c| c.is_sibling && c.knows_device(&sender_device));
+        if !is_sibling {
+            crate::log("BRIDGE: term frame from a non-sibling — dropped");
+            return;
+        }
+        let Some(fleet_key) = self.fleet_key_cached() else {
+            crate::log("BRIDGE: no fleet key — cannot open term payload");
+            return;
+        };
+        let payload = if sealed_payload.is_empty() {
+            Vec::new()
+        } else {
+            match crate::network::bridge::open_term(&sealed_payload, &fleet_key) {
+                Some(p) => p,
+                None => {
+                    crate::log("BRIDGE: term payload failed to open (wrong fleet key / tamper) — dropped");
+                    return;
+                }
+            }
+        };
+
+        // Lazily build the host + output channel on first use.
+        if self.bridge_host.is_none() {
+            self.bridge_host = Some(crate::network::bridge::BridgeHost::new());
+            self.bridge_out = Some(std::sync::mpsc::channel());
+        }
+        let out_tx = self.bridge_out.as_ref().unwrap().0.clone();
+
+        // Remember where to route this session's output.
+        let relay_to = self.contacts.iter().find(|c| c.knows_device(&sender_device)).filter(|c| c.validated_path.is_none()).map(|c| c.relay_device_list()).unwrap_or_default();
+        let addr_pair = (sender_addr, None);
+        self.bridge_clients.insert(session_id, (sender_device, addr_pair, relay_to));
+
+        let host = self.bridge_host.as_mut().unwrap();
+        match kind {
+            term_kind::OPEN => {
+                let (cols, rows) = crate::network::bridge::unpack_winsize(&payload);
+                match host.open(session_id, cols, rows, out_tx) {
+                    Ok(_) => {
+                        crate::logf!("BRIDGE: shell opened for sibling {} ({}x{})", crate::fp(&sender_device), cols, rows);
+                        // Ears-and-eyes: a shell opening on this box is a notify-worthy event.
+                        self.ready_toast = Some("A fleet device opened a shell here".to_string());
+                        self.ready_toast_screen = None;
+                    }
+                    Err(e) => crate::logf!("BRIDGE: shell open failed: {}", e),
+                }
+            }
+            term_kind::DATA => host.write_input(&session_id, &payload),
+            term_kind::RESIZE => {
+                let (cols, rows) = crate::network::bridge::unpack_winsize(&payload);
+                host.resize(&session_id, cols, rows);
+            }
+            term_kind::CLOSE => {
+                host.close(&session_id);
+                self.bridge_clients.remove(&session_id);
+                crate::logf!("BRIDGE: session closed by client {}", crate::fp(&sender_device));
+            }
+            term_kind::NUKE => {
+                match host.nuke(session_id, 80, 24, out_tx) {
+                    Ok(_) => crate::log("BRIDGE: shell nuked + respawned"),
+                    Err(e) => crate::logf!("BRIDGE: nuke failed: {}", e),
+                }
+            }
+            _ => crate::logf!("BRIDGE: unknown term kind {}", kind),
+        }
+    }
+
+    /// Send a `term` frame (HOST → client output/exit): seal the payload under the fleet key, sign, dispatch over PT to the session's client.
+    #[cfg(all(unix, not(target_os = "android")))]
+    fn send_term_frame(&self, session_id: [u8; 16], kind: u8, payload: &[u8]) {
+        let Some((device, addr_pair, relay_to)) = self.bridge_clients.get(&session_id).cloned() else { return };
+        let Some(fleet_key) = self.fleet_key_cached() else { return };
+        let Ok(sealed) = crate::network::bridge::seal_term(payload, &fleet_key) else { return };
+        let (Some(kp), Some(checker)) = (self.device_keypair.as_ref(), self.status_checker.as_ref()) else { return };
+        let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_term_vsf(&session_id, kind, sealed, kp.public.as_bytes(), kp.secret.as_bytes()) else { return };
+        checker.send_history(crate::network::status::HistorySendRequest {
+            peer_addr: addr_pair.0,
+            alt_addr: addr_pair.1,
+            recipient_pubkey: device,
+            vsf_bytes,
+            relay_to,
+        });
+    }
+
+    /// Drain the PTY reader threads' output → seal + send DATA/EXIT frames to each session's client. Called every tick. Stale-generation events (post-nuke) are dropped.
+    #[cfg(all(unix, not(target_os = "android")))]
+    fn drive_bridge_output(&mut self) {
+        use crate::network::bridge::TermOut;
+        let events: Vec<TermOut> = match self.bridge_out.as_ref() {
+            Some((_, rx)) => rx.try_iter().collect(),
+            None => return,
+        };
+        for ev in events {
+            match ev {
+                TermOut::Data { session_id, generation, bytes } => {
+                    if self.bridge_host.as_ref().and_then(|h| h.generation(&session_id)) == Some(generation) {
+                        self.send_term_frame(session_id, crate::network::fgtw::protocol::term_kind::DATA, &bytes);
+                    }
+                }
+                TermOut::Exit { session_id, generation, code } => {
+                    if self.bridge_host.as_ref().and_then(|h| h.generation(&session_id)) == Some(generation) {
+                        self.send_term_frame(session_id, crate::network::fgtw::protocol::term_kind::EXIT, &code.to_be_bytes());
+                        if let Some(h) = self.bridge_host.as_mut() { h.close(&session_id); }
+                        self.bridge_clients.remove(&session_id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Turn the bridge host on/off. OFF tears down every live session.
+    #[cfg(all(unix, not(target_os = "android")))]
+    fn set_remote_terminal(&mut self, on: bool) {
+        let Some(marker) = Self::remote_terminal_marker_path() else { return };
+        if on {
+            let _ = std::fs::write(&marker, b"operator enabled serving remote shells to fleet siblings\n");
+            crate::log("BRIDGE: remote-terminal host ENABLED (siblings can open shells)");
+        } else {
+            let _ = std::fs::remove_file(&marker);
+            if let Some(h) = self.bridge_host.as_mut() {
+                h.close_all();
+            }
+            crate::log("BRIDGE: remote-terminal host DISABLED (sessions torn down)");
+        }
+    }
+
     /// Turn unattended mode on/off. ON writes the marker AND (also requires background/autostart so a reboot actually relaunches photon) refreshes the capsule from the live session. OFF removes the marker and shreds the capsule.
     fn set_unattended(&mut self, on: bool) {
         let Some(marker) = Self::unattended_marker_path() else { return };
@@ -20625,6 +20777,9 @@ impl PhotonApp {
 
         let mut changed = false;
         let mut ceremony_completions: Vec<usize> = Vec::new(); // Contact indices to complete after loop
+        // BRIDGE: term frames deferred past the drain (on_term_frame needs &mut self; the drain holds an immutable `checker` borrow).
+        #[cfg(all(unix, not(target_os = "android")))]
+        let mut term_frames: Vec<([u8; 16], u8, Vec<u8>, [u8; 32], std::net::SocketAddr)> = Vec::new();
         let mut lan_ping_indices: Vec<usize> = Vec::new(); // Contact indices to ping immediately on new LAN discovery
                                                            // Collect pending message retransmit requests (friendship_id, ip, handle, device_pubkey, last_received_ef6) to process after loop last_received_ef6 from pong tells us what they already have - only retransmit newer
         let mut retransmit_requests: Vec<(
@@ -23237,6 +23392,21 @@ impl PhotonApp {
                         });
                     }
                 }
+                // BRIDGE: a remote-terminal frame from a fleet sibling. Desktop-only; gated on the host opt-in AND a fold-verified SIBLING device (never a friend). Drives the PTY host.
+                #[cfg(all(unix, not(target_os = "android")))]
+                StatusUpdate::TermReceived {
+                    session_id,
+                    kind,
+                    sealed_payload,
+                    sender_pubkey,
+                    sender_addr,
+                } => {
+                    term_frames.push((session_id, kind, sealed_payload, sender_pubkey.key, sender_addr));
+                }
+                #[cfg(not(all(unix, not(target_os = "android"))))]
+                StatusUpdate::TermReceived { .. } => {
+                    crate::log("BRIDGE: term frame ignored (no PTY host on this platform)");
+                }
                 StatusUpdate::ChainSyncReceived {
                     conversation_token,
                     epoch_k,
@@ -24148,6 +24318,13 @@ impl PhotonApp {
         if fleet_sweep_due {
             self.kick_fleet_history_sweep("sibling online");
         }
+        // BRIDGE: process deferred term frames (drive the PTY host) now the drain's borrow is released.
+        #[cfg(all(unix, not(target_os = "android")))]
+        for (session_id, kind, sealed_payload, sender_device, sender_addr) in term_frames {
+            self.on_term_frame(session_id, kind, sealed_payload, sender_device, sender_addr);
+            changed = true;
+        }
+
         // Retransmit pending messages to contacts that just came online Use last_received_ef6 from pong to only retransmit messages they don't have
         for (fid, peer_addr, alt_addr, handle, recipient_pubkey, last_received_ef6) in
             retransmit_requests

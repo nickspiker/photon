@@ -2703,6 +2703,98 @@ pub fn parse_attach_have_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32]), 
     Ok(((conversation_token, content_hash), sender_pubkey))
 }
 
+/// Remote-terminal frame kinds (the `bridge` — a passless SSH between fleet siblings). One frame family, discriminated by `kind`, so the whole PTY session rides a single dispatch arm.
+pub mod term_kind {
+    /// client → host: open a shell for `session_id` (payload = initial cols<<16 | rows, u32 BE, 4 bytes).
+    pub const OPEN: u8 = 0;
+    /// bidirectional: raw bytes for `session_id` (keystrokes host-ward, PTY output client-ward).
+    pub const DATA: u8 = 1;
+    /// client → host: resize `session_id`'s PTY (payload = cols<<16 | rows, u32 BE).
+    pub const RESIZE: u8 = 2;
+    /// either → : tear the session down (client cancels / host shell exited cleanly-less). No payload.
+    pub const CLOSE: u8 = 3;
+    /// host → client: the shell exited (payload = exit code, i32 BE, 4 bytes).
+    pub const EXIT: u8 = 4;
+    /// client → host: kill the shell and respawn a fresh one for `session_id` (the "nuke a hung bash" button). No payload.
+    pub const NUKE: u8 = 5;
+}
+
+/// Build a `term` frame — one remote-terminal message. `session_id` scopes it to one shell session; `kind` is a [`term_kind`] discriminant; `sealed_payload` is the AEAD-sealed payload (sealed by the caller under the FLEET key, since bridge peers are always siblings for now — opaque here). Device-signed like every sibling frame; the receiver authorizes the signer as a known sibling AND checks the remote-terminal opt-in before acting.
+pub fn build_term_vsf(
+    session_id: &[u8; 16],
+    kind: u8,
+    sealed_payload: Vec<u8>,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+
+    let mut section = VsfSection::new("term");
+    section.add_field("sid", VsfType::hb(session_id.to_vec()));
+    section.add_field("kind", VsfType::u3(kind));
+    let n = sealed_payload.len();
+    section.add_field("data", VsfType::t_u3(vsf::Tensor::new(vec![n], sealed_payload)));
+
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build term VSF: {}", e))?;
+
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse + verify a `term` frame. Returns ((session_id, kind, sealed_payload), sender_pubkey). Authorization (known sibling + remote-terminal enabled) is the caller's job — signature validity alone is NOT authorization.
+pub fn parse_term_vsf(
+    vsf_bytes: &[u8],
+) -> Result<(([u8; 16], u8, Vec<u8>), [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("term verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "term" {
+        return Err(format!("Expected 'term' section, got '{}'", section_name));
+    }
+    let fields = &section.fields;
+
+    let session_id: [u8; 16] = fields
+        .iter()
+        .find(|f| f.name == "sid")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::hb(b) if b.len() == 16 => {
+                let mut a = [0u8; 16];
+                a.copy_from_slice(b);
+                Some(a)
+            }
+            _ => None,
+        })
+        .ok_or("term missing sid")?;
+    let kind = fields
+        .iter()
+        .find(|f| f.name == "kind")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::u3(k) => Some(*k),
+            _ => None,
+        })
+        .ok_or("term missing kind")?;
+    let sealed = fields
+        .iter()
+        .find(|f| f.name == "data")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::t_u3(tensor) => Some(tensor.data.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    Ok(((session_id, kind, sealed), sender_pubkey))
+}
+
 pub fn build_chain_reset_vsf(
     conversation_token: &[u8; 32],
     sealed_nonce: Vec<u8>,
