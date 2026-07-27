@@ -1477,6 +1477,16 @@ pub struct PhotonApp {
     settings_hardlogs_check: Option<crate::ui::settings_widgets::Checkbox>,
     /// Desktop "Run in background" toggle (Notifications page): the OS autostart artifact IS the stored state (`platform::autostart` — no vault setting to desync), and `resident_mode` follows it live. Never built on Android (the OS owns app lifecycle there).
     settings_background_check: Option<crate::ui::settings_widgets::Checkbox>,
+    /// Security-page "Auto-attest on reboot" toggle — DANGEROUS, off by default. Marker file (`unattended_reboot`) + a device-bound reboot capsule; defeats the deliberate reboot-death of the session for remote failsafe boxes. See `set_unattended`.
+    settings_unattended_check: Option<crate::ui::settings_widgets::Checkbox>,
+    /// Handle-confirmation modal for the unattended toggle: `Some(target_on)` while the operator must re-type their handle to arm (true) or disarm (false) unattended mode. Arming/disarming this device-becomes-you switch from an already-unlocked session must still prove the operator — not just whoever walked up to the screen. `None` = no modal.
+    unattended_confirm: Option<bool>,
+    /// The handle-entry box for the unattended-confirm modal (built lazily on first open).
+    unattended_confirm_tb: Option<Textbox>,
+    /// Hit-id base for the confirm modal pills (confirm / cancel). Allocated in init.
+    unattended_confirm_base: HitId,
+    /// Last confirm attempt mismatched — shows a red "handle didn't match" line until the next edit.
+    unattended_confirm_failed: bool,
     /// Desktop resident mode: close hides the window instead of exiting (`FluorApp::on_close_requested`), the process keeps serving the network, and a second launch (or a future tray click) surfaces it via the control channel. True when launched `--background` or when the autostart artifact exists; the settings toggle moves it live.
     resident_mode: bool,
     /// The tray icon exists (once per process — a re-spawn would park a second orb). Set on the resident-at-launch spawn or the first toggle-on; toggle-off leaves the icon until exit (v1 — despawn needs a service handle plumb-thru).
@@ -1590,6 +1600,11 @@ impl PhotonApp {
             published_bell: None,
             tray_spawned: false,
             settings_background_check: None,
+            settings_unattended_check: None,
+            unattended_confirm: None,
+            unattended_confirm_tb: None,
+            unattended_confirm_base: HIT_NONE,
+            unattended_confirm_failed: false,
             chrome: None,
             hit_counter: 0,
             event_proxy: None,
@@ -2278,6 +2293,12 @@ impl Container for PhotonApp {
 impl PhotonApp {
     /// Every APP widget (NOT chrome) active on the current screen, yielded to `f` — the single per-widget registry (see [`Container::visit`]). Screen-gated: an off-screen widget is neither dispatched to, tab-focusable, hover-lit, nor damage-claimed. An inherent method (not part of `Container`) so hover/damage passes can call it directly.
     fn visit_app_widgets(&mut self, f: &mut dyn FnMut(&mut dyn Widget)) {
+        // The unattended-confirm handle modal floats over any screen — its textbox must be focusable/typeable while up.
+        if self.unattended_confirm.is_some() {
+            if let Some(tb) = self.unattended_confirm_tb.as_mut() {
+                f(tb);
+            }
+        }
         if matches!(self.state, AppState::Launch(_)) {
             // The attest button is only part of the tree when there's a handle to attest — same reveal as the render gate. An empty field yields just the textbox, so Tab can't land focus on a button that isn't drawn and a hit-test can't dispatch to it. Join words phase (new device displaying its pairing words): no input widgets at all — the screen is display-only until bound or cancelled.
             let join_words_up = self.launch_add_mode && self.add_join_words.is_some();
@@ -2348,6 +2369,11 @@ impl PhotonApp {
                 }
                 SettingsPage::Recovery => {
                     if let Some(cb) = self.settings_custodian_check.as_mut() {
+                        f(cb);
+                    }
+                }
+                SettingsPage::Security => {
+                    if let Some(cb) = self.settings_unattended_check.as_mut() {
                         f(cb);
                     }
                 }
@@ -2692,6 +2718,9 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.attach_ui_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(2);
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.unattended_confirm_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(2); // confirm / cancel
         self.settings_custodian_check = Some(crate::ui::settings_widgets::Checkbox::new(
             &mut self.hit_counter,
             "Be a custodian for others",
@@ -2763,6 +2792,17 @@ impl FluorApp for PhotonApp {
                 crate::platform::autostart::background_desired(),
             ));
         }
+        // Security page: DANGEROUS auto-attest-on-reboot toggle. Off unless the operator opted a failsafe box in.
+        self.settings_unattended_check = Some(crate::ui::settings_widgets::Checkbox::new(
+            &mut self.hit_counter,
+            "Auto-attest on reboot (unattended)",
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            Self::unattended_enabled(),
+        ));
         self.settings_note_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         self.you_add_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         // The per-field boxes are built lazily on first You-page open (build_you_fields) — HitId is a u16, so we allocate the ~32 field ids only when the page is actually visited.
@@ -2893,6 +2933,14 @@ impl FluorApp for PhotonApp {
         }
 
         self.handle_query = Some(hq);
+
+        // UNATTENDED MODE (off by default, Security → "Auto-attest on reboot"): the boot-locked tohu session dies on reboot BY DESIGN, so a normal reboot lands on the typed-attest screen. When the operator has explicitly opted a failsafe box into unattended mode, a device-bound reboot capsule (sealed under the hardware fingerprint, not the wairua) survives the reboot — adopt it into tohu's live session here so the identical resume path below runs with no handle typed. The capsule opens ONLY on the same hardware; a copy elsewhere fails. If tohu already has a live session (warm restart, same boot) this is a no-op.
+        if tohu::session().is_none() {
+            if let Some(cap) = Self::reboot_capsule_path().and_then(|p| tohu::load_reboot_capsule(&p)) {
+                crate::log("RESUME: unattended reboot capsule opened — auto-attesting with no handle (Security toggle is ON)");
+                let _ = tohu::set_session(&cap); // re-arm the normal (boot-locked) session so the rest of this boot behaves like a warm restart
+            }
+        }
 
         // Auto-resume from the remembered session roots. If tohu has this login's roots (persisted on a prior, FGTW-confirmed attest), paint Ready IMMEDIATELY from local state — we already own this identity, so there is no reason to block the first frame on the network. The avatar comes from a local cache file (no vault, no network); contacts + peer presence + cloud-merge arrive a beat later via the background `query_resume` and merge in thru `on_query_result`. A rejection (handle claimed by another device) bails back to the attest screen; a transient network error leaves the local session on Ready untouched. None (first run / post-logout) falls thru to the normal typed-attest flow.
         if let Some(remembered) = tohu::session() {
@@ -3444,6 +3492,9 @@ impl FluorApp for PhotonApp {
                     if *p != SettingsPage::Security {
                         self.settings_removeshred_armed = false;
                         self.settings_shred_armed = false;
+                        // A stranded unattended-confirm modal must not survive navigating away.
+                        self.unattended_confirm = None;
+                        self.unattended_confirm_failed = false;
                     }
                     // Fresh page starts at the top — a leftover scroll from a longer page would strand a short one mid-air.
                     self.settings_content_scroll = 0.0;
@@ -3777,6 +3828,35 @@ impl FluorApp for PhotonApp {
                         Some("drop a file on the conversation to attach".to_string());
                     self.ready_toast_screen = None;
                 }
+                self.scene_dirty = true;
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+            // Unattended-confirm modal: ARM/DISARM (verified) / cancel.
+            if self.unattended_confirm_base != HIT_NONE && hit_id == self.unattended_confirm_base && self.unattended_confirm.is_some() {
+                let typed: String = self.unattended_confirm_tb.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
+                let typed_seed = crate::types::Handle::to_identity_seed(&typed);
+                let live_seed = self.session.as_ref().map(|s| s.identity_seed);
+                if Some(typed_seed) == live_seed {
+                    let target_on = self.unattended_confirm.take().unwrap_or(false);
+                    self.set_unattended(target_on);
+                    if let Some(cb) = self.settings_unattended_check.as_mut() {
+                        cb.set_checked(target_on);
+                    }
+                    self.change_focus(None);
+                    self.ready_toast = Some(if target_on { "Unattended auto-attest ARMED — this box reboots as you".to_string() } else { "Unattended auto-attest disarmed".to_string() });
+                    self.ready_toast_screen = None;
+                } else {
+                    self.unattended_confirm_failed = true;
+                }
+                self.scene_dirty = true;
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+            if self.unattended_confirm_base != HIT_NONE && hit_id == self.unattended_confirm_base.wrapping_add(1) && self.unattended_confirm.is_some() {
+                self.unattended_confirm = None;
+                self.unattended_confirm_failed = false;
+                self.change_focus(None);
                 self.scene_dirty = true;
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
@@ -9150,10 +9230,10 @@ impl FluorApp for PhotonApp {
                     );
                 }
                 SettingsPage::Security => {
-                    // Destructiveness ramp, least → most, one blank row between each pill so they breathe: Lock (green, reversible) · fleet self-removal (yellow) · Shred (orange, wipe this device) · Remove & shred (red, sign out of the fleet THEN wipe). The two wipers are two-tap confirmed, mutually exclusive.
+                    // Destructiveness ramp, least → most, one blank row between each pill so they breathe: Lock (green, reversible) · fleet self-removal (yellow) · Shred (orange, wipe this device) · Remove & shred (red, sign out of the fleet THEN wipe). The two wipers are two-tap confirmed, mutually exclusive. Rows 11-14 hold the DANGEROUS unattended toggle + disclaimer, well below the wipers.
                     let rows = layout
-                        .content_scrolled(11, settings_content_scroll)
-                        .split_v([1.0; 11]);
+                        .content_scrolled(15, settings_content_scroll)
+                        .split_v([1.0; 15]);
                     settings_line(
                         &mut canvas,
                         ctx.text,
@@ -9268,6 +9348,18 @@ impl FluorApp for PhotonApp {
                         *theme::LABEL_COLOUR,
                         400,
                     );
+                    // ── DANGEROUS: unattended auto-attest-on-reboot. Off by default; the checkbox sits above a red multi-line disclaimer that ONLY shows in full alarm when the box is ticked.
+                    let armed = self.settings_unattended_check.as_ref().map(|c| c.is_checked()).unwrap_or(false);
+                    settings_line(&mut canvas, ctx.text, rows[12], "\u{26A0} Auto-attest on reboot (unattended)", hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                    if let Some(cb) = self.settings_unattended_check.as_mut() {
+                        cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                    }
+                    // The disclaimer, always visible so the danger is understood BEFORE ticking; it goes bright red once armed.
+                    let disc = *theme::ERROR_TEXT_COLOUR;
+                    let dull = *theme::LABEL_COLOUR;
+                    let dc = if armed { disc } else { dull };
+                    settings_line(&mut canvas, ctx.text, rows[13], "BAD IDEA on any device you carry. This defeats the whole point of a passless identity:", hspan2, dc, if armed { 600 } else { 400 });
+                    settings_line(&mut canvas, ctx.text, rows[14], "after a reboot this box becomes YOU with no handle typed. Only for remote failsafe boxes you physically control. Anyone who reboots it — or steals it and powers it on — is you.", hspan2, dc, if armed { 600 } else { 400 });
                 }
                 SettingsPage::Recovery => {
                     let rows = layout
@@ -10065,6 +10157,47 @@ impl FluorApp for PhotonApp {
 
         // Development builds get the amber debug theme (orange bg tint / window hairline / title) via fluor's `amber` feature — pure theme-CONSTANT swaps, zero extra drawing steps. The old post-composite amber wash is gone: it wrote straight-RGB into fluor's α+darkness buffer, which inverted to blue.
 
+        // ── Unattended-confirm handle modal: floats over everything (usually the Security settings page). Arming OR disarming auto-attest-on-reboot demands re-typing the handle — proof the operator, not a passer-by at the unlocked screen, flipped this device-becomes-you switch.
+        if let Some(target_on) = self.unattended_confirm {
+            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+            let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
+            let (cx, cy, w, h) = attach_card_rect(buf_w, buf_h, unit);
+            paint::fill_rect(&mut canvas, 0, 0, buf_w as isize, buf_h as isize, *theme::OVERLAY_DIM, None, None);
+            paint::fill_rect(&mut canvas, (cx - w * 0.5) as isize, (cy - h * 0.5) as isize, w as isize, h as isize, *theme::CARD_BG, None, None);
+            let title = if target_on { "Arm auto-attest on reboot" } else { "Disarm auto-attest on reboot" };
+            let title_style = TextStyle::new(unit * 0.64, *theme::ERROR_TEXT_COLOUR).weight(600).font("Oxanium");
+            ctx.text.draw_text_center(&mut canvas, title, cx, cy - h * 0.5 + unit * 0.85, &title_style, None, None);
+            let sub_style = TextStyle::new(unit * 0.5, *theme::LABEL_COLOUR).weight(400).font("Oxanium");
+            ctx.text.draw_text_center(&mut canvas, "Re-type your handle to confirm.", cx, cy - h * 0.5 + unit * 1.6, &sub_style, None, None);
+            if let Some(tb) = self.unattended_confirm_tb.as_mut() {
+                let id = tb.hit_id();
+                tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
+            }
+            if self.unattended_confirm_failed {
+                let fail_style = TextStyle::new(unit * 0.5, *theme::ERROR_TEXT_COLOUR).weight(600).font("Oxanium");
+                ctx.text.draw_text_center(&mut canvas, "handle didn't match", cx, cy + unit * 1.35, &fail_style, None, None);
+            }
+            // Confirm / cancel pills.
+            let pill_y = cy + h * 0.5 - unit * 0.8;
+            let pills: [(&str, u32, HitId); 2] = [
+                (if target_on { "arm" } else { "disarm" }, *theme::ERROR_TEXT_COLOUR, self.unattended_confirm_base),
+                ("cancel", *theme::SEARCH_FOUND_COLOUR, self.unattended_confirm_base.wrapping_add(1)),
+            ];
+            let mut px = cx - w * 0.25;
+            for (plabel, colour, hid) in pills {
+                let st = TextStyle::new(unit * 0.62, colour).weight(600).font("Oxanium");
+                let pw = ctx.text.measure_text(plabel, &st);
+                ctx.text.draw_text_center(&mut canvas, plabel, px, pill_y, &st, None, None);
+                restamp_hit_rect(
+                    &mut chrome.hit_test_map, buf_w, buf_h,
+                    (px - pw * 0.5 - unit * 0.4) as isize, (pill_y - unit * 0.6) as isize,
+                    (px + pw * 0.5 + unit * 0.4) as isize, (pill_y + unit * 0.6) as isize,
+                    hid,
+                );
+                px += w * 0.5;
+            }
+        }
+
         // Hit-mask overlay (`[]h`): replace every pixel with the opaque random colour for its hit_test_map ID. Drawn LAST over everything (including chrome + chord hint) — hit testing is per-final-pixel anyway, so the overlay shows exactly what `hit_at` would return. `.get` keeps the index lookup safe for any stale stamp at an unregistered high ID.
         if show_hitmask && !self.debug_hit_colours.is_empty() {
             let map = chrome.hit_test_map();
@@ -10604,6 +10737,38 @@ impl PhotonApp {
             }
         }
 
+        // Clear the "handle didn't match" line as soon as the operator edits the confirm box again (event-shown, interaction-cleared — no timers).
+        if self.unattended_confirm_failed {
+            let has_text = self.unattended_confirm_tb.as_ref().map(|tb| !tb.chars.is_empty()).unwrap_or(false);
+            if has_text {
+                self.unattended_confirm_failed = false;
+                needs_redraw = true;
+            }
+        }
+
+        // Unattended (auto-attest-on-reboot) toggle: a flip does NOT act — it opens the handle-confirmation modal (arming AND disarming this device-becomes-you switch must re-prove the operator, not just whoever reached the unlocked screen). The visual box is reverted immediately; the modal's verified confirm is what actually writes state.
+        let unattended_toggle = self
+            .settings_unattended_check
+            .as_mut()
+            .map(|cb| (cb.take_toggle(), cb.is_checked()));
+        if let Some((true, checked)) = unattended_toggle {
+            // Revert the box to the true current state; the modal owns the real change.
+            if let Some(cb) = self.settings_unattended_check.as_mut() {
+                cb.set_checked(Self::unattended_enabled());
+            }
+            self.unattended_confirm = Some(checked); // target_on = where the flip wanted to go
+            self.unattended_confirm_failed = false;
+            if self.unattended_confirm_tb.is_none() {
+                self.unattended_confirm_tb = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+            }
+            if let Some(tb) = self.unattended_confirm_tb.as_mut() {
+                tb.clear();
+                let id = tb.hit_id();
+                self.change_focus(Some(id));
+            }
+            needs_redraw = true;
+        }
+
         // AddDevice flow: the status line is EVENT-driven, re-derived on every edit by the LIVE MATCHER — the typed entry prefix-matches against the candidate word strings from the binding-request registry (docs/pairing-v2.md), so a typo flags at the exact word it happens and a full 23-word match auto-binds.
         if matches!(self.state, AppState::AddDevice) {
             let text: String = self
@@ -11055,6 +11220,15 @@ impl PhotonApp {
             }
         }
 
+        // Unattended-confirm modal: a centred card with the handle-entry box (metrics mirror the render block).
+        if self.unattended_confirm.is_some() {
+            let (cx, cy, w, _h) = attach_card_rect(buf_w, buf_h, unit);
+            if let Some(tb) = self.unattended_confirm_tb.as_mut() {
+                tb.set_rect(cx, cy + unit * 0.3, w * 0.8, unit * 1.4);
+                tb.set_font_size(font_size, ctx.text);
+            }
+        }
+
         // Settings panel (STUB): position the stateful widgets on the selected page. Content-body rows give each control a slot; a control's rect is a portion of its row so the label can sit beside / above it. Only the active page's widgets are repositioned — the others keep their placeholder geometry off-screen, and `visit` gates them out anyway.
         if let AppState::Settings(page) = self.state {
             let layout = SettingsLayout::compute(&ctx.viewport);
@@ -11084,6 +11258,14 @@ impl PhotonApp {
                         .split_v([1.0; 8]);
                     if let Some(cb) = self.settings_custodian_check.as_mut() {
                         let r = rows[2];
+                        cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
+                        cb.set_font_size(ctrl_font);
+                    }
+                }
+                SettingsPage::Security => {
+                    let rows = layout.content_scrolled(15, settings_content_scroll).split_v([1.0; 15]);
+                    if let Some(cb) = self.settings_unattended_check.as_mut() {
+                        let r = rows[11];
                         cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
                         cb.set_font_size(ctrl_font);
                     }
@@ -15186,6 +15368,59 @@ impl PhotonApp {
     }
 
     /// Fire an attest with caller-supplied roots (the probe already derived them), skipping the permanence interstitial and the second proof. First-attest persistence semantics.
+    /// Path of the unattended reboot capsule (`<config>/reboot_capsule`). None if the config dir can't be resolved.
+    fn reboot_capsule_path() -> Option<std::path::PathBuf> {
+        crate::storage::photon_config_dir().ok().map(|d| d.join("reboot_capsule"))
+    }
+
+    /// Path of the unattended-mode opt-IN marker (`<config>/unattended_reboot`). Presence = the operator turned "Auto-attest on reboot" ON. Read at resume before any UI, so it must be a plain durable file, not vault state.
+    fn unattended_marker_path() -> Option<std::path::PathBuf> {
+        crate::storage::photon_config_dir().ok().map(|d| d.join("unattended_reboot"))
+    }
+
+    /// Whether unattended auto-attest-on-reboot is enabled (default OFF — marker absent).
+    fn unattended_enabled() -> bool {
+        Self::unattended_marker_path().map_or(false, |p| p.exists())
+    }
+
+    /// Turn unattended mode on/off. ON writes the marker AND (also requires background/autostart so a reboot actually relaunches photon) refreshes the capsule from the live session. OFF removes the marker and shreds the capsule.
+    fn set_unattended(&mut self, on: bool) {
+        let Some(marker) = Self::unattended_marker_path() else { return };
+        if on {
+            let _ = std::fs::write(&marker, b"operator enabled unattended auto-attest on reboot\n");
+            // Unattended only means anything if the box relaunches photon at boot — force background/autostart on.
+            #[cfg(not(target_os = "android"))]
+            {
+                let _ = crate::platform::autostart::enable();
+                crate::platform::autostart::set_background_desired(true);
+                self.resident_mode = true;
+            }
+            self.refresh_reboot_capsule();
+            crate::log("UNATTENDED: auto-attest-on-reboot ENABLED (also forced background/autostart on)");
+        } else {
+            let _ = std::fs::remove_file(&marker);
+            if let Some(p) = Self::reboot_capsule_path() {
+                tohu::clear_reboot_capsule(&p);
+            }
+            crate::log("UNATTENDED: auto-attest-on-reboot DISABLED (capsule shredded)");
+        }
+    }
+
+    /// Refresh the reboot capsule from the live session IFF unattended mode is on; otherwise ensure no capsule exists. Called on every successful attest and on toggle-on.
+    fn refresh_reboot_capsule(&self) {
+        let Some(path) = Self::reboot_capsule_path() else { return };
+        if Self::unattended_enabled() {
+            if let Some(session) = self.session.as_ref() {
+                match tohu::store_reboot_capsule(session, &path) {
+                    Ok(()) => crate::log("UNATTENDED: reboot capsule refreshed (device-bound; opens only on this hardware)"),
+                    Err(e) => crate::logf!("UNATTENDED: reboot capsule write failed: {}", e),
+                }
+            }
+        } else {
+            tohu::clear_reboot_capsule(&path);
+        }
+    }
+
     fn fire_attest_query_with_roots(&mut self, session: tohu::SessionIdentity) {
         if let Some(hq) = self.handle_query.as_ref() {
             hq.query_first_attest_with_roots(session);
@@ -15274,6 +15509,8 @@ impl PhotonApp {
                         &crate::crypto::clutch::identity_party_id(&data.identity_seed),
                     );
                 }
+                // UNATTENDED MODE: if the operator has opted this box into auto-attest-on-reboot, refresh the reboot capsule now that we hold a live session, so the NEXT reboot resumes without a handle. No-op (and the capsule is cleared) when the toggle is off — see refresh_reboot_capsule.
+                self.refresh_reboot_capsule();
                 self.pending_broadcast_signal = 1;
                 // Re-anchor the sticky-freshness timer off this fresh post so the periodic ensure doesn't immediately double-fire (and so a re-attest after a logout re-schedules cleanly rather than riding a stale pre-logout deadline).
                 self.next_session_broadcast = Some(
@@ -24992,7 +25229,7 @@ fn settings_page_rows(page: SettingsPage) -> usize {
     match page {
         SettingsPage::You => 7,
         SettingsPage::Diagnostics => 10,
-        SettingsPage::Security => 11,
+        SettingsPage::Security => 15,
         _ => 8,
     }
 }
