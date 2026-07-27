@@ -52,6 +52,34 @@ fn main() {
         panic!("TEST PANIC - this should appear in the log");
     }
 
+    // BRIDGE host opt-in from the CLI (headless remote boxes): `--enable-remote-terminal` / `--disable-remote-terminal`
+    // writes/removes the <config>/remote_terminal marker and exits. A running photon then serves (or stops serving)
+    // remote shells to fold-verified fleet siblings. Desktop-unix only.
+    #[cfg(all(unix, not(target_os = "android")))]
+    {
+        let enable = std::env::args().any(|a| a == "--enable-remote-terminal");
+        let disable = std::env::args().any(|a| a == "--disable-remote-terminal");
+        if enable || disable {
+            match photon_messenger::storage::photon_config_dir() {
+                Ok(dir) => {
+                    let marker = dir.join("remote_terminal");
+                    if enable {
+                        let _ = std::fs::create_dir_all(&dir);
+                        match std::fs::write(&marker, b"operator enabled serving remote shells to fleet siblings\n") {
+                            Ok(()) => println!("remote-terminal host ENABLED ({}). Restart photon to serve.", marker.display()),
+                            Err(e) => eprintln!("failed to enable: {e}"),
+                        }
+                    } else {
+                        let _ = std::fs::remove_file(&marker);
+                        println!("remote-terminal host DISABLED.");
+                    }
+                }
+                Err(e) => eprintln!("no config dir: {e}"),
+            }
+            return;
+        }
+    }
+
     // Verify binary signature matches fractaldecoder (Ed25519 cryptographic signature)
     let signature_hex = match self_verify::verify_binary_hash() {
         Ok(sig) => sig,
