@@ -99,6 +99,10 @@ pub static BG_BASE_WARNING: LazyLock<u32> =
     LazyLock::new(|| fluor::theme::fmt(to_display(0x00_30_10_00)));
 /// Thin white rule between conversation messages.
 pub static DIVIDER_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_FF_FF_FF));
+/// Attachment resample overlay: the near-black scene wash behind the card.
+pub static OVERLAY_DIM: LazyLock<u32> = LazyLock::new(|| c(0x00_08_08_0A));
+/// Attachment resample overlay: the card panel fill.
+pub static CARD_BG: LazyLock<u32> = LazyLock::new(|| c(0x00_16_1A_20));
 /// Dim grey for the compose-box placeholder text.
 pub static LABEL_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_80_80_80));
 

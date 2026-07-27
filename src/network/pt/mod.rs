@@ -533,6 +533,24 @@ impl PTManager {
     /// - peer_addr, wire_bytes: UDP packet to send (the preferred path)
     /// - tcp_payload: if Some, also send this whole VSF over TCP (reliable fallback, once per transfer)
     /// - relay: if Some, UDP+TCP failed, relay via /conduit with this info
+    /// Live progress of every ACTIVE sharded transfer: (peer, done, total, outbound). Small single-packet sends never appear (they have no SPEC). Drives the attachment progress bar; callers filter by size/peer.
+    pub fn transfer_progress(&self) -> Vec<(SocketAddr, u32, u32, bool)> {
+        let mut out = Vec::new();
+        for t in &self.outbound {
+            let (done, total) = t.send_buffer.progress();
+            if done < total {
+                out.push((t.peer_addr, done, total, true));
+            }
+        }
+        for t in &self.inbound {
+            let (done, total) = t.receive_buffer.progress();
+            if done < total {
+                out.push((t.peer_addr, done, total, false));
+            }
+        }
+        out
+    }
+
     pub fn tick(&mut self) -> Vec<TickSend> {
         let mut to_send = Vec::new();
 
