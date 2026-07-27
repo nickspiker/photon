@@ -3855,6 +3855,7 @@ impl FluorApp for PhotonApp {
                 let typed: String = self.unattended_confirm_tb.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
                 let typed_seed = crate::types::Handle::to_identity_seed(&typed);
                 let live_seed = self.session.as_ref().map(|s| s.identity_seed);
+                crate::logf!("UNATTENDED confirm: typed {} chars, seed_match = {}, has_session = {}", typed.chars().count(), Some(typed_seed) == live_seed, live_seed.is_some());
                 if Some(typed_seed) == live_seed {
                     let target_on = self.unattended_confirm.take().unwrap_or(false);
                     self.set_unattended(target_on);
