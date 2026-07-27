@@ -820,6 +820,8 @@ enum TextboxRole {
     SettingsNote,
     /// Any You-page profile field (display name, first, email, a custom one, …) or the add-a-field entry — same registry so click-to-focus raises the IME + blinkie. The form treats them all alike; the `field_id` that distinguishes them lives on [`ProfileField`], not here.
     ProfileField,
+    /// The unattended-confirm modal's handle-entry box — in the registry so it takes keys / IME / blink like every other box (without this it rendered but couldn't be typed into).
+    UnattendedConfirm,
 }
 
 /// One editable profile field on the You page: a `field_id` (the VSF dictionary label, also the `profile.<id>` settings key), a human label, its taxonomy tier, and the text box holding the working value. Custom fields are user-added (registered in `profile._custom`) and grouped under a "Custom" header. See docs/contact-system.md "The field taxonomy".
@@ -2805,6 +2807,8 @@ impl FluorApp for PhotonApp {
         ));
         self.settings_note_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         self.you_add_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        // Unattended-confirm handle box: built once here so its hit_id is stable (lazy creation at open time bumped hit_counter every open, drifting the id out from under the render's stamp — the box then took no input).
+        self.unattended_confirm_tb = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         // The per-field boxes are built lazily on first You-page open (build_you_fields) — HitId is a u16, so we allocate the ~32 field ids only when the page is actually visited.
 
         self.update_widget_layout(ctx);
@@ -10758,9 +10762,6 @@ impl PhotonApp {
             }
             self.unattended_confirm = Some(checked); // target_on = where the flip wanted to go
             self.unattended_confirm_failed = false;
-            if self.unattended_confirm_tb.is_none() {
-                self.unattended_confirm_tb = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
-            }
             if let Some(tb) = self.unattended_confirm_tb.as_mut() {
                 tb.clear();
                 let id = tb.hit_id();
@@ -24344,6 +24345,9 @@ impl PhotonApp {
             self.you_add_textbox
                 .as_mut()
                 .map(|t| (TextboxRole::ProfileField, t)),
+            self.unattended_confirm_tb
+                .as_mut()
+                .map(|t| (TextboxRole::UnattendedConfirm, t)),
         ]
         .into_iter()
         .flatten()
