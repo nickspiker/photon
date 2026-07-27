@@ -15498,6 +15498,43 @@ impl PhotonApp {
         }
     }
 
+    /// BRIDGE (chat-as-shell): run one `$ ` command from a sibling with `bash -c`, then reply to that sibling with the combined stdout+stderr as an ordinary chat message. Output is capped so a runaway `cat` can't flood the chain; a non-zero exit appends the code. Runs in the operator's own login environment (HOME, PATH) — this is the operator shelling into their own box.
+    #[cfg(all(unix, not(target_os = "android")))]
+    fn run_bridge_command(&mut self, contact_idx: usize, cmd: &str) {
+        const MAX_OUT: usize = 12 * 1024; // keep a reply comfortably inside one chain message
+        crate::logf!("BRIDGE: running command from sibling: {}", cmd);
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        let output = std::process::Command::new(&shell)
+            .arg("-lc")
+            .arg(cmd)
+            .output();
+        let reply = match output {
+            Ok(out) => {
+                let mut body = String::new();
+                body.push_str(&String::from_utf8_lossy(&out.stdout));
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                if !stderr.is_empty() {
+                    body.push_str(&stderr);
+                }
+                if body.len() > MAX_OUT {
+                    // Keep the TAIL — the end of a command's output is usually what matters.
+                    let cut = body.len() - MAX_OUT;
+                    body = format!("…(truncated {} bytes)\n{}", cut, &body[cut..]);
+                }
+                let code = out.status.code().unwrap_or(-1);
+                if body.trim().is_empty() {
+                    body = if code == 0 { "(no output)".to_string() } else { format!("(no output, exit {})", code) };
+                } else if code != 0 {
+                    body.push_str(&format!("\n[exit {}]", code));
+                }
+                body
+            }
+            Err(e) => format!("(failed to run: {})", e),
+        };
+        // Reply on the same conversation. suppress_bubble = false so the output shows in the host's own history too.
+        self.send_chain_message(contact_idx, &reply, false);
+    }
+
     /// Turn the bridge host on/off. OFF tears down every live session.
     #[cfg(all(unix, not(target_os = "android")))]
     fn set_remote_terminal(&mut self, on: bool) {
@@ -16725,6 +16762,8 @@ impl PhotonApp {
         let mut fork_friend_rekey: Option<usize> = None;
         let mut sibling_push: Option<(usize, ChatMessage)> = None;
         let mut recv_seal_idx: Option<usize> = None;
+        // BRIDGE (chat-as-shell): `$ `-prefixed sibling messages queued here, run + replied in the tail after the row is stored (see run_bridge_command).
+        let mut bridge_commands: Vec<(usize, String)> = Vec::new();
         let mut persist_ci: Option<usize> = None;
         let mut conv_state_pos: Option<usize> = None;
         let mut replays: Vec<crate::network::status::StatusUpdate> = Vec::new();
@@ -17071,6 +17110,18 @@ impl PhotonApp {
                 {
                     contact.chain_advanced_by_ack = true;
                 }
+                // BRIDGE (chat-as-shell): a `$ `-prefixed message from a SIBLING, on a host that opted in, is a command to run — decided HERE (before message_text is moved into the ChatMessage), queued, run + replied after the drain. The message still stores as a normal bubble so the host's history shows what was asked. Gates: sibling only (never a friend) + host opt-in marker.
+                #[cfg(all(unix, not(target_os = "android")))]
+                {
+                    if contact.is_sibling
+                        && !crate::types::is_control_content(&message_text)
+                        && Self::remote_terminal_enabled()
+                    {
+                        if let Some(cmd) = message_text.strip_prefix("$ ").or_else(|| message_text.strip_prefix("$\t")) {
+                            bridge_commands.push((contact_idx, cmd.to_string()));
+                        }
+                    }
+                }
                 // Use actual eagle_time and sorted insert for correct chronological order
                 let mut msg = ChatMessage::new_with_timestamp(
                     message_text,
@@ -17207,6 +17258,10 @@ impl PhotonApp {
             self.seal_chain_if_ready(idx);
             // ACK-ADVANCE FLUSH, receive-edge twin: a commit can free a window slot (dedup) and always proves the pipeline moves — release any held row now. No-op when nothing is held.
             self.resend_held_messages(idx);
+        }
+        // BRIDGE (chat-as-shell): run each queued `$ `-command and reply with its output, now that the asking row is stored.
+        for (idx, cmd) in bridge_commands {
+            self.run_bridge_command(idx, &cmd);
         }
         if let Some(idx) = fork_sibling_reset {
             self.initiate_sibling_chain_reset(idx);
@@ -20780,6 +20835,9 @@ impl PhotonApp {
         // BRIDGE: term frames deferred past the drain (on_term_frame needs &mut self; the drain holds an immutable `checker` borrow).
         #[cfg(all(unix, not(target_os = "android")))]
         let mut term_frames: Vec<([u8; 16], u8, Vec<u8>, [u8; 32], std::net::SocketAddr)> = Vec::new();
+        // BRIDGE (chat-based): `$ `-prefixed commands received from a sibling, to run as bash + reply with the output. (contact_idx, command). Deferred past the drain's borrows. Desktop-unix + host opt-in only.
+        #[cfg(all(unix, not(target_os = "android")))]
+        let mut bridge_commands: Vec<(usize, String)> = Vec::new();
         let mut lan_ping_indices: Vec<usize> = Vec::new(); // Contact indices to ping immediately on new LAN discovery
                                                            // Collect pending message retransmit requests (friendship_id, ip, handle, device_pubkey, last_received_ef6) to process after loop last_received_ef6 from pong tells us what they already have - only retransmit newer
         let mut retransmit_requests: Vec<(
@@ -24322,6 +24380,13 @@ impl PhotonApp {
         #[cfg(all(unix, not(target_os = "android")))]
         for (session_id, kind, sealed_payload, sender_device, sender_addr) in term_frames {
             self.on_term_frame(session_id, kind, sealed_payload, sender_device, sender_addr);
+            changed = true;
+        }
+
+        // BRIDGE (chat-as-shell): run each queued `$ ` command + reply with its output, now the drain's borrow is released.
+        #[cfg(all(unix, not(target_os = "android")))]
+        for (contact_idx, cmd) in bridge_commands {
+            self.run_bridge_command(contact_idx, &cmd);
             changed = true;
         }
 
