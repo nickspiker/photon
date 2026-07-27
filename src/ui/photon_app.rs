@@ -2310,12 +2310,6 @@ impl Container for PhotonApp {
 impl PhotonApp {
     /// Every APP widget (NOT chrome) active on the current screen, yielded to `f` — the single per-widget registry (see [`Container::visit`]). Screen-gated: an off-screen widget is neither dispatched to, tab-focusable, hover-lit, nor damage-claimed. An inherent method (not part of `Container`) so hover/damage passes can call it directly.
     fn visit_app_widgets(&mut self, f: &mut dyn FnMut(&mut dyn Widget)) {
-        // The unattended-confirm handle modal floats over any screen — its textbox must be focusable/typeable while up.
-        if self.unattended_confirm.is_some() {
-            if let Some(tb) = self.unattended_confirm_tb.as_mut() {
-                f(tb);
-            }
-        }
         if matches!(self.state, AppState::Launch(_)) {
             // The attest button is only part of the tree when there's a handle to attest — same reveal as the render gate. An empty field yields just the textbox, so Tab can't land focus on a button that isn't drawn and a hit-test can't dispatch to it. Join words phase (new device displaying its pairing words): no input widgets at all — the screen is display-only until bound or cancelled.
             let join_words_up = self.launch_add_mode && self.add_join_words.is_some();
@@ -2390,7 +2384,12 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Security => {
-                    if let Some(cb) = self.settings_unattended_check.as_mut() {
+                    // Confirm state shows the handle box; normal state shows the checkbox — only one is live.
+                    if self.unattended_confirm.is_some() {
+                        if let Some(tb) = self.unattended_confirm_tb.as_mut() {
+                            f(tb);
+                        }
+                    } else if let Some(cb) = self.settings_unattended_check.as_mut() {
                         f(cb);
                     }
                 }
@@ -4143,10 +4142,6 @@ impl FluorApp for PhotonApp {
                 _ => false,
             };
         if !matches!(event, Event::CursorMoved { .. }) && !compose_typing {
-            self.scene_dirty = true;
-        }
-        // EXCEPTION: while a full-screen immediate-mode MODAL is up, even a bare cursor move must full-repaint — otherwise the host's incremental hover pass tints the widgets UNDER the modal (which still hold hit rects) and those tints show through the card, and the card itself isn't recomposited. Force the whole scene so the modal repaints on top every frame.
-        if self.unattended_confirm.is_some() {
             self.scene_dirty = true;
         }
         match event {
@@ -9362,27 +9357,32 @@ impl FluorApp for PhotonApp {
                             500,
                         );
                     }
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[10],
-                        "Security: strong   ·   Recovery: not set up",
-                        hspan2,
-                        *theme::LABEL_COLOUR,
-                        400,
-                    );
-                    // ── DANGEROUS: unattended auto-attest-on-reboot. Off by default; the checkbox sits above a red multi-line disclaimer that ONLY shows in full alarm when the box is ticked.
-                    let armed = self.settings_unattended_check.as_ref().map(|c| c.is_checked()).unwrap_or(false);
-                    settings_line(&mut canvas, ctx.text, rows[12], "\u{26A0} Auto-attest on reboot (unattended)", hspan2, *theme::CONTACT_NAME_COLOUR, 600);
-                    if let Some(cb) = self.settings_unattended_check.as_mut() {
-                        cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                    settings_line(&mut canvas, ctx.text, rows[10], "Security: strong   ·   Recovery: not set up", hspan2, *theme::LABEL_COLOUR, 400);
+                    // ── DANGEROUS: unattended auto-attest-on-reboot. Off by default. Rows 11-14. Two states, both drawn INLINE in this page (no floating overlay — an over-content modal drawn after chrome.flatten_into never composited its glyphs): the normal checkbox+disclaimer, OR (while a flip is pending) a handle-entry confirmation that must re-prove the operator before arming/disarming.
+                    settings_line(&mut canvas, ctx.text, rows[11], "\u{26A0} Auto-attest on reboot (unattended)", hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                    if let Some(target_on) = self.unattended_confirm {
+                        // CONFIRM state: re-type the handle to arm/disarm.
+                        settings_line(&mut canvas, ctx.text, rows[12], if target_on { "Re-type your handle to ARM (this box will reboot as you):" } else { "Re-type your handle to disarm:" }, hspan2, *theme::ERROR_TEXT_COLOUR, 600);
+                        if let Some(tb) = self.unattended_confirm_tb.as_mut() {
+                            let id = tb.hit_id();
+                            tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
+                        }
+                        let pr = rows[14].split_h([1.0, 1.0]);
+                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(pillf(0.6)), if target_on { "Arm" } else { "Disarm" }, self.unattended_confirm_base, ctx.pressed_hit, true, Some(*theme::PILL_RED), "Open Sans");
+                        draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(pillf(0.6)), "Cancel", self.unattended_confirm_base.wrapping_add(1), ctx.pressed_hit);
+                        if self.unattended_confirm_failed {
+                            settings_line(&mut canvas, ctx.text, rows[13], "Handle didn't match — try again.", hspan2, *theme::ERROR_TEXT_COLOUR, 600);
+                        }
+                    } else {
+                        // NORMAL state: checkbox + disclaimer (red + bold once armed).
+                        let armed = self.settings_unattended_check.as_ref().map(|c| c.is_checked()).unwrap_or(false);
+                        if let Some(cb) = self.settings_unattended_check.as_mut() {
+                            cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                        }
+                        let dc = if armed { *theme::ERROR_TEXT_COLOUR } else { *theme::LABEL_COLOUR };
+                        settings_line(&mut canvas, ctx.text, rows[13], "BAD IDEA on any device you carry. Defeats the whole point of a passless identity:", hspan2, dc, if armed { 600 } else { 400 });
+                        settings_line(&mut canvas, ctx.text, rows[14], "after a reboot this box becomes YOU with no handle typed. Only for remote failsafe boxes you physically control.", hspan2, dc, if armed { 600 } else { 400 });
                     }
-                    // The disclaimer, always visible so the danger is understood BEFORE ticking; it goes bright red once armed.
-                    let disc = *theme::ERROR_TEXT_COLOUR;
-                    let dull = *theme::LABEL_COLOUR;
-                    let dc = if armed { disc } else { dull };
-                    settings_line(&mut canvas, ctx.text, rows[13], "BAD IDEA on any device you carry. This defeats the whole point of a passless identity:", hspan2, dc, if armed { 600 } else { 400 });
-                    settings_line(&mut canvas, ctx.text, rows[14], "after a reboot this box becomes YOU with no handle typed. Only for remote failsafe boxes you physically control. Anyone who reboots it — or steals it and powers it on — is you.", hspan2, dc, if armed { 600 } else { 400 });
                 }
                 SettingsPage::Recovery => {
                     let rows = layout
@@ -10179,49 +10179,6 @@ impl FluorApp for PhotonApp {
         chrome.flatten_into(target, buf_w, buf_h, None);
 
         // Development builds get the amber debug theme (orange bg tint / window hairline / title) via fluor's `amber` feature — pure theme-CONSTANT swaps, zero extra drawing steps. The old post-composite amber wash is gone: it wrote straight-RGB into fluor's α+darkness buffer, which inverted to blue.
-
-        // ── Unattended-confirm handle modal: floats over everything (usually the Security settings page). Arming OR disarming auto-attest-on-reboot demands re-typing the handle — proof the operator, not a passer-by at the unlocked screen, flipped this device-becomes-you switch.
-        if let Some(target_on) = self.unattended_confirm {
-            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
-            let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
-            let (cx, cy, w, h) = attach_card_rect(buf_w, buf_h, unit);
-            paint::fill_rect(&mut canvas, 0, 0, buf_w as isize, buf_h as isize, *theme::OVERLAY_DIM, None, None);
-            // Erase EVERY underlying hit id first: the modal is app-modal, so nothing beneath it may hover-tint or take a click. The textbox + pills re-stamp their own ids on top below.
-            restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, 0, 0, buf_w as isize, buf_h as isize, HIT_NONE);
-            paint::fill_rect(&mut canvas, (cx - w * 0.5) as isize, (cy - h * 0.5) as isize, w as isize, h as isize, *theme::CARD_BG, None, None);
-            let title = if target_on { "Arm auto-attest on reboot" } else { "Disarm auto-attest on reboot" };
-            let title_style = TextStyle::new(unit * 0.64, *theme::ERROR_TEXT_COLOUR).weight(600).font("Oxanium");
-            ctx.text.draw_text_center(&mut canvas, title, cx, cy - h * 0.5 + unit * 0.85, &title_style, None, None);
-            let sub_style = TextStyle::new(unit * 0.5, *theme::LABEL_COLOUR).weight(400).font("Oxanium");
-            ctx.text.draw_text_center(&mut canvas, "Re-type your handle to confirm.", cx, cy - h * 0.5 + unit * 1.6, &sub_style, None, None);
-            if let Some(tb) = self.unattended_confirm_tb.as_mut() {
-                let id = tb.hit_id();
-                tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
-            }
-            if self.unattended_confirm_failed {
-                let fail_style = TextStyle::new(unit * 0.5, *theme::ERROR_TEXT_COLOUR).weight(600).font("Oxanium");
-                ctx.text.draw_text_center(&mut canvas, "handle didn't match", cx, cy + unit * 1.35, &fail_style, None, None);
-            }
-            // Confirm / cancel pills.
-            let pill_y = cy + h * 0.5 - unit * 0.8;
-            let pills: [(&str, u32, HitId); 2] = [
-                (if target_on { "arm" } else { "disarm" }, *theme::ERROR_TEXT_COLOUR, self.unattended_confirm_base),
-                ("cancel", *theme::SEARCH_FOUND_COLOUR, self.unattended_confirm_base.wrapping_add(1)),
-            ];
-            let mut px = cx - w * 0.25;
-            for (plabel, colour, hid) in pills {
-                let st = TextStyle::new(unit * 0.62, colour).weight(600).font("Oxanium");
-                let pw = ctx.text.measure_text(plabel, &st);
-                ctx.text.draw_text_center(&mut canvas, plabel, px, pill_y, &st, None, None);
-                restamp_hit_rect(
-                    &mut chrome.hit_test_map, buf_w, buf_h,
-                    (px - pw * 0.5 - unit * 0.4) as isize, (pill_y - unit * 0.6) as isize,
-                    (px + pw * 0.5 + unit * 0.4) as isize, (pill_y + unit * 0.6) as isize,
-                    hid,
-                );
-                px += w * 0.5;
-            }
-        }
 
         // Hit-mask overlay (`[]h`): replace every pixel with the opaque random colour for its hit_test_map ID. Drawn LAST over everything (including chrome + chord hint) — hit testing is per-final-pixel anyway, so the overlay shows exactly what `hit_at` would return. `.get` keeps the index lookup safe for any stale stamp at an unregistered high ID.
         if show_hitmask && !self.debug_hit_colours.is_empty() {
@@ -11242,14 +11199,6 @@ impl PhotonApp {
             }
         }
 
-        // Unattended-confirm modal: a centred card with the handle-entry box (metrics mirror the render block).
-        if self.unattended_confirm.is_some() {
-            let (cx, cy, w, _h) = attach_card_rect(buf_w, buf_h, unit);
-            if let Some(tb) = self.unattended_confirm_tb.as_mut() {
-                tb.set_rect(cx, cy + unit * 0.3, w * 0.8, unit * 1.4);
-                tb.set_font_size(font_size, ctx.text);
-            }
-        }
 
         // Settings panel (STUB): position the stateful widgets on the selected page. Content-body rows give each control a slot; a control's rect is a portion of its row so the label can sit beside / above it. Only the active page's widgets are repositioned — the others keep their placeholder geometry off-screen, and `visit` gates them out anyway.
         if let AppState::Settings(page) = self.state {
@@ -11286,10 +11235,16 @@ impl PhotonApp {
                 }
                 SettingsPage::Security => {
                     let rows = layout.content_scrolled(15, settings_content_scroll).split_v([1.0; 15]);
+                    // Checkbox on row 12 (normal state); the confirm handle box shares that row (confirm state) — only one is visited/drawn at a time.
                     if let Some(cb) = self.settings_unattended_check.as_mut() {
-                        let r = rows[11];
+                        let r = rows[12];
                         cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
                         cb.set_font_size(ctrl_font);
+                    }
+                    if let Some(tb) = self.unattended_confirm_tb.as_mut() {
+                        let r = rows[13];
+                        tb.set_rect(r.center_x(), r.center_y(), r.w * 0.9, ctrl_h);
+                        tb.set_font_size(ctrl_font, ctx.text);
                     }
                 }
                 SettingsPage::Notifications => {
