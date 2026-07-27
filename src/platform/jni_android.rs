@@ -614,6 +614,46 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollSessionBroa
 /// Per-frame poll for the avatar image-picker request. Returns `1` when the user has tapped the avatar circle since the last poll, `0` otherwise. Kotlin's `doFrame` hook calls this alongside `nativePollKeyboard` and launches `ACTION_GET_CONTENT` on `1`. One-shot semantics: `PhotonApp::take_picker_request` clears the flag so consecutive polls without further taps yield `0`.
 #[cfg(target_os = "android")]
 #[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollAttachPicker(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    context_ptr: jlong,
+) -> jint {
+    let Some(ctx) = get_context(context_ptr) else {
+        return 0;
+    };
+    if ctx.shell.app().take_attach_picker_request() {
+        1
+    } else {
+        0
+    }
+}
+
+/// A picked file (any type) for the active conversation: display name + raw bytes.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSendAttachment(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    context_ptr: jlong,
+    name: JString<'_>,
+    data: JByteArray<'_>,
+) {
+    let Some(ctx) = get_context(context_ptr) else {
+        return;
+    };
+    let name: String = env
+        .get_string(&name)
+        .map(|s| s.into())
+        .unwrap_or_else(|_| "file".to_string());
+    let Ok(bytes) = env.convert_byte_array(&data) else {
+        return;
+    };
+    ctx.shell.app().attach_picked(name, bytes);
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollAvatarPicker(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,

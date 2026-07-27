@@ -416,6 +416,25 @@ fn dim_colour(c: u32) -> u32 {
 
 /// Greedy word-wrap for the message list: split `s` into lines that each measure ≤ `max_w` under `style`. Word widths are measured individually and summed (kerning across a space is negligible at chat sizes), so the cost is O(words), not O(words²) re-shapes. A single word wider than the line hard-breaks by chars — a pasted URL/hash must wrap, not vanish off-screen. Empty input yields one empty line so the row keeps its height.
 /// Bubble DISPLAY text for a row: attachment rows render as a pill line — paperclip, name, dozenal size, and an actions hint while the blob isn't held locally. Everything else passes thru. The raw marker string never reaches a glyph.
+/// Attachment resample card geometry: (centre_x, centre_y, w, h) — shared by layout + render + hit rects.
+fn attach_card_rect(buf_w: usize, buf_h: usize, unit: f32) -> (f32, f32, f32, f32) {
+    let w = (buf_w as f32 * 0.82).min(unit * 22.0);
+    let h = unit * 6.4;
+    (buf_w as f32 * 0.5, buf_h as f32 * 0.44, w, h)
+}
+
+/// The slider's resample curve: t ≤ 0.6 ramps the long edge 256→4096 at hard compression ("small → medium, shit quality"); past 0.6 the edge holds 4K and JPEG quality ramps 35→92 ("good on the high end").
+fn attach_curve(t: f32) -> (u32, u8) {
+    let t = t.clamp(0.0, 1.0);
+    if t <= 0.6 {
+        let f = t / 0.6;
+        ((256.0 * 16.0f32.powf(f)).round() as u32, 35)
+    } else {
+        let f = (t - 0.6) / 0.4;
+        (4096, (35.0 + f * 57.0).round() as u8)
+    }
+}
+
 fn display_content(content: &str) -> String {
     if let Some((hash, name, size)) = crate::types::parse_attachment_content(content) {
         let (units, label) = crate::types::size_units(size);
@@ -1030,6 +1049,21 @@ pub struct PhotonApp {
     settings_theme_dropdown: Option<fluor::widgets::Dropdown>,
     /// Appearance-page zoom / text-size control — a real fluor `Slider`.
     settings_zoom_slider: Option<fluor::widgets::Slider>,
+    /// A picked/dropped IMAGE awaiting the resample decision (non-images send immediately). (contact idx, filename, original bytes, (w, h)).
+    pending_attach: Option<(usize, String, Vec<u8>, (u32, u32))>,
+    /// Deferred encode (the pending_delete pattern): `Some(false)` = armed (paint "encoding…" this frame), `Some(true)` = feedback painted (tick runs the encode now).
+    pending_attach_encode: Option<bool>,
+    /// Resample overlay controls — created with placeholder geometry at init, positioned each frame while the overlay is up.
+    attach_slider: Option<fluor::widgets::Slider>,
+    attach_original_check: Option<crate::ui::settings_widgets::Checkbox>,
+    /// Overlay action pills: base = send, base+1 = cancel. Paperclip compose button = base+2.
+    attach_ui_base: HitId,
+    /// Live PT transfer progress (peer, done, total, outbound) — throttled push from the status thread; drives the pill progress bar.
+    attach_progress: Vec<(std::net::SocketAddr, u32, u32, bool)>,
+    /// Blob pushes confirmed landed (attach_have), this session.
+    attach_confirmed: std::collections::HashSet<[u8; 32]>,
+    /// Android: set when the paperclip asks for the system file picker; drained by nativePollAttachPicker.
+    pending_attach_picker: bool,
     /// Recovery-page "be a custodian" opt-in — a custom `Checkbox`.
     settings_custodian_check: Option<crate::ui::settings_widgets::Checkbox>,
     /// Notifications-page global chime on/off — a custom `Checkbox`.
@@ -1332,6 +1366,14 @@ impl PhotonApp {
             settings_btn_base: HIT_NONE,
             settings_theme_dropdown: None,
             settings_zoom_slider: None,
+            pending_attach: None,
+            pending_attach_encode: None,
+            attach_slider: None,
+            attach_original_check: None,
+            attach_ui_base: HIT_NONE,
+            attach_progress: Vec::new(),
+            attach_confirmed: std::collections::HashSet::new(),
+            pending_attach_picker: false,
             settings_custodian_check: None,
             settings_chime_check: None,
             settings_presence_check: None,
@@ -1380,6 +1422,22 @@ impl PhotonApp {
     }
 
     /// Take the one-shot image-picker request. JNI shim polls this once per frame; returns `true` exactly on the frame the user taps the avatar so the Activity launches `ACTION_GET_CONTENT` once per tap.
+    /// Android: drain the paperclip's system-file-picker request (mirrors [`Self::take_picker_request`]).
+    pub fn take_attach_picker_request(&mut self) -> bool {
+        let req = self.pending_attach_picker;
+        self.pending_attach_picker = false;
+        req
+    }
+
+    /// Android picker result: a file's name + bytes for the ACTIVE conversation (no-op outside one).
+    pub fn attach_picked(&mut self, name: String, bytes: Vec<u8>) {
+        if matches!(self.state, AppState::Conversation) {
+            if let Some(ci) = self.active_contact {
+                self.send_attachment_from_bytes(ci, name, bytes);
+            }
+        }
+    }
+
     pub fn take_picker_request(&mut self) -> bool {
         let req = self.pending_picker_request;
         self.pending_picker_request = false;
@@ -1701,6 +1759,15 @@ impl PhotonApp {
                     is_self || c.chain_woven || can_fleet_forward
                 })
                 .unwrap_or(false);
+            // Attachment resample overlay controls ride the conversation walk while pending (independent of the compose gate).
+            if self.pending_attach.is_some() {
+                if let Some(sl) = self.attach_slider.as_mut() {
+                    f(sl);
+                }
+                if let Some(cb) = self.attach_original_check.as_mut() {
+                    f(cb);
+                }
+            }
             if compose_ready {
                 if let Some(tb) = self.message_textbox.as_mut() {
                     f(tb);
@@ -1999,6 +2066,22 @@ impl FluorApp for PhotonApp {
         ));
         self.settings_zoom_slider =
             Some(fluor::widgets::Slider::new(&mut self.hit_counter, 0., 0., 1., 1., 0.5));
+        // Attachment resample overlay: quality/size slider (default 0.7 ≈ 4K decent) + the send-original checkbox that disables it, plus a 3-id pill block (send / cancel / paperclip).
+        self.attach_slider =
+            Some(fluor::widgets::Slider::new(&mut self.hit_counter, 0., 0., 1., 1., 0.7));
+        self.attach_original_check = Some(crate::ui::settings_widgets::Checkbox::new(
+            &mut self.hit_counter,
+            "send original",
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            false,
+        ));
+        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.attach_ui_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(2);
         self.settings_custodian_check = Some(crate::ui::settings_widgets::Checkbox::new(
             &mut self.hit_counter,
             "Be a custodian for others",
@@ -2783,6 +2866,34 @@ impl FluorApp for PhotonApp {
 
         // Message-row tap (conversation) — toggle that message's details strip (direction, age, delivery, copy). The copy pill copies the message text via the platform clipboard (arboard / Kotlin poll bridge).
         if matches!(self.state, AppState::Conversation) && self.msg_hit_base != HIT_NONE {
+            // Attachment overlay pills: send (arms the deferred encode — "encoding…" paints first) / cancel. Paperclip (base+2): Android opens the system picker; desktop hints the drop gesture.
+            if self.attach_ui_base != HIT_NONE && hit_id == self.attach_ui_base && self.pending_attach.is_some() {
+                self.pending_attach_encode = Some(false);
+                self.scene_dirty = true;
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+            if self.attach_ui_base != HIT_NONE && hit_id == self.attach_ui_base.wrapping_add(1) && self.pending_attach.is_some() {
+                self.pending_attach = None;
+                self.pending_attach_encode = None;
+                self.scene_dirty = true;
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+            if self.attach_ui_base != HIT_NONE && hit_id == self.attach_ui_base.wrapping_add(2) {
+                #[cfg(target_os = "android")]
+                {
+                    self.pending_attach_picker = true;
+                }
+                #[cfg(not(target_os = "android"))]
+                {
+                    self.ready_toast = Some("drop a file on the conversation to attach".to_string());
+                    self.ready_toast_screen = None;
+                }
+                self.scene_dirty = true;
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
             if hit_id == self.msg_copy_id && hit_id != HIT_NONE {
                 if let Some((sci, ts, out)) = self.selected_msg {
                     let text_opt = self.contacts.get(sci).and_then(|c| {
@@ -3663,6 +3774,35 @@ impl FluorApp for PhotonApp {
 
         // Point the top-left orb at the current subject (peer avatar + their presence ring in a conversation, else the Photon orb + our connectivity). Self-diffing — a no-op unless the contact / avatar / screen changed.
         self.update_orb();
+
+        // Deferred attachment encode: runs AFTER the "encoding…" frame painted (the pending_delete pattern) — a 50MP decode+Lanczos+JPEG can take a second or two and must not eat the press feedback.
+        if self.pending_attach_encode == Some(true) {
+            if let Some((ci, name, bytes, _dims)) = self.pending_attach.take() {
+                self.pending_attach_encode = None;
+                let send_original = self.attach_original_check.as_ref().map(|c| c.is_checked()).unwrap_or(false);
+                if send_original {
+                    self.attach_send_now(ci, name, bytes);
+                } else {
+                    let t = self.attach_slider.as_ref().map(|s| s.value()).unwrap_or(0.7);
+                    let (edge, q) = attach_curve(t);
+                    match crate::ui::avatar::resample_to_jpeg(&bytes, edge, q) {
+                        Ok((jpeg, w, h)) => {
+                            let stem = name.rsplit_once('.').map(|(st, _)| st.to_string()).unwrap_or(name);
+                            crate::logf!("attach: resampled to {}x{} q{} ({} bytes)", w, h, q, jpeg.len());
+                            self.attach_send_now(ci, format!("{}.jpg", stem), jpeg);
+                        }
+                        Err(e) => {
+                            crate::logf!("attach: resample failed: {} — sending original", e);
+                            self.attach_send_now(ci, name, bytes);
+                        }
+                    }
+                }
+                self.scene_dirty = true;
+                needs_redraw = true;
+            } else {
+                self.pending_attach_encode = None;
+            }
+        }
 
         // Deferred message delete: runs only AFTER the "deleting…" frame painted (see pending_delete). TOMBSTONE, not removal: the flag propagates monotonically thru fleet sync (push + sweep + merge true-wins), and a hidden DELETE marker rides the chain to the FRIEND so their side tombstones too — delete-for-everyone. Content is preserved internally (braid weave dependency — see ChatMessage::deleted).
         if let Some(((sci, ts, out), true)) = self.pending_delete {
@@ -5354,6 +5494,23 @@ impl FluorApp for PhotonApp {
                             static EMPTY_LINES: Vec<String> = Vec::new();
                             let lines: &Vec<String> = wrap_cache.get(vi).unwrap_or(&EMPTY_LINES);
                             let block_extra = (lines.len() as f32 - 1.0) * intra;
+                            // Attachment transfer progress: a thin fill under the pill while a matching PT transfer runs (outbound for our un-confirmed sends, inbound for blobs we're missing). Matched loosely by direction — the throttled snapshot only ever contains big sharded transfers.
+                            if let Some((hash, _, _)) = crate::types::parse_attachment_content(&msg.content) {
+                                let want_outbound = msg.is_outgoing;
+                                let relevant = if want_outbound { !self.attach_confirmed.contains(&hash) } else { !crate::storage::blob_present(&hash) };
+                                if relevant {
+                                    if let Some((_, done, total, _)) = self.attach_progress.iter().find(|(_, _, _, ob)| *ob == want_outbound) {
+                                        let frac = (*done as f32 / (*total).max(1) as f32).clamp(0.0, 1.0);
+                                        let bar_w = (buf_w as f32 - pad_x * 2.0) * frac;
+                                        let (bx, bw) = if msg.is_outgoing {
+                                            ((buf_w as f32 - pad_x - bar_w) as isize, bar_w as isize)
+                                        } else {
+                                            (pad_x as isize, bar_w as isize)
+                                        };
+                                        paint::fill_rect(&mut canvas, bx, (y + msg_size * 0.55) as isize, bw, (ru.max(1.0) * 2.0) as isize, *theme::PROGRESS_FILL, Some(list_clip), None);
+                                    }
+                                }
+                            }
                             // Divider under this message (between it and the next-newer one).
                             // Full-bleed divider at the version-watermark treatment: pure white, α=1/8 (VERSION_COLOUR is exactly that, and darkness-0 white is channel-order invariant). Positioned at the MIDPOINT of the inter-message gap (0.8·msg_size below the baseline centre): at 0.5 it sat flush against the descenders — good padding above, none below.
                             paint::fill_rect(
@@ -5385,6 +5542,14 @@ impl FluorApp for PhotonApp {
                                 };
                                 if msg.recovered {
                                     detail.push_str(" · recovered");
+                                }
+                                // Attachment blob state joins the meta line: held/confirmed vs still travelling.
+                                if let Some((hash, _, _)) = crate::types::parse_attachment_content(&msg.content) {
+                                    if msg.is_outgoing {
+                                        detail.push_str(if self.attach_confirmed.contains(&hash) { " · blob delivered" } else { " · blob sending" });
+                                    } else if !crate::storage::blob_present(&hash) {
+                                        detail.push_str(" · blob not here yet");
+                                    }
                                 }
                                 let detail_size = msg_size * 0.75;
                                 let detail_style = TextStyle::new(detail_size, *theme::LABEL_COLOUR).weight(500).font("Oxanium");
@@ -5549,8 +5714,82 @@ impl FluorApp for PhotonApp {
                             if let Some(btn) = self.message_send_btn.as_ref() {
                                 btn.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, btn.hit_id());
                             }
+                            // Paperclip attach button, left of the compose box: Android opens the system picker, desktop hints drag-and-drop.
+                            if let Some(tb) = self.message_textbox.as_ref() {
+                                let (tcx, tcy, tw, th) = (tb.center_x, tb.center_y, tb.width, tb.height);
+                                let clip_size = th * 0.55;
+                                let clip_cx = tcx - tw * 0.5 - th * 0.55;
+                                let clip_style = TextStyle::new(clip_size, *theme::SEND_ARROW_COLOUR).weight(500);
+                                ctx.text.draw_text_center(&mut canvas, "\u{1F4CE}", clip_cx, tcy, &clip_style, None, None);
+                                restamp_hit_rect(
+                                    &mut chrome.hit_test_map, buf_w, buf_h,
+                                    (clip_cx - th * 0.45) as isize, (tcy - th * 0.45) as isize,
+                                    (clip_cx + th * 0.45) as isize, (tcy + th * 0.45) as isize,
+                                    self.attach_ui_base.wrapping_add(2),
+                                );
+                            }
                         } // end chain-woven compose gate
                     } // end CLUTCH-Complete gate (message list + compose box)
+                }
+            }
+
+            // ── Attachment resample overlay: a modal card over the whole conversation. Dim wash → card panel → name/dims/size → slider → send-original check → [send][cancel] pills. Slider + check are real widgets (walk-wired); the pills stamp attach_ui_base / +1.
+            if let Some((_, name, bytes, (iw, ih))) = self.pending_attach.clone() {
+                let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+                let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
+                let (cx, cy, w, h) = attach_card_rect(buf_w, buf_h, unit);
+                // Dim the scene, then the card panel.
+                paint::fill_rect(&mut canvas, 0, 0, buf_w as isize, buf_h as isize, *theme::OVERLAY_DIM, None, None);
+                paint::fill_rect(&mut canvas, (cx - w * 0.5) as isize, (cy - h * 0.5) as isize, w as isize, h as isize, *theme::CARD_BG, None, None);
+                let label = TextStyle::new(unit * 0.62, *theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium");
+                let small = TextStyle::new(unit * 0.52, *theme::LABEL_COLOUR).weight(400).font("Oxanium");
+                // Line 1: name. Line 2: dims + size (dozenal glyphs — never arabic).
+                ctx.text.draw_text_center(&mut canvas, &name, cx, cy - h * 0.5 + unit * 0.8, &label, None, None);
+                let (units_n, units_l) = crate::types::size_units(bytes.len() as u64);
+                let send_original = self.attach_original_check.as_ref().map(|c| c.is_checked()).unwrap_or(false);
+                let t = self.attach_slider.as_ref().map(|s| s.value()).unwrap_or(0.7);
+                let (edge, q) = attach_curve(t);
+                let out_edge = edge.min(iw.max(ih));
+                let scale = out_edge as f32 / iw.max(ih) as f32;
+                let (ow, oh) = (((iw as f32 * scale).round() as u32).max(1), ((ih as f32 * scale).round() as u32).max(1));
+                let dims_line = if send_original {
+                    format!("{}\u{00D7}{} \u{00B7} {}\u{202F}{} \u{00B7} original", crate::dozenal_glyphs(iw), crate::dozenal_glyphs(ih), crate::dozenal_glyphs(units_n), units_l)
+                } else {
+                    format!("{}\u{00D7}{} \u{2192} {}\u{00D7}{} \u{00B7} q{}", crate::dozenal_glyphs(iw), crate::dozenal_glyphs(ih), crate::dozenal_glyphs(ow), crate::dozenal_glyphs(oh), crate::dozenal_glyphs(q as u32))
+                };
+                ctx.text.draw_text_center(&mut canvas, &dims_line, cx, cy - h * 0.5 + unit * 1.7, &small, None, None);
+                // Widgets: slider (disabled + dimmed when sending original) and the checkbox.
+                if let Some(sl) = self.attach_slider.as_mut() {
+                    sl.set_enabled(!send_original);
+                    sl.render_content_into(&mut canvas, Some(&mut chrome.hit_test_map), sl.hit_id());
+                }
+                if let Some(cb) = self.attach_original_check.as_mut() {
+                    cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                }
+                // Pills: send / cancel. Encoding feedback frame rides the send pill (the pending_delete pattern).
+                let encoding = self.pending_attach_encode.is_some();
+                let pill_y = cy + h * 0.5 - unit * 0.8;
+                let pills: [(&str, u32, HitId); 2] = [
+                    (if encoding { "encoding\u{2026}" } else { "send" }, *theme::SEARCH_FOUND_COLOUR, self.attach_ui_base),
+                    ("cancel", *theme::ERROR_TEXT_COLOUR, self.attach_ui_base.wrapping_add(1)),
+                ];
+                let pstyle_sz = unit * 0.62;
+                let mut px = cx - w * 0.25;
+                for (plabel, colour, hid) in pills {
+                    let st = TextStyle::new(pstyle_sz, colour).weight(600).font("Oxanium");
+                    let pw = ctx.text.measure_text(plabel, &st);
+                    ctx.text.draw_text_center(&mut canvas, plabel, px, pill_y, &st, None, None);
+                    restamp_hit_rect(
+                        &mut chrome.hit_test_map, buf_w, buf_h,
+                        (px - pw * 0.5 - unit * 0.4) as isize, (pill_y - unit * 0.6) as isize,
+                        (px + pw * 0.5 + unit * 0.4) as isize, (pill_y + unit * 0.6) as isize,
+                        hid,
+                    );
+                    px += w * 0.5;
+                }
+                if self.pending_attach_encode == Some(false) {
+                    // The "encoding…" feedback frame is on screen — the tick may run the encode now.
+                    self.pending_attach_encode = Some(true);
                 }
             }
         }
@@ -7015,6 +7254,17 @@ impl PhotonApp {
             let send_cx = box_right - send_inset - send_size * 0.5;
             btn.set_rect(send_cx, compose_cy, send_size, send_size);
             btn.set_font_size(font_size);
+        }
+        // Attachment resample overlay: a centred card — name/dims line, slider, send-original check, [send][cancel] pills (pills stamp their own hit rects in the render). Card metrics mirror the render block (attach_card_rect).
+        if self.pending_attach.is_some() {
+            let (cx, cy, w, _h) = attach_card_rect(buf_w, buf_h, unit);
+            if let Some(sl) = self.attach_slider.as_mut() {
+                sl.set_rect(cx, cy - unit * 0.2, w * 0.72, unit * 0.9);
+            }
+            if let Some(cb) = self.attach_original_check.as_mut() {
+                cb.set_rect(cx, cy + unit * 1.1, w * 0.72, unit * 0.9);
+                cb.set_font_size(font_size * 0.9);
+            }
         }
 
         // Settings panel (STUB): position the stateful widgets on the selected page. Content-body rows give each control a slot; a control's rect is a portion of its row so the label can sit beside / above it. Only the active page's widgets are repositioned — the others keep their placeholder geometry off-screen, and `visit` gates them out anyway.
@@ -9471,9 +9721,8 @@ impl PhotonApp {
         true
     }
 
-    /// Send a dropped/picked file as an attachment: cap 25MB, blob sealed to disk, the row = an ATTACHMENT_PREFIX content string riding the ordinary chain send (bubble, ACK, fleet sync, tombstones all inherited), then the blob itself pushed over PT.
+    /// Send a dropped/picked file as an attachment (path entry — desktop drop). Reads and forwards to [`Self::send_attachment_from_bytes`].
     fn send_attachment_from_path(&mut self, ci: usize, path: &str) {
-        const MAX_ATTACH: usize = 25 * 1024 * 1024;
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) => {
@@ -9481,16 +9730,40 @@ impl PhotonApp {
                 return;
             }
         };
-        if bytes.is_empty() || bytes.len() > MAX_ATTACH {
-            self.ready_toast = Some("attachment limit is 25 MB".to_string());
-            self.ready_toast_screen = None;
-            crate::logf!("attach: rejected ({} bytes)", bytes.len());
-            return;
-        }
         let name = std::path::Path::new(path)
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".to_string());
+        self.send_attachment_from_bytes(ci, name, bytes);
+    }
+
+    /// Byte entry (Android picker + desktop drop converge here). Images fork to the RESAMPLE OVERLAY (slider = size/quality curve, checkbox = send original); everything else sends immediately.
+    fn send_attachment_from_bytes(&mut self, ci: usize, name: String, bytes: Vec<u8>) {
+        if let Some(dims) = crate::ui::avatar::probe_image_dims(&bytes) {
+            if let Some(sl) = self.attach_slider.as_mut() {
+                sl.set_value(0.7);
+                sl.set_enabled(true);
+            }
+            if let Some(cb) = self.attach_original_check.as_mut() {
+                cb.set_checked(false);
+            }
+            self.pending_attach = Some((ci, name, bytes, dims));
+            self.pending_attach_encode = None;
+            self.scene_dirty = true;
+            return;
+        }
+        self.attach_send_now(ci, name, bytes);
+    }
+
+    /// The actual send: cap 25MB, blob sealed to disk, the row = an ATTACHMENT_PREFIX content string riding the ordinary chain send (bubble, ACK, fleet sync, tombstones all inherited), then the blob itself pushed over PT.
+    fn attach_send_now(&mut self, ci: usize, name: String, bytes: Vec<u8>) {
+        const MAX_ATTACH: usize = 25 * 1024 * 1024;
+        if bytes.is_empty() || bytes.len() > MAX_ATTACH {
+            self.ready_toast = Some("attachment limit is 25 MB \u{2014} resample the image down".to_string());
+            self.ready_toast_screen = None;
+            crate::logf!("attach: rejected ({} bytes)", bytes.len());
+            return;
+        }
         let hash = *blake3::hash(&bytes).as_bytes();
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return;
@@ -15554,7 +15827,7 @@ impl PhotonApp {
                     content_hash,
                     sealed,
                     sender_pubkey,
-                    sender_addr: _,
+                    sender_addr,
                 } => {
                     let known = self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key));
                     if !known {
@@ -15566,6 +15839,19 @@ impl PhotonApp {
                                     match crate::storage::blob_store(&seed, &content_hash, &plain) {
                                         Ok(()) => {
                                             crate::logf!("ATTACH: blob received + stored ({} bytes)", plain.len());
+                                            // Confirm to the pusher (attach_have) so their pill flips to delivered. Relay reply when the blob came thru the pipe.
+                                            if let (Some(kp), Some(checker)) = (self.device_keypair.as_ref(), self.status_checker.as_ref()) {
+                                                if let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_attach_have_vsf(&conversation_token, &content_hash, kp.public.as_bytes(), kp.secret.as_bytes()) {
+                                                    let via_relay = sender_addr == crate::network::status::RELAY_ADDR;
+                                                    checker.send_history(crate::network::status::HistorySendRequest {
+                                                        peer_addr: sender_addr,
+                                                        alt_addr: None,
+                                                        recipient_pubkey: sender_pubkey.key,
+                                                        vsf_bytes,
+                                                        relay_to: if via_relay { vec![sender_pubkey.key] } else { Vec::new() },
+                                                    });
+                                                }
+                                            }
                                             self.msg_wrap = None;
                                             self.scene_dirty = true;
                                             changed = true;
@@ -15579,6 +15865,23 @@ impl PhotonApp {
                         }
                     } else {
                         crate::log("ATTACH: no wire key for the blob's conversation — dropped");
+                    }
+                }
+                // Throttled PT transfer progress — drives the pill progress bars.
+                StatusUpdate::AttachProgress(snap) => {
+                    self.attach_progress = snap;
+                    if matches!(self.state, AppState::Conversation) {
+                        self.scene_dirty = true;
+                        changed = true;
+                    }
+                }
+                // Blob-landed confirmation from the receiver: the sender's pill flips to delivered.
+                StatusUpdate::AttachHaveReceived { content_hash, sender_pubkey } => {
+                    if self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key)) {
+                        self.attach_confirmed.insert(content_hash);
+                        self.msg_wrap = None;
+                        self.scene_dirty = true;
+                        changed = true;
                     }
                 }
                 // A peer wants a blob we may hold: authorize, seal under the requester-relationship key, answer over PT (relay reply when the request came thru the pipe).

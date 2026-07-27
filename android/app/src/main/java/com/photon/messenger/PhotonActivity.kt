@@ -174,6 +174,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativeImeEditorCursor(contextPtr: Long): Int   // honest-IME mirror: cursor in CHARS (code points)
     private external fun nativeImeReplace(contextPtr: Long, start: Int, end: Int, text: String)  // honest-IME write: TRUE range replace (char offsets)  // insets listener → Rust's IME-height mirror (ptr-less); the surface never resizes for the keyboard, Rust lifts its bottom strips instead
     private external fun nativePollAvatarPicker(contextPtr: Long): Int  // Per-frame poll for the avatar image-picker request — 1=launch ACTION_GET_CONTENT, 0=no change
+    private external fun nativePollAttachPicker(contextPtr: Long): Int  // Per-frame poll for the paperclip any-file picker — 1=launch, 0=no change
+    private external fun nativeSendAttachment(contextPtr: Long, name: String, data: ByteArray)  // Picked file → the active conversation (name + raw bytes; Rust caps size + forks images to the resample overlay)
     private external fun nativePollSessionBroadcast(contextPtr: Long): Int  // 1=send sticky broadcast, -1=clear, 0=no change
     private external fun nativePollApkInstall(contextPtr: Long): String?  // Per-frame poll: staged self-update APK path (one-shot) — fire the system installer with it
     private external fun nativePollClipboardCopy(contextPtr: Long): String?  // Per-frame poll: text to place on the OS clipboard (one-shot) — copy-words / copy-name affordances
@@ -233,6 +235,35 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
 
     private fun openImagePicker() {
         imagePickerLauncher.launch("image/*")
+    }
+
+    // Any-file picker for attachments — same raw-bytes doctrine as the avatar path (no Android-side decoding), plus the display name via OpenableColumns so the receiver sees a real filename.
+    private val attachPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let {
+            try {
+                var name = "file"
+                contentResolver.query(it, null, null, null, null)?.use { cursor ->
+                    val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0 && cursor.moveToFirst()) {
+                        cursor.getString(idx)?.let { n -> if (n.isNotEmpty()) name = n }
+                    }
+                }
+                contentResolver.openInputStream(it)?.use { stream ->
+                    val fileBytes = stream.readBytes()
+                    if (nativePtr != 0L && fileBytes.isNotEmpty()) {
+                        nativeSendAttachment(nativePtr, name, fileBytes)
+                    }
+                }
+            } catch (e: Exception) {
+                // Silently fail - Rust logs the absence
+            }
+        }
+    }
+
+    private fun openAttachPicker() {
+        attachPickerLauncher.launch("*/*")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -562,6 +593,10 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                 // Avatar tap (Ready screen) → launch the system image picker. App-driven, not touch-driven, so it polls alongside the keyboard signal instead of riding the nativeOnTouch return like the legacy 2-code path did.
                 if (nativePollAvatarPicker(nativePtr) == 1) {
                     openImagePicker()
+                }
+                // Paperclip (conversation) → any-file picker.
+                if (nativePollAttachPicker(nativePtr) == 1) {
+                    openAttachPicker()
                 }
                 when (nativePollSessionBroadcast(nativePtr)) {
                     1 -> connectionService?.sendSessionBroadcast()

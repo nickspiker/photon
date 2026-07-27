@@ -2633,6 +2633,55 @@ pub fn parse_attach_req_vsf(
     Ok(((conversation_token, content_hash), sender_pubkey))
 }
 
+/// Build an `attach_have` frame — the receiver's confirmation that an attachment blob arrived, verified, and stored. Flips the sender's pill from "sending" to delivered; purely informational (no retransmit machinery keys off it — PT owns reliability).
+pub fn build_attach_have_vsf(
+    conversation_token: &[u8; 32],
+    content_hash: &[u8; 32],
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+
+    let mut section = VsfSection::new("attach_have");
+    section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    section.add_field("hash", VsfType::hb(content_hash.to_vec()));
+
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build attach_have VSF: {}", e))?;
+
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse + verify an `attach_have` frame. Returns ((conversation_token, content_hash), sender_pubkey).
+pub fn parse_attach_have_vsf(
+    vsf_bytes: &[u8],
+) -> Result<(([u8; 32], [u8; 32]), [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("attach_have verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "attach_have" {
+        return Err(format!(
+            "Expected 'attach_have' section, got '{}'",
+            section_name
+        ));
+    }
+    let fields = &section.fields;
+
+    let conversation_token = field_hash32(fields, "tok", |v| matches!(v, VsfType::hg(_)))
+        .ok_or("attach_have missing tok")?;
+    let content_hash = field_hash32(fields, "hash", |v| matches!(v, VsfType::hb(_)))
+        .ok_or("attach_have missing hash")?;
+
+    Ok(((conversation_token, content_hash), sender_pubkey))
+}
+
 pub fn build_chain_reset_vsf(
     conversation_token: &[u8; 32],
     sealed_nonce: Vec<u8>,

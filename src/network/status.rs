@@ -303,6 +303,13 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
+    /// Live PT transfer progress (throttled ~500ms): (peer, done, total, outbound) per active sharded transfer. Drives the attachment progress bar.
+    AttachProgress(Vec<(SocketAddr, u32, u32, bool)>),
+    /// A receiver confirmed an attachment blob arrived + verified + stored — flips the sender's pill to delivered.
+    AttachHaveReceived {
+        content_hash: [u8; 32],
+        sender_pubkey: DevicePubkey,
+    },
     /// A peer wants the blob for an attachment row it holds (offline race, or a fleet sibling with row-but-no-blob). The UI answers with an attach_blob if the blob is held.
     AttachReqReceived {
         conversation_token: [u8; 32],
@@ -1933,6 +1940,26 @@ async fn run_checker(
                                 );
                                 continue;
                             }
+                            if let Ok(((_tok, content_hash), sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_attach_have_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::AttachHaveReceived {
+                                        content_hash,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
                             if let Ok(((conversation_token, content_hash), sender_pubkey)) =
                                 crate::network::fgtw::protocol::parse_attach_req_vsf(msg_bytes)
                             {
@@ -2703,6 +2730,10 @@ async fn run_checker(
         }
     });
 
+    // Attachment progress throttle state (see the PT tick block).
+    let mut last_progress_push = std::time::Instant::now();
+    let mut last_progress_snap: Vec<(SocketAddr, u32, u32, bool)> = Vec::new();
+
     // Main event loop
     loop {
         match ping_rx.try_recv() {
@@ -3271,6 +3302,19 @@ async fn run_checker(
         // PT periodic tick - handles timeouts, retries, TCP+relay fallback
         {
             let mut pt_mgr = pt.lock().unwrap();
+            // Throttled transfer-progress push (attachment bars): only sharded transfers exist here, only pushed when the snapshot changed. ~2Hz keeps the pill honest without spamming the UI channel.
+            if last_progress_push.elapsed() >= std::time::Duration::from_millis(500) {
+                last_progress_push = std::time::Instant::now();
+                let snap = pt_mgr.transfer_progress();
+                if snap != last_progress_snap {
+                    last_progress_snap = snap.clone();
+                    send_status_update(
+                        &status_tx,
+                        StatusUpdate::AttachProgress(snap),
+                        &event_proxy,
+                    );
+                }
+            }
             let to_send = pt_mgr.tick();
             let keypair_for_relay = pt_mgr.keypair().clone();
             drop(pt_mgr);
