@@ -5,15 +5,9 @@
 //! no password because possession of a fold-verified sibling device IS the credential — the same trust the fleet key already
 //! encodes. It is OFF by default and gated behind a Security toggle on the host; a session opening fires a notification there.
 //!
-//! This module is the HOST half: it owns the live PTY sessions (one child shell each), pumps the shell's output back to the
-//! client, and applies keystrokes / resizes / kill-and-respawn. The CLIENT half is the `photonsh` binary, which proxies raw
-//! stdin/stdout through the resident photon over a local unix socket. Desktop-only (real PTY); compiled out on Android.
-
-#![cfg(all(unix, not(target_os = "android")))]
-
-use std::collections::HashMap;
-use std::os::unix::io::RawFd;
-use std::sync::mpsc::Sender;
+//! The seal/open helpers (`seal_term`/`open_term`) are CROSS-PLATFORM — both the client (any platform) and the host need them.
+//! The PTY HOST (live shell sessions via forkpty) is desktop-unix only and gated below. The chat-as-shell bridge (line in / line
+//! out) uses only the seal helpers + the app-side runner; the PTY host is a separate future path for full interactive sessions.
 
 /// The blake3 KDF context binding a `term` payload seal to this feature — folded with the fleet key so a term payload can't be
 /// confused with any other fleet-key-sealed blob.
@@ -21,15 +15,24 @@ fn term_seal_key(fleet_key: &[u8; 32]) -> [u8; 32] {
     blake3::derive_key("photon.bridge.term.v0", fleet_key)
 }
 
-/// Seal a term payload (keystrokes / output / control args) under the fleet key.
+/// Seal a term payload (a command line / output) under the fleet key. Cross-platform.
 pub fn seal_term(payload: &[u8], fleet_key: &[u8; 32]) -> Result<Vec<u8>, String> {
     kete::encrypt_bytes(payload, &term_seal_key(fleet_key))
 }
 
-/// Open a term payload sealed by [`seal_term`]. `None` on wrong key / tamper.
+/// Open a term payload sealed by [`seal_term`]. `None` on wrong key / tamper. Cross-platform.
 pub fn open_term(sealed: &[u8], fleet_key: &[u8; 32]) -> Option<Vec<u8>> {
     kete::decrypt_bytes(sealed, &term_seal_key(fleet_key)).ok()
 }
+
+// ─────────────────────────── PTY host (desktop-unix only, future full-interactive path) ───────────────────────────
+
+#[cfg(all(unix, not(target_os = "android")))]
+#[allow(dead_code)]
+mod pty_host {
+use std::collections::HashMap;
+use std::os::unix::io::RawFd;
+use std::sync::mpsc::Sender;
 
 /// One live PTY session on the host: the master fd (we read shell output from it and write keystrokes to it) and the child pid
 /// (killed on close / nuke). The output-reader thread owns a dup of the master fd and streams `TermOut` events until EOF.
@@ -256,7 +259,7 @@ fn set_winsize(master_fd: RawFd, cols: u16, rows: u16) {
 }
 
 #[cfg(test)]
-mod tests {
+mod pty_tests {
     use super::*;
 
     #[test]
@@ -265,6 +268,17 @@ mod tests {
         assert_eq!(unpack_winsize(&pack_winsize(80, 24)), (80, 24));
         assert_eq!(unpack_winsize(&[]), (80, 24)); // default on empty
     }
+}
+} // end mod pty_host
+
+/// Re-export the PTY host for the future full-interactive path (desktop-unix only).
+#[cfg(all(unix, not(target_os = "android")))]
+#[allow(unused_imports)]
+pub use pty_host::{pack_winsize, unpack_winsize, BridgeHost, TermOut};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     #[test]
     fn term_seal_round_trips_and_rejects_wrong_key() {
