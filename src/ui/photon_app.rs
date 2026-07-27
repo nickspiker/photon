@@ -415,6 +415,17 @@ fn dim_colour(c: u32) -> u32 {
 }
 
 /// Greedy word-wrap for the message list: split `s` into lines that each measure ≤ `max_w` under `style`. Word widths are measured individually and summed (kerning across a space is negligible at chat sizes), so the cost is O(words), not O(words²) re-shapes. A single word wider than the line hard-breaks by chars — a pasted URL/hash must wrap, not vanish off-screen. Empty input yields one empty line so the row keeps its height.
+/// Bubble DISPLAY text for a row: attachment rows render as a pill line — paperclip, name, dozenal size, and an actions hint while the blob isn't held locally. Everything else passes thru. The raw marker string never reaches a glyph.
+fn display_content(content: &str) -> String {
+    if let Some((hash, name, size)) = crate::types::parse_attachment_content(content) {
+        let (units, label) = crate::types::size_units(size);
+        let state = if crate::storage::blob_present(&hash) { "" } else { " \u{2014} tap for actions" };
+        format!("\u{1F4CE} {} \u{00B7} {}\u{202F}{}{}", name, crate::dozenal_glyphs(units), label, state)
+    } else {
+        content.to_string()
+    }
+}
+
 fn wrap_text_lines(tr: &mut fluor::text::TextRenderer, s: &str, style: &TextStyle, max_w: f32) -> Vec<String> {
     let space_w = tr.measure_text(" ", style);
     let mut lines: Vec<String> = Vec::new();
@@ -2777,7 +2788,7 @@ impl FluorApp for PhotonApp {
                     let text_opt = self.contacts.get(sci).and_then(|c| {
                         c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out).map(|m| m.content.clone())
                     });
-                    if let Some(text) = text_opt {
+                    if let Some(text) = text_opt.map(|t| display_content(&t)) {
                         if self.copy_to_clipboard(&text) {
                             crate::log("msg-details: message text copied");
                             // Pill flips green + "copied" — event-cleared when the selection moves/closes.
@@ -2801,8 +2812,9 @@ impl FluorApp for PhotonApp {
                         0 => {
                             let excerpt: Option<String> = self.contacts.get(sci).and_then(|c| {
                                 c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out).map(|m| {
-                                    let mut e: String = m.content.chars().take(40).collect();
-                                    if m.content.chars().count() > 40 { e.push('\u{2026}'); }
+                                    let d = display_content(&m.content);
+                                    let mut e: String = d.chars().take(40).collect();
+                                    if d.chars().count() > 40 { e.push('\u{2026}'); }
                                     e
                                 })
                             });
@@ -2830,6 +2842,27 @@ impl FluorApp for PhotonApp {
                                         self.push_rows_to_siblings(sci, std::slice::from_ref(&row), None);
                                         self.ready_toast = Some("re-pushed thru the fleet (no chain on this device)".to_string());
                                     }
+                                }
+                                self.ready_toast_screen = None;
+                            }
+                        }
+                        // SAVE / FETCH (attachments): blob held → write to Downloads; missing → ask friend + siblings over PT.
+                        4 => {
+                            let att = self.contacts.get(sci).and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out)).and_then(|m| crate::types::parse_attachment_content(&m.content));
+                            if let Some((hash, name, _)) = att {
+                                if crate::storage::blob_present(&hash) {
+                                    match self.attach_save(&name, &hash) {
+                                        Some(dest) => {
+                                            self.ready_toast = Some(format!("saved \u{2192} {}", dest));
+                                            crate::logf!("attach: saved to {}", dest);
+                                        }
+                                        None => {
+                                            self.ready_toast = Some("save failed \u{2014} see the log".to_string());
+                                        }
+                                    }
+                                } else {
+                                    self.attach_fetch(sci, &hash);
+                                    self.ready_toast = Some("fetching from your devices\u{2026}".to_string());
                                 }
                                 self.ready_toast_screen = None;
                             }
@@ -3568,6 +3601,14 @@ impl FluorApp for PhotonApp {
                 EventResponse::Pass
             }
             Event::DroppedFile(path) => {
+                // A file dropped on an OPEN CONVERSATION = send it as an attachment. (Ready-screen drops stay the avatar pipeline below.)
+                if matches!(self.state, AppState::Conversation) {
+                    if let Some(ci) = self.active_contact {
+                        self.send_attachment_from_path(ci, path);
+                        ctx.window.request_redraw();
+                        return EventResponse::Handled;
+                    }
+                }
                 // Desktop avatar update: a file dropped on the window (Ready screen) is read and run thru the same encode→save→load→install→upload pipeline as the Android picker. Ignored off the Ready screen and when no handle is attested yet (set_avatar_from_file no-ops without a handle). Android has no drop path — it uses the picker.
                 if matches!(self.state, AppState::Ready) {
                     match std::fs::read(path) {
@@ -3641,6 +3682,10 @@ impl FluorApp for PhotonApp {
                 }
             }
             if let Some(row) = tombstoned {
+                // Attachments truly shred: only ROW CONTENT is braid-bound (preserved) — the blob file has no weave duty, so the bytes themselves are deleted here and on every device that applies this tombstone.
+                if let Some((hash, _, _)) = crate::types::parse_attachment_content(&row.content) {
+                    crate::storage::blob_delete(&hash);
+                }
                 // Fleet-wide: the tombstoned row rides the ordinary sibling push (merge upgrades true-wins).
                 self.push_rows_to_siblings(sci, std::slice::from_ref(&row), None);
                 // Cross-party: the hidden delete marker on the chain (friend conversations with a local chain; a chainless device's fleet tombstone still reaches the chain owner, which is where a follow-up marker could ride — v1 logs the gap).
@@ -5280,7 +5325,7 @@ impl FluorApp for PhotonApp {
                             let mut all_lines: Vec<Vec<String>> = Vec::with_capacity(n);
                             let mut total = 0usize;
                             for m in &visible {
-                                let lines = wrap_text_lines(ctx.text, &m.content, &wrap_style, avail_w);
+                                let lines = wrap_text_lines(ctx.text, &display_content(&m.content), &wrap_style, avail_w);
                                 total += lines.len();
                                 all_lines.push(lines);
                             }
@@ -5360,6 +5405,14 @@ impl FluorApp for PhotonApp {
                                 pills.push((copy_label, copy_colour, self.msg_copy_id));
                                 if msg.is_outgoing && !msg.delivered {
                                     pills.push(("resend", *theme::HOURGLASS_COLOUR, self.msg_action_base.wrapping_add(2)));
+                                }
+                                // Attachment rows: save (blob held) or fetch (blob missing — ask friend + siblings for it).
+                                if let Some((hash, _, _)) = crate::types::parse_attachment_content(&msg.content) {
+                                    if crate::storage::blob_present(&hash) {
+                                        pills.push(("save", *theme::SEARCH_FOUND_COLOUR, self.msg_action_base.wrapping_add(4)));
+                                    } else {
+                                        pills.push(("fetch", *theme::HOURGLASS_COLOUR, self.msg_action_base.wrapping_add(4)));
+                                    }
                                 }
                                 let deleting = self.pending_delete.as_ref().is_some_and(|(k, _)| *k == (ci, msg.timestamp, msg.is_outgoing));
                                 pills.push((if deleting { "deleting\u{2026}" } else { "delete" }, *theme::ERROR_TEXT_COLOUR, self.msg_action_base.wrapping_add(3)));
@@ -9416,6 +9469,174 @@ impl PhotonApp {
         }
 
         true
+    }
+
+    /// Send a dropped/picked file as an attachment: cap 25MB, blob sealed to disk, the row = an ATTACHMENT_PREFIX content string riding the ordinary chain send (bubble, ACK, fleet sync, tombstones all inherited), then the blob itself pushed over PT.
+    fn send_attachment_from_path(&mut self, ci: usize, path: &str) {
+        const MAX_ATTACH: usize = 25 * 1024 * 1024;
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                crate::logf!("attach: read failed: {}", e);
+                return;
+            }
+        };
+        if bytes.is_empty() || bytes.len() > MAX_ATTACH {
+            self.ready_toast = Some("attachment limit is 25 MB".to_string());
+            self.ready_toast_screen = None;
+            crate::logf!("attach: rejected ({} bytes)", bytes.len());
+            return;
+        }
+        let name = std::path::Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file".to_string());
+        let hash = *blake3::hash(&bytes).as_bytes();
+        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+            return;
+        };
+        if let Err(e) = crate::storage::blob_store(&seed, &hash, &bytes) {
+            crate::logf!("attach: blob store failed: {}", e);
+            return;
+        }
+        let content = crate::types::attachment_content(&hash, &name, bytes.len() as u64);
+        // The row: ordinary chain send (or fleet-forward on a chainless device) — everything downstream treats it as a normal message.
+        if !self.send_chain_message(ci, &content, false) {
+            crate::log("attach: row send failed (no chain, no fleet) — attachment stays local");
+        }
+        // The blob: eager PT push to the friend. Siblings + offline races fetch on demand (attach_req).
+        self.send_attach_blob(ci, &hash);
+        self.msg_wrap = None;
+        self.scene_dirty = true;
+        crate::logf!("attach: sent {} ({} bytes)", crate::deglyph_for_log(&name), bytes.len());
+    }
+
+    /// The wire seal key for an attachment exchanged with `device`: fleet key when the device is one of OUR siblings, else the conversation's friendship history key. (Blob files at rest use a separate local-only key.)
+    fn attach_wire_key(&self, device: &[u8; 32], token: &[u8; 32]) -> Option<[u8; 32]> {
+        let is_sib = self
+            .contacts
+            .iter()
+            .any(|c| c.is_sibling && c.public_identity.key == *device);
+        if is_sib {
+            return self.fleet_key_cached();
+        }
+        self.friendship_chains
+            .iter()
+            .find(|(_, ch)| ch.conversation_token == *token)
+            .and_then(|(_, ch)| ch.history_key().copied())
+    }
+
+    /// Seal + push the blob for `content_hash` to contact `ci`'s device over PT (skips self/sibling contacts — they fetch lazily).
+    fn send_attach_blob(&mut self, ci: usize, content_hash: &[u8; 32]) {
+        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else { return };
+        let Some(plain) = crate::storage::blob_load(&seed, content_hash) else {
+            crate::log("attach: blob missing locally — nothing to push");
+            return;
+        };
+        let (device, addr_pair, relay_to, token) = {
+            let Some(c) = self.contacts.get(ci) else { return };
+            let is_self = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) == Some(c.handle_hash);
+            if is_self || c.is_sibling {
+                return;
+            }
+            let Some(token) = self
+                .friendship_chains
+                .iter()
+                .find(|(id, _)| Some(*id) == c.friendship_id)
+                .map(|(_, ch)| ch.conversation_token)
+            else {
+                crate::log("attach: no chains yet — blob waits for attach_req");
+                return;
+            };
+            let relay_to = if c.validated_path.is_none() { c.relay_device_list() } else { Vec::new() };
+            (c.public_identity.key, c.race_addrs(), relay_to, token)
+        };
+        let Some((peer_addr, alt_addr)) = addr_pair else { return };
+        let Some(wire_key) = self.attach_wire_key(&device, &token) else {
+            crate::log("attach: no wire key (history key not derived yet)");
+            return;
+        };
+        let Ok(sealed) = kete::encrypt_bytes(&plain, &wire_key) else { return };
+        let (Some(kp), Some(checker)) = (self.device_keypair.as_ref(), self.status_checker.as_ref()) else { return };
+        match crate::network::fgtw::protocol::build_attach_blob_vsf(&token, content_hash, sealed, kp.public.as_bytes(), kp.secret.as_bytes()) {
+            Ok(vsf_bytes) => {
+                checker.send_history(crate::network::status::HistorySendRequest {
+                    peer_addr,
+                    alt_addr,
+                    recipient_pubkey: device,
+                    vsf_bytes,
+                    relay_to,
+                });
+                crate::log("attach: blob dispatched over PT");
+            }
+            Err(e) => crate::logf!("attach: blob frame build failed: {}", e),
+        }
+    }
+
+    /// Ask for a missing blob: attach_req to the conversation's friend device AND every online sibling — whoever holds it answers with an attach_blob.
+    fn attach_fetch(&mut self, sci: usize, content_hash: &[u8; 32]) {
+        // Token: the friendship token when one exists; else (self-conversation — no chains) the handle hash. Sibling exchanges seal under the FLEET key regardless of token, so the fallback only ever reaches sibling responders, where it's a plain discriminator.
+        let Some(token) = ({
+            let c = self.contacts.get(sci);
+            c.map(|c| {
+                self.friendship_chains
+                    .iter()
+                    .find(|(id, _)| Some(*id) == c.friendship_id)
+                    .map(|(_, ch)| ch.conversation_token)
+                    .unwrap_or(c.handle_hash)
+            })
+        }) else {
+            return;
+        };
+        let (Some(kp), Some(checker)) = (self.device_keypair.as_ref(), self.status_checker.as_ref()) else { return };
+        let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_attach_req_vsf(&token, content_hash, kp.public.as_bytes(), kp.secret.as_bytes()) else { return };
+        // Friend device + all siblings; race_addrs handles LAN/WAN, relay list covers the unreachable.
+        let mut targets: Vec<(std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32], Vec<[u8; 32]>)> = Vec::new();
+        for c in &self.contacts {
+            let is_target = c.is_sibling
+                || self.contacts.get(sci).map(|t| t.handle_hash) == Some(c.handle_hash);
+            if !is_target {
+                continue;
+            }
+            if let Some((a, alt)) = c.race_addrs() {
+                let relay = if c.validated_path.is_none() { c.relay_device_list() } else { Vec::new() };
+                targets.push((a, alt, c.public_identity.key, relay));
+            }
+        }
+        for (peer_addr, alt_addr, recipient_pubkey, relay_to) in targets {
+            checker.send_history(crate::network::status::HistorySendRequest {
+                peer_addr,
+                alt_addr,
+                recipient_pubkey,
+                vsf_bytes: vsf_bytes.clone(),
+                relay_to,
+            });
+        }
+        crate::log("attach: fetch request dispatched");
+    }
+
+    /// Save a held blob to the user's Downloads dir (name deduped). Returns the destination on success.
+    fn attach_save(&mut self, name: &str, content_hash: &[u8; 32]) -> Option<String> {
+        let seed = self.session.as_ref().map(|s| s.identity_seed)?;
+        let plain = crate::storage::blob_load(&seed, content_hash)?;
+        #[cfg(target_os = "android")]
+        let base = crate::storage::photon_config_dir().ok()?.join("Download");
+        #[cfg(not(target_os = "android"))]
+        let base = dirs::download_dir()?;
+        let _ = std::fs::create_dir_all(&base);
+        // Dedupe: name, name (2), name (3)…
+        let mut dest = base.join(name);
+        let (stem, ext) = match name.rsplit_once('.') {
+            Some((s, e)) => (s.to_string(), format!(".{}", e)),
+            None => (name.to_string(), String::new()),
+        };
+        let mut i = 2;
+        while dest.exists() {
+            dest = base.join(format!("{} ({}){}", stem, i, ext));
+            i += 1;
+        }
+        std::fs::write(&dest, &plain).ok()?;
+        Some(dest.to_string_lossy().into_owned())
     }
 
     /// Just after a contact's CLUTCH reaches `Complete`, fire the one hidden chain-weave probe: a normal chat message with the reserved [`CHAIN_PROBE_MARKER`] content, sent once (guarded by `probe_sent`) with its UI bubble suppressed. When it lands the peer advances+ACKs the chain like any message, which is what proves the ratchet works end-to-end without the user seeing a decoy message. No-op if the contact isn't Complete, has no friendship chain yet, or already probed. Skips self-contacts (no peer to answer). Consolidates the transition-site logic so every `= ClutchState::Complete` path only needs one call.
@@ -13675,6 +13896,9 @@ impl PhotonApp {
                                     let _ = crate::storage::contacts::save_messages(contact, storage);
                                 }
                                 if let Some(row) = tombstoned {
+                                    if let Some((hash, _, _)) = crate::types::parse_attachment_content(&row.content) {
+                                        crate::storage::blob_delete(&hash);
+                                    }
                                     crate::logf!("CHAT: friend deleted a message (ts {}) — tombstone applied + gossiped", target_ts);
                                     sibling_push = Some((contact_idx, row));
                                 } else {
@@ -15324,6 +15548,74 @@ impl PhotonApp {
                         self.reseed_contact_pubkeys();
                     }
                 }
+                // Attachment blob arrived: authorize the sender (known device), pick the wire key by relationship (sibling → fleet, friend → history), open, verify the content hash, seal to the local blob store. The pill flips from "fetching" to present on the next frame (wrap cache dropped).
+                StatusUpdate::AttachBlobReceived {
+                    conversation_token,
+                    content_hash,
+                    sealed,
+                    sender_pubkey,
+                    sender_addr: _,
+                } => {
+                    let known = self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key));
+                    if !known {
+                        crate::log("ATTACH: blob from unknown device — dropped");
+                    } else if let Some(wire_key) = self.attach_wire_key(&sender_pubkey.key, &conversation_token) {
+                        match kete::decrypt_bytes(&sealed, &wire_key) {
+                            Ok(plain) if *blake3::hash(&plain).as_bytes() == content_hash => {
+                                if let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) {
+                                    match crate::storage::blob_store(&seed, &content_hash, &plain) {
+                                        Ok(()) => {
+                                            crate::logf!("ATTACH: blob received + stored ({} bytes)", plain.len());
+                                            self.msg_wrap = None;
+                                            self.scene_dirty = true;
+                                            changed = true;
+                                        }
+                                        Err(e) => crate::logf!("ATTACH: blob store failed: {}", e),
+                                    }
+                                }
+                            }
+                            Ok(_) => crate::log("ATTACH: blob hash mismatch — dropped"),
+                            Err(e) => crate::logf!("ATTACH: blob seal open failed: {}", e),
+                        }
+                    } else {
+                        crate::log("ATTACH: no wire key for the blob's conversation — dropped");
+                    }
+                }
+                // A peer wants a blob we may hold: authorize, seal under the requester-relationship key, answer over PT (relay reply when the request came thru the pipe).
+                StatusUpdate::AttachReqReceived {
+                    conversation_token,
+                    content_hash,
+                    sender_pubkey,
+                    sender_addr,
+                } => {
+                    let known = self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key));
+                    let seed = self.session.as_ref().map(|s| s.identity_seed);
+                    if !known {
+                        crate::log("ATTACH: request from unknown device — ignored");
+                    } else if let (Some(seed), Some(wire_key)) = (seed, self.attach_wire_key(&sender_pubkey.key, &conversation_token)) {
+                        if let Some(plain) = crate::storage::blob_load(&seed, &content_hash) {
+                            if let (Ok(sealed), Some(kp), Some(checker)) = (kete::encrypt_bytes(&plain, &wire_key), self.device_keypair.as_ref(), self.status_checker.as_ref()) {
+                                match crate::network::fgtw::protocol::build_attach_blob_vsf(&conversation_token, &content_hash, sealed, kp.public.as_bytes(), kp.secret.as_bytes()) {
+                                    Ok(vsf_bytes) => {
+                                        // A relay-injected request has no routable src addr — answer back thru the pipe.
+                                        let via_relay = sender_addr == crate::network::status::RELAY_ADDR;
+                                        checker.send_history(crate::network::status::HistorySendRequest {
+                                            peer_addr: sender_addr,
+                                            alt_addr: None,
+                                            recipient_pubkey: sender_pubkey.key,
+                                            vsf_bytes,
+                                            relay_to: if via_relay { vec![sender_pubkey.key] } else { Vec::new() },
+                                        });
+                                        crate::log("ATTACH: served blob request");
+                                    }
+                                    Err(e) => crate::logf!("ATTACH: serve frame build failed: {}", e),
+                                }
+                            }
+                        } else {
+                            crate::log("ATTACH: requested blob not held here");
+                        }
+                    }
+                }
                 StatusUpdate::ChainSyncReceived {
                     conversation_token,
                     sealed,
@@ -15522,6 +15814,9 @@ impl PhotonApp {
                                             }
                                             if row.deleted && !existing.deleted {
                                                 existing.deleted = true;
+                                                if let Some((hash, _, _)) = crate::types::parse_attachment_content(&existing.content) {
+                                                    crate::storage::blob_delete(&hash);
+                                                }
                                                 upgraded = true;
                                             }
                                             if upgraded {

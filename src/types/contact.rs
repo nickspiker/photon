@@ -145,6 +145,38 @@ pub fn is_control_content(content: &str) -> bool {
     content == CHAIN_PROBE_MARKER || content.starts_with(DELETE_MARKER_PREFIX)
 }
 
+/// Attachment row marker. NOT control content — attachment rows are VISIBLE messages (bubble = pill), they ACK, sync fleet-wide, tombstone, and weave like any row; only their DISPLAY differs. The content string is the whole record: `PREFIX + blake3_hex(64) + \u{2} + filename + \u{2} + size_bytes` — riding the ordinary content field means zero codec changes anywhere (vault, history pages, fleet sync all carry it as text). The blob itself travels separately over PT (attach_blob frames) and lives as a sealed file beside the vault, NEVER in a row.
+pub const ATTACHMENT_PREFIX: &str = "\u{1}\u{2}photon-attach\u{2}\u{1}";
+
+/// Build an attachment row's content string.
+pub fn attachment_content(content_hash: &[u8; 32], filename: &str, size: u64) -> String {
+    format!("{}{}\u{2}{}\u{2}{}", ATTACHMENT_PREFIX, hex::encode(content_hash), filename.replace('\u{2}', " "), size)
+}
+
+/// Parse an attachment row's content → (content_hash, filename, size). None for non-attachment content or a malformed record.
+pub fn parse_attachment_content(content: &str) -> Option<([u8; 32], String, u64)> {
+    let rest = content.strip_prefix(ATTACHMENT_PREFIX)?;
+    let mut parts = rest.splitn(3, '\u{2}');
+    let hash_hex = parts.next()?;
+    let name = parts.next()?;
+    let size: u64 = parts.next()?.parse().ok()?;
+    let bytes = hex::decode(hash_hex).ok()?;
+    let hash: [u8; 32] = bytes.try_into().ok()?;
+    Some((hash, name.to_string(), size))
+}
+
+/// Human-readable byte size for attachment pills — dozenal-doctrine exempt? NO: digits render at the edge; this returns arabic-free unit steps with the NUMBER left to the renderer. Kept simple: returns (whole_units, unit_label) so the caller renders the number in dozenal glyphs.
+pub fn size_units(size: u64) -> (u32, &'static str) {
+    const KI: u64 = 1024;
+    if size >= KI * KI {
+        (((size + KI * KI / 2) / (KI * KI)) as u32, "MB")
+    } else if size >= KI {
+        (((size + KI / 2) / KI) as u32, "kB")
+    } else {
+        (size as u32, "B")
+    }
+}
+
 /// State of the CLUTCH key ceremony for a contact
 ///
 /// Slot-based design: each party has a slot indexed by sorted handle_hash position. Ceremony completes when all slots have both offer and kem_secrets filled, AND both parties have exchanged matching eggs_proof values.
