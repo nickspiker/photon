@@ -15448,28 +15448,41 @@ impl PhotonApp {
     /// BRIDGE client SEND: transmit a line typed in a sibling conversation to that device as a `term` DATA frame (the sibling device-to-device transport). The line rides fleet-sealed; the host runs any `$ ` command and replies with a term DATA frame carrying the output, which our client-receive turns back into a chat bubble. `session_id` is derived from the device pair so both sides agree without a handshake.
     fn send_bridge_text(&mut self, ci: usize, text: &str) {
         let Some((device, addr_pair, relay_to)) = self.contacts.get(ci).map(|c| {
+            // Always gather a relay list for a sibling with no proven path — the bridge must reach an idle device even when presence never adopted a direct address.
             let relay = if c.validated_path.is_none() { c.relay_device_list() } else { Vec::new() };
             (c.public_identity.key, c.race_addrs(), relay)
         }) else { return };
-        let Some((peer_addr, alt_addr)) = addr_pair else {
-            self.ready_toast = Some("That device has no known address yet — try when it's online.".to_string());
-            self.ready_toast_screen = None;
+        // If there's no direct address, fall back to the RELAY sentinel (0.0.0.0:0) + the relay list — same path chat uses for an unreachable-but-relayable peer. Only truly hopeless (no address AND no relay) bails.
+        let (peer_addr, alt_addr) = match addr_pair {
+            Some(pair) => pair,
+            None if !relay_to.is_empty() => (crate::network::status::RELAY_ADDR, None),
+            None => {
+                self.ready_toast = Some("That device has no address or relay yet — can't reach it.".to_string());
+                self.ready_toast_screen = None;
+                crate::logf!("BRIDGE: send bail — sibling {} has no address and no relay", crate::fp(&device));
+                return;
+            }
+        };
+        let Some(fleet_key) = self.fleet_key_cached() else {
+            crate::log("BRIDGE: send bail — no fleet key");
             return;
         };
-        let Some(fleet_key) = self.fleet_key_cached() else { return };
         // Session id = blake3(sorted device pair) truncated — stable, handshake-free, per-pair.
         let session_id = self.bridge_session_id(&device);
         let Ok(sealed) = crate::network::bridge::seal_term(text.as_bytes(), &fleet_key) else { return };
-        let (Some(kp), Some(checker)) = (self.device_keypair.as_ref(), self.status_checker.as_ref()) else { return };
+        let (Some(kp), Some(checker)) = (self.device_keypair.as_ref(), self.status_checker.as_ref()) else {
+            crate::log("BRIDGE: send bail — no device key or status checker");
+            return;
+        };
         let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_term_vsf(&session_id, crate::network::fgtw::protocol::term_kind::DATA, sealed, kp.public.as_bytes(), kp.secret.as_bytes()) else { return };
         checker.send_history(crate::network::status::HistorySendRequest {
             peer_addr,
             alt_addr,
             recipient_pubkey: device,
             vsf_bytes,
-            relay_to,
+            relay_to: relay_to.clone(),
         });
-        crate::logf!("BRIDGE: sent line to sibling {}", crate::fp(&device));
+        crate::logf!("BRIDGE: sent line to sibling {} via {} ({} relay targets)", crate::fp(&device), peer_addr, relay_to.len());
     }
 
     /// Stable, handshake-free session id for a device pair: blake3 of the two device pubkeys sorted. Both ends compute the same 16 bytes.
