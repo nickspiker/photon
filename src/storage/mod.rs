@@ -53,6 +53,53 @@ pub fn photon_config_dir() -> Result<std::path::PathBuf, std::io::Error> {
     }
 }
 
+/// The attachment blob directory: `<config>/blobs/`. Blobs live OUTSIDE the vault deliberately — the dual-ring mirror doubles every vault write and a multi-MB value triggers a vault-grow fsync that freezes the UI (the same phenomenon that made clutch keypairs memory-only). Each blob is one sealed file, content-addressed by the PLAINTEXT blake3.
+pub fn blob_dir() -> Result<std::path::PathBuf, std::io::Error> {
+    let dir = photon_config_dir()?.join("blobs");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Per-device blob seal key. Derived from the identity seed — blobs never leave this device as FILES (the wire carries its own seal under history/fleet keys), so the at-rest key needs no cross-device agreement; identity-seed derivation just means a restored session can still open its old blobs.
+pub fn blob_seal_key(identity_seed: &[u8; 32]) -> [u8; 32] {
+    blake3::derive_key(&format!("{}.blob.seal.v0", APP.id), identity_seed)
+}
+
+/// Store an attachment blob: seal plaintext under the device blob key, write `<blobs>/<hash-hex>.bin`. Idempotent — an existing file is left alone (content-addressed, same hash = same bytes).
+pub fn blob_store(identity_seed: &[u8; 32], content_hash: &[u8; 32], plaintext: &[u8]) -> Result<(), String> {
+    let dir = blob_dir().map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{}.bin", hex::encode(content_hash)));
+    if path.exists() {
+        return Ok(());
+    }
+    let sealed = kete::encrypt_bytes(plaintext, &blob_seal_key(identity_seed))?;
+    std::fs::write(&path, &sealed).map_err(|e| e.to_string())
+}
+
+/// Load + open an attachment blob; verifies the content hash after decrypt. None = not held locally.
+pub fn blob_load(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Vec<u8>> {
+    let dir = blob_dir().ok()?;
+    let sealed = std::fs::read(dir.join(format!("{}.bin", hex::encode(content_hash)))).ok()?;
+    let plain = kete::decrypt_bytes(&sealed, &blob_seal_key(identity_seed)).ok()?;
+    if blake3::hash(&plain).as_bytes() != content_hash {
+        crate::log("blob: content hash mismatch on load — corrupt blob file dropped");
+        return None;
+    }
+    Some(plain)
+}
+
+/// Whether the blob for `content_hash` is held locally (no decrypt — presence only).
+pub fn blob_present(content_hash: &[u8; 32]) -> bool {
+    blob_dir().map(|d| d.join(format!("{}.bin", hex::encode(content_hash))).exists()).unwrap_or(false)
+}
+
+/// Delete a blob file (attachment tombstone follow-through — blobs CAN truly shred; only row content is braid-bound).
+pub fn blob_delete(content_hash: &[u8; 32]) {
+    if let Ok(dir) = blob_dir() {
+        let _ = std::fs::remove_file(dir.join(format!("{}.bin", hex::encode(content_hash))));
+    }
+}
+
 /// Holds the single-instance lock for the whole process; dropping it (or process exit/crash) releases it.
 /// Unix-only: this is the `flock`-backed variant. Non-unix desktops (Windows) use the socket-backed `InstanceLock` defined below, and Android is single-instance by construction so neither is compiled there.
 #[cfg(all(unix, not(target_os = "android")))]
