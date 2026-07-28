@@ -10,8 +10,11 @@ elif [ -d "/mnt/Chiton/MEGA/Code/keys" ]; then
     KEYS_DIR="/mnt/Chiton/MEGA/Code/keys"
 elif [ -d "$HOME/MEGA/code/keys" ]; then
     KEYS_DIR="$HOME/MEGA/code/keys"
+elif [ -d "$HOME/Code/keys" ]; then
+    # The MacBook's MEGA sync lands here (2026-07-27) — same contents, no /mnt mounts on macOS.
+    KEYS_DIR="$HOME/Code/keys"
 else
-    echo "ERROR: Cannot find keys directory"
+    echo "ERROR: Cannot find keys directory (looked in /mnt/Octopus/Code/keys, /mnt/Chiton/MEGA/Code/keys, $HOME/MEGA/code/keys, $HOME/Code/keys)"
     return 1 2>/dev/null || exit 1
 fi
 
@@ -22,11 +25,20 @@ if [ ! -f "$KEYSTORE_PATH" ]; then
     return 1 2>/dev/null || exit 1
 fi
 
+# Password source is per-OS: GNOME keyring via secret-tool on Linux, the macOS Keychain via security(1) on a Mac. Same service/account naming on both ('token' / 'keystore_password') so the store-once instructions below stay parallel.
 if [ -z "$TOKEN_KEYSTORE_PASSWORD" ]; then
-    TOKEN_KEYSTORE_PASSWORD=$(secret-tool lookup service token key keystore_password 2>/dev/null)
+    if command -v secret-tool >/dev/null; then
+        TOKEN_KEYSTORE_PASSWORD=$(secret-tool lookup service token key keystore_password 2>/dev/null)
+    elif command -v security >/dev/null; then
+        TOKEN_KEYSTORE_PASSWORD=$(security find-generic-password -s token -a keystore_password -w 2>/dev/null)
+    fi
     if [ -z "$TOKEN_KEYSTORE_PASSWORD" ]; then
-        echo "Password not in keyring. Run this once to store it:"
-        echo "  secret-tool store --label='TOKEN Keystore' service token key keystore_password"
+        echo "Password not in the OS keyring. Run this once to store it:"
+        if command -v secret-tool >/dev/null; then
+            echo "  secret-tool store --label='TOKEN Keystore' service token key keystore_password"
+        else
+            echo "  security add-generic-password -s token -a keystore_password -w"
+        fi
         echo ""
         echo -n "Keystore password: "
         read -s TOKEN_KEYSTORE_PASSWORD
