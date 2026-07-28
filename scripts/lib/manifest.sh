@@ -10,6 +10,9 @@ manifest_commit() { git rev-parse HEAD; }
 # BLAKE3 of a file (the manifest hash the client re-checks post-download).
 manifest_b3() { b3sum "$1" | cut -d' ' -f1; }
 
+# Byte size of a file. `stat -c %s` is GNU-only — BSD/macOS stat spells it `-f%z` and errors out on -c, which took down a macOS publish AFTER the binary was already on R2 (manifest row never written, so the upload was live but unreferenced). Probe once, use everywhere.
+manifest_size() { stat -c %s "$1" 2>/dev/null || stat -f%z "$1"; }
+
 # A publish stamps HEAD's commit into the manifest — a dirty tree has no honest commit to claim, so refuse outright (agreed 2026-07-16).
 manifest_refuse_dirty() {
     if [ -n "$(git status --porcelain)" ]; then
@@ -102,7 +105,7 @@ manifest_publish_dev_row() {
     local merge_arg=""
     [ -s /tmp/manifest-dev-current.vsf ] && merge_arg="--merge /tmp/manifest-dev-current.vsf"
     "$tool" --channel development --out /tmp/manifest-dev.vsf $merge_arg \
-        --artefact "$platform" "$arch" "$full" "$commit" "$R2_DEV_URL/$object" "$hash" "$(stat -c %s "$file")"
+        --artefact "$platform" "$arch" "$full" "$commit" "$R2_DEV_URL/$object" "$hash" "$(manifest_size "$file")"
     wrangler r2 object put "$R2_BUCKET/$R2_PATH/manifest-dev.vsf" \
         --file /tmp/manifest-dev.vsf --content-type application/octet-stream --remote
     echo "dev manifest: $platform/$arch -> $full ($commit) published"
