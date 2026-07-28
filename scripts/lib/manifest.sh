@@ -13,6 +13,16 @@ manifest_b3() { b3sum "$1" | cut -d' ' -f1; }
 # Byte size of a file. `stat -c %s` is GNU-only — BSD/macOS stat spells it `-f%z` and errors out on -c, which took down a macOS publish AFTER the binary was already on R2 (manifest row never written, so the upload was live but unreferenced). Probe once, use everywhere.
 manifest_size() { stat -c %s "$1" 2>/dev/null || stat -f%z "$1"; }
 
+# In-place sed. GNU takes `-i` with no argument; BSD/macOS requires a backup suffix, so `sed -i -E ...` there reads "-E" as the SUFFIX and writes Cargo.toml-E while leaving the original untouched — the version bump silently did nothing, and the next publish would have collided on an already-published version. `-i ''` is the BSD spelling for "no backup".
+# Usage: sed_i <sed-args...> <file>
+sed_i() {
+    if sed --version >/dev/null 2>&1; then
+        sed -i "$@"          # GNU
+    else
+        sed -i '' "$@"       # BSD/macOS
+    fi
+}
+
 # A publish stamps HEAD's commit into the manifest — a dirty tree has no honest commit to claim, so refuse outright (agreed 2026-07-16).
 manifest_refuse_dirty() {
     if [ -n "$(git status --porcelain)" ]; then
@@ -80,7 +90,7 @@ manifest_end_dev_publish() {
     full=$(manifest_full_version)
     major=$(echo "$full" | cut -d. -f1); minor=$(echo "$full" | cut -d. -f2); patch=$(echo "$full" | cut -d. -f3)
     next=$((patch + 1))
-    sed -i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${major}.${minor}.${next}\"/" Cargo.toml
+    sed_i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${major}.${minor}.${next}\"/" Cargo.toml
     # Cargo.lock records the workspace member's version — refresh it so the tree is exactly two files changed.
     cargo update --workspace --quiet 2>/dev/null || true
     git add Cargo.toml Cargo.lock

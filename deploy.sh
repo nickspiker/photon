@@ -18,7 +18,7 @@ CURRENT_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([0-9]+\.[0-9]+\
 MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
 SHIP_VERSION=$(( $(echo "$CURRENT_VERSION" | cut -d. -f2) + 1 ))   # the MINOR is the deploy counter / dozenal cue
 FULL_VERSION="${MAJOR}.${SHIP_VERSION}.0"
-sed -i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${FULL_VERSION}\"/" Cargo.toml
+sed_i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${FULL_VERSION}\"/" Cargo.toml
 cargo update --workspace --quiet 2>/dev/null || true
 git add Cargo.toml Cargo.lock
 git commit -q -m "release: v${SHIP_VERSION} (${FULL_VERSION})"
@@ -258,7 +258,7 @@ fi
 # Update website version and date
 WEBSITE_DIR="/mnt/Chiton/MEGA/holdmyoscilloscope/photon"
 DEPLOY_DATE=$(date +%Y-%m-%d)
-sed -i "s/Version: [^·]*· Updated: [^<]*/Version: $DOZENAL_VERSION · Updated: $DEPLOY_DATE/" "$WEBSITE_DIR/index.html"
+sed_i "s/Version: [^·]*· Updated: [^<]*/Version: $DOZENAL_VERSION · Updated: $DEPLOY_DATE/" "$WEBSITE_DIR/index.html"
 echo "Updated website: Version $DOZENAL_VERSION, Date $DEPLOY_DATE"
 
 # Deploy website to Cloudflare Pages
@@ -284,7 +284,7 @@ curl -s "https://fgtw.org/admin/release-notice?auth=f6d46fc44bd35b1b7204640d8cad
 # on, every build is ≥ .1, and the next dev publish SHIPS .1 (publish-current-then-bump — see
 # scripts/lib/manifest.sh).
 DEV_OPEN="${MAJOR}.${SHIP_VERSION}.1"
-sed -i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${DEV_OPEN}\"/" Cargo.toml
+sed_i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${DEV_OPEN}\"/" Cargo.toml
 cargo update --workspace --quiet 2>/dev/null || true
 git add Cargo.toml Cargo.lock
 git commit -q -m "dev line open: v${DEV_OPEN} (release v${SHIP_VERSION} shipped at .0)"
