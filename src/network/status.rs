@@ -2917,21 +2917,25 @@ async fn run_checker(
 
             let msg_bytes = msg.to_vsf_bytes();
             if !msg_bytes.is_empty() {
-                // Route thru PT - handles UDP, TCP after 1s, relay fallback
-                let pt_bytes = {
-                    let mut pt_mgr = pt.lock().unwrap();
-                    pt_mgr.send_with_pubkey(
-                        request.peer_addr,
-                        msg_bytes.clone(),
-                        Some(request.recipient_pubkey),
-                    )
-                };
-                // PT returns the first wire bytes to send, or EMPTY if this packet queued behind an in-flight one for this peer (stop-and-wait) — in that case tick() sends it once the head is acked. Don't emit an empty datagram.
-                if !pt_bytes.is_empty() {
-                    udp::send(&socket, &pt_bytes, request.peer_addr).await;
-                    // Race the alt path with the SAME wire bytes (best-effort duplicate, not a second PT transfer). The reachable address delivers; the receiver dedupes by eagle_time and its ACK is deterministic, so a redelivery just yields a free re-ACK. This is why chat now reaches an off-LAN peer: PT/reliability tracks the primary, but the message rides both addresses on every attempt, and the message-layer retransmit keeps re-spraying both until the ACK clears it.
-                    if let Some(alt) = request.alt_addr {
-                        udp::send(&socket, &pt_bytes, alt).await;
+                // Direct leg — ONLY for a peer that actually has a direct address. A relay-only peer arrives here carrying `RELAY_ADDR` (the caller says so explicitly: "peer_addr is unused for delivery here … the relay_to carries it"), and handing that to PT's RELIABLE queue enqueues a packet that can never be ACKed, burns the whole retry ladder, and head-of-line-blocks the real messages behind it — 86% of one device's PT retransmits were exactly this.
+                // Same guard the history drain below already applies for the same reason; the relay fan-out that follows is the delivery path for these peers and is deliberately left outside the `if`.
+                if !crate::network::traverse::gather::is_bogus_addr(&request.peer_addr) {
+                    // Route thru PT - handles UDP, TCP after 1s, relay fallback
+                    let pt_bytes = {
+                        let mut pt_mgr = pt.lock().unwrap();
+                        pt_mgr.send_with_pubkey(
+                            request.peer_addr,
+                            msg_bytes.clone(),
+                            Some(request.recipient_pubkey),
+                        )
+                    };
+                    // PT returns the first wire bytes to send, or EMPTY if this packet queued behind an in-flight one for this peer (stop-and-wait) — in that case tick() sends it once the head is acked. Don't emit an empty datagram.
+                    if !pt_bytes.is_empty() {
+                        udp::send(&socket, &pt_bytes, request.peer_addr).await;
+                        // Race the alt path with the SAME wire bytes (best-effort duplicate, not a second PT transfer). The reachable address delivers; the receiver dedupes by eagle_time and its ACK is deterministic, so a redelivery just yields a free re-ACK. This is why chat now reaches an off-LAN peer: PT/reliability tracks the primary, but the message rides both addresses on every attempt, and the message-layer retransmit keeps re-spraying both until the ACK clears it.
+                        if let Some(alt) = request.alt_addr {
+                            udp::send(&socket, &pt_bytes, alt).await;
+                        }
                     }
                 }
                 // No direct path → also send the WHOLE chat VSF (not the PT shard) over the relay pipe.
@@ -3002,18 +3006,22 @@ async fn run_checker(
 
             let msg_bytes = msg.to_vsf_bytes();
             if !msg_bytes.is_empty() {
-                // Route thru PT - handles UDP, TCP after 1s, relay fallback
-                let pt_bytes = {
-                    let mut pt_mgr = pt.lock().unwrap();
-                    pt_mgr.send_with_pubkey(
-                        request.peer_addr,
-                        msg_bytes.clone(),
-                        Some(request.recipient_pubkey),
-                    )
-                };
-                // Empty = queued behind an in-flight packet (stop-and-wait); tick() will send it.
-                if !pt_bytes.is_empty() {
-                    udp::send(&socket, &pt_bytes, request.peer_addr).await;
+                // Direct leg only when there IS a direct address — same reasoning as the chat drain above: a relay-only peer's ACK arrives with `RELAY_ADDR`, and enqueueing that reliably would block the per-peer FIFO with a packet nothing can ever ACK.
+                // `relay_to` below is this ACK's real path (that is exactly what the field is for), so the guard costs nothing here.
+                if !crate::network::traverse::gather::is_bogus_addr(&request.peer_addr) {
+                    // Route thru PT - handles UDP, TCP after 1s, relay fallback
+                    let pt_bytes = {
+                        let mut pt_mgr = pt.lock().unwrap();
+                        pt_mgr.send_with_pubkey(
+                            request.peer_addr,
+                            msg_bytes.clone(),
+                            Some(request.recipient_pubkey),
+                        )
+                    };
+                    // Empty = queued behind an in-flight packet (stop-and-wait); tick() will send it.
+                    if !pt_bytes.is_empty() {
+                        udp::send(&socket, &pt_bytes, request.peer_addr).await;
+                    }
                 }
                 // No direct path → relay the whole ACK VSF so it returns over the sender's pipe.
                 for dev in &request.relay_to {
@@ -3037,6 +3045,13 @@ async fn run_checker(
             let sig = keypair.sign(&provenance_hash);
             let mut sig_bytes = [0u8; 64];
             sig_bytes.copy_from_slice(&sig.to_bytes());
+
+            // A relay-only peer has no direct address, and AvatarRequestSend carries no `relay_to` — so there is no path for this frame at all. Say so and drop it here rather than handing `RELAY_ADDR` to PT: the guard in send_with_pubkey_and_alt would refuse it anyway, and a silent refusal deep in the transport reads as "sent" from up here.
+            // The avatar is not lost — it falls back to the FGTW blob fetch (the same path used when a peer is offline), and the next pong with a fresh avatar_ts re-triggers a request once a direct path exists.
+            if crate::network::traverse::gather::is_bogus_addr(&request.peer_addr) {
+                crate::logf!("Status: AVATAR_REQUEST to {}... skipped — relay-only peer, no direct path (avatar falls back to the FGTW blob fetch)", hex::encode(&request.recipient_pubkey[..4]));
+                continue;
+            }
 
             crate::logf!("Status: Sending AVATAR_REQUEST to {} via PT", request.peer_addr);
 
@@ -3072,6 +3087,12 @@ async fn run_checker(
                 crate::logf!("Status: refusing to serve avatar error frame {}: {}", reason, detail);
                 continue;
             }
+            // Same as the request side: no direct address and no `relay_to` on this type means no path. Drop it loudly instead of letting PT's guard swallow it. The requester recovers via the FGTW blob fetch.
+            if crate::network::traverse::gather::is_bogus_addr(&request.peer_addr) {
+                crate::logf!("Status: AVATAR_RESPONSE to {}... skipped — relay-only peer, no direct path (they fetch the blob from FGTW instead)", hex::encode(&request.recipient_pubkey[..4]));
+                continue;
+            }
+
             let timestamp = eagle_time_now();
 
             // provenance = BLAKE3(avatar_vsf) - the signature covers the avatar bytes' hash

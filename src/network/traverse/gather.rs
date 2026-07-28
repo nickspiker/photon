@@ -21,7 +21,9 @@ fn public_kind(addr: &SocketAddr) -> CandidateKind {
 }
 
 /// True for an address that must NEVER enter the candidate set: the unspecified `0.0.0.0` / `::` — which is the RELAY_ADDR sentinel a relayed message carries. If it leaks in, the punch "validates" a path to `0.0.0.0` (it round-trips locally), which then poisons all addressing: sends go to nowhere and `relay_to` empties out because `validated_path` looks Some. Observed as a peer's proof vanishing after a spurious `path validated to … = [0,0,0,0]`.
-fn is_bogus_addr(addr: &SocketAddr) -> bool {
+///
+/// PUBLIC because the sentinel escapes the candidate set: callers hand `RELAY_ADDR` as `peer_addr` for a relay-only peer ON PURPOSE (the relay_to fan-out is the real delivery path), so every send drain that can reach a RELIABLE queue has to recognise it. See [`crate::network::pt::PTManager::send_with_pubkey_and_alt`], which refuses it outright.
+pub fn is_bogus_addr(addr: &SocketAddr) -> bool {
     addr.ip().is_unspecified()
 }
 
