@@ -156,6 +156,15 @@ impl PTManager {
         data: Vec<u8>,
         recipient_pubkey: Option<[u8; 32]>,
     ) -> Vec<u8> {
+        // NEVER accept the unspecified sentinel (`0.0.0.0:0` / `[::]:0` — `status::RELAY_ADDR`). Callers hand it deliberately for a relay-only peer, meaning "there is no direct address; the relay_to fan-out delivers this".
+        // A fire-and-forget path (presence ping) can shrug that off — one datagram to nowhere costs nothing. A RELIABLE queue cannot: the packet can never be ACKed (nothing listens at the zero address), so it burns the full 1→3→5→10→29s retry ladder and, because the queue is stop-and-wait PER PEER, it HEAD-OF-LINE-BLOCKS every real message queued behind it — the "messages stick" failure the give-up sweep in `tick()` was added to paper over.
+        // Measured before this guard (submitted logs, 2026-07-21..27): 42,820 zero-address retransmits on one device, 2,830 on another — 86% of ALL its PT retransmits, every one undeliverable by construction.
+        // The history drain in `status.rs` already refused the sentinel for exactly this reason ("relay-only pairs starved forever on it"); chat never got the same guard. This is that guard, moved DOWN to the layer that owns the queue so no future caller can reintroduce it.
+        // Returning empty is the correct contract: it means "nothing to send on the wire right now", which every caller already handles (it's the same value a packet queued behind an in-flight head returns). The relay fan-out that follows the call site is untouched, so the message still goes out — it just no longer leaves a poisoned entry in the reliable queue.
+        if crate::network::traverse::gather::is_bogus_addr(&peer_addr) {
+            return Vec::new();
+        }
+
         // Small payload — enqueue as a reliable packet (stop-and-wait, one in flight per peer, retransmitted on backoff in tick() until the receiver's delivery ack arrives). Returns the bytes to send NOW only if no packet is already in flight to this peer; otherwise it queues behind the in-flight head and goes out when that head is acked.
         if data.len() <= Self::SINGLE_PACKET_MAX {
             let peer_busy = self
@@ -754,6 +763,30 @@ mod tests {
         let secret = SigningKey::from_bytes(&[0x42; 32]);
         let public = (&secret).into();
         Keypair { secret, public }
+    }
+
+    /// The unspecified sentinel (`status::RELAY_ADDR`) must NEVER enter the reliable queue. Callers pass it on purpose for a relay-only peer, and a packet addressed there can never be ACKed — so it would burn the whole retry ladder and head-of-line-block every real message behind it in the per-peer FIFO. Submitted logs showed 42,820 such retransmits on a single device before the guard.
+    /// Both size classes are checked: small payloads take the stop-and-wait packet path, large ones the SPEC/DATA stream path, and the guard sits ahead of both.
+    #[test]
+    fn bogus_addr_never_enqueues() {
+        let mut mgr = PTManager::new(test_keypair());
+        for addr in ["0.0.0.0:0", "[::]:0"] {
+            let bogus: SocketAddr = addr.parse().unwrap();
+            for len in [64usize, 8000] {
+                assert!(
+                    mgr.send(bogus, vec![0xCD; len]).is_empty(),
+                    "{addr} ({len}B) must yield no wire bytes"
+                );
+            }
+        }
+        assert!(
+            mgr.outbound_packets.is_empty(),
+            "the sentinel must leave NOTHING queued — a queued packet is the head-of-line block itself"
+        );
+
+        // A real address still works — the guard must not be a blanket refusal.
+        let real: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        assert!(!mgr.send(real, vec![0xCD; 64]).is_empty(), "a routable address must still send");
     }
 
     #[test]
