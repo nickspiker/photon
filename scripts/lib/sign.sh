@@ -24,7 +24,14 @@ sign_binary() {
     # Apple targets first get the STABLE-identity Apple code signature (self-signed 10-yr cert, identifier org.fgtw.photon) — macOS TCC keys privacy grants on it, so updates stop re-prompting Local Network. Must precede the Ed25519 append (rcodesign rewrites the Mach-O). Skipped gracefully when the tooling/cert isn't on this box.
     case "$target" in
         *apple-darwin*)
-            local cert="/mnt/Octopus/Code/keys/photon-macos-codesign"
+            # Resolve the keys dir the same way keystore.sh does rather than hardcoding the desktop's mount — the MacBook keeps it at ~/Code/keys, and a missing cert here silently downgrades to an ad-hoc signature (TCC then re-prompts for Local Network on every update).
+            local cert=""
+            for d in /mnt/Octopus/Code/keys /mnt/Chiton/MEGA/Code/keys "$HOME/MEGA/code/keys" "$HOME/Code/keys"; do
+                if [ -f "$d/photon-macos-codesign.crt" ]; then
+                    cert="$d/photon-macos-codesign"
+                    break
+                fi
+            done
             if command -v rcodesign >/dev/null && [ -f "$cert.crt" ]; then
                 rcodesign sign \
                     --pem-file "$cert.crt" \
