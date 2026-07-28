@@ -23,10 +23,26 @@ manifest_refuse_dirty() {
 # One publish at a time per box. Without this, a second dev-*.sh started while the first still builds bumps the version mid-run, and the FIRST run's manifest row — which re-read the tree at row time — stamps the SECOND run's version+commit onto its own artefact (happened 2026-07-16: the v0.36.11 android APK published as v0.36.12 + the macos bump commit, so updating installed "12" that self-reports 11). fd 9 stays open for the sourcing script's lifetime; the kernel releases the lock when the script exits, success or failure.
 manifest_take_publish_lock() {
     exec 9>>/tmp/photon-publish.lock
-    if ! flock -n 9; then
-        echo "Another publish is running — waiting for it to finish..."
-        flock 9
+    if command -v flock >/dev/null; then
+        if ! flock -n 9; then
+            echo "Another publish is running — waiting for it to finish..."
+            flock 9
+        fi
+        return
     fi
+    # macOS has no flock(1) (util-linux only). Falling through silently would leave the publish UNLOCKED — the exact 2026-07-16 race above, just quieter — so use shlock(1), which ships with macOS and holds a PID-checked lock file: it detects a dead holder and steals the lock, so a crashed publish can't wedge the next one.
+    if command -v shlock >/dev/null; then
+        local lock=/tmp/photon-publish.pid
+        until shlock -f "$lock" -p $$; do
+            echo "Another publish is running (pid $(cat "$lock" 2>/dev/null)) — waiting for it to finish..."
+            sleep 2
+        done
+        # The lock file is ours now; drop it when this shell exits, success or failure, mirroring the fd-9 lifetime the flock path relies on.
+        trap 'rm -f "'"$lock"'"' EXIT
+        return
+    fi
+    echo "WARNING: neither flock nor shlock found — publishing WITHOUT the one-at-a-time lock."
+    echo "         Do not start another publish on this box until this one finishes."
 }
 
 # Dev publish preamble — PUBLISH-CURRENT-THEN-BUMP (2026-07-17): the tree ALREADY holds this publish's version.
