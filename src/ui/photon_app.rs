@@ -8091,6 +8091,7 @@ impl PhotonApp {
                 // §4.2 one-ceremony claim rides the entry. Woven carries whichever truth we hold: OUR chain woven (we're the owner) or the owner's roster-adopted completion.
                 ceremony_owner: c.ceremony_owner.unwrap_or([0u8; 32]),
                 woven: c.chain_woven || c.owner_woven,
+                trust_level: crate::storage::cloud::trust_level_to_u8(c.trust_level),
             })
             .collect()
     }
@@ -8149,6 +8150,8 @@ impl PhotonApp {
                     c.avatar_pin = e.avatar_pin;
                     c.avatar_pin_dirty = true; // post-drain sweep persists the index + refetches the avatar
                 }
+                // Trust rides the same last-writer-wins clock as the petname above (PRST3): a trust decision belongs to the identity, not to whichever device it was typed on. We are already past the `e.updated` gate, so a strictly-newer entry wins and ties keep ours.
+                c.trust_level = crate::storage::cloud::u8_to_trust_level(e.trust_level);
                 // §4.2 claim + the owner's completion, newest entry wins (same LWW as the fields above).
                 let new_owner = (e.ceremony_owner != [0u8; 32]).then_some(e.ceremony_owner);
                 // DISCARD-ON-PARK (fleet-sync.md §4.2: "a sibling DISCARDS its own parked offer toward the friend"): another device now owns this friendship's ceremony, so any round WE hold must die here — otherwise its keypairs/offer keep re-sending and the friend receives COMPETING ceremony instances (the "unknown conversation_token" stall). Also the takeover-LOSER path: a newer LWW claim only reaches this arm past the e.updated gate above. Never bumps roster_updated / never pushes — the winner's entry must stay newest.
@@ -8182,6 +8185,8 @@ impl PhotonApp {
             let device_pubkey = crate::types::DevicePubkey::from_bytes(e.public_identity);
             let mut contact = crate::types::Contact::from_pin(e.name.clone(), e.avatar_pin, e.handle_proof, e.handle_hash, device_pubkey);
             contact.added = e.added;
+            // Carry the fleet's trust decision onto the stub. Defaulting here would silently DOWNGRADE a friend the user already promoted on another device — and a downgrade that arrives as "new contact" is exactly the case nothing would ever correct.
+            contact.trust_level = crate::storage::cloud::u8_to_trust_level(e.trust_level);
             contact.roster_updated = e.updated;
             // §4.2: the entry names the fleet device running this friendship's ceremony — adopt the claim so THIS device parks instead of racing its own round at the friend. No discard hook needed here: a fresh from_pin contact holds no round state.
             contact.ceremony_owner = (e.ceremony_owner != [0u8; 32]).then_some(e.ceremony_owner);
@@ -12045,6 +12050,8 @@ impl PhotonApp {
                 tombstone: true,
                 ceremony_owner: [0u8; 32],
                 woven: false,
+                // A tombstone carries no identity payload — name, pin and owner are already blanked above for the same reason. Stranger (0) is the least-privileged value, so a tombstone that somehow lost its flag downgrades rather than promotes.
+                trust_level: 0,
             };
             std::thread::spawn(move || {
                 match crate::network::fgtw::fleet::push_roster(&hp, &kp, &fleet_key, &[entry]) {

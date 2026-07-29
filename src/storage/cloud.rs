@@ -277,7 +277,8 @@ fn decrypt_data(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, CloudError>
     decrypt_bytes(encrypted, key).map_err(CloudError::Decryption)
 }
 
-fn trust_level_to_u8(level: TrustLevel) -> u8 {
+/// The canonical TrustLevel wire mapping. Public because the fleet roster carries `trust_level` too (PRST3) and must agree byte-for-byte with the backup blob — one mapping, not two.
+pub fn trust_level_to_u8(level: TrustLevel) -> u8 {
     match level {
         TrustLevel::Stranger => 0,
         TrustLevel::Known => 1,
@@ -286,7 +287,8 @@ fn trust_level_to_u8(level: TrustLevel) -> u8 {
     }
 }
 
-fn u8_to_trust_level(v: u8) -> TrustLevel {
+/// Inverse of [`trust_level_to_u8`]. Unknown values fall back to Stranger — the least-privileged reading, so a future level added by a newer device can never silently grant more trust than it should here.
+pub fn u8_to_trust_level(v: u8) -> TrustLevel {
     match v {
         0 => TrustLevel::Stranger,
         1 => TrustLevel::Known,
