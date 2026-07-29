@@ -716,12 +716,15 @@ impl HandleQuery {
 
                         // Cloud sync (download + merge)
                         crate::log("Network: Syncing with cloud...");
+                        // What the cloud already holds, kept so the upload below can tell a real change from a no-op. The blob's BYTES can't answer that — encrypt_bytes draws a fresh random nonce per call, so re-encrypting identical contacts yields different ciphertext every time. Compare the decoded CONTENT instead.
+                        let mut cloud_had: Option<Vec<crate::storage::cloud::CloudContact>> = None;
                         if let Ok(Some(cloud_contacts)) =
                             crate::storage::cloud::load_contacts_from_cloud(
                                 &identity_seed,
                                 &keypair,
                             )
                         {
+                            cloud_had = Some(cloud_contacts.clone());
                             // Merge cloud contacts we don't have locally
                             for cc in cloud_contacts {
                                 let exists =
@@ -749,14 +752,24 @@ impl HandleQuery {
                             }
                         }
 
-                        // Upload to cloud if we have more contacts locally
-                        if !contacts.is_empty() {
+                        // Upload ONLY when our local set actually differs from what the cloud already holds.
+                        // The old condition was `!contacts.is_empty()`, which is true on essentially every attest — so every single attest re-uploaded a byte-identical set. Observed 2026-07-29: downloaded 1945 bytes / 9 contacts, then re-uploaded 1945 bytes / 9 contacts ONE MILLISECOND later, and that no-op write blocked attestation for 7.3s on a 202 KB/s uplink. It is invisible on fibre and brutal on hotel wifi.
+                        // Compare decoded content, not ciphertext (random nonce per encrypt — see above). Order-independent: the merge above appends cloud-only rows, so a set that matches can still be permuted.
+                        let ours: Vec<crate::storage::cloud::CloudContact> =
+                            contacts.iter().map(crate::storage::cloud::CloudContact::from).collect();
+                        let unchanged = cloud_had.as_ref().is_some_and(|had| {
+                            had.len() == ours.len()
+                                && ours.iter().all(|o| had.iter().any(|h| h == o))
+                        });
+                        if !contacts.is_empty() && !unchanged {
                             let _ = crate::storage::cloud::sync_contacts_to_cloud(
                                 &contacts,
                                 &identity_seed,
                                 &keypair,
                                 &handle_proof,
                             );
+                        } else if unchanged {
+                            crate::logf!("Cloud: {} contacts unchanged — skipping upload", ours.len());
                         }
                         crate::log("Network: Background loading complete");
 

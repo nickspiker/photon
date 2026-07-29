@@ -42,10 +42,32 @@ pub fn blocking() -> &'static reqwest::blocking::Client {
     })
 }
 
-/// Short, plain message for a failed FGTW request — NO web-stack jargon (no "error sending request for url", no reqwest internals, no TCP/DNS strings the user can't act on). A connect/timeout failure is the "server unreachable" case → "No connection to FGTW"; anything else is a plain per-action failure. `action` is a short verb phrase like "reach FGTW" or "check the handle".
+/// The shared blocking client, for call sites that need their OWN per-request timeout.
+/// Those sites used to each build a private `Client`, which throws away the connection pool and the warm TLS session — every call paid a fresh TCP + TLS handshake. On fibre that hides in the noise; on a 202 KB/s uplink it was most of a 7.3-second blob upload that blocked attestation (2026-07-29).
+/// reqwest hangs the timeout on the REQUEST BUILDER, so the pooled client and a per-call deadline are not mutually exclusive — `http::blocking_timeout(d).post(url)` keeps the pool AND the timeout. Prefer this over `Client::builder().timeout(d)`.
+pub fn blocking_timeout(d: std::time::Duration) -> RequestTimeout {
+    RequestTimeout(d)
+}
+
+/// Builder shim from [`blocking_timeout`] — mirrors the `Client` methods the FGTW call sites use, attaching the deadline to each request it hands back.
+pub struct RequestTimeout(std::time::Duration);
+
+impl RequestTimeout {
+    pub fn post(&self, url: &str) -> reqwest::blocking::RequestBuilder {
+        blocking().post(url).timeout(self.0)
+    }
+    pub fn get(&self, url: &str) -> reqwest::blocking::RequestBuilder {
+        blocking().get(url).timeout(self.0)
+    }
+}
+
+/// Short, plain message for a failed FGTW request — NO web-stack jargon (no "error sending request for url", no reqwest internals, no TCP/DNS strings the user can't act on). `action` is a short verb phrase like "reach FGTW" or "check the handle".
+/// Connect failure and TIMEOUT are deliberately NOT the same message. A connect failure means we never reached the server. A timeout means we DID — the request went out and the reply didn't come back in time, which is the server being slow on that path, not the network being down. Collapsing both into "No connection to FGTW" printed that line while the connectivity probe held FGTW ONLINE and the UI showed a green circle (observed 2026-07-29 05:06:40: challenge answered in 1ms, the 398B announce then timed out at exactly 10.000s while GET /status kept succeeding) — which sends you debugging your network instead of the announce path.
 pub fn short_send_error(action: &str, e: &reqwest::Error) -> String {
-    if e.is_connect() || e.is_timeout() {
+    if e.is_connect() {
         "No connection to FGTW".to_string()
+    } else if e.is_timeout() {
+        format!("FGTW didn't answer in time ({action})")
     } else {
         format!("Couldn't {action}")
     }

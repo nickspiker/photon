@@ -40,7 +40,8 @@ impl std::fmt::Display for CloudError {
 }
 
 /// Contact data stored in cloud (minimal for recovery) — the PIN-SET, never a handle string (docs/identity-profile.md).
-#[derive(Clone, Debug)]
+/// PartialEq is what lets the attest path tell "the cloud already has exactly this" from a real change, so it can skip a no-op upload. It has to compare CONTENT: the encrypted blob carries a fresh random nonce every time, so identical contacts never produce identical bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CloudContact {
     pub handle_proof: [u8; 32],
     /// The pinned identity pubkey (party id).
@@ -88,8 +89,11 @@ pub fn contacts_encryption_key(identity_seed: &[u8; 32], device_secret: &[u8; 32
 }
 
 /// Schema for cloud_contacts section
+/// The section name, shared by the builder and the TOC lookup in `decode_contacts` — `parse_document` finds the section by matching this against the header, so the two must never drift.
+const CLOUD_CONTACTS_SECTION: &str = "cloud_contacts";
+
 fn cloud_contacts_schema() -> SectionSchema {
-    SectionSchema::new("cloud_contacts")
+    SectionSchema::new(CLOUD_CONTACTS_SECTION)
         .field("version", TypeConstraint::AnyUnsigned)
         .field("contact", TypeConstraint::Any) // Mixed types per contact
 }
@@ -122,8 +126,17 @@ pub fn encode_contacts(
             .map_err(|e| CloudError::Parse(e.to_string()))?;
     }
 
-    let vsf_bytes = builder
+    let section_bytes = builder
         .encode()
+        .map_err(|e| CloudError::Parse(e.to_string()))?;
+
+    // A DOCUMENT, not a bare section. `.encode()` emits the section body ALONE — no header, so no creation time, no TOC, no BLAKE3 provenance hash, and nothing `read_verified`/`parse_document` can check. That is why the decode side had to hand-roll `VsfSection::parse`, and why the attest path had no way to ask "is this the same blob I already have?" (it fell back to re-uploading unconditionally). The crate does all of this for us; we just have to use it.
+    // `provenance_only` (not `signed_only`): the blob is sealed under a key derived from the identity seed, so possession already proves the reader is us. The header's BLAKE3 provenance hash is the integrity anchor here. A device signature would additionally mean every device syncing the same contacts had to be enrolled as a distinct signer — which is not what this blob is for.
+    let vsf_bytes = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .provenance_only()
+        .add_unboxed(CLOUD_CONTACTS_SECTION, section_bytes)
+        .build()
         .map_err(|e| CloudError::Parse(e.to_string()))?;
 
     encrypt_data(&vsf_bytes, encryption_key)
@@ -136,53 +149,88 @@ pub fn decode_contacts(
 ) -> Result<Vec<CloudContact>, CloudError> {
     let vsf_bytes = decrypt_data(encrypted, encryption_key)?;
 
-    let mut ptr = 0;
-    let section = VsfSection::parse(&vsf_bytes, &mut ptr)
-        .map_err(|e| CloudError::Parse(format!("VSF parse: {}", e)))?;
-
-    let mut contacts = Vec::new();
-    for field in section.get_fields("contact") {
-        // 7-value pin-set rows only; old 5-value handle-bearing rows are flag-day dead (skipped).
-        if field.values.len() >= 7 {
-            let handle_proof: [u8; 32] = match &field.values[0] {
-                VsfType::hP(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
-                _ => continue,
-            };
-            let party_id: [u8; 32] = match &field.values[1] {
-                VsfType::ke(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
-                _ => continue,
-            };
-            let avatar_pin: [u8; 64] = match &field.values[2] {
-                VsfType::ge(v) if v.len() == 64 => v.as_slice().try_into().unwrap(),
-                _ => continue,
-            };
-            let name = match &field.values[3] {
-                VsfType::x(s) => s.clone(),
-                _ => continue,
-            };
-            let device_pubkey: [u8; 32] = match &field.values[4] {
-                VsfType::ke(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
-                _ => continue,
-            };
-            let trust_level = match &field.values[5] {
-                VsfType::u3(v) => *v,
-                _ => 0,
-            };
-            let added = match &field.values[6] {
-                VsfType::e(vsf::types::EtType::e6(osc)) => *osc,
-                _ => 0,
-            };
-
-            contacts.push(CloudContact {
-                handle_proof,
-                party_id,
-                avatar_pin,
-                name,
-                device_pubkey,
-                trust_level,
-                added,
-            });
+    // Verified read: `parse_document` runs `read_verified` internally (header decode + provenance self-consistency), so a tampered or truncated blob is rejected before any field is trusted — the hand-rolled `VsfSection::parse` this replaces checked nothing.
+    // LEGACY FALLBACK: blobs written before the document wrapper landed are a BARE SECTION with no header, so `parse_document` can't find a TOC and fails. Fall back to the raw section parse for those; the next `sync_contacts_to_cloud` rewrites the blob in document form and the fallback stops being reachable for that identity. Remove it once every live blob has been rewritten (it is the only remaining unverified read on this path).
+    let section = match vsf::schema::SectionBuilder::parse_document(
+        cloud_contacts_schema(),
+        &vsf_bytes,
+        None,
+    ) {
+        Ok(s) => s,
+        Err(doc_err) => {
+            let mut ptr = 0;
+            let legacy = VsfSection::parse(&vsf_bytes, &mut ptr).map_err(|e| {
+                CloudError::Parse(format!("VSF parse: {doc_err} (legacy fallback: {e})"))
+            })?;
+            crate::log("Cloud: contacts blob is pre-document (bare section) — reading legacy form; the next sync rewrites it with a header");
+            return decode_contact_rows(
+                legacy.get_fields("contact").into_iter().map(|f| f.values.as_slice()),
+            );
         }
+    };
+
+    decode_contact_rows(
+        section.get_fields("contact").into_iter().map(|f| f.values.as_slice()),
+    )
+}
+
+/// Shared row decoder for both the verified-document path and the legacy bare-section fallback — one place that knows the `(contact: …)` row.
+/// Reads by TYPE MARKER, never by index (AGENT.md: "VSF Type Markers Are Self-Describing"). The old positional form read `values[0]`, `values[1]`, … which is silent corruption waiting to happen: `party_id` and `device_pubkey` are BOTH `ke`, so position was the only thing telling them apart, and any reorder or inserted value would have swapped a contact's identity key with its device key with no error anywhere.
+/// The two `ke` values are disambiguated by ORDER OF ARRIVAL within the row (first `ke` = party id, second = device pubkey) — the one thing position is still legitimately good for, because both are 32-byte keys of the same marker. Everything else is matched purely on its marker and length.
+/// Takes value slices rather than a field type: the verified-document and legacy paths hand back structurally identical but distinct types (`schema::FieldValue` vs `file_format::VsfField`, both `{name, values}`).
+fn decode_contact_rows<'a>(
+    rows: impl Iterator<Item = &'a [VsfType]>,
+) -> Result<Vec<CloudContact>, CloudError> {
+    let mut contacts = Vec::new();
+    for values in rows {
+        let mut handle_proof: Option<[u8; 32]> = None;
+        let mut party_id: Option<[u8; 32]> = None;
+        let mut device_pubkey: Option<[u8; 32]> = None;
+        let mut avatar_pin: Option<[u8; 64]> = None;
+        let mut name: Option<String> = None;
+        let mut trust_level = 0u8;
+        let mut added = 0i64;
+
+        for v in values {
+            match v {
+                VsfType::hP(b) if b.len() == 32 => {
+                    handle_proof = b.as_slice().try_into().ok();
+                }
+                // Two 32-byte `ke` keys per row: party id first, device pubkey second.
+                VsfType::ke(b) if b.len() == 32 => {
+                    let key: Option<[u8; 32]> = b.as_slice().try_into().ok();
+                    if party_id.is_none() {
+                        party_id = key;
+                    } else if device_pubkey.is_none() {
+                        device_pubkey = key;
+                    }
+                }
+                VsfType::ge(b) if b.len() == 64 => {
+                    avatar_pin = b.as_slice().try_into().ok();
+                }
+                VsfType::x(s) => name = Some(s.clone()),
+                VsfType::u3(t) => trust_level = *t,
+                VsfType::e(vsf::types::EtType::e6(osc)) => added = *osc,
+                _ => {}
+            }
+        }
+
+        // A row is only a contact if every identifying part is present. Old 5-value handle-bearing rows are flag-day dead and simply never fill these.
+        let (Some(handle_proof), Some(party_id), Some(device_pubkey), Some(avatar_pin), Some(name)) =
+            (handle_proof, party_id, device_pubkey, avatar_pin, name)
+        else {
+            continue;
+        };
+
+        contacts.push(CloudContact {
+            handle_proof,
+            party_id,
+            avatar_pin,
+            name,
+            device_pubkey,
+            trust_level,
+            added,
+        });
     }
 
     Ok(contacts)
@@ -458,5 +506,68 @@ mod tests {
         let result = decode_contacts(&encrypted, &key2);
 
         assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod document_tests {
+    use super::*;
+
+    fn sample() -> Vec<CloudContact> {
+        vec![
+            CloudContact {
+                handle_proof: [0x11; 32],
+                party_id: [0x22; 32],
+                avatar_pin: [0x33; 64],
+                name: "alice".to_string(),
+                device_pubkey: [0x44; 32],
+                trust_level: 2,
+                added: 1234567890,
+            },
+            CloudContact {
+                handle_proof: [0x55; 32],
+                party_id: [0x66; 32],
+                avatar_pin: [0u8; 64],
+                name: String::new(),
+                device_pubkey: [0x77; 32],
+                trust_level: 0,
+                added: -42,
+            },
+        ]
+    }
+
+    /// The blob must be a COMPLETE VSF FILE (AGENT.md: "VSF Transport Rule: COMPLETE FILES ONLY") — magic header + provenance hash — not a bare section. A bare section is what shipped before, and it is why the attest path had no provenance to compare and had to re-upload unconditionally.
+    #[test]
+    fn blob_is_a_complete_vsf_document() {
+        let key = [7u8; 32];
+        let blob = encode_contacts(&sample(), &key).expect("encode");
+        let plain = crate::storage::decrypt_bytes(&blob, &key).expect("decrypt");
+        assert!(plain.starts_with(b"R\xc3\x85<"), "must carry the RÅ< magic header, got {:?}", &plain[..plain.len().min(8)]);
+        let (header, _) = vsf::verification::read_verified(&plain, None).expect("read_verified must accept our own document");
+        assert!(
+            matches!(header.provenance_hash, VsfType::hp(ref h) if h.len() == 32),
+            "a document without a 32-byte hp has nothing to compare or verify, got {:?}",
+            header.provenance_hash
+        );
+    }
+
+    /// Round-trip through the real encode/decode pair, values matched by type marker.
+    #[test]
+    fn round_trip_preserves_every_field() {
+        let key = [9u8; 32];
+        let original = sample();
+        let blob = encode_contacts(&original, &key).expect("encode");
+        let back = decode_contacts(&blob, &key).expect("decode");
+        assert_eq!(back, original, "decode must reproduce exactly what encode was given");
+    }
+
+    /// The two 32-byte `ke` values (party id, device pubkey) must not swap. This is the silent corruption the positional decoder invited.
+    #[test]
+    fn party_id_and_device_pubkey_do_not_swap() {
+        let key = [3u8; 32];
+        let blob = encode_contacts(&sample(), &key).expect("encode");
+        let back = decode_contacts(&blob, &key).expect("decode");
+        assert_eq!(back[0].party_id, [0x22; 32]);
+        assert_eq!(back[0].device_pubkey, [0x44; 32]);
     }
 }
