@@ -14,7 +14,7 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use blake3::Hasher;
 use vsf::schema::{SectionSchema, TypeConstraint};
-use vsf::{VsfSection, VsfType};
+use vsf::VsfType;
 
 use crate::storage::{decrypt_bytes, encrypt_bytes};
 use crate::types::{Contact, DevicePubkey, TrustLevel};
@@ -149,25 +149,12 @@ pub fn decode_contacts(
 ) -> Result<Vec<CloudContact>, CloudError> {
     let vsf_bytes = decrypt_data(encrypted, encryption_key)?;
 
-    // Verified read: `parse_document` runs `read_verified` internally (header decode + provenance self-consistency), so a tampered or truncated blob is rejected before any field is trusted — the hand-rolled `VsfSection::parse` this replaces checked nothing.
-    // LEGACY FALLBACK: blobs written before the document wrapper landed are a BARE SECTION with no header, so `parse_document` can't find a TOC and fails. Fall back to the raw section parse for those; the next `sync_contacts_to_cloud` rewrites the blob in document form and the fallback stops being reachable for that identity. Remove it once every live blob has been rewritten (it is the only remaining unverified read on this path).
-    let section = match vsf::schema::SectionBuilder::parse_document(
-        cloud_contacts_schema(),
-        &vsf_bytes,
-        None,
-    ) {
-        Ok(s) => s,
-        Err(doc_err) => {
-            let mut ptr = 0;
-            let legacy = VsfSection::parse(&vsf_bytes, &mut ptr).map_err(|e| {
-                CloudError::Parse(format!("VSF parse: {doc_err} (legacy fallback: {e})"))
-            })?;
-            crate::log("Cloud: contacts blob is pre-document (bare section) — reading legacy form; the next sync rewrites it with a header");
-            return decode_contact_rows(
-                legacy.get_fields("contact").into_iter().map(|f| f.values.as_slice()),
-            );
-        }
-    };
+    // Verified read, no fallback. `parse_document` runs `read_verified` internally (header decode + provenance self-consistency), so a tampered, truncated, or pre-document blob is REJECTED rather than parsed on faith — the hand-rolled `VsfSection::parse` this replaces checked nothing at all.
+    // Blobs written before the document wrapper are bare sections and fail here, which is correct and costs nothing: the storage key is BLAKE3(identity_seed ‖ device_secret), so a blob is written and read by exactly ONE device — there is no other client to stay compatible with. The caller treats a decode failure as "no cloud contacts this round" (`if let Ok(Some(..))`), skips the merge, and then re-uploads from the local vault in document form. One attest without a cloud merge, self-healed, and the vault was the source of truth for those contacts the whole time.
+    // A legacy branch here would be exactly the compatibility fork AGENT.md forbids, in exchange for nothing.
+    let section =
+        vsf::schema::SectionBuilder::parse_document(cloud_contacts_schema(), &vsf_bytes, None)
+            .map_err(|e| CloudError::Parse(format!("contacts blob failed verified read: {e}")))?;
 
     decode_contact_rows(
         section.get_fields("contact").into_iter().map(|f| f.values.as_slice()),
@@ -559,6 +546,38 @@ mod document_tests {
         let blob = encode_contacts(&original, &key).expect("encode");
         let back = decode_contacts(&blob, &key).expect("decode");
         assert_eq!(back, original, "decode must reproduce exactly what encode was given");
+    }
+
+    /// A pre-document blob (bare section, no header) must be REJECTED, not silently parsed. The caller treats that as "no cloud contacts this round" and re-uploads in document form, so the slot self-heals — and because the storage key binds the device secret, no other client ever reads this blob.
+    #[test]
+    fn pre_document_blob_is_rejected() {
+        let key = [5u8; 32];
+        // Rebuild the OLD wire form: the section body alone, exactly what `builder.encode()` used to ship.
+        let schema = cloud_contacts_schema();
+        let mut b = schema.build().set("version", 0u8).expect("version");
+        for c in sample() {
+            b = b
+                .append_multi(
+                    "contact",
+                    vec![
+                        VsfType::hP(c.handle_proof.to_vec()),
+                        VsfType::ke(c.party_id.to_vec()),
+                        VsfType::ge(c.avatar_pin.to_vec()),
+                        VsfType::x(c.name.clone()),
+                        VsfType::ke(c.device_pubkey.to_vec()),
+                        VsfType::u3(c.trust_level),
+                        VsfType::e(vsf::types::EtType::e6(c.added)),
+                    ],
+                )
+                .expect("row");
+        }
+        let bare = b.encode().expect("bare section");
+        let legacy_blob = crate::storage::encrypt_bytes(&bare, &key).expect("seal");
+
+        assert!(
+            decode_contacts(&legacy_blob, &key).is_err(),
+            "a headerless blob has no provenance hash — it must fail the verified read, not parse on faith"
+        );
     }
 
     /// The two 32-byte `ke` values (party id, device pubkey) must not swap. This is the silent corruption the positional decoder invited.
