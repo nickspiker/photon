@@ -11,6 +11,10 @@ build_sign_install() {
     source "$(dirname "${BASH_SOURCE[0]}")/vsf-gate.sh"
     vsf_gate
 
+    # Expired-compatibility-branch ratchet: a migration names the release it dies in, and this fails the build once the tree reaches it. See scripts/lib/migration-gate.sh.
+    source "$(dirname "${BASH_SOURCE[0]}")/migration-gate.sh"
+    migration_gate
+
     # Source freeze: reflink-snapshot photon + its path-dep closure THIS instant and build from the frozen copy — edits made while the build runs can't tear it. Off-btrfs (or any snapshot failure) builds the live tree exactly as before. Target stays the real ./target (see snapbuild.sh for why that's cache-coherent), so sign + install below are untouched.
     source "$(dirname "${BASH_SOURCE[0]}")/snapbuild.sh"
     local build_dir="."

@@ -247,12 +247,14 @@ pub fn load_friendship_chains(
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
-// MIGRATION — DELETE THIS WHOLE BLOCK (the fn + its one call site above). Added 2026-07-29.
+// MIGRATION — DELETE THIS WHOLE BLOCK (the fn + its one call site above). Added 2026-07-29, v52.
 //
-// Removal condition, not a date: every vault has been read once by a build that contains it. Each
-// read rewrites that friendship's blob as a document, so the migration erases its own reason to
-// exist. `MIGRATION: rewrote a pre-document chains blob` in a submitted log is the signal it is
-// still needed; its absence across the fleet's logs is the signal to delete.
+// MIGRATION-EXPIRES: v56 — pre-document chains vault blobs; safe to delete once every device has loaded once (each load rewrites the blob as a document).
+//
+// The gate deletes this, not a memory. At v56 the build FAILS pointing at that marker, and the only
+// ways past it are to remove the block or to move the number on purpose. `MIGRATION: rewrote a
+// pre-document chains blob` in a submitted log is the evidence for that call: still appearing means
+// devices are still arriving with old vaults; absent across the fleet means it is already dead code.
 //
 // It lives here, isolated and named, rather than inside `chains_from_vsf_bytes`, for two reasons.
 // One: that decoder is shared with the fleet chain-replication ADOPT path, so a fallback there
