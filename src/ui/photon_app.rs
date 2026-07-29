@@ -11680,7 +11680,7 @@ impl PhotonApp {
                         // A FRESH ceremony just completed = a brand-new chain — any prior weave seal is void. Reset the double-toggle state so the hidden probe REFIRES for this chain. Without this, a peer that client-reset and re-CLUTCHed hits a deadlock: our persisted chain_woven=true (load latches all probe flags true) suppresses our probe, the reset peer waits forever for it ("weaving the chain"), and we dismiss their re-sent proofs as woven-duplicates. First-ceremony case: flags already false, no-op.
                         contact.chain_woven = false;
                         contact.probe_sent = false;
-                        contact.their_probe_seen = false;
+                        contact.void_weave_seal_from_previous_chain();
                         contact.chain_advanced_by_ack = false;
                         // Store their HQC pub prefix to detect stale offers after restart
                         contact.completed_their_hqc_prefix = Some(result.their_hqc_prefix);
@@ -12910,6 +12910,7 @@ impl PhotonApp {
             contact.friendship_id = Some(fid);
             contact.probe_sent = false;
             contact.their_probe_seen = false;
+            contact.their_probe_ceremony = None; // the chain itself is gone — drop the attribution so a stale id can't match a future ceremony
             contact.chain_advanced_by_ack = false;
             contact.chain_woven = false;
             contact.chain_fail_streak = 0;
@@ -12971,6 +12972,7 @@ impl PhotonApp {
         c.chain_woven = false;
         c.probe_sent = false;
         c.their_probe_seen = false;
+        c.their_probe_ceremony = None; // ditto: the round was discarded, so nothing may inherit its seal
         c.chain_advanced_by_ack = false;
         c.clutch_proof_retry_lifetime = 0;
         c.clutch_proof_gave_up = false;
@@ -14190,6 +14192,8 @@ impl PhotonApp {
                         } else if is_chain_probe {
                             if let Some(contact) = self.contacts.get_mut(contact_idx) {
                                 contact.their_probe_seen = true;
+                                // Attribute the probe to the ceremony whose chain just decrypted it, so a completion landing microseconds later can tell "the peer's probe for THIS ceremony" from "a stale seal for the chain we just replaced".
+                                contact.their_probe_ceremony = contact.ceremony_id;
                                 // Persist the probe as a HIDDEN rarangi row carrying its ack_hash: without a row the duplicate handler has nothing to re-ACK from, so a probe whose ACK was lost froze the sender's chain at the pre-probe position forever — the sibling weave fork of 2026-07-23. Every UI/history/preview path already filters CHAIN_PROBE_MARKER, so the row never surfaces; it exists purely as the durable dedup + re-ACK record. No chime, no sibling push (probes stay device-pair-local).
                                 let probe_row = ChatMessage::new_with_timestamp(
                                     crate::types::CHAIN_PROBE_MARKER.to_string(),
@@ -14209,6 +14213,7 @@ impl PhotonApp {
                         } else if let Some(contact) = self.contacts.get_mut(contact_idx) {
                             // Any real received message means the chain is demonstrably working end-to-end in at least the RX direction — belt-and-suspenders toward woven.
                             contact.their_probe_seen = true;
+                            contact.their_probe_ceremony = contact.ceremony_id;
                             // A real message that DECRYPTED and advanced the chain is DEFINITIVE proof the ratchet works — stronger than the hidden probe ever was. Seal here unconditionally on a Complete contact, WITHOUT waiting for chain_advanced_by_ack. That flag is runtime-only and resets on reload, so a chain that completed but never sealed before a restart (probe lost, or the seal raced) reloaded chain_woven=false with no way back: the compose box stayed hidden, so no outgoing message could ever set chain_advanced_by_ack, so it could never seal — a functional chain locked out of composing forever (peer_m↔peer_b after her re-attest, 2026-07-25). Receiving a decryptable message breaks that deadlock.
                             if !contact.chain_woven && contact.clutch_state == crate::types::ClutchState::Complete {
                                 contact.chain_advanced_by_ack = true;
@@ -14396,6 +14401,8 @@ impl PhotonApp {
                             // Our TX chain just advanced on a matching ACK — their RX is proven. Record it so the chain-weave can seal (sealing itself happens after the `chains` borrow ends, below). This is the "our TX / their RX" half of woven.
                             if let Some(contact) = self.contacts.get_mut(contact_idx) {
                                 contact.chain_advanced_by_ack = true;
+                                // A matching ACK is DEFINITIVE proof the peer holds our ceremony proof — they cannot run the chain that produced this ACK without it. So stop resending the proof HERE, independently of whether the full weave seals. Previously the budget only cleared inside seal_chain_if_ready, which needs BOTH directions, so a ceremony that was provably complete kept rebroadcasting: 5 retransmits × 3 relay devices ≈ 15 pointless relay sends per contact (Jon, 2026-07-27).
+                                contact.clutch_proof_resends_left = 0;
                             }
                             ack_sealed_idx = Some(contact_idx);
 
@@ -15444,7 +15451,7 @@ impl PhotonApp {
                                             // Fresh ceremony = fresh chain: void any prior weave seal so the probe refires (see the twin reset at the Early-proof-verified site for the full deadlock story).
                                             contact.chain_woven = false;
                                             contact.probe_sent = false;
-                                            contact.their_probe_seen = false;
+                                            contact.void_weave_seal_from_previous_chain();
                                             contact.chain_advanced_by_ack = false;
                                             newly_complete_idx = Some(contact_idx);
                                             // Store their HQC pub prefix to detect stale offers after restart
