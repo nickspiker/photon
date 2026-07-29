@@ -45,6 +45,12 @@ impl FleetSettings {
         }
     }
 
+    /// This DEVICE's own value for a key, ignoring the fleet global entirely — `None` if this device has never set one.
+    /// For settings that are ergonomics rather than preferences: zoom is tied to the physical monitor in front of you, so inheriting another device's value is always wrong. `effective` deliberately falls back to the global for a born-linked key, which is right for "how do my devices behave" and wrong for "how big is this screen". Reading zoom through `effective` is what let a fresh device adopt a 4K desktop's zoom seconds after launch.
+    pub fn device_local(&self, key: &str) -> Option<&[u8]> {
+        self.our_entry(key).map(|e| e.value.as_slice())
+    }
+
     /// Set a key's value: writes the GLOBAL when linked (propagates to every linked device), our own map when unlinked. Returns true if anything changed (caller persists + pushes).
     pub fn set(&mut self, key: &str, value: Vec<u8>, now: i64) -> bool {
         if self.effective(key) == Some(value.as_slice()) {

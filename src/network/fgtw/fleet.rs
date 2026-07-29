@@ -223,9 +223,17 @@ pub fn push_roster(
     fleet_key: &[u8; 32],
     entries: &[RosterEntry],
 ) -> Result<(), String> {
+    // A FAILED pull must never become a destructive push. This is pull-merge-push, so the pulled state is the merge base for BOTH layers — and `Err` (network blip, AEAD failure across a key rotation, a tag bump the reader doesn't know) is not the same fact as `Ok(None)` (nothing published yet). Collapsing them into `default()` meant any transient error rebased the fleet on EMPTY and the push overwrote everyone's settings and roster with this device's local view.
+    // Observed live on the PRST2→PRST3 roster bump: "state pulled — 8 roster entries, 0 global settings, 0 device maps" — the settings layer was gone from FGTW.
+    // Ok(None) still starts from empty: that is a genuine first publish, and there is nothing to lose.
     let mut state = match pull_fstate(handle_proof, fleet_key) {
         Ok(Some(s)) => s,
-        _ => fgtw::fstate::FleetState::default(),
+        Ok(None) => fgtw::fstate::FleetState::default(),
+        Err(e) => {
+            return Err(format!(
+                "refusing to push fleet state: the pull failed ({e}), so the merge base is unknown — pushing now would overwrite the fleet's roster and settings with this device's view alone"
+            ))
+        }
     };
     state.roster = fgtw::fstate::merge_rosters(std::mem::take(&mut state.roster), entries.to_vec());
     push_fstate(handle_proof, device_key, fleet_key, &state)

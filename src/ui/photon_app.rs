@@ -3851,7 +3851,9 @@ impl FluorApp for PhotonApp {
         // Fleet chain replication push: any friendship chain that mutated since its last push ships to the siblings. Constant-time no-op when nothing changed.
         self.drive_chain_replication();
 
-        // One-shot settled re-push: the fleet slot only ever gets our settings/roster when a SAVE happens after the keys settle — pushes before that bailed silently and nothing retried. Fire once per session as soon as everything's derivable.
+        // SETTINGS ARE LOCAL-FIRST. A launch pushes NOTHING: settings live in this device's vault, and the fleet slot is consulted only when the vault has no value for a key. They travel outward exactly when the user adjusts one (`save_*_setting` → `persist_and_push_settings`) — never on a timer, never "just to be safe".
+        // The old unconditional re-push here treated every launch as an edit. That is what made a launch able to damage the fleet: the push is pull-merge-push, so a pull that failed for ANY reason (network blip, AEAD failure across a key rotation, a roster tag the reader didn't know) rebased the whole slot on empty and the push overwrote everyone's settings with this device's view. Observed on the PRST2→PRST3 bump — "state pulled — 8 roster entries, 0 global settings, 0 device maps". A device that never edits anything must never be able to do that.
+        // The ROSTER still re-pushes: it is a CRDT of contacts this device genuinely holds, its merge is union-by-handle_proof with per-entry LWW, and a fleet formed before roster-sync existed needs a seed. Settings have no such need — a value nobody changed is not news.
         if !self.settings_repushed
             && self.session.is_some()
             && self.fleet_key_cached().is_some()
@@ -3859,8 +3861,7 @@ impl FluorApp for PhotonApp {
             && self.device_keypair.is_some()
         {
             self.settings_repushed = true;
-            crate::log("SETTINGS: session re-push (settings + roster) — keys settled");
-            self.spawn_settings_push();
+            crate::log("FLEET: session roster re-push — keys settled (settings stay local until edited)");
             self.spawn_roster_push();
         }
 
@@ -8653,11 +8654,11 @@ impl PhotonApp {
         if let Some(cb) = self.settings_autoupdate_check.as_mut() {
             cb.set_checked(auto);
         }
-        // Restore this device's persisted zoom (display.zoom, f32 LE bytes — binary at rest). Handed to the host as a one-shot absolute request; applies exactly like a user zoom.
+        // Restore THIS DEVICE'S persisted zoom (display.zoom, f32 LE bytes — binary at rest), device-local ONLY: never the fleet global. Zoom is monitor ergonomics, so a device that has never set one keeps the default rather than adopting another screen's value — reading it through `effective` is what made a fresh device jump to a 4K desktop's zoom seconds after launch. Handed to the host as a one-shot absolute request; applies exactly like a user zoom.
         if let Some(ru) = self
             .fleet_settings
             .as_ref()
-            .and_then(|fs| fs.effective("display.zoom"))
+            .and_then(|fs| fs.device_local("display.zoom"))
             .filter(|v| v.len() == 4)
             .map(|v| f32::from_le_bytes([v[0], v[1], v[2], v[3]]))
             .filter(|ru| ru.is_finite() && *ru > 0.0)
@@ -8986,9 +8987,14 @@ impl PhotonApp {
             return;
         };
         std::thread::spawn(move || {
+            // A FAILED pull must not become a destructive push (same rule as fleet::push_roster). The comment below — empty ours.roster leaves the slot's roster untouched — holds ONLY when the slot actually pulled: rebasing on `default()` after an error unions an empty roster with an empty base, so a SETTINGS push would silently wipe the fleet's ROSTER. `Ok(None)` is different and safe: nothing is published yet, so there is nothing to lose.
             let slot = match fleet::pull_fstate(&hp, &fleet_key) {
                 Ok(Some(s)) => s,
-                _ => fgtw::fstate::FleetState::default(),
+                Ok(None) => fgtw::fstate::FleetState::default(),
+                Err(e) => {
+                    crate::logf!("SETTINGS: push skipped — pull failed ({}), so the merge base is unknown; pushing now would overwrite the fleet's roster", e);
+                    return;
+                }
             };
             // Empty ours.roster merges to the slot's roster untouched (union) — settings pushes never disturb the roster.
             let merged = fgtw::fstate::merge_fstate(slot, ours);
