@@ -714,16 +714,23 @@ impl HandleQuery {
                             crate::avatar::load_avatar_from_seed(&identity_seed, &storage)
                                 .map(|(_, p)| p);
 
-                        // Cloud sync (download + merge)
-                        crate::log("Network: Syncing with cloud...");
+                        // Cloud contact BACKUP (download + merge). Addressed and sealed under the FLEET key, so one blob serves every device — that is what makes it a restore path rather than a per-device cache. Live cross-device contact state travels on the roster (a CRDT with a clock and tombstones); this is the cold copy.
+                        // No fleet key yet (pre-join, or the fan-out hasn't landed) → SKIP the whole exchange. Falling back to a device-bound derivation would write a blob only this device could ever read, which is the v0 bug.
+                        let fleet_key: Option<[u8; 32]> = storage
+                            .read_addr(&crate::storage::vault_key("fleet_key", &vault_seed))
+                            .ok()
+                            .flatten()
+                            .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
+
                         // What the cloud already holds, kept so the upload below can tell a real change from a no-op. The blob's BYTES can't answer that — encrypt_bytes draws a fresh random nonce per call, so re-encrypting identical contacts yields different ciphertext every time. Compare the decoded CONTENT instead.
                         let mut cloud_had: Option<Vec<crate::storage::cloud::CloudContact>> = None;
-                        if let Ok(Some(cloud_contacts)) =
-                            crate::storage::cloud::load_contacts_from_cloud(
-                                &identity_seed,
-                                &keypair,
-                            )
-                        {
+                        if fleet_key.is_none() {
+                            crate::log("Cloud: no fleet key yet — skipping the contacts backup this round");
+                        }
+                        if let Some(Ok(Some(cloud_contacts))) = fleet_key.map(|fk| {
+                            crate::log("Network: Syncing with cloud...");
+                            crate::storage::cloud::load_contacts_from_cloud(&identity_seed, &fk)
+                        }) {
                             cloud_had = Some(cloud_contacts.clone());
                             // Merge cloud contacts we don't have locally
                             for cc in cloud_contacts {
@@ -761,15 +768,18 @@ impl HandleQuery {
                             had.len() == ours.len()
                                 && ours.iter().all(|o| had.iter().any(|h| h == o))
                         });
-                        if !contacts.is_empty() && !unchanged {
-                            let _ = crate::storage::cloud::sync_contacts_to_cloud(
-                                &contacts,
-                                &identity_seed,
-                                &keypair,
-                                &handle_proof,
-                            );
-                        } else if unchanged {
-                            crate::logf!("Cloud: {} contacts unchanged — skipping upload", ours.len());
+                        if let Some(fk) = fleet_key {
+                            if !contacts.is_empty() && !unchanged {
+                                let _ = crate::storage::cloud::sync_contacts_to_cloud(
+                                    &contacts,
+                                    &identity_seed,
+                                    &fk,
+                                    &keypair,
+                                    &handle_proof,
+                                );
+                            } else if unchanged {
+                                crate::logf!("Cloud: {} contacts unchanged — skipping upload", ours.len());
+                            }
                         }
                         crate::log("Network: Background loading complete");
 
