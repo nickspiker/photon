@@ -16984,7 +16984,53 @@ impl PhotonApp {
     }
 
     /// Fully clean this device for a new owner / a fresh identity: nuke the on-disk vault (all `.vsf` — contacts, chains, keypairs, the cached fleet key) AND clear the tohu session (identity_seed + vault_seed + handle_proof), drop all in-memory state, and drop back to the attest screen. The device KEY is fingerprint-derived (not stored) so it survives — but with no identity bound and an empty vault the device is a blank slate: a new owner types their handle to attest fresh, or JOINs another fleet. This is `[]n` + `[]u` combined, exposed as a real (non-dev-chord) action for the Security page + the removed-device "start fresh" path; the `-1` broadcast signal tells the Android host to drop its sticky session too.
+    /// Delete this identity's contacts-backup blobs from FGTW — both the fleet-keyed v1 slot and the device-keyed v0 slot this device may have left behind before the re-key.
+    /// Runs on a detached thread: two HTTPS round trips must not stall a wipe the user just confirmed, and the outcome changes nothing locally. Every failure is logged and swallowed.
+    fn sweep_contacts_backup_blobs(&self) {
+        let (Some(session), Some(keypair)) = (self.session.as_ref(), self.device_keypair.as_ref())
+        else {
+            return; // nothing attested — no identity seed, so no blob was ever written
+        };
+        let identity_seed = session.identity_seed;
+        let device_secret = *keypair.secret.as_bytes();
+        let kp = keypair.clone();
+
+        // The fleet key is cached in the vault; absent (never joined / fan-out never landed) means no v1 blob was ever written.
+        let fleet_key: Option<[u8; 32]> = self.storage.as_ref().and_then(|s| {
+            s.read_addr(&crate::storage::vault_key("fleet_key", &session.vault_seed))
+                .ok()
+                .flatten()
+                .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
+        });
+
+        std::thread::spawn(move || {
+            use crate::network::fgtw::delete_blob_blocking;
+            if let Some(fk) = fleet_key {
+                let key = crate::storage::cloud::contacts_storage_key(&identity_seed, &fk);
+                match delete_blob_blocking(&key, &kp) {
+                    Ok(()) => crate::log("CLEAN: contacts backup (fleet-keyed) deleted from FGTW"),
+                    Err(e) => crate::logf!("CLEAN: contacts backup delete failed: {}", e),
+                }
+            }
+            // v0: the pre-re-key, device-bound slot. This is the ONLY moment it is deletable — the address needs this device's secret, which is about to be gone.
+            let v0 = crate::storage::cloud::contacts_storage_key_v0_device_bound(
+                &identity_seed,
+                &device_secret,
+            );
+            match delete_blob_blocking(&v0, &kp) {
+                Ok(()) => crate::log("CLEAN: legacy device-keyed contacts blob swept"),
+                Err(e) => crate::logf!("CLEAN: legacy contacts blob sweep failed: {}", e),
+            }
+        });
+    }
+
     fn clean_device_for_reuse(&mut self) {
+        // LastRites sweep for the contacts backup — BEFORE the wipe, because both keys die with it.
+        // The v0 blob is device-bound: its address is BLAKE3(identity_seed ‖ device_secret), which only THIS device can compute, so this is the last moment it can ever be deleted. Miss it and the ciphertext is stranded on FGTW forever — unreadable by anyone and unreachable by any purge, exactly the problem `delete_avatar_blocking` exists to avoid for the wall.
+        // The v1 blob is fleet-bound, so a sibling could also delete it; we do it here anyway because the departing device may be the last member.
+        // Best-effort and off the critical path: an already-absent blob is the goal state, and a failure must never block the wipe.
+        self.sweep_contacts_backup_blobs();
+
         let count = Self::dev_wipe_vault_files("clean");
         tohu::clear_session();
         self.session = None;
