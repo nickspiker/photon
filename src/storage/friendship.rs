@@ -18,8 +18,11 @@ use crate::types::{FriendshipChains, FriendshipId};
 ///
 /// Standard VSF types:
 /// - x = UTF-8 text (Huffman compressed Unicode) for message plaintexts
+/// The section name, shared by the document builder in `chains_to_vsf_bytes` and the TOC lookup in `chains_from_vsf_bytes` — `parse_document` matches this against the header, so the two must never drift.
+const CHAINS_SECTION: &str = "friendship_chains";
+
 fn chains_schema() -> SectionSchema {
-    SectionSchema::new("friendship_chains")
+    SectionSchema::new(CHAINS_SECTION)
         .field("version", TypeConstraint::AnyUnsigned)
         .field("friendship_id", TypeConstraint::AnyHash)
         .field("participant", TypeConstraint::AnyHash) // One per participant (handle_hash as hb)
@@ -203,8 +206,16 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
         .set("mutated_osc", VsfType::e(vsf::types::EtType::e6(chains.mutated_osc)))
         .map_err(|e| StorageError::Parse(e.to_string()))?;
 
-    builder
+    // A COMPLETE VSF FILE, not a bare section (AGENT.md: "VSF Transport Rule: COMPLETE FILES ONLY"). These bytes are not disk-only: `chains_to_vsf_bytes` also feeds fleet chain replication (photon_app.rs `push_chains_to_siblings`), sealed under the fleet key and pushed to every sibling, and the adopt path on the far side parses them back into live RATCHET STATE — chain keys, last plaintexts, mutation stamps. A bare section gave that path nothing to verify: the AEAD proves only "someone in the fleet wrote this", which the signed outer frame already proved. The header's BLAKE3 provenance hash is what makes the payload self-consistent.
+    let section_bytes = builder
         .encode()
+        .map_err(|e| StorageError::Parse(e.to_string()))?;
+
+    vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .provenance_only()
+        .add_unboxed(CHAINS_SECTION, section_bytes)
+        .build()
         .map_err(|e| StorageError::Parse(e.to_string()))
 }
 
@@ -232,9 +243,20 @@ pub fn load_friendship_chains(
 pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, StorageError> {
     use crate::types::friendship::PendingMessage;
 
-    // Schema-validated parse — the same chains_schema the writer encodes with, so reader and writer can no longer drift.
-    let section = vsf::schema::SectionBuilder::parse(chains_schema(), &vsf_bytes)
-        .map_err(|e| StorageError::Parse(format!("VSF parse: {}", e)))?;
+    // Verified read first: `parse_document` runs `read_verified` (header decode + provenance self-consistency) before a single field is trusted. This is what the fleet chain-replication adopt path needs — it is parsing RATCHET STATE that arrived from another device.
+    //
+    // ONE-CYCLE READ-BOTH, deliberately not a protocol fork. These bytes are ALSO the on-disk vault format (`save_friendship_chains`), and `load_all_friendships` DROPS a friendship whose chains fail to load — so a hard flag day here would silently delete every existing conversation's braid state on every device and force a re-CLUTCH with every contact. That is not a resyncable cache like a history page; it is the conversation.
+    // So a pre-document vault blob is still readable, and the very next `save_friendship_chains` rewrites it as a document. The window is one write cycle per friendship, on local disk, and it does not weaken the network path: a chain_sync frame from a sibling is a fresh encode from a build that always writes documents, and the frame around it is device-signed and fleet-key-sealed regardless. Delete this branch once every device has saved once.
+    let section = match vsf::schema::SectionBuilder::parse_document(
+        chains_schema(),
+        vsf_bytes,
+        None,
+    ) {
+        Ok(s) => s,
+        Err(doc_err) => vsf::schema::SectionBuilder::parse(chains_schema(), vsf_bytes).map_err(
+            |e| StorageError::Parse(format!("chains failed verified read: {doc_err}; and as a pre-document section: {e}")),
+        )?,
+    };
 
     // Extract participants (handle hashes as hb)
     let mut participants: Vec<[u8; 32]> = Vec::new();
@@ -483,6 +505,49 @@ pub fn delete_friendship_chains(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The canonical chain bytes must be a COMPLETE VSF FILE (AGENT.md: "VSF Transport Rule: COMPLETE FILES ONLY"). These same bytes are sealed under the fleet key and pushed to siblings, whose adopt path parses them back into live ratchet state — so the payload needs its own provenance anchor, not just the AEAD (which proves only "someone in the fleet wrote this").
+    #[test]
+    fn chain_bytes_are_a_complete_vsf_document() {
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+
+        let bytes = chains_to_vsf_bytes(&chains).expect("encode");
+        assert!(
+            bytes.starts_with(b"R\xc3\x85<"),
+            "must carry the R\u{c5}< magic, got {:?}",
+            &bytes[..bytes.len().min(8)]
+        );
+        let (header, _) =
+            vsf::verification::read_verified(&bytes, None).expect("read_verified must accept it");
+        assert!(
+            matches!(header.provenance_hash, vsf::VsfType::hp(ref h) if h.len() == 32),
+            "chains without a 32-byte hp have nothing to verify"
+        );
+
+        let back = chains_from_vsf_bytes(&bytes).expect("decode");
+        assert_eq!(back.participants(), chains.participants());
+    }
+
+    /// A PRE-DOCUMENT vault blob must still load. Unlike a history page, these bytes are also the on-disk format, and `load_all_friendships` DROPS a friendship whose chains fail to load — a hard flag day here would silently delete every existing conversation's braid state and force a re-CLUTCH with every contact. The next save rewrites it as a document; this branch exists for exactly that one write cycle.
+    #[test]
+    fn pre_document_chain_bytes_still_load() {
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+
+        // Rebuild the OLD wire form: strip the document wrapper by re-encoding the section alone.
+        let doc = chains_to_vsf_bytes(&chains).expect("encode");
+        let section = vsf::schema::SectionBuilder::parse_document(chains_schema(), &doc, None)
+            .expect("parse our own document");
+        let bare = section.encode().expect("bare section");
+
+        let back = chains_from_vsf_bytes(&bare).expect("a pre-document vault blob must still load");
+        assert_eq!(back.participants(), chains.participants());
+    }
 
     #[test]
     fn test_friendship_storage_roundtrip() {

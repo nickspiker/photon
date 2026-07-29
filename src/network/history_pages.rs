@@ -32,9 +32,12 @@ pub struct HistoryPagePlain {
     pub more: bool,
 }
 
+/// The section name, shared by the document builder and the TOC lookup in `open_history_page` — `parse_document` finds the section by matching this against the header, so the two must never drift.
+const PAGE_SECTION: &str = "hist_rows";
+
 /// Schema for the sealed page plaintext. Rows are four parallel multi-value arrays zipped on decode (the `pending_*` idiom from friendship storage).
 fn page_schema() -> SectionSchema {
-    SectionSchema::new("hist_rows")
+    SectionSchema::new(PAGE_SECTION)
         .field("oldest", TypeConstraint::Any) // e6 eagle-time
         .field("more", TypeConstraint::AnyUnsigned) // bool
         .field("m_time", TypeConstraint::Any) // e6, one per row
@@ -68,15 +71,26 @@ pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<
             .append_multi("m_tomb", vec![VsfType::u3(row.deleted as u8)])
             .map_err(|e| e.to_string())?;
     }
-    let plain = builder.encode().map_err(|e| e.to_string())?;
-    kete::encrypt_bytes(&plain, key)
+    let section_bytes = builder.encode().map_err(|e| e.to_string())?;
+
+    // A COMPLETE VSF FILE inside the seal, not a bare section (AGENT.md: "VSF Transport Rule: COMPLETE FILES ONLY"). `.encode()` alone emits the section body — no header, no creation time, no TOC, no BLAKE3 provenance hash — so the open side had nothing to verify and fell back to a raw schema parse.
+    // The AEAD is not a substitute here. These pages ride the FLEET key to every sibling device, so "it decrypted" proves only that SOMEONE IN THE FLEET wrote it — exactly what the signed outer frame already proved. The provenance hash is what makes the payload itself self-consistent, and it costs one builder call.
+    let doc = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .provenance_only()
+        .add_unboxed(PAGE_SECTION, section_bytes)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    kete::encrypt_bytes(&doc, key)
 }
 
 /// AEAD-open + decode a page. Fails on wrong key, tamper, or malformed plaintext.
 pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePlain, String> {
     let plain = kete::decrypt_bytes(sealed, key)?;
-    let section =
-        SectionBuilder::parse(page_schema(), &plain).map_err(|e| format!("page parse: {e}"))?;
+    // Verified read — `parse_document` runs `read_verified` (header decode + provenance self-consistency) before a single field is trusted. A pre-document page is a bare section with no TOC and fails here, which is correct: pages are a resyncable cache, so the requester simply re-fetches and the server re-seals in document form. No compat branch (AGENT.md: atomic updates, no protocol forks).
+    let section = SectionBuilder::parse_document(page_schema(), &plain, None)
+        .map_err(|e| format!("page failed verified read: {e}"))?;
 
     let oldest_osc = section
         .get_fields("oldest")
@@ -219,6 +233,55 @@ mod tests {
         let page = sample_page();
         let sealed = seal_history_page(&page, &[0x42u8; 32]).unwrap();
         assert!(open_history_page(&sealed, &[0x43u8; 32]).is_err());
+    }
+
+    /// The sealed plaintext must be a COMPLETE VSF FILE (AGENT.md: "VSF Transport Rule: COMPLETE FILES ONLY"), not a bare section. These pages ride the fleet key to every sibling, so the payload needs its own integrity anchor — the AEAD only proves "someone in the fleet wrote this", which the signed outer frame already proved.
+    #[test]
+    fn sealed_page_is_a_complete_vsf_document() {
+        let key = [4u8; 32];
+        let page = HistoryPagePlain {
+            rows: vec![HistoryRow {
+                timestamp: 7,
+                content: "hi".to_string(),
+                sender_outgoing: true,
+                delivered: false,
+                deleted: false,
+            }],
+            oldest_osc: 7,
+            more: false,
+        };
+        let sealed = seal_history_page(&page, &key).expect("seal");
+        let plain = kete::decrypt_bytes(&sealed, &key).expect("open");
+        assert!(
+            plain.starts_with(b"R\xc3\x85<"),
+            "must carry the R\u{c5}< magic, got {:?}",
+            &plain[..plain.len().min(8)]
+        );
+        let (header, _) =
+            vsf::verification::read_verified(&plain, None).expect("read_verified must accept it");
+        assert!(
+            matches!(header.provenance_hash, vsf::VsfType::hp(ref h) if h.len() == 32),
+            "a page without a 32-byte hp has nothing to verify"
+        );
+    }
+
+    /// A pre-document page (bare section) must be REJECTED, not parsed on faith. Pages are a resyncable cache — the requester just re-fetches and the server re-seals in document form.
+    #[test]
+    fn pre_document_page_is_rejected() {
+        let key = [6u8; 32];
+        let bare = page_schema()
+            .build()
+            .set("oldest", VsfType::e(vsf::types::EtType::e6(0)))
+            .expect("oldest")
+            .set("more", VsfType::u3(0))
+            .expect("more")
+            .encode()
+            .expect("bare section");
+        let sealed = kete::encrypt_bytes(&bare, &key).expect("seal");
+        assert!(
+            open_history_page(&sealed, &key).is_err(),
+            "a headerless page has no provenance hash — it must fail the verified read"
+        );
     }
 
     #[test]
