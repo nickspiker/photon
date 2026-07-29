@@ -1,14 +1,27 @@
-//! Cloud contact storage via FGTW blob endpoints.
+//! Cloud contact backup via FGTW blob endpoints.
 //!
-//! Stores encrypted contact list on FGTW so users can backup contacts. Each device gets its own blob slot (key includes device_secret).
+//! ONE blob per identity, readable by every device in the fleet — the whole fleet shares one slot.
 //!
-//! Key derivation:
-//! - Storage key: BLAKE3(identity_seed || device_secret || "contacts_storage_key_v0")
-//! - Encryption key: BLAKE3(identity_seed || device_secret || "contacts_v0")
+//! Key derivation (v1):
+//! - Storage key: BLAKE3(identity_seed || fleet_key || "contacts_storage_key_v1")
+//! - Encryption key: BLAKE3(identity_seed || fleet_key || "contacts_v1")
+//!
+//! v0 bound `device_secret` (the device's Ed25519 secret) into BOTH, which meant a blob was
+//! readable only by the device that wrote it. That is not a backup: the case people mean by
+//! backup is a lost or replaced device, and that is exactly the case where the key is gone.
+//! It was also silently orphaned on every Android reinstall, because the Android fingerprint
+//! oracle is ANDROID_ID and that rotates. Binding the FLEET key instead makes the blob what
+//! the module always claimed to be, and gives it a natural purge path (any device can delete
+//! it, and `clean_device_for_reuse` does).
+//!
+//! This is a BACKUP, not the sync channel. Live cross-device contact state travels on the
+//! fleet roster (`fleet::push_roster`/`pull_roster`), which is a proper CRDT with a logical
+//! clock and tombstones. This blob is the cold copy for a fleet that has lost every device's
+//! vault but still holds the fleet key.
 //!
 //! Security:
 //! - identity_seed = BLAKE3(VsfType::x(handle)) - private
-//! - device_secret = Ed25519 signing key bytes - private
+//! - fleet_key = the epoch'd fleet secret, fanned out to members - private, fleet-wide
 //! - handle_proof is PUBLIC - never use for encryption!
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -69,23 +82,38 @@ impl From<&Contact> for CloudContact {
     }
 }
 
-/// Derive storage key for contacts blob on FGTW Returns base64url-encoded 32-byte hash (43 chars)
-pub fn contacts_storage_key(identity_seed: &[u8; 32], device_secret: &[u8; 32]) -> String {
+/// Derive the storage key (address) for the fleet's contacts blob. Returns base64url-encoded 32-byte hash (43 chars).
+/// Binds the FLEET key, so every device in the fleet computes the same address — that is what makes this a backup rather than a per-device cache.
+pub fn contacts_storage_key(identity_seed: &[u8; 32], fleet_key: &[u8; 32]) -> String {
+    let mut hasher = Hasher::new();
+    hasher.update(identity_seed);
+    hasher.update(fleet_key);
+    hasher.update(b"contacts_storage_key_v1");
+    let hash = hasher.finalize();
+    URL_SAFE_NO_PAD.encode(hash.as_bytes())
+}
+
+/// Derive the encryption key for the fleet's contacts blob. Fleet-bound for the same reason as the address.
+pub fn contacts_encryption_key(identity_seed: &[u8; 32], fleet_key: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Hasher::new();
+    hasher.update(identity_seed);
+    hasher.update(fleet_key);
+    hasher.update(b"contacts_v1");
+    *hasher.finalize().as_bytes()
+}
+
+/// The v0 storage key — device-bound, and therefore only ever computable by the device that wrote it.
+/// Kept for ONE purpose: deleting the blob a device left behind, which is only possible while that device still holds its own secret. `clean_device_for_reuse` calls this before wiping. Nothing reads or writes v0 content any more.
+pub fn contacts_storage_key_v0_device_bound(
+    identity_seed: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> String {
     let mut hasher = Hasher::new();
     hasher.update(identity_seed);
     hasher.update(device_secret);
     hasher.update(b"contacts_storage_key_v0");
     let hash = hasher.finalize();
     URL_SAFE_NO_PAD.encode(hash.as_bytes())
-}
-
-/// Derive encryption key for contacts blob
-pub fn contacts_encryption_key(identity_seed: &[u8; 32], device_secret: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Hasher::new();
-    hasher.update(identity_seed);
-    hasher.update(device_secret);
-    hasher.update(b"contacts_v0");
-    *hasher.finalize().as_bytes()
 }
 
 /// Schema for cloud_contacts section
@@ -276,10 +304,11 @@ fn u8_to_trust_level(v: u8) -> TrustLevel {
 /// Uploads current contacts to cloud. Call after any contact change.
 ///
 /// # Arguments
-/// * `contacts` - Current contacts list * `identity_seed` - Our identity seed (BLAKE3 of VSF-normalized handle) * `device_keypair` - Device Ed25519 keypair * `handle_proof` - 32-byte handle proof (proves registered user)
+/// * `contacts` - Current contacts list * `identity_seed` - Our identity seed (BLAKE3 of VSF-normalized handle) * `fleet_key` - the fleet's shared secret; addresses AND seals the blob, so any device in the fleet can read it back * `device_keypair` - Device Ed25519 keypair, used only to SIGN the blob_put (FGTW authorises the write against the fleet chain) * `handle_proof` - 32-byte handle proof (proves registered user)
 pub fn sync_contacts_to_cloud(
     contacts: &[Contact],
     identity_seed: &[u8; 32],
+    fleet_key: &[u8; 32],
     device_keypair: &crate::network::fgtw::Keypair,
     handle_proof: &[u8; 32],
 ) -> Result<(), CloudError> {
@@ -288,10 +317,9 @@ pub fn sync_contacts_to_cloud(
     // Convert contacts to cloud format
     let cloud_contacts: Vec<CloudContact> = contacts.iter().map(CloudContact::from).collect();
 
-    // Derive keys
-    let device_secret = device_keypair.secret.as_bytes();
-    let storage_key = contacts_storage_key(identity_seed, device_secret);
-    let encryption_key = contacts_encryption_key(identity_seed, device_secret);
+    // Derive keys — FLEET-bound, so every device in the fleet resolves the same address and can open the result. The device keypair below only SIGNS the write.
+    let storage_key = contacts_storage_key(identity_seed, fleet_key);
+    let encryption_key = contacts_encryption_key(identity_seed, fleet_key);
 
     // Encode and encrypt
     let encrypted = encode_contacts(&cloud_contacts, &encryption_key)?;
@@ -322,14 +350,13 @@ pub fn sync_contacts_to_cloud(
 /// * `Ok(Some(contacts))` - Contacts found and decrypted * `Ok(None)` - No contacts blob exists on cloud * `Err(...)` - Error
 pub fn load_contacts_from_cloud(
     identity_seed: &[u8; 32],
-    device_keypair: &crate::network::fgtw::Keypair,
+    fleet_key: &[u8; 32],
 ) -> Result<Option<Vec<CloudContact>>, CloudError> {
     use crate::network::fgtw::{get_blob_blocking, BlobError};
 
-    // Derive keys
-    let device_secret = device_keypair.secret.as_bytes();
-    let storage_key = contacts_storage_key(identity_seed, device_secret);
-    let encryption_key = contacts_encryption_key(identity_seed, device_secret);
+    // Derive keys — FLEET-bound. The read needs no device key at all: the GET is unauthenticated (the payload is ciphertext only fleet members can open), which is exactly why any device in the fleet can restore from this blob.
+    let storage_key = contacts_storage_key(identity_seed, fleet_key);
+    let encryption_key = contacts_encryption_key(identity_seed, fleet_key);
 
     // Download from FGTW
     let encrypted = match get_blob_blocking(&storage_key) {
@@ -350,73 +377,6 @@ pub fn load_contacts_from_cloud(
     // Decrypt and decode
     let contacts = decode_contacts(&encrypted, &encryption_key)?;
     crate::logf!("Cloud: Decoded {} contacts", contacts.len());
-    Ok(Some(contacts))
-}
-
-// ============================================================================
-// High-Level API (Async) ============================================================================
-
-/// Upload contacts to FGTW cloud storage (async version)
-pub async fn upload_contacts_to_cloud(
-    contacts: &[Contact],
-    identity_seed: &[u8; 32],
-    device_keypair: &crate::network::fgtw::Keypair,
-    handle_proof: &[u8; 32],
-) -> Result<(), CloudError> {
-    use crate::network::fgtw::{put_blob, BlobError};
-
-    // Convert contacts to cloud format
-    let cloud_contacts: Vec<CloudContact> = contacts.iter().map(CloudContact::from).collect();
-
-    // Derive keys
-    let device_secret = device_keypair.secret.as_bytes();
-    let storage_key = contacts_storage_key(identity_seed, device_secret);
-    let encryption_key = contacts_encryption_key(identity_seed, device_secret);
-
-    // Encode and encrypt
-    let encrypted = encode_contacts(&cloud_contacts, &encryption_key)?;
-
-    // Upload to FGTW
-    put_blob(&storage_key, &encrypted, device_keypair, handle_proof)
-        .await
-        .map_err(|e| match e {
-            BlobError::Network(s) => CloudError::Network(s),
-            BlobError::NotFound => CloudError::Network("Blob not found".to_string()),
-            BlobError::Unauthorized(s) => CloudError::Encryption(s),
-            BlobError::ServerError(s) => CloudError::Network(s),
-        })?;
-
-    Ok(())
-}
-
-/// Download contacts from FGTW cloud storage (async version)
-pub async fn download_contacts_from_cloud(
-    identity_seed: &[u8; 32],
-    device_keypair: &crate::network::fgtw::Keypair,
-) -> Result<Option<Vec<CloudContact>>, CloudError> {
-    use crate::network::fgtw::{get_blob, BlobError};
-
-    // Derive keys
-    let device_secret = device_keypair.secret.as_bytes();
-    let storage_key = contacts_storage_key(identity_seed, device_secret);
-    let encryption_key = contacts_encryption_key(identity_seed, device_secret);
-
-    // Download from FGTW
-    let encrypted = match get_blob(&storage_key).await {
-        Ok(Some(data)) => data,
-        Ok(None) => return Ok(None),
-        Err(e) => {
-            return Err(match e {
-                BlobError::Network(s) => CloudError::Network(s),
-                BlobError::NotFound => return Ok(None),
-                BlobError::Unauthorized(s) => CloudError::Decryption(s),
-                BlobError::ServerError(s) => CloudError::Network(s),
-            })
-        }
-    };
-
-    // Decrypt and decode
-    let contacts = decode_contacts(&encrypted, &encryption_key)?;
     Ok(Some(contacts))
 }
 
@@ -546,6 +506,46 @@ mod document_tests {
         let blob = encode_contacts(&original, &key).expect("encode");
         let back = decode_contacts(&blob, &key).expect("decode");
         assert_eq!(back, original, "decode must reproduce exactly what encode was given");
+    }
+
+    /// The whole point of v1: the address and the key follow the FLEET, not the device. Two devices in one fleet must land on the SAME blob (that is what makes it a restore path), and a different fleet key must land somewhere else entirely.
+    #[test]
+    fn blob_address_follows_the_fleet_not_the_device() {
+        let identity_seed = [1u8; 32];
+        let fleet_key = [2u8; 32];
+        let other_fleet_key = [3u8; 32];
+
+        // Same identity + same fleet key = same slot, no matter which device asks. (The device
+        // secret is not an input at all any more, which is exactly the v0 bug being removed.)
+        assert_eq!(
+            contacts_storage_key(&identity_seed, &fleet_key),
+            contacts_storage_key(&identity_seed, &fleet_key),
+            "every device in the fleet must resolve the same address"
+        );
+        assert_eq!(
+            contacts_encryption_key(&identity_seed, &fleet_key),
+            contacts_encryption_key(&identity_seed, &fleet_key),
+            "every device in the fleet must derive the same encryption key"
+        );
+
+        // A different fleet key is a different slot AND a different key — an epoch rotation
+        // must not silently read or clobber the previous epoch's blob.
+        assert_ne!(
+            contacts_storage_key(&identity_seed, &fleet_key),
+            contacts_storage_key(&identity_seed, &other_fleet_key)
+        );
+        assert_ne!(
+            contacts_encryption_key(&identity_seed, &fleet_key),
+            contacts_encryption_key(&identity_seed, &other_fleet_key)
+        );
+
+        // v1 and v0 are different addresses, so the re-key cannot collide with the blob a
+        // device already left behind (which only its own secret can still delete).
+        let device_secret = [9u8; 32];
+        assert_ne!(
+            contacts_storage_key(&identity_seed, &fleet_key),
+            contacts_storage_key_v0_device_bound(&identity_seed, &device_secret)
+        );
     }
 
     /// A pre-document blob (bare section, no header) must be REJECTED, not silently parsed. The caller treats that as "no cloud contacts this round" and re-uploads in document form, so the slot self-heals — and because the storage key binds the device secret, no other client ever reads this blob.
