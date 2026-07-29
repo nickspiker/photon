@@ -566,6 +566,53 @@ pub fn get_blob_blocking(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError
 /// Sends POST / with VSF section "blob_delete" containing:
 /// - key (d): base64url storage key
 /// - signature (ge): Ed25519 signature over key bytes
+/// Blocking `blob_delete` — the LastRites sweep needs this from `clean_device_for_reuse`, which runs on the UI thread with no runtime to await on (the async twin below is unreachable from there).
+/// Uses the SHARED pooled client with a per-request deadline rather than building a private one: a fresh `Client` throws away the connection pool and the warm TLS session, which is most of a multi-second round trip on a slow uplink.
+/// Idempotent, exactly like the async twin: an already-absent blob is the goal state, so `not_found` is success.
+pub fn delete_blob_blocking(storage_key: &str, device_keypair: &Keypair) -> Result<(), BlobError> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+    let key_bytes = URL_SAFE_NO_PAD
+        .decode(storage_key.as_bytes())
+        .map_err(|e| BlobError::Network(format!("Invalid storage key: {}", e)))?;
+    let key_signature = device_keypair.secret.sign(&key_bytes);
+
+    let vsf_bytes = build_signed_blob_vsf(
+        device_keypair,
+        "blob_delete",
+        vec![
+            ("key".to_string(), VsfType::d(storage_key.to_string())),
+            (
+                "signature".to_string(),
+                VsfType::ge(key_signature.to_bytes().to_vec()),
+            ),
+        ],
+    )?;
+
+    let response = crate::network::http::blocking_timeout(std::time::Duration::from_secs(30))
+        .post(FGTW_URL)
+        .header("Content-Type", "application/octet-stream")
+        .body(vsf_bytes)
+        .send()
+        .map_err(|e| BlobError::Network(format!("DELETE request failed: {}", e)))?;
+
+    let status = response.status();
+    let body = response.bytes().unwrap_or_default();
+    if fgtw::client::is_error(&body, "not_found") {
+        return Ok(());
+    }
+    if let Some((reason, detail)) = fgtw::client::error_frame(&body) {
+        return Err(match reason.as_str() {
+            "slot_owned" => BlobError::Unauthorized(format!("{reason}: {detail}")),
+            _ => BlobError::ServerError(format!("{reason}: {detail}")),
+        });
+    }
+    if !status.is_success() {
+        return Err(BlobError::ServerError(format!("transport {}", status)));
+    }
+    Ok(())
+}
+
 pub async fn delete_blob(storage_key: &str, device_keypair: &Keypair) -> Result<(), BlobError> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
