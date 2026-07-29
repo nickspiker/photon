@@ -116,25 +116,26 @@ pub fn load_contact_list(storage: &FlatStorage) -> Result<Vec<ContactIdentity>, 
 
     let mut contacts = Vec::new();
     for field in builder.get_fields("contact") {
-        // 4-value pin-set rows; old 2-value handle-bearing rows fail the ke match and drop (flag-day).
-        if field.values.len() >= 4 {
-            let handle_proof: [u8; 32] = match &field.values[0] {
-                VsfType::hP(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
-                _ => continue,
-            };
-            let party_id: [u8; 32] = match &field.values[1] {
-                VsfType::ke(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
-                _ => continue,
-            };
-            let avatar_pin: [u8; 64] = match &field.values[2] {
-                VsfType::ge(v) if v.len() == 64 => v.as_slice().try_into().unwrap(),
-                _ => continue,
-            };
-            let name = match &field.values[3] {
-                VsfType::x(s) => s.clone(),
-                _ => continue,
-            };
+        // Read by TYPE MARKER, never by index (AGENT.md: "VSF Type Markers Are Self-Describing"). Each marker appears exactly once in this row, so there is no ordering dependency at all: reordering the writer, or inserting a field, cannot silently shift a value into the wrong slot the way positional reads did.
+        // Old 2-value handle-bearing rows simply never fill all four and drop (flag-day).
+        let mut handle_proof: Option<[u8; 32]> = None;
+        let mut party_id: Option<[u8; 32]> = None;
+        let mut avatar_pin: Option<[u8; 64]> = None;
+        let mut name: Option<String> = None;
 
+        for v in &field.values {
+            match v {
+                VsfType::hP(b) if b.len() == 32 => handle_proof = b.as_slice().try_into().ok(),
+                VsfType::ke(b) if b.len() == 32 => party_id = b.as_slice().try_into().ok(),
+                VsfType::ge(b) if b.len() == 64 => avatar_pin = b.as_slice().try_into().ok(),
+                VsfType::x(s) => name = Some(s.clone()),
+                _ => {}
+            }
+        }
+
+        if let (Some(handle_proof), Some(party_id), Some(avatar_pin), Some(name)) =
+            (handle_proof, party_id, avatar_pin, name)
+        {
             contacts.push(ContactIdentity {
                 handle_proof,
                 party_id,
