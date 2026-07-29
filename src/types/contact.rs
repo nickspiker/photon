@@ -309,6 +309,8 @@ pub struct Contact {
     pub probe_sent: bool,
     /// We've received the peer's chain-weave probe (their TX chain / our RX proven for at least one hop).
     pub their_probe_seen: bool,
+    /// WHICH ceremony that probe belonged to. A completing ceremony voids a weave seal from a PREVIOUS chain, but the peer's probe for the ceremony now completing routinely arrives a few hundred ms BEFORE our own completion finishes (observed 290ms, Jon↔7ff3835f 2026-07-27) — and a reset that discriminates on timing alone throws that one away too, so `chain_woven` never seals and the proof rebroadcasts until its budget runs out. The real question is never "when" but "which chain", and this answers it.
+    pub their_probe_ceremony: Option<[u8; 32]>,
     /// Our own TX chain has advanced via a matching ACK at least once (our TX / their RX proven). Sealed with `their_probe_seen` this is the both-directions-proven condition for `chain_woven`.
     pub chain_advanced_by_ack: bool,
     /// Runtime-only: a punch-validated direct path to this contact `(remote_addr, last_confirmed)`, set when a hole-punch round-trips (see [`crate::network::traverse`]). `race_addrs` prefers it as the primary send address, keeping the public/LAN as the alternate so PT still races if the NAT mapping went stale. Each keepalive ack refreshes `last_confirmed`; once it exceeds the traversal TTL with no ack the path is cleared and re-punched. `Instant` (not eagle-time) because it's never persisted — a resumed session re-punches.
@@ -459,6 +461,7 @@ impl Contact {
             chain_woven: false,           // Chain not yet proven end-to-end (probe pending)
             probe_sent: false,            // Chain-weave probe not sent yet
             their_probe_seen: false,      // Haven't seen their chain-weave probe yet
+            their_probe_ceremony: None,   // …and so no ceremony to attribute one to
             chain_advanced_by_ack: false, // Our TX chain not yet ACK-advanced
             validated_path: None,         // No punch-validated direct path yet
             punch_unvalidated_cycles: 0,  // No failed punch cycles yet
@@ -643,6 +646,18 @@ impl Contact {
 
     /// §4.2 canonical round teardown: kill THIS device's in-flight CLUTCH round (parked loser, takeover adoption, or mid-ceremony new-round adoption). Resets every ephemeral round field so no keep-alive path can resurrect it.
     /// Deliberately does NOT touch `friendship_id` / chain state / `roster_updated` — a discard is only legal for a non-Complete round, and the Complete-rekey path clears friendship state itself. Also leaves `clutch_keygen_in_progress` alone: the serialized keygen worker owns that flag, and the result drain drops a stale result for a parked round instead.
+    /// A ceremony just completed: void a weave seal that belonged to the chain it REPLACED, and keep one that belongs to the ceremony now completing.
+    ///
+    /// Both are real cases and only the attribution tells them apart. On a re-key the peer's old probe proved a chain that no longer exists, so the seal must die or the new chain would inherit a proof it never earned. But the peer's probe for the ceremony now completing routinely arrives BEFORE our own completion finishes — 290 ms in the observed case (Jon↔7ff3835f, 2026-07-27) — and a reset that discriminates on timing throws that one away too. The result was a ceremony that both sides had completed sitting on "weaving the chain" forever, with the proof rebroadcasting until its budget ran out.
+    ///
+    /// Caller resets `chain_woven`, `probe_sent` and `chain_advanced_by_ack` unconditionally; only the probe half is attribution-sensitive, because it is the only half that can arrive before we know the ceremony is done.
+    pub fn void_weave_seal_from_previous_chain(&mut self) {
+        if self.their_probe_ceremony != self.ceremony_id {
+            self.their_probe_seen = false;
+            self.their_probe_ceremony = None;
+        }
+    }
+
     pub fn discard_clutch_round(&mut self) {
         self.clutch_state = ClutchState::Pending;
         self.completed_their_hqc_prefix = None;
@@ -818,6 +833,51 @@ mod fold_honour_tests {
         assert!(!sib.fleet_folded_once, "siblings are never armed");
         assert!(sib.knows_device(&[5u8; 32]), "the sibling device is trusted (bootstrap)");
         assert!(!sib.knows_device(&[6u8; 32]), "another device is not");
+    }
+
+    /// The peer's probe for the ceremony now completing must SURVIVE that completion. Theirs beats our own completion by a few hundred ms often enough that discarding it was a permanent stall: `chain_woven` needs both halves, so the seal never fired, the contact sat on "weaving the chain", and the proof rebroadcast until its budget ran out (Jon↔7ff3835f, 2026-07-27 — probe at 08.158, completion at 08.448, ACK at 10.292, never sealed).
+    #[test]
+    fn probe_for_the_completing_ceremony_survives_completion() {
+        let ceremony = [0xAB; 32];
+        let mut c = Contact::new_sibling([0x22; 32], DevicePubkey::from_bytes([5u8; 32]));
+        c.ceremony_id = Some(ceremony);
+
+        // Peer's probe lands FIRST, attributed to the ceremony whose chain decrypted it.
+        c.their_probe_seen = true;
+        c.their_probe_ceremony = Some(ceremony);
+
+        // …then our own completion for that same ceremony runs.
+        c.void_weave_seal_from_previous_chain();
+
+        assert!(c.their_probe_seen, "a probe for THIS ceremony must survive its completion");
+        assert_eq!(c.their_probe_ceremony, Some(ceremony));
+    }
+
+    /// A re-key must still void the old seal: the probe proved a chain that no longer exists, and letting the new chain inherit it would mark it woven without either side proving anything.
+    #[test]
+    fn probe_from_the_replaced_chain_is_voided() {
+        let mut c = Contact::new_sibling([0x22; 32], DevicePubkey::from_bytes([5u8; 32]));
+        c.their_probe_seen = true;
+        c.their_probe_ceremony = Some([0x11; 32]); // the chain being replaced
+        c.ceremony_id = Some([0x99; 32]); // the fresh one
+
+        c.void_weave_seal_from_previous_chain();
+
+        assert!(!c.their_probe_seen, "a probe from the replaced chain must not seal the new one");
+        assert_eq!(c.their_probe_ceremony, None);
+    }
+
+    /// An unattributed probe (pre-fix state carried across an upgrade) is treated as stale — the conservative reading: re-probing costs one round trip, inheriting an unearned seal costs correctness.
+    #[test]
+    fn unattributed_probe_is_voided() {
+        let mut c = Contact::new_sibling([0x22; 32], DevicePubkey::from_bytes([5u8; 32]));
+        c.their_probe_seen = true;
+        c.their_probe_ceremony = None;
+        c.ceremony_id = Some([0x99; 32]);
+
+        c.void_weave_seal_from_previous_chain();
+
+        assert!(!c.their_probe_seen);
     }
 
     #[test]
