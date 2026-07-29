@@ -48,7 +48,8 @@ fn settings_path() -> Option<std::path::PathBuf> {
 }
 
 impl Settings {
-    /// Serialize to a VSF document (one `settings` section with the knobs as inline fields).
+    /// Serialize to a BARE VSF section (the `settings` knobs as inline fields) — deliberately NOT a complete document, the one sanctioned exception to "COMPLETE FILES ONLY".
+    /// This file never leaves the device, is never sealed, and is meant to be hand-edited; a provenance hash over two display knobs would only make it un-editable by hand for no security gain. `decode` falls back to defaults on anything it can't read, so a mangled file costs a preference, not integrity. Every payload that IS sealed or sent must be a document — see `storage::cloud`, `network::history_pages`, `storage::friendship`, all three of which shipped bare sections until 2026-07-29.
     /// Lengths are stored as u3 (a single byte), so they're clamped to 255 — far beyond any useful head/tail for log readability, and it keeps the file one byte per knob.
     fn encode(&self) -> Result<Vec<u8>, String> {
         let head = self.hex_head.min(255) as u8;
