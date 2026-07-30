@@ -43,4 +43,32 @@ build_sign_install() {
     install -m755 "target/$prof_dir/photon-messenger" "$dir/photon-messenger.new"
     mv -f "$dir/photon-messenger.new" "$dir/photon-messenger"
     echo "Installed to $dir/photon-messenger"
+
+    # macOS: refresh the .app bundle too, because that is what the Dock, Spotlight and Finder launch.
+    # Installing only to ~/.local/bin meant a dev build was built, signed, "installed" -- and every relaunch
+    # from the Dock kept running whatever the last RELEASE install or in-app update left behind. That cost a
+    # full debugging round: two fixes were reported as still-broken by testing a binary that had neither.
+    #
+    # ONE fixed path, the same literal the installers use ($HOME/Applications/Photon Messenger.app) -- never
+    # a search, never /Applications. macOS keys TCC privacy grants to (code identity, bundle path), so a
+    # bundle that moves between builds re-prompts for Local Network exactly like the churning ad-hoc
+    # identifier did before sign.sh pinned org.fgtw.photon.
+    #
+    # The binary is already fully signed at this point (Apple codesign via rcodesign, then the Ed25519
+    # append), so it is dropped in as-is: re-signing here would strip the Ed25519 tail and the binary would
+    # fail its own startup self_verify.
+    #
+    # Only refreshes a bundle that ALREADY exists -- building one is the installer's job (it has the
+    # Info.plist and the icns). No bundle yet? Run installers/install-development.sh once.
+    if [ "$(uname -s)" = "Darwin" ]; then
+        local app="$HOME/Applications/Photon Messenger.app"
+        if [ -d "$app/Contents/MacOS" ]; then
+            # Stage-then-rename, same reason as above: a running instance holds the old inode open.
+            install -m755 "target/$prof_dir/photon-messenger" "$app/Contents/MacOS/photon-messenger.new"
+            mv -f "$app/Contents/MacOS/photon-messenger.new" "$app/Contents/MacOS/photon-messenger"
+            echo "Installed to $app"
+        else
+            echo "No .app bundle at $app — run installers/install-development.sh once to create it (the Dock launches the bundle, not ~/.local/bin)."
+        fi
+    fi
 }
