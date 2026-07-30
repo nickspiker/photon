@@ -4,8 +4,7 @@ use vsf::VsfType;
 
 use crate::network::http::SEED_HTTPS as FGTW_URL;
 
-// ============================================================================
-// Blob Storage API (VSF section-based) ============================================================================
+// ============================================================================ Blob Storage API (VSF section-based) ============================================================================
 
 /// Error type for blob operations
 #[derive(Debug)]
@@ -669,8 +668,7 @@ pub async fn delete_blob(storage_key: &str, device_keypair: &Keypair) -> Result<
 mod log_capability_tests {
     use super::*;
 
-    // Network smoke test against the LIVE fgtw.org worker: submit a sealed log, then pull it back by the
-    // seed-derived tag and decrypt it. Run explicitly: `cargo test --features development -- --ignored roundtrip`.
+    // Network smoke test against the LIVE fgtw.org worker: submit a sealed log, then pull it back by the seed-derived tag and decrypt it. Run explicitly: `cargo test --features development -- --ignored roundtrip`.
     #[test]
     #[ignore]
     fn roundtrip_submit_list_get_decrypt() {

@@ -349,8 +349,7 @@ mod imp {
         Ok(())
     }
 
-    // ── Windows advertiser: WinRT BluetoothLEAdvertisementPublisher. ──
-    // Runs on a dedicated thread that owns a COM apartment (WinRT activation requires one) and holds the publisher alive until stopped — dropping the publisher stops the advertisement, so the thread parks on it rather than returning.
+    // ── Windows advertiser: WinRT BluetoothLEAdvertisementPublisher. ── Runs on a dedicated thread that owns a COM apartment (WinRT activation requires one) and holds the publisher alive until stopped — dropping the publisher stops the advertisement, so the thread parks on it rather than returning.
     #[cfg(target_os = "windows")]
     mod win_adv {
         use super::*;

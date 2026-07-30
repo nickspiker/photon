@@ -87,9 +87,7 @@ pub fn is_usable_lan_ipv4(ip: std::net::Ipv4Addr) -> bool {
     !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified() && !is_service_continuity
 }
 
-/// True for the RFC 1918 private ranges (10/8, 172.16/12, 192.168/16) — the addresses that are only reachable
-/// on a shared LAN. Used to decide whether a peer's v4 candidate is a routable public address (send freely)
-/// or a private one that's only worth trying when we're on the SAME subnet (see gather::is_foreign_peer_lan).
+/// True for the RFC 1918 private ranges (10/8, 172.16/12, 192.168/16) — the addresses that are only reachable on a shared LAN. Used to decide whether a peer's v4 candidate is a routable public address (send freely) or a private one that's only worth trying when we're on the SAME subnet (see gather::is_foreign_peer_lan).
 pub fn is_private_ipv4(ip: std::net::Ipv4Addr) -> bool {
     let o = ip.octets();
     o[0] == 10 || (o[0] == 172 && (16..=31).contains(&o[1])) || (o[0] == 192 && o[1] == 168)

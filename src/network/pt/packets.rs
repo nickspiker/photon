@@ -507,8 +507,7 @@ impl PTComplete {
     }
 }
 
-// ============================================================================
-// VSF Variable-Length Uint Encoding (matching VSF spec) ============================================================================
+// ============================================================================ VSF Variable-Length Uint Encoding (matching VSF spec) ============================================================================
 
 /// Encode unsigned integer as VSF variable-length format
 /// - 0-127: 1 byte (high bit clear)

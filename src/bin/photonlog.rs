@@ -52,8 +52,7 @@ struct Filter {
 }
 
 /// Decode and print whole records from `buf` (via the shared [`photon_messenger::parse_log_records`] — the in-app viewer walks the same decode), applying the filter.
-/// Returns the number of bytes consumed — i.e. the offset of the last COMPLETE record boundary — so a
-/// half-written trailing record (mid-append) is left for the next pass instead of being mis-decoded.
+/// Returns the number of bytes consumed — i.e. the offset of the last COMPLETE record boundary — so a half-written trailing record (mid-append) is left for the next pass instead of being mis-decoded.
 fn print_records(buf: &[u8], filter: &Filter) -> usize {
     let (records, consumed) = photon_messenger::parse_log_records(buf);
     for r in &records {

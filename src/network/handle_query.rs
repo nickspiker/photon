@@ -33,16 +33,12 @@ pub struct AttestationData {
     pub peers: Vec<PeerRecord>,
     /// The address FGTW OBSERVED this announce arriving from, straight off the signed `announce_ok` ack.
     ///
-    /// This is the bootstrap that breaks a circular dependency: `publish_self_peer_record` needs
-    /// `our_reflexive` before it can sign a record, `our_reflexive` was only ever learned from a peer-echoed
-    /// pong, and a pong needs a reachable path -- which needs an address a peer could learn, which needs a
-    /// published record. Nothing could go first, so no device ever published one and gossip carried nothing.
+    /// This is the bootstrap that breaks a circular dependency: `publish_self_peer_record` needs `our_reflexive` before it can sign a record, `our_reflexive` was only ever learned from a peer-echoed pong, and a pong needs a reachable path -- which needs an address a peer could learn, which needs a published record. Nothing could go first, so no device ever published one and gossip carried nothing.
     ///
-    /// The seed's view is a TLS-flow observation, so it is only exactly right for a cone NAT -- but it is
-    /// SIGNED by FGTW and it is strictly better than `None`. A peer-echoed reflection from the live UDP
-    /// socket still wins the moment one arrives (see the `ReflexiveLearned` arm), so this is a starting
-    /// guess that gets corrected, never an authority.
+    /// The seed's view is a TLS-flow observation, so it is only exactly right for a cone NAT -- but it is SIGNED by FGTW and it is strictly better than `None`. A peer-echoed reflection from the live UDP socket still wins the moment one arrives (see the `ReflexiveLearned` arm), so this is a starting guess that gets corrected, never an authority.
     pub observed_addr: Option<std::net::SocketAddr>,
+    /// Unique identities the seed knows, INCLUDING us — off the signed announce ack. Feeds the Ready-screen peer count while the local store has nothing gossiped into it yet.
+    pub seed_identity_count: u32,
     /// True if FlatStorage detected a damaged ring during open this session (missing, permission-denied, corrupt, or HMAC-bad). UI renders a persistent degraded banner when true. Sticky for the session — only clears on next process restart after both rings open cleanly.
     pub vault_degraded: bool,
 }
@@ -645,8 +641,7 @@ impl HandleQuery {
                             crate::logf!("Development: identity_seed = {}  handle_seed = {}", voca::encode(BigUint::from_bytes_be(&identity_seed)), voca::encode(BigUint::from_bytes_be(&handle_seed)));
                         }
 
-                        // Initialize FlatStorage for this session. A bare `return` here would silently strand the UI on the Attesting spinner because the result channel never gets a verdict — the worker has already proven FGTW says the handle is ours, but with no local vault we can't reach Ready. Surface the failure as a QueryResult::Error so the Launch screen flips to its error state and the user sees what happened.
-                        // open_shared, NEVER new: on a resume the UI thread already holds this vault's engine and is writing to it (CLUTCH chains, avatars, presence state). A second independent engine here is two in-RAM states racing one file — the exact corruption that bricks a live vault ("seal verification failed" on every open after the stale engine's commit).
+                        // Initialize FlatStorage for this session. A bare `return` here would silently strand the UI on the Attesting spinner because the result channel never gets a verdict — the worker has already proven FGTW says the handle is ours, but with no local vault we can't reach Ready. Surface the failure as a QueryResult::Error so the Launch screen flips to its error state and the user sees what happened. open_shared, NEVER new: on a resume the UI thread already holds this vault's engine and is writing to it (CLUTCH chains, avatars, presence state). A second independent engine here is two in-RAM states racing one file — the exact corruption that bricks a live vault ("seal verification failed" on every open after the stale engine's commit).
                         let storage = match crate::storage::FlatStorage::open_shared(
                             crate::storage::APP,
                             vault_seed,
@@ -803,6 +798,7 @@ impl HandleQuery {
                             avatar_pixels,
                             peers: result.peers,
                             observed_addr: result.observed_addr,
+                            seed_identity_count: result.identity_count,
                             vault_degraded,
                         }))
                     } else {

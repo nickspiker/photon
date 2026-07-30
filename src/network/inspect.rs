@@ -145,8 +145,7 @@ fn strip_ansi_if_needed(s: &str) -> String {
     }
 }
 
-// =============================================================================
-// Centralized VSF disk I/O with automatic dev-mode inspection =============================================================================
+// ============================================================================= Centralized VSF disk I/O with automatic dev-mode inspection =============================================================================
 
 use ed25519_dalek::SigningKey;
 use std::path::Path;

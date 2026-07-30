@@ -2,9 +2,7 @@
 //!
 //! Photon stamps every eagle-time on the LOCAL clock (the braid, message ordering, avatar newer-wins all need a monotonic, unique-per-tick local stamp — nunc's ~seconds latency and ±confidence interval would break that). nunc is used ONLY to ask, out of band, "is this device's wall clock telling the truth?" If the consensus says we're off by more than a threshold, the UI raises an amber "clock off" banner — a warning, never a silent correction. Open source relies on everyone being honest; we surface the anomaly loudly instead of trusting or overriding it.
 //!
-//! It runs once a few seconds after attest, and again whenever the jump detector below notices the wall clock diverging from the monotonic clock by more than the re-check slack (an NTP step,
-//! a long sleep, or an adversary moving the clock after boot). The jump is only the cheap TRIGGER;
-//! nunc is the arbiter that decides whether the banner shows.
+//! It runs once a few seconds after attest, and again whenever the jump detector below notices the wall clock diverging from the monotonic clock by more than the re-check slack (an NTP step, a long sleep, or an adversary moving the clock after boot). The jump is only the cheap TRIGGER; nunc is the arbiter that decides whether the banner shows.
 
 #[cfg(not(target_os = "android"))]
 use std::sync::Arc;

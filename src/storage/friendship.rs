@@ -246,32 +246,19 @@ pub fn load_friendship_chains(
     }
 }
 
-// ════════════════════════════════════════════════════════════════════════════════════════════════
-// MIGRATION — DELETE THIS WHOLE BLOCK (the fn + its one call site above). Added 2026-07-29, v52.
+// ════════════════════════════════════════════════════════════════════════════════════════════════ MIGRATION — DELETE THIS WHOLE BLOCK (the fn + its one call site above). Added 2026-07-29, v52.
 //
 // MIGRATION-EXPIRES: v56 — pre-document chains vault blobs; safe to delete once every device has loaded once (each load rewrites the blob as a document).
 //
-// The gate deletes this, not a memory. At v56 the build FAILS pointing at that marker, and the only
-// ways past it are to remove the block or to move the number on purpose. `MIGRATION: rewrote a
-// pre-document chains blob` in a submitted log is the evidence for that call: still appearing means
-// devices are still arriving with old vaults; absent across the fleet means it is already dead code.
+// The gate deletes this, not a memory. At v56 the build FAILS pointing at that marker, and the only ways past it are to remove the block or to move the number on purpose. `MIGRATION: rewrote a pre-document chains blob` in a submitted log is the evidence for that call: still appearing means devices are still arriving with old vaults; absent across the fleet means it is already dead code.
 //
 // It lives here, isolated and named, rather than inside `chains_from_vsf_bytes`, for two reasons.
-// One: that decoder is shared with the fleet chain-replication ADOPT path, so a fallback there
-// would silently let a headerless blob from the network be parsed into live ratchet state — the
-// exact thing the document wrapper was added to prevent. Two: deleting a self-contained function
-// and one `match` arm is a two-line edit with no risk to the read path, whereas unpicking a branch
-// threaded through the decoder is surgery.
+// One: that decoder is shared with the fleet chain-replication ADOPT path, so a fallback there would silently let a headerless blob from the network be parsed into live ratchet state — the exact thing the document wrapper was added to prevent. Two: deleting a self-contained function and one `match` arm is a two-line edit with no risk to the read path, whereas unpicking a branch threaded through the decoder is surgery.
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
-/// Read a pre-document (bare section) chains blob from the VAULT and immediately rewrite it as a
-/// document. Returns `None` if the bytes are not a readable legacy blob either — then the caller
-/// surfaces the original strict error, so genuine corruption still fails loudly.
+/// Read a pre-document (bare section) chains blob from the VAULT and immediately rewrite it as a document. Returns `None` if the bytes are not a readable legacy blob either — then the caller surfaces the original strict error, so genuine corruption still fails loudly.
 ///
-/// Why this exists at all: `chains_to_vsf_bytes` is the on-disk format as well as the wire format,
-/// and `load_all_friendships` DROPS a friendship whose chains fail to load. A hard cutover would
-/// therefore have deleted every existing conversation's braid state on every device and forced a
-/// re-CLUTCH with every contact. Chain state is not a resyncable cache; it is the conversation.
+/// Why this exists at all: `chains_to_vsf_bytes` is the on-disk format as well as the wire format, and `load_all_friendships` DROPS a friendship whose chains fail to load. A hard cutover would therefore have deleted every existing conversation's braid state on every device and forced a re-CLUTCH with every contact. Chain state is not a resyncable cache; it is the conversation.
 fn migrate_pre_document_chains(
     vsf_bytes: &[u8],
     storage: &FlatStorage,
@@ -624,8 +611,7 @@ mod tests {
         let loaded = load_friendship_chains(&fid, &storage).expect("legacy blob must still load");
         assert_eq!(loaded.participants(), chains.participants());
 
-        // And the blob on disk is now a document, so the migration is self-terminating: the strict
-        // decoder alone can read it, with no fallback involved.
+        // And the blob on disk is now a document, so the migration is self-terminating: the strict decoder alone can read it, with no fallback involved.
         let on_disk = storage.read_addr(&chains_key(&fid)).unwrap().expect("still there");
         assert!(
             chains_from_vsf_bytes(&on_disk).is_ok(),

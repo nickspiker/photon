@@ -64,8 +64,7 @@ pub enum FgtwMessage {
         responder_pubkey: DevicePubkey, // Who is responding
         provenance_hash: [u8; 32],      // Same hash from ping (proves we received it)
         signature: [u8; 64],            // Ed25519 signature of provenance_hash
-        /// Per-conversation sync records: (conversation_token, last_received_osc) Tells peer: "For this conversation, your last message I received was at time X" Peer retransmits any pending messages with eagle_time > X
-        /// PARSE-SIDE LEGACY ONLY: filled from the old plaintext `sync` rows of a not-yet-updated peer. This build NEVER emits plaintext sync rows — outbound they travel inside `sealed`.
+        /// Per-conversation sync records: (conversation_token, last_received_osc) Tells peer: "For this conversation, your last message I received was at time X" Peer retransmits any pending messages with eagle_time > X PARSE-SIDE LEGACY ONLY: filled from the old plaintext `sync` rows of a not-yet-updated peer. This build NEVER emits plaintext sync rows — outbound they travel inside `sealed`.
         sync_records: Vec<SyncRecord>,
         /// The source address the responder observed this pong's ping arriving from — i.e. the requester's reflexive (public) address on the live UDP data socket. `None` from legacy peers. This is the peer-echoed STUN primitive: a node learns its own public address from any node whose pong it receives (see the traversal plan, P0), on the exact socket the data flows over — unlike fgtw.org's `cf-connecting-ip`, which only sees the TLS flow and is thus cone-NAT-only. Deliberately PLAINTEXT: it is the PINGER'S own address bootstrapping information and predates any pairing.
         observed_addr: Option<SocketAddr>,
@@ -793,11 +792,7 @@ impl FgtwMessage {
             });
         }
 
-        // clutch_* sections are NOT parsed here — they have dedicated parsers (parse_clutch_offer /
-        // _kem_response / _complete) the receive loop tries directly. If one reaches this general parser it
-        // means an upstream branch didn't claim it; say so plainly instead of the misleading "unexpected
-        // section" error, which read as corruption when it was really just mis-routing (a sibling's
-        // clutch_complete proof falling thru the recv dispatch — the bug that stalled fleet weaves).
+        // clutch_* sections are NOT parsed here — they have dedicated parsers (parse_clutch_offer / _kem_response / _complete) the receive loop tries directly. If one reaches this general parser it means an upstream branch didn't claim it; say so plainly instead of the misleading "unexpected section" error, which read as corruption when it was really just mis-routing (a sibling's clutch_complete proof falling thru the recv dispatch — the bug that stalled fleet weaves).
         if section_name.starts_with("clutch_") {
             return Err(format!(
                 "{} is parsed by its dedicated parser, not FgtwMessage::from_vsf_bytes (recv-dispatch mis-route)",
@@ -3348,14 +3343,9 @@ mod local_ip_absent_tests {
     use super::*;
     use ed25519_dalek::SigningKey;
 
-    /// A peer with NO local_ip must not poison the batch. `local_ip` is absent for any peer whose LAN
-    /// address we never learned -- the common case -- and it encodes as a zero-length tensor. A vsf
-    /// decoder bug routed that empty tensor into the multi-dim path, which then read the ',' delimiter
-    /// after it as a shape; because one bad value fails the whole section, ONE such peer made the
-    /// entire PhonebookResponse unparseable and the receiver silently dropped every peer in it.
+    /// A peer with NO local_ip must not poison the batch. `local_ip` is absent for any peer whose LAN address we never learned -- the common case -- and it encodes as a zero-length tensor. A vsf decoder bug routed that empty tensor into the multi-dim path, which then read the ',' delimiter after it as a shape; because one bad value fails the whole section, ONE such peer made the entire PhonebookResponse unparseable and the receiver silently dropped every peer in it.
     ///
-    /// The existing round-trip test set `local_ip = Some(..)` on every fixture, so the absent case --
-    /// the one that actually dominates the wire -- was never exercised. It is now.
+    /// The existing round-trip test set `local_ip = Some(..)` on every fixture, so the absent case -- the one that actually dominates the wire -- was never exercised. It is now.
     #[test]
     fn phonebook_response_round_trips_a_peer_with_no_local_ip() {
         let sk = SigningKey::from_bytes(&[5u8; 32]);
@@ -3365,8 +3355,7 @@ mod local_ip_absent_tests {
         absent.local_ip = None;
         absent.sign(&sk);
 
-        // Mixed batch: the absent-local_ip row sits FIRST, so if it over-reads it takes the signed
-        // row after it down too -- which is exactly how this presented in the field.
+        // Mixed batch: the absent-local_ip row sits FIRST, so if it over-reads it takes the signed row after it down too -- which is exactly how this presented in the field.
         let sk2 = SigningKey::from_bytes(&[22u8; 32]);
         let pk2 = DevicePubkey::from_bytes(sk2.verifying_key().to_bytes());
         let mut with_local = PeerRecord::new([2u8; 32], pk2, "198.51.100.4:4383".parse().unwrap());
@@ -3386,8 +3375,7 @@ mod local_ip_absent_tests {
                 assert_eq!(peers.len(), 2, "both peers, not zero and not one");
                 assert_eq!(peers[0].local_ip, None, "empty tensor parses back to None");
                 assert_eq!(peers[1].local_ip, with_local.local_ip, "the row AFTER it is intact");
-                // The signature is over signing_bytes, which treats None as the empty string -- so a
-                // record with no local_ip still verifies, and can therefore still be merged.
+                // The signature is over signing_bytes, which treats None as the empty string -- so a record with no local_ip still verifies, and can therefore still be merged.
                 assert!(peers[0].verify(), "an absent local_ip must not break the self-signature");
                 assert!(peers[1].verify());
             }

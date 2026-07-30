@@ -10,10 +10,10 @@ use crate::network::http::SEED_HTTPS as FGTW_URL;
 pub struct BootstrapResult {
     pub peers: Vec<PeerRecord>,
     pub error: Option<String>,
-    /// The address FGTW observed the announce arriving from, off the signed ack. Seeds `our_reflexive` so
-    /// `publish_self_peer_record` has something honest to sign BEFORE any pong arrives -- see
-    /// `AttestationData::observed_addr` for why that bootstrap is what gossip was missing.
+    /// The address FGTW observed the announce arriving from, off the signed ack. Seeds `our_reflexive` so `publish_self_peer_record` has something honest to sign BEFORE any pong arrives -- see `AttestationData::observed_addr` for why that bootstrap is what gossip was missing.
     pub observed_addr: Option<std::net::SocketAddr>,
+    /// Unique identities the seed knows (off the signed ack, INCLUDING us). The Ready-screen peer count fell to 0 at the cutover because it counted the peer STORE, which the announce echo used to fill — this is the honest replacement number until gossip refills the store.
+    pub identity_count: u32,
 }
 
 // FGTW Seed Public Keys (hardcoded to avoid extra queries) X25519 public key - for encrypting announce messages
@@ -67,11 +67,14 @@ pub async fn load_bootstrap_peers(
     identity_seed: &[u8; 32],
 ) -> BootstrapResult {
     match load_bootstrap_peers_inner(device_key, handle_proof, port, identity_seed).await {
-        Ok((peers, observed_addr)) => BootstrapResult { peers, error: None, observed_addr },
+        Ok((peers, observed_addr, identity_count)) => {
+            BootstrapResult { peers, error: None, observed_addr, identity_count }
+        }
         Err(e) => BootstrapResult {
             peers: vec![],
             error: Some(e),
             observed_addr: None,
+            identity_count: 0,
         },
     }
 }
@@ -82,7 +85,7 @@ async fn load_bootstrap_peers_inner(
     handle_proof: [u8; 32],
     port: u16,
     identity_seed: &[u8; 32],
-) -> Result<(Vec<PeerRecord>, Option<std::net::SocketAddr>), String> {
+) -> Result<(Vec<PeerRecord>, Option<std::net::SocketAddr>, u32), String> {
     // Shared async client — pools on the process-wide runtime, so the TLS session is reused across announces (challenge + announce here are two requests on one warm connection). The per-request `.timeout(10s)` below preserves the old client-level budget.
     let client = crate::network::http::async_client();
 
@@ -198,11 +201,8 @@ async fn load_bootstrap_peers_inner(
         ));
     }
 
-    // The announce ACKS; it no longer echoes the phonebook. The seed is the LAST resort for peer
-    // discovery, not the first -- our own store persists and gossips, so a seed-supplied list was
-    // duplicating what we already hold, at the cost of a full per-recipient encrypt on every attest.
-    // What we still want from the ack is the reflexive address the worker observed, which is the one
-    // thing only the server can tell us.
+    // The announce ACKS; it no longer echoes the phonebook. The seed is the LAST resort for peer discovery, not the first -- our own store persists and gossips, so a seed-supplied list was duplicating what we already hold, at the cost of a full per-recipient encrypt on every attest.
+    // What we still want from the ack is the reflexive address the worker observed, which is the one thing only the server can tell us.
     let (observed_addr, count) = parse_announce_ack(&response_bytes)?;
     crate::logf!(
         "FGTW: announce ok, {} identities known, we look like {}",
@@ -210,14 +210,12 @@ async fn load_bootstrap_peers_inner(
         observed_addr.map(|a| a.to_string()).unwrap_or_else(|| "(unknown)".to_string())
     );
 
-    Ok((Vec::new(), observed_addr))
+    Ok((Vec::new(), observed_addr, count))
 }
 
 /// Verify the `announce_ok` ack and pull out (observed address, identity count).
 ///
-/// Verified read pinned to the FGTW signing key, same as the challenge: an ack that isn't signed by FGTW
-/// tells us nothing about what the network saw. There is no fallback to the old `encrypted_peers` shape --
-/// a worker still serving it fails here loudly, which is the intent (AGENT.md "No Fork Bullshit").
+/// Verified read pinned to the FGTW signing key, same as the challenge: an ack that isn't signed by FGTW tells us nothing about what the network saw. There is no fallback to the old `encrypted_peers` shape -- a worker still serving it fails here loudly, which is the intent (AGENT.md "No Fork Bullshit").
 fn parse_announce_ack(bytes: &[u8]) -> Result<(Option<std::net::SocketAddr>, u32), String> {
     let schema = vsf::schema::SectionSchema::new("announce_ok")
         .field("count", vsf::schema::TypeConstraint::Any)
@@ -228,9 +226,7 @@ fn parse_announce_ack(bytes: &[u8]) -> Result<(Option<std::net::SocketAddr>, u32
     let count: u32 = section.get_value("count").unwrap_or(0);
     let ip: String = section.get_value("ip").unwrap_or_default();
     let port: u16 = section.get_value("port").unwrap_or(0);
-    // The worker stamps `ip` from cf-connecting-ip, so it is a bare address with no port and can be v4 or
-    // v6. Pair it with the port WE announced (the worker echoes it back) to form the endpoint peers would
-    // reach us on. A malformed or empty address yields None rather than a bogus 0.0.0.0 we might sign.
+    // The worker stamps `ip` from cf-connecting-ip, so it is a bare address with no port and can be v4 or v6. Pair it with the port WE announced (the worker echoes it back) to form the endpoint peers would reach us on. A malformed or empty address yields None rather than a bogus 0.0.0.0 we might sign.
     let observed = ip.parse::<std::net::IpAddr>().ok().and_then(|addr| {
         if port == 0 { return None; }
         let sa = std::net::SocketAddr::new(addr, port);
@@ -463,13 +459,9 @@ pub(crate) fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord,
 mod tests {
     use super::*;
 
-    /// Build an `announce_ok` ack byte-for-byte the way the worker does, then read it with the client's
-    /// own parser. This pins the two halves of a contract that live in different repos.
+    /// Build an `announce_ok` ack byte-for-byte the way the worker does, then read it with the client's own parser. This pins the two halves of a contract that live in different repos.
     ///
-    /// It exists because the first cut of this ack was UNSIGNED: `vsf_bytes_response` doesn't sign, and
-    /// only `handle_challenge` filled a `ge`. The client verifies pinned to the FGTW key, so every attest
-    /// would have failed at `read_verified` -- after deploy, on all five clients, with the seed being the
-    /// only way to attest. A round-trip test is the cheap way to catch a cross-repo shape mismatch.
+    /// It exists because the first cut of this ack was UNSIGNED: `vsf_bytes_response` doesn't sign, and only `handle_challenge` filled a `ge`. The client verifies pinned to the FGTW key, so every attest would have failed at `read_verified` -- after deploy, on all five clients, with the seed being the only way to attest. A round-trip test is the cheap way to catch a cross-repo shape mismatch.
     fn worker_shaped_ack(signer: &ed25519_dalek::SigningKey, count: u32, ip: &str, port: u16) -> Vec<u8> {
         use vsf::VsfType;
         let unsigned = vsf::VsfBuilder::new()
@@ -518,9 +510,7 @@ mod tests {
         assert_eq!(section.get_value::<u16>("port").expect("port"), 4383);
     }
 
-    /// An ack from the WRONG key must be refused. The reflexive address in it is the one thing only the
-    /// server can assert, so accepting an unpinned ack would let anything on the path tell us we look
-    /// like an address it chose.
+    /// An ack from the WRONG key must be refused. The reflexive address in it is the one thing only the server can assert, so accepting an unpinned ack would let anything on the path tell us we look like an address it chose.
     #[test]
     fn announce_ack_from_a_foreign_key_is_refused() {
         let real = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);

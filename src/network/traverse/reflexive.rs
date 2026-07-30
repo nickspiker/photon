@@ -36,15 +36,9 @@ impl ReflexiveState {
     ///
     /// Returns `Some(addr)` when this observation *changed* the adopted address for its family (the caller should then update `PhotonApp.our_reflexive` and re-announce), else `None`.
     pub fn record(&mut self, observed: SocketAddr, from: [u8; 32], trusted: bool) -> Option<SocketAddr> {
-        // A pong that arrived over the RELAY carries the `RELAY_ADDR` sentinel (0.0.0.0:0) as its observed
-        // address -- the pipe has no peer address to report. Adopting that as OUR reflexive address is
-        // actively harmful: it is what `publish_self_peer_record` signs, so the mesh gets handed a record
-        // saying we are unreachable, and the seed-from-ack fallback then declines to correct it because a
-        // value is technically present. Observed live: a first-ever published record carrying 0.0.0.0:0
-        // while the FGTW ack was reporting a perfectly good v6 address.
+        // A pong that arrived over the RELAY carries the `RELAY_ADDR` sentinel (0.0.0.0:0) as its observed address -- the pipe has no peer address to report. Adopting that as OUR reflexive address is actively harmful: it is what `publish_self_peer_record` signs, so the mesh gets handed a record saying we are unreachable, and the seed-from-ack fallback then declines to correct it because a value is technically present. Observed live: a first-ever published record carrying 0.0.0.0:0 while the FGTW ack was reporting a perfectly good v6 address.
         //
-        // The inbound-DATA path already refuses the sentinel for the same reason (see photon_app's
-        // "storing the sentinel as contact.ip would poison direct sends"); this is the missing half.
+        // The inbound-DATA path already refuses the sentinel for the same reason (see photon_app's "storing the sentinel as contact.ip would poison direct sends"); this is the missing half.
         if crate::network::traverse::gather::is_bogus_addr(&observed) {
             return None;
         }
@@ -140,10 +134,7 @@ mod tests {
 
     /// The RELAY sentinel must never become our reflexive address.
     ///
-    /// A pong injected off the relay pipe reports `0.0.0.0:0` -- the pipe has no peer address to give. That
-    /// used to be adopted verbatim and then SIGNED into our published peer record, telling the whole mesh
-    /// we were unreachable. Worse, it was sticky: the seed-from-ack fallback only fills when nothing is
-    /// present, so a garbage value blocked the good address FGTW was reporting all along.
+    /// A pong injected off the relay pipe reports `0.0.0.0:0` -- the pipe has no peer address to give. That used to be adopted verbatim and then SIGNED into our published peer record, telling the whole mesh we were unreachable. Worse, it was sticky: the seed-from-ack fallback only fills when nothing is present, so a garbage value blocked the good address FGTW was reporting all along.
     #[test]
     fn the_relay_sentinel_is_never_adopted_as_our_address() {
         let mut r = ReflexiveState::new();
