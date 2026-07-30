@@ -17127,6 +17127,15 @@ impl PhotonApp {
             return; // pre-attest, or no reflexive echo yet — nothing honest to publish
         };
 
+        // Never SIGN an unreachable address. A relay-injected pong reports the RELAY_ADDR sentinel, and
+        // adopting it produced a first-ever published record advertising 0.0.0.0:0 to the whole mesh -- a
+        // signed claim that we cannot be reached, which gossip would then dutifully propagate. `record()`
+        // now refuses the sentinel at the source; this is the belt-and-braces at the signing point, because
+        // a bad record here is the one thing that spreads.
+        if crate::network::traverse::gather::is_bogus_addr(&addr) {
+            return;
+        }
+
         let mut rec = crate::network::fgtw::PeerRecord {
             handle_proof: hp,
             device_pubkey: crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes()),
