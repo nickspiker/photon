@@ -1,11 +1,11 @@
 use super::{fingerprint::Keypair, PeerRecord};
 use crate::types::DevicePubkey;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use vsf::{schema::FromVsfType, VsfSection};
+use vsf::schema::FromVsfType;
 
 use crate::network::http::SEED_HTTPS as FGTW_URL;
 
-/// Result of a bootstrap query. `peers` carries whatever records parsed successfully; a malformed record is skipped (not fatal) rather than aborting the whole list, and a transport/decode-level failure is reported in `error` while still returning any peers already recovered.
+/// Result of a bootstrap query. `peers` is now always EMPTY: the announce acks rather than echoing the phonebook, so the seed no longer supplies peers -- they come from the persisted store and gossip, with fgtw.org as the last resort. The field stays so callers keep their shape (they filter and merge, which is a no-op on empty); `error` still carries any transport or verification failure.
 #[derive(Debug)]
 pub struct BootstrapResult {
     pub peers: Vec<PeerRecord>,
@@ -193,12 +193,33 @@ async fn load_bootstrap_peers_inner(
         ));
     }
 
-    // Parse peer list
-    let peers = parse_peer_list(&response_bytes, device_key)?;
+    // The announce ACKS; it no longer echoes the phonebook. The seed is the LAST resort for peer
+    // discovery, not the first -- our own store persists and gossips, so a seed-supplied list was
+    // duplicating what we already hold, at the cost of a full per-recipient encrypt on every attest.
+    // What we still want from the ack is the reflexive address the worker observed, which is the one
+    // thing only the server can tell us.
+    let observed = parse_announce_ack(&response_bytes)?;
+    crate::logf!("FGTW: announce ok, {} identities known, we look like {}", observed.1, observed.0);
 
-    crate::logf!("FGTW: Received {} peer(s)", peers.len());
+    Ok(Vec::new())
+}
 
-    Ok(peers)
+/// Verify the `announce_ok` ack and pull out (observed address, identity count).
+///
+/// Verified read pinned to the FGTW signing key, same as the challenge: an ack that isn't signed by FGTW
+/// tells us nothing about what the network saw. There is no fallback to the old `encrypted_peers` shape --
+/// a worker still serving it fails here loudly, which is the intent (AGENT.md "No Fork Bullshit").
+fn parse_announce_ack(bytes: &[u8]) -> Result<(String, u32), String> {
+    let schema = vsf::schema::SectionSchema::new("announce_ok")
+        .field("count", vsf::schema::TypeConstraint::Any)
+        .field("ip", vsf::schema::TypeConstraint::Any)
+        .field("port", vsf::schema::TypeConstraint::Any);
+    let section = vsf::schema::SectionBuilder::parse_document(schema, bytes, Some(FGTW_ED25519_PUBLIC_KEY))
+        .map_err(|e| format!("Verified parse of announce_ok: {}", e))?;
+    let count: u32 = section.get_value("count").unwrap_or(0);
+    let ip: String = section.get_value("ip").unwrap_or_default();
+    let port: u16 = section.get_value("port").unwrap_or(0);
+    Ok((format!("{ip}:{port}"), count))
 }
 
 /// Parse challenge VSF to extract provenance hash The timestamp in the challenge is ignored - announce generates its own timestamp
@@ -263,73 +284,7 @@ fn encrypt_for_fgtw(plaintext: &[u8], fgtw_x25519_pubkey: &[u8; 32]) -> Result<V
     Ok(result)
 }
 
-/// Convert Ed25519 secret key to X25519 secret key (RFC 8032) This is a one-way deterministic conversion using SHA-512 and clamping Matches FGTW's implementation for compatibility
-fn ed25519_secret_to_x25519(ed25519_secret: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha512};
 
-    // Hash the Ed25519 secret key
-    let mut hasher = Sha512::new();
-    hasher.update(ed25519_secret);
-    let hash = hasher.finalize();
-
-    // Take first 32 bytes and clamp them for X25519
-    let mut x25519_secret = [0u8; 32];
-    x25519_secret.copy_from_slice(&hash[..32]);
-
-    // Clamp the secret key (RFC 7748)
-    x25519_secret[0] &= 248;
-    x25519_secret[31] &= 127;
-    x25519_secret[31] |= 64;
-
-    x25519_secret
-}
-
-/// Decrypt data from FGTW using ephemeral X25519 + AES-256-GCM Format: [ephemeral_pubkey:32][nonce:12][ciphertext+tag] The device_key is Ed25519 but we derive X25519 for decryption
-fn decrypt_from_fgtw(
-    ciphertext_with_header: &[u8],
-    device_key: &Keypair,
-) -> Result<Vec<u8>, String> {
-    use aes_gcm::{
-        aead::{Aead, KeyInit},
-        Aes256Gcm, Nonce,
-    };
-    use x25519_dalek::{PublicKey, StaticSecret};
-
-    if ciphertext_with_header.len() < 44 {
-        // 32 (ephemeral pubkey) + 12 (nonce) = 44 minimum
-        return Err("Ciphertext too short".to_string());
-    }
-
-    // Extract ephemeral public key (first 32 bytes)
-    let mut ephemeral_pubkey_bytes = [0u8; 32];
-    ephemeral_pubkey_bytes.copy_from_slice(&ciphertext_with_header[0..32]);
-    let ephemeral_pubkey = PublicKey::from(ephemeral_pubkey_bytes);
-
-    // Extract nonce (next 12 bytes)
-    let mut nonce_bytes = [0u8; 12];
-    nonce_bytes.copy_from_slice(&ciphertext_with_header[32..44]);
-    let nonce = Nonce::from(nonce_bytes);
-
-    // Remaining bytes are ciphertext+tag
-    let ciphertext = &ciphertext_with_header[44..];
-
-    // Convert Ed25519 secret key to X25519 secret key using RFC 8032 method This matches FGTW's conversion: SHA-512 hash + clamping
-    let x25519_secret_bytes = ed25519_secret_to_x25519(device_key.secret.as_bytes());
-    let x25519_secret = StaticSecret::from(x25519_secret_bytes);
-
-    // Perform ECDH with ephemeral public key
-    let shared_secret = x25519_secret.diffie_hellman(&ephemeral_pubkey);
-
-    // Derive AES-256-GCM key from shared secret (32 bytes)
-    let cipher = Aes256Gcm::new(shared_secret.as_bytes().into());
-
-    // Decrypt
-    let plaintext = cipher
-        .decrypt(&nonce, ciphertext)
-        .map_err(|e| format!("Decryption error: {}", e))?;
-
-    Ok(plaintext)
-}
 
 /// Build VSF announce message (new encrypted format) Structure: RÅ< z y b ef6 hp ke ge n[1] (d"announce" o b n) > [announce payload] The device Ed25519 key (ke) and signature (ge) are at HEADER level for full file integrity
 fn build_announce_message(
@@ -383,54 +338,6 @@ fn build_announce_message(
     Ok(vsf_bytes)
 }
 
-/// Parse peer list from VSF bytes
-fn parse_peer_list(bytes: &[u8], device_key: &Keypair) -> Result<Vec<PeerRecord>, String> {
-    // 1+2. Verified whole-document read (hp + hb) + schema-validated section parse — the response cannot be read without verification passing first.
-    let schema = vsf::schema::SectionSchema::new("encrypted_peers")
-        .field("data", vsf::schema::TypeConstraint::Wrapped(b'e'));
-    let section = vsf::schema::SectionBuilder::parse_document(schema, bytes, None)
-        .map_err(|e| format!("Verified parse of encrypted_peers response: {}", e))?;
-
-    // 3. Extract the v'e' encrypted blob from the "data" field (encoding enforced by the Wrapped(b'e') constraint above).
-    let encrypted_data = section
-        .get_value::<Vec<u8>>("data")
-        .map_err(|e| format!("encrypted_peers data field: {}", e))?;
-
-    // 5. Decrypt to get raw section data (just `[peers: ...]`, no VSF header)
-    let plaintext_bytes = decrypt_from_fgtw(&encrypted_data, device_key)?;
-
-    // Log decrypted section with inspector
-    #[cfg(feature = "development")]
-    {
-        let msg = crate::network::inspect::section_inspect(
-            &plaintext_bytes,
-            "FGTW",
-            "Decrypted",
-            "peers",
-        );
-        if !msg.is_empty() {
-            crate::log(&msg);
-        }
-    }
-
-    // 6. Parse the peers section directly (no header, just `[peers: ...]`)
-    let mut ptr = 0;
-    let peers_section = VsfSection::parse(&plaintext_bytes, &mut ptr)
-        .map_err(|e| format!("Parse peers section: {}", e))?;
-
-    // 9. Get all peer fields and convert to PeerRecords.
-    // Per-record skip: one malformed record must NOT abort the whole peer list — a single bad entry used to `?`-bail here, leaving the requester with zero peers (so it never dialled anyone and presence went one-way). Skip the bad record loudly and keep the rest.
-    let peer_fields = peers_section.get_fields("peer");
-    let mut peers = Vec::new();
-    for (idx, field) in peer_fields.into_iter().enumerate() {
-        match parse_peer_from_field(field) {
-            Ok(peer) => peers.push(peer),
-            Err(e) => crate::logf!("Bootstrap: skipping malformed peer record at index {} = {}", idx, e),
-        }
-    }
-
-    Ok(peers)
-}
 
 /// Parse a PeerRecord from a VsfField Expected format: (peer: hb{32}, ke{32}, t_u3{IP}, u3{port}, ef6{timestamp})
 pub(crate) fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord, String> {
@@ -533,4 +440,99 @@ pub(crate) fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord,
         last_seen,
         signature,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build an `announce_ok` ack byte-for-byte the way the worker does, then read it with the client's
+    /// own parser. This pins the two halves of a contract that live in different repos.
+    ///
+    /// It exists because the first cut of this ack was UNSIGNED: `vsf_bytes_response` doesn't sign, and
+    /// only `handle_challenge` filled a `ge`. The client verifies pinned to the FGTW key, so every attest
+    /// would have failed at `read_verified` -- after deploy, on all five clients, with the seed being the
+    /// only way to attest. A round-trip test is the cheap way to catch a cross-repo shape mismatch.
+    fn worker_shaped_ack(signer: &ed25519_dalek::SigningKey, count: u32, ip: &str, port: u16) -> Vec<u8> {
+        use vsf::VsfType;
+        let unsigned = vsf::VsfBuilder::new()
+            .creation_time_oscillations(vsf::eagle_time_oscillations())
+            .signed_only(VsfType::ke(signer.verifying_key().to_bytes().to_vec()))
+            .add_section(
+                "announce_ok",
+                vec![
+                    ("count".to_string(), VsfType::u5(count)),
+                    ("ip".to_string(), VsfType::a(ip.to_string())),
+                    ("port".to_string(), VsfType::u4(port)),
+                ],
+            )
+            .build()
+            .expect("build ack");
+        let hp = vsf::verification::compute_provenance_hash(&unsigned).expect("hp");
+        let mut bytes = unsigned;
+        vsf::verification::fill_provenance_hash(&mut bytes, &hp).expect("fill hp");
+        // ge signs BLAKE3(file with hp filled, ge zeroed) — the canonical scheme read_verified enforces.
+        let file_hash = blake3::hash(&bytes);
+        use ed25519_dalek::Signer;
+        let sig = signer.sign(file_hash.as_bytes());
+        vsf::verification::fill_signature(&mut bytes, &sig.to_bytes()).expect("fill ge");
+        bytes
+    }
+
+    #[test]
+    fn announce_ack_round_trips_from_a_worker_shaped_document() {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
+        let bytes = worker_shaped_ack(&sk, 7, "203.0.113.9", 4383);
+
+        // Parse with the pin the real client uses, but pointed at THIS test key.
+        let schema = vsf::schema::SectionSchema::new("announce_ok")
+            .field("count", vsf::schema::TypeConstraint::Any)
+            .field("ip", vsf::schema::TypeConstraint::Any)
+            .field("port", vsf::schema::TypeConstraint::Any);
+        let section = vsf::schema::SectionBuilder::parse_document(
+            schema,
+            &bytes,
+            Some(sk.verifying_key().to_bytes()),
+        )
+        .expect("a worker-shaped ack must parse under the pinned key");
+
+        assert_eq!(section.get_value::<u32>("count").expect("count"), 7);
+        assert_eq!(section.get_value::<String>("ip").expect("ip"), "203.0.113.9");
+        assert_eq!(section.get_value::<u16>("port").expect("port"), 4383);
+    }
+
+    /// An ack from the WRONG key must be refused. The reflexive address in it is the one thing only the
+    /// server can assert, so accepting an unpinned ack would let anything on the path tell us we look
+    /// like an address it chose.
+    #[test]
+    fn announce_ack_from_a_foreign_key_is_refused() {
+        let real = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
+        let imposter = ed25519_dalek::SigningKey::from_bytes(&[43u8; 32]);
+        let bytes = worker_shaped_ack(&imposter, 1, "198.51.100.4", 4383);
+
+        let schema = vsf::schema::SectionSchema::new("announce_ok")
+            .field("count", vsf::schema::TypeConstraint::Any);
+        assert!(
+            vsf::schema::SectionBuilder::parse_document(schema, &bytes, Some(real.verifying_key().to_bytes())).is_err(),
+            "an ack signed by a foreign key must not verify"
+        );
+    }
+
+    /// An UNSIGNED ack must be refused — the exact defect this module's first cut shipped with.
+    #[test]
+    fn unsigned_announce_ack_is_refused() {
+        use vsf::VsfType;
+        let bytes = vsf::VsfBuilder::new()
+            .creation_time_oscillations(vsf::eagle_time_oscillations())
+            .add_section("announce_ok", vec![("count".to_string(), VsfType::u5(3))])
+            .build()
+            .expect("build unsigned");
+        let schema = vsf::schema::SectionSchema::new("announce_ok")
+            .field("count", vsf::schema::TypeConstraint::Any);
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
+        assert!(
+            vsf::schema::SectionBuilder::parse_document(schema, &bytes, Some(sk.verifying_key().to_bytes())).is_err(),
+            "an ack with no ge must not verify against a pinned key"
+        );
+    }
 }
