@@ -952,6 +952,11 @@ pub struct PhotonApp {
     joiner_selected: bool,
     /// One-shot absolute-zoom restore (the persisted per-device `display.zoom`), handed to the host via `FluorApp::take_zoom_request`. Set when settings load; the host applies + clears it.
     pending_zoom_restore: Option<f32>,
+    /// Has the persisted zoom restore already been armed this process? The restore is a STARTUP action, but
+    /// its trigger (`apply_settings_to_ui`) also runs on every fleet merge, so this latch is what keeps a
+    /// ~15s poll from re-zooming the window forever. Set on the first `apply_settings_to_ui` regardless of
+    /// whether a value existed.
+    zoom_restored: bool,
     /// The picked avatar's display pixels, arriving from the OFF-THREAD set pipeline (decode runs there too — a 50MP photo must not stall a frame). Installed + repainted in tick.
     avatar_set_rx: Option<std::sync::mpsc::Receiver<Vec<u8>>>,
     /// One-shot Android image-picker request. Set when the user taps the avatar; consumed by the JNI poll (`nativePollAvatarPicker`) which signals the Activity to launch `ACTION_GET_CONTENT`. Stays `None` on idle frames so the Activity doesn't churn.
@@ -1323,6 +1328,7 @@ impl PhotonApp {
             known_mine_hit: HIT_NONE,
             joiner_selected: false,
             pending_zoom_restore: None,
+            zoom_restored: false,
             avatar_set_rx: None,
             active_contact: None,
             contact_hit_base: HIT_NONE,
@@ -8676,15 +8682,28 @@ impl PhotonApp {
             cb.set_checked(auto);
         }
         // Restore THIS DEVICE'S persisted zoom (display.zoom, f32 LE bytes — binary at rest), device-local ONLY: never the fleet global. Zoom is monitor ergonomics, so a device that has never set one keeps the default rather than adopting another screen's value — reading it through `effective` is what made a fresh device jump to a 4K desktop's zoom seconds after launch. Handed to the host as a one-shot absolute request; applies exactly like a user zoom.
-        if let Some(ru) = self
-            .fleet_settings
-            .as_ref()
-            .and_then(|fs| fs.device_local("display.zoom"))
-            .filter(|v| v.len() == 4)
-            .map(|v| f32::from_le_bytes([v[0], v[1], v[2], v[3]]))
-            .filter(|ru| ru.is_finite() && *ru > 0.0)
-        {
-            self.pending_zoom_restore = Some(ru);
+        // ONCE per process, and only at load. `apply_settings_to_ui` also runs after EVERY fleet merge that
+        // changed anything, and the fleet poll fires every ~15s -- so without this guard the stored zoom was
+        // re-applied on a timer, stomping whatever the window was actually at. That is the "scaling elements
+        // go half size a few moments after the contacts show up" report: the first pull after contacts load
+        // re-armed the restore, and every pull after it did so again. A restore is a startup action, not a
+        // steady-state one; the host applies it exactly like a user zoom and the user must stay in control
+        // after that.
+        if !self.zoom_restored {
+            if let Some(ru) = self
+                .fleet_settings
+                .as_ref()
+                .and_then(|fs| fs.device_local("display.zoom"))
+                .filter(|v| v.len() == 4)
+                .map(|v| f32::from_le_bytes([v[0], v[1], v[2], v[3]]))
+                .filter(|ru| ru.is_finite() && *ru > 0.0)
+            {
+                self.pending_zoom_restore = Some(ru);
+                crate::logf!("SETTINGS: restoring device zoom = {} (one-shot)", ru);
+            }
+            // Armed even when nothing was stored: a device with no saved zoom must not have a LATER fleet
+            // merge start restoring one mid-session either.
+            self.zoom_restored = true;
         }
     }
 

@@ -137,6 +137,58 @@ pub fn load_fleet_settings(storage: &FlatStorage, our_device: [u8; 32]) -> Fleet
 mod tests {
     use super::*;
 
+    /// A sibling's device map must NEVER become our `device_local` value.
+    ///
+    /// This is the "half size a few moments after the contacts show up" bug. `apply_settings_to_ui` re-arms
+    /// the one-shot zoom restore from `device_local("display.zoom")` on EVERY fleet merge that changed
+    /// anything, and the fleet poll runs every ~15s. So if a merge can ever make `device_local` return
+    /// another device's value, the window silently re-zooms to a foreign monitor's ergonomics on a timer --
+    /// which is exactly what a phone's zoom doing to a 3360x2100 Mac looks like.
+    #[test]
+    fn a_siblings_device_map_never_leaks_into_our_device_local() {
+        const US: [u8; 32] = [1; 32];
+        const SIBLING: [u8; 32] = [2; 32];
+
+        let mut fs = FleetSettings::new(US);
+        // We have never set a zoom: device_local must be None, so nothing is restored.
+        assert_eq!(fs.device_local("display.zoom"), None, "no zoom of our own to start");
+
+        // A sibling (a phone) pushes ITS zoom. This arrives through the normal fleet pull.
+        let sibling_zoom = 0.5f32.to_le_bytes().to_vec();
+        let remote = vec![DeviceSettings {
+            device_pubkey: SIBLING,
+            updated: 500,
+            entries: vec![DeviceSetting {
+                key: "display.zoom".to_string(),
+                value: sibling_zoom.clone(),
+                updated: 500,
+                linked: false,
+            }],
+        }];
+        fs.merge_from(Vec::new(), remote);
+
+        // The sibling's map is now in our cached state -- that is correct, we mirror the fleet.
+        assert!(fs.devices.iter().any(|d| d.device_pubkey == SIBLING), "sibling map is cached");
+        // But it must NOT be OUR value. If this fails, every fleet poll re-zooms this window.
+        assert_eq!(
+            fs.device_local("display.zoom"),
+            None,
+            "a sibling's zoom must not be readable as ours -- this is the half-size regression"
+        );
+
+        // Our own zoom, once set, is the only thing device_local returns.
+        fs.set_link("display.zoom", false, 600);
+        fs.set("display.zoom", 1.0f32.to_le_bytes().to_vec(), 600);
+        assert_eq!(
+            fs.device_local("display.zoom").map(|v| f32::from_le_bytes([v[0], v[1], v[2], v[3]])),
+            Some(1.0),
+            "our own zoom wins for us"
+        );
+        // And the sibling's own value is untouched by ours -- the fleet map still carries both.
+        let sib = fs.devices.iter().find(|d| d.device_pubkey == SIBLING).expect("sibling still present");
+        assert_eq!(sib.entries[0].value, sibling_zoom, "we did not overwrite the sibling's ergonomics");
+    }
+
     #[test]
     fn born_linked_set_writes_global_and_unlink_goes_local() {
         let mut fs = FleetSettings::new([7; 32]);
