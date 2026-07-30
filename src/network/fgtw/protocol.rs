@@ -935,7 +935,7 @@ impl PeerRecord {
 }
 
 /// Encode one PeerRecord as a single multi-value `peer` field, in the exact POSITIONAL shape [`crate::network::fgtw::bootstrap::parse_peer_from_field`] reads — the production-proven encoding (FGTW peer lists decode thru it daily): `(peer: hP{handle_proof}, ke{device_pubkey}, t_u3{ip}, u4{port}, e6{last_seen}, t_u3{local_ip}, ge{sig})` The trailing `ge` self-signature lets the receiver verify each record independently of the relay. (The flat-named `peer_N_*` / `v_u3` style of the legacy DHT `extract_peer_list` is deliberately NOT used — it has a latent IP type mismatch and isn't exercised in production.)
-fn encode_peer_field(peer: &PeerRecord) -> (String, Vec<VsfType>) {
+pub(crate) fn encode_peer_field(peer: &PeerRecord) -> (String, Vec<VsfType>) {
     let (ip_octets, port) = match peer.ip {
         SocketAddr::V4(v4) => (v4.ip().octets().to_vec(), v4.port()),
         SocketAddr::V6(v6) => (v6.ip().octets().to_vec(), v6.port()),
@@ -3339,6 +3339,59 @@ mod pong_seal_tests {
                 assert!(sealed.is_none());
             }
             other => panic!("expected StatusPong, got {:?}", other),
+        }
+    }
+}
+
+#[cfg(test)]
+mod local_ip_absent_tests {
+    use super::*;
+    use ed25519_dalek::SigningKey;
+
+    /// A peer with NO local_ip must not poison the batch. `local_ip` is absent for any peer whose LAN
+    /// address we never learned -- the common case -- and it encodes as a zero-length tensor. A vsf
+    /// decoder bug routed that empty tensor into the multi-dim path, which then read the ',' delimiter
+    /// after it as a shape; because one bad value fails the whole section, ONE such peer made the
+    /// entire PhonebookResponse unparseable and the receiver silently dropped every peer in it.
+    ///
+    /// The existing round-trip test set `local_ip = Some(..)` on every fixture, so the absent case --
+    /// the one that actually dominates the wire -- was never exercised. It is now.
+    #[test]
+    fn phonebook_response_round_trips_a_peer_with_no_local_ip() {
+        let sk = SigningKey::from_bytes(&[5u8; 32]);
+        let pubkey = DevicePubkey::from_bytes(sk.verifying_key().to_bytes());
+        let mut absent = PeerRecord::new([1u8; 32], pubkey, "203.0.113.9:4383".parse().unwrap());
+        absent.last_seen = 1000;
+        absent.local_ip = None;
+        absent.sign(&sk);
+
+        // Mixed batch: the absent-local_ip row sits FIRST, so if it over-reads it takes the signed
+        // row after it down too -- which is exactly how this presented in the field.
+        let sk2 = SigningKey::from_bytes(&[22u8; 32]);
+        let pk2 = DevicePubkey::from_bytes(sk2.verifying_key().to_bytes());
+        let mut with_local = PeerRecord::new([2u8; 32], pk2, "198.51.100.4:4383".parse().unwrap());
+        with_local.last_seen = 2000;
+        with_local.local_ip = Some("192.168.1.7".parse().unwrap());
+        with_local.sign(&sk2);
+        let resp = FgtwMessage::PhonebookResponse {
+            timestamp: 999,
+            responder_pubkey: DevicePubkey::from_bytes([7u8; 32]),
+            provenance_hash: [0x11; 32],
+            signature: [0x22; 64],
+            peers: vec![absent.clone(), with_local.clone()],
+        };
+
+        match FgtwMessage::from_vsf_bytes(&resp.to_vsf_bytes()).expect("a batch must survive an absent local_ip") {
+            FgtwMessage::PhonebookResponse { peers, .. } => {
+                assert_eq!(peers.len(), 2, "both peers, not zero and not one");
+                assert_eq!(peers[0].local_ip, None, "empty tensor parses back to None");
+                assert_eq!(peers[1].local_ip, with_local.local_ip, "the row AFTER it is intact");
+                // The signature is over signing_bytes, which treats None as the empty string -- so a
+                // record with no local_ip still verifies, and can therefore still be merged.
+                assert!(peers[0].verify(), "an absent local_ip must not break the self-signature");
+                assert!(peers[1].verify());
+            }
+            other => panic!("expected PhonebookResponse, got {other:?}"),
         }
     }
 }

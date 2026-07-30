@@ -1152,6 +1152,8 @@ pub struct PhotonApp {
     our_reflexive: Option<std::net::SocketAddr>,
     /// The address we last published a signed self-record for. Differs from `our_reflexive` exactly when the record peers hold for us is stale — on first learn, on a network change, or when the first echo beat attestation and there was no `handle_proof` to sign against yet.
     self_record_published_for: Option<std::net::SocketAddr>,
+    /// Whether the persisted phonebook has been merged into the live store this session. One-shot: also stops an unreadable vault entry being retried every tick.
+    peer_store_loaded: bool,
 }
 
 impl PhotonApp {
@@ -1180,6 +1182,7 @@ impl PhotonApp {
             event_proxy: None,
             our_reflexive: None,
             self_record_published_for: None,
+            peer_store_loaded: false,
             bg_scroll: 0,
             zoom_hint: false,
             last_ru: 1.0,
@@ -3868,9 +3871,19 @@ impl FluorApp for PhotonApp {
             self.spawn_roster_push();
         }
 
-        // Keep our own signed record current. Cheap no-op once published for the current address; re-fires when the address moves or when attestation finally supplies the handle_proof a earlier reflexive echo had to wait for.
+        // Load the persisted phonebook once the vault and session are both up. One-shot per session; the flag also stops a failed read retrying every tick.
+        if !self.peer_store_loaded && self.storage.is_some() && self.session.is_some() && self.peer_store.is_some() {
+            self.peer_store_loaded = true;
+            self.load_peer_store();
+        }
+
+        // Keep our own signed record current. Cheap no-op once published for the current address; re-fires when the address moves or when attestation finally supplies the handle_proof an earlier reflexive echo had to wait for.
         if self.our_reflexive.is_some() && self.our_reflexive != self.self_record_published_for {
             self.publish_self_peer_record();
+            // Our own row changed, so the persisted copy is stale. Writing here (rather than on every
+            // merge) keeps it to one write per address change — the phonebook is a cache, and a
+            // gossiped row we lose to a crash arrives again on the next exchange.
+            self.persist_peer_store();
         }
 
         // Periodic fleet-sweep backstop (~5 min, jittered): re-arm history recovery for every conversation so devices converge even when the edge-triggered kicks (roster merge, sibling-online) were missed. Signed-in only; a complete conversation costs one early-stop page.
@@ -17094,6 +17107,64 @@ impl PhotonApp {
         store.lock().unwrap().add_peer(rec);
         self.self_record_published_for = Some(addr);
         crate::logf!("PHONEBOOK: published our own signed record at {} — gossip can now carry it", addr);
+    }
+
+    /// Write the phonebook to the vault so it survives a restart.
+    ///
+    /// `PeerStore::new()` starts EMPTY every launch, so today the phonebook cannot accumulate — it is
+    /// refilled from FGTW each time and forgotten. That is why "peers first, seed last" is
+    /// structurally impossible right now regardless of what else works: there is nothing to ask
+    /// first. This is Phase A item 1 of docs/peers-are-fgtw.md, listed as done-next since June.
+    ///
+    /// Only self-signed rows persist (see `to_vsf_bytes`) — an unsigned FGTW row can never be
+    /// gossiped or trusted by a peer, so carrying it across a restart would just grow the file.
+    fn persist_peer_store(&self) {
+        let (Some(store), Some(storage), Some(session)) =
+            (self.peer_store.as_ref(), self.storage.as_ref(), self.session.as_ref())
+        else {
+            return;
+        };
+        let Some(kp) = self.device_keypair.as_ref() else { return };
+        let bytes = match store.lock().unwrap().to_vsf_bytes(kp) {
+            Ok(b) => b,
+            Err(e) => {
+                crate::logf!("PHONEBOOK: encode failed, not persisting: {}", e);
+                return;
+            }
+        };
+        let addr = crate::storage::vault_key("peers", &session.vault_seed);
+        match storage.write_addr(&addr, &bytes) {
+            Ok(()) => crate::logf!("PHONEBOOK: persisted ({} bytes)", bytes.len()),
+            Err(e) => crate::logf!("PHONEBOOK: persist failed: {}", e),
+        }
+    }
+
+    /// Load the persisted phonebook into the live store, merging rather than replacing — a record
+    /// learned this session (fresher `last_seen`) must win over a stale one off disk, which is what
+    /// `add_peer`'s per-device upsert already does.
+    fn load_peer_store(&mut self) {
+        let (Some(store), Some(storage), Some(session)) =
+            (self.peer_store.as_ref(), self.storage.as_ref(), self.session.as_ref())
+        else {
+            return;
+        };
+        let addr = crate::storage::vault_key("peers", &session.vault_seed);
+        let Ok(Some(bytes)) = storage.read_addr(&addr) else {
+            return; // first run, or nothing persisted yet
+        };
+        match crate::network::fgtw::PeerStore::from_vsf_bytes(&bytes) {
+            Ok(loaded) => {
+                let mut live = store.lock().unwrap();
+                let mut n = 0usize;
+                for rec in loaded.get_all_peers() {
+                    live.add_peer(rec);
+                    n += 1;
+                }
+                crate::logf!("PHONEBOOK: loaded {} signed record(s) from the vault", n);
+            }
+            // A vault a disk error touched must not inject peers — the verified read refused it.
+            Err(e) => crate::logf!("PHONEBOOK: persisted phonebook unreadable, starting fresh: {}", e),
+        }
     }
 
     fn clean_device_for_reuse(&mut self) {
