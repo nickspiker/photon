@@ -105,8 +105,8 @@ impl PeerUpdateClient {
                 }
 
                 // Connect to WebSocket
-                crate::log("PeerUpdate: Connecting to wss://fgtw.org/ws");
-                let ws_result = tokio_tungstenite::connect_async("wss://fgtw.org/ws").await;
+                crate::logf!("PeerUpdate: Connecting to {}", crate::network::http::SEED_WS);
+                let ws_result = tokio_tungstenite::connect_async(crate::network::http::SEED_WS).await;
 
                 match ws_result {
                     Ok((ws_stream, _response)) => {
@@ -180,7 +180,7 @@ impl PeerUpdateClient {
                     break;
                 }
 
-                let ws_result = tokio_tungstenite::connect_async("wss://fgtw.org/ws").await;
+                let ws_result = tokio_tungstenite::connect_async(crate::network::http::SEED_WS).await;
 
                 if let Ok((ws_stream, _)) = ws_result {
                     let (_, mut read) = ws_stream.split();

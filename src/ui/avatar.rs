@@ -1095,7 +1095,7 @@ pub fn save_avatar_from_seed(
     save_avatar_to_cache_from_seed(identity_seed, &vsf_bytes, storage)
 }
 
-const FGTW_URL: &str = "https://fgtw.org";
+use crate::network::http::SEED_HTTPS as FGTW_URL;
 
 /// Extract AV1 data from avatar VSF (decrypts v'e' wrapper)
 fn extract_av1_data_from_seed(

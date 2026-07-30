@@ -354,7 +354,7 @@ impl HandleQuery {
             let check_connectivity = |client: &Option<reqwest::blocking::Client>| -> bool {
                 client
                     .as_ref()
-                    .and_then(|c| c.get("https://fgtw.org/status").send().ok())
+                    .and_then(|c| c.get(crate::network::http::SEED_STATUS).send().ok())
                     .map(|r| r.status().is_success())
                     .unwrap_or(false)
             };
@@ -401,7 +401,7 @@ impl HandleQuery {
 
             loop {
                 let online = match &client {
-                    Some(c) => match c.get("https://fgtw.org/status").send() {
+                    Some(c) => match c.get(crate::network::http::SEED_STATUS).send() {
                         Ok(r) => {
                             let success = r.status().is_success();
                             if first_check {

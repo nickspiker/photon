@@ -6,7 +6,7 @@ use vsf::VsfType;
 
 use super::Keypair;
 
-const FGTW_URL: &str = "https://fgtw.org";
+use crate::network::http::SEED_HTTPS as FGTW_URL;
 
 /// Peel a relay envelope received over the pipe: the whole signed `relay` VSF the SENDER built
 /// (`build_signed_vsf("relay", {recipient, payload})`, signed with their device key), which the worker now

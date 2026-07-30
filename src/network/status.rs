@@ -1319,7 +1319,7 @@ async fn run_checker(
         tokio::spawn(async move {
             use futures::StreamExt;
             use tokio_tungstenite::tungstenite::Message;
-            let url = format!("wss://fgtw.org/pipe?dev={}", our_dev_hex);
+            let url = crate::network::http::seed_pipe_url(&our_dev_hex);
             crate::logf!("PIPE: relay pipe task started (dev {}...)", &our_dev_hex[..8]);
             loop {
                 match tokio_tungstenite::connect_async(&url).await {
