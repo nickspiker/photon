@@ -1150,6 +1150,8 @@ pub struct PhotonApp {
 
     /// This node's own reflexive (public) address, learned via peer-echoed reflection (see [`crate::network::traverse::reflexive`]). `None` until the first signed pong / `ReflectResponse` echo. Fed forward to candidate gathering and the FGTW announce so our published address is the one seen on the live UDP data socket — not fgtw.org's TLS-flow `cf-connecting-ip`, which is only right for cone NATs.
     our_reflexive: Option<std::net::SocketAddr>,
+    /// The address we last published a signed self-record for. Differs from `our_reflexive` exactly when the record peers hold for us is stale — on first learn, on a network change, or when the first echo beat attestation and there was no `handle_proof` to sign against yet.
+    self_record_published_for: Option<std::net::SocketAddr>,
 }
 
 impl PhotonApp {
@@ -1177,6 +1179,7 @@ impl PhotonApp {
             hit_counter: 0,
             event_proxy: None,
             our_reflexive: None,
+            self_record_published_for: None,
             bg_scroll: 0,
             zoom_hint: false,
             last_ru: 1.0,
@@ -3863,6 +3866,11 @@ impl FluorApp for PhotonApp {
             self.settings_repushed = true;
             crate::log("FLEET: session roster re-push — keys settled (settings stay local until edited)");
             self.spawn_roster_push();
+        }
+
+        // Keep our own signed record current. Cheap no-op once published for the current address; re-fires when the address moves or when attestation finally supplies the handle_proof a earlier reflexive echo had to wait for.
+        if self.our_reflexive.is_some() && self.our_reflexive != self.self_record_published_for {
+            self.publish_self_peer_record();
         }
 
         // Periodic fleet-sweep backstop (~5 min, jittered): re-arm history recovery for every conversation so devices converge even when the edge-triggered kicks (roster merge, sibling-online) were missed. Signed-in only; a complete conversation costs one early-stop page.
@@ -16573,6 +16581,7 @@ impl PhotonApp {
                     if self.our_reflexive != Some(addr) {
                         self.our_reflexive = Some(addr);
                         crate::logf!("TRAVERSE: our reflexive address = {}", addr);
+                        // The re-publish happens in tick, not here: this arm sits inside a borrow of `status_checker`, and publishing also needs `handle_proof`, which can arrive AFTER the first reflexive echo. Comparing against `self_record_published_for` there makes it idempotent and self-retrying instead of a one-shot that could fire too early.
                     }
                 }
 
@@ -17042,6 +17051,49 @@ impl PhotonApp {
                 Err(e) => crate::logf!("CLEAN: legacy contacts blob sweep failed: {}", e),
             }
         });
+    }
+
+    /// Put OUR OWN device's peer record into the store, self-signed.
+    ///
+    /// Nothing did this before, and it is why phonebook gossip has never carried a single record:
+    /// FGTW's `serialize_peer_list` emits no signature field, so every record parsed from the
+    /// server arrives with `signature = [0u8; 64]` — and `PeerStore::merge_peer` opens by rejecting
+    /// anything that fails `verify()`. The wire, the encode, the serve and the merge were all
+    /// built; the mesh simply had nothing signed to carry.
+    ///
+    /// Only this device can produce this record: the signature is by the device key, over
+    /// `handle_proof ‖ device_pubkey ‖ ip ‖ local_ip ‖ last_seen`. That is what lets a peer trust a
+    /// record WITHOUT trusting the peer that relayed it — the property the whole gossip mesh needs,
+    /// and the reason a record can propagate hop to hop instead of only from an authority.
+    ///
+    /// The published address is the REFLEXIVE one — what peers actually observe on the live UDP
+    /// data socket — not fgtw.org's `cf-connecting-ip`, which reflects a TLS flow and is only right
+    /// for cone NATs. That is also why the device can sign it at all: until reflexive discovery
+    /// existed, a device did not know its own public address and could not commit to one.
+    fn publish_self_peer_record(&mut self) {
+        let (Some(store), Some(kp), Some(addr), Some(hp)) = (
+            self.peer_store.as_ref(),
+            self.device_keypair.as_ref(),
+            self.our_reflexive,
+            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+        ) else {
+            return; // pre-attest, or no reflexive echo yet — nothing honest to publish
+        };
+
+        let mut rec = crate::network::fgtw::PeerRecord {
+            handle_proof: hp,
+            device_pubkey: crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes()),
+            ip: addr,
+            local_ip: crate::network::udp::get_local_ip().map(std::net::IpAddr::V4),
+            last_seen: vsf::eagle_time_oscillations(),
+            signature: [0u8; 64],
+        };
+        rec.sign(&kp.secret);
+        debug_assert!(rec.verify(), "a record we just signed must verify");
+
+        store.lock().unwrap().add_peer(rec);
+        self.self_record_published_for = Some(addr);
+        crate::logf!("PHONEBOOK: published our own signed record at {} — gossip can now carry it", addr);
     }
 
     fn clean_device_for_reuse(&mut self) {
