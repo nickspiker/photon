@@ -36,6 +36,18 @@ impl ReflexiveState {
     ///
     /// Returns `Some(addr)` when this observation *changed* the adopted address for its family (the caller should then update `PhotonApp.our_reflexive` and re-announce), else `None`.
     pub fn record(&mut self, observed: SocketAddr, from: [u8; 32], trusted: bool) -> Option<SocketAddr> {
+        // A pong that arrived over the RELAY carries the `RELAY_ADDR` sentinel (0.0.0.0:0) as its observed
+        // address -- the pipe has no peer address to report. Adopting that as OUR reflexive address is
+        // actively harmful: it is what `publish_self_peer_record` signs, so the mesh gets handed a record
+        // saying we are unreachable, and the seed-from-ack fallback then declines to correct it because a
+        // value is technically present. Observed live: a first-ever published record carrying 0.0.0.0:0
+        // while the FGTW ack was reporting a perfectly good v6 address.
+        //
+        // The inbound-DATA path already refuses the sentinel for the same reason (see photon_app's
+        // "storing the sentinel as contact.ip would poison direct sends"); this is the missing half.
+        if crate::network::traverse::gather::is_bogus_addr(&observed) {
+            return None;
+        }
         let adopt = if trusted {
             true
         } else {
@@ -124,5 +136,26 @@ mod tests {
         r.record(v6a, [1u8; 32], true);
         assert_eq!(r.v4(), Some(v4("1.2.3.4:4383")));
         assert_eq!(r.v6(), Some(v6a));
+    }
+
+    /// The RELAY sentinel must never become our reflexive address.
+    ///
+    /// A pong injected off the relay pipe reports `0.0.0.0:0` -- the pipe has no peer address to give. That
+    /// used to be adopted verbatim and then SIGNED into our published peer record, telling the whole mesh
+    /// we were unreachable. Worse, it was sticky: the seed-from-ack fallback only fills when nothing is
+    /// present, so a garbage value blocked the good address FGTW was reporting all along.
+    #[test]
+    fn the_relay_sentinel_is_never_adopted_as_our_address() {
+        let mut r = ReflexiveState::new();
+        let sentinel: SocketAddr = "0.0.0.0:0".parse().unwrap();
+
+        // Even "trusted" (a signature-verified friend's pong) must not get the sentinel through.
+        assert_eq!(r.record(sentinel, [1u8; 32], true), None, "sentinel refused even from a trusted echo");
+        assert_eq!(r.v4(), None, "nothing adopted");
+
+        // A real address still works, and is not blocked by the refused one.
+        let real: SocketAddr = "203.0.113.9:4383".parse().unwrap();
+        assert_eq!(r.record(real, [1u8; 32], true), Some(real), "a genuine address still adopts");
+        assert_eq!(r.v4(), Some(real));
     }
 }
