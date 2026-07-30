@@ -290,13 +290,7 @@ const PRESENCE_PING_DEEP: std::time::Duration = std::time::Duration::from_secs(1
 const PRESENCE_IDLE_NEAR: std::time::Duration = std::time::Duration::from_secs(30);
 /// Idle past this → drop from idle (1min) to deep-idle (15min).
 const PRESENCE_IDLE_FAR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
-/// Cap on the presence-sweep interval while ANY validated direct path is held. The presence
-/// ping doubles as the NAT keepalive for that path (its ack refreshes the mapping), and NAT
-/// UDP mappings — especially CGNAT — expire well under a minute, so the idle/deep taper would
-/// silently kill a live direct path mid-session (the app keeps believing it for up to PATH_TTL
-/// while the mapping is already dead). Clamping to 20s keeps held paths warm under common NAT
-/// timeouts. Only ever makes the sweep *more* frequent, never less, so presence liveness is
-/// unaffected. Supersedes the never-wired `traverse::session::keepalive_due`.
+/// Cap on the presence-sweep interval while ANY validated direct path is held. The presence ping doubles as the NAT keepalive for that path (its ack refreshes the mapping), and NAT UDP mappings — especially CGNAT — expire well under a minute, so the idle/deep taper would silently kill a live direct path mid-session (the app keeps believing it for up to PATH_TTL while the mapping is already dead). Clamping to 20s keeps held paths warm under common NAT timeouts. Only ever makes the sweep *more* frequent, never less, so presence liveness is unaffected. Supersedes the never-wired `traverse::session::keepalive_due`.
 const VALIDATED_PATH_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// One deterministic aesthetic channel in `[0, 1]` from a relationship digest: `blake3(name ‖ digest)`, first 8 bytes as u64, divided by `u64::MAX`. Same convention as chirp's `channel_unit` (the chime derivation) — duplicated here rather than imported because chirp is desktop-gated and colour must build on every target. Keep the two in lockstep.
@@ -745,18 +739,9 @@ pub struct PhotonApp {
     last_interaction: Option<Instant>,
     /// Last time an already-running device re-folded its OWN fleet chain to catch a device add/remove it may have missed. The hub `fleet` event is the fast path but best-effort (a dropped WebSocket = a missed add), so this periodic re-fold is the reliable doorbell: without it, an existing device never learns a newly-added sibling until relaunch — it wouldn't answer the new device's presence pings (→ shows it offline) and its Fleet list would stay stale. `None` until the first poll.
     last_fleet_refold: Option<Instant>,
-    /// Last time we pulsed a background resume to re-fetch a stalled contact's address. Address
-    /// discovery (`contact.ip`) only refreshes on attest echo / roster / search — there is no
-    /// periodic re-fetch — so a contact whose initial fetch failed (flaky cellular fgtw) is stuck
-    /// with no address: its CLUTCH offer can't send, name/avatar (which ride the pong) never
-    /// arrive, and it loops keygen forever. While any contact is blocked this way we pulse a
-    /// lightweight background resume on a fast cadence; one success learns the address and
-    /// fire-on-learn punches + the offer sends. `None` until the first pulse. (Stopgap for the
-    /// peer-gossip fix, TICKETS T0.)
+    /// Last time we pulsed a background resume to re-fetch a stalled contact's address. Address discovery (`contact.ip`) only refreshes on attest echo / roster / search — there is no periodic re-fetch — so a contact whose initial fetch failed (flaky cellular fgtw) is stuck with no address: its CLUTCH offer can't send, name/avatar (which ride the pong) never arrive, and it loops keygen forever. While any contact is blocked this way we pulse a lightweight background resume on a fast cadence; one success learns the address and fire-on-learn punches + the offer sends. `None` until the first pulse. (Stopgap for the peer-gossip fix, TICKETS T0.)
     last_stalled_refetch: Option<Instant>,
-    /// Shared peer store (self-signed routing records), cloned from HandleQuery's. Populated by
-    /// fgtw fetches AND by phonebook-gossip responses (see status.rs); the app harvests learned
-    /// addresses from it for stalled contacts whose own fgtw fetch keeps failing. `None` until init.
+    /// Shared peer store (self-signed routing records), cloned from HandleQuery's. Populated by fgtw fetches AND by phonebook-gossip responses (see status.rs); the app harvests learned addresses from it for stalled contacts whose own fgtw fetch keeps failing. `None` until init.
     peer_store: Option<std::sync::Arc<std::sync::Mutex<crate::network::fgtw::PeerStore>>>,
     /// HandleQuery client — owns the UDP socket, device keypair, and FGTW peer store. Submission calls `handle_query.query(handle)`; `tick()` polls `try_recv()` for results. `None` until init.
     handle_query: Option<HandleQuery>,
@@ -929,9 +914,9 @@ pub struct PhotonApp {
     pending_fleet_key: Option<[u8; 32]>,
     /// In-flight fleet-roster pull; its `Ok` result merges into contacts, its `Err` triggers a retry — both drained in `tick`. `Some` = a pull is running, which also debounces re-spawns.
     roster_pull_rx: Option<std::sync::mpsc::Receiver<Result<fgtw::fstate::FleetState, String>>>,
-    /// In-flight phonebook resolution: `(device_pubkey, public, lan)` for devices we could not otherwise
-    /// address. Drained in `tick` into `device_endpoints`, which is what candidate gathering reads.
-    /// `Some` = a resolve is running, which debounces re-spawns so a stalled seed can't stack requests.
+    /// Unique identities the seed knows (including us), off the latest signed announce ack. The Ready-screen count reads this as a floor: the peer STORE only fills by gossip now, so on a fresh session it holds nothing but our own record and would show "0 peers" to a user who can see nine friends in the contact list.
+    seed_identity_count: u32,
+    /// In-flight phonebook resolution: `(device_pubkey, public, lan)` for devices we could not otherwise address. Drained in `tick` into `device_endpoints`, which is what candidate gathering reads. `Some` = a resolve is running, which debounces re-spawns so a stalled seed can't stack requests.
     pb_resolve_rx: Option<
         std::sync::mpsc::Receiver<
             Vec<([u8; 32], std::net::SocketAddr, Option<std::net::SocketAddr>)>,
@@ -960,10 +945,7 @@ pub struct PhotonApp {
     joiner_selected: bool,
     /// One-shot absolute-zoom restore (the persisted per-device `display.zoom`), handed to the host via `FluorApp::take_zoom_request`. Set when settings load; the host applies + clears it.
     pending_zoom_restore: Option<f32>,
-    /// Has the persisted zoom restore already been armed this process? The restore is a STARTUP action, but
-    /// its trigger (`apply_settings_to_ui`) also runs on every fleet merge, so this latch is what keeps a
-    /// ~15s poll from re-zooming the window forever. Set on the first `apply_settings_to_ui` regardless of
-    /// whether a value existed.
+    /// Has the persisted zoom restore already been armed this process? The restore is a STARTUP action, but its trigger (`apply_settings_to_ui`) also runs on every fleet merge, so this latch is what keeps a ~15s poll from re-zooming the window forever. Set on the first `apply_settings_to_ui` regardless of whether a value existed.
     zoom_restored: bool,
     /// The picked avatar's display pixels, arriving from the OFF-THREAD set pipeline (decode runs there too — a 50MP photo must not stall a frame). Installed + repainted in tick.
     avatar_set_rx: Option<std::sync::mpsc::Receiver<Vec<u8>>>,
@@ -1196,6 +1178,7 @@ impl PhotonApp {
             our_reflexive: None,
             self_record_published_for: None,
             peer_store_loaded: false,
+            seed_identity_count: 0,
             pb_resolve_rx: None,
             bg_scroll: 0,
             zoom_hint: false,
@@ -2200,9 +2183,7 @@ impl FluorApp for PhotonApp {
             let _ = proxy;
             HandleQuery::new(keypair)
         };
-        // ONE shared peer store: HandleQuery populates it from fgtw fetches, the status receiver
-        // serves/merges phonebook-gossip records into it, and the app harvests learned addresses
-        // from it for stalled contacts. All three hold clones of the same Arc.
+        // ONE shared peer store: HandleQuery populates it from fgtw fetches, the status receiver serves/merges phonebook-gossip records into it, and the app harvests learned addresses from it for stalled contacts. All three hold clones of the same Arc.
         let peer_store = Arc::new(Mutex::new(PeerStore::new()));
         self.peer_store = Some(peer_store.clone());
         hq.set_transport(peer_store.clone());
@@ -3433,8 +3414,7 @@ impl FluorApp for PhotonApp {
                     .unwrap_or(false);
                 if send_clicked {
                     self.submit_message();
-                    // Return focus to the compose box so the send button releases its focused/active
-                    // (dark, pressed-in) tint — otherwise it sticks down — and the user keeps typing.
+                    // Return focus to the compose box so the send button releases its focused/active (dark, pressed-in) tint — otherwise it sticks down — and the user keeps typing.
                     if let Some(id) = self.message_textbox.as_ref().map(|t| t.hit_id()) {
                         self.change_focus(Some(id));
                     }
@@ -3895,9 +3875,7 @@ impl FluorApp for PhotonApp {
         // Keep our own signed record current. Cheap no-op once published for the current address; re-fires when the address moves or when attestation finally supplies the handle_proof an earlier reflexive echo had to wait for.
         if self.our_reflexive.is_some() && self.our_reflexive != self.self_record_published_for {
             self.publish_self_peer_record();
-            // Our own row changed, so the persisted copy is stale. Writing here (rather than on every
-            // merge) keeps it to one write per address change — the phonebook is a cache, and a
-            // gossiped row we lose to a crash arrives again on the next exchange.
+            // Our own row changed, so the persisted copy is stale. Writing here (rather than on every merge) keeps it to one write per address change — the phonebook is a cache, and a gossiped row we lose to a crash arrives again on the next exchange.
             self.persist_peer_store();
         }
 
@@ -4222,6 +4200,8 @@ impl FluorApp for PhotonApp {
                         .unwrap_or(0)
                 })
                 .unwrap_or(0);
+            // The store only fills by gossip since the announce cutover, so on a fresh session it holds nothing but our own record and `n` is 0 even with the whole network up. The seed's identity count (off the signed ack, minus ourselves) is the floor: the store wins once gossip carries more than the seed remembers, and the max never shows a friend LESS than what either source can vouch for.
+            let n = n.max(self.seed_identity_count.saturating_sub(1) as usize);
             format!("{n} {}", if n == 1 { "peer" } else { "peers" })
         } else if matches!(self.state, AppState::Settings(_)) {
             // The settings screen draws its own "Settings" heading in the header band — a chrome title would double up behind it (portrait showed "‹ Network" bleeding thru the heading).
@@ -5696,8 +5676,7 @@ impl FluorApp for PhotonApp {
                         }
                         let _ = n;
 
-                        // ── Compose box (pinned bottom) ────────────────────────────
-                        // Shown when THIS device can dispatch: a locally-woven chain (direct send), self (loopback), or COMPOSE-ANYWHERE — a friend conversation with history while a fleet exists (the send fleet-forwards to the chain-owning sibling; delivered tick follows its ACK back thru the sync). A truly fresh un-clutched contact still hides it (nothing anywhere can transmit yet).
+                        // ── Compose box (pinned bottom) ──────────────────────────── Shown when THIS device can dispatch: a locally-woven chain (direct send), self (loopback), or COMPOSE-ANYWHERE — a friend conversation with history while a fleet exists (the send fleet-forwards to the chain-owning sibling; delivered tick follows its ACK back thru the sync). A truly fresh un-clutched contact still hides it (nothing anywhere can transmit yet).
                         let can_fleet_forward = !contact.is_sibling && !contact.messages.is_empty() && self.contacts.iter().any(|c| c.is_sibling);
                         if is_self_contact || contact.chain_woven || can_fleet_forward {
                             let compose_empty = self
@@ -6031,8 +6010,7 @@ impl FluorApp for PhotonApp {
             );
 
             // --- Selected page body ---
-            // (page body is computed per-arm as a scrolled, natural-height region — see `layout.content_scrolled`)
-            // Everything sizes off layout.unit — the ONE span·ru harmonic unit — so text, pills, rows, and controls all scale together with window shape AND zoom. (The old mix — text × ru inside fixed rows, controls off bare region fractions — is what made zoom hit-or-miss.)
+            // (page body is computed per-arm as a scrolled, natural-height region — see `layout.content_scrolled`) Everything sizes off layout.unit — the ONE span·ru harmonic unit — so text, pills, rows, and controls all scale together with window shape AND zoom. (The old mix — text × ru inside fixed rows, controls off bare region fractions — is what made zoom hit-or-miss.)
             let tspan = (layout.unit * 0.72).max(8.0);
             let hspan2 = tspan * 0.75;
             // Stub-pill height as a fraction of its row — the row is already unit-scaled, so no extra ru factor (that would double-scale).
@@ -6535,9 +6513,7 @@ impl FluorApp for PhotonApp {
         viewport_w: usize,
         viewport_h: usize,
     ) -> Vec<Option<fluor::canvas::PixelRect>> {
-        // Parallel to overlay_deltas: each Hover widget's pill bbox by HitId, so the host bounds the tint
-        // scan to the hovered widget's rect instead of the whole window. Widgets without a bbox (e.g.
-        // chrome buttons that don't impl hover_bbox yet) get None → full-window fallback for that id.
+        // Parallel to overlay_deltas: each Hover widget's pill bbox by HitId, so the host bounds the tint scan to the hovered widget's rect instead of the whole window. Widgets without a bbox (e.g. chrome buttons that don't impl hover_bbox yet) get None → full-window fallback for that id.
         let count = self.hit_counter as usize + 1;
         widget::build_overlay_bboxes(self, count, viewport_w, viewport_h)
     }
@@ -6625,14 +6601,7 @@ impl PhotonApp {
         }
 
         // Stalled-address re-fetch — the deadlock breaker for flaky-fgtw address discovery.
-        // A contact whose address fetch failed sits with `ip = None`: its CLUTCH offer can't
-        // send (send needs an address), name/avatar never arrive (they ride the pong, which
-        // needs a reachable path), and the ceremony loops keygen forever. There is no periodic
-        // address re-fetch otherwise, so while any non-self contact is Pending-CLUTCH with no
-        // address, pulse a lightweight background resume (re-runs the announce + peer fetch →
-        // refresh_contact_addrs_from_peers). A single success learns the address, fire-on-learn
-        // punches, the offer sends, and the pong then carries name/avatar. Self-limiting: stops
-        // the moment the address lands. (Stopgap for the peer-gossip fix, TICKETS T0.)
+        // A contact whose address fetch failed sits with `ip = None`: its CLUTCH offer can't send (send needs an address), name/avatar never arrive (they ride the pong, which needs a reachable path), and the ceremony loops keygen forever. There is no periodic address re-fetch otherwise, so while any non-self contact is Pending-CLUTCH with no address, pulse a lightweight background resume (re-runs the announce + peer fetch → refresh_contact_addrs_from_peers). A single success learns the address, fire-on-learn punches, the offer sends, and the pong then carries name/avatar. Self-limiting: stops the moment the address lands. (Stopgap for the peer-gossip fix, TICKETS T0.)
         const STALLED_ADDR_REFETCH: std::time::Duration = std::time::Duration::from_secs(15);
         if matches!(self.state, AppState::Ready | AppState::Conversation | AppState::Settings(_)) {
             let our_pid = self
@@ -6647,8 +6616,7 @@ impl PhotonApp {
             let due = self
                 .last_stalled_refetch
                 .is_none_or(|last| now.duration_since(last) >= STALLED_ADDR_REFETCH);
-            // Harvest every tick while blocked: a record for a stalled contact may have landed in
-            // the shared peer store — from our own fgtw fetch OR from a phonebook-gossip response.
+            // Harvest every tick while blocked: a record for a stalled contact may have landed in the shared peer store — from our own fgtw fetch OR from a phonebook-gossip response.
             // Adopt it as the contact's address so the offer can send; fire-on-learn does the rest.
             if blocked {
                 let recs = self
@@ -6677,8 +6645,7 @@ impl PhotonApp {
                     }
                 }
             }
-            // Every 15s while blocked: pulse our own fgtw (may catch a working window) AND ask every
-            // reachable peer for its phonebook — so a friend we CAN'T reach is learned from one we can.
+            // Every 15s while blocked: pulse our own fgtw (may catch a working window) AND ask every reachable peer for its phonebook — so a friend we CAN'T reach is learned from one we can.
             if blocked && due {
                 self.last_stalled_refetch = Some(now);
                 if let (Some(hq), Some(session)) =
@@ -6697,10 +6664,7 @@ impl PhotonApp {
                         checker.send_phonebook_request(addr);
                     }
                 }
-                // PEERS FIRST, SEED LAST. The gossip request above asks everyone we can already reach;
-                // this asks the seed only for what that could not answer. On a cold start `reachable`
-                // is empty — no path is validated because no address is known — and the seed is the
-                // only party reachable without knowing anyone, so it is what re-enters the cycle.
+                // PEERS FIRST, SEED LAST. The gossip request above asks everyone we can already reach; this asks the seed only for what that could not answer. On a cold start `reachable` is empty — no path is validated because no address is known — and the seed is the only party reachable without knowing anyone, so it is what re-enters the cycle.
                 self.resolve_stalled_addresses_from_seed();
             }
             // Apply whatever the seed answered (a resolve spawned on an earlier tick).
@@ -8700,13 +8664,7 @@ impl PhotonApp {
             cb.set_checked(auto);
         }
         // Restore THIS DEVICE'S persisted zoom (display.zoom, f32 LE bytes — binary at rest), device-local ONLY: never the fleet global. Zoom is monitor ergonomics, so a device that has never set one keeps the default rather than adopting another screen's value — reading it through `effective` is what made a fresh device jump to a 4K desktop's zoom seconds after launch. Handed to the host as a one-shot absolute request; applies exactly like a user zoom.
-        // ONCE per process, and only at load. `apply_settings_to_ui` also runs after EVERY fleet merge that
-        // changed anything, and the fleet poll fires every ~15s -- so without this guard the stored zoom was
-        // re-applied on a timer, stomping whatever the window was actually at. That is the "scaling elements
-        // go half size a few moments after the contacts show up" report: the first pull after contacts load
-        // re-armed the restore, and every pull after it did so again. A restore is a startup action, not a
-        // steady-state one; the host applies it exactly like a user zoom and the user must stay in control
-        // after that.
+        // ONCE per process, and only at load. `apply_settings_to_ui` also runs after EVERY fleet merge that changed anything, and the fleet poll fires every ~15s -- so without this guard the stored zoom was re-applied on a timer, stomping whatever the window was actually at. That is the "scaling elements go half size a few moments after the contacts show up" report: the first pull after contacts load re-armed the restore, and every pull after it did so again. A restore is a startup action, not a steady-state one; the host applies it exactly like a user zoom and the user must stay in control after that.
         if !self.zoom_restored {
             if let Some(ru) = self
                 .fleet_settings
@@ -8719,8 +8677,7 @@ impl PhotonApp {
                 self.pending_zoom_restore = Some(ru);
                 crate::logf!("SETTINGS: restoring device zoom = {} (one-shot)", ru);
             }
-            // Armed even when nothing was stored: a device with no saved zoom must not have a LATER fleet
-            // merge start restoring one mid-session either.
+            // Armed even when nothing was stored: a device with no saved zoom must not have a LATER fleet merge start restoring one mid-session either.
             self.zoom_restored = true;
         }
     }
@@ -10281,20 +10238,17 @@ impl PhotonApp {
                 }
                 // Refresh existing contacts' WAN + LAN addresses from the FGTW peer list. FGTW reports both a public and a same-LAN address per device; pulling the LAN address in lets the offer/KEM send race the LAN path against the WAN path right away, instead of waiting for LAN multicast (which routers often drop) or a pong. This is what unblocks a same-router peer whose stored WAN IPv6 says "No route to host" — the case where m never received an offer. Retain the echo so a sibling contact created LATER (by the async fleet fold below) can be addressed from the same rows.
                 self.last_peers = data.peers.clone();
-                // Seed `our_reflexive` from FGTW's signed observation if we have nothing better yet. This is
-                // what lets `publish_self_peer_record` sign a record on a FIRST launch: until now it needed a
-                // peer-echoed pong, but a pong needs a reachable path, which needs an address a peer could
-                // learn, which needs a published record -- a cycle nothing could enter, which is why
-                // `PHONEBOOK:` never appeared in a log and gossip carried zero records.
+                // Seed `our_reflexive` from FGTW's signed observation if we have nothing better yet. This is what lets `publish_self_peer_record` sign a record on a FIRST launch: until now it needed a peer-echoed pong, but a pong needs a reachable path, which needs an address a peer could learn, which needs a published record -- a cycle nothing could enter, which is why `PHONEBOOK:` never appeared in a log and gossip carried zero records.
                 //
-                // Deliberately does NOT overwrite an address we already hold: a peer echo comes off the live
-                // UDP data socket and is quorum-corroborated, while the seed sees a TLS flow and is only
-                // exactly right for a cone NAT. Seed first, correct later.
+                // Deliberately does NOT overwrite an address we already hold: a peer echo comes off the live UDP data socket and is quorum-corroborated, while the seed sees a TLS flow and is only exactly right for a cone NAT. Seed first, correct later.
                 if self.our_reflexive.is_none() {
                     if let Some(addr) = data.observed_addr {
                         self.our_reflexive = Some(addr);
                         crate::logf!("TRAVERSE: reflexive address seeded from the FGTW ack = {} (a peer echo will refine it)", addr);
                     }
+                }
+                if data.seed_identity_count > 0 {
+                    self.seed_identity_count = data.seed_identity_count;
                 }
                 self.refresh_contact_addrs_from_peers(&data.peers);
                 // Fleet weave: load persisted siblings if this attest path didn't come thru the resume loader (e.g. JOIN-flow first attest, or []u→re-attest), then re-fold OUR OWN chain — the members drain routes our hp to reconcile_fleet_siblings, which creates Pending sibling contacts for any member device we don't hold yet. Fires on every background refresh too, giving a ~30s catch-up cadence for fleet changes we missed.
@@ -12025,12 +11979,7 @@ impl PhotonApp {
     fn refresh_contact_addrs_from_peers(&mut self, peers: &[crate::network::fgtw::PeerRecord]) {
         // Addresses whose transfers must be cancelled because they went stale (collected here so the checker borrow stays out of the contact-iter loop).
         let mut stale_addrs: Vec<std::net::SocketAddr> = Vec::new();
-        // Did any contact just learn a new/changed address? If so we fire an immediate presence
-        // sweep at the end so the punch goes out the instant we know where to aim — rather than
-        // sitting on the fresh address until the next (possibly 60s / 15min) presence tick. This
-        // is the one-sided-punch fix: a peer whose FGTW fetch was late/failed learns the other's
-        // address and punches at once, instead of the other side punching into a peer that never
-        // punches back.
+        // Did any contact just learn a new/changed address? If so we fire an immediate presence sweep at the end so the punch goes out the instant we know where to aim — rather than sitting on the fresh address until the next (possibly 60s / 15min) presence tick. This is the one-sided-punch fix: a peer whose FGTW fetch was late/failed learns the other's address and punches at once, instead of the other side punching into a peer that never punches back.
         let mut any_addr_changed = false;
         let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
         let siblings = sibling_presence_snapshot(&self.contacts);
@@ -12061,9 +12010,7 @@ impl PhotonApp {
                     let addr_changed = old_ip != contact.ip || old_local != contact.local_ip;
                     if addr_changed {
                         any_addr_changed = true;
-                        // Fresh address = fresh chance at a direct path; the prior unreachable
-                        // cycles were counted against the old (now dead) address, so don't let
-                        // them trip the premature "pending relay" threshold on the new one.
+                        // Fresh address = fresh chance at a direct path; the prior unreachable cycles were counted against the old (now dead) address, so don't let them trip the premature "pending relay" threshold on the new one.
                         contact.punch_unvalidated_cycles = 0;
                     }
                     // ONLY cancel when a VALIDATED direct path is what the offer was riding: then a real address move means the transfer is hitting a dead endpoint and must restart.
@@ -12091,8 +12038,7 @@ impl PhotonApp {
             }
         }
         // Punch the freshly-learned address(es) right now instead of waiting for the next tick.
-        // Cheap (only when an address actually changed) and reuses the tested gather+punch path;
-        // a no-op before the status checker exists (ping_contacts guards on it).
+        // Cheap (only when an address actually changed) and reuses the tested gather+punch path; a no-op before the status checker exists (ping_contacts guards on it).
         if any_addr_changed {
             self.ping_contacts();
         }
@@ -12242,9 +12188,7 @@ impl PhotonApp {
         } else {
             PRESENCE_PING_DEEP
         };
-        // A held direct path is kept open only by traffic on it, and the presence sweep IS
-        // that keepalive — so while any validated path exists, don't let the idle/deep taper
-        // starve it below the NAT-safe interval, or the mapping dies mid-session.
+        // A held direct path is kept open only by traffic on it, and the presence sweep IS that keepalive — so while any validated path exists, don't let the idle/deep taper starve it below the NAT-safe interval, or the mapping dies mid-session.
         if tier > VALIDATED_PATH_KEEPALIVE
             && self.contacts.iter().any(|c| c.validated_path.is_some())
         {
@@ -12404,9 +12348,7 @@ impl PhotonApp {
                     sent = true;
                 }
             }
-            // If neither address fired (relay-only peer with no stored endpoint at all), still send the
-            // presence ping over the relay so the pipe keepalive keeps them yellow. peer_addr is a
-            // sentinel the send drain will UDP-send to harmlessly; the relay_to fan-out is what matters.
+            // If neither address fired (relay-only peer with no stored endpoint at all), still send the presence ping over the relay so the pipe keepalive keeps them yellow. peer_addr is a sentinel the send drain will UDP-send to harmlessly; the relay_to fan-out is what matters.
             if !relay_ping.is_empty() {
                 checker.ping(
                     crate::network::status::RELAY_ADDR,
@@ -12657,8 +12599,7 @@ impl PhotonApp {
         let now_osc = vsf::eagle_time_oscillations();
 
         // Snapshot (friendship_id → primary + alt addr + recipient pubkey) from contacts so we don't hold a contacts borrow across the mutable chains sweep. Only Complete contacts with a known address. Carry BOTH addresses — a retransmit that only re-hit the primary would keep blackholing an off-LAN peer for the whole retry budget (observed: 8 attempts all to a dead LAN IPv4).
-        // OUR own LAN v4 (if any) decides whether a peer's private-v4 address is a same-subnet fast path or a
-        // foreign black hole. Computed ONCE for the whole sweep — it's a syscall.
+        // OUR own LAN v4 (if any) decides whether a peer's private-v4 address is a same-subnet fast path or a foreign black hole. Computed ONCE for the whole sweep — it's a syscall.
         let our_lan_v4 = crate::network::udp::get_local_ip();
         let routes: Vec<(crate::types::FriendshipId, std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32], Vec<[u8; 32]>)> = self
             .contacts
@@ -13653,20 +13594,10 @@ impl PhotonApp {
                             };
                             // Note: ceremony_id is now computed from offer_provenances, not ping provenances. Offer provenances are collected when ClutchOfferReceived messages arrive.
 
-                            // Relay vs direct is the FIRST question a pong answers, and now it's answered from
-                            // ground truth: a pong injected off the pipe carries the RELAY_ADDR sentinel because
-                            // the pipe task already verified its authenticated relay envelope (peel_relay_envelope).
-                            // A relayed pong proves the peer is reachable — but ONLY via the relay — so mark the
-                            // link relay-only (→ lime-yellow) and DO NOT learn its address (storing 0.0.0.0:0 as an
-                            // endpoint would poison direct sends, and a relayed pong carries no reachable address
-                            // anyway). A direct pong clears the flag: a real UDP path always wins over the relay.
+                            // Relay vs direct is the FIRST question a pong answers, and now it's answered from ground truth: a pong injected off the pipe carries the RELAY_ADDR sentinel because the pipe task already verified its authenticated relay envelope (peel_relay_envelope).
+                            // A relayed pong proves the peer is reachable — but ONLY via the relay — so mark the link relay-only (→ lime-yellow) and DO NOT learn its address (storing 0.0.0.0:0 as an endpoint would poison direct sends, and a relayed pong carries no reachable address anyway). A direct pong clears the flag: a real UDP path always wins over the relay.
                             let via_relay = peer_addr == Some(crate::network::status::RELAY_ADDR);
-                            // An UNSPECIFIED address (0.0.0.0 / ::) is never a reachable peer endpoint — it's the
-                            // relay sentinel, OR a pong whose observed_addr echo is our own not-yet-learned
-                            // reflexive (a sibling on a fresh device pongs back the 0.0.0.0 it saw). Adopting it as
-                            // the contact's `ip` sends the next CLUTCH offer to 0.0.0.0 (a black hole), which is
-                            // exactly why a freshly-paired sibling's weave never completes — the offer is fired at
-                            // nowhere. Treat it like a relayed pong: proves liveness, carries no address to learn.
+                            // An UNSPECIFIED address (0.0.0.0 / ::) is never a reachable peer endpoint — it's the relay sentinel, OR a pong whose observed_addr echo is our own not-yet-learned reflexive (a sibling on a fresh device pongs back the 0.0.0.0 it saw). Adopting it as the contact's `ip` sends the next CLUTCH offer to 0.0.0.0 (a black hole), which is exactly why a freshly-paired sibling's weave never completes — the offer is fired at nowhere. Treat it like a relayed pong: proves liveness, carries no address to learn.
                             let addr_unspecified = peer_addr.map_or(false, |a| a.ip().is_unspecified());
                             let learn_addr = !via_relay && !addr_unspecified;
                             // PER-DEVICE addressing: a DIRECT pong updates the SENDING device's endpoint (public/LAN split by source privacy), and only the ACTIVE device's pong may move the contact-level `ip`/`local_*` slot. A friend's other devices each keep their own endpoint — the old any-device-writes-the-one-slot rule made three-device fleets flip-flop the slot every cycle, which broke presence (pings chased the last ponger) AND cancelled mid-flight CLUTCH offer transfers ("address changed — cancelling"). First pong with no active device adopts the sender (bootstrap); inbound DATA (chat/CLUTCH) re-elects it (the device in their hand).
@@ -13699,15 +13630,11 @@ impl PhotonApp {
                                     }
                                 }
                             }
-                            // Set the relay flag from THIS pong only when it's a positive report (is_online). A
-                            // TIMEOUT flows thru this same arm with is_online=false and peer_addr=None — silence
-                            // must not flip the flag either way; the last real pong's verdict stands until the next.
-                            // A direct pong wins: if ANY device answered directly this cycle, the identity is
-                            // direct (green). Relay-only when the only answer came over the pipe (yellow).
+                            // Set the relay flag from THIS pong only when it's a positive report (is_online). A TIMEOUT flows thru this same arm with is_online=false and peer_addr=None — silence must not flip the flag either way; the last real pong's verdict stands until the next.
+                            // A direct pong wins: if ANY device answered directly this cycle, the identity is direct (green). Relay-only when the only answer came over the pipe (yellow).
                             if is_online {
                                 if via_relay {
-                                    // Don't override a direct verdict already set this cycle by a sibling device's
-                                    // direct pong; only claim relay if we're not already known-direct-and-online.
+                                    // Don't override a direct verdict already set this cycle by a sibling device's direct pong; only claim relay if we're not already known-direct-and-online.
                                     if !contact.is_online || contact.reached_via_relay {
                                         contact.reached_via_relay = true;
                                     }
@@ -17121,20 +17048,11 @@ impl PhotonApp {
     /// Put OUR OWN device's peer record into the store, self-signed.
     ///
     /// Nothing did this before, and it is why phonebook gossip has never carried a single record:
-    /// FGTW's `serialize_peer_list` emits no signature field, so every record parsed from the
-    /// server arrives with `signature = [0u8; 64]` — and `PeerStore::merge_peer` opens by rejecting
-    /// anything that fails `verify()`. The wire, the encode, the serve and the merge were all
-    /// built; the mesh simply had nothing signed to carry.
+    /// FGTW's `serialize_peer_list` emits no signature field, so every record parsed from the server arrives with `signature = [0u8; 64]` — and `PeerStore::merge_peer` opens by rejecting anything that fails `verify()`. The wire, the encode, the serve and the merge were all built; the mesh simply had nothing signed to carry.
     ///
-    /// Only this device can produce this record: the signature is by the device key, over
-    /// `handle_proof ‖ device_pubkey ‖ ip ‖ local_ip ‖ last_seen`. That is what lets a peer trust a
-    /// record WITHOUT trusting the peer that relayed it — the property the whole gossip mesh needs,
-    /// and the reason a record can propagate hop to hop instead of only from an authority.
+    /// Only this device can produce this record: the signature is by the device key, over `handle_proof ‖ device_pubkey ‖ ip ‖ local_ip ‖ last_seen`. That is what lets a peer trust a record WITHOUT trusting the peer that relayed it — the property the whole gossip mesh needs, and the reason a record can propagate hop to hop instead of only from an authority.
     ///
-    /// The published address is the REFLEXIVE one — what peers actually observe on the live UDP
-    /// data socket — not fgtw.org's `cf-connecting-ip`, which reflects a TLS flow and is only right
-    /// for cone NATs. That is also why the device can sign it at all: until reflexive discovery
-    /// existed, a device did not know its own public address and could not commit to one.
+    /// The published address is the REFLEXIVE one — what peers actually observe on the live UDP data socket — not fgtw.org's `cf-connecting-ip`, which reflects a TLS flow and is only right for cone NATs. That is also why the device can sign it at all: until reflexive discovery existed, a device did not know its own public address and could not commit to one.
     fn publish_self_peer_record(&mut self) {
         let (Some(store), Some(kp), Some(addr), Some(hp)) = (
             self.peer_store.as_ref(),
@@ -17145,11 +17063,7 @@ impl PhotonApp {
             return; // pre-attest, or no reflexive echo yet — nothing honest to publish
         };
 
-        // Never SIGN an unreachable address. A relay-injected pong reports the RELAY_ADDR sentinel, and
-        // adopting it produced a first-ever published record advertising 0.0.0.0:0 to the whole mesh -- a
-        // signed claim that we cannot be reached, which gossip would then dutifully propagate. `record()`
-        // now refuses the sentinel at the source; this is the belt-and-braces at the signing point, because
-        // a bad record here is the one thing that spreads.
+        // Never SIGN an unreachable address. A relay-injected pong reports the RELAY_ADDR sentinel, and adopting it produced a first-ever published record advertising 0.0.0.0:0 to the whole mesh -- a signed claim that we cannot be reached, which gossip would then dutifully propagate. `record()` now refuses the sentinel at the source; this is the belt-and-braces at the signing point, because a bad record here is the one thing that spreads.
         if crate::network::traverse::gather::is_bogus_addr(&addr) {
             return;
         }
@@ -17169,12 +17083,7 @@ impl PhotonApp {
         self.self_record_published_for = Some(addr);
         crate::logf!("PHONEBOOK: published our own signed record at {} — gossip can now carry it", addr);
 
-        // ALSO publish to the seed's registry. Gossip alone cannot bootstrap: carrying a record needs
-        // a validated path, a path needs a punch, and a punch needs an address we could only have
-        // learned from a peer we cannot yet reach. The seed breaks that circle — it is the one place
-        // reachable without already knowing anyone. Fire-and-forget off-thread: this is a
-        // discovery-path nicety, and a seed that is down must never stall the UI or the local store
-        // (which is already updated above and persists regardless).
+        // ALSO publish to the seed's registry. Gossip alone cannot bootstrap: carrying a record needs a validated path, a path needs a punch, and a punch needs an address we could only have learned from a peer we cannot yet reach. The seed breaks that circle — it is the one place reachable without already knowing anyone. Fire-and-forget off-thread: this is a discovery-path nicety, and a seed that is down must never stall the UI or the local store (which is already updated above and persists regardless).
         let secret = kp.secret.clone();
         let local = crate::network::udp::get_local_ip().map(std::net::IpAddr::V4);
         crate::network::http::runtime().spawn(async move {
@@ -17189,23 +17098,14 @@ impl PhotonApp {
 
     /// Ask the seed registry for the addresses of devices we cannot otherwise reach.
     ///
-    /// This is what re-enters the discovery cycle. Every other address source needs an address
-    /// already: a pong needs somewhere to send a ping, gossip needs a validated path, and a path
-    /// needs a punch at an address we do not have. The seed is reachable without knowing anyone, so
-    /// on a cold start it is the only way in — but it is asked LAST, after the gossip request to
-    /// every peer we can already reach, because a peer's answer is fresher and costs the seed
-    /// nothing.
+    /// This is what re-enters the discovery cycle. Every other address source needs an address already: a pong needs somewhere to send a ping, gossip needs a validated path, and a path needs a punch at an address we do not have. The seed is reachable without knowing anyone, so on a cold start it is the only way in — but it is asked LAST, after the gossip request to every peer we can already reach, because a peer's answer is fresher and costs the seed nothing.
     ///
-    /// Results land in `device_endpoints`, which is what `gather_peer_candidates` reads to build
-    /// punch candidates. They are NOT written to the contact-level `ip` slot: a resolved address is a
-    /// claim we have not yet round-tripped, and the punch is what promotes it to a real path.
+    /// Results land in `device_endpoints`, which is what `gather_peer_candidates` reads to build punch candidates. They are NOT written to the contact-level `ip` slot: a resolved address is a claim we have not yet round-tripped, and the punch is what promotes it to a real path.
     fn resolve_stalled_addresses_from_seed(&mut self) {
         if self.pb_resolve_rx.is_some() {
             return; // one in flight — a slow seed must not stack requests
         }
-        // Every device of a contact we cannot address, including fleet members we have never
-        // pinged. `relay_device_list` is already exactly "every device pubkey we know for this
-        // contact", which is the set the relay addresses stores to.
+        // Every device of a contact we cannot address, including fleet members we have never pinged. `relay_device_list` is already exactly "every device pubkey we know for this contact", which is the set the relay addresses stores to.
         let mut wanted: Vec<[u8; 32]> = Vec::new();
         for c in self.contacts.iter().filter(|c| c.ip.is_none()) {
             for dev in c.relay_device_list() {
@@ -17217,8 +17117,7 @@ impl PhotonApp {
         if wanted.is_empty() {
             return;
         }
-        // Bounded per pulse. A large roster must not turn one stalled tick into a burst at the seed;
-        // the next pulse takes the next devices, and a resolved one drops out of `wanted` entirely.
+        // Bounded per pulse. A large roster must not turn one stalled tick into a burst at the seed; the next pulse takes the next devices, and a resolved one drops out of `wanted` entirely.
         wanted.truncate(16);
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -17235,8 +17134,7 @@ impl PhotonApp {
                             found.push((dev, pubaddr, lan));
                         }
                     }
-                    // Absence is the normal case for a device that has not published yet; only a
-                    // genuine rejection is worth a line.
+                    // Absence is the normal case for a device that has not published yet; only a genuine rejection is worth a line.
                     Err(crate::network::fgtw::phonebook_client::PhonebookError::NotFound) => {}
                     Err(e) => crate::logf!("PHONEBOOK: seed lookup failed ({})", e),
                 }
@@ -17264,8 +17162,7 @@ impl PhotonApp {
         }
         let mut learned = 0usize;
         for (dev, pubaddr, lan) in found {
-            // Never adopt the relay sentinel or an unspecified address as an endpoint — it validates
-            // locally and then poisons every send that keys off `validated_path`.
+            // Never adopt the relay sentinel or an unspecified address as an endpoint — it validates locally and then poisons every send that keys off `validated_path`.
             if crate::network::traverse::gather::is_bogus_addr(&pubaddr) {
                 continue;
             }
@@ -17291,13 +17188,9 @@ impl PhotonApp {
 
     /// Write the phonebook to the vault so it survives a restart.
     ///
-    /// `PeerStore::new()` starts EMPTY every launch, so today the phonebook cannot accumulate — it is
-    /// refilled from FGTW each time and forgotten. That is why "peers first, seed last" is
-    /// structurally impossible right now regardless of what else works: there is nothing to ask
-    /// first. This is Phase A item 1 of docs/peers-are-fgtw.md, listed as done-next since June.
+    /// `PeerStore::new()` starts EMPTY every launch, so today the phonebook cannot accumulate — it is refilled from FGTW each time and forgotten. That is why "peers first, seed last" is structurally impossible right now regardless of what else works: there is nothing to ask first. This is Phase A item 1 of docs/peers-are-fgtw.md, listed as done-next since June.
     ///
-    /// Only self-signed rows persist (see `to_vsf_bytes`) — an unsigned FGTW row can never be
-    /// gossiped or trusted by a peer, so carrying it across a restart would just grow the file.
+    /// Only self-signed rows persist (see `to_vsf_bytes`) — an unsigned FGTW row can never be gossiped or trusted by a peer, so carrying it across a restart would just grow the file.
     fn persist_peer_store(&self) {
         let (Some(store), Some(storage), Some(session)) =
             (self.peer_store.as_ref(), self.storage.as_ref(), self.session.as_ref())
@@ -17319,9 +17212,7 @@ impl PhotonApp {
         }
     }
 
-    /// Load the persisted phonebook into the live store, merging rather than replacing — a record
-    /// learned this session (fresher `last_seen`) must win over a stale one off disk, which is what
-    /// `add_peer`'s per-device upsert already does.
+    /// Load the persisted phonebook into the live store, merging rather than replacing — a record learned this session (fresher `last_seen`) must win over a stale one off disk, which is what `add_peer`'s per-device upsert already does.
     fn load_peer_store(&mut self) {
         let (Some(store), Some(storage), Some(session)) =
             (self.peer_store.as_ref(), self.storage.as_ref(), self.session.as_ref())

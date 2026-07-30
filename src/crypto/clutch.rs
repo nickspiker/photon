@@ -98,8 +98,7 @@ mod identity_binding_tests {
         assert_ne!(ab, ac);
         assert_ne!(ab, pk_a);
         assert_ne!(ab, pk_b);
-        // (A garbage pin often still decodes as SOME point — the mismatch then surfaces as a CLUTCH proof failure, the same flag-day outcome as an outright None.)
-        // Party id is deterministic and distinct from the seed it derives from.
+        // (A garbage pin often still decodes as SOME point — the mismatch then surfaces as a CLUTCH proof failure, the same flag-day outcome as an outright None.) Party id is deterministic and distinct from the seed it derives from.
         assert_eq!(pk_a, identity_party_id(&seed_a));
         assert_ne!(pk_a, seed_a);
     }

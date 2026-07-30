@@ -134,8 +134,7 @@ impl OutboundTransfer {
         self.spec_last_sent = Instant::now();
         self.spec_retry_count += 1;
 
-        // Exponential backoff: 1s → 2s → 4s → 8s → 16s → 32s (capped), JITTERED to 50–100% so peers that
-        // retransmit after the same shared outage don't sync up into a retransmit storm (decorrelated backoff).
+        // Exponential backoff: 1s → 2s → 4s → 8s → 16s → 32s (capped), JITTERED to 50–100% so peers that retransmit after the same shared outage don't sync up into a retransmit storm (decorrelated backoff).
         self.spec_next_delay = crate::jitter_dur(std::cmp::min(
             Duration::from_secs(1 << self.spec_retry_count.min(5)),
             Duration::from_secs(32),

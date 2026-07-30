@@ -1,29 +1,17 @@
-//! Phonebook registry client — publish our own address record to the seed, and resolve another
-//! device's address from it.
+//! Phonebook registry client — publish our own address record to the seed, and resolve another device's address from it.
 //!
-//! This is the replacement for the announce echo. The old `announce` response carried the whole peer
-//! list, which is how every contact learned an address on a cold start; dropping it is what made the
-//! per-record registry cutover possible (there is no aggregate blob to echo once records are
-//! addressed individually), but until this module existed there was NO seed-side discovery at all —
-//! only gossip against a store that starts empty, over paths that need an address to establish.
+//! This is the replacement for the announce echo. The old `announce` response carried the whole peer list, which is how every contact learned an address on a cold start; dropping it is what made the per-record registry cutover possible (there is no aggregate blob to echo once records are addressed individually), but until this module existed there was NO seed-side discovery at all — only gossip against a store that starts empty, over paths that need an address to establish.
 //!
-//! The wire is deliberately thin: a record is 256 self-describing bytes carrying its own signature,
-//! so it crosses as raw bytes and is verified by the RECEIVER against the codec both sides share
-//! ([`fgtw::phonebook`]). Nothing here is trusted because the seed said it — a record that fails
-//! `verify_address` is dropped exactly as if it had never arrived.
+//! The wire is deliberately thin: a record is 256 self-describing bytes carrying its own signature, so it crosses as raw bytes and is verified by the RECEIVER against the codec both sides share ([`fgtw::phonebook`]). Nothing here is trusted because the seed said it — a record that fails `verify_address` is dropped exactly as if it had never arrived.
 //!
-//! What this does NOT do: prove the device belongs to the identity's fleet. `verify_address` proves
-//! only that the holder of `device_pubkey` signed this address under this `handle_proof`; a stranger
-//! can mint a row for any scraped `handle_proof`. That binding is the PRIMARY registry's job and is
-//! still open — see [`resolve_device_address`] for what a caller may and may not conclude.
+//! What this does NOT do: prove the device belongs to the identity's fleet. `verify_address` proves only that the holder of `device_pubkey` signed this address under this `handle_proof`; a stranger can mint a row for any scraped `handle_proof`. That binding is the PRIMARY registry's job and is still open — see [`resolve_device_address`] for what a caller may and may not conclude.
 
 use fgtw::phonebook::{key_address, Key, Record, STRIDE};
 use vsf::VsfType;
 
 use crate::network::http::SEED_HTTPS as FGTW_URL;
 
-/// How long a phonebook call may take. Short: this runs on the address-discovery path, where a slow
-/// answer is worse than no answer (the caller falls back to gossip/relay, which still works).
+/// How long a phonebook call may take. Short: this runs on the address-discovery path, where a slow answer is worse than no answer (the caller falls back to gossip/relay, which still works).
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Debug)]
@@ -31,8 +19,7 @@ pub enum PhonebookError {
     Network(String),
     NotFound,
     Rejected(String),
-    /// The seed returned a record whose own signature does not verify. Treated as absence, never as
-    /// data — a seed that serves a forged row must not be able to redirect anyone.
+    /// The seed returned a record whose own signature does not verify. Treated as absence, never as data — a seed that serves a forged row must not be able to redirect anyone.
     Unverified,
 }
 
@@ -75,14 +62,9 @@ async fn post(body: Vec<u8>) -> Result<Vec<u8>, PhonebookError> {
 
 /// Publish OUR OWN signed address record so other devices can find us without gossip.
 ///
-/// The record is signed by this device's key over `(handle_proof ‖ device_pubkey ‖ ip ‖ port ‖
-/// local_ip ‖ timestamp)`, so the seed stores a claim it cannot forge or alter. `timestamp` is the
-/// monotonic guard: the seed refuses a record no newer than the one it holds, which stops a captured
-/// row being replayed to roll our address back to somewhere an attacker can reach.
+/// The record is signed by this device's key over `(handle_proof ‖ device_pubkey ‖ ip ‖ port ‖ local_ip ‖ timestamp)`, so the seed stores a claim it cannot forge or alter. `timestamp` is the monotonic guard: the seed refuses a record no newer than the one it holds, which stops a captured row being replayed to roll our address back to somewhere an attacker can reach.
 ///
-/// The address published must be one we actually believe in — a quorum-corroborated reflexive
-/// address, never the relay sentinel. The caller owns that check; signing an unreachable address
-/// produces a signed claim that we cannot be reached, and gossip would propagate it faithfully.
+/// The address published must be one we actually believe in — a quorum-corroborated reflexive address, never the relay sentinel. The caller owns that check; signing an unreachable address produces a signed claim that we cannot be reached, and gossip would propagate it faithfully.
 pub async fn publish_address(
     device_secret: &ed25519_dalek::SigningKey,
     handle_proof: &[u8; 32],
@@ -110,12 +92,7 @@ pub async fn publish_address(
 
 /// Resolve one device's published address.
 ///
-/// The returned record is signature-verified HERE, so the caller can rely on "the holder of
-/// `device_pubkey` claims this address". The caller may NOT conclude the device belongs to any
-/// particular fleet — `handle_proof` is inside the signature, so the device did claim it, but
-/// nothing yet proves a current member of that fleet ever vouched for the device. Use it to ADDRESS
-/// a device you already have reason to care about (a contact's known device pubkey), not to accept a
-/// stranger into a fleet.
+/// The returned record is signature-verified HERE, so the caller can rely on "the holder of `device_pubkey` claims this address". The caller may NOT conclude the device belongs to any particular fleet — `handle_proof` is inside the signature, so the device did claim it, but nothing yet proves a current member of that fleet ever vouched for the device. Use it to ADDRESS a device you already have reason to care about (a contact's known device pubkey), not to accept a stranger into a fleet.
 pub async fn resolve_device_address(
     device_pubkey: &[u8; 32],
 ) -> Result<Record, PhonebookError> {
@@ -132,8 +109,7 @@ pub async fn resolve_device_address(
     if !rec.verify_address() {
         return Err(PhonebookError::Unverified);
     }
-    // The record must be the one we asked for. Without this a seed could answer any query with any
-    // valid record and silently redirect us to a device we never asked about.
+    // The record must be the one we asked for. Without this a seed could answer any query with any valid record and silently redirect us to a device we never asked about.
     if rec.key() != Some(key) {
         return Err(PhonebookError::Unverified);
     }
@@ -156,8 +132,7 @@ fn parse_pb_rec(bytes: &[u8]) -> Option<Record> {
     }
 }
 
-/// v4 as `::ffff:a.b.c.d` so the field is fixed width — the record layout stores one 16-byte slot for
-/// either family.
+/// v4 as `::ffff:a.b.c.d` so the field is fixed width — the record layout stores one 16-byte slot for either family.
 fn ip_to_bytes(ip: std::net::IpAddr) -> [u8; 16] {
     match ip {
         std::net::IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
@@ -165,9 +140,7 @@ fn ip_to_bytes(ip: std::net::IpAddr) -> [u8; 16] {
     }
 }
 
-/// The inverse of [`ip_to_bytes`]: unwrap a v4-mapped address back to a real v4 so it compares equal
-/// to addresses learned off the wire (a `::ffff:` form would never match a stored v4 and would be
-/// punched at as a v6 host).
+/// The inverse of [`ip_to_bytes`]: unwrap a v4-mapped address back to a real v4 so it compares equal to addresses learned off the wire (a `::ffff:` form would never match a stored v4 and would be punched at as a v6 host).
 pub fn bytes_to_ip(b: &[u8; 16]) -> std::net::IpAddr {
     let v6 = std::net::Ipv6Addr::from(*b);
     match v6.to_ipv4_mapped() {
@@ -176,8 +149,7 @@ pub fn bytes_to_ip(b: &[u8; 16]) -> std::net::IpAddr {
     }
 }
 
-/// The socket address a resolved record points at, or `None` when the record carries no usable
-/// address (an all-zero IP is the unwritten/absent case, and adopting it would send to a black hole).
+/// The socket address a resolved record points at, or `None` when the record carries no usable address (an all-zero IP is the unwritten/absent case, and adopting it would send to a black hole).
 pub fn record_socket_addr(rec: &Record) -> Option<std::net::SocketAddr> {
     let ip = bytes_to_ip(&rec.ip());
     if ip.is_unspecified() || rec.port() == 0 {
@@ -203,9 +175,7 @@ mod tests {
         ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
     }
 
-    /// A v4 address must survive the mapped-form round trip as a REAL v4 — if it came back as
-    /// `::ffff:a.b.c.d` it would never compare equal to the same address learned off the wire, and
-    /// the punch would treat it as a v6 host that needs no hole.
+    /// A v4 address must survive the mapped-form round trip as a REAL v4 — if it came back as `::ffff:a.b.c.d` it would never compare equal to the same address learned off the wire, and the punch would treat it as a v6 host that needs no hole.
     #[test]
     fn a_v4_address_round_trips_unmapped() {
         let v4: std::net::IpAddr = "192.168.0.42".parse().unwrap();
@@ -233,8 +203,7 @@ mod tests {
         assert_eq!(record_local_addr(&rec), Some(std::net::SocketAddr::new(lan, 4383)));
     }
 
-    /// An all-zero address slot is ABSENCE, not `0.0.0.0` — adopting it as a peer endpoint is the
-    /// relay-sentinel poisoning that made sends go nowhere while `validated_path` looked Some.
+    /// An all-zero address slot is ABSENCE, not `0.0.0.0` — adopting it as a peer endpoint is the relay-sentinel poisoning that made sends go nowhere while `validated_path` looked Some.
     #[test]
     fn an_empty_address_slot_is_absence() {
         let dev = key(2);
@@ -243,9 +212,7 @@ mod tests {
         assert_eq!(record_local_addr(&rec), None);
     }
 
-    /// A response frame carrying a record for a DIFFERENT device must be refused by the key check in
-    /// `resolve_device_address` — the parse itself is agnostic, so pin that the keys differ and the
-    /// comparison is the thing that catches it.
+    /// A response frame carrying a record for a DIFFERENT device must be refused by the key check in `resolve_device_address` — the parse itself is agnostic, so pin that the keys differ and the comparison is the thing that catches it.
     #[test]
     fn a_record_for_another_device_has_a_different_key() {
         let ours = key(1);
@@ -259,12 +226,9 @@ mod tests {
         );
     }
 
-    /// LIVE smoke check against the deployed seed — `#[ignore]`d so it never runs in the normal
-    /// suite (it needs the network and a deployed worker). Run explicitly after a deploy:
-    /// `cargo test --lib phonebook_client -- --ignored --nocapture`
+    /// LIVE smoke check against the deployed seed — `#[ignore]`d so it never runs in the normal suite (it needs the network and a deployed worker). Run explicitly after a deploy: `cargo test --lib phonebook_client -- --ignored --nocapture`
     ///
-    /// Asserts the ROUTE exists: an unknown section answers `unknown_op`, so a `not_found` for a key
-    /// that cannot exist is the positive result.
+    /// Asserts the ROUTE exists: an unknown section answers `unknown_op`, so a `not_found` for a key that cannot exist is the positive result.
     #[test]
     #[ignore]
     fn live_seed_answers_a_phonebook_lookup() {
@@ -283,9 +247,7 @@ mod tests {
         }
     }
 
-    /// LIVE end-to-end: publish a record for a throwaway device key, then resolve it back and
-    /// confirm the address survives the round trip through R2. `#[ignore]`d — network + deploy.
-    /// Uses a key derived from the current time so repeat runs never fight the monotonic guard.
+    /// LIVE end-to-end: publish a record for a throwaway device key, then resolve it back and confirm the address survives the round trip through R2. `#[ignore]`d — network + deploy. Uses a key derived from the current time so repeat runs never fight the monotonic guard.
     #[test]
     #[ignore]
     fn live_publish_then_resolve_round_trips() {
@@ -309,8 +271,7 @@ mod tests {
         println!("live round trip OK: {} lan={:?}", addr, record_local_addr(&rec));
     }
 
-    /// The exact frame the worker's `pb_get` builds must parse here. This is the wire contract
-    /// between the two halves; a type or stride change on either side breaks discovery silently.
+    /// The exact frame the worker's `pb_get` builds must parse here. This is the wire contract between the two halves; a type or stride change on either side breaks discovery silently.
     #[test]
     fn a_pb_rec_frame_parses_back_to_the_record() {
         let dev = key(4);

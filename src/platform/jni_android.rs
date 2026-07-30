@@ -684,11 +684,8 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeDestroy(
     }
 }
 
-// ============================================================================
-// Pairing v2 beacon bridge — the PhotonBeacon Kotlin object (BLE advertise + scan).
-// Registered at PhotonBeacon.init (Activity onCreate); Rust threads call up thru the
-// global ref, Kotlin's scan callback calls down via nativeOnBeaconHeard. Shadow mode:
-// heard frames only log + store (docs/pairing-v2.md milestone A).
+// ============================================================================ Pairing v2 beacon bridge — the PhotonBeacon Kotlin object (BLE advertise + scan).
+// Registered at PhotonBeacon.init (Activity onCreate); Rust threads call up thru the global ref, Kotlin's scan callback calls down via nativeOnBeaconHeard. Shadow mode: heard frames only log + store (docs/pairing-v2.md milestone A).
 // ============================================================================
 
 /// The PhotonBeacon Kotlin object: JavaVM + global ref, registered once at `nativeInit`.
@@ -1209,8 +1206,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeRestoreSessionF
     }
 }
 
-// ============================================================================
-// Session broadcast — sticky broadcast carrying the VSF-sealed session capsule.
+// ============================================================================ Session broadcast — sticky broadcast carrying the VSF-sealed session capsule.
 // Survives app uninstall (OS holds the sticky); cleared on logout.
 // Permission: com.photon.SESSION_READ (signature-level, declared in manifest).
 // ============================================================================

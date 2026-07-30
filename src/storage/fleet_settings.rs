@@ -139,11 +139,7 @@ mod tests {
 
     /// A sibling's device map must NEVER become our `device_local` value.
     ///
-    /// This is the "half size a few moments after the contacts show up" bug. `apply_settings_to_ui` re-arms
-    /// the one-shot zoom restore from `device_local("display.zoom")` on EVERY fleet merge that changed
-    /// anything, and the fleet poll runs every ~15s. So if a merge can ever make `device_local` return
-    /// another device's value, the window silently re-zooms to a foreign monitor's ergonomics on a timer --
-    /// which is exactly what a phone's zoom doing to a 3360x2100 Mac looks like.
+    /// This is the "half size a few moments after the contacts show up" bug. `apply_settings_to_ui` re-arms the one-shot zoom restore from `device_local("display.zoom")` on EVERY fleet merge that changed anything, and the fleet poll runs every ~15s. So if a merge can ever make `device_local` return another device's value, the window silently re-zooms to a foreign monitor's ergonomics on a timer -- which is exactly what a phone's zoom doing to a 3360x2100 Mac looks like.
     #[test]
     fn a_siblings_device_map_never_leaks_into_our_device_local() {
         const US: [u8; 32] = [1; 32];

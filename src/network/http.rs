@@ -11,18 +11,11 @@
 
 use std::sync::OnceLock;
 
-// ════════════════════════════════════════════════════════════════════════════════════════════
-// THE SEED. One place that knows where fgtw.org is.
+// ════════════════════════════════════════════════════════════════════════════════════════════ THE SEED. One place that knows where fgtw.org is.
 //
-// fgtw.org is BOOTSTRAP SCAFFOLDING, not infrastructure: the end state is peers first, a random
-// sample to confirm the list is current, and the seed consulted LAST — then retired entirely
-// (docs/peers-are-fgtw.md). That ordering is impossible to implement while the host is spelled out
-// at thirteen call sites, because "try the seed last" needs somewhere that can decide to try it at
-// all. This is that somewhere.
+// fgtw.org is BOOTSTRAP SCAFFOLDING, not infrastructure: the end state is peers first, a random sample to confirm the list is current, and the seed consulted LAST — then retired entirely (docs/peers-are-fgtw.md). That ordering is impossible to implement while the host is spelled out at thirteen call sites, because "try the seed last" needs somewhere that can decide to try it at all. This is that somewhere.
 //
-// Keep it a single definition even though the constants look trivially duplicable — the whole point
-// is that switching to a seed LIST, a user-configured seed, or no seed at all becomes one edit here
-// rather than a hunt through six modules and seven inline string literals.
+// Keep it a single definition even though the constants look trivially duplicable — the whole point is that switching to a seed LIST, a user-configured seed, or no seed at all becomes one edit here rather than a hunt through six modules and seven inline string literals.
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
 /// The bootstrap seed's bare host.
@@ -72,8 +65,7 @@ pub fn blocking() -> &'static reqwest::blocking::Client {
 }
 
 /// The shared blocking client, for call sites that need their OWN per-request timeout.
-/// Those sites used to each build a private `Client`, which throws away the connection pool and the warm TLS session — every call paid a fresh TCP + TLS handshake. On fibre that hides in the noise; on a 202 KB/s uplink it was most of a 7.3-second blob upload that blocked attestation (2026-07-29).
-/// reqwest hangs the timeout on the REQUEST BUILDER, so the pooled client and a per-call deadline are not mutually exclusive — `http::blocking_timeout(d).post(url)` keeps the pool AND the timeout. Prefer this over `Client::builder().timeout(d)`.
+/// Those sites used to each build a private `Client`, which throws away the connection pool and the warm TLS session — every call paid a fresh TCP + TLS handshake. On fibre that hides in the noise; on a 202 KB/s uplink it was most of a 7.3-second blob upload that blocked attestation (2026-07-29). reqwest hangs the timeout on the REQUEST BUILDER, so the pooled client and a per-call deadline are not mutually exclusive — `http::blocking_timeout(d).post(url)` keeps the pool AND the timeout. Prefer this over `Client::builder().timeout(d)`.
 pub fn blocking_timeout(d: std::time::Duration) -> RequestTimeout {
     RequestTimeout(d)
 }

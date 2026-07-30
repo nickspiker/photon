@@ -6,18 +6,10 @@
 //! - Storage key: BLAKE3(identity_seed || fleet_key || "contacts_storage_key_v1")
 //! - Encryption key: BLAKE3(identity_seed || fleet_key || "contacts_v1")
 //!
-//! v0 bound `device_secret` (the device's Ed25519 secret) into BOTH, which meant a blob was
-//! readable only by the device that wrote it. That is not a backup: the case people mean by
-//! backup is a lost or replaced device, and that is exactly the case where the key is gone.
-//! It was also silently orphaned on every Android reinstall, because the Android fingerprint
-//! oracle is ANDROID_ID and that rotates. Binding the FLEET key instead makes the blob what
-//! the module always claimed to be, and gives it a natural purge path (any device can delete
-//! it, and `clean_device_for_reuse` does).
+//! v0 bound `device_secret` (the device's Ed25519 secret) into BOTH, which meant a blob was readable only by the device that wrote it. That is not a backup: the case people mean by backup is a lost or replaced device, and that is exactly the case where the key is gone.
+//! It was also silently orphaned on every Android reinstall, because the Android fingerprint oracle is ANDROID_ID and that rotates. Binding the FLEET key instead makes the blob what the module always claimed to be, and gives it a natural purge path (any device can delete it, and `clean_device_for_reuse` does).
 //!
-//! This is a BACKUP, not the sync channel. Live cross-device contact state travels on the
-//! fleet roster (`fleet::push_roster`/`pull_roster`), which is a proper CRDT with a logical
-//! clock and tombstones. This blob is the cold copy for a fleet that has lost every device's
-//! vault but still holds the fleet key.
+//! This is a BACKUP, not the sync channel. Live cross-device contact state travels on the fleet roster (`fleet::push_roster`/`pull_roster`), which is a proper CRDT with a logical clock and tombstones. This blob is the cold copy for a fleet that has lost every device's vault but still holds the fleet key.
 //!
 //! Security:
 //! - identity_seed = BLAKE3(VsfType::x(handle)) - private
@@ -116,8 +108,7 @@ pub fn contacts_storage_key_v0_device_bound(
     URL_SAFE_NO_PAD.encode(hash.as_bytes())
 }
 
-/// Schema for cloud_contacts section
-/// The section name, shared by the builder and the TOC lookup in `decode_contacts` — `parse_document` finds the section by matching this against the header, so the two must never drift.
+/// Schema for cloud_contacts section The section name, shared by the builder and the TOC lookup in `decode_contacts` — `parse_document` finds the section by matching this against the header, so the two must never drift.
 const CLOUD_CONTACTS_SECTION: &str = "cloud_contacts";
 
 fn cloud_contacts_schema() -> SectionSchema {
@@ -298,8 +289,7 @@ pub fn u8_to_trust_level(v: u8) -> TrustLevel {
     }
 }
 
-// ============================================================================
-// High-Level API (Blocking) ============================================================================
+// ============================================================================ High-Level API (Blocking) ============================================================================
 
 /// Sync contacts to FGTW cloud storage (blocking)
 ///
@@ -517,8 +507,7 @@ mod document_tests {
         let fleet_key = [2u8; 32];
         let other_fleet_key = [3u8; 32];
 
-        // Same identity + same fleet key = same slot, no matter which device asks. (The device
-        // secret is not an input at all any more, which is exactly the v0 bug being removed.)
+        // Same identity + same fleet key = same slot, no matter which device asks. (The device secret is not an input at all any more, which is exactly the v0 bug being removed.)
         assert_eq!(
             contacts_storage_key(&identity_seed, &fleet_key),
             contacts_storage_key(&identity_seed, &fleet_key),
@@ -530,8 +519,7 @@ mod document_tests {
             "every device in the fleet must derive the same encryption key"
         );
 
-        // A different fleet key is a different slot AND a different key — an epoch rotation
-        // must not silently read or clobber the previous epoch's blob.
+        // A different fleet key is a different slot AND a different key — an epoch rotation must not silently read or clobber the previous epoch's blob.
         assert_ne!(
             contacts_storage_key(&identity_seed, &fleet_key),
             contacts_storage_key(&identity_seed, &other_fleet_key)
@@ -541,8 +529,7 @@ mod document_tests {
             contacts_encryption_key(&identity_seed, &other_fleet_key)
         );
 
-        // v1 and v0 are different addresses, so the re-key cannot collide with the blob a
-        // device already left behind (which only its own secret can still delete).
+        // v1 and v0 are different addresses, so the re-key cannot collide with the blob a device already left behind (which only its own secret can still delete).
         let device_secret = [9u8; 32];
         assert_ne!(
             contacts_storage_key(&identity_seed, &fleet_key),

@@ -8,13 +8,7 @@ use super::Keypair;
 
 use crate::network::http::SEED_HTTPS as FGTW_URL;
 
-/// Peel a relay envelope received over the pipe: the whole signed `relay` VSF the SENDER built
-/// (`build_signed_vsf("relay", {recipient, payload})`, signed with their device key), which the worker now
-/// forwards intact instead of the unwrapped inner. Verifies the sender's whole-file signature, then returns
-/// `(sender_device_key, inner_payload)`. `None` on any structural/parse/verify failure — a malformed or
-/// unsigned frame off the pipe is dropped, never injected. This is the DOMAIN SEPARATOR for the pipe: a
-/// message is known-relayed because it arrived wrapped in this authenticated envelope, not because of a
-/// sentinel address. The inner payload is byte-identical to a direct message, so no inner parser changes.
+/// Peel a relay envelope received over the pipe: the whole signed `relay` VSF the SENDER built (`build_signed_vsf("relay", {recipient, payload})`, signed with their device key), which the worker now forwards intact instead of the unwrapped inner. Verifies the sender's whole-file signature, then returns `(sender_device_key, inner_payload)`. `None` on any structural/parse/verify failure — a malformed or unsigned frame off the pipe is dropped, never injected. This is the DOMAIN SEPARATOR for the pipe: a message is known-relayed because it arrived wrapped in this authenticated envelope, not because of a sentinel address. The inner payload is byte-identical to a direct message, so no inner parser changes.
 pub fn peel_relay_envelope(bytes: &[u8]) -> Option<([u8; 32], Vec<u8>)> {
     use vsf::file_format::VsfHeader;
 

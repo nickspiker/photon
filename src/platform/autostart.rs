@@ -3,8 +3,7 @@
 //! Every path here is user-owned (HKCU / ~/Library/LaunchAgents / ~/.config/autostart): no sudo, no UAC, no prompts.
 //! The registered command is `<current_exe> --background`, so a login launch comes up RESIDENT (hidden window, network up) rather than opening a window over the fresh session.
 
-// ───────── Default-ON policy (user mandate) ─────────
-// Background residency + launch-at-login are ON unless the user explicitly turned them off. The OS artifact alone can't carry that: auto-enrolling every launch would resurrect a login item the user deleted, so the explicit "no" lives in a marker file — present = user opted out, absent = default-on. The artifact stays the OS-visible truth for WHAT runs at login; the marker is only the user's veto.
+// ───────── Default-ON policy (user mandate) ───────── Background residency + launch-at-login are ON unless the user explicitly turned them off. The OS artifact alone can't carry that: auto-enrolling every launch would resurrect a login item the user deleted, so the explicit "no" lives in a marker file — present = user opted out, absent = default-on. The artifact stays the OS-visible truth for WHAT runs at login; the marker is only the user's veto.
 
 fn optout_path() -> Option<std::path::PathBuf> {
     crate::storage::photon_config_dir().ok().map(|d| d.join("background_optout"))
@@ -40,8 +39,7 @@ fn exe_path() -> Result<std::path::PathBuf, String> {
     std::env::current_exe().map_err(|e| format!("current_exe: {e}"))
 }
 
-// ───────── Linux: XDG autostart entry ─────────
-// A .desktop file in ~/.config/autostart — the freedesktop mechanism every session manager (GNOME, KDE, XFCE…) honours at graphical login. Session-scoped by design: a UI app wants the display + session env, which a systemd user unit only gets with extra ceremony.
+// ───────── Linux: XDG autostart entry ───────── A .desktop file in ~/.config/autostart — the freedesktop mechanism every session manager (GNOME, KDE, XFCE…) honours at graphical login. Session-scoped by design: a UI app wants the display + session env, which a systemd user unit only gets with extra ceremony.
 
 #[cfg(target_os = "linux")]
 fn artifact_path() -> Result<std::path::PathBuf, String> {
@@ -81,8 +79,7 @@ pub fn disable() -> Result<(), String> {
     }
 }
 
-// ───────── macOS: LaunchAgent plist ─────────
-// ~/Library/LaunchAgents/com.photon.messenger.plist with RunAtLoad. Takes effect at next login without launchctl (launchd scans the directory); the SMAppService route needs a signed .app bundle we don't ship yet.
+// ───────── macOS: LaunchAgent plist ───────── ~/Library/LaunchAgents/com.photon.messenger.plist with RunAtLoad. Takes effect at next login without launchctl (launchd scans the directory); the SMAppService route needs a signed .app bundle we don't ship yet.
 
 #[cfg(target_os = "macos")]
 fn artifact_path() -> Result<std::path::PathBuf, String> {
@@ -124,8 +121,7 @@ pub fn disable() -> Result<(), String> {
     }
 }
 
-// ───────── Windows: HKCU Run value ─────────
-// The per-user registry Run key, written via reg.exe (in every Windows install; keeps us dependency-free). Shows in Task Manager → Startup where the user can also disable it.
+// ───────── Windows: HKCU Run value ───────── The per-user registry Run key, written via reg.exe (in every Windows install; keeps us dependency-free). Shows in Task Manager → Startup where the user can also disable it.
 
 #[cfg(target_os = "windows")]
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";

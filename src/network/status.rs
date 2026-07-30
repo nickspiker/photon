@@ -442,10 +442,7 @@ pub struct StatusChecker {
     lan_broadcast_sender: Sender<LanBroadcastRequest>,
     clear_pt_sender: Sender<ClearPtSendsRequest>,
     status_receiver: Receiver<StatusUpdate>,
-    /// Fire a phonebook-gossip request at a reachable peer (its address). The peer replies with
-    /// the self-signed peer records it holds, so a device whose own fgtw is unreachable can still
-    /// learn a friend's address from a friend it CAN reach. Not a relay — only routing records
-    /// (each independently verifiable) travel, never payload.
+    /// Fire a phonebook-gossip request at a reachable peer (its address). The peer replies with the self-signed peer records it holds, so a device whose own fgtw is unreachable can still learn a friend's address from a friend it CAN reach. Not a relay — only routing records (each independently verifiable) travel, never payload.
     phonebook_req_sender: Sender<SocketAddr>,
 }
 
@@ -675,8 +672,7 @@ impl StatusChecker {
         })
     }
 
-    /// Request to ping a contact (non-blocking). `relay_to` = peer device keys to also ping over the relay
-    /// pipe (empty = direct only); set when no direct path is proven so presence works for a relay-only peer.
+    /// Request to ping a contact (non-blocking). `relay_to` = peer device keys to also ping over the relay pipe (empty = direct only); set when no direct path is proven so presence works for a relay-only peer.
     pub fn ping(
         &self,
         peer_addr: SocketAddr,
@@ -719,10 +715,7 @@ impl StatusChecker {
         let _ = self.history_sender.send(request);
     }
 
-    /// Start a PT large transfer (non-blocking)
-    /// Ask a reachable peer (by address) for the peer records it holds — phonebook gossip. Used when
-    /// our own fgtw is unreachable but a friend is: they answer with self-signed records that merge
-    /// into the shared peer store, so a friend we can't reach gets learned from one we can.
+    /// Start a PT large transfer (non-blocking) Ask a reachable peer (by address) for the peer records it holds — phonebook gossip. Used when our own fgtw is unreachable but a friend is: they answer with self-signed records that merge into the shared peer store, so a friend we can't reach gets learned from one we can.
     pub fn send_phonebook_request(&self, addr: SocketAddr) {
         let _ = self.phonebook_req_sender.send(addr);
     }
@@ -780,17 +773,12 @@ type OptionalEventProxy = Option<Arc<dyn WakeSender<PhotonEvent>>>;
 #[cfg(target_os = "android")]
 type OptionalEventProxy = Option<()>;
 
-/// Send a status update and wake the UI thread if a wake sender is available
-/// Sentinel `sender_addr` for a CLUTCH StatusUpdate that arrived via the FGTW relay, not a direct socket. The app checks for it to skip address-learning (a relayed message carries no reachable peer address) and to mark the contact reached_via_relay (lime-yellow presence). Unspecified v4:0 — never a real peer address.
+/// Send a status update and wake the UI thread if a wake sender is available Sentinel `sender_addr` for a CLUTCH StatusUpdate that arrived via the FGTW relay, not a direct socket. The app checks for it to skip address-learning (a relayed message carries no reachable peer address) and to mark the contact reached_via_relay (lime-yellow presence). Unspecified v4:0 — never a real peer address.
 pub const RELAY_ADDR: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
 
 /// Send a REPLY (pong, chat ACK, CLUTCH proof ACK) back to whoever sent us the message we're answering.
-/// If it arrived directly (`dst` is a real address) this is a plain UDP send. If it arrived over the relay
-/// pipe (`dst == RELAY_ADDR`), UDP would black-hole to 0.0.0.0:0 — so instead we relay the reply back to the
-/// sender's device key over their pipe. `reply_to_device` is the device key extracted from the inbound
-/// message (its signer). This is what makes the relay BIDIRECTIONAL: a pong/ACK returns the same way the
-/// message came, so presence flips online on both ends and chat ACKs clear the sender's retransmit.
+/// If it arrived directly (`dst` is a real address) this is a plain UDP send. If it arrived over the relay pipe (`dst == RELAY_ADDR`), UDP would black-hole to 0.0.0.0:0 — so instead we relay the reply back to the sender's device key over their pipe. `reply_to_device` is the device key extracted from the inbound message (its signer). This is what makes the relay BIDIRECTIONAL: a pong/ACK returns the same way the message came, so presence flips online on both ends and chat ACKs clear the sender's retransmit.
 async fn relay_reply(
     socket: &tokio::net::UdpSocket,
     keypair: &crate::network::fgtw::Keypair,
@@ -809,10 +797,7 @@ async fn relay_reply(
     }
 }
 
-// The old relay dispatch (split_concatenated_vsf + dispatch_relayed_clutch) is GONE. The pipe injects each
-// relayed frame directly into the receiver's select! as a whole datagram tagged RELAY_ADDR, so the real
-// dispatch parses it — CLUTCH, ping/pong, chat, acks all — with no bespoke relay parser. There is nothing to
-// split either: a WebSocket frame IS one message (no concatenation, unlike the old fetch response).
+// The old relay dispatch (split_concatenated_vsf + dispatch_relayed_clutch) is GONE. The pipe injects each relayed frame directly into the receiver's select! as a whole datagram tagged RELAY_ADDR, so the real dispatch parses it — CLUTCH, ping/pong, chat, acks all — with no bespoke relay parser. There is nothing to split either: a WebSocket frame IS one message (no concatenation, unlike the old fetch response).
 
 fn send_status_update(
     status_tx: &Sender<StatusUpdate>,
@@ -1304,11 +1289,8 @@ async fn run_checker(
         });
     }
 
-    // The RELAY PIPE inject channel. Frames that arrive over the live WebSocket pipe are pushed here and
-    // the receiver task's select! pulls them out AS IF they'd arrived on the UDP socket, tagged RELAY_ADDR.
-    // That means the ENTIRE existing dispatch — PT DATA, ping/pong presence, chat, acks, CLUTCH — runs on
-    // relayed bytes with zero bespoke per-message-type handling. A generous bound so a burst (a 548 KB
-    // CLUTCH offer arrives as one frame) never blocks the WS reader.
+    // The RELAY PIPE inject channel. Frames that arrive over the live WebSocket pipe are pushed here and the receiver task's select! pulls them out AS IF they'd arrived on the UDP socket, tagged RELAY_ADDR.
+    // That means the ENTIRE existing dispatch — PT DATA, ping/pong presence, chat, acks, CLUTCH — runs on relayed bytes with zero bespoke per-message-type handling. A generous bound so a burst (a 548 KB CLUTCH offer arrives as one frame) never blocks the WS reader.
     let (inject_tx, mut inject_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
 
     // Spawn RELAY PIPE task — the live bridge for peers with NO direct path (asymmetric reachability: one end IPv6-only, the other IPv4-only). fgtw.org is dual-stack, so both reach it. We hold ONE WebSocket open to our own device's PipeHub (keyed by our device key); a sender's signed `relay` request is forwarded straight down it by the worker — no polling, no store-and-forward, no R2. Every frame received is fed into the inject channel, so it rides the receiver task's real dispatch tagged RELAY_ADDR (the app skips address-learning + marks reached_via_relay). Trust is applied downstream exactly as for a UDP packet (each parser verifies the signature; CLUTCH handlers gate on fold-respecting knows_device). This carries the WHOLE data plane, not just the ceremony — presence and chat ride it too.
@@ -1329,11 +1311,7 @@ async fn run_checker(
                         while let Some(msg) = read.next().await {
                             match msg {
                                 Ok(Message::Binary(data)) => {
-                                    // Peel the authenticated relay envelope the worker now forwards intact. The
-                                    // envelope's presence + valid sender signature IS the domain separator: a
-                                    // frame off the pipe is KNOWN-relayed from device X, ground truth in the
-                                    // bytes, not the RELAY_ADDR sentinel. Inject only the inner payload — it's
-                                    // byte-identical to a direct message, so the dispatch below is untouched.
+                                    // Peel the authenticated relay envelope the worker now forwards intact. The envelope's presence + valid sender signature IS the domain separator: a frame off the pipe is KNOWN-relayed from device X, ground truth in the bytes, not the RELAY_ADDR sentinel. Inject only the inner payload — it's byte-identical to a direct message, so the dispatch below is untouched.
                                     match crate::network::fgtw::relay::peel_relay_envelope(&data) {
                                         Some((sender_key, inner)) => {
                                             crate::logf!("PIPE: ← {}B envelope from {} → {}B inner (injecting)", data.len(), hex::encode(&sender_key[..4]), inner.len());
@@ -2143,8 +2121,7 @@ async fn run_checker(
 
                                     let pong_bytes = pong.to_vsf_bytes();
                                     if !pong_bytes.is_empty() {
-                                        // Route back the way the ping came: UDP if direct, relay-pipe to the
-                                        // pinger's device key if this ping arrived over the relay (RELAY_ADDR).
+                                        // Route back the way the ping came: UDP if direct, relay-pipe to the pinger's device key if this ping arrived over the relay (RELAY_ADDR).
                                         relay_reply(
                                             &socket_recv,
                                             &keypair_recv,
@@ -2772,9 +2749,7 @@ async fn run_checker(
                 udp::send(&socket, &msg_bytes, request.peer_addr).await;
 
                 // No direct path → also ping over the relay pipe so PRESENCE works for a relay-only peer.
-                // The peer receives it on its pipe and pongs back over its own pipe; each side flips the
-                // other online (reached_via_relay). Best-effort — a live pipe means the peer is reachable;
-                // a dropped frame just means they're offline, which a missed pong already conveys.
+                // The peer receives it on its pipe and pongs back over its own pipe; each side flips the other online (reached_via_relay). Best-effort — a live pipe means the peer is reachable; a dropped frame just means they're offline, which a missed pong already conveys.
                 for dev in &request.relay_to {
                     if let Err(e) =
                         crate::network::fgtw::relay::send_via_relay(&keypair, dev, &msg_bytes).await
@@ -2811,9 +2786,7 @@ async fn run_checker(
             Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
         }
 
-        // Fire any queued phonebook-gossip requests: ask a reachable peer for the peer records it
-        // holds, so a friend we CAN'T reach (our fgtw is flaky) is learned from one we can. Small
-        // signed control message, best-effort like a ping; the response merges into the shared store.
+        // Fire any queued phonebook-gossip requests: ask a reachable peer for the peer records it holds, so a friend we CAN'T reach (our fgtw is flaky) is learned from one we can. Small signed control message, best-effort like a ping; the response merges into the shared store.
         while let Ok(addr) = phonebook_req_rx.try_recv() {
             let ts = eagle_time_now();
             let prov = compute_provenance_hash(&our_pubkey, ts);
@@ -2939,8 +2912,7 @@ async fn run_checker(
                     }
                 }
                 // No direct path → also send the WHOLE chat VSF (not the PT shard) over the relay pipe.
-                // The peer receives it on its pipe and its dispatch decrypts + ACKs exactly as a direct
-                // message; the ACK returns over the peer's pipe. Chat now works with no direct path.
+                // The peer receives it on its pipe and its dispatch decrypts + ACKs exactly as a direct message; the ACK returns over the peer's pipe. Chat now works with no direct path.
                 for dev in &request.relay_to {
                     if let Err(e) =
                         crate::network::fgtw::relay::send_via_relay(&keypair, dev, &msg_bytes).await
