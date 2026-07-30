@@ -10263,6 +10263,21 @@ impl PhotonApp {
                 }
                 // Refresh existing contacts' WAN + LAN addresses from the FGTW peer list. FGTW reports both a public and a same-LAN address per device; pulling the LAN address in lets the offer/KEM send race the LAN path against the WAN path right away, instead of waiting for LAN multicast (which routers often drop) or a pong. This is what unblocks a same-router peer whose stored WAN IPv6 says "No route to host" — the case where m never received an offer. Retain the echo so a sibling contact created LATER (by the async fleet fold below) can be addressed from the same rows.
                 self.last_peers = data.peers.clone();
+                // Seed `our_reflexive` from FGTW's signed observation if we have nothing better yet. This is
+                // what lets `publish_self_peer_record` sign a record on a FIRST launch: until now it needed a
+                // peer-echoed pong, but a pong needs a reachable path, which needs an address a peer could
+                // learn, which needs a published record -- a cycle nothing could enter, which is why
+                // `PHONEBOOK:` never appeared in a log and gossip carried zero records.
+                //
+                // Deliberately does NOT overwrite an address we already hold: a peer echo comes off the live
+                // UDP data socket and is quorum-corroborated, while the seed sees a TLS flow and is only
+                // exactly right for a cone NAT. Seed first, correct later.
+                if self.our_reflexive.is_none() {
+                    if let Some(addr) = data.observed_addr {
+                        self.our_reflexive = Some(addr);
+                        crate::logf!("TRAVERSE: reflexive address seeded from the FGTW ack = {} (a peer echo will refine it)", addr);
+                    }
+                }
                 self.refresh_contact_addrs_from_peers(&data.peers);
                 // Fleet weave: load persisted siblings if this attest path didn't come thru the resume loader (e.g. JOIN-flow first attest, or []u→re-attest), then re-fold OUR OWN chain — the members drain routes our hp to reconcile_fleet_siblings, which creates Pending sibling contacts for any member device we don't hold yet. Fires on every background refresh too, giving a ~30s catch-up cadence for fleet changes we missed.
                 if let Some(storage) = self.storage.as_ref().cloned() {

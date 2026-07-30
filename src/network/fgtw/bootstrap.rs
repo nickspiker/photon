@@ -10,6 +10,10 @@ use crate::network::http::SEED_HTTPS as FGTW_URL;
 pub struct BootstrapResult {
     pub peers: Vec<PeerRecord>,
     pub error: Option<String>,
+    /// The address FGTW observed the announce arriving from, off the signed ack. Seeds `our_reflexive` so
+    /// `publish_self_peer_record` has something honest to sign BEFORE any pong arrives -- see
+    /// `AttestationData::observed_addr` for why that bootstrap is what gossip was missing.
+    pub observed_addr: Option<std::net::SocketAddr>,
 }
 
 // FGTW Seed Public Keys (hardcoded to avoid extra queries) X25519 public key - for encrypting announce messages
@@ -63,10 +67,11 @@ pub async fn load_bootstrap_peers(
     identity_seed: &[u8; 32],
 ) -> BootstrapResult {
     match load_bootstrap_peers_inner(device_key, handle_proof, port, identity_seed).await {
-        Ok(peers) => BootstrapResult { peers, error: None },
+        Ok((peers, observed_addr)) => BootstrapResult { peers, error: None, observed_addr },
         Err(e) => BootstrapResult {
             peers: vec![],
             error: Some(e),
+            observed_addr: None,
         },
     }
 }
@@ -77,7 +82,7 @@ async fn load_bootstrap_peers_inner(
     handle_proof: [u8; 32],
     port: u16,
     identity_seed: &[u8; 32],
-) -> Result<Vec<PeerRecord>, String> {
+) -> Result<(Vec<PeerRecord>, Option<std::net::SocketAddr>), String> {
     // Shared async client — pools on the process-wide runtime, so the TLS session is reused across announces (challenge + announce here are two requests on one warm connection). The per-request `.timeout(10s)` below preserves the old client-level budget.
     let client = crate::network::http::async_client();
 
@@ -198,10 +203,14 @@ async fn load_bootstrap_peers_inner(
     // duplicating what we already hold, at the cost of a full per-recipient encrypt on every attest.
     // What we still want from the ack is the reflexive address the worker observed, which is the one
     // thing only the server can tell us.
-    let observed = parse_announce_ack(&response_bytes)?;
-    crate::logf!("FGTW: announce ok, {} identities known, we look like {}", observed.1, observed.0);
+    let (observed_addr, count) = parse_announce_ack(&response_bytes)?;
+    crate::logf!(
+        "FGTW: announce ok, {} identities known, we look like {}",
+        count,
+        observed_addr.map(|a| a.to_string()).unwrap_or_else(|| "(unknown)".to_string())
+    );
 
-    Ok(Vec::new())
+    Ok((Vec::new(), observed_addr))
 }
 
 /// Verify the `announce_ok` ack and pull out (observed address, identity count).
@@ -209,7 +218,7 @@ async fn load_bootstrap_peers_inner(
 /// Verified read pinned to the FGTW signing key, same as the challenge: an ack that isn't signed by FGTW
 /// tells us nothing about what the network saw. There is no fallback to the old `encrypted_peers` shape --
 /// a worker still serving it fails here loudly, which is the intent (AGENT.md "No Fork Bullshit").
-fn parse_announce_ack(bytes: &[u8]) -> Result<(String, u32), String> {
+fn parse_announce_ack(bytes: &[u8]) -> Result<(Option<std::net::SocketAddr>, u32), String> {
     let schema = vsf::schema::SectionSchema::new("announce_ok")
         .field("count", vsf::schema::TypeConstraint::Any)
         .field("ip", vsf::schema::TypeConstraint::Any)
@@ -219,7 +228,15 @@ fn parse_announce_ack(bytes: &[u8]) -> Result<(String, u32), String> {
     let count: u32 = section.get_value("count").unwrap_or(0);
     let ip: String = section.get_value("ip").unwrap_or_default();
     let port: u16 = section.get_value("port").unwrap_or(0);
-    Ok((format!("{ip}:{port}"), count))
+    // The worker stamps `ip` from cf-connecting-ip, so it is a bare address with no port and can be v4 or
+    // v6. Pair it with the port WE announced (the worker echoes it back) to form the endpoint peers would
+    // reach us on. A malformed or empty address yields None rather than a bogus 0.0.0.0 we might sign.
+    let observed = ip.parse::<std::net::IpAddr>().ok().and_then(|addr| {
+        if port == 0 { return None; }
+        let sa = std::net::SocketAddr::new(addr, port);
+        if crate::network::traverse::gather::is_bogus_addr(&sa) { None } else { Some(sa) }
+    });
+    Ok((observed, count))
 }
 
 /// Parse challenge VSF to extract provenance hash The timestamp in the challenge is ignored - announce generates its own timestamp
