@@ -14,6 +14,61 @@ impl PeerStore {
         Self { peers: Vec::new() }
     }
 
+    /// Serialise the store for the vault by reusing the GOSSIP MESSAGE codec verbatim — a persisted
+    /// phonebook is literally a `PhonebookResponse` addressed to ourselves.
+    ///
+    /// One codec, not two. The 7-value positional peer row carries tensors (the v4/v6 IP octets), and
+    /// the schema-builder codec cannot round-trip that shape — a hand-rolled second encoder here
+    /// failed on exactly that, and would have been a second thing to keep in step with the wire
+    /// forever. `FgtwMessage` already encodes a signed peer list into a complete VSF document and
+    /// parses it back, so disk and mesh agree by construction rather than by discipline. It also adds
+    /// no raw-parse site (scripts/lib/vsf-gate.sh).
+    ///
+    /// Unsigned rows are DROPPED. Everything from FGTW arrives unsigned (`serialize_peer_list` emits
+    /// no signature field), and `merge_peer` refuses anything failing `verify()` — so an unsigned row
+    /// can never be gossiped or trusted by a peer, and persisting it would only grow the file.
+    pub fn to_vsf_bytes(&self, device_key: &super::Keypair) -> Result<Vec<u8>, String> {
+        use super::protocol::FgtwMessage;
+        let signed: Vec<PeerRecord> = self.peers.iter().filter(|p| p.verify()).cloned().collect();
+
+        // Sign our own snapshot, the same way a gossip responder signs the list it serves.
+        let provenance_hash = *blake3::hash(b"PHOTON_PEERSTORE_SNAPSHOT_v1").as_bytes();
+        let sig = device_key.sign(&provenance_hash);
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(&sig.to_bytes());
+
+        let msg = FgtwMessage::PhonebookResponse {
+            timestamp: vsf::eagle_time_oscillations(),
+            responder_pubkey: DevicePubkey::from_bytes(*device_key.public.as_bytes()),
+            provenance_hash,
+            signature,
+            peers: signed,
+        };
+        let bytes = msg.to_vsf_bytes();
+        if bytes.is_empty() {
+            return Err("phonebook encode produced no bytes".into());
+        }
+        Ok(bytes)
+    }
+
+    /// Read a persisted phonebook back. Each row must still self-verify — a vault a disk error
+    /// touched cannot inject a peer, and a row that no longer verifies is not a peer.
+    pub fn from_vsf_bytes(bytes: &[u8]) -> Result<Self, String> {
+        use super::protocol::FgtwMessage;
+        let peers = match FgtwMessage::from_vsf_bytes(bytes)? {
+            FgtwMessage::PhonebookResponse { peers, .. } => peers,
+            _ => return Err("persisted phonebook is not a peer list".into()),
+        };
+        let mut store = PeerStore::new();
+        for rec in peers {
+            // Same gate as the mesh.
+            if rec.verify() {
+                store.add_peer(rec);
+            }
+        }
+        Ok(store)
+    }
+
     /// Binary search for handle_proof, returns index where it would be inserted
     fn find_position(&self, handle_proof: &[u8; 32]) -> usize {
         self.peers
@@ -54,10 +109,47 @@ impl PeerStore {
     ///
     /// This is the convergence rule of the peers-are-FGTW mesh: every device's freshest-known address wins, so asking everyone and merging by Eagle-time pulls the whole network toward agreement.
     pub fn merge_peer(&mut self, peer: PeerRecord) -> bool {
+        self.merge_peer_bound(peer, None)
+    }
+
+    /// Merge a gossiped record, optionally gated on a KNOWN fleet for its `handle_proof`.
+    ///
+    /// The self-signature proves the holder of a device key CLAIMS an address under some
+    /// `handle_proof`. It does not prove the device belongs to that identity's fleet — nothing in the
+    /// record binds the two, so a stranger's device can mint a validly-signed row for any
+    /// `handle_proof` it scraped off the open phonebook. On the FGTW path the SERVER closes this
+    /// (`handle_announce` refuses a device the fleet chain doesn't fold as a member); the mesh has no
+    /// server, and that is the load-bearing gap in Phase A of docs/peers-are-fgtw.md.
+    ///
+    /// `known_fleet` is the caller's ground truth — the folded member set for that identity, which
+    /// photon already holds for every contact. When supplied, a device outside it is refused: gossip
+    /// about someone you know is checked against their chain.
+    ///
+    /// `None` means the caller has no chain for this identity, which is the normal case for the OPEN
+    /// phonebook — enumerating strangers is the point. Those rows are accepted as unverified
+    /// DIRECTORY data: routable, never trusted. They cannot escalate, because reaching a device still
+    /// requires passing the contact gate (ping/pong and every CLUTCH handler drop non-contacts) and
+    /// completing CLUTCH, which needs the handle out-of-band.
+    ///
+    /// The durable fix is the phonebook's primary registry (`fgtw::phonebook`), where a current
+    /// member's signed placement binds device to identity without any chain fetch. Until that is
+    /// deployed, this is the strongest check available from local state.
+    pub fn merge_peer_bound(
+        &mut self,
+        peer: PeerRecord,
+        known_fleet: Option<&[[u8; 32]]>,
+    ) -> bool {
         // Gossip records are only trusted if they self-verify — a relay can carry a device's entry but can't forge or redirect it.
         // An unsigned / forged record is dropped here, so nothing untrusted ever enters the store via the mesh. (The FGTW-authoritative path uses add_peer, not this.)
         if !peer.verify() {
             return false;
+        }
+        // Where we DO hold the identity's chain, a device it doesn't fold as a member is refused —
+        // the binding the record itself cannot carry.
+        if let Some(fleet) = known_fleet {
+            if !fleet.iter().any(|m| m == peer.device_pubkey.as_bytes()) {
+                return false;
+            }
         }
         let pos = self.find_position(&peer.handle_proof);
 
@@ -262,6 +354,86 @@ mod tests {
             .peers
             .windows(2)
             .all(|w| w[0].handle_proof <= w[1].handle_proof));
+    }
+
+    /// `rec` with a CURRENT last_seen. Both `peer_count` and `get_all_peers` filter on the 7-day
+    /// expiry window, so a synthetic `last_seen` of 100 is eagle-time ~1969 and reads as decades
+    /// stale — invisible to every reader even though it is stored.
+    fn fresh(handle: u8, device: u8, offset: i64) -> PeerRecord {
+        rec(handle, device, vsf::eagle_time_oscillations() + offset)
+    }
+
+    /// The gate that closes the Phase A binding gap where we HAVE ground truth. A self-signature
+    /// proves a device claims an address under some handle_proof; it does not prove the device is in
+    /// that identity's fleet. On the FGTW path the server refuses a non-member; the mesh has no
+    /// server, so a stranger can mint a valid row for any scraped handle_proof.
+    #[test]
+    fn merge_gated_on_a_known_fleet_refuses_a_non_member() {
+        let mut store = PeerStore::new();
+        let r = fresh(1, 1, 0);
+        let member = *r.device_pubkey.as_bytes();
+
+        // The device IS in the fleet we know → accepted.
+        assert!(store.merge_peer_bound(r.clone(), Some(&[member])), "a folded member merges");
+
+        // A different device claiming the SAME handle_proof, correctly self-signed, but absent from
+        // the fleet → refused. This is the impersonation the record itself cannot rule out.
+        let intruder = fresh(1, 99, 1);
+        assert!(intruder.verify(), "the intruder's own signature is genuinely valid");
+        assert!(
+            !store.merge_peer_bound(intruder, Some(&[member])),
+            "a validly-signed non-member must not enter the store"
+        );
+    }
+
+    /// `None` is the OPEN-phonebook case: we hold no chain for this identity, which is normal when
+    /// enumerating strangers. Those rows are directory data — routable, never trusted — and cannot
+    /// escalate, because reaching a device still requires the contact gate and CLUTCH.
+    #[test]
+    fn merge_without_a_known_fleet_accepts_as_directory_data() {
+        let mut store = PeerStore::new();
+        assert!(store.merge_peer_bound(fresh(7, 7, 0), None), "unknown identity → directory data");
+        // get_all_peers, not peer_count: the latter filters on the 7-day expiry window, and these
+        // fixtures carry a synthetic last_seen. The assertion here is "is it stored".
+        assert_eq!(store.get_all_peers().len(), 1);
+    }
+
+    /// Persistence uses the SAME codec as the gossip wire, so a row off disk is byte-identical to one
+    /// off the mesh. Unsigned rows are dropped on the way out: they can never be gossiped (merge
+    /// rejects them) so persisting them would only grow the file.
+    #[test]
+    fn persisted_phonebook_round_trips_signed_rows_only() {
+        let mut store = PeerStore::new();
+        store.merge_peer(fresh(1, 1, 0));
+        store.merge_peer(fresh(2, 2, 1));
+        let mut unsigned = fresh(3, 3, 2);
+        unsigned.signature = [0u8; 64];
+        store.add_peer(unsigned); // authoritative path takes it; persistence must not
+        assert_eq!(store.get_all_peers().len(), 3);
+
+        let kp = super::super::Keypair::from_seed(&[9u8; 32]);
+        let bytes = store.to_vsf_bytes(&kp).expect("encode");
+        assert!(bytes.starts_with(b"R\xc3\x85<"), "a complete VSF file, not a bare section");
+
+        let back = PeerStore::from_vsf_bytes(&bytes).expect("decode");
+        assert_eq!(back.get_all_peers().len(), 2, "the unsigned row must not persist");
+        for r in back.get_all_peers() {
+            assert!(r.verify(), "every persisted row self-verifies");
+        }
+    }
+
+    /// A vault a disk error touched must not inject peers — the verified read refuses it rather than
+    /// silently returning a short list.
+    #[test]
+    fn corrupt_persisted_phonebook_is_refused() {
+        let mut store = PeerStore::new();
+        store.merge_peer(fresh(1, 1, 0));
+        let kp = super::super::Keypair::from_seed(&[9u8; 32]);
+        let mut bytes = store.to_vsf_bytes(&kp).expect("encode");
+        let n = bytes.len();
+        bytes[n / 2] ^= 0xFF;
+        assert!(PeerStore::from_vsf_bytes(&bytes).is_err(), "tampered vault entry must not load");
+        assert!(PeerStore::from_vsf_bytes(b"garbage").is_err());
     }
 
     #[test]
