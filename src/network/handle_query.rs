@@ -31,6 +31,18 @@ pub struct AttestationData {
     )>,
     pub avatar_pixels: Option<Vec<u8>>, // Local avatar if exists
     pub peers: Vec<PeerRecord>,
+    /// The address FGTW OBSERVED this announce arriving from, straight off the signed `announce_ok` ack.
+    ///
+    /// This is the bootstrap that breaks a circular dependency: `publish_self_peer_record` needs
+    /// `our_reflexive` before it can sign a record, `our_reflexive` was only ever learned from a peer-echoed
+    /// pong, and a pong needs a reachable path -- which needs an address a peer could learn, which needs a
+    /// published record. Nothing could go first, so no device ever published one and gossip carried nothing.
+    ///
+    /// The seed's view is a TLS-flow observation, so it is only exactly right for a cone NAT -- but it is
+    /// SIGNED by FGTW and it is strictly better than `None`. A peer-echoed reflection from the live UDP
+    /// socket still wins the moment one arrives (see the `ReflexiveLearned` arm), so this is a starting
+    /// guess that gets corrected, never an authority.
+    pub observed_addr: Option<std::net::SocketAddr>,
     /// True if FlatStorage detected a damaged ring during open this session (missing, permission-denied, corrupt, or HMAC-bad). UI renders a persistent degraded banner when true. Sticky for the session — only clears on next process restart after both rings open cleanly.
     pub vault_degraded: bool,
 }
@@ -790,6 +802,7 @@ impl HandleQuery {
                             friendships,
                             avatar_pixels,
                             peers: result.peers,
+                            observed_addr: result.observed_addr,
                             vault_degraded,
                         }))
                     } else {
