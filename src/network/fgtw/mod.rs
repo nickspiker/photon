@@ -4,6 +4,7 @@ pub mod fingerprint;
 pub mod fleet;
 pub mod node;
 pub mod peer_store;
+pub mod phonebook_client;
 pub mod protocol;
 pub mod relay;
 

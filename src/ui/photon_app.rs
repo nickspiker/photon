@@ -929,6 +929,14 @@ pub struct PhotonApp {
     pending_fleet_key: Option<[u8; 32]>,
     /// In-flight fleet-roster pull; its `Ok` result merges into contacts, its `Err` triggers a retry — both drained in `tick`. `Some` = a pull is running, which also debounces re-spawns.
     roster_pull_rx: Option<std::sync::mpsc::Receiver<Result<fgtw::fstate::FleetState, String>>>,
+    /// In-flight phonebook resolution: `(device_pubkey, public, lan)` for devices we could not otherwise
+    /// address. Drained in `tick` into `device_endpoints`, which is what candidate gathering reads.
+    /// `Some` = a resolve is running, which debounces re-spawns so a stalled seed can't stack requests.
+    pb_resolve_rx: Option<
+        std::sync::mpsc::Receiver<
+            Vec<([u8; 32], std::net::SocketAddr, Option<std::net::SocketAddr>)>,
+        >,
+    >,
     /// The linked-settings cache (per-device maps + link-to-global; docs/global-vault.md). Lazily loaded from the vault once storage + device key exist; merged from every fstate pull; every local set persists + pushes.
     fleet_settings: Option<crate::storage::fleet_settings::FleetSettings>,
     /// Set on each attest/resume: "do one roster pull as soon as the fleet key is available." The key is written by an ASYNC fan-out sync, so an immediate pull races it and loses — this flag makes tick fire the pull the moment `fleet_key_cached()` goes Some, which is the wake-up catch-up that brings a friend added on a sibling device onto this one.
@@ -1188,6 +1196,7 @@ impl PhotonApp {
             our_reflexive: None,
             self_record_published_for: None,
             peer_store_loaded: false,
+            pb_resolve_rx: None,
             bg_scroll: 0,
             zoom_hint: false,
             last_ru: 1.0,
@@ -6688,6 +6697,15 @@ impl PhotonApp {
                         checker.send_phonebook_request(addr);
                     }
                 }
+                // PEERS FIRST, SEED LAST. The gossip request above asks everyone we can already reach;
+                // this asks the seed only for what that could not answer. On a cold start `reachable`
+                // is empty — no path is validated because no address is known — and the seed is the
+                // only party reachable without knowing anyone, so it is what re-enters the cycle.
+                self.resolve_stalled_addresses_from_seed();
+            }
+            // Apply whatever the seed answered (a resolve spawned on an earlier tick).
+            if self.drain_pb_resolve() {
+                needs_redraw = true;
             }
         }
 
@@ -17150,6 +17168,125 @@ impl PhotonApp {
         store.lock().unwrap().add_peer(rec);
         self.self_record_published_for = Some(addr);
         crate::logf!("PHONEBOOK: published our own signed record at {} — gossip can now carry it", addr);
+
+        // ALSO publish to the seed's registry. Gossip alone cannot bootstrap: carrying a record needs
+        // a validated path, a path needs a punch, and a punch needs an address we could only have
+        // learned from a peer we cannot yet reach. The seed breaks that circle — it is the one place
+        // reachable without already knowing anyone. Fire-and-forget off-thread: this is a
+        // discovery-path nicety, and a seed that is down must never stall the UI or the local store
+        // (which is already updated above and persists regardless).
+        let secret = kp.secret.clone();
+        let local = crate::network::udp::get_local_ip().map(std::net::IpAddr::V4);
+        crate::network::http::runtime().spawn(async move {
+            match crate::network::fgtw::phonebook_client::publish_address(&secret, &hp, addr, local)
+                .await
+            {
+                Ok(()) => crate::logf!("PHONEBOOK: address record published to the seed registry"),
+                Err(e) => crate::logf!("PHONEBOOK: seed publish failed ({}) — gossip still carries it", e),
+            }
+        });
+    }
+
+    /// Ask the seed registry for the addresses of devices we cannot otherwise reach.
+    ///
+    /// This is what re-enters the discovery cycle. Every other address source needs an address
+    /// already: a pong needs somewhere to send a ping, gossip needs a validated path, and a path
+    /// needs a punch at an address we do not have. The seed is reachable without knowing anyone, so
+    /// on a cold start it is the only way in — but it is asked LAST, after the gossip request to
+    /// every peer we can already reach, because a peer's answer is fresher and costs the seed
+    /// nothing.
+    ///
+    /// Results land in `device_endpoints`, which is what `gather_peer_candidates` reads to build
+    /// punch candidates. They are NOT written to the contact-level `ip` slot: a resolved address is a
+    /// claim we have not yet round-tripped, and the punch is what promotes it to a real path.
+    fn resolve_stalled_addresses_from_seed(&mut self) {
+        if self.pb_resolve_rx.is_some() {
+            return; // one in flight — a slow seed must not stack requests
+        }
+        // Every device of a contact we cannot address, including fleet members we have never
+        // pinged. `relay_device_list` is already exactly "every device pubkey we know for this
+        // contact", which is the set the relay addresses stores to.
+        let mut wanted: Vec<[u8; 32]> = Vec::new();
+        for c in self.contacts.iter().filter(|c| c.ip.is_none()) {
+            for dev in c.relay_device_list() {
+                if !wanted.contains(&dev) {
+                    wanted.push(dev);
+                }
+            }
+        }
+        if wanted.is_empty() {
+            return;
+        }
+        // Bounded per pulse. A large roster must not turn one stalled tick into a burst at the seed;
+        // the next pulse takes the next devices, and a resolved one drops out of `wanted` entirely.
+        wanted.truncate(16);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pb_resolve_rx = Some(rx);
+        crate::network::http::runtime().spawn(async move {
+            let mut found = Vec::new();
+            for dev in wanted {
+                match crate::network::fgtw::phonebook_client::resolve_device_address(&dev).await {
+                    Ok(rec) => {
+                        if let Some(pubaddr) =
+                            crate::network::fgtw::phonebook_client::record_socket_addr(&rec)
+                        {
+                            let lan = crate::network::fgtw::phonebook_client::record_local_addr(&rec);
+                            found.push((dev, pubaddr, lan));
+                        }
+                    }
+                    // Absence is the normal case for a device that has not published yet; only a
+                    // genuine rejection is worth a line.
+                    Err(crate::network::fgtw::phonebook_client::PhonebookError::NotFound) => {}
+                    Err(e) => crate::logf!("PHONEBOOK: seed lookup failed ({})", e),
+                }
+            }
+            let _ = tx.send(found);
+        });
+    }
+
+    /// Apply resolved seed addresses to the per-device endpoints, and ping so the punch fires at once.
+    fn drain_pb_resolve(&mut self) -> bool {
+        let Some(rx) = self.pb_resolve_rx.as_ref() else {
+            return false;
+        };
+        let found = match rx.try_recv() {
+            Ok(f) => f,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pb_resolve_rx = None;
+                return false;
+            }
+        };
+        self.pb_resolve_rx = None;
+        if found.is_empty() {
+            return false;
+        }
+        let mut learned = 0usize;
+        for (dev, pubaddr, lan) in found {
+            // Never adopt the relay sentinel or an unspecified address as an endpoint — it validates
+            // locally and then poisons every send that keys off `validated_path`.
+            if crate::network::traverse::gather::is_bogus_addr(&pubaddr) {
+                continue;
+            }
+            for contact in self.contacts.iter_mut() {
+                if !contact.relay_device_list().contains(&dev) {
+                    continue;
+                }
+                let ep = contact.endpoint_mut(&dev);
+                ep.public = Some(pubaddr);
+                if let Some(l) = lan.filter(|a| !crate::network::traverse::gather::is_bogus_addr(a)) {
+                    ep.lan = Some(l);
+                }
+                learned += 1;
+            }
+        }
+        if learned > 0 {
+            crate::logf!("PHONEBOOK: resolved {} device endpoint(s) from the seed registry — punching", learned);
+            self.ping_contacts();
+            return true;
+        }
+        false
     }
 
     /// Write the phonebook to the vault so it survives a restart.
