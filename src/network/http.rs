@@ -11,6 +11,35 @@
 
 use std::sync::OnceLock;
 
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// THE SEED. One place that knows where fgtw.org is.
+//
+// fgtw.org is BOOTSTRAP SCAFFOLDING, not infrastructure: the end state is peers first, a random
+// sample to confirm the list is current, and the seed consulted LAST — then retired entirely
+// (docs/peers-are-fgtw.md). That ordering is impossible to implement while the host is spelled out
+// at thirteen call sites, because "try the seed last" needs somewhere that can decide to try it at
+// all. This is that somewhere.
+//
+// Keep it a single definition even though the constants look trivially duplicable — the whole point
+// is that switching to a seed LIST, a user-configured seed, or no seed at all becomes one edit here
+// rather than a hunt through six modules and seven inline string literals.
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+/// The bootstrap seed's bare host.
+pub const SEED_HOST: &str = "fgtw.org";
+/// The seed's HTTPS origin — every VSF POST target.
+pub const SEED_HTTPS: &str = "https://fgtw.org";
+/// The seed's broadcast hub (peer-IP push, pair events).
+pub const SEED_WS: &str = "wss://fgtw.org/ws";
+/// The seed's liveness probe — the one endpoint that says "is the seed reachable" without a payload.
+pub const SEED_STATUS: &str = "https://fgtw.org/status";
+
+/// This device's relay-pipe socket on the seed, keyed by its own device pubkey.
+pub fn seed_pipe_url(device_pubkey_hex: &str) -> String {
+    format!("wss://{SEED_HOST}/pipe?dev={device_pubkey_hex}")
+}
+
+
 /// The process-wide async runtime. Every FGTW `block_on` / spawn uses this one, so reqwest's connection pool stays warm across calls. Multi-thread so the worker threads (query, status, …) can `block_on` it concurrently.
 pub fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();

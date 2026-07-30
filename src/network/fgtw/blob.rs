@@ -2,7 +2,7 @@ use super::fingerprint::Keypair;
 use ed25519_dalek::Signer;
 use vsf::VsfType;
 
-const FGTW_URL: &str = "https://fgtw.org";
+use crate::network::http::SEED_HTTPS as FGTW_URL;
 
 // ============================================================================
 // Blob Storage API (VSF section-based) ============================================================================

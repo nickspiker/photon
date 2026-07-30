@@ -7630,7 +7630,7 @@ impl PhotonApp {
                 let stop = stop.clone();
                 crate::network::http::runtime().spawn(async move {
                     use futures::StreamExt;
-                    let Ok((mut ws, _)) = tokio_tungstenite::connect_async("wss://fgtw.org/ws").await else {
+                    let Ok((mut ws, _)) = tokio_tungstenite::connect_async(crate::network::http::SEED_WS).await else {
                         return;
                     };
                     loop {
@@ -7805,7 +7805,7 @@ impl PhotonApp {
                 if stop.load(Ordering::Relaxed) {
                     return;
                 }
-                if let Ok((mut ws, _)) = tokio_tungstenite::connect_async("wss://fgtw.org/ws").await {
+                if let Ok((mut ws, _)) = tokio_tungstenite::connect_async(crate::network::http::SEED_WS).await {
                     loop {
                         tokio::select! {
                             frame = ws.next() => {
@@ -9392,7 +9392,7 @@ impl PhotonApp {
                 let stop = stop.clone();
                 crate::network::http::runtime().spawn(async move {
                     use futures::StreamExt;
-                    let Ok((mut ws, _)) = tokio_tungstenite::connect_async("wss://fgtw.org/ws").await else {
+                    let Ok((mut ws, _)) = tokio_tungstenite::connect_async(crate::network::http::SEED_WS).await else {
                         return;
                     };
                     loop {

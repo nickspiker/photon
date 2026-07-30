@@ -21,7 +21,7 @@ pub use fgtw::pair::{
 use crate::network::fgtw::Keypair;
 use fgtw::client::{FgtwResponse, FgtwTransport, FleetSealer};
 
-const FGTW_URL: &str = "https://fgtw.org";
+use crate::network::http::SEED_HTTPS as FGTW_URL;
 
 // ── Transport injection: the crate owns the FGTW protocol; photon supplies the raw HTTP (pooled reqwest, warm TLS, short "No connection to FGTW" errors) and the roster AEAD (kete). ──
 

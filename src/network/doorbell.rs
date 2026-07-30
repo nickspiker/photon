@@ -5,7 +5,7 @@
 
 use vsf::VsfType;
 
-const FGTW_URL: &str = "https://fgtw.org";
+use crate::network::http::SEED_HTTPS as FGTW_URL;
 
 /// Provenance-only signed frame (the log_put/blob_put shape): ke in the header names the signer, the canonical hp+ge are filled for wire hygiene, and the op-specific authorization is the DETACHED `signature` field each op defines — that's what the worker verifies.
 fn signed_frame(

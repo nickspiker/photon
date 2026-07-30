@@ -3,7 +3,7 @@ use crate::types::DevicePubkey;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use vsf::{schema::FromVsfType, VsfSection};
 
-const FGTW_URL: &str = "https://fgtw.org";
+use crate::network::http::SEED_HTTPS as FGTW_URL;
 
 /// Result of a bootstrap query. `peers` carries whatever records parsed successfully; a malformed record is skipped (not fatal) rather than aborting the whole list, and a transport/decode-level failure is reported in `error` while still returning any peers already recovered.
 #[derive(Debug)]
