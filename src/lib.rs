@@ -907,6 +907,8 @@ impl log::Log for VsfLogBridge {
         const NOISY: &[&str] = &[
             "cosmic_text", "reqwest", "naga", "wgpu",
             "rustls", "tungstenite", "tokio_tungstenite", "hyper", "h2",
+            // jni logs an attach/detach DEBUG pair on every status-thread hop — ~16,000 lines per Android session, the single largest consumer of the 16 MiB log window (it shortens how much real history a submission carries).
+            "jni",
         ];
         let t = meta.target();
         let noisy = NOISY.iter().any(|p| t.starts_with(p));

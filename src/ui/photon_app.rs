@@ -9263,20 +9263,9 @@ impl PhotonApp {
             // Immediate press feedback — the read + upload run seconds on a big log, and silence here read as "the button did nothing". Replaced by "Log sent √" / "Send failed" when the worker thread reports.
             self.ready_toast = Some(format!("Sending log ({} KiB)\u{2026}", (total as usize + 1023) / 1024));
             std::thread::spawn(move || {
-                // Submit at most the newest LOG_SUBMIT_CAP bytes, cut at a record boundary (every record is a complete VSF doc opening with the RÅ< magic). A never-submitted device accumulates hundreds of MB, which dies in the upload timeout / body cap and reads as "log_put request failed: error sending" — the newest window is what's diagnostically alive anyway.
-                const LOG_SUBMIT_CAP: usize = 24 * 1024 * 1024;
                 let Some(bytes) = crate::snapshot_log_bytes() else {
                     let _ = tx.send(Err("log unreadable".to_string()));
                     return;
-                };
-                let bytes = if bytes.len() > LOG_SUBMIT_CAP {
-                    let tail = &bytes[bytes.len() - LOG_SUBMIT_CAP..];
-                    match tail.windows(4).position(|w| w == [0x52, 0xC3, 0x85, 0x3C]) {
-                        Some(i) => tail[i..].to_vec(),
-                        None => tail.to_vec(),
-                    }
-                } else {
-                    bytes
                 };
                 crate::logf!("DIAG: submitting log ({} bytes) to FGTW (sealed)", bytes.len());
                 let r = put_log_blocking(&bytes, &note, &kp, &hp, &seed).map_err(|e| format!("{e}"));
