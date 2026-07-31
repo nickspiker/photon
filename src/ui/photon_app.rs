@@ -13951,12 +13951,8 @@ impl PhotonApp {
                             });
                             if let Some((ph, recipient_pubkey)) = stored {
                                 if let Some(ref checker) = self.status_checker {
-                                    // Message arrived over the relay (or no direct path) → return the ACK over the pipe.
-                                    let relay_to = if sender_addr == crate::network::status::RELAY_ADDR {
-                                        self.contacts.get(contact_idx).map(|c| c.relay_device_list()).unwrap_or_default()
-                                    } else {
-                                        Vec::new()
-                                    };
+                                    // The ACK ALWAYS rides the relay alongside any direct leg. Gating on the sentinel missed the case that actually lagged in the field: a message received DIRECT whose reverse direction is dead — the direct ACK vanished, the sender retransmitted, and only the duplicate's re-ACK (relayed) landed. Acks are tiny and idempotent, so the duplicate delivery is free.
+                                    let relay_to = self.contacts.get(contact_idx).map(|c| c.relay_device_list()).unwrap_or_default();
                                     checker.send_ack(AckRequest {
                                         peer_addr: sender_addr,
                                         recipient_pubkey,
@@ -14327,12 +14323,8 @@ impl PhotonApp {
                             .unwrap_or([0u8; 32]);
                         // The re-ACK source is now the per-message ack_hash persisted on the stored ChatMessage (see the duplicate handler above + with_ack_hash below), which heals a lost ACK for ANY message — not just the most recent. The old single-slot last_acked is retired.
                         if let Some(ref checker) = self.status_checker {
-                            // Message arrived over the relay (or no direct path) → return the ACK over the pipe.
-                            let relay_to = if sender_addr == crate::network::status::RELAY_ADDR {
-                                self.contacts.get(contact_idx).map(|c| c.relay_device_list()).unwrap_or_default()
-                            } else {
-                                Vec::new()
-                            };
+                            // ACK always rides the relay alongside any direct leg — see the re-ACK site above for the field-observed one-directional case this closes.
+                            let relay_to = self.contacts.get(contact_idx).map(|c| c.relay_device_list()).unwrap_or_default();
                             checker.send_ack(AckRequest {
                                 peer_addr: sender_addr,
                                 recipient_pubkey,
