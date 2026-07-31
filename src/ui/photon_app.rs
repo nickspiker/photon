@@ -5993,6 +5993,16 @@ impl FluorApp for PhotonApp {
                             *theme::LABEL_COLOUR,
                             400,
                         );
+                        // The deterministic two-word voca pseudonym, always shown even when a petname/published name renders elsewhere: it derives from the party id, so it's the one name that can't be changed or spoofed — the human-checkable identity anchor (compare it out-of-band and you've verified the contact).
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[11],
+                            &format!("always \u{201c}{}\u{201d} \u{2014} derived from their identity, can\u{2019}t be changed", crate::network::fgtw::fleet::keyed_pseudonym(&contact.handle_hash)),
+                            hspan2,
+                            *theme::LABEL_COLOUR,
+                            400,
+                        );
                     }
                     ContactPage::Stats => {
                         let n = contact_page_rows(ContactPage::Stats);
@@ -12406,6 +12416,7 @@ impl PhotonApp {
             let salt_text = text.to_string().into_bytes();
 
             let conv_token = chains.conversation_token;
+            let __prep_t = std::time::Instant::now();
             match chains.prepare_send(
                 &our_handle_hash,
                 payload,
@@ -12413,7 +12424,14 @@ impl PhotonApp {
                 eagle_time,
                 woven_strands,
             ) {
-                Some((ct, prev, _msg_hp, _ph)) => (ct, prev, conv_token),
+                Some((ct, prev, _msg_hp, _ph)) => {
+                    // Name the send-path work: the UI no longer lags (the bubble renders first), but the wire half still runs on this thread and "the mac works hard on send" — this says whether it's the braid crypto or the chains persist below.
+                    let ms = __prep_t.elapsed().as_millis();
+                    if ms > 50 {
+                        crate::logf!("PERF: chain prepare_send took {}ms (UI thread)", ms as u64);
+                    }
+                    (ct, prev, conv_token)
+                }
                 None => {
                     crate::log("CHAT: prepare_send failed (not a participant)");
                     return false;
@@ -12428,9 +12446,14 @@ impl PhotonApp {
                 .iter()
                 .find(|(id, _)| *id == friendship_id)
             {
+                let __persist_t = std::time::Instant::now();
                 if let Err(e) = crate::storage::friendship::save_friendship_chains(chains, storage)
                 {
                     crate::logf!("STORAGE CRITICAL: save chains before send: {}", e);
+                }
+                let ms = __persist_t.elapsed().as_millis();
+                if ms > 50 {
+                    crate::logf!("PERF: chains persist took {}ms (UI thread)", ms as u64);
                 }
             }
         }
