@@ -914,6 +914,8 @@ pub struct PhotonApp {
     pending_fleet_key: Option<[u8; 32]>,
     /// In-flight fleet-roster pull; its `Ok` result merges into contacts, its `Err` triggers a retry — both drained in `tick`. `Some` = a pull is running, which also debounces re-spawns.
     roster_pull_rx: Option<std::sync::mpsc::Receiver<Result<fgtw::fstate::FleetState, String>>>,
+    /// Outgoing sends whose WIRE half is deferred to the next tick: (contact idx, text, eagle_time). The pending-grey bubble is inserted synchronously in `send_chain_message`; chain_transmit (weave selection, braid advance, chains persist, PT dispatch) runs from this queue AFTER the frame presents — running it inline meant the bubble, though inserted first, couldn't render until the whole wire half finished (the "message goes into the void" report).
+    pending_chain_sends: Vec<(usize, String, i64)>,
     /// Unique identities the seed knows (including us), off the latest signed announce ack. The Ready-screen count reads this as a floor: the peer STORE only fills by gossip now, so on a fresh session it holds nothing but our own record and would show "0 peers" to a user who can see nine friends in the contact list.
     seed_identity_count: u32,
     /// In-flight phonebook resolution: `(device_pubkey, public, lan)` for devices we could not otherwise address. Drained in `tick` into `device_endpoints`, which is what candidate gathering reads. `Some` = a resolve is running, which debounces re-spawns so a stalled seed can't stack requests.
@@ -1178,6 +1180,7 @@ impl PhotonApp {
             our_reflexive: None,
             self_record_published_for: None,
             peer_store_loaded: false,
+            pending_chain_sends: Vec::new(),
             seed_identity_count: 0,
             pb_resolve_rx: None,
             bg_scroll: 0,
@@ -6672,6 +6675,10 @@ impl PhotonApp {
             if self.drain_pb_resolve() {
                 needs_redraw = true;
             }
+            // Deferred wire half of sends whose bubbles rendered last frame.
+            if self.drain_pending_chain_sends() {
+                needs_redraw = true;
+            }
         }
 
         // Drain per-contact presence + CLUTCH ceremony updates (pongs → is_online/ip; offers/KEM/complete → ceremony progress), plus the three background-job result channels (keygen / KEM-encap / ceremony-expand). TEMP instrumentation: log any tick phase that blocks the UI thread > 50ms so the launch hang is pinpointed in the trace rather than guessed at. Remove once the hang source is fixed.
@@ -9577,26 +9584,38 @@ impl PhotonApp {
             }
         }
 
-        if !self.chain_transmit(ci, &text, eagle_time) {
-            // FLEET-FORWARD (compose anywhere): THIS device holds no usable chain for the friendship, but a sibling does — the bubble is already in; push it thru the fleet and the chain-owning sibling's merge drain transmits it on the braid with THIS timestamp (one row identity fleet-wide); the delivered upgrade flows back thru the same sync.
-            let has_fleet = self.contacts.iter().any(|c| c.is_sibling);
-            let is_friend = self.contacts.get(ci).map_or(false, |c| !c.is_sibling);
-            if !(has_fleet && is_friend) {
-                // No chain here and no sibling to forward thru — the send genuinely cannot go anywhere. Take the bubble back out so the UI doesn't show a message nothing will ever deliver (callers rely on false meaning "nothing happened").
-                if let Some(contact) = self.contacts.get_mut(ci) {
-                    contact.messages.retain(|m| !(m.timestamp == eagle_time && m.is_outgoing && m.content == text));
-                    if let Some(storage) = self.storage.as_ref() {
-                        let _ = crate::storage::contacts::save_messages(contact, storage);
-                    }
-                }
-                return false;
-            }
-            crate::log("CHAT: no local chain — fleet-forwarded to the chain-owning sibling (delivered tick follows its ACK)");
-        }
-
-        // Live fleet propagation: our own outgoing message exists ONLY on this device until a sibling hears about it — push it now so the conversation follows the user across their devices. (Same push carries the fleet-forward case.)
-        self.push_rows_to_siblings(ci, std::slice::from_ref(&msg), None);
+        // The wire half is DEFERRED to the next tick (drain_pending_chain_sends): the bubble above can only reach the screen when this handler returns, so running chain_transmit inline here — crypto, chains persist, dispatch — held the frame hostage for its whole duration. Queue it and let the grey bubble present first.
+        self.pending_chain_sends.push((ci, text, eagle_time));
         return true;
+    }
+
+    /// Run the deferred WIRE half of queued sends — one tick after their bubbles rendered. Failure handling matches the old inline path: no local chain but a sibling exists → fleet-forward (the sibling's merge drain transmits on the braid); no chain and no sibling → the send has nowhere to go, take the bubble back out.
+    fn drain_pending_chain_sends(&mut self) -> bool {
+        if self.pending_chain_sends.is_empty() {
+            return false;
+        }
+        let sends = std::mem::take(&mut self.pending_chain_sends);
+        for (ci, text, eagle_time) in sends {
+            let msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
+            if !self.chain_transmit(ci, &text, eagle_time) {
+                let has_fleet = self.contacts.iter().any(|c| c.is_sibling);
+                let is_friend = self.contacts.get(ci).map_or(false, |c| !c.is_sibling);
+                if !(has_fleet && is_friend) {
+                    if let Some(contact) = self.contacts.get_mut(ci) {
+                        contact.messages.retain(|m| !(m.timestamp == eagle_time && m.is_outgoing && m.content == text));
+                        if let Some(storage) = self.storage.as_ref() {
+                            let _ = crate::storage::contacts::save_messages(contact, storage);
+                        }
+                    }
+                    crate::log("CHAT: send had nowhere to go (no chain, no fleet) — bubble withdrawn");
+                    continue;
+                }
+                crate::log("CHAT: no local chain — fleet-forwarded to the chain-owning sibling (delivered tick follows its ACK)");
+            }
+            // Live fleet propagation: our own outgoing message exists ONLY on this device until a sibling hears about it. (Same push carries the fleet-forward case.)
+            self.push_rows_to_siblings(ci, std::slice::from_ref(&msg), None);
+        }
+        true
     }
 
     /// The WIRE half of a chain send — weave selection, braid advance (prepare_send), chains persist, PT dispatch — with NO row bookkeeping: callers own the bubble. `send_chain_message` inserts its fresh bubble after; the fleet-forward drain transmits rows a sibling already merged (with their ORIGINAL timestamps, so the row identity — and therefore delivered-upgrades and digests — stays one fleet-wide). Returns false quietly when this device holds no usable chain (not Complete, no friendship chain, no party id, no address).
