@@ -148,10 +148,11 @@ impl FleetSettings {
         remote_global: Vec<SettingEntry>,
         remote_devices: Vec<DeviceSettings>,
     ) -> bool {
-        let before = settings_to_bytes(&self.global, &self.devices);
+        // Compare STATE, not serialized bytes: the document codec stamps a creation time, so identical state never re-encodes to identical bytes — a byte compare here reported every merge as a change (= a spurious re-push per pull).
+        let before = (self.global.clone(), self.devices.clone());
         self.global = merge_global_settings(std::mem::take(&mut self.global), remote_global);
         self.devices = merge_device_settings(std::mem::take(&mut self.devices), remote_devices);
-        settings_to_bytes(&self.global, &self.devices) != before
+        (&self.global, &self.devices) != (&before.0, &before.1)
     }
 }
 
