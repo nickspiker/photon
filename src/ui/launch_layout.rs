@@ -70,6 +70,21 @@ pub struct LaunchLayout {
 }
 
 impl LaunchLayout {
+    /// Slide ONLY the attest block up far enough that its bottom clears the soft keyboard — the layout itself is untouched (same aspect branch, same scale, same spectrum/wordmark positions as keyboard-closed). Computing the layout against a keyboard-shrunk height instead re-entered the aspect interpolant and produced a visibly DIFFERENT design when the keyboard opened; the form must ride, not re-flow. No-op when keyboard_px is 0 or the block already clears it; the lift clamps at the top edge.
+    pub fn lifted(mut self, keyboard_px: f32, buf_h: usize) -> Self {
+        if keyboard_px <= 0.0 {
+            return self;
+        }
+        let bottom_limit = buf_h as f32 - keyboard_px;
+        let overlap = self.attest_block.y1 as f32 - bottom_limit;
+        if overlap > 0.0 {
+            let lift = (overlap as usize).min(self.attest_block.y0);
+            self.attest_block.y0 -= lift;
+            self.attest_block.y1 -= lift;
+        }
+        self
+    }
+
     /// Compute the launch layout. `ru` is the viewport's relative-unit zoom factor (1.0 = default; Ctrl++/Ctrl-+ adjust it). Only the `attest_block` slice scales with `ru` — spectrum + wordmark stay window-proportional so the visual identity reads consistent across zoom levels; the interactive form (textbox + button + hint + error labels) grows or shrinks around its base centerpoint so users zooming for legibility get a larger pill + larger fonts together.
     pub fn compute(buf_w: usize, buf_h: usize, ru: f32) -> Self {
         // Horizontal: 1/8 margin | 6/8 content | 1/8 margin. Spectrum ignores this and uses full width.
