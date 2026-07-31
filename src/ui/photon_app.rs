@@ -8524,11 +8524,25 @@ impl PhotonApp {
                             ChannelCheck::Failed
                         }
                     };
+                    // Log WHAT settled, not just that it did. "check settled" alone made the field case undiagnosable: a device sat three releases behind while reporting up-to-date, and nothing recorded whether the manifest it fetched was stale, the row was missing for the platform, or the compare itself was wrong.
+                    if let ChannelCheck::Ready(row_opt) = &state {
+                        let ours = crate::network::updates::our_version();
+                        match row_opt {
+                            Some(row) => {
+                                let manifest_v = format!("{}.{}.{}", row.version.0, row.version.1, row.version.2);
+                                let ours_v = format!("{}.{}.{}", ours.0, ours.1, ours.2);
+                                let verdict = if row.version > ours { " → UPDATE AVAILABLE" } else { "" };
+                                crate::logf!("UPDATE: {} check settled — manifest has {}, running {}{}", channel.label(), manifest_v, ours_v, verdict);
+                            }
+                            None => crate::logf!("UPDATE: {} check settled — no artefact row for this platform", channel.label()),
+                        }
+                    } else {
+                        crate::logf!("UPDATE: {} check settled (failed)", channel.label());
+                    }
                     match channel {
                         crate::network::updates::Channel::Release => self.update_release = state,
                         crate::network::updates::Channel::Dev => self.update_dev = state,
                     }
-                    crate::logf!("UPDATE: {} check settled", channel.label());
                 }
                 UpdateEvent::AutoChecked(stamp, row) => {
                     auto_checked = Some((stamp, row));
