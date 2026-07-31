@@ -254,7 +254,7 @@ pub fn log_size_bytes() -> u64 {
     LOG_BYTES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-// The structured VSF log sink: one COMPLETE VSF record per line — {creation_time (Eagle), section "log" {lvl, msg}} — appended to `<photon_config_dir>/photon.log.vsf` on EVERY platform (Android: app filesDir, pullable via `adb pull`; desktop/Windows: the config dir). The log is thus a stream of self-describing, Eagle-time-stamped, vsfinfo-inspectable records; read it with the `photonlog` bin. Opens lazily and RETRIES until the dir is ready — a plain Mutex<Option<File>>, NOT a OnceLock, precisely so a pre-data-dir failure isn't cached forever (the first Kotlin/JNI lines predate Android's data_dir; they buffer in LOG_PENDING below and flush when the file opens).
+// The structured VSF log sink: one COMPLETE VSF record per line — {creation_time (Eagle), section "log" {lvl, msg}} — appended to `photon.log.vsf` in `log_dir()` (Android: external filesDir, pullable via `adb pull`; desktop: the OS temp dir — volatile diagnostics, see log_dir). The log is thus a stream of self-describing, Eagle-time-stamped, vsfinfo-inspectable records; read it with the `photonlog` bin. Opens lazily and RETRIES until the dir is ready — a plain Mutex<Option<File>>, NOT a OnceLock, precisely so a pre-data-dir failure isn't cached forever (the first Kotlin/JNI lines predate Android's data_dir; they buffer in LOG_PENDING below and flush when the file opens).
 // Known filename (logging is a dev-build feature, so adb-pull discoverability beats filename privacy).
 #[cfg(feature = "logging")]
 static LOG_FILE: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
@@ -301,9 +301,28 @@ pub fn set_android_log_dir(dir: String) {
 /// Directory the VSF log file lives in. Android prefers the JNI-set external dir (pullable); everything else uses `photon_config_dir`.
 #[cfg(feature = "logging")]
 fn log_dir() -> Option<std::path::PathBuf> {
+    // Android stays on the external files dir: apps get no tmpfs (cacheDir is the SAME flash, so zero wear saved) and adb-readability on release APKs is load-bearing for diagnostics.
     #[cfg(target_os = "android")]
     if let Some(d) = ANDROID_LOG_DIR.get() {
         return Some(std::path::PathBuf::from(d));
+    }
+    // Desktop logs are VOLATILE by choice (user call 2026-08-01): diagnostics rarely need to survive a reboot or a temp clean, so they live in the OS temp dir — tmpfs (RAM, zero disk wear) on most Linux, per-user OS-cleaned temp on macOS/Windows. Per-user suffix because Linux /tmp is shared. Falls back to the config dir if temp isn't writable.
+    #[cfg(not(target_os = "android"))]
+    {
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "shared".into());
+        let dir = std::env::temp_dir().join(format!("photon-{user}"));
+        if std::fs::create_dir_all(&dir).is_ok() {
+            // One-shot migration: drop the old persistent-dir log so it doesn't sit stale forever (records are ephemeral diagnostics — nothing worth carrying over).
+            static OLD_LOG_SWEPT: std::sync::Once = std::sync::Once::new();
+            OLD_LOG_SWEPT.call_once(|| {
+                if let Ok(old) = crate::storage::photon_config_dir() {
+                    let _ = std::fs::remove_file(old.join("photon.log.vsf"));
+                }
+            });
+            return Some(dir);
+        }
     }
     crate::storage::photon_config_dir().ok()
 }
