@@ -9242,10 +9242,12 @@ impl PhotonApp {
 
     fn spawn_log_submit(&mut self, note: String) {
         use crate::network::fgtw::put_log_blocking;
-        let Some(bytes) = crate::snapshot_log_bytes() else {
+        // Cheap emptiness probe only — the actual file read moves into the worker thread below: a long-lived log is hundreds of MB (peer_m's never-yet-submitted buffer), and fs::read of that on the UI thread is its own hang.
+        let total = crate::log_size_bytes();
+        if total == 0 {
             self.ready_toast = Some("No log to send yet".to_string());
             return;
-        };
+        }
         if self.log_submit_tx.is_none() {
             let (tx, rx) = std::sync::mpsc::channel();
             self.log_submit_rx = Some(rx);
@@ -9258,11 +9260,25 @@ impl PhotonApp {
             self.session.as_ref().map(|s| s.identity_seed),
             self.log_submit_tx.clone(),
         ) {
-            let n = bytes.len();
-            // Immediate press feedback — the upload runs seconds on a big log, and silence here read as "the button did nothing". Replaced by "Log sent √" / "Send failed" when the worker thread reports.
-            self.ready_toast = Some(format!("Sending log ({} KiB)\u{2026}", (n + 1023) / 1024));
-            crate::logf!("DIAG: submitting log ({} bytes) to FGTW (sealed)", n);
+            // Immediate press feedback — the read + upload run seconds on a big log, and silence here read as "the button did nothing". Replaced by "Log sent √" / "Send failed" when the worker thread reports.
+            self.ready_toast = Some(format!("Sending log ({} KiB)\u{2026}", (total as usize + 1023) / 1024));
             std::thread::spawn(move || {
+                // Submit at most the newest LOG_SUBMIT_CAP bytes, cut at a record boundary (every record is a complete VSF doc opening with the RÅ< magic). A never-submitted device accumulates hundreds of MB, which dies in the upload timeout / body cap and reads as "log_put request failed: error sending" — the newest window is what's diagnostically alive anyway.
+                const LOG_SUBMIT_CAP: usize = 24 * 1024 * 1024;
+                let Some(bytes) = crate::snapshot_log_bytes() else {
+                    let _ = tx.send(Err("log unreadable".to_string()));
+                    return;
+                };
+                let bytes = if bytes.len() > LOG_SUBMIT_CAP {
+                    let tail = &bytes[bytes.len() - LOG_SUBMIT_CAP..];
+                    match tail.windows(4).position(|w| w == [0x52, 0xC3, 0x85, 0x3C]) {
+                        Some(i) => tail[i..].to_vec(),
+                        None => tail.to_vec(),
+                    }
+                } else {
+                    bytes
+                };
+                crate::logf!("DIAG: submitting log ({} bytes) to FGTW (sealed)", bytes.len());
                 let r = put_log_blocking(&bytes, &note, &kp, &hp, &seed).map_err(|e| format!("{e}"));
                 let _ = tx.send(r);
             });
