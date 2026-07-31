@@ -15154,9 +15154,9 @@ impl PhotonApp {
         if self
             .contacts
             .iter()
-            .any(|c| !c.is_sibling && c.handle_hash == our_pid)
+            .any(|c| !c.is_sibling && (c.handle_hash == our_pid || c.handle_proof == session.handle_proof))
         {
-            return;
+            return; // an existing self row counts even under a stale pid key — settle migrates it; creating a second would double notes-to-self
         }
         let device_pubkey = crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes());
         let mut contact = crate::types::Contact::from_pin(
@@ -15178,16 +15178,29 @@ impl PhotonApp {
     }
 
     fn settle_self_contacts(&mut self) -> bool {
-        let Some(our_pid) = self
+        let Some((our_pid, our_hp)) = self
             .session
             .as_ref()
-            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+            .map(|s| (crate::crypto::clutch::identity_party_id(&s.identity_seed), s.handle_proof))
         else {
             return false;
         };
         let mut changed = false;
         for contact in self.contacts.iter_mut() {
-            if contact.handle_hash == our_pid {
+            // Match by pid OR by our own handle_proof (excluding siblings, which also carry it): a self row minted under an older party-id scheme carries a hash no current derivation reproduces, so every pid-keyed is_self check misses it — it renders Pending forever and its sends fall into the chain path and get withdrawn (peer_m's stuck notes-to-self, v0.51.12-era row on v0.51.40).
+            let is_self_row = contact.handle_hash == our_pid
+                || (!contact.is_sibling && contact.handle_proof == our_hp);
+            if is_self_row {
+                // One-time migration for the stale-keyed row: adopt the current pid and immediately re-persist contact + messages, which re-homes any loaded rows under the new conversation table key.
+                if contact.handle_hash != our_pid {
+                    crate::logf!("SELF: migrating stale self-contact key {} -> current party id", crate::fp(&contact.handle_hash));
+                    contact.handle_hash = our_pid;
+                    changed = true;
+                    if let Some(storage) = self.storage.as_ref() {
+                        let _ = crate::storage::contacts::save_contact(contact, storage);
+                        let _ = crate::storage::contacts::save_messages(contact, storage);
+                    }
+                }
                 // The "notes to self" contact IS this identity — always reachable, no ceremony, no pong. It never gets a pong to flip it online, so without forcing it here it shows OFFLINE forever (the reported bug). Mark it online + Complete unconditionally, on every settle (attest + resume — a reloaded-from-disk self-contact needs it re-applied).
                 if !contact.is_online {
                     contact.is_online = true;
