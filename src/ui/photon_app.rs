@@ -9234,8 +9234,9 @@ impl PhotonApp {
             self.log_submit_rx = Some(rx);
             self.log_submit_tx = Some(tx);
         }
+        // hp comes from the SESSION itself, not HandleQuery's worker-populated cache: a sticky-broadcast resume can reach Ready with `last_handle_proof` still unset, which made this gate claim "not signed in" to a user who plainly was (peer_a, twice). Signed in ⇒ session ⇒ handle_proof; the cache is only a fallback.
         if let (Some(hp), Some(kp), Some(seed), Some(tx)) = (
-            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.session.as_ref().map(|s| s.handle_proof).or_else(|| self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof())),
             self.device_keypair.clone(),
             self.session.as_ref().map(|s| s.identity_seed),
             self.log_submit_tx.clone(),
