@@ -279,7 +279,8 @@ pub fn put_log_blocking(
     identity_seed: &[u8; 32],
 ) -> Result<(), BlobError> {
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
+        // 300s: a capped-at-24MB log on a slow cellular uplink (1 Mbps up ≈ 3+ min) must finish, not die mid-body as "error sending request".
+        .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
 
