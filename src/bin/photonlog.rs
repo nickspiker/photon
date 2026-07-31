@@ -163,7 +163,9 @@ fn main() {
         };
         let tag = photon_messenger::log_retrieval_tag(&seed);
         let key = photon_messenger::log_encryption_key(&seed);
-        use photon_messenger::network::fgtw::{log_get_blocking, log_list_blocking};
+        use photon_messenger::network::fgtw::{
+            log_delete_blocking, log_get_blocking, log_list_blocking,
+        };
         let keys = match log_list_blocking(&tag) {
             Ok(k) => k,
             Err(e) => {
@@ -210,6 +212,7 @@ fn main() {
                 }
             }
         };
+        let mut failures = 0usize;
         for k in &keys {
             // The submitter's note rides as a sealed `.note` sidecar next to the `.vsf` (absent when none was typed) — surface it ABOVE the log so the human context leads the dump.
             let note_key = format!("{}.note", k.strip_suffix(".vsf").unwrap_or(k));
@@ -227,9 +230,15 @@ fn main() {
                         println!("\n── {k} ──");
                         print_records(&plain, &filter);
                     }
-                    Err(e) => eprintln!("photonlog: {k}: decrypt failed ({e})"),
+                    Err(e) => {
+                        eprintln!("photonlog: {k}: decrypt failed ({e})");
+                        failures += 1;
+                    }
                 },
-                None => eprintln!("photonlog: {k}: fetch failed (and not cached)"),
+                None => {
+                    eprintln!("photonlog: {k}: fetch failed (and not cached)");
+                    failures += 1;
+                }
             }
         }
         eprintln!(
@@ -238,6 +247,19 @@ fn main() {
             cached,
             cache_dir.display()
         );
+        // The pull IS the consumption edge: everything decoded clean is now held locally (the ciphertext cache is the archive), so the server copies have no further purpose and get wiped. Any failure leaves them for a retry; the 24h sweep remains the backstop for never-pulled logs.
+        if failures == 0 {
+            match log_delete_blocking(&tag) {
+                Ok(()) => eprintln!(
+                    "photonlog: consumed — server copies deleted (cache keeps the ciphertext)"
+                ),
+                Err(e) => eprintln!(
+                    "photonlog: server wipe failed ({e}) — copies remain until the 24h sweep"
+                ),
+            }
+        } else {
+            eprintln!("photonlog: {failures} object(s) failed — leaving server copies for a retry");
+        }
         return;
     }
 
