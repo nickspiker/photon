@@ -4662,7 +4662,7 @@ impl FluorApp for PhotonApp {
             (None, None, scroll_offset)
         };
         // Launch layout: faithful proportional slicing port from legacy `Layout::new` — spectrum near the top, logo wordmark overlapping its bottom, attest block (textbox + hint + button) below. Compute every frame; cheap and lets resize flow thru without a separate cache.
-        let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru);
+        let layout = LaunchLayout::compute(buf_w, ((buf_h as f32 - ime_lift).max(buf_h as f32 * 0.4)) as usize, ctx.viewport.ru);
         // Chromatic wave phase has two summands: * Scroll-driven base (`bg_scroll * 1/128 rad/scroll-unit`) — one wheel-notch ≈ 8 units → ~1/16 rad shift; user-tunable by changing the shift exponent.
         // * `attest_anim_phase` (advanced in `tick()` while `LaunchState::Attesting`) — the "query in flight" cue, 1 cycle/sec.
         // Summing them means the wave responds to BOTH inputs simultaneously: a user scrolling during an attestation still nudges the phase on top of the animation.
@@ -4763,7 +4763,7 @@ impl FluorApp for PhotonApp {
 
         // Launch-screen widgets paint UNDER the chord hint (so the hint always wins over the textbox) and OVER chrome (so the pill sits on top of the spectrum strip / wordmark). Same target buffer as the chord hint; widgets stamp their hit IDs into chrome's shared `hit_test_map`. Only paint when the launch screen is the active state — Ready/Searching/Conversation get their own widgets later.
         if let AppState::Launch(launch_state) = &self.state {
-            let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru);
+            let layout = LaunchLayout::compute(buf_w, ((buf_h as f32 - ime_lift).max(buf_h as f32 * 0.4)) as usize, ctx.viewport.ru);
             let attest = AttestBlockLayout::compute(layout.attest_block);
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
 
@@ -9524,7 +9524,9 @@ impl PhotonApp {
     fn update_widget_layout(&mut self, ctx: &mut Context) {
         let buf_w = ctx.viewport.width_px as usize;
         let buf_h = ctx.viewport.height_px as usize;
-        let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru);
+        // Launch form squishes above the soft keyboard (ime_lift = keyboard px, 0 on desktop/closed); the 0.4 floor keeps a monster keyboard from crushing the form to nothing. The IME-inset watch in tick() re-runs this layout on every inset change.
+        let ime_lift = self.ime_lift();
+        let layout = LaunchLayout::compute(buf_w, ((buf_h as f32 - ime_lift).max(buf_h as f32 * 0.4)) as usize, ctx.viewport.ru);
         let attest = AttestBlockLayout::compute(layout.attest_block);
         // Font size = textbox-slot height × 0.75. Derived from the pill so the text-to-pill ratio stays constant at any viewport — span/24 sized text via the harmonic-mean span which scales differently from pill_h (pill_h is linear in viewport_h, span is biased toward the narrower dim), so on a tall narrow phone the pill grew faster than the text and a soft-keyboard show/hide jumped the ratio. Pill-derived sizing keeps padding around the text proportional, so descenders + ascenders never crowd the squircle edge. Same scalar drives the attest button and the resting ∞ so they read as a matched set.
         let textbox_h = (attest.textbox.y1 as f32) - (attest.textbox.y0 as f32);
