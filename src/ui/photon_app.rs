@@ -5058,7 +5058,6 @@ impl FluorApp for PhotonApp {
 
             // Clock-off indicator: same amber as the degraded banner (nunc-time consensus says the system clock is grossly wrong). Warn only — Photon never corrects the clock. Stacks one band above "storage degraded" when both are showing so they don't overlap.
             if let Some(offset_secs) = self.clock_off {
-                const CLOCK_TEXT: u32 = 0xFF_00_73_FF; // visible RGB(255, 140, 0) amber, as above
                 let band_h = ready_layout.unit_height * 1.5;
                 let cx = buf_w as f32 * 0.5;
                 // Sit at the bottom; if the degraded banner is also up, lift this one band higher.
@@ -5076,7 +5075,7 @@ impl FluorApp for PhotonApp {
                 };
                 let dir = if offset_secs < 0 { "ahead" } else { "behind" };
                 let label = format!("clock off — {} {}", pretty, dir);
-                ctx.text.draw_text_center(&mut canvas, &label, cx, cy, &TextStyle::new(font_size, CLOCK_TEXT).weight(600).font("Oxanium"), None, None);
+                ctx.text.draw_text_center(&mut canvas, &label, cx, cy, &TextStyle::new(font_size, theme::CLOCK_TEXT).weight(600).font("Oxanium"), None, None);
             }
 
             // (The Security / Recovery posture meters that used to sit bottom-right were removed — the security posture belongs on a dedicated Security page, not as ambient bottom-strip dots that read as noise. identity_posture/posture_colour/POSTURE_PIPS stay defined for that page.)

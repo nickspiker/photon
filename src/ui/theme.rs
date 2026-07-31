@@ -122,6 +122,8 @@ pub const ORB_ONLINE: u32 = 0xFF_BF_1F_BF;
 pub const ORB_OFFLINE: u32 = 0xFF_1F_BF_BF;
 /// Degraded-vault banner text. Darkness-space, visible RGB(255, 140, 0) amber — pairs with BG_BASE_WARNING's warm background tint.
 pub const DEGRADED_TEXT: u32 = 0xFF_00_73_FF;
+/// Clock-skew banner text — same amber as DEGRADED_TEXT on purpose (both are "something is off with this device" warnings), named separately so they can diverge without a hunt.
+pub const CLOCK_TEXT: u32 = DEGRADED_TEXT;
 /// Settings back-button idle fill (held state uses fluor::theme::BUTTON_HELD).
 pub const BACK_BUTTON_IDLE_FILL: u32 = 0x80_FF_FF_FF;
 /// Disabled pill-label ink, RAW visible grey — apply `fluor::theme::dark(fluor::theme::fmt(..))` at the use site (fmt is platform-dependent, so it cannot be precomputed here).
@@ -129,6 +131,6 @@ pub const DISABLED_LABEL_RGB: u32 = 0x00_70_70_6E;
 
 /// Dim a stored α+darkness colour to ~half opacity — the undelivered-outgoing message treatment (delivered = the same colour at full α; the RGB never changes, only presence). The stored high byte is opacity, so halving it makes the glyph fainter against the background.
 pub fn dim_colour(c: u32) -> u32 {
-    let a = ((c >> 24) & 0xFF) / 2;
+    let a = ((c >> 24) & 0xFF) >>1;
     (c & 0x00FF_FFFF) | (a << 24)
 }
