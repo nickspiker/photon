@@ -209,9 +209,7 @@ pub struct DeviceEndpoint {
 #[derive(Clone, Debug)]
 pub struct Contact {
     pub id: ContactId,
-    /// Local petname — the only name at rest for this contact; user-chosen, synced across OUR fleet via the roster, EMPTY by default (empty renders the keyed voca pseudonym). Never defaulted to the typed handle: the handle string derives the identity seed, so storing it anywhere re-creates the honeypot (docs/identity-profile.md).
-    pub petname: String,
-    /// The friend's published profile name, adopted from their pong's always-granted name slot. Display fallback after petname; carries zero trust.
+    /// The friend's published profile name, adopted from their pong's always-granted name slot and synced across OUR fleet via the roster (PRST4). Empty renders the keyed voca pseudonym; carries zero trust — the pinned key does. Never defaulted to the typed handle: the handle string derives the identity seed, so storing it anywhere re-creates the honeypot (docs/identity-profile.md).
     pub published_name: String,
     /// Runtime: `published_name` changed since the last state save — the status drain sets it, the post-drain sweep persists + clears it (persisting inside the drain would fight the contacts borrow).
     pub published_name_dirty: bool,
@@ -286,7 +284,7 @@ pub struct Contact {
 
     pub trust_level: TrustLevel,
     pub added: i64,
-    /// Roster LWW clock: eagle time of the last change to this contact's SYNCED identity fields (petname / avatar_pin). The fleet roster entry carries it as `updated`; a pulled entry newer than this overwrites those fields, an older one loses. Starts equal to `added`.
+    /// Roster LWW clock: eagle time of the last change to this contact's SYNCED identity fields (published_name / avatar_pin). The fleet roster entry carries it as `updated`; a pulled entry newer than this overwrites those fields, an older one loses. Starts equal to `added`.
     pub roster_updated: i64,
     /// The ONE fleet device running this friendship's CLUTCH (fleet-sync.md §4.2 — synced via the roster entry). The adding device claims at add time; siblings park their own rounds while the owner is present; presence-loss enables takeover. `None` = unclaimed (legacy / pre-claim) — first device to pick it up claims.
     pub ceremony_owner: Option<[u8; 32]>,
@@ -392,18 +390,11 @@ impl Contact {
         let seed = crate::types::Handle::to_identity_seed(handle.as_str());
         let handle_hash = crate::crypto::clutch::identity_party_id(&seed);
         // NO handle-derived avatar pin: that made the avatar readable by anyone who knew the handle (docs/identity-profile.md). A fresh contact starts UNPINNED (zero) — its real pin (random key ‖ lookup) arrives over an authenticated pong once the friendship is mutual, exactly like the published name. Until then the gradient avatar renders.
-        Self::from_pin(
-            String::new(),
-            [0u8; 64],
-            handle_proof,
-            handle_hash,
-            public_identity,
-        )
+        Self::from_pin([0u8; 64], handle_proof, handle_hash, public_identity)
     }
 
     /// PIN-SET constructor: reconstruct a contact from stored/synced material (vault rows, roster entries) — no handle anywhere.
     pub fn from_pin(
-        petname: String,
         avatar_pin: [u8; 64],
         handle_proof: [u8; 32],
         party_id: [u8; 32],
@@ -411,7 +402,6 @@ impl Contact {
     ) -> Self {
         Self {
             id: ContactId::from_pubkey(&public_identity),
-            petname,
             published_name: String::new(),
             published_name_dirty: false,
             avatar_pin_dirty: false,
@@ -500,32 +490,23 @@ impl Contact {
     /// Construct a fleet-sibling contact: one of our OWN devices, discovered from our folded membership chain. Party id (in `handle_hash`) is device-derived so the ceremony machinery can't collide with the self/friend id space; `handle_proof` is OUR OWN so `refresh_contact_addrs_from_peers` matches the sibling's FGTW peer row (keyed hp + device pubkey — no handle string needed). Trust is implicit — the pubkey came from our own fold.
     pub fn new_sibling(our_handle_proof: [u8; 32], sibling_device: DevicePubkey) -> Self {
         let party_id = crate::crypto::clutch::sibling_party_id(&sibling_device.key);
-        let mut c = Self::from_pin(
-            String::new(),
-            [0u8; 64],
-            our_handle_proof,
-            party_id,
-            sibling_device,
-        );
+        let mut c = Self::from_pin([0u8; 64], our_handle_proof, party_id, sibling_device);
         c.is_sibling = true;
         c.trust_level = TrustLevel::Inner;
         c
     }
 
-    /// The name this contact renders as everywhere: local petname → their published profile name → the keyed two-word voca pseudonym from the party id. No handle: the string that derives an identity exists at rest nowhere (docs/identity-profile.md). Names carry ZERO trust — the pinned key does.
+    /// The name this contact renders as everywhere: their published profile name → the keyed two-word voca pseudonym from the party id. No handle: the string that derives an identity exists at rest nowhere (docs/identity-profile.md). Names carry ZERO trust — the pinned key does.
     pub fn display_name(&self) -> String {
-        if !self.petname.is_empty() {
-            return self.petname.clone();
-        }
         if !self.published_name.is_empty() {
             return self.published_name.clone();
         }
         crate::network::fgtw::fleet::keyed_pseudonym(&self.handle_hash)
     }
 
-    /// True once we have a REAL name — a petname we set or the name they published. Until then the only "name" is the deterministic voca pseudonym, which reads like a real name (PotatoOctopus) then jarringly flips to the actual name once it arrives.
+    /// True once we have a REAL name — the name they published. Until then the only "name" is the deterministic voca pseudonym, which reads like a real name (PotatoOctopus) then jarringly flips to the actual name once it arrives.
     pub fn has_real_name(&self) -> bool {
-        !self.petname.is_empty() || !self.published_name.is_empty()
+        !self.published_name.is_empty()
     }
 
     /// Name for the VISUAL surfaces (contact row, conversation header): the real name if we have one, else "Pending…" — never the pseudonym. The deterministic gradient avatar (hash-computed) carries the visual identity meanwhile. `display_name` still returns the pseudonym for stable non-visual uses (search filters, log labels).

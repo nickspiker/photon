@@ -338,7 +338,6 @@ mod tests {
             handle_proof: [hp; 32],
             handle_hash: [hp ^ 0xff; 32],
             public_identity: [hp.wrapping_add(1); 32],
-            name: format!("friend{hp}"),
             published_name: format!("Chosen{hp}"),
             avatar_pin: [hp ^ 0x55; 64],
             added: 100,
