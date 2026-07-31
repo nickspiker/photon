@@ -5742,7 +5742,8 @@ impl FluorApp for PhotonApp {
                                 btn.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, btn.hit_id());
                             }
                             // Paperclip, left of the compose box. Android always: it opens the system picker and is the ONLY way to attach there. Desktop only while an attachment is staged: drag-and-drop anywhere on the conversation is the attach affordance, so an always-on paperclip was a button whose entire click behavior was a toast explaining it isn't a button.
-                            let clip_visible = cfg!(target_os = "android") || self.pending_attach.is_some();
+                            // Android's always-on paperclip is nixed too (Nick, 2026-07-31 — undecided on the affordance): with no drop path there, Android currently has NO way to attach. The paperclip only appears while an attachment is staged, which on Android is never.
+                            let clip_visible = self.pending_attach.is_some();
                             if let Some(tb) = self.message_textbox.as_ref().filter(|_| clip_visible) {
                                 let (tcx, tcy, tw, th) = (tb.center_x, tb.center_y, tb.width, tb.height);
                                 let clip_size = th * 0.55;
