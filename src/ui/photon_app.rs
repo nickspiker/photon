@@ -11261,7 +11261,9 @@ impl PhotonApp {
 
                     // Send our offer if not already sent (don't wait for ceremony_id - that comes later)
                     if !contact.clutch_offer_sent {
-                        if let Some(ip) = contact.ip {
+                        // No address → the RELAY sentinel; the relay_to fan-out below is the real delivery. This gate silently skipping on ip=None (relayed pongs never set it) is what held offers hostage to address discovery — the weave stalled Pending while the relay carried every other message fine.
+                        {
+                            let ip = contact.ip.unwrap_or(crate::network::status::RELAY_ADDR);
                             if let Some(ref keypairs) = contact.clutch_our_keypairs {
                                 use crate::network::fgtw::protocol::build_clutch_offer_vsf;
 
@@ -11348,7 +11350,9 @@ impl PhotonApp {
 
                         if !already_sent_kem && !contact.clutch_kem_encap_in_progress {
                             if let Some(ceremony_id) = contact.ceremony_id {
-                                if let Some(ip) = contact.ip {
+                                // No address → RELAY sentinel; the KEM response fans out over relay_to like every ceremony message. Gating on ip stalled the middle of the weave the same way it stalled the offer.
+                                {
+                                    let ip = contact.ip.unwrap_or(crate::network::status::RELAY_ADDR);
                                     let conv_token = derive_conversation_token(&[
                                         our_handle_hash,
                                         contact.handle_hash,
@@ -11414,7 +11418,9 @@ impl PhotonApp {
                                 && kem_encap_spawn.is_none()
                             {
                                 if let Some(ceremony_id) = contact.ceremony_id {
-                                    if let Some(ip) = contact.ip {
+                                    // Same relay fallback as the sibling arm above — a queued KEM must drain even with no address.
+                                    {
+                                        let ip = contact.ip.unwrap_or(crate::network::status::RELAY_ADDR);
                                         let conv_token = derive_conversation_token(&[
                                             our_handle_hash,
                                             contact.handle_hash,
@@ -12554,9 +12560,8 @@ impl PhotonApp {
             // Keygen hasn't (re)filled the ephemerals — the serialized keygen worker will, and its own completion path sends the offer.
             return;
         };
-        let Some(ip) = contact.ip else {
-            return;
-        };
+        // No known address is NOT a reason to hold the offer: with no validated path the send already fans out over the relay (relay_to below), and the relay demonstrably carries traffic exactly when addressing is broken. This gate used to return here, which is why a contact whose relayed pongs proved it ALIVE still sat Pending forever — relayed pongs never set `contact.ip` (they carry the RELAY sentinel), so the offer waited on an address it never needed. The sentinel peer_addr is harmless to the send drain; the relay_to fan-out is the real delivery.
+        let ip = contact.ip.unwrap_or(crate::network::status::RELAY_ADDR);
 
         let payload = crate::crypto::clutch::ClutchOfferPayload::from_keypairs(keypairs);
         let conversation_token =
@@ -13736,7 +13741,9 @@ impl PhotonApp {
                                     let payload =
                                         clutch::ClutchOfferPayload::from_keypairs(keypairs);
 
-                                    if let Some(ip) = contact.ip {
+                                    // This is the send that a RELAYED pong triggers — and a relayed pong never sets `contact.ip`, so gating on it here meant the exact peer whose liveness the relay just proved could never receive our offer. The RELAY sentinel + relay_to fan-out is the delivery path that pong itself arrived on.
+                                    {
+                                        let ip = contact.ip.unwrap_or(crate::network::status::RELAY_ADDR);
                                         // Build VSF and capture our offer_provenance
                                         let conversation_token =
                                             clutch::derive_conversation_token(&[
