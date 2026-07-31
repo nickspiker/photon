@@ -402,11 +402,6 @@ fn party_colour(digest: &[u8; 32]) -> u32 {
     vsf_rgb_to_stored(rgb_vsf)
 }
 
-/// Dim a stored α+darkness colour to ~half opacity (for undelivered outgoing messages). The stored high byte is opacity (α), so scaling it down makes the glyph fainter against the background.
-fn dim_colour(c: u32) -> u32 {
-    let a = ((c >> 24) & 0xFF) / 2;
-    (c & 0x00FF_FFFF) | (a << 24)
-}
 
 /// Greedy word-wrap for the message list: split `s` into lines that each measure ≤ `max_w` under `style`. Word widths are measured individually and summed (kerning across a space is negligible at chat sizes), so the cost is O(words), not O(words²) re-shapes. A single word wider than the line hard-breaks by chars — a pasted URL/hash must wrap, not vanish off-screen. Empty input yields one empty line so the row keeps its height.
 /// Bubble DISPLAY text for a row: attachment rows render as a pill line — paperclip, name, dozenal size, and an actions hint while the blob isn't held locally. Everything else passes thru. The raw marker string never reaches a glyph.
@@ -1660,10 +1655,8 @@ fn proof_gradient_seed(proof: &[u8; 32]) -> u64 {
 fn orb_tint_for(online: bool) -> fluor::host::chrome::OrbTint {
     // Visible RGB(64, 224, 64) green: darkness = (0xBF, 0x1F, 0xBF); packed α=0xFF. Visible RGB(224, 64, 64) red:   darkness = (0x1F, 0xBF, 0xBF); packed α=0xFF.
     // These are hand-authored in darkness-space (pre-inverted, so no `dark()`), but they STILL need `fmt()` — the platform channel-order pass (identity on desktop, R↔B swap on Android). Every other photon colour rides `fmt`; the orb ring skipping it was the Android "red-blue swapped ring". `fmt` only reorders RGB and preserves the α byte, so it's correct on the already-darkened constants.
-    const ORB_ONLINE: u32 = 0xFF_BF_1F_BF;
-    const ORB_OFFLINE: u32 = 0xFF_1F_BF_BF;
     fluor::host::chrome::OrbTint::Custom {
-        ring: fluor::theme::fmt(if online { ORB_ONLINE } else { ORB_OFFLINE }),
+        ring: fluor::theme::fmt(if online { crate::ui::theme::ORB_ONLINE } else { crate::ui::theme::ORB_OFFLINE }),
         brighten: online,
     }
 }
@@ -5055,14 +5048,12 @@ impl FluorApp for PhotonApp {
 
             // Persistent degraded-vault indicator: amber text at the bottom. The matching warm background tint already lives in the noise pass above (we swap BG_BASE → (*theme::BG_BASE_WARNING)) so we add no extra render pass here, just the text glyph. Full details live in the README.
             if self.vault_degraded {
-                // Visible RGB(255, 140, 0) amber. Packed: α=0xFF | darkness = (0x00, 0x73, 0xFF).
-                const DEGRADED_TEXT: u32 = 0xFF_00_73_FF;
                 // Band height off the span-based layout unit (zoom-aware, aspect-ratio-robust, no pixel floor) — same scaling family as the rest of the screen.
                 let band_h = ready_layout.unit_height * 1.5;
                 let cx = buf_w as f32 * 0.5;
                 let cy = buf_h as f32 - band_h * 0.5;
                 let font_size = band_h * 0.6;
-                ctx.text.draw_text_center(&mut canvas, "storage degraded", cx, cy, &TextStyle::new(font_size, DEGRADED_TEXT).weight(600).font("Oxanium"), None, None);
+                ctx.text.draw_text_center(&mut canvas, "storage degraded", cx, cy, &TextStyle::new(font_size, theme::DEGRADED_TEXT).weight(600).font("Oxanium"), None, None);
             }
 
             // Clock-off indicator: same amber as the degraded banner (nunc-time consensus says the system clock is grossly wrong). Warn only — Photon never corrects the clock. Stacks one band above "storage degraded" when both are showing so they don't overlap.
@@ -5133,7 +5124,7 @@ impl FluorApp for PhotonApp {
                     let r = fluor::region::Region::new(rail_inset.x, rail_inset.y, rail_inset.w, nav_h);
                     let back_held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
                     ctx.text.draw_text_left(&mut canvas, "\u{2039} Back", r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
-                    let fill = if back_held { fluor::theme::BUTTON_HELD } else { 0x80_FF_FF_FF };
+                    let fill = if back_held { fluor::theme::BUTTON_HELD } else { theme::BACK_BUTTON_IDLE_FILL };
                     paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fill, None, None);
                     restamp_hit_rect(
                         &mut chrome.hit_test_map, buf_w, buf_h,
@@ -5640,7 +5631,7 @@ impl FluorApp for PhotonApp {
                                 if msg.delivered {
                                     our_colour
                                 } else {
-                                    dim_colour(our_colour)
+                                    theme::dim_colour(our_colour)
                                 }
                             } else {
                                 their_colour
@@ -5968,7 +5959,7 @@ impl FluorApp for PhotonApp {
                 let back_held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
                 // Text FIRST (topmost-first → in front), THEN the fill behind it. 50%-black (α = 0x80) in darkness space is 0x80_FF_FF_FF (visible black is 0xFFFFFF in the RGB bytes); brighter when held.
                 ctx.text.draw_text_left(&mut canvas, "‹ Back", r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
-                let fill = if back_held { fluor::theme::BUTTON_HELD } else { 0x80_FF_FF_FF };
+                let fill = if back_held { fluor::theme::BUTTON_HELD } else { theme::BACK_BUTTON_IDLE_FILL };
                 paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fill, None, None);
                 restamp_hit_rect(
                     &mut chrome.hit_test_map, buf_w, buf_h,
@@ -17862,7 +17853,7 @@ fn draw_stub_pill_filled(
     let label_colour = if enabled {
         fluor::theme::TEXTBOX_TEXT
     } else {
-        fluor::theme::dark(fluor::theme::fmt(0x00_70_70_6E))
+        fluor::theme::dark(fluor::theme::fmt(crate::ui::theme::DISABLED_LABEL_RGB))
     };
     text.draw_text_left(canvas, label, rect.center_x() - tw * 0.5, rect.center_y(), &TextStyle::new(font_size, label_colour).font(label_font), None, None);
     let inner_w = (w - 2 * stroke).max(0);
