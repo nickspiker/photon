@@ -166,6 +166,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativeOnKeyEvent(contextPtr: Long, keyCode: Int): Boolean  // Special keys (backspace, enter)
     private external fun nativeOnBackPressed(contextPtr: Long): Boolean  // Back button - returns true if handled
     private external fun nativeOnScale(contextPtr: Long, scaleFactor: Float)  // Pinch-to-zoom scale factor
+    private external fun nativeOnScaleEnd(contextPtr: Long)  // Pinch released — the zoom-persist edge
     private external fun nativePollKeyboard(contextPtr: Long): Int  // Per-frame poll for show/hide soft IME — 1=show, -1=hide, 0=no change
     private external fun nativePollInputReset(contextPtr: Long): Int  // Per-frame poll: 1=restartInput (clear the IME's stale composing buffer after a send), 0=no change
     private external fun nativeSetForeground(foreground: Boolean)  // onResume/onPause → Rust's foreground mirror (ptr-less: writes a process global; Rust gates unread + notify-suppression on it)
@@ -342,7 +343,10 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             }
 
             override fun onScaleEnd(detector: ScaleGestureDetector) {
-                // No-op
+                // The release edge: Rust persists the settled zoom here (desktop's analog is Ctrl/Cmd key-up).
+                if (nativePtr != 0L) {
+                    nativeOnScaleEnd(nativePtr)
+                }
             }
         })
 

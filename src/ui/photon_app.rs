@@ -940,9 +940,8 @@ pub struct PhotonApp {
             std::sync::Arc<crate::storage::FlatStorage>,
         )>,
     >,
-    /// Last zoom value actually persisted, with its debounce deadline: pinch-zoom (Android) has no modifier-release moment, so persistence keys off ru STABILITY — any settled change saves after ~1s. Desktop's modifier-release save still fires too (harmless double).
+    /// Last zoom value actually persisted. Android saves on the pinch-release edge (onScaleEnd → take_scale_ended); desktop saves on modifier release. This tracker suppresses redundant re-saves of the restored value.
     zoom_saved_ru: f32,
-    zoom_save_deadline: Option<Instant>,
     /// Monotonic tick counter — the frame-gap fence for `pending_chain_sends` (see `drain_pending_chain_sends`).
     tick_serial: u64,
     /// Outgoing sends whose WIRE half is deferred: (contact idx, text, eagle_time, tick_serial at enqueue). The pending-grey bubble is inserted synchronously in `send_chain_message`; chain_transmit (weave selection, braid advance, chains persist, PT dispatch) runs from this queue AFTER the frame presents — running it inline meant the bubble, though inserted first, couldn't render until the whole wire half finished (the "message goes into the void" report).
@@ -1212,7 +1211,6 @@ impl PhotonApp {
             self_record_published_for: None,
             peer_store_loaded: false,
             zoom_saved_ru: 1.0,
-            zoom_save_deadline: None,
             persist_tx: None,
             tick_serial: 0,
             pending_chain_sends: Vec::new(),
@@ -4198,19 +4196,13 @@ impl FluorApp for PhotonApp {
             }
         }
 
-        // Modifier-free zoom persistence: Android pinch has no Ctrl/Cmd release to hook (the desktop save site), so ANY settled ru change persists after 1s of stability. zoom_saved_ru tracks what's on disk; the deadline debounces mid-pinch churn.
-        if (ctx.viewport.ru - self.zoom_saved_ru).abs() > 0.001 {
-            match self.zoom_save_deadline {
-                Some(t) if now >= t => {
-                    self.zoom_saved_ru = ctx.viewport.ru;
-                    self.zoom_save_deadline = None;
-                    self.save_zoom_setting(ctx.viewport.ru);
-                }
-                Some(_) => {}
-                None => self.zoom_save_deadline = Some(now + Duration::from_secs(1)),
-            }
-        } else {
-            self.zoom_save_deadline = None;
+        // Android zoom persistence rides the pinch-RELEASE edge (Kotlin onScaleEnd → nativeOnScaleEnd), the exact analog of desktop's Ctrl/Cmd key-up save. No timers — the value is settled the moment the fingers lift.
+        #[cfg(target_os = "android")]
+        if crate::platform::jni_android::take_scale_ended()
+            && (ctx.viewport.ru - self.zoom_saved_ru).abs() > 0.001
+        {
+            self.zoom_saved_ru = ctx.viewport.ru;
+            self.save_zoom_setting(ctx.viewport.ru);
         }
 
         // IME-inset watch (Android): the surface never resizes for the keyboard, so an inset change arrives with NO resize event — diff it here and relayout the bottom-anchored widgets + repaint. Cheap atomic read per tick.
