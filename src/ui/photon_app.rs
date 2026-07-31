@@ -914,8 +914,12 @@ pub struct PhotonApp {
     pending_fleet_key: Option<[u8; 32]>,
     /// In-flight fleet-roster pull; its `Ok` result merges into contacts, its `Err` triggers a retry — both drained in `tick`. `Some` = a pull is running, which also debounces re-spawns.
     roster_pull_rx: Option<std::sync::mpsc::Receiver<Result<fgtw::fstate::FleetState, String>>>,
-    /// Outgoing sends whose WIRE half is deferred to the next tick: (contact idx, text, eagle_time). The pending-grey bubble is inserted synchronously in `send_chain_message`; chain_transmit (weave selection, braid advance, chains persist, PT dispatch) runs from this queue AFTER the frame presents — running it inline meant the bubble, though inserted first, couldn't render until the whole wire half finished (the "message goes into the void" report).
-    pending_chain_sends: Vec<(usize, String, i64)>,
+    /// Message-table persist worker: conversation snapshots go over this channel to ONE background thread that coalesces (latest snapshot per handle_hash wins) and writes. `save_messages` is a full encrypted table rewrite — on the UI thread it was the named 600ms–5.7s stall behind every ChatMessage/MessageAck arm; off it, an ack is a field flip.
+    persist_tx: Option<std::sync::mpsc::Sender<(crate::types::Contact, std::sync::Arc<crate::storage::FlatStorage>)>>,
+    /// Monotonic tick counter — the frame-gap fence for `pending_chain_sends` (see `drain_pending_chain_sends`).
+    tick_serial: u64,
+    /// Outgoing sends whose WIRE half is deferred: (contact idx, text, eagle_time, tick_serial at enqueue). The pending-grey bubble is inserted synchronously in `send_chain_message`; chain_transmit (weave selection, braid advance, chains persist, PT dispatch) runs from this queue AFTER the frame presents — running it inline meant the bubble, though inserted first, couldn't render until the whole wire half finished (the "message goes into the void" report).
+    pending_chain_sends: Vec<(usize, String, i64, u64)>,
     /// Unique identities the seed knows (including us), off the latest signed announce ack. The Ready-screen count reads this as a floor: the peer STORE only fills by gossip now, so on a fresh session it holds nothing but our own record and would show "0 peers" to a user who can see nine friends in the contact list.
     seed_identity_count: u32,
     /// In-flight phonebook resolution: `(device_pubkey, public, lan)` for devices we could not otherwise address. Drained in `tick` into `device_endpoints`, which is what candidate gathering reads. `Some` = a resolve is running, which debounces re-spawns so a stalled seed can't stack requests.
@@ -1180,6 +1184,8 @@ impl PhotonApp {
             our_reflexive: None,
             self_record_published_for: None,
             peer_store_loaded: false,
+            persist_tx: None,
+            tick_serial: 0,
             pending_chain_sends: Vec::new(),
             seed_identity_count: 0,
             pb_resolve_rx: None,
@@ -3775,6 +3781,8 @@ impl FluorApp for PhotonApp {
     fn tick(&mut self, ctx: &mut Context) -> bool {
         let now = Instant::now();
         let mut needs_redraw = false;
+        // Frame fence for the deferred send drain: entries queued during THIS tick's input pass wait until the next one, guaranteeing the pending bubble a rendered frame before the wire half runs.
+        self.tick_serial = self.tick_serial.wrapping_add(1);
 
         // Point the top-left orb at the current subject (peer avatar + their presence ring in a conversation, else the Photon orb + our connectivity). Self-diffing — a no-op unless the contact / avatar / screen changed.
         self.update_orb();
@@ -9571,11 +9579,7 @@ impl PhotonApp {
             msg.delivered = true;
             contact.insert_message_sorted(msg.clone());
             contact.message_scroll_offset = 0.0;
-            if let Some(storage) = self.storage.as_ref() {
-                if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
-                    crate::logf!("STORAGE: failed to save self-note: {}", e);
-                }
-            }
+            self.persist_messages_async(ci);
             // Live fleet propagation: a note typed here appears on our other devices now, not at the next sweep.
             self.push_rows_to_siblings(ci, std::slice::from_ref(&msg), None);
             return true;
@@ -9592,16 +9596,40 @@ impl PhotonApp {
         if let Some(contact) = self.contacts.get_mut(ci) {
             contact.insert_message_sorted(msg.clone());
             contact.message_scroll_offset = 0.0;
-            if let Some(storage) = self.storage.as_ref() {
-                if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
-                    crate::logf!("STORAGE: failed to save messages: {}", e);
-                }
-            }
         }
+        self.persist_messages_async(ci);
 
         // The wire half is DEFERRED to the next tick (drain_pending_chain_sends): the bubble above can only reach the screen when this handler returns, so running chain_transmit inline here — crypto, chains persist, dispatch — held the frame hostage for its whole duration. Queue it and let the grey bubble present first.
-        self.pending_chain_sends.push((ci, text, eagle_time));
+        self.pending_chain_sends.push((ci, text, eagle_time, self.tick_serial));
         return true;
+    }
+
+    /// Persist a contact's message table WITHOUT blocking the UI thread. Snapshots the contact and hands it to one background writer that coalesces bursts (latest snapshot per handle_hash wins — an older snapshot can never clobber a newer one because the drain keeps only the last). The write itself is the same `save_messages` full-table rewrite; only the thread changed.
+    fn persist_messages_async(&mut self, ci: usize) {
+        let Some(contact) = self.contacts.get(ci).cloned() else { return };
+        let Some(storage) = self.storage.as_ref().cloned() else { return };
+        // Storage rides WITH each snapshot (not captured once): logout/login swaps the vault, and a worker holding the first session's Arc would write a dead vault forever.
+        type PersistItem = (crate::types::Contact, std::sync::Arc<crate::storage::FlatStorage>);
+        let tx = self.persist_tx.get_or_insert_with(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<PersistItem>();
+            std::thread::spawn(move || {
+                while let Ok(first) = rx.recv() {
+                    // Coalesce the burst: keep the newest snapshot per conversation.
+                    let mut latest: Vec<PersistItem> = vec![first];
+                    while let Ok(next) = rx.try_recv() {
+                        latest.retain(|(c, _)| c.handle_hash != next.0.handle_hash);
+                        latest.push(next);
+                    }
+                    for (c, st) in latest {
+                        if let Err(e) = crate::storage::contacts::save_messages(&c, &st) {
+                            crate::logf!("STORAGE: async message persist failed: {}", e);
+                        }
+                    }
+                }
+            });
+            tx
+        });
+        let _ = tx.send((contact, storage));
     }
 
     /// Run the deferred WIRE half of queued sends — one tick after their bubbles rendered. Failure handling matches the old inline path: no local chain but a sibling exists → fleet-forward (the sibling's merge drain transmits on the braid); no chain and no sibling → the send has nowhere to go, take the bubble back out.
@@ -9609,8 +9637,14 @@ impl PhotonApp {
         if self.pending_chain_sends.is_empty() {
             return false;
         }
-        let sends = std::mem::take(&mut self.pending_chain_sends);
-        for (ci, text, eagle_time) in sends {
+        // FRAME FENCE: only take entries queued on an EARLIER tick. The drain runs in the same tick pass that renders, so an entry queued by this pass's input handler would still hold the frame hostage thru the whole wire half -- exactly the void this deferral exists to kill (field-observed surviving the first version of it).
+        let serial = self.tick_serial;
+        let (sends, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_chain_sends).into_iter().partition(|(_, _, _, q)| q.wrapping_add(1) < serial);
+        self.pending_chain_sends = keep;
+        if sends.is_empty() {
+            return false;
+        }
+        for (ci, text, eagle_time, _) in sends {
             let msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
             if !self.chain_transmit(ci, &text, eagle_time) {
                 let has_fleet = self.contacts.iter().any(|c| c.is_sibling);
@@ -9618,10 +9652,8 @@ impl PhotonApp {
                 if !(has_fleet && is_friend) {
                     if let Some(contact) = self.contacts.get_mut(ci) {
                         contact.messages.retain(|m| !(m.timestamp == eagle_time && m.is_outgoing && m.content == text));
-                        if let Some(storage) = self.storage.as_ref() {
-                            let _ = crate::storage::contacts::save_messages(contact, storage);
-                        }
                     }
+                    self.persist_messages_async(ci);
                     crate::log("CHAT: send had nowhere to go (no chain, no fleet) — bubble withdrawn");
                     continue;
                 }
@@ -13549,6 +13581,8 @@ impl PhotonApp {
         let mut offer_refire_indices: Vec<usize> = Vec::new();
         // Fleet history sweep deferral: a sibling coming online means it may hold conversation rows we don't — arm the per-conversation walk after the loop (the sweep needs &mut contacts).
         let mut fleet_sweep_due = false;
+        // Conversations whose message table changed in an arm below — persisted AFTER the loop via the async writer (the arms hold a &mut contact borrow; the inline save_messages here was the named 600ms-5.7s UI stall).
+        let mut persist_hashes: Vec<[u8; 32]> = Vec::new();
 
         // The braid / strict-ordering replay queue: when a successful decrypt fills a hash-chain gap, the now-contiguous buffered messages are pushed here as synthetic ChatMessage updates and drained BEFORE the next channel item, so a buffered N+1 is reprocessed immediately after N (and can itself cascade to N+2). FIFO front-drain.
         let mut replay_queue: std::collections::VecDeque<StatusUpdate> =
@@ -14259,9 +14293,7 @@ impl PhotonApp {
                                 // The marker row itself (hidden, ack_hash-bearing) — a lost ACK re-ACKs from it.
                                 let marker_row = ChatMessage::new_with_timestamp(message_text.clone(), false, timestamp).with_ack_hash(plaintext_hash);
                                 contact.insert_message_sorted(marker_row);
-                                if let Some(storage) = self.storage.as_ref() {
-                                    let _ = crate::storage::contacts::save_messages(contact, storage);
-                                }
+                                persist_hashes.push(contact.handle_hash);
                                 if let Some(row) = tombstoned {
                                     if let Some((hash, _, _)) = crate::types::parse_attachment_content(&row.content) {
                                         crate::storage::blob_delete(&hash);
@@ -14287,11 +14319,7 @@ impl PhotonApp {
                                 )
                                 .with_ack_hash(plaintext_hash);
                                 contact.insert_message_sorted(probe_row);
-                                if let Some(storage) = self.storage.as_ref() {
-                                    if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
-                                        crate::logf!("STORAGE: Failed to save probe row: {}", e);
-                                    }
-                                }
+                                persist_hashes.push(contact.handle_hash);
                             }
                             crate::log("CHAIN-PROBE: received peer's chain-weave probe — RX chain proven");
                             recv_seal_idx = Some(contact_idx);
@@ -14315,14 +14343,8 @@ impl PhotonApp {
                             contact.message_scroll_offset = 0.0; // Scroll to show new message
                             changed = true;
 
-                            // Persist messages for UI
-                            if let Some(storage) = self.storage.as_ref() {
-                                if let Err(e) =
-                                    crate::storage::contacts::save_messages(contact, storage)
-                                {
-                                    crate::logf!("STORAGE: Failed to save messages: {}", e);
-                                }
-                            }
+                            // Persist (async — see persist_hashes)
+                            persist_hashes.push(contact.handle_hash);
 
                             // Unread gate: is the user plausibly looking at THIS conversation right now? "Looking" = this contact's conversation (or its contact-scoped panel) is the active view AND, on desktop, the window is visible + focused. Event-shown, interaction-cleared doctrine: the counter only ever moves on a message landing or the user opening the conversation — no timers anywhere.
                             let conversation_open = matches!(self.state, AppState::Conversation | AppState::ContactPanel(_))
@@ -14569,14 +14591,10 @@ impl PhotonApp {
                                 }
                             }
 
-                            // Persist delivered status (AGENT.md: every change hits disk)
+                            // Persist delivered status (async writer — the inline save was the 5.7s MessageAck stall)
                             if found_msg {
-                                if let Some(storage) = self.storage.as_ref() {
-                                    if let Err(e) =
-                                        crate::storage::contacts::save_messages(contact, storage)
-                                    {
-                                        crate::logf!("STORAGE: Failed to save delivered status: {}", e);
-                                    }
+                                {
+                                    persist_hashes.push(contact.handle_hash);
                                 }
                             }
                         }
@@ -16703,6 +16721,14 @@ impl PhotonApp {
             }
         }
         close_arm_timer!();
+
+        // Async-persist every conversation an arm touched (deduped — one snapshot per conversation per drain).
+        persist_hashes.dedup();
+        for hh in persist_hashes {
+            if let Some(idx) = self.contacts.iter().position(|c| c.handle_hash == hh) {
+                self.persist_messages_async(idx);
+            }
+        }
 
         // Parked-ceremony offer re-fires collected on path-up edges (after releasing the checker borrow).
         for idx in offer_refire_indices {
