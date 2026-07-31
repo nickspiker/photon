@@ -444,6 +444,23 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeImeReplace(
 /// Kotlin's inset listener → the IME-inset mirror. Ptr-less like the foreground mirror; the app's per-frame tick diffs the value and relayouts on change.
 #[cfg(target_os = "android")]
 #[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnScaleEnd(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    _context_ptr: jlong,
+) {
+    SCALE_ENDED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Pinch-release edge, drained once by the app's tick — the Android zoom-persist moment.
+pub fn take_scale_ended() -> bool {
+    SCALE_ENDED.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
+static SCALE_ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_os = "android")]
+#[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeImeInset(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
