@@ -13554,6 +13554,46 @@ impl PhotonApp {
         let mut replay_queue: std::collections::VecDeque<StatusUpdate> =
             std::collections::VecDeque::new();
 
+        // Per-ARM stall attribution. PERF already showed check_status_updates blocking the UI thread for seconds, but not WHICH update type — this names it. Timed from loop top to loop top (arms `continue`, so an end-of-body probe would be skipped); the post-loop check closes the last iteration.
+        fn arm_label(u: &StatusUpdate) -> &'static str {
+            match u {
+                StatusUpdate::Online { .. } => "Online",
+                StatusUpdate::ChatMessage { .. } => "ChatMessage",
+                StatusUpdate::ChainResetReceived { .. } => "ChainResetReceived",
+                StatusUpdate::PongSealMissing { .. } => "PongSealMissing",
+                StatusUpdate::ChainSyncReceived { .. } => "ChainSyncReceived",
+                StatusUpdate::AttachBlobReceived { .. } => "AttachBlobReceived",
+                StatusUpdate::AttachProgress { .. } => "AttachProgress",
+                StatusUpdate::AttachHaveReceived { .. } => "AttachHaveReceived",
+                StatusUpdate::AttachReqReceived { .. } => "AttachReqReceived",
+                StatusUpdate::MessageAck { .. } => "MessageAck",
+                StatusUpdate::AvatarRequestReceived { .. } => "AvatarRequestReceived",
+                StatusUpdate::AvatarReceived { .. } => "AvatarReceived",
+                StatusUpdate::HistoryRequestReceived { .. } => "HistoryRequestReceived",
+                StatusUpdate::HistoryPageReceived { .. } => "HistoryPageReceived",
+                StatusUpdate::BlindFrameReceived { .. } => "BlindFrameReceived",
+                StatusUpdate::PTReceived { .. } => "PTReceived",
+                StatusUpdate::PTSendComplete { .. } => "PTSendComplete",
+                StatusUpdate::ClutchOfferReceived { .. } => "ClutchOfferReceived",
+                StatusUpdate::ClutchKemResponseReceived { .. } => "ClutchKemResponseReceived",
+                StatusUpdate::ClutchCompleteReceived { .. } => "ClutchCompleteReceived",
+                StatusUpdate::LanPeerDiscovered { .. } => "LanPeerDiscovered",
+                StatusUpdate::ReflexiveLearned { .. } => "ReflexiveLearned",
+                StatusUpdate::PathValidated { .. } => "PathValidated",
+            }
+        }
+        let mut arm_timer: Option<(&'static str, std::time::Instant)> = None;
+        macro_rules! close_arm_timer {
+            () => {
+                if let Some((label, t)) = arm_timer.take() {
+                    let ms = t.elapsed().as_millis();
+                    if ms > 100 {
+                        crate::logf!("PERF: status arm {} took {}ms (UI thread)", label, ms as u64);
+                    }
+                }
+            };
+        }
+
         loop {
             let update = match replay_queue.pop_front() {
                 Some(u) => u,
@@ -13562,6 +13602,8 @@ impl PhotonApp {
                     None => break,
                 },
             };
+            close_arm_timer!();
+            arm_timer = Some((arm_label(&update), std::time::Instant::now()));
             match update {
                 StatusUpdate::Online {
                     peer_pubkey,
@@ -16660,6 +16702,7 @@ impl PhotonApp {
                 }
             }
         }
+        close_arm_timer!();
 
         // Parked-ceremony offer re-fires collected on path-up edges (after releasing the checker borrow).
         for idx in offer_refire_indices {
