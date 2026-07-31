@@ -13271,11 +13271,12 @@ impl PhotonApp {
                         } else {
                             "depositing our blind with"
                         }, crate::fp(&contact.handle_proof));
+                    // BLIND frames ALWAYS ride the relay alongside any direct path. A validated path can be one-directional (their probes reach us, our answers vanish — observed live: peer_b served found=0 every 15s while peer_a's probe expired every 15s, forever), and a lost blind frame stalls S-recovery silently. The frames are tiny and idempotent by request id, so the duplicate costs nothing.
                     checker.send_history(crate::network::status::HistorySendRequest {
                         peer_addr: primary,
                         alt_addr: alt,
                         recipient_pubkey: *contact.public_identity.as_bytes(),
-                        relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
+                        relay_to: contact.relay_device_list(),
                         vsf_bytes,
                     });
                 }
@@ -16311,7 +16312,7 @@ impl PhotonApp {
                                                     peer_addr: primary,
                                                     alt_addr: alt,
                                                     recipient_pubkey: sender_pubkey.key,
-                                                    relay_to: if primary.ip().is_unspecified() || self.contacts[idx].validated_path.is_none() { self.contacts[idx].relay_device_list() } else { Vec::new() },
+                                                    relay_to: self.contacts[idx].relay_device_list(), // BLIND frames always ride the relay — a validated path can be one-directional, and a lost answer stalls S-recovery silently (see drive_blind_ops)
                                                     vsf_bytes,
                                                 },
                                             );
@@ -16373,7 +16374,7 @@ impl PhotonApp {
                                                         peer_addr: primary,
                                                         alt_addr: alt,
                                                         recipient_pubkey: sender_pubkey.key,
-                                                        relay_to: if primary.ip().is_unspecified() || self.contacts[idx].validated_path.is_none() { self.contacts[idx].relay_device_list() } else { Vec::new() },
+                                                        relay_to: self.contacts[idx].relay_device_list(), // BLIND frames always ride the relay — a validated path can be one-directional, and a lost answer stalls S-recovery silently (see drive_blind_ops)
                                                         vsf_bytes,
                                                     },
                                                 );
@@ -16409,7 +16410,7 @@ impl PhotonApp {
                                                     peer_addr: primary,
                                                     alt_addr: alt,
                                                     recipient_pubkey: sender_pubkey.key,
-                                                    relay_to: if primary.ip().is_unspecified() || self.contacts[idx].validated_path.is_none() { self.contacts[idx].relay_device_list() } else { Vec::new() },
+                                                    relay_to: self.contacts[idx].relay_device_list(), // BLIND frames always ride the relay — a validated path can be one-directional, and a lost answer stalls S-recovery silently (see drive_blind_ops)
                                                     vsf_bytes,
                                                 },
                                             );
