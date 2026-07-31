@@ -437,7 +437,8 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeImeReplace(
         return;
     };
     let s: String = env.get_string(&text).map(|j| j.into()).unwrap_or_default();
-    ctx.shell.ime_replace_chars(start.max(0) as usize, end.max(0) as usize, &s);
+    ctx.shell
+        .ime_replace_chars(start.max(0) as usize, end.max(0) as usize, &s);
 }
 
 /// Kotlin's inset listener → the IME-inset mirror. Ptr-less like the foreground mirror; the app's per-frame tick diffs the value and relayouts on change.
@@ -733,7 +734,8 @@ pub extern "C" fn Java_com_photon_messenger_PhotonBeacon_nativeOnBeaconHeard(
 /// Call a no-arg PhotonBeacon method ("stopAdvertise" / "startScan" / "stopScan") from any Rust thread. No-op with a log if the bridge never registered (Activity not up yet).
 #[cfg(target_os = "android")]
 // ── PhotonNfc bridge (NFC instant device add): the Kotlin object registers at nativeInit; Rust drives serve/reader thru the global ref; the reader's tap comes down via nativeOnNfcSecret. Same lifecycle pattern as PhotonBeacon. ──
-static PHOTON_NFC: std::sync::OnceLock<(jni::JavaVM, jni::objects::GlobalRef)> = std::sync::OnceLock::new();
+static PHOTON_NFC: std::sync::OnceLock<(jni::JavaVM, jni::objects::GlobalRef)> =
+    std::sync::OnceLock::new();
 
 #[cfg(target_os = "android")]
 #[no_mangle]
@@ -790,7 +792,10 @@ pub fn nfc_call_bytes(method: &str, a: &[u8]) {
             let Ok(arr) = env.byte_array_from_slice(a) else {
                 return;
             };
-            if env.call_method(obj.as_obj(), method, "([B)V", &[(&arr).into()]).is_err() {
+            if env
+                .call_method(obj.as_obj(), method, "([B)V", &[(&arr).into()])
+                .is_err()
+            {
                 let _ = env.exception_clear();
             }
         }
@@ -827,7 +832,10 @@ pub fn beacon_call_bytes(method: &str, a: &[u8]) {
                 error!("beacon_call_bytes({method}): array alloc failed");
                 return;
             };
-            if env.call_method(obj.as_obj(), method, "([B)V", &[(&arr).into()]).is_err() {
+            if env
+                .call_method(obj.as_obj(), method, "([B)V", &[(&arr).into()])
+                .is_err()
+            {
                 let _ = env.exception_clear();
                 error!("beacon_call_bytes({method}) failed");
             }
@@ -891,7 +899,11 @@ pub fn fcm_bell() -> Option<(String, String)> {
 
 /// Shared body for the two Kotlin entry points (the connection service's startup fetch + the messaging service's rotation callback — JNI names are class-scoped, hence two thin exports).
 #[cfg(target_os = "android")]
-fn set_fcm_bell(env: &mut JNIEnv<'_>, token: jni::objects::JString<'_>, project_id: jni::objects::JString<'_>) {
+fn set_fcm_bell(
+    env: &mut JNIEnv<'_>,
+    token: jni::objects::JString<'_>,
+    project_id: jni::objects::JString<'_>,
+) {
     let (Ok(token), Ok(project)) = (env.get_string(&token), env.get_string(&project_id)) else {
         error!("set_fcm_bell: bad JNI strings");
         return;
@@ -901,7 +913,11 @@ fn set_fcm_bell(env: &mut JNIEnv<'_>, token: jni::objects::JString<'_>, project_
     if token.is_empty() || project.is_empty() {
         return;
     }
-    info!("FCM bell material set (project {}, token {} chars)", project, token.len());
+    info!(
+        "FCM bell material set (project {}, token {} chars)",
+        project,
+        token.len()
+    );
     *FCM_BELL.lock().unwrap() = Some((project, token));
 }
 
@@ -1066,7 +1082,9 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetwor
             tohu::set_boot_secret_override(&bytes);
             info!("session boot-secret override set ({} bytes)", bytes.len());
         }
-        _ => error!("nativeNetworkInit: empty/unreadable boot secret — session may not persist on this ROM"),
+        _ => error!(
+            "nativeNetworkInit: empty/unreadable boot secret — session may not persist on this ROM"
+        ),
     }
 
     // Register the service as the message-notification sink. nativeNetworkInit is an INSTANCE method on the Kotlin side, so the second JNI parameter is the service `this` — a global ref of it (+ the JavaVM) lets the RX thread post "new message" notifications up thru Kotlin regardless of Activity lifecycle (the Choreographer poll bridge stops when the app backgrounds, which is exactly when notifications matter).

@@ -203,7 +203,12 @@ pub(crate) fn blur_vertical_soft(buf: &mut [u8], buf_w: usize, virtual_height: u
 
 /// Wrap-add each scratch byte into the canvas pixel's visible RGB (legacy compose op for glow + highlight). Read pixel → XOR to visible → wrap-add grey per channel → XOR back to darkness → preserve α. Wrap-around (not saturating) is intentional: produces Photon's characteristic chromatic-interaction look where bright bg pixels wrap dark.
 /// Glow: a WHITE light layer (darkness = 0) composited UNDER whatever's there, α = the blurred coverage byte. `under()` of a darkness-0 pixel brightens the destination toward white by α — an additive-white halo that soft-clamps at 255 (no wrap artifacts). A proper fluor layer, so it needs nothing opaque beneath it and the logo can draw first/topmost.
-pub(crate) fn composite_glow_white(pixels: &mut [u32], buf_w: usize, start_row: usize, scratch: &[u8]) {
+pub(crate) fn composite_glow_white(
+    pixels: &mut [u32],
+    buf_w: usize,
+    start_row: usize,
+    scratch: &[u8],
+) {
     use fluor::pixel::{Blend, BlendMode};
     for (i, &grey) in scratch.iter().enumerate() {
         if grey == 0 {

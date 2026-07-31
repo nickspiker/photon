@@ -29,7 +29,11 @@ static HEARD: Mutex<Vec<HeardBeacon>> = Mutex::new(Vec::new());
 // ── Announce (new device) ──
 
 /// Advertise this device's join beacon for as long as the returned guard lives — tie it to the join ceremony's thread scope so every exit path (bind, cancel, error) stops the radio. `eagle_time` is this device's PUBLISHED binding-offer stamp (`BindRequest::t`) — the beacon is derived entirely from published offer state, so post the offer first, then announce with the stamp it returned.
-pub fn announce_guard(handle_proof: &[u8; 32], device_pubkey: &[u8; 32], eagle_time: i64) -> AnnounceGuard {
+pub fn announce_guard(
+    handle_proof: &[u8; 32],
+    device_pubkey: &[u8; 32],
+    eagle_time: i64,
+) -> AnnounceGuard {
     announce(handle_proof, device_pubkey, eagle_time);
     AnnounceGuard(())
 }
@@ -40,7 +44,11 @@ pub fn reannounce(handle_proof: &[u8; 32], device_pubkey: &[u8; 32], eagle_time:
 }
 
 fn announce(handle_proof: &[u8; 32], device_pubkey: &[u8; 32], eagle_time: i64) {
-    imp::start_announce(fgtw::pair::beacon_id(handle_proof, device_pubkey, eagle_time));
+    imp::start_announce(fgtw::pair::beacon_id(
+        handle_proof,
+        device_pubkey,
+        eagle_time,
+    ));
 }
 
 /// Stops the announce beacon on drop.
@@ -80,7 +88,10 @@ pub fn on_uuid_heard(uuid: [u8; BEACON_UUID_LEN]) {
     let mut heard = HEARD.lock().unwrap();
     match heard.iter_mut().find(|b| b.uuid == uuid) {
         Some(b) => b.last_seen = Instant::now(),
-        None => heard.push(HeardBeacon { uuid, last_seen: Instant::now() }),
+        None => heard.push(HeardBeacon {
+            uuid,
+            last_seen: Instant::now(),
+        }),
     }
 }
 
@@ -312,8 +323,12 @@ mod imp {
 
     async fn scan(stop: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let manager = Manager::new().await?;
-        let central =
-            manager.adapters().await?.into_iter().next().ok_or("no BLE adapter")?;
+        let central = manager
+            .adapters()
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("no BLE adapter")?;
         let mut events = central.events().await?;
         // Scan-all: our beacon UUID carries a per-ceremony nonce, so it can't be pre-listed in a ScanFilter — the magic-prefix check in on_uuid_heard does the selection. Foreground scan-all is permitted on macOS/Windows.
         central.start_scan(ScanFilter::default()).await?;

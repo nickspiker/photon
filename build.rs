@@ -51,7 +51,10 @@ fn main() {
     // via ld64's -sectcreate (works under both osxcross and a native toolchain), which is the standard way
     // a command-line tool declares a TCC usage string.
     if target.contains("apple") {
-        let plist = format!("{}/macos/Info.plist", env::var("CARGO_MANIFEST_DIR").unwrap());
+        let plist = format!(
+            "{}/macos/Info.plist",
+            env::var("CARGO_MANIFEST_DIR").unwrap()
+        );
         println!("cargo:rustc-link-arg=-Wl,-sectcreate,__TEXT,__info_plist,{plist}");
         println!("cargo:rerun-if-changed=macos/Info.plist");
         // CoreBluetooth advertiser shim (pairing-beacon new-device role) — ObjC because CBPeripheralManager needs a delegate + run loop. Compiled with ARC; links CoreBluetooth + Foundation. cc honours CC_<target>, so it rides the osxcross clang wrapper under the cross build.

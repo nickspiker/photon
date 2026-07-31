@@ -150,7 +150,13 @@ pub const ATTACHMENT_PREFIX: &str = "\u{1}\u{2}photon-attach\u{2}\u{1}";
 
 /// Build an attachment row's content string.
 pub fn attachment_content(content_hash: &[u8; 32], filename: &str, size: u64) -> String {
-    format!("{}{}\u{2}{}\u{2}{}", ATTACHMENT_PREFIX, hex::encode(content_hash), filename.replace('\u{2}', " "), size)
+    format!(
+        "{}{}\u{2}{}\u{2}{}",
+        ATTACHMENT_PREFIX,
+        hex::encode(content_hash),
+        filename.replace('\u{2}', " "),
+        size
+    )
 }
 
 /// Parse an attachment row's content → (content_hash, filename, size). None for non-attachment content or a malformed record.
@@ -292,11 +298,11 @@ pub struct Contact {
     pub reached_via_relay: bool,
     pub messages: Vec<ChatMessage>, // Conversation history
     pub message_scroll_offset: f32, // Vertical scroll offset for message area (pixels)
-    pub prev_is_online: bool, // For differential rendering (not persisted)
-    pub indicator_x: usize, // Cached indicator dot X position (set during draw)
-    pub indicator_y: usize, // Cached indicator dot Y position (set during draw)
-    pub text_x: f32,     // Cached text X position (set during draw)
-    pub text_y: f32,     // Cached text Y position (set during draw)
+    pub prev_is_online: bool,       // For differential rendering (not persisted)
+    pub indicator_x: usize,         // Cached indicator dot X position (set during draw)
+    pub indicator_y: usize,         // Cached indicator dot Y position (set during draw)
+    pub text_x: f32,                // Cached text X position (set during draw)
+    pub text_y: f32,                // Cached text Y position (set during draw)
     // Avatar cache - fetched from FGTW by handle Storage key is deterministic: BLAKE3(BLAKE3(handle) || "avatar")
     pub avatar_pixels: Option<Vec<u8>>, // Full 256x256 VSF RGB pixels (cached)
     pub avatar_scaled: Option<Vec<u8>>, // Pre-scaled to current display size
@@ -386,7 +392,13 @@ impl Contact {
         let seed = crate::types::Handle::to_identity_seed(handle.as_str());
         let handle_hash = crate::crypto::clutch::identity_party_id(&seed);
         // NO handle-derived avatar pin: that made the avatar readable by anyone who knew the handle (docs/identity-profile.md). A fresh contact starts UNPINNED (zero) — its real pin (random key ‖ lookup) arrives over an authenticated pong once the friendship is mutual, exactly like the published name. Until then the gradient avatar renders.
-        Self::from_pin(String::new(), [0u8; 64], handle_proof, handle_hash, public_identity)
+        Self::from_pin(
+            String::new(),
+            [0u8; 64],
+            handle_proof,
+            handle_hash,
+            public_identity,
+        )
     }
 
     /// PIN-SET constructor: reconstruct a contact from stored/synced material (vault rows, roster entries) — no handle anywhere.
@@ -439,7 +451,7 @@ impl Contact {
             clutch_kem_encap_in_progress: false, // No KEM encap running yet
             clutch_ceremony_in_progress: false, // No ceremony completion running yet
             completed_their_hqc_prefix: None, // Set when CLUTCH completes, persisted
-            offer_provenances: Vec::new(), // Collected offer provenances for ceremony nonce
+            offer_provenances: Vec::new(),    // Collected offer provenances for ceremony nonce
             trust_level: TrustLevel::Stranger,
             added: vsf::eagle_time_oscillations(),
             roster_updated: vsf::eagle_time_oscillations(),
@@ -458,24 +470,24 @@ impl Contact {
             avatar_pixels: None,        // Fetched from FGTW by handle when online
             avatar_scaled: None,        // Scaled on demand for display
             avatar_scaled_diameter: 0,
-            chain_woven: false,           // Chain not yet proven end-to-end (probe pending)
-            probe_sent: false,            // Chain-weave probe not sent yet
-            their_probe_seen: false,      // Haven't seen their chain-weave probe yet
-            their_probe_ceremony: None,   // …and so no ceremony to attribute one to
+            chain_woven: false, // Chain not yet proven end-to-end (probe pending)
+            probe_sent: false,  // Chain-weave probe not sent yet
+            their_probe_seen: false, // Haven't seen their chain-weave probe yet
+            their_probe_ceremony: None, // …and so no ceremony to attribute one to
             chain_advanced_by_ack: false, // Our TX chain not yet ACK-advanced
-            validated_path: None,         // No punch-validated direct path yet
-            punch_unvalidated_cycles: 0,  // No failed punch cycles yet
+            validated_path: None, // No punch-validated direct path yet
+            punch_unvalidated_cycles: 0, // No failed punch cycles yet
             clutch_offer_stall_cycles: 0, // No stalled-offer cycles yet
-            last_heard: None,             // No signed traffic from them yet this session
-            presence_probed: false,       // No presence verdict yet this session
-            last_ring: None,              // Doorbell never rung this session
+            last_heard: None,   // No signed traffic from them yet this session
+            presence_probed: false, // No presence verdict yet this session
+            last_ring: None,    // Doorbell never rung this session
             chain_fail_streak: 0,
             gap_streak: (0, 0),
             last_chain_reset_nonce: None,
             last_chain_reset_sent: None,
             digest_kick_osc: 0,
             history_recovery: None,       // No history recovery running
-            clutch_completed_at: None,         // Ceremony not yet complete
+            clutch_completed_at: None,    // Ceremony not yet complete
             is_sibling: false,            // A friend, unless made via new_sibling
             deposited_blinds: Vec::new(), // No blinds deposited with us yet
             blind_deposited: false,       // Our blind not confirmed at this friend yet
@@ -488,7 +500,13 @@ impl Contact {
     /// Construct a fleet-sibling contact: one of our OWN devices, discovered from our folded membership chain. Party id (in `handle_hash`) is device-derived so the ceremony machinery can't collide with the self/friend id space; `handle_proof` is OUR OWN so `refresh_contact_addrs_from_peers` matches the sibling's FGTW peer row (keyed hp + device pubkey — no handle string needed). Trust is implicit — the pubkey came from our own fold.
     pub fn new_sibling(our_handle_proof: [u8; 32], sibling_device: DevicePubkey) -> Self {
         let party_id = crate::crypto::clutch::sibling_party_id(&sibling_device.key);
-        let mut c = Self::from_pin(String::new(), [0u8; 64], our_handle_proof, party_id, sibling_device);
+        let mut c = Self::from_pin(
+            String::new(),
+            [0u8; 64],
+            our_handle_proof,
+            party_id,
+            sibling_device,
+        );
         c.is_sibling = true;
         c.trust_level = TrustLevel::Inner;
         c
@@ -561,10 +579,19 @@ impl Contact {
 
     /// Upsert the per-device endpoint for `pubkey` and apply `update` to it. Linear scan — fleets are single-digit sized.
     pub fn endpoint_mut(&mut self, pubkey: &[u8; 32]) -> &mut DeviceEndpoint {
-        if let Some(i) = self.device_endpoints.iter().position(|e| e.pubkey == *pubkey) {
+        if let Some(i) = self
+            .device_endpoints
+            .iter()
+            .position(|e| e.pubkey == *pubkey)
+        {
             return &mut self.device_endpoints[i];
         }
-        self.device_endpoints.push(DeviceEndpoint { pubkey: *pubkey, public: None, lan: None, online: false });
+        self.device_endpoints.push(DeviceEndpoint {
+            pubkey: *pubkey,
+            public: None,
+            lan: None,
+            online: false,
+        });
         self.device_endpoints.last_mut().unwrap()
     }
 
@@ -727,7 +754,10 @@ impl Contact {
                 }
             }
             ClutchState::Pending => {
-                let their_offer = self.clutch_slots.iter().any(|s| s.offer.is_some() && s.handle_hash != self.handle_hash);
+                let their_offer = self
+                    .clutch_slots
+                    .iter()
+                    .any(|s| s.offer.is_some() && s.handle_hash != self.handle_hash);
                 let all_kem = self.all_slots_complete();
                 // Walk the milestones in order; report the earliest one not yet reached.
                 if self.clutch_ceremony_in_progress {
@@ -785,7 +815,10 @@ mod fold_honour_tests {
     #[test]
     fn knows_first_met_device_before_any_refresh() {
         let c = contact_with([1u8; 32]);
-        assert!(c.knows_device(&[1u8; 32]), "the device we met is always known");
+        assert!(
+            c.knows_device(&[1u8; 32]),
+            "the device we met is always known"
+        );
         assert!(!c.knows_device(&[2u8; 32]), "a stranger device is not");
     }
 
@@ -798,7 +831,11 @@ mod fold_honour_tests {
         assert!(!c.knows_device(&[9u8; 32]), "still rejects a non-member");
         // public_identity (1) appears once, siblings 2 and 3 follow — no duplicate of 1.
         let ans = c.answerable_pubkeys();
-        assert_eq!(ans.len(), 3, "first-met + 2 distinct siblings, deduped: {ans:?}");
+        assert_eq!(
+            ans.len(),
+            3,
+            "first-met + 2 distinct siblings, deduped: {ans:?}"
+        );
         assert_eq!(ans[0], [1u8; 32], "first-met device leads");
     }
 
@@ -821,9 +858,16 @@ mod fold_honour_tests {
         let mut c = contact_with([1u8; 32]);
         c.fleet_members = vec![[2u8; 32]]; // first-met (1) is gone; only 2 remains
         c.fleet_folded_once = true;
-        assert!(!c.knows_device(&[1u8; 32]), "removed first-met device is no longer trusted");
+        assert!(
+            !c.knows_device(&[1u8; 32]),
+            "removed first-met device is no longer trusted"
+        );
         assert!(c.knows_device(&[2u8; 32]), "the current member is trusted");
-        assert_eq!(c.answerable_pubkeys(), vec![[2u8; 32]], "answerable drops the revoked device");
+        assert_eq!(
+            c.answerable_pubkeys(),
+            vec![[2u8; 32]],
+            "answerable drops the revoked device"
+        );
     }
 
     #[test]
@@ -831,7 +875,10 @@ mod fold_honour_tests {
         // A sibling contact never folds a contact-chain, so fleet_folded_once stays false and knows_device answers only the one sibling device (empty fleet_members is load-bearing for first-match routing).
         let sib = Contact::new_sibling([0x22; 32], DevicePubkey::from_bytes([5u8; 32]));
         assert!(!sib.fleet_folded_once, "siblings are never armed");
-        assert!(sib.knows_device(&[5u8; 32]), "the sibling device is trusted (bootstrap)");
+        assert!(
+            sib.knows_device(&[5u8; 32]),
+            "the sibling device is trusted (bootstrap)"
+        );
         assert!(!sib.knows_device(&[6u8; 32]), "another device is not");
     }
 
@@ -849,7 +896,10 @@ mod fold_honour_tests {
         // …then our own completion for that same ceremony runs.
         c.void_weave_seal_from_previous_chain();
 
-        assert!(c.their_probe_seen, "a probe for THIS ceremony must survive its completion");
+        assert!(
+            c.their_probe_seen,
+            "a probe for THIS ceremony must survive its completion"
+        );
         assert_eq!(c.their_probe_ceremony, Some(ceremony));
     }
 
@@ -863,7 +913,10 @@ mod fold_honour_tests {
 
         c.void_weave_seal_from_previous_chain();
 
-        assert!(!c.their_probe_seen, "a probe from the replaced chain must not seal the new one");
+        assert!(
+            !c.their_probe_seen,
+            "a probe from the replaced chain must not seal the new one"
+        );
         assert_eq!(c.their_probe_ceremony, None);
     }
 
@@ -890,7 +943,10 @@ mod fold_honour_tests {
             sib.handle_hash,
             crate::crypto::clutch::sibling_party_id(&sib_device)
         );
-        assert_ne!(sib.handle_hash, crate::types::Handle::to_identity_seed("me"));
+        assert_ne!(
+            sib.handle_hash,
+            crate::types::Handle::to_identity_seed("me")
+        );
         // ContactId is device-keyed — two siblings of one handle never collide.
         assert_eq!(sib.id, ContactId::from_pubkey(&sib.public_identity));
         // knows_device answers ONLY that one device (empty fleet_members is load-bearing for first-match routing).
@@ -902,7 +958,10 @@ mod fold_honour_tests {
         let mut sib = sib;
         sib.init_clutch_slots(our_pid);
         assert_eq!(sib.clutch_slots.len(), 2);
-        assert_ne!(sib.clutch_slots[0].handle_hash, sib.clutch_slots[1].handle_hash);
+        assert_ne!(
+            sib.clutch_slots[0].handle_hash,
+            sib.clutch_slots[1].handle_hash
+        );
         assert!(sib.get_slot(&our_pid).is_some());
         assert!(sib.get_slot(&sib.handle_hash).is_some());
     }

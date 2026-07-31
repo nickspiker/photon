@@ -74,8 +74,11 @@ pub enum QueryResult {
     Success(Box<AttestationData>),
     AlreadyAttested(PeerRecord), // Handle is claimed by another device
     /// Result of a [`QueryRequest::Probe`]: the branch decision plus the derived roots (so the follow-up attest/join reuses the proof instead of recomputing it).
-    Probe { outcome: ProbeOutcome, session: tohu::SessionIdentity },
-    Error(String),               // Error during attestation
+    Probe {
+        outcome: ProbeOutcome,
+        session: tohu::SessionIdentity,
+    },
+    Error(String), // Error during attestation
 }
 
 /// Unified handle query system for all platforms
@@ -371,7 +374,10 @@ impl HandleQuery {
                 let online = check_connectivity(&client);
 
                 if first_check || online != prev_online {
-                    crate::logf!("Connectivity: FGTW {} (GET /status)", if online { "ONLINE" } else { "offline" });
+                    crate::logf!(
+                        "Connectivity: FGTW {} (GET /status)",
+                        if online { "ONLINE" } else { "offline" }
+                    );
                     let _ = online_tx.send(online);
                     if let Some(ref proxy) = event_proxy {
                         let _ = proxy.send(PhotonEvent::ConnectivityChanged(online));
@@ -413,7 +419,11 @@ impl HandleQuery {
                         Ok(r) => {
                             let success = r.status().is_success();
                             if first_check {
-                                crate::logf!("Network: FGTW status check: {} ({})", r.status(), if success { "online" } else { "offline" });
+                                crate::logf!(
+                                    "Network: FGTW status check: {} ({})",
+                                    r.status(),
+                                    if success { "online" } else { "offline" }
+                                );
                             }
                             success
                         }
@@ -483,7 +493,10 @@ impl HandleQuery {
                                     ProbeOutcome::Fresh
                                 }
                                 Err(fold_err) => {
-                                    crate::logf!("Network: probe fold failed (indeterminate, not taken): {}", format!("{:?}", fold_err));
+                                    crate::logf!(
+                                        "Network: probe fold failed (indeterminate, not taken): {}",
+                                        format!("{:?}", fold_err)
+                                    );
                                     let _ = tx.send(QueryResult::Error(format!(
                                         "chain unverifiable: {fold_err:?}"
                                     )));
@@ -523,7 +536,9 @@ impl HandleQuery {
                         (s.identity_seed, s.vault_seed, s.handle_proof, false)
                     }
                     // Handled above with an early `continue` — never reaches here.
-                    QueryRequest::Probe(_) => unreachable!("Probe is intercepted before roots resolution"),
+                    QueryRequest::Probe(_) => {
+                        unreachable!("Probe is intercepted before roots resolution")
+                    }
                 };
                 crate::log("Network: Querying handle...");
 
@@ -595,7 +610,10 @@ impl HandleQuery {
                             Err(fold_err) => {
                                 // Dev-log the raw body so a Cloudflare KV read-lag serving a pre-wipe chain is visible (gated to the development feature).
                                 #[cfg(feature = "development")]
-                                crate::logf!("Network: attest verdict fold failed (indeterminate): {}", format!("{:?}", fold_err));
+                                crate::logf!(
+                                    "Network: attest verdict fold failed (indeterminate): {}",
+                                    format!("{:?}", fold_err)
+                                );
                                 Err(format!("chain unverifiable: {fold_err:?}"))
                             }
                         },
@@ -606,7 +624,10 @@ impl HandleQuery {
                         Ok(ours) => ours,
                         Err(e) => {
                             // Indeterminate — never taken, never clear the session; retry next cycle.
-                            crate::logf!("Network: attest verdict indeterminate (keeping session): {}", e);
+                            crate::logf!(
+                                "Network: attest verdict indeterminate (keeping session): {}",
+                                e
+                            );
                             let _ = tx.send(QueryResult::Error(e));
                             continue;
                         }
@@ -638,7 +659,11 @@ impl HandleQuery {
                             use num_bigint::BigUint;
                             let handle_seed = vault_seed;
                             // device_secret is NEVER logged: the identity/handle seeds are handle-derivable anyway (no new capability in the log), but the device secret is fingerprint-derived and the log is SUBMITTABLE — writing it would hand fleet-membership keys to anyone who can pull the blob (which only needs the handle).
-                            crate::logf!("Development: identity_seed = {}  handle_seed = {}", voca::encode(BigUint::from_bytes_be(&identity_seed)), voca::encode(BigUint::from_bytes_be(&handle_seed)));
+                            crate::logf!(
+                                "Development: identity_seed = {}  handle_seed = {}",
+                                voca::encode(BigUint::from_bytes_be(&identity_seed)),
+                                voca::encode(BigUint::from_bytes_be(&handle_seed))
+                            );
                         }
 
                         // Initialize FlatStorage for this session. A bare `return` here would silently strand the UI on the Attesting spinner because the result channel never gets a verdict — the worker has already proven FGTW says the handle is ours, but with no local vault we can't reach Ready. Surface the failure as a QueryResult::Error so the Launch screen flips to its error state and the user sees what happened. open_shared, NEVER new: on a resume the UI thread already holds this vault's engine and is writing to it (CLUTCH chains, avatars, presence state). A second independent engine here is two in-RAM states racing one file — the exact corruption that bricks a live vault ("seal verification failed" on every open after the stale engine's commit).
@@ -666,7 +691,11 @@ impl HandleQuery {
                             if let Err(e) =
                                 crate::storage::contacts::load_messages(contact, &storage)
                             {
-                                crate::logf!("Network: Failed to load messages for {}: {}", crate::fp(&contact.handle_proof).as_str(), e);
+                                crate::logf!(
+                                    "Network: Failed to load messages for {}: {}",
+                                    crate::fp(&contact.handle_proof).as_str(),
+                                    e
+                                );
                             }
 
                             // Load CLUTCH state if ceremony incomplete
@@ -732,7 +761,9 @@ impl HandleQuery {
                         // What the cloud already holds, kept so the upload below can tell a real change from a no-op. The blob's BYTES can't answer that — encrypt_bytes draws a fresh random nonce per call, so re-encrypting identical contacts yields different ciphertext every time. Compare the decoded CONTENT instead.
                         let mut cloud_had: Option<Vec<crate::storage::cloud::CloudContact>> = None;
                         if fleet_key.is_none() {
-                            crate::log("Cloud: no fleet key yet — skipping the contacts backup this round");
+                            crate::log(
+                                "Cloud: no fleet key yet — skipping the contacts backup this round",
+                            );
                         }
                         if let Some(Ok(Some(cloud_contacts))) = fleet_key.map(|fk| {
                             crate::log("Network: Syncing with cloud...");
@@ -769,8 +800,10 @@ impl HandleQuery {
                         // Upload ONLY when our local set actually differs from what the cloud already holds.
                         // The old condition was `!contacts.is_empty()`, which is true on essentially every attest — so every single attest re-uploaded a byte-identical set. Observed 2026-07-29: downloaded 1945 bytes / 9 contacts, then re-uploaded 1945 bytes / 9 contacts ONE MILLISECOND later, and that no-op write blocked attestation for 7.3s on a 202 KB/s uplink. It is invisible on fibre and brutal on hotel wifi.
                         // Compare decoded content, not ciphertext (random nonce per encrypt — see above). Order-independent: the merge above appends cloud-only rows, so a set that matches can still be permuted.
-                        let ours: Vec<crate::storage::cloud::CloudContact> =
-                            contacts.iter().map(crate::storage::cloud::CloudContact::from).collect();
+                        let ours: Vec<crate::storage::cloud::CloudContact> = contacts
+                            .iter()
+                            .map(crate::storage::cloud::CloudContact::from)
+                            .collect();
                         let unchanged = cloud_had.as_ref().is_some_and(|had| {
                             had.len() == ours.len()
                                 && ours.iter().all(|o| had.iter().any(|h| h == o))
@@ -785,7 +818,10 @@ impl HandleQuery {
                                     &handle_proof,
                                 );
                             } else if unchanged {
-                                crate::logf!("Cloud: {} contacts unchanged — skipping upload", ours.len());
+                                crate::logf!(
+                                    "Cloud: {} contacts unchanged — skipping upload",
+                                    ours.len()
+                                );
                             }
                         }
                         crate::log("Network: Background loading complete");
@@ -827,7 +863,8 @@ impl HandleQuery {
                                     "Network: chain-proven takeover but no peer record echoed — treating as retryable",
                                 );
                                 QueryResult::Error(
-                                    "handle claimed by another identity (no peer record)".to_string(),
+                                    "handle claimed by another identity (no peer record)"
+                                        .to_string(),
                                 )
                             }
                         }
@@ -914,7 +951,10 @@ impl HandleQuery {
             None => return SearchResult::NotFound,
         };
 
-        crate::logf!("Network: '{}' not in local store — refreshing peer list from FGTW", handle);
+        crate::logf!(
+            "Network: '{}' not in local store — refreshing peer list from FGTW",
+            handle
+        );
         let refresh = crate::network::http::runtime().block_on(
             crate::network::fgtw::bootstrap::load_bootstrap_peers(
                 keypair,
@@ -978,7 +1018,9 @@ impl HandleQuery {
 
     /// First attest with caller-derived roots (non-blocking) — the JOIN flow derives them once up front; this skips the string and the second ~1s proof while keeping first-attest persistence (roots remembered on FGTW confirmation).
     pub fn query_first_attest_with_roots(&self, session: tohu::SessionIdentity) {
-        let _ = self.query_sender.send(QueryRequest::FirstAttestWithRoots(session));
+        let _ = self
+            .query_sender
+            .send(QueryRequest::FirstAttestWithRoots(session));
     }
 
     /// Resume attestation from the cached session roots (non-blocking) — no handle string, no ~1s proof recompute.

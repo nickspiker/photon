@@ -176,7 +176,10 @@ pub fn decode_contacts(
             .map_err(|e| CloudError::Parse(format!("contacts blob failed verified read: {e}")))?;
 
     decode_contact_rows(
-        section.get_fields("contact").into_iter().map(|f| f.values.as_slice()),
+        section
+            .get_fields("contact")
+            .into_iter()
+            .map(|f| f.values.as_slice()),
     )
 }
 
@@ -316,7 +319,11 @@ pub fn sync_contacts_to_cloud(
     // Encode and encrypt
     let encrypted = encode_contacts(&cloud_contacts, &encryption_key)?;
 
-    crate::logf!("Cloud: Uploading {} contacts ({} bytes encrypted)", contacts.len(), encrypted.len());
+    crate::logf!(
+        "Cloud: Uploading {} contacts ({} bytes encrypted)",
+        contacts.len(),
+        encrypted.len()
+    );
 
     #[cfg(feature = "development")]
     crate::log("Cloud: About to call put_blob_blocking...");
@@ -364,7 +371,10 @@ pub fn load_contacts_from_cloud(
         }
     };
 
-    crate::logf!("Cloud: Downloaded contacts blob ({} bytes)", encrypted.len());
+    crate::logf!(
+        "Cloud: Downloaded contacts blob ({} bytes)",
+        encrypted.len()
+    );
 
     // Decrypt and decode
     let contacts = decode_contacts(&encrypted, &encryption_key)?;
@@ -481,8 +491,13 @@ mod document_tests {
         let key = [7u8; 32];
         let blob = encode_contacts(&sample(), &key).expect("encode");
         let plain = crate::storage::decrypt_bytes(&blob, &key).expect("decrypt");
-        assert!(plain.starts_with(b"R\xc3\x85<"), "must carry the RÅ< magic header, got {:?}", &plain[..plain.len().min(8)]);
-        let (header, _) = vsf::verification::read_verified(&plain, None).expect("read_verified must accept our own document");
+        assert!(
+            plain.starts_with(b"R\xc3\x85<"),
+            "must carry the RÅ< magic header, got {:?}",
+            &plain[..plain.len().min(8)]
+        );
+        let (header, _) = vsf::verification::read_verified(&plain, None)
+            .expect("read_verified must accept our own document");
         assert!(
             matches!(header.provenance_hash, VsfType::hp(ref h) if h.len() == 32),
             "a document without a 32-byte hp has nothing to compare or verify, got {:?}",
@@ -497,7 +512,10 @@ mod document_tests {
         let original = sample();
         let blob = encode_contacts(&original, &key).expect("encode");
         let back = decode_contacts(&blob, &key).expect("decode");
-        assert_eq!(back, original, "decode must reproduce exactly what encode was given");
+        assert_eq!(
+            back, original,
+            "decode must reproduce exactly what encode was given"
+        );
     }
 
     /// The whole point of v1: the address and the key follow the FLEET, not the device. Two devices in one fleet must land on the SAME blob (that is what makes it a restore path), and a different fleet key must land somewhere else entirely.

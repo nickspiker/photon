@@ -88,7 +88,11 @@ pub fn set_profile_name(name: &str) {
 }
 
 fn profile_name() -> Option<String> {
-    PROFILE_NAME.lock().ok().map(|n| n.clone()).filter(|n| !n.is_empty())
+    PROFILE_NAME
+        .lock()
+        .ok()
+        .map(|n| n.clone())
+        .filter(|n| !n.is_empty())
 }
 
 /// Our avatar pin (random key ‖ lookup) as sent in pongs — the friend-gated avatar capability. Written by the UI thread on avatar set / settings load; read by the status thread per pong. Zero = unset (no avatar).
@@ -102,7 +106,10 @@ pub fn set_avatar_pin(pin: &[u8; 64]) {
 }
 
 fn avatar_pin() -> Option<[u8; 64]> {
-    AVATAR_PIN.lock().ok().and_then(|p| if *p == [0u8; 64] { None } else { Some(*p) })
+    AVATAR_PIN
+        .lock()
+        .ok()
+        .and_then(|p| if *p == [0u8; 64] { None } else { Some(*p) })
 }
 
 /// Request to ping a contact
@@ -198,7 +205,7 @@ pub struct ClutchOfferRequest {
     pub peer_addr: SocketAddr, // Primary path (LAN-preferred); port comes from FGTW (peer's photon_port)
     pub alt_addr: Option<SocketAddr>, // Alternate path raced alongside (WAN) — see PtManager::send_with_pubkey_and_alt
     pub vsf_bytes: Vec<u8>,           // Pre-built and signed VSF message
-    pub recipient_pubkey: [u8; 32],   // Peer's primary device — PT's own retry-threshold relay fallback stores under relay/{recipient}/
+    pub recipient_pubkey: [u8; 32], // Peer's primary device — PT's own retry-threshold relay fallback stores under relay/{recipient}/
     pub relay_to: Vec<[u8; 32]>, // Store on the FGTW relay for EACH of these peer devices in parallel (empty = don't relay). Set to the peer's full device list when no direct path is proven (asymmetric reachability): the direct transfer keeps getting cancelled on address churn before it could reach PT's own fallback, and we can't tell which of a multi-device peer's phones is polling, so we address them all.
 }
 
@@ -213,7 +220,7 @@ pub struct ClutchKemResponseRequest {
     pub ceremony_id: [u8; 32], // Deterministic from sorted handle_hashes
     pub payload: crate::crypto::clutch::ClutchKemResponsePayload,
     pub device_pubkey: [u8; 32],
-    pub device_secret: [u8; 32], // For signing (zeroize after use)
+    pub device_secret: [u8; 32],    // For signing (zeroize after use)
     pub recipient_pubkey: [u8; 32], // Peer primary device (PT fallback)
     pub relay_to: Vec<[u8; 32]>,    // Relay for each of these peer devices (empty = no relay)
 }
@@ -229,7 +236,7 @@ pub struct ClutchCompleteRequest {
     pub ceremony_id: [u8; 32], // Deterministic from sorted handle_hashes
     pub payload: crate::crypto::clutch::ClutchCompletePayload,
     pub device_pubkey: [u8; 32],
-    pub device_secret: [u8; 32], // For signing (zeroize after use)
+    pub device_secret: [u8; 32],    // For signing (zeroize after use)
     pub recipient_pubkey: [u8; 32], // Peer primary device (PT fallback)
     pub relay_to: Vec<[u8; 32]>,    // Relay for each of these peer devices (empty = no relay)
 }
@@ -286,9 +293,7 @@ pub enum StatusUpdate {
         sender_addr: SocketAddr,
     },
     /// A sealed pong tail failed to open (no pairwise key for that device yet) — the UI thread reseeds the pong-seal map (rate-limited): on a freshly-restored device the map fills in fold/roster order, and a pong racing ahead of the reseed walk stayed tail-less forever (names + avatar pins ride the tail — the blank-restore of 2026-07-26).
-    PongSealMissing {
-        device: DevicePubkey,
-    },
+    PongSealMissing { device: DevicePubkey },
     /// Fleet chain-state replication (chain_sync): a sibling's fleet-sealed chains snapshot, opaque to this layer — the UI thread opens with the fleet key, decodes, and adopts iff its mutated_osc is newer than the local copy's.
     ChainSyncReceived {
         conversation_token: [u8; 32],
@@ -774,8 +779,7 @@ type OptionalEventProxy = Option<Arc<dyn WakeSender<PhotonEvent>>>;
 type OptionalEventProxy = Option<()>;
 
 /// Send a status update and wake the UI thread if a wake sender is available Sentinel `sender_addr` for a CLUTCH StatusUpdate that arrived via the FGTW relay, not a direct socket. The app checks for it to skip address-learning (a relayed message carries no reachable peer address) and to mark the contact reached_via_relay (lime-yellow presence). Unspecified v4:0 — never a real peer address.
-pub const RELAY_ADDR: SocketAddr =
-    SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+pub const RELAY_ADDR: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
 
 /// Send a REPLY (pong, chat ACK, CLUTCH proof ACK) back to whoever sent us the message we're answering.
 /// If it arrived directly (`dst` is a real address) this is a plain UDP send. If it arrived over the relay pipe (`dst == RELAY_ADDR`), UDP would black-hole to 0.0.0.0:0 — so instead we relay the reply back to the sender's device key over their pipe. `reply_to_device` is the device key extracted from the inbound message (its signer). This is what makes the relay BIDIRECTIONAL: a pong/ACK returns the same way the message came, so presence flips online on both ends and chat ACKs clear the sender's retransmit.
@@ -790,7 +794,11 @@ async fn relay_reply(
         if let Err(e) =
             crate::network::fgtw::relay::send_via_relay(keypair, reply_to_device, bytes).await
         {
-            crate::logf!("RELAY: reply to {} failed: {}", hex::encode(&reply_to_device[..4]), e);
+            crate::logf!(
+                "RELAY: reply to {} failed: {}",
+                hex::encode(&reply_to_device[..4]),
+                e
+            );
         }
     } else {
         udp::send(socket, bytes, dst).await;
@@ -903,8 +911,9 @@ async fn run_checker(
     let pending: Arc<Mutex<Vec<PendingPing>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Outstanding hole-punch probes, shared with the receiver task: the main loop inserts on send (fired alongside the ping cycle), the receiver resolves on a matching PunchProbeAck → a validated direct path.
-    let pending_probes: Arc<Mutex<crate::network::traverse::punch::PendingProbes>> =
-        Arc::new(Mutex::new(crate::network::traverse::punch::PendingProbes::new()));
+    let pending_probes: Arc<Mutex<crate::network::traverse::punch::PendingProbes>> = Arc::new(
+        Mutex::new(crate::network::traverse::punch::PendingProbes::new()),
+    );
 
     // Track consecutive failed pings per contact (hysteresis - don't flip offline on 1 lost packet)
     let failed_pings: Arc<Mutex<Vec<([u8; 32], u8)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -970,7 +979,11 @@ async fn run_checker(
                 }
             };
 
-            crate::logf!("LAN: Multicast listener on {}:{}", multicast_addr, multicast_port);
+            crate::logf!(
+                "LAN: Multicast listener on {}:{}",
+                multicast_addr,
+                multicast_port
+            );
 
             // 64 KiB so a sync-record-laden datagram is never silently truncated (a short recv drops the tail → parse error → one-way presence).
             let mut buf = [0u8; 65536];
@@ -980,7 +993,9 @@ async fn run_checker(
                         crate::logf!("LAN: Multicast RX {} bytes from {}", len, src_addr);
                         let packet = &buf[..len];
                         // Only process pt_disc packets (LAN discovery)
-                        if let Some(lan_update) = parse_lan_discovery(packet, src_addr, &our_device_pk) {
+                        if let Some(lan_update) =
+                            parse_lan_discovery(packet, src_addr, &our_device_pk)
+                        {
                             crate::logf!("LAN: Discovered peer via multicast: {}", src_addr);
                             send_status_update(&status_tx_mcast, lan_update, &event_proxy_mcast);
                         }
@@ -1111,7 +1126,11 @@ async fn run_checker(
                 }
             };
 
-            crate::logf!("LAN: IPv6 multicast listener on [{}]:{}", multicast_addr, multicast_port);
+            crate::logf!(
+                "LAN: IPv6 multicast listener on [{}]:{}",
+                multicast_addr,
+                multicast_port
+            );
 
             // 64 KiB so a sync-record-laden datagram is never silently truncated.
             let mut buf = [0u8; 65536];
@@ -1120,7 +1139,9 @@ async fn run_checker(
                     Ok((len, src_addr)) => {
                         crate::logf!("LAN: IPv6 Multicast RX {} bytes from {}", len, src_addr);
                         let packet = &buf[..len];
-                        if let Some(lan_update) = parse_lan_discovery(packet, src_addr, &our_device_pk) {
+                        if let Some(lan_update) =
+                            parse_lan_discovery(packet, src_addr, &our_device_pk)
+                        {
                             crate::logf!("LAN: Discovered peer via IPv6 multicast: {}", src_addr);
                             send_status_update(&status_tx_mcast6, lan_update, &event_proxy_mcast6);
                         }
@@ -1156,14 +1177,21 @@ async fn run_checker(
                                 // Read payload using VSF L field
                                 match crate::network::tcp::recv(&mut std_stream) {
                                     Ok(data) => {
-                                        crate::logf!("Status: Received {} bytes via TCP from {}", data.len(), src_addr);
+                                        crate::logf!(
+                                            "Status: Received {} bytes via TCP from {}",
+                                            data.len(),
+                                            src_addr
+                                        );
 
                                         // VSF inspection for development builds
                                         #[cfg(feature = "development")]
                                         {
                                             if let Ok(inspection) = vsf::inspect::inspect_vsf(&data)
                                             {
-                                                crate::logf!("Status: Received TCP VSF:\n{}", inspection);
+                                                crate::logf!(
+                                                    "Status: Received TCP VSF:\n{}",
+                                                    inspection
+                                                );
                                             }
                                         }
 
@@ -1302,7 +1330,10 @@ async fn run_checker(
             use futures::StreamExt;
             use tokio_tungstenite::tungstenite::Message;
             let url = crate::network::http::seed_pipe_url(&our_dev_hex);
-            crate::logf!("PIPE: relay pipe task started (dev {}...)", &our_dev_hex[..8]);
+            crate::logf!(
+                "PIPE: relay pipe task started (dev {}...)",
+                &our_dev_hex[..8]
+            );
             loop {
                 match tokio_tungstenite::connect_async(&url).await {
                     Ok((ws_stream, _)) => {
@@ -1431,14 +1462,25 @@ async fn run_checker(
                                         };
                                         crate::logf!("PT: ← {} OK | {} | {:.1}s | {} pkts | {:.0}% util ({} dups)", src_addr, thruput_str, duration_ms as f64 / 1000.0, packets, utilization, duplicates);
                                     } else {
-                                        crate::logf!("PT: ← {} OK | {} bytes", src_addr, data.len());
+                                        crate::logf!(
+                                            "PT: ← {} OK | {} bytes",
+                                            src_addr,
+                                            data.len()
+                                        );
                                     }
 
                                     // Inspect completed PT data with VSF inspector
                                     if let Ok(inspection) = vsf::inspect::inspect_vsf(&data) {
-                                        crate::logf!("PT: Received VSF ({} bytes):\n{}", data.len(), inspection);
+                                        crate::logf!(
+                                            "PT: Received VSF ({} bytes):\n{}",
+                                            data.len(),
+                                            inspection
+                                        );
                                     } else {
-                                        crate::logf!("PT: Received {} bytes - NOT valid VSF", data.len());
+                                        crate::logf!(
+                                            "PT: Received {} bytes - NOT valid VSF",
+                                            data.len()
+                                        );
                                     }
 
                                     // Parse PT data as CLUTCH message and emit appropriate event
@@ -1722,7 +1764,9 @@ async fn run_checker(
                     udp::log_received(msg_bytes, &src_addr);
 
                     // Handle LAN discovery packets (same port as main socket now)
-                    if let Some(lan_update) = parse_lan_discovery(msg_bytes, src_addr, &our_device_pk) {
+                    if let Some(lan_update) =
+                        parse_lan_discovery(msg_bytes, src_addr, &our_device_pk)
+                    {
                         send_status_update(&status_tx_recv, lan_update, &event_proxy_recv);
                         continue;
                     }
@@ -1760,27 +1804,27 @@ async fn run_checker(
                             if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
                                 parse_clutch_complete_vsf_without_recipient_check(msg_bytes)
                             {
-                            crate::log("UDP: Received ClutchComplete directly (VSF verified)");
-                            // Delivery ack — ClutchComplete is sent as a reliable PT packet; without acking it the sender's stop-and-wait queue head never clears and it blocks every later packet (chat) behind it. Pure transport "bytes got here"; the proof's own convergence logic is layered on top.
-                            {
-                                let ack_bytes = {
-                                    let pt_mgr = pt_recv.lock().unwrap();
-                                    pt_mgr.build_packet_ack(msg_bytes)
-                                };
-                                udp::send(&socket_recv, &ack_bytes, src_addr).await;
-                            }
-                            send_status_update(
-                                &status_tx_recv,
-                                StatusUpdate::ClutchCompleteReceived {
-                                    conversation_token,
-                                    ceremony_id,
-                                    sender_pubkey,
-                                    payload,
-                                    sender_addr: src_addr,
-                                },
-                                &event_proxy_recv,
-                            );
-                            continue;
+                                crate::log("UDP: Received ClutchComplete directly (VSF verified)");
+                                // Delivery ack — ClutchComplete is sent as a reliable PT packet; without acking it the sender's stop-and-wait queue head never clears and it blocks every later packet (chat) behind it. Pure transport "bytes got here"; the proof's own convergence logic is layered on top.
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::ClutchCompleteReceived {
+                                        conversation_token,
+                                        ceremony_id,
+                                        sender_pubkey,
+                                        payload,
+                                        sender_addr: src_addr,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
                             }
                             // ClutchOffer (~548KB) and ClutchKemResponse (~32KB) arriving as a WHOLE frame — this is the RELAY-INJECTED path.
                             // Direct sends shard these through PT and parse them in the PT-transfer-complete branch above, but a relayed message is injected as one datagram tagged RELAY_ADDR, so it never touches PT and only clutch_complete was parsed here — the offer + KEM were silently dropped, so the ceremony never got past the offer over the relay (presence worked, but no KEM ever came back).
@@ -1847,10 +1891,8 @@ async fn run_checker(
                                 continue;
                             }
                             // History page (hist_page — small pages ride this path; big ones arrive via the PT-transfer-complete branch). Same mandatory packet-ack.
-                            if let Ok((
-                                (conversation_token, request_id, sealed),
-                                sender_pubkey,
-                            )) = crate::network::fgtw::protocol::parse_history_page_vsf(msg_bytes)
+                            if let Ok(((conversation_token, request_id, sealed), sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_history_page_vsf(msg_bytes)
                             {
                                 {
                                     let ack_bytes = {
@@ -2162,10 +2204,17 @@ async fn run_checker(
                                         Some(p) => p,
                                         None => {
                                             // LIVENESS SALVAGE: an unmatched pong (doze-delayed past expiry, an answered race twin, a fan-out duplicate) still PROVES the signing device is alive — discarding that fact kept siblings "offline" for whole sessions (hundreds of dropped pongs per day, the fleet-push killswitch + the amber/green ring flap). Verify the signature and count presence ONLY: no address adoption (the source isn't freshness-proven without the nonce match — a replayed pong from an attacker's address could poison the contact's ip), no sync/name/pin (those ride matched pongs). Strikes reset like any live verdict so dead-address fan-out pings can't out-vote a living device.
-                                            if verify_provenance_signature(&provenance_hash, &responder_pubkey, &signature) {
+                                            if verify_provenance_signature(
+                                                &provenance_hash,
+                                                &responder_pubkey,
+                                                &signature,
+                                            ) {
                                                 {
-                                                    let mut failures = failed_pings_recv.lock().unwrap();
-                                                    failures.retain(|(k, _)| k != responder_pubkey.as_bytes());
+                                                    let mut failures =
+                                                        failed_pings_recv.lock().unwrap();
+                                                    failures.retain(|(k, _)| {
+                                                        k != responder_pubkey.as_bytes()
+                                                    });
                                                 }
                                                 crate::logf!("Status: unmatched pong from {} ({}) — liveness only (late/twin; no addr adoption)", crate::fp(responder_pubkey.as_bytes()), src_addr);
                                                 send_status_update(
@@ -2191,10 +2240,17 @@ async fn run_checker(
                                     if responder_pubkey != pending_ping.recipient_pubkey {
                                         // Another device answered this provenance (a fleet sibling heard the fan-out, or a stale contact record routed the ping). The RESPONDER is provably alive if its signature holds — salvage that as presence-only, same terms as the unmatched arm. And the consumed pending entry still belongs to its intended recipient: put it back so their answer (or honest timeout) isn't silently voided.
                                         crate::logf!("Status: pong answered by {} but we pinged {} — responder counted alive (liveness only), ping re-armed for its recipient", crate::fp(responder_pubkey.as_bytes()), crate::fp(pending_ping.recipient_pubkey.as_bytes()));
-                                        if verify_provenance_signature(&provenance_hash, &responder_pubkey, &signature) {
+                                        if verify_provenance_signature(
+                                            &provenance_hash,
+                                            &responder_pubkey,
+                                            &signature,
+                                        ) {
                                             {
-                                                let mut failures = failed_pings_recv.lock().unwrap();
-                                                failures.retain(|(k, _)| k != responder_pubkey.as_bytes());
+                                                let mut failures =
+                                                    failed_pings_recv.lock().unwrap();
+                                                failures.retain(|(k, _)| {
+                                                    k != responder_pubkey.as_bytes()
+                                                });
                                             }
                                             send_status_update(
                                                 &status_tx_recv,
@@ -2255,21 +2311,31 @@ async fn run_checker(
                                                 keys.get(responder_pubkey.as_bytes()).copied()
                                             };
                                             let opened = key.and_then(|k| {
-                                                crate::network::fgtw::protocol::open_pong_sensitive(&blob, &k).ok()
+                                                crate::network::fgtw::protocol::open_pong_sensitive(
+                                                    &blob, &k,
+                                                )
+                                                .ok()
                                             });
                                             match opened {
                                                 Some(tail) => {
-                                                    pong_open_failed.retain(|d| d != responder_pubkey.as_bytes());
+                                                    pong_open_failed.retain(|d| {
+                                                        d != responder_pubkey.as_bytes()
+                                                    });
                                                     tail
                                                 }
                                                 None => {
-                                                    if !pong_open_failed.contains(responder_pubkey.as_bytes()) {
-                                                        pong_open_failed.push(*responder_pubkey.as_bytes());
+                                                    if !pong_open_failed
+                                                        .contains(responder_pubkey.as_bytes())
+                                                    {
+                                                        pong_open_failed
+                                                            .push(*responder_pubkey.as_bytes());
                                                         crate::logf!("Status: sealed pong tail from {} unopenable ({}) — treating as tail-less until keys agree", crate::fp(responder_pubkey.as_bytes()), if key.is_some() { "key mismatch" } else { "no pairwise key seeded yet" });
                                                         // Ask the UI thread to reseed the seal map — self-heal for the fresh-device ordering race (the map fills in fold order; a pong racing ahead stayed tail-less forever).
                                                         send_status_update(
                                                             &status_tx_recv,
-                                                            StatusUpdate::PongSealMissing { device: responder_pubkey.clone() },
+                                                            StatusUpdate::PongSealMissing {
+                                                                device: responder_pubkey.clone(),
+                                                            },
                                                             &event_proxy_recv,
                                                         );
                                                     }
@@ -2318,11 +2384,15 @@ async fn run_checker(
                                     // Twin collapse (see recent_chat_frames above): the same frame arriving via direct AND relay inside the window is one message, not two.
                                     {
                                         let now = std::time::Instant::now();
-                                        recent_chat_frames.retain(|(_, at)| now.duration_since(*at) < CHAT_TWIN_WINDOW);
+                                        recent_chat_frames.retain(|(_, at)| {
+                                            now.duration_since(*at) < CHAT_TWIN_WINDOW
+                                        });
                                         let mut token8 = [0u8; 8];
                                         token8.copy_from_slice(&conversation_token[..8]);
                                         let mut ct8 = [0u8; 8];
-                                        ct8.copy_from_slice(&blake3::hash(&ciphertext).as_bytes()[..8]);
+                                        ct8.copy_from_slice(
+                                            &blake3::hash(&ciphertext).as_bytes()[..8],
+                                        );
                                         let key = (token8, timestamp, ct8);
                                         if recent_chat_frames.iter().any(|(k, _)| *k == key) {
                                             crate::logf!("Status: collapsed twin chat frame (eagle_time {}) from {}", timestamp, src_addr);
@@ -2373,7 +2443,11 @@ async fn run_checker(
                                     sender_pubkey,
                                     signature,
                                 } => {
-                                    crate::logf!("Status: MESSAGE_ACK received from {} (eagle_time {})", src_addr, acked_eagle_time);
+                                    crate::logf!(
+                                        "Status: MESSAGE_ACK received from {} (eagle_time {})",
+                                        src_addr,
+                                        acked_eagle_time
+                                    );
 
                                     // Verify signature (CHAIN format provenance)
                                     let provenance = compute_ack_provenance_v2(
@@ -2407,7 +2481,10 @@ async fn run_checker(
                                     provenance_hash,
                                     signature,
                                 } => {
-                                    crate::logf!("Status: AVATAR_REQUEST received from {}", src_addr);
+                                    crate::logf!(
+                                        "Status: AVATAR_REQUEST received from {}",
+                                        src_addr
+                                    );
 
                                     // Verify provenance binds sender_pubkey + timestamp, then the signature
                                     let provenance: [u8; 32] = blake3::hash(
@@ -2603,10 +2680,17 @@ async fn run_checker(
                                     }
                                     // Resolve the probe → validated path. The address we sent to (`target`) is what we'll use to reach them; the ack's src confirms reachability. `resolve` removes the entry so a replayed ack can't re-validate.
                                     let resolved = {
-                                        pending_probes_recv.lock().unwrap().resolve(&provenance_hash)
+                                        pending_probes_recv
+                                            .lock()
+                                            .unwrap()
+                                            .resolve(&provenance_hash)
                                     };
                                     if let Some((peer, target)) = resolved {
-                                        crate::logf!("TRAVERSE: ACK from {} — path validated {}", src_addr, target);
+                                        crate::logf!(
+                                            "TRAVERSE: ACK from {} — path validated {}",
+                                            src_addr,
+                                            target
+                                        );
                                         send_status_update(
                                             &status_tx_recv,
                                             StatusUpdate::PathValidated {
@@ -2682,7 +2766,11 @@ async fn run_checker(
                                         }
                                     }
                                     if merged > 0 {
-                                        crate::logf!("GOSSIP: merged {} peer record(s) from {}", merged, src_addr);
+                                        crate::logf!(
+                                            "GOSSIP: merged {} peer record(s) from {}",
+                                            merged,
+                                            src_addr
+                                        );
                                     }
                                 }
 
@@ -2698,7 +2786,12 @@ async fn run_checker(
                                 .map(|b| format!("{:02x}", b))
                                 .collect::<Vec<_>>()
                                 .join(" ");
-                            crate::logf!("Status: Parse error: {} (len={}, hex: {})", e, msg_bytes.len(), preview);
+                            crate::logf!(
+                                "Status: Parse error: {} (len={}, hex: {})",
+                                e,
+                                msg_bytes.len(),
+                                preview
+                            );
                         }
                     }
                 }
@@ -2762,12 +2855,11 @@ async fn run_checker(
                 for cand in &request.punch_candidates {
                     let mut nonce = [0u8; 32];
                     nonce.copy_from_slice(blake3::hash(cand.to_string().as_bytes()).as_bytes());
-                    let (probe_bytes, provenance) =
-                        crate::network::traverse::punch::build_probe(
-                            &keypair,
-                            our_pubkey.clone(),
-                            nonce,
-                        );
+                    let (probe_bytes, provenance) = crate::network::traverse::punch::build_probe(
+                        &keypair,
+                        our_pubkey.clone(),
+                        nonce,
+                    );
                     {
                         let mut probes = pending_probes.lock().unwrap();
                         probes.insert(
@@ -2840,7 +2932,11 @@ async fn run_checker(
 
                 if count >= OFFLINE_THRESHOLD {
                     // Enough consecutive failures - mark offline
-                    crate::logf!("Status: TIMEOUT ({} consecutive) - {} marked offline", count, hex::encode(&pubkey_bytes[..8]));
+                    crate::logf!(
+                        "Status: TIMEOUT ({} consecutive) - {} marked offline",
+                        count,
+                        hex::encode(&pubkey_bytes[..8])
+                    );
                     send_status_update(
                         &status_tx,
                         StatusUpdate::Online {
@@ -2856,7 +2952,12 @@ async fn run_checker(
                     // Reset counter after marking offline (so we can detect coming back online)
                     failures.retain(|(k, _)| *k != pubkey_bytes);
                 } else {
-                    crate::logf!("Status: TIMEOUT ({}/{}) - {} (waiting for more failures before offline)", count, OFFLINE_THRESHOLD, hex::encode(&pubkey_bytes[..8]));
+                    crate::logf!(
+                        "Status: TIMEOUT ({}/{}) - {} (waiting for more failures before offline)",
+                        count,
+                        OFFLINE_THRESHOLD,
+                        hex::encode(&pubkey_bytes[..8])
+                    );
                 }
             }
 
@@ -2877,7 +2978,11 @@ async fn run_checker(
             let mut sig_bytes = [0u8; 64];
             sig_bytes.copy_from_slice(&sig.to_bytes());
 
-            crate::logf!("Status: Sending CHAT_MESSAGE to {} (tok {}...) via PT", request.peer_addr, hex::encode(&request.conversation_token[..4]));
+            crate::logf!(
+                "Status: Sending CHAT_MESSAGE to {} (tok {}...) via PT",
+                request.peer_addr,
+                hex::encode(&request.conversation_token[..4])
+            );
 
             let msg = FgtwMessage::ChatMessage {
                 timestamp,
@@ -2944,7 +3049,8 @@ async fn run_checker(
             }
             for dev in &request.relay_to {
                 if let Err(e) =
-                    crate::network::fgtw::relay::send_via_relay(&keypair, dev, &request.vsf_bytes).await
+                    crate::network::fgtw::relay::send_via_relay(&keypair, dev, &request.vsf_bytes)
+                        .await
                 {
                     crate::logf!("RELAY: history to {} failed: {}", hex::encode(&dev[..4]), e);
                 }
@@ -2965,7 +3071,11 @@ async fn run_checker(
             let mut sig_bytes = [0u8; 64];
             sig_bytes.copy_from_slice(&sig.to_bytes());
 
-            crate::logf!("Status: Sending MESSAGE_ACK to {} (eagle_time {}) via PT", request.peer_addr, request.acked_eagle_time);
+            crate::logf!(
+                "Status: Sending MESSAGE_ACK to {} (eagle_time {}) via PT",
+                request.peer_addr,
+                request.acked_eagle_time
+            );
 
             let msg = FgtwMessage::MessageAck {
                 timestamp,
@@ -3011,9 +3121,10 @@ async fn run_checker(
             let timestamp = eagle_time_now();
 
             // provenance = BLAKE3(sender_pubkey || timestamp) - same shape as a signed ping
-            let provenance_hash: [u8; 32] =
-                blake3::hash(&[our_pubkey.as_bytes().as_slice(), &timestamp.to_le_bytes()].concat())
-                    .into();
+            let provenance_hash: [u8; 32] = blake3::hash(
+                &[our_pubkey.as_bytes().as_slice(), &timestamp.to_le_bytes()].concat(),
+            )
+            .into();
             let sig = keypair.sign(&provenance_hash);
             let mut sig_bytes = [0u8; 64];
             sig_bytes.copy_from_slice(&sig.to_bytes());
@@ -3025,7 +3136,10 @@ async fn run_checker(
                 continue;
             }
 
-            crate::logf!("Status: Sending AVATAR_REQUEST to {} via PT", request.peer_addr);
+            crate::logf!(
+                "Status: Sending AVATAR_REQUEST to {} via PT",
+                request.peer_addr
+            );
 
             let msg = FgtwMessage::AvatarRequest {
                 timestamp,
@@ -3056,7 +3170,11 @@ async fn run_checker(
         while let Ok(request) = avatar_response_rx.try_recv() {
             // Defence-in-depth: never device-sign and ship an FGTW error frame as an avatar (the caller validates+decodes first, but a poisoned frame reaching here would be signed as a real avatar the friend can't decode). The full decode needs the seed, so here we reject only the cheap-to-detect error frame; the seed-gated decode happens upstream.
             if let Some((reason, detail)) = fgtw::client::error_frame(&request.avatar_vsf) {
-                crate::logf!("Status: refusing to serve avatar error frame {}: {}", reason, detail);
+                crate::logf!(
+                    "Status: refusing to serve avatar error frame {}: {}",
+                    reason,
+                    detail
+                );
                 continue;
             }
             // Same as the request side: no direct address and no `relay_to` on this type means no path. Drop it loudly instead of letting PT's guard swallow it. The requester recovers via the FGTW blob fetch.
@@ -3073,7 +3191,11 @@ async fn run_checker(
             let mut sig_bytes = [0u8; 64];
             sig_bytes.copy_from_slice(&sig.to_bytes());
 
-            crate::logf!("Status: Sending AVATAR_RESPONSE to {} ({} bytes avatar) via PT", request.peer_addr, request.avatar_vsf.len());
+            crate::logf!(
+                "Status: Sending AVATAR_RESPONSE to {} ({} bytes avatar) via PT",
+                request.peer_addr,
+                request.avatar_vsf.len()
+            );
 
             let msg = FgtwMessage::AvatarResponse {
                 timestamp,
@@ -3103,7 +3225,11 @@ async fn run_checker(
 
         // Process PT send requests (large transfers)
         while let Ok(request) = pt_rx.try_recv() {
-            crate::logf!("PT: Starting outbound transfer to {} ({} bytes)", request.peer_addr, request.data.len());
+            crate::logf!(
+                "PT: Starting outbound transfer to {} ({} bytes)",
+                request.peer_addr,
+                request.data.len()
+            );
             let bytes_to_send = {
                 let mut pt_mgr = pt.lock().unwrap();
                 pt_mgr.send(request.peer_addr, request.data)
@@ -3116,7 +3242,11 @@ async fn run_checker(
             // VSF bytes already built by caller (to capture offer_provenance)
             let vsf_bytes = request.vsf_bytes;
 
-            crate::logf!("Status: Sending ClutchOffer to {} ({} bytes VSF) via PT/UDP", request.peer_addr, vsf_bytes.len());
+            crate::logf!(
+                "Status: Sending ClutchOffer to {} ({} bytes VSF) via PT/UDP",
+                request.peer_addr,
+                vsf_bytes.len()
+            );
 
             // VSF inspection for development builds
             #[cfg(feature = "development")]
@@ -3143,7 +3273,9 @@ async fn run_checker(
             // No direct path proven → store on the relay in parallel. A peer we can't reach directly (asymmetric reachability — one end v6-only, the other v4-only behind symmetric NAT) still gets the offer via dual-stack fgtw.org. We relay explicitly here because the direct transfer keeps getting cancelled on address churn before its own retry-threshold relay fallback could fire.
             for dev in &request.relay_to {
                 match crate::network::fgtw::relay::send_via_relay(&keypair, dev, &vsf_bytes).await {
-                    Ok(()) => crate::logf!("RELAY: stored ClutchOffer for {}", hex::encode(&dev[..4])),
+                    Ok(()) => {
+                        crate::logf!("RELAY: stored ClutchOffer for {}", hex::encode(&dev[..4]))
+                    }
                     Err(e) => crate::logf!("RELAY: ClutchOffer store failed: {}", e),
                 }
             }
@@ -3167,7 +3299,11 @@ async fn run_checker(
                 }
             };
 
-            crate::logf!("Status: Sending ClutchKemResponse to {} ({} bytes)", request.peer_addr, vsf_bytes.len());
+            crate::logf!(
+                "Status: Sending ClutchKemResponse to {} ({} bytes)",
+                request.peer_addr,
+                vsf_bytes.len()
+            );
 
             #[cfg(feature = "development")]
             if let Ok(inspection) = vsf::inspect::inspect_vsf(&vsf_bytes) {
@@ -3190,7 +3326,10 @@ async fn run_checker(
             }
             for dev in &request.relay_to {
                 match crate::network::fgtw::relay::send_via_relay(&keypair, dev, &vsf_bytes).await {
-                    Ok(()) => crate::logf!("RELAY: stored ClutchKemResponse for {}", hex::encode(&dev[..4])),
+                    Ok(()) => crate::logf!(
+                        "RELAY: stored ClutchKemResponse for {}",
+                        hex::encode(&dev[..4])
+                    ),
                     Err(e) => crate::logf!("RELAY: ClutchKemResponse store failed: {}", e),
                 }
             }
@@ -3214,7 +3353,11 @@ async fn run_checker(
                 }
             };
 
-            crate::logf!("Status: Sending ClutchComplete to {} ({} bytes)", request.peer_addr, vsf_bytes.len());
+            crate::logf!(
+                "Status: Sending ClutchComplete to {} ({} bytes)",
+                request.peer_addr,
+                vsf_bytes.len()
+            );
 
             #[cfg(feature = "development")]
             if let Ok(inspection) = vsf::inspect::inspect_vsf(&vsf_bytes) {
@@ -3237,7 +3380,10 @@ async fn run_checker(
             }
             for dev in &request.relay_to {
                 match crate::network::fgtw::relay::send_via_relay(&keypair, dev, &vsf_bytes).await {
-                    Ok(()) => crate::logf!("RELAY: stored ClutchComplete for {}", hex::encode(&dev[..4])),
+                    Ok(()) => crate::logf!(
+                        "RELAY: stored ClutchComplete for {}",
+                        hex::encode(&dev[..4])
+                    ),
                     Err(e) => crate::logf!("RELAY: ClutchComplete store failed: {}", e),
                 }
             }
@@ -3245,7 +3391,8 @@ async fn run_checker(
 
         // Process LAN discovery requests via multicast (more reliable than broadcast)
         while let Ok(request) = lan_broadcast_rx.try_recv() {
-            let packet = udp::build_lan_discovery(request.our_handle_proof, request.our_port, our_device_pk);
+            let packet =
+                udp::build_lan_discovery(request.our_handle_proof, request.our_port, our_device_pk);
 
             // IPv4 multicast: 239.104.199.144 (from random entropy 0x68C790)
             let mcast_v4 = SocketAddr::new(
@@ -3281,7 +3428,12 @@ async fn run_checker(
                 if let Ok(bcast_sock) = UdpSocket::bind("0.0.0.0:0") {
                     let _ = bcast_sock.set_broadcast(true);
                     let _ = udp::send_sync(&bcast_sock, &packet, bcast_addr);
-                    crate::logf!("LAN: Broadcast {} bytes to {} (from {})", packet.len(), bcast_addr, local_ip);
+                    crate::logf!(
+                        "LAN: Broadcast {} bytes to {} (from {})",
+                        packet.len(),
+                        bcast_addr,
+                        local_ip
+                    );
                 }
             }
         }
@@ -3326,7 +3478,10 @@ async fn run_checker(
 
                 // If both UDP and TCP exhausted, try relay via /conduit
                 if let Some(relay_info) = tick.relay {
-                    crate::logf!("PT: Relaying to {} via /conduit", hex::encode(&relay_info.recipient_pubkey[..4]));
+                    crate::logf!(
+                        "PT: Relaying to {} via /conduit",
+                        hex::encode(&relay_info.recipient_pubkey[..4])
+                    );
                     match crate::network::fgtw::relay::send_via_relay(
                         &keypair_for_relay,
                         &relay_info.recipient_pubkey,
@@ -3483,14 +3638,23 @@ async fn handle_pt_vsf_packet(
                     };
 
                     if !is_known_contact {
-                        crate::logf!("PT: SPEC REJECTED from {} - sender not in contacts (pubkey: {})", src_addr, sender_pubkey
+                        crate::logf!(
+                            "PT: SPEC REJECTED from {} - sender not in contacts (pubkey: {})",
+                            src_addr,
+                            sender_pubkey
                                 .map(|p| hex::encode(&p[..8]))
-                                .unwrap_or_else(|| "none".to_string()));
+                                .unwrap_or_else(|| "none".to_string())
+                        );
                         // Silent drop - don't send ACK, don't accept transfer
                         return Some(true);
                     }
 
-                    crate::logf!("PT: SPEC accepted from {} - {} packets, {} bytes", src_addr, spec.total_packets, spec.total_size);
+                    crate::logf!(
+                        "PT: SPEC accepted from {} - {} packets, {} bytes",
+                        src_addr,
+                        spec.total_packets,
+                        spec.total_size
+                    );
                     let spec_ack = {
                         let mut pt_mgr = pt.lock().unwrap();
                         pt_mgr.handle_spec(src_addr, spec)
@@ -3518,7 +3682,12 @@ fn parse_lan_discovery(
         None if udp::get_local_ip() == Some(local_ip) => return None,
         _ => {}
     }
-    crate::logf!("LAN: Received discovery from {} (handle_proof: {}..., port: {})", src_addr, hex::encode(&handle_proof[..4]), port);
+    crate::logf!(
+        "LAN: Received discovery from {} (handle_proof: {}..., port: {})",
+        src_addr,
+        hex::encode(&handle_proof[..4]),
+        port
+    );
     Some(StatusUpdate::LanPeerDiscovered {
         handle_proof,
         local_ip,

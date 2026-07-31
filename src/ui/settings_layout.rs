@@ -9,7 +9,11 @@ use fluor::Coord;
 /// Harmonic mean — C¹-smooth blend of two size candidates (no kink where they cross); zero if either is.
 fn hm(a: Coord, b: Coord) -> Coord {
     let sum = a + b;
-    if sum <= 0.0 { 0.0 } else { 2.0 * a * b / sum }
+    if sum <= 0.0 {
+        0.0
+    } else {
+        2.0 * a * b / sum
+    }
 }
 
 /// The two panes of the settings screen plus the shared header strip.
@@ -39,12 +43,24 @@ impl SettingsLayout {
             let header = Region::new(root.x + root.w * 0.12, root.y, root.w * 0.88, header_h);
             let below = Region::new(root.x, root.y + header_h, root.w, root.h - header_h);
             let [rail, content] = below.split_h([1.0, 2.0]);
-            Self { header, rail, content, portrait, unit }
+            Self {
+                header,
+                rail,
+                content,
+                portrait,
+                unit,
+            }
         } else {
             let header = Region::new(root.x, root.y, root.w, header_h);
             let below = Region::new(root.x, root.y + header_h, root.w, root.h - header_h);
             let [rail, content] = below.split_h([1.0, 2.0]);
-            Self { header, rail, content, portrait, unit }
+            Self {
+                header,
+                rail,
+                content,
+                portrait,
+                unit,
+            }
         }
     }
 
@@ -71,6 +87,11 @@ impl SettingsLayout {
     /// The scrolled, natural-height body for a page of `n` rows: anchored at the content inset, shifted up by `scroll`, `n · content_line_h` tall. `split_v([1.0; n])` on it yields natural-height line rows that scroll (no compression). Clip draws to [`content_inset`].
     pub fn content_scrolled(&self, n: usize, scroll: Coord) -> Region {
         let inset = self.content_inset();
-        Region::new(inset.x, inset.y - scroll, inset.w, self.content_line_h() * n as Coord)
+        Region::new(
+            inset.x,
+            inset.y - scroll,
+            inset.w,
+            self.content_line_h() * n as Coord,
+        )
     }
 }

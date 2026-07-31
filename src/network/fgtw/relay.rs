@@ -112,10 +112,12 @@ pub async fn send_via_relay(
     if !status.is_success() {
         return Err(format!("Relay failed (transport {})", status));
     }
-    crate::logf!("RELAY: Stored message for {}...", hex::encode(&recipient_pubkey[..4]));
+    crate::logf!(
+        "RELAY: Stored message for {}...",
+        hex::encode(&recipient_pubkey[..4])
+    );
     Ok(())
 }
-
 
 /// Synchronous version of send_via_relay for non-async contexts
 pub fn send_via_relay_sync(
@@ -159,7 +161,10 @@ pub fn send_via_relay_sync(
     if !status.is_success() {
         return Err(format!("Relay failed (transport {})", status));
     }
-    crate::logf!("RELAY: Stored message for {}...", hex::encode(&recipient_pubkey[..4]));
+    crate::logf!(
+        "RELAY: Stored message for {}...",
+        hex::encode(&recipient_pubkey[..4])
+    );
     Ok(())
 }
 
@@ -182,8 +187,14 @@ mod peel_tests {
         )
         .expect("build envelope");
         let (sender, payload) = peel_relay_envelope(&envelope).expect("peel must succeed");
-        assert_eq!(sender, kp.public.to_bytes(), "sender key must be the signer");
-        assert_eq!(payload, inner, "inner payload must round-trip byte-identical");
+        assert_eq!(
+            sender,
+            kp.public.to_bytes(),
+            "sender key must be the signer"
+        );
+        assert_eq!(
+            payload, inner,
+            "inner payload must round-trip byte-identical"
+        );
     }
 }
-

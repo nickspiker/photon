@@ -112,11 +112,7 @@ impl PeerStore {
     /// `None` means the caller has no chain for this identity, which is the normal case for the OPEN phonebook — enumerating strangers is the point. Those rows are accepted as unverified DIRECTORY data: routable, never trusted. They cannot escalate, because reaching a device still requires passing the contact gate (ping/pong and every CLUTCH handler drop non-contacts) and completing CLUTCH, which needs the handle out-of-band.
     ///
     /// The durable fix is the phonebook's primary registry (`fgtw::phonebook`), where a current member's signed placement binds device to identity without any chain fetch. Until that is deployed, this is the strongest check available from local state.
-    pub fn merge_peer_bound(
-        &mut self,
-        peer: PeerRecord,
-        known_fleet: Option<&[[u8; 32]]>,
-    ) -> bool {
+    pub fn merge_peer_bound(&mut self, peer: PeerRecord, known_fleet: Option<&[[u8; 32]]>) -> bool {
         // Gossip records are only trusted if they self-verify — a relay can carry a device's entry but can't forge or redirect it.
         // An unsigned / forged record is dropped here, so nothing untrusted ever enters the store via the mesh. (The FGTW-authoritative path uses add_peer, not this.)
         if !peer.verify() {
@@ -281,22 +277,34 @@ mod tests {
         let mut r = PeerRecord::new([1u8; 32], device, addr);
         assert!(!r.verify(), "unsigned record must not verify");
         r.sign(&sk);
-        assert!(r.verify(), "self-signed record verifies against its own device_pubkey");
+        assert!(
+            r.verify(),
+            "self-signed record verifies against its own device_pubkey"
+        );
 
         // Tampering with any signed field breaks the signature (the whole point — a relay can't redirect the address).
         let mut tampered = r.clone();
         tampered.ip = "198.51.100.9:4383".parse().unwrap();
-        assert!(!tampered.verify(), "address tamper invalidates the signature");
+        assert!(
+            !tampered.verify(),
+            "address tamper invalidates the signature"
+        );
 
         let mut tampered2 = r.clone();
         tampered2.last_seen += 1;
-        assert!(!tampered2.verify(), "last_seen tamper invalidates the signature");
+        assert!(
+            !tampered2.verify(),
+            "last_seen tamper invalidates the signature"
+        );
 
         // A record signed by a DIFFERENT key but claiming our device_pubkey fails (forgery guard).
         let attacker = SigningKey::from_bytes(&[9u8; 32]);
         let mut forged = PeerRecord::new([1u8; 32], r.device_pubkey.clone(), addr);
         forged.sign(&attacker); // attacker signs, but device_pubkey is the victim's
-        assert!(!forged.verify(), "signature by a non-matching key must not verify");
+        assert!(
+            !forged.verify(),
+            "signature by a non-matching key must not verify"
+        );
     }
 
     #[test]
@@ -345,11 +353,17 @@ mod tests {
         let member = *r.device_pubkey.as_bytes();
 
         // The device IS in the fleet we know → accepted.
-        assert!(store.merge_peer_bound(r.clone(), Some(&[member])), "a folded member merges");
+        assert!(
+            store.merge_peer_bound(r.clone(), Some(&[member])),
+            "a folded member merges"
+        );
 
         // A different device claiming the SAME handle_proof, correctly self-signed, but absent from the fleet → refused. This is the impersonation the record itself cannot rule out.
         let intruder = fresh(1, 99, 1);
-        assert!(intruder.verify(), "the intruder's own signature is genuinely valid");
+        assert!(
+            intruder.verify(),
+            "the intruder's own signature is genuinely valid"
+        );
         assert!(
             !store.merge_peer_bound(intruder, Some(&[member])),
             "a validly-signed non-member must not enter the store"
@@ -360,7 +374,10 @@ mod tests {
     #[test]
     fn merge_without_a_known_fleet_accepts_as_directory_data() {
         let mut store = PeerStore::new();
-        assert!(store.merge_peer_bound(fresh(7, 7, 0), None), "unknown identity → directory data");
+        assert!(
+            store.merge_peer_bound(fresh(7, 7, 0), None),
+            "unknown identity → directory data"
+        );
         // get_all_peers, not peer_count: the latter filters on the 7-day expiry window, and these fixtures carry a synthetic last_seen. The assertion here is "is it stored".
         assert_eq!(store.get_all_peers().len(), 1);
     }
@@ -378,10 +395,17 @@ mod tests {
 
         let kp = super::super::Keypair::from_seed(&[9u8; 32]);
         let bytes = store.to_vsf_bytes(&kp).expect("encode");
-        assert!(bytes.starts_with(b"R\xc3\x85<"), "a complete VSF file, not a bare section");
+        assert!(
+            bytes.starts_with(b"R\xc3\x85<"),
+            "a complete VSF file, not a bare section"
+        );
 
         let back = PeerStore::from_vsf_bytes(&bytes).expect("decode");
-        assert_eq!(back.get_all_peers().len(), 2, "the unsigned row must not persist");
+        assert_eq!(
+            back.get_all_peers().len(),
+            2,
+            "the unsigned row must not persist"
+        );
         for r in back.get_all_peers() {
             assert!(r.verify(), "every persisted row self-verifies");
         }
@@ -396,7 +420,10 @@ mod tests {
         let mut bytes = store.to_vsf_bytes(&kp).expect("encode");
         let n = bytes.len();
         bytes[n / 2] ^= 0xFF;
-        assert!(PeerStore::from_vsf_bytes(&bytes).is_err(), "tampered vault entry must not load");
+        assert!(
+            PeerStore::from_vsf_bytes(&bytes).is_err(),
+            "tampered vault entry must not load"
+        );
         assert!(PeerStore::from_vsf_bytes(b"garbage").is_err());
     }
 
@@ -413,13 +440,21 @@ mod tests {
         store.add_peer(rec(3, 5, now));
         // Peers are PEOPLE: multi-device friends dedup to one, and we are not our own peer.
         assert_eq!(store.handle_count(), 3, "three identities in the store");
-        assert_eq!(store.handle_count_excluding(&[1u8; 32]), 2, "excluding ours leaves the two friends");
+        assert_eq!(
+            store.handle_count_excluding(&[1u8; 32]),
+            2,
+            "excluding ours leaves the two friends"
+        );
         // Excluding a handle that isn't in the store changes nothing.
         assert_eq!(store.handle_count_excluding(&[9u8; 32]), 3);
         // A stale sibling record still doesn't resurrect us, and stale friends age out of the count.
         let mut stale = PeerStore::new();
         stale.add_peer(rec(1, 1, now));
         stale.add_peer(rec(2, 3, now - crate::PEER_EXPIRY_OSC - 1));
-        assert_eq!(stale.handle_count_excluding(&[1u8; 32]), 0, "only a stale friend and ourselves → zero peers");
+        assert_eq!(
+            stale.handle_count_excluding(&[1u8; 32]),
+            0,
+            "only a stale friend and ourselves → zero peers"
+        );
     }
 }

@@ -176,10 +176,10 @@ pub enum FgtwMessage {
 pub struct PeerRecord {
     pub handle_proof: [u8; 32], // Memory-hard PoW output (24MB, 17 rounds)
     pub device_pubkey: DevicePubkey, // Device's Ed25519 identity key (also the gossip signature key)
-    pub ip: SocketAddr,         // Where to reach this device (public IP)
+    pub ip: SocketAddr,              // Where to reach this device (public IP)
     pub local_ip: Option<std::net::IpAddr>, // LAN IP for hairpin NAT (peers behind same public IP)
-    pub last_seen: i64,         // Eagle Time oscillations
-    pub signature: [u8; 64],    // Ed25519 sig by device_pubkey over signing_bytes(); [0;64] = unsigned
+    pub last_seen: i64,              // Eagle Time oscillations
+    pub signature: [u8; 64], // Ed25519 sig by device_pubkey over signing_bytes(); [0;64] = unsigned
 }
 
 /// Sync record for pong - tells peer our last received message timestamp per conversation Used for efficient resync: peer retransmits pending messages with eagle_time > last_received_ef6
@@ -374,7 +374,10 @@ impl FgtwMessage {
                 if let Some(blob) = sealed {
                     section.add_field_multi(
                         "enc",
-                        vec![VsfType::t_u3(vsf::Tensor::new(vec![blob.len()], blob.clone()))],
+                        vec![VsfType::t_u3(vsf::Tensor::new(
+                            vec![blob.len()],
+                            blob.clone(),
+                        ))],
                     );
                 }
                 builder
@@ -761,9 +764,7 @@ impl FgtwMessage {
                 let peers: Vec<PeerRecord> = section
                     .get_fields("peer")
                     .iter()
-                    .filter_map(|f| {
-                        crate::network::fgtw::bootstrap::parse_peer_from_field(f).ok()
-                    })
+                    .filter_map(|f| crate::network::fgtw::bootstrap::parse_peer_from_field(f).ok())
                     .collect();
                 return Ok(FgtwMessage::PhonebookResponse {
                     timestamp,
@@ -1174,14 +1175,18 @@ pub fn open_pong_sensitive(
 ) -> Result<(Vec<SyncRecord>, Option<String>, Option<[u8; 64]>), String> {
     let plain = kete::decrypt_bytes(sealed, key)?;
     let mut ptr = 0;
-    let section = vsf::VsfSection::parse(&plain, &mut ptr)
-        .map_err(|e| format!("pongsec parse: {}", e))?;
+    let section =
+        vsf::VsfSection::parse(&plain, &mut ptr).map_err(|e| format!("pongsec parse: {}", e))?;
     if section.name != "pongsec" {
         return Err(format!("pongsec name mismatch: {}", section.name));
     }
     let sync_records = extract_sync_records(&section)?;
     let fields = section_fields_to_tuples(&section);
-    Ok((sync_records, extract_pong_name(&fields), extract_pong_apin(&fields)))
+    Ok((
+        sync_records,
+        extract_pong_name(&fields),
+        extract_pong_apin(&fields),
+    ))
 }
 
 // Helper functions to extract from VsfHeader for simplified ping/pong format
@@ -1471,10 +1476,16 @@ pub fn parse_clutch_offer_vsf(
             .take(8)
             .map(|b| format!("{:02x}", b))
             .collect();
-        crate::logf!("CLUTCH: Received offer ({} bytes) offer_provenance={}... (key-based)", vsf_bytes.len(), prov_hex);
+        crate::logf!(
+            "CLUTCH: Received offer ({} bytes) offer_provenance={}... (key-based)",
+            vsf_bytes.len(),
+            prov_hex
+        );
         crate::logf!("CLUTCH: Offer pubkeys (X25519: {}B, P-384: {}B, secp256k1: {}B, P-256: {}B, Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)", payload.x25519_public.len(), payload.p384_public.len(), payload.secp256k1_public.len(), payload.p256_public.len(), payload.frodo976_public.len(), payload.ntru701_public.len(), payload.mceliece_public.len(), payload.hqc256_public.len());
-        crate::logf!("CLUTCH: Parsed offer HQC pub[..8]={}", // `.min(8)` guards a short (forged / truncated) field — a bare `[..8]` panics the whole receiver task.
-            hex::encode(&payload.hqc256_public[..payload.hqc256_public.len().min(8)]));
+        crate::logf!(
+            "CLUTCH: Parsed offer HQC pub[..8]={}", // `.min(8)` guards a short (forged / truncated) field — a bare `[..8]` panics the whole receiver task.
+            hex::encode(&payload.hqc256_public[..payload.hqc256_public.len().min(8)])
+        );
     }
 
     Ok((payload, sender_pubkey, offer_provenance, conversation_token))
@@ -1740,10 +1751,24 @@ pub fn parse_clutch_kem_response_vsf(
             .take(8)
             .map(|b| format!("{:02x}", b))
             .collect();
-        crate::logf!("CLUTCH: Received KEM response ({} bytes) ceremony_id={}...", vsf_bytes.len(), hp_hex);
-        crate::logf!("CLUTCH: KEM ciphertexts (Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)", payload.frodo976_ciphertext.len(), payload.ntru701_ciphertext.len(), payload.mceliece_ciphertext.len(), payload.hqc256_ciphertext.len());
-        crate::logf!("CLUTCH: Parsed KEM response HQC ct[..8]={}, EC ephemerals: X25519 {}B, P384 {}B", // `.min(8)` guards a short field so a truncated/forged ciphertext can't panic the receiver.
-            hex::encode(&payload.hqc256_ciphertext[..payload.hqc256_ciphertext.len().min(8)]), payload.x25519_ephemeral.len(), payload.p384_ephemeral.len());
+        crate::logf!(
+            "CLUTCH: Received KEM response ({} bytes) ceremony_id={}...",
+            vsf_bytes.len(),
+            hp_hex
+        );
+        crate::logf!(
+            "CLUTCH: KEM ciphertexts (Frodo: {}B, NTRU: {}B, McEliece: {}B, HQC: {}B)",
+            payload.frodo976_ciphertext.len(),
+            payload.ntru701_ciphertext.len(),
+            payload.mceliece_ciphertext.len(),
+            payload.hqc256_ciphertext.len()
+        );
+        crate::logf!(
+            "CLUTCH: Parsed KEM response HQC ct[..8]={}, EC ephemerals: X25519 {}B, P384 {}B", // `.min(8)` guards a short field so a truncated/forged ciphertext can't panic the receiver.
+            hex::encode(&payload.hqc256_ciphertext[..payload.hqc256_ciphertext.len().min(8)]),
+            payload.x25519_ephemeral.len(),
+            payload.p384_ephemeral.len()
+        );
     }
 
     Ok((payload, sender_pubkey, ceremony_id, conversation_token))
@@ -1876,8 +1901,11 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
         crate::crypto::clutch::clutch_offer_provenance(&sender_pubkey, send_time_osc);
 
     #[cfg(feature = "development")]
-    crate::logf!("CLUTCH: Parsed offer (no recipient check) HQC pub[..8]={} provenance={}...", // `.min(8)` guards a short field so a truncated/forged public key can't panic the receiver (offer_provenance is a fixed [u8;32], so its slice is always in-bounds).
-        hex::encode(&payload.hqc256_public[..payload.hqc256_public.len().min(8)]), hex::encode(&offer_provenance[..8]));
+    crate::logf!(
+        "CLUTCH: Parsed offer (no recipient check) HQC pub[..8]={} provenance={}...", // `.min(8)` guards a short field so a truncated/forged public key can't panic the receiver (offer_provenance is a fixed [u8;32], so its slice is always in-bounds).
+        hex::encode(&payload.hqc256_public[..payload.hqc256_public.len().min(8)]),
+        hex::encode(&offer_provenance[..8])
+    );
 
     Ok((payload, sender_pubkey, offer_provenance, conversation_token))
 }
@@ -2236,7 +2264,12 @@ pub fn parse_clutch_complete_vsf(
             .take(8)
             .map(|b| format!("{:02x}", b))
             .collect();
-        crate::logf!("CLUTCH: Received complete proof ({} bytes) ceremony_id={}... proof={}...", vsf_bytes.len(), id_hex, hex::encode(&payload.eggs_proof[..8]));
+        crate::logf!(
+            "CLUTCH: Received complete proof ({} bytes) ceremony_id={}... proof={}...",
+            vsf_bytes.len(),
+            id_hex,
+            hex::encode(&payload.eggs_proof[..8])
+        );
     }
 
     Ok((payload, sender_pubkey, ceremony_id, conversation_token))
@@ -2283,7 +2316,10 @@ pub fn parse_clutch_complete_vsf_without_recipient_check(
     let payload = ClutchCompletePayload { eggs_proof };
 
     #[cfg(feature = "development")]
-    crate::logf!("CLUTCH: Parsed complete proof (no recipient check) proof={}...", hex::encode(&payload.eggs_proof[..8]));
+    crate::logf!(
+        "CLUTCH: Parsed complete proof (no recipient check) proof={}...",
+        hex::encode(&payload.eggs_proof[..8])
+    );
 
     Ok((payload, sender_pubkey, ceremony_id, conversation_token))
 }
@@ -2348,7 +2384,10 @@ pub fn parse_history_request_vsf(
 
     let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
     if section_name != "hist_req" {
-        return Err(format!("Expected 'hist_req' section, got '{}'", section_name));
+        return Err(format!(
+            "Expected 'hist_req' section, got '{}'",
+            section_name
+        ));
     }
     let fields = &section.fields;
 
@@ -2375,8 +2414,8 @@ pub fn parse_history_request_vsf(
             _ => None,
         })
         .ok_or("hist_req missing limit")?;
-    let request_id =
-        field_hash32(fields, "rid", |v| matches!(v, VsfType::hb(_))).ok_or("hist_req missing rid")?;
+    let request_id = field_hash32(fields, "rid", |v| matches!(v, VsfType::hb(_)))
+        .ok_or("hist_req missing rid")?;
 
     Ok((
         HistoryRequestPayload {
@@ -2483,9 +2522,7 @@ pub fn build_chain_sync_vsf(
 }
 
 /// Parse + verify a `chain_sync` frame. Returns ((conversation_token, sealed_chains), sender_pubkey). The blob is opaque here; the receiver opens it with the fleet key (AEAD failure = drop).
-pub fn parse_chain_sync_vsf(
-    vsf_bytes: &[u8],
-) -> Result<(([u8; 32], Vec<u8>), [u8; 32]), String> {
+pub fn parse_chain_sync_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], Vec<u8>), [u8; 32]), String> {
     let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
         .map_err(|e| format!("chain_sync verification failed: {}", e))?;
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
@@ -2604,9 +2641,7 @@ pub fn build_attach_req_vsf(
 }
 
 /// Parse + verify an `attach_req` frame. Returns ((conversation_token, content_hash), sender_pubkey). Same caller-side authorization rule as attach_blob.
-pub fn parse_attach_req_vsf(
-    vsf_bytes: &[u8],
-) -> Result<(([u8; 32], [u8; 32]), [u8; 32]), String> {
+pub fn parse_attach_req_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32]), [u8; 32]), String> {
     let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
         .map_err(|e| format!("attach_req verification failed: {}", e))?;
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
@@ -2653,9 +2688,7 @@ pub fn build_attach_have_vsf(
 }
 
 /// Parse + verify an `attach_have` frame. Returns ((conversation_token, content_hash), sender_pubkey).
-pub fn parse_attach_have_vsf(
-    vsf_bytes: &[u8],
-) -> Result<(([u8; 32], [u8; 32]), [u8; 32]), String> {
+pub fn parse_attach_have_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32]), [u8; 32]), String> {
     let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
         .map_err(|e| format!("attach_have verification failed: {}", e))?;
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
@@ -2705,9 +2738,7 @@ pub fn build_chain_reset_vsf(
 }
 
 /// Parse + verify a `chain_reset` frame. Returns ((conversation_token, sealed_nonce), sender_pubkey); the blob only opens with the fleet key (AEAD failure = drop, non-member noise).
-pub fn parse_chain_reset_vsf(
-    vsf_bytes: &[u8],
-) -> Result<(([u8; 32], Vec<u8>), [u8; 32]), String> {
+pub fn parse_chain_reset_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], Vec<u8>), [u8; 32]), String> {
     let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
         .map_err(|e| format!("chain_reset verification failed: {}", e))?;
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
@@ -2778,7 +2809,8 @@ pub fn parse_any_blind_frame(
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes).ok()?;
     let sent_osc = header_creation_oscillations(&header);
 
-    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end).ok()?;
+    let (section, section_name) =
+        parse_section_after_header(vsf_bytes, &header, header_end).ok()?;
     let kind = match section_name.as_str() {
         "blind_put" => BlindFrameKind::Put,
         "blind_ack" => BlindFrameKind::Ack,
@@ -3012,8 +3044,7 @@ mod history_frame_tests {
         let (pubkey, secret) = keypair(7);
         let tok = [0xA1u8; 32];
         let rid = [0xB2u8; 32];
-        let bytes =
-            build_history_request_vsf(&tok, i64::MAX, 50, &rid, &pubkey, &secret).unwrap();
+        let bytes = build_history_request_vsf(&tok, i64::MAX, 50, &rid, &pubkey, &secret).unwrap();
         let (payload, signer) = parse_history_request_vsf(&bytes).unwrap();
         assert_eq!(signer, pubkey);
         assert_eq!(payload.conversation_token, tok);
@@ -3029,8 +3060,7 @@ mod history_frame_tests {
         let tok = [0xC3u8; 32];
         let rid = [0xD4u8; 32];
         let blob = vec![0x5Au8; 4096];
-        let bytes =
-            build_history_page_vsf(&tok, &rid, blob.clone(), &pubkey, &secret).unwrap();
+        let bytes = build_history_page_vsf(&tok, &rid, blob.clone(), &pubkey, &secret).unwrap();
         let ((ptok, prid, psealed), signer) = parse_history_page_vsf(&bytes).unwrap();
         assert_eq!(signer, pubkey);
         assert_eq!(ptok, tok);
@@ -3094,9 +3124,14 @@ mod history_frame_tests {
     #[test]
     fn blind_frame_bit_flip_rejected() {
         let (pubkey, secret) = keypair(11);
-        let mut bytes =
-            build_blind_put_vsf(&[0xE5u8; 32], &[0xF6u8; 32], &[0x42u8; 64], &pubkey, &secret)
-                .unwrap();
+        let mut bytes = build_blind_put_vsf(
+            &[0xE5u8; 32],
+            &[0xF6u8; 32],
+            &[0x42u8; 64],
+            &pubkey,
+            &secret,
+        )
+        .unwrap();
         let mid = bytes.len() / 2;
         bytes[mid] ^= 0x01;
         assert!(parse_blind_put_vsf(&bytes).is_err());
@@ -3134,7 +3169,11 @@ mod phonebook_tests {
         };
         let bytes = msg.to_vsf_bytes();
         match FgtwMessage::from_vsf_bytes(&bytes).expect("parse pb_req") {
-            FgtwMessage::PhonebookRequest { timestamp, provenance_hash, .. } => {
+            FgtwMessage::PhonebookRequest {
+                timestamp,
+                provenance_hash,
+                ..
+            } => {
                 assert_eq!(timestamp, 12345);
                 assert_eq!(provenance_hash, [0xAB; 32]);
             }
@@ -3166,7 +3205,10 @@ mod phonebook_tests {
                     assert_eq!(a.local_ip, b.local_ip);
                     assert_eq!(a.last_seen, b.last_seen);
                     // The signature survived the wire AND still verifies against the embedded pubkey — the whole point: trust travels with the record.
-                    assert!(a.verify(), "peer record must still verify after wire round-trip");
+                    assert!(
+                        a.verify(),
+                        "peer record must still verify after wire round-trip"
+                    );
                 }
             }
             other => panic!("expected PhonebookResponse, got {:?}", other),
@@ -3184,7 +3226,11 @@ mod phonebook_tests {
         };
         let bytes = msg.to_vsf_bytes();
         match FgtwMessage::from_vsf_bytes(&bytes).expect("parse av_req") {
-            FgtwMessage::AvatarRequest { timestamp, provenance_hash, .. } => {
+            FgtwMessage::AvatarRequest {
+                timestamp,
+                provenance_hash,
+                ..
+            } => {
                 assert_eq!(timestamp, 54321);
                 assert_eq!(provenance_hash, [0x9A; 32]);
             }
@@ -3205,9 +3251,16 @@ mod phonebook_tests {
         };
         let bytes = resp.to_vsf_bytes();
         match FgtwMessage::from_vsf_bytes(&bytes).expect("parse av_resp") {
-            FgtwMessage::AvatarResponse { timestamp, avatar_vsf: got, .. } => {
+            FgtwMessage::AvatarResponse {
+                timestamp,
+                avatar_vsf: got,
+                ..
+            } => {
                 assert_eq!(timestamp, 777);
-                assert_eq!(got, avatar_vsf, "avatar payload must round-trip byte-for-byte");
+                assert_eq!(
+                    got, avatar_vsf,
+                    "avatar payload must round-trip byte-for-byte"
+                );
             }
             other => panic!("expected AvatarResponse, got {:?}", other),
         }
@@ -3261,21 +3314,39 @@ mod pong_seal_tests {
         assert!(!bytes.is_empty());
 
         // The leak this fix exists for: none of the sensitive material may appear in the wire bytes — not the pin, not the name, not a conversation token.
-        assert!(!bytes.windows(pin.len()).any(|w| w == &pin[..]), "avatar pin leaked in plaintext");
-        assert!(!bytes.windows(name.len()).any(|w| w == name.as_bytes()), "display name leaked in plaintext");
+        assert!(
+            !bytes.windows(pin.len()).any(|w| w == &pin[..]),
+            "avatar pin leaked in plaintext"
+        );
+        assert!(
+            !bytes.windows(name.len()).any(|w| w == name.as_bytes()),
+            "display name leaked in plaintext"
+        );
         for r in &records {
-            assert!(!bytes.windows(32).any(|w| w == &r.conversation_token[..]), "conversation token leaked in plaintext");
+            assert!(
+                !bytes.windows(32).any(|w| w == &r.conversation_token[..]),
+                "conversation token leaked in plaintext"
+            );
         }
 
         match FgtwMessage::from_vsf_bytes(&bytes).expect("parse sealed pong") {
-            FgtwMessage::StatusPong { sync_records, observed_addr, display_name, avatar_pin, sealed, .. } => {
+            FgtwMessage::StatusPong {
+                sync_records,
+                observed_addr,
+                display_name,
+                avatar_pin,
+                sealed,
+                ..
+            } => {
                 // Plaintext tail fields stay empty on the new wire form; the obs echo survives openly.
                 assert!(sync_records.is_empty());
                 assert!(display_name.is_none());
                 assert!(avatar_pin.is_none());
                 assert_eq!(observed_addr, Some("203.0.113.9:4383".parse().unwrap()));
                 // The right pairwise key recovers everything.
-                let (rec, dn, ap) = open_pong_sensitive(&sealed.expect("sealed tail present"), &key).expect("open with right key");
+                let (rec, dn, ap) =
+                    open_pong_sensitive(&sealed.expect("sealed tail present"), &key)
+                        .expect("open with right key");
                 assert_eq!(rec, records);
                 assert_eq!(dn.as_deref(), Some(name));
                 assert_eq!(ap, Some(pin));
@@ -3286,12 +3357,24 @@ mod pong_seal_tests {
 
     #[test]
     fn sealed_pong_wrong_key_yields_absent_fields_not_error() {
-        let blob = seal_pong_sensitive(&sample_records(), Some("Ada"), Some(&[0x77u8; 64]), &[0x42u8; 32]).unwrap();
+        let blob = seal_pong_sensitive(
+            &sample_records(),
+            Some("Ada"),
+            Some(&[0x77u8; 64]),
+            &[0x42u8; 32],
+        )
+        .unwrap();
         let bytes = sealed_pong(Some(blob)).to_vsf_bytes();
         // The pong itself still parses (presence must land) — only the tail refuses.
-        match FgtwMessage::from_vsf_bytes(&bytes).expect("pong parse must not fail on an unopenable tail") {
+        match FgtwMessage::from_vsf_bytes(&bytes)
+            .expect("pong parse must not fail on an unopenable tail")
+        {
             FgtwMessage::StatusPong { sealed, .. } => {
-                assert!(open_pong_sensitive(&sealed.expect("tail rode the wire"), &[0x43u8; 32]).is_err(), "wrong key must not open the tail");
+                assert!(
+                    open_pong_sensitive(&sealed.expect("tail rode the wire"), &[0x43u8; 32])
+                        .is_err(),
+                    "wrong key must not open the tail"
+                );
             }
             other => panic!("expected StatusPong, got {:?}", other),
         }
@@ -3302,7 +3385,13 @@ mod pong_seal_tests {
         // No pairwise key for the pinger → the pong goes out with no sensitive tail at all; presence still works.
         let bytes = sealed_pong(None).to_vsf_bytes();
         match FgtwMessage::from_vsf_bytes(&bytes).expect("parse tail-less pong") {
-            FgtwMessage::StatusPong { sync_records, display_name, avatar_pin, sealed, .. } => {
+            FgtwMessage::StatusPong {
+                sync_records,
+                display_name,
+                avatar_pin,
+                sealed,
+                ..
+            } => {
                 assert!(sync_records.is_empty());
                 assert!(display_name.is_none());
                 assert!(avatar_pin.is_none());
@@ -3327,7 +3416,13 @@ mod pong_seal_tests {
             .build()
             .expect("legacy pong build");
         match FgtwMessage::from_vsf_bytes(&bytes).expect("parse legacy pong") {
-            FgtwMessage::StatusPong { sync_records, display_name, avatar_pin, sealed, .. } => {
+            FgtwMessage::StatusPong {
+                sync_records,
+                display_name,
+                avatar_pin,
+                sealed,
+                ..
+            } => {
                 assert_eq!(sync_records, records);
                 assert_eq!(display_name.as_deref(), Some("Grace"));
                 assert_eq!(avatar_pin, Some(pin));
@@ -3370,13 +3465,21 @@ mod local_ip_absent_tests {
             peers: vec![absent.clone(), with_local.clone()],
         };
 
-        match FgtwMessage::from_vsf_bytes(&resp.to_vsf_bytes()).expect("a batch must survive an absent local_ip") {
+        match FgtwMessage::from_vsf_bytes(&resp.to_vsf_bytes())
+            .expect("a batch must survive an absent local_ip")
+        {
             FgtwMessage::PhonebookResponse { peers, .. } => {
                 assert_eq!(peers.len(), 2, "both peers, not zero and not one");
                 assert_eq!(peers[0].local_ip, None, "empty tensor parses back to None");
-                assert_eq!(peers[1].local_ip, with_local.local_ip, "the row AFTER it is intact");
+                assert_eq!(
+                    peers[1].local_ip, with_local.local_ip,
+                    "the row AFTER it is intact"
+                );
                 // The signature is over signing_bytes, which treats None as the empty string -- so a record with no local_ip still verifies, and can therefore still be merged.
-                assert!(peers[0].verify(), "an absent local_ip must not break the self-signature");
+                assert!(
+                    peers[0].verify(),
+                    "an absent local_ip must not break the self-signature"
+                );
                 assert!(peers[1].verify());
             }
             other => panic!("expected PhonebookResponse, got {other:?}"),

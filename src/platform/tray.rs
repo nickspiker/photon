@@ -21,7 +21,8 @@ mod linux {
         }
         fn icon_pixmap(&self) -> Vec<ksni::Icon> {
             // The shipped round RGBA asset (transparent corners, AA rim) → SNI's network-byte-order ARGB32.
-            let Ok(img) = image::load_from_memory(include_bytes!("../../assets/icon-64.png")) else {
+            let Ok(img) = image::load_from_memory(include_bytes!("../../assets/icon-64.png"))
+            else {
                 return Vec::new();
             };
             let rgba = img.to_rgba8();
@@ -31,7 +32,11 @@ mod linux {
                 let [r, g, b, a] = px.0;
                 argb.extend_from_slice(&[a, r, g, b]);
             }
-            vec![ksni::Icon { width: w, height: h, data: argb }]
+            vec![ksni::Icon {
+                width: w,
+                height: h,
+                data: argb,
+            }]
         }
         fn activate(&mut self, _x: i32, _y: i32) {
             let _ = self.proxy.send(crate::ui::PhotonEvent::ShowWindow);
@@ -156,7 +161,12 @@ mod windows_tray {
         let _ = Shell_NotifyIconW(NIM_ADD, &nid);
     }
 
-    unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe extern "system" fn wndproc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
         if msg == WM_TRAY_CALLBACK {
             match lparam.0 as u32 {
                 WM_LBUTTONUP => {
@@ -174,7 +184,15 @@ mod windows_tray {
                         let _ = GetCursorPos(&mut pt);
                         // Required Win32 ritual: without SetForegroundWindow the popup never dismisses on outside-click.
                         let _ = SetForegroundWindow(hwnd);
-                        let picked = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, 0, hwnd, None);
+                        let picked = TrackPopupMenu(
+                            menu,
+                            TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
+                            pt.x,
+                            pt.y,
+                            0,
+                            hwnd,
+                            None,
+                        );
                         match picked.0 as usize {
                             MENU_SHOW => {
                                 if let Some(proxy) = PROXY.get() {
@@ -323,7 +341,10 @@ mod macos_tray {
                 let data = NSData::with_bytes(bytes);
                 if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
                     // Menu-bar icons render at ~18pt; setting the drawn size keeps the orb from occupying a 64pt slab.
-                    image.setSize(NSSize { width: 18.0, height: 18.0 });
+                    image.setSize(NSSize {
+                        width: 18.0,
+                        height: 18.0,
+                    });
                     button.setImage(Some(&image));
                 } else {
                     button.setTitle(ns_string!("\u{25CF}"));
@@ -361,5 +382,7 @@ pub fn spawn(proxy: std::sync::Arc<dyn fluor::host::WakeSender<crate::ui::Photon
 
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 pub fn spawn(_proxy: std::sync::Arc<dyn fluor::host::WakeSender<crate::ui::PhotonEvent>>) {
-    crate::log("TRAY: no backend for this platform — residency still works via relaunch-to-surface");
+    crate::log(
+        "TRAY: no backend for this platform — residency still works via relaunch-to-surface",
+    );
 }

@@ -276,7 +276,11 @@ pub fn vsf_read(path: &Path, label: &str, device_secret: &[u8; 32]) -> std::io::
         if field.name == "payload" {
             if let Some(VsfType::v(b'e', data)) = field.values.first() {
                 #[cfg(feature = "development")]
-                crate::logf!("STORAGE: vsf_read: {} verified, payload_len={}", label, data.len());
+                crate::logf!(
+                    "STORAGE: vsf_read: {} verified, payload_len={}",
+                    label,
+                    data.len()
+                );
                 return Ok(data.clone());
             }
         }

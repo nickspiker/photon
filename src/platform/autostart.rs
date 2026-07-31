@@ -6,7 +6,9 @@
 // ───────── Default-ON policy (user mandate) ───────── Background residency + launch-at-login are ON unless the user explicitly turned them off. The OS artifact alone can't carry that: auto-enrolling every launch would resurrect a login item the user deleted, so the explicit "no" lives in a marker file — present = user opted out, absent = default-on. The artifact stays the OS-visible truth for WHAT runs at login; the marker is only the user's veto.
 
 fn optout_path() -> Option<std::path::PathBuf> {
-    crate::storage::photon_config_dir().ok().map(|d| d.join("background_optout"))
+    crate::storage::photon_config_dir()
+        .ok()
+        .map(|d| d.join("background_optout"))
 }
 
 /// The user's standing wish: `true` unless they flipped the settings toggle off. Drives `resident_mode` and the toggle's initial state.
@@ -28,8 +30,13 @@ pub fn set_background_desired(on: bool) {
 pub fn ensure_enrolled() {
     if background_desired() && !enabled() {
         match enable() {
-            Ok(()) => crate::log("RESIDENT: default-on — login item written (settings toggle to opt out)"),
-            Err(e) => crate::logf!("RESIDENT: default-on enrollment failed: {} (still resident this session)", e),
+            Ok(()) => {
+                crate::log("RESIDENT: default-on — login item written (settings toggle to opt out)")
+            }
+            Err(e) => crate::logf!(
+                "RESIDENT: default-on enrollment failed: {} (still resident this session)",
+                e
+            ),
         }
     }
 }
@@ -142,13 +149,18 @@ pub fn enable() -> Result<(), String> {
     let exe = exe_path()?;
     let cmd = format!("\"{}\" --background", exe.display());
     let out = std::process::Command::new("reg")
-        .args(["add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", &cmd, "/f"])
+        .args([
+            "add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", &cmd, "/f",
+        ])
         .output()
         .map_err(|e| format!("reg add: {e}"))?;
     if out.status.success() {
         Ok(())
     } else {
-        Err(format!("reg add failed: {}", String::from_utf8_lossy(&out.stderr)))
+        Err(format!(
+            "reg add failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ))
     }
 }
 
@@ -162,7 +174,10 @@ pub fn disable() -> Result<(), String> {
     if out.status.success() || String::from_utf8_lossy(&out.stderr).contains("unable to find") {
         Ok(())
     } else {
-        Err(format!("reg delete failed: {}", String::from_utf8_lossy(&out.stderr)))
+        Err(format!(
+            "reg delete failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ))
     }
 }
 

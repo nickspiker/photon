@@ -105,8 +105,12 @@ impl PeerUpdateClient {
                 }
 
                 // Connect to WebSocket
-                crate::logf!("PeerUpdate: Connecting to {}", crate::network::http::SEED_WS);
-                let ws_result = tokio_tungstenite::connect_async(crate::network::http::SEED_WS).await;
+                crate::logf!(
+                    "PeerUpdate: Connecting to {}",
+                    crate::network::http::SEED_WS
+                );
+                let ws_result =
+                    tokio_tungstenite::connect_async(crate::network::http::SEED_WS).await;
 
                 match ws_result {
                     Ok((ws_stream, _response)) => {
@@ -180,7 +184,8 @@ impl PeerUpdateClient {
                     break;
                 }
 
-                let ws_result = tokio_tungstenite::connect_async(crate::network::http::SEED_WS).await;
+                let ws_result =
+                    tokio_tungstenite::connect_async(crate::network::http::SEED_WS).await;
 
                 if let Ok((ws_stream, _)) = ws_result {
                     let (_, mut read) = ws_stream.split();
@@ -207,7 +212,6 @@ impl PeerUpdateClient {
     fn parse_peer_update(data: &[u8]) -> Option<PeerUpdate> {
         use vsf::file_format::VsfHeader;
         use vsf::types::VsfType;
-        
 
         // Parse VSF header, then the primary section — TOC name resolution lives in the vsf crate now.
         let (header, header_end) = VsfHeader::decode(data).ok()?;

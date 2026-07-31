@@ -156,8 +156,14 @@ mod tests {
             derive_blind_pad(&dev_a, &friend_x),
             "same (device, friend) → same pad, any session"
         );
-        assert_ne!(derive_blind_pad(&dev_a, &friend_x), derive_blind_pad(&dev_b, &friend_x));
-        assert_ne!(derive_blind_pad(&dev_a, &friend_x), derive_blind_pad(&dev_a, &friend_y));
+        assert_ne!(
+            derive_blind_pad(&dev_a, &friend_x),
+            derive_blind_pad(&dev_b, &friend_x)
+        );
+        assert_ne!(
+            derive_blind_pad(&dev_a, &friend_x),
+            derive_blind_pad(&dev_a, &friend_y)
+        );
     }
 
     #[test]
@@ -201,11 +207,17 @@ mod tests {
         let sealed = seal_sibling_s(&s, &key).unwrap();
         let opened = open_sibling_s(&sealed, &key).expect("AEAD + check must pass");
         assert_eq!(*opened, s);
-        assert!(open_sibling_s(&sealed, &[0x78u8; 32]).is_none(), "wrong key fails closed");
+        assert!(
+            open_sibling_s(&sealed, &[0x78u8; 32]).is_none(),
+            "wrong key fails closed"
+        );
         let mut t = sealed.clone();
         let mid = t.len() / 2;
         t[mid] ^= 0x01;
-        assert!(open_sibling_s(&t, &key).is_none(), "tampered ciphertext fails closed");
+        assert!(
+            open_sibling_s(&t, &key).is_none(),
+            "tampered ciphertext fails closed"
+        );
     }
 
     #[test]

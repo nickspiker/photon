@@ -43,7 +43,10 @@ fn level_from_arg(s: &str) -> Option<u64> {
 
 /// Eagle oscillations → a readable UTC string for display (display-only conversion is allowed).
 fn eagle_display(osc: i64) -> String {
-    vsf::types::EagleTime::from_oscillations(osc).to_datetime().format("%Y-%m-%d %H:%M:%S%.3f").to_string()
+    vsf::types::EagleTime::from_oscillations(osc)
+        .to_datetime()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string()
 }
 
 struct Filter {
@@ -81,7 +84,10 @@ fn read_all(path: &str) -> std::io::Result<Vec<u8>> {
 
 /// Parse a 64-char hex string into a 32-byte array (identity seed or raw log key).
 fn parse_hex32(s: &str) -> Option<[u8; 32]> {
-    let v = (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect::<Option<Vec<u8>>>()?;
+    let v = (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
     v.try_into().ok()
 }
 
@@ -102,7 +108,11 @@ fn main() {
             "-p" | "--pull" => pull = true,
             "-H" | "--handle" => match args.next() {
                 // The friendly path: derive the identity seed straight from the handle (cheap — ihi::handle_to_hash, NOT the memory-hard proof), using photon's exact canonicalization so it matches the submitter's seed.
-                Some(h) => seed = Some(photon_messenger::storage::contacts::derive_identity_seed(&h)),
+                Some(h) => {
+                    seed = Some(photon_messenger::storage::contacts::derive_identity_seed(
+                        &h,
+                    ))
+                }
                 None => {
                     eprintln!("photonlog: --handle needs the handle string");
                     std::process::exit(2);
@@ -162,12 +172,21 @@ fn main() {
             }
         };
         if keys.is_empty() {
-            eprintln!("photonlog: no submitted logs for that identity (tag {})", hex::encode(&tag[..6]));
+            eprintln!(
+                "photonlog: no submitted logs for that identity (tag {})",
+                hex::encode(&tag[..6])
+            );
             return;
         }
-        eprintln!("photonlog: {} submitted log(s) for tag {}", keys.len(), hex::encode(&tag[..6]));
+        eprintln!(
+            "photonlog: {} submitted log(s) for tag {}",
+            keys.len(),
+            hex::encode(&tag[..6])
+        );
         // Local ciphertext cache: submitted logs are IMMUTABLE (each submission is a fresh eagle-stamped key), so anything already on disk never needs re-fetching — a pull that used to re-download the whole history (minutes) now only fetches the new submissions. Cache the CIPHERTEXT, so the at-rest copy stays as sealed as R2's; the seed still gates reading.
-        let cache_dir = std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join(".cache/photon-logs")).unwrap_or_else(|_| std::path::PathBuf::from(".photon-log-cache"));
+        let cache_dir = std::env::var("HOME")
+            .map(|h| std::path::PathBuf::from(h).join(".cache/photon-logs"))
+            .unwrap_or_else(|_| std::path::PathBuf::from(".photon-log-cache"));
         let _ = std::fs::create_dir_all(&cache_dir);
         let cache_path = |k: &str| cache_dir.join(k.replace('/', "_"));
         let mut fetched = 0usize;
@@ -213,12 +232,18 @@ fn main() {
                 None => eprintln!("photonlog: {k}: fetch failed (and not cached)"),
             }
         }
-        eprintln!("photonlog: {} fetched, {} from cache ({})", fetched, cached, cache_dir.display());
+        eprintln!(
+            "photonlog: {} fetched, {} from cache ({})",
+            fetched,
+            cached,
+            cache_dir.display()
+        );
         return;
     }
 
     // Decrypt key for a LOCAL sealed blob: the raw log key if given, else derived from the seed.
-    let log_key: Option<[u8; 32]> = raw_key.or_else(|| seed.as_ref().map(photon_messenger::log_encryption_key));
+    let log_key: Option<[u8; 32]> =
+        raw_key.or_else(|| seed.as_ref().map(photon_messenger::log_encryption_key));
 
     let path = path.unwrap_or_else(|| "photon.log.vsf".to_string());
 
@@ -269,4 +294,3 @@ fn main() {
         }
     }
 }
-

@@ -758,8 +758,18 @@ mod tests {
         // A fresh receiver (position 0) decrypting msg1 (encrypted at position 1) gets GARBAGE.
         let rx_salt_wrong = derive_salt(b"first", &receiver_fresh);
         let rx_scratch_wrong = generate_scratch(&receiver_fresh, &rx_salt_wrong);
-        let garbage = decrypt_layers(&ct1, &receiver_fresh, CURRENT_KEY_INDEX, &rx_scratch_wrong, &et1);
-        assert_ne!(&garbage[..], b"second", "decrypting out-of-position must NOT yield the plaintext");
+        let garbage = decrypt_layers(
+            &ct1,
+            &receiver_fresh,
+            CURRENT_KEY_INDEX,
+            &rx_scratch_wrong,
+            &et1,
+        );
+        assert_ne!(
+            &garbage[..],
+            b"second",
+            "decrypting out-of-position must NOT yield the plaintext"
+        );
 
         // In strict order it works: advance the receiver once (process msg0), then msg1 decrypts.
         let mut receiver = make_test_chain();
@@ -777,6 +787,10 @@ mod tests {
         // And both chains converge to the same key after the same advances.
         receiver.advance(&et1, &blake3::hash(b"second").as_bytes().to_owned(), &[]);
         sender.advance(&et1, &blake3::hash(b"second").as_bytes().to_owned(), &[]);
-        assert_eq!(sender.current_key(), receiver.current_key(), "chains must converge");
+        assert_eq!(
+            sender.current_key(),
+            receiver.current_key(),
+            "chains must converge"
+        );
     }
 }

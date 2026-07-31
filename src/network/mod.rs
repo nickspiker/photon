@@ -11,14 +11,14 @@ pub mod pairing_nfc;
 #[cfg(not(target_os = "android"))]
 pub mod peer_updates;
 pub mod pt;
-pub mod updates;
 pub mod status;
 pub mod tcp;
 pub mod traverse;
 pub mod udp;
+pub mod updates;
 
-pub use clock_check::{ClockCheckResult, ClockJumpDetector, ClockWake};
 pub use clock_check::spawn_clock_check;
+pub use clock_check::{ClockCheckResult, ClockJumpDetector, ClockWake};
 pub use clutch_jobs::{ClutchCeremonyResult, ClutchKemEncapResult, ClutchKeygenResult};
 pub use handle_query::{HandleQuery, QueryResult};
 #[cfg(not(target_os = "android"))]

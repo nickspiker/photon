@@ -6,7 +6,9 @@ const MARKER_FILE: &str = "device_binding.vsf";
 const KEY_DOMAIN: &str = "photon.device_binding.v0";
 
 fn marker_path() -> Option<std::path::PathBuf> {
-    crate::storage::photon_config_dir().ok().map(|d| d.join(MARKER_FILE))
+    crate::storage::photon_config_dir()
+        .ok()
+        .map(|d| d.join(MARKER_FILE))
 }
 
 fn seal_key(device_secret: &[u8; 32]) -> [u8; 32] {

@@ -19,11 +19,14 @@ fn signed_frame(
         .add_section(section_name, fields)
         .build()
         .map_err(|e| format!("build VSF: {}", e))?;
-    let hash = vsf::verification::compute_provenance_hash(&unsigned).map_err(|e| format!("hash: {}", e))?;
+    let hash = vsf::verification::compute_provenance_hash(&unsigned)
+        .map_err(|e| format!("hash: {}", e))?;
     let signature = keypair.sign(&hash);
     let mut signed = unsigned;
-    vsf::verification::fill_provenance_hash(&mut signed, &hash).map_err(|e| format!("fill hash: {}", e))?;
-    vsf::verification::fill_signature(&mut signed, &signature.to_bytes()).map_err(|e| format!("fill sig: {}", e))?;
+    vsf::verification::fill_provenance_hash(&mut signed, &hash)
+        .map_err(|e| format!("fill hash: {}", e))?;
+    vsf::verification::fill_signature(&mut signed, &signature.to_bytes())
+        .map_err(|e| format!("fill sig: {}", e))?;
     Ok(signed)
 }
 
@@ -70,15 +73,25 @@ pub fn spawn_ring(device_secret: [u8; 32], target: [u8; 32]) {
         let signature = keypair.sign(&msg);
         let fields = vec![
             ("target".to_string(), VsfType::v(b'r', target.to_vec())),
-            ("timestamp".to_string(), VsfType::e(vsf::types::EtType::e6(ts))),
-            ("signature".to_string(), VsfType::ge(signature.to_bytes().to_vec())),
+            (
+                "timestamp".to_string(),
+                VsfType::e(vsf::types::EtType::e6(ts)),
+            ),
+            (
+                "signature".to_string(),
+                VsfType::ge(signature.to_bytes().to_vec()),
+            ),
         ];
         match signed_frame(&keypair, "ring", fields).and_then(post) {
             Ok(body) => {
                 let rung = ring_ack_rung(&body).unwrap_or_else(|| "?".to_string());
                 crate::logf!("DOORBELL: rang {} — {}", crate::fp(&target).as_str(), rung);
             }
-            Err(e) => crate::logf!("DOORBELL: ring {} failed: {}", crate::fp(&target).as_str(), e),
+            Err(e) => crate::logf!(
+                "DOORBELL: ring {} failed: {}",
+                crate::fp(&target).as_str(),
+                e
+            ),
         }
     });
 }
@@ -100,8 +113,14 @@ pub fn spawn_publish_bells(device_secret: [u8; 32], hp: [u8; 32], bells: Vec<Str
         let signature = keypair.sign(&msg);
         let mut fields = vec![
             ("hp".to_string(), VsfType::v(b'r', hp.to_vec())),
-            ("timestamp".to_string(), VsfType::e(vsf::types::EtType::e6(ts))),
-            ("signature".to_string(), VsfType::ge(signature.to_bytes().to_vec())),
+            (
+                "timestamp".to_string(),
+                VsfType::e(vsf::types::EtType::e6(ts)),
+            ),
+            (
+                "signature".to_string(),
+                VsfType::ge(signature.to_bytes().to_vec()),
+            ),
         ];
         // One `bell` per repeated field, preference order — the instance is identified by its POSITION, never a decimal-suffixed name; the worker reads all of them via get_fields.
         for b in &bells {

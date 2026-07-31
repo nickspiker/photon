@@ -18,14 +18,14 @@ pub struct BootstrapResult {
 
 // FGTW Seed Public Keys (hardcoded to avoid extra queries) X25519 public key - for encrypting announce messages
 pub const FGTW_X25519_PUBLIC_KEY: [u8; 32] = [
-    0xD6, 0x0B, 0x9D, 0xAC, 0x7F, 0x3F, 0x9D, 0x0E, 0xFC, 0xC2, 0x87, 0x88, 0xFB, 0x55, 0x56, 0x95, 
-    0x1E, 0x47, 0x95, 0x63, 0xB0, 0x74, 0xE8, 0xD1, 0x40, 0xE7, 0xDD, 0x51, 0x21, 0xCA, 0xE4, 0x24, 
+    0xD6, 0x0B, 0x9D, 0xAC, 0x7F, 0x3F, 0x9D, 0x0E, 0xFC, 0xC2, 0x87, 0x88, 0xFB, 0x55, 0x56, 0x95,
+    0x1E, 0x47, 0x95, 0x63, 0xB0, 0x74, 0xE8, 0xD1, 0x40, 0xE7, 0xDD, 0x51, 0x21, 0xCA, 0xE4, 0x24,
 ];
 
 // Ed25519 public key - for verifying challenge signatures
 pub const FGTW_ED25519_PUBLIC_KEY: [u8; 32] = [
-    0x02, 0x1C, 0xDF, 0x80, 0x43, 0x0C, 0x09, 0xFD, 0x58, 0xA4, 0xF7, 0xCD, 0x86, 0x03, 0x78, 0x0A, 
-    0xFC, 0x30, 0x87, 0xEF, 0x16, 0x24, 0x3F, 0xC1, 0x63, 0x9D, 0x31, 0x5F, 0x94, 0x06, 0xEB, 0x6D, 
+    0x02, 0x1C, 0xDF, 0x80, 0x43, 0x0C, 0x09, 0xFD, 0x58, 0xA4, 0xF7, 0xCD, 0x86, 0x03, 0x78, 0x0A,
+    0xFC, 0x30, 0x87, 0xEF, 0x16, 0x24, 0x3F, 0xC1, 0x63, 0x9D, 0x31, 0x5F, 0x94, 0x06, 0xEB, 0x6D,
 ];
 
 /// Try to parse a VSF error message from response bytes Returns Some(error_message) if the response is a worker `error` frame, None otherwise. The old hand-rolled scan for legacy "message"/"error" section shapes is retired — the worker answers every failure as a `{reason, detail}` error frame (fgtw 6b01e46).
@@ -67,9 +67,12 @@ pub async fn load_bootstrap_peers(
     identity_seed: &[u8; 32],
 ) -> BootstrapResult {
     match load_bootstrap_peers_inner(device_key, handle_proof, port, identity_seed).await {
-        Ok((peers, observed_addr, identity_count)) => {
-            BootstrapResult { peers, error: None, observed_addr, identity_count }
-        }
+        Ok((peers, observed_addr, identity_count)) => BootstrapResult {
+            peers,
+            error: None,
+            observed_addr,
+            identity_count,
+        },
         Err(e) => BootstrapResult {
             peers: vec![],
             error: Some(e),
@@ -133,7 +136,11 @@ async fn load_bootstrap_peers_inner(
         return Err(reason_error("challenge", &reason, &detail));
     }
     if !challenge_status.is_success() {
-        return Err(format_http_error_from_bytes("challenge", challenge_status, &challenge_bytes));
+        return Err(format_http_error_from_bytes(
+            "challenge",
+            challenge_status,
+            &challenge_bytes,
+        ));
     }
 
     #[cfg(feature = "development")]
@@ -207,7 +214,9 @@ async fn load_bootstrap_peers_inner(
     crate::logf!(
         "FGTW: announce ok, {} identities known, we look like {}",
         count,
-        observed_addr.map(|a| a.to_string()).unwrap_or_else(|| "(unknown)".to_string())
+        observed_addr
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "(unknown)".to_string())
     );
 
     Ok((Vec::new(), observed_addr, count))
@@ -221,16 +230,23 @@ fn parse_announce_ack(bytes: &[u8]) -> Result<(Option<std::net::SocketAddr>, u32
         .field("count", vsf::schema::TypeConstraint::Any)
         .field("ip", vsf::schema::TypeConstraint::Any)
         .field("port", vsf::schema::TypeConstraint::Any);
-    let section = vsf::schema::SectionBuilder::parse_document(schema, bytes, Some(FGTW_ED25519_PUBLIC_KEY))
-        .map_err(|e| format!("Verified parse of announce_ok: {}", e))?;
+    let section =
+        vsf::schema::SectionBuilder::parse_document(schema, bytes, Some(FGTW_ED25519_PUBLIC_KEY))
+            .map_err(|e| format!("Verified parse of announce_ok: {}", e))?;
     let count: u32 = section.get_value("count").unwrap_or(0);
     let ip: String = section.get_value("ip").unwrap_or_default();
     let port: u16 = section.get_value("port").unwrap_or(0);
     // The worker stamps `ip` from cf-connecting-ip, so it is a bare address with no port and can be v4 or v6. Pair it with the port WE announced (the worker echoes it back) to form the endpoint peers would reach us on. A malformed or empty address yields None rather than a bogus 0.0.0.0 we might sign.
     let observed = ip.parse::<std::net::IpAddr>().ok().and_then(|addr| {
-        if port == 0 { return None; }
+        if port == 0 {
+            return None;
+        }
         let sa = std::net::SocketAddr::new(addr, port);
-        if crate::network::traverse::gather::is_bogus_addr(&sa) { None } else { Some(sa) }
+        if crate::network::traverse::gather::is_bogus_addr(&sa) {
+            None
+        } else {
+            Some(sa)
+        }
     });
     Ok((observed, count))
 }
@@ -241,8 +257,12 @@ fn parse_challenge_hash(bytes: &[u8]) -> Result<[u8; 32], String> {
 
     // Verified read pinned to the FGTW signing key: is_original + Ed25519(ge over BLAKE3(file, ge zeroed)) + ke must equal FGTW_ED25519_PUBLIC_KEY. A challenge that fails ANY of those is not from FGTW.
     let (header, _header_len) =
-        vsf::verification::read_verified(bytes, Some(FGTW_ED25519_PUBLIC_KEY))
-            .map_err(|e| format!("Challenge verification failed - not from authentic FGTW: {}", e))?;
+        vsf::verification::read_verified(bytes, Some(FGTW_ED25519_PUBLIC_KEY)).map_err(|e| {
+            format!(
+                "Challenge verification failed - not from authentic FGTW: {}",
+                e
+            )
+        })?;
 
     // The provenance hash is the challenge value.
     match &header.provenance_hash {
@@ -297,8 +317,6 @@ fn encrypt_for_fgtw(plaintext: &[u8], fgtw_x25519_pubkey: &[u8; 32]) -> Result<V
     Ok(result)
 }
 
-
-
 /// Build VSF announce message (new encrypted format) Structure: RÅ< z y b ef6 hp ke ge n[1] (d"announce" o b n) > [announce payload] The device Ed25519 key (ke) and signature (ge) are at HEADER level for full file integrity
 fn build_announce_message(
     handle_proof: [u8; 32],
@@ -350,7 +368,6 @@ fn build_announce_message(
 
     Ok(vsf_bytes)
 }
-
 
 /// Parse a PeerRecord from a VsfField Expected format: (peer: hb{32}, ke{32}, t_u3{IP}, u3{port}, ef6{timestamp})
 pub(crate) fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord, String> {
@@ -462,7 +479,12 @@ mod tests {
     /// Build an `announce_ok` ack byte-for-byte the way the worker does, then read it with the client's own parser. This pins the two halves of a contract that live in different repos.
     ///
     /// It exists because the first cut of this ack was UNSIGNED: `vsf_bytes_response` doesn't sign, and only `handle_challenge` filled a `ge`. The client verifies pinned to the FGTW key, so every attest would have failed at `read_verified` -- after deploy, on all five clients, with the seed being the only way to attest. A round-trip test is the cheap way to catch a cross-repo shape mismatch.
-    fn worker_shaped_ack(signer: &ed25519_dalek::SigningKey, count: u32, ip: &str, port: u16) -> Vec<u8> {
+    fn worker_shaped_ack(
+        signer: &ed25519_dalek::SigningKey,
+        count: u32,
+        ip: &str,
+        port: u16,
+    ) -> Vec<u8> {
         use vsf::VsfType;
         let unsigned = vsf::VsfBuilder::new()
             .creation_time_oscillations(vsf::eagle_time_oscillations())
@@ -506,7 +528,10 @@ mod tests {
         .expect("a worker-shaped ack must parse under the pinned key");
 
         assert_eq!(section.get_value::<u32>("count").expect("count"), 7);
-        assert_eq!(section.get_value::<String>("ip").expect("ip"), "203.0.113.9");
+        assert_eq!(
+            section.get_value::<String>("ip").expect("ip"),
+            "203.0.113.9"
+        );
         assert_eq!(section.get_value::<u16>("port").expect("port"), 4383);
     }
 
@@ -520,7 +545,12 @@ mod tests {
         let schema = vsf::schema::SectionSchema::new("announce_ok")
             .field("count", vsf::schema::TypeConstraint::Any);
         assert!(
-            vsf::schema::SectionBuilder::parse_document(schema, &bytes, Some(real.verifying_key().to_bytes())).is_err(),
+            vsf::schema::SectionBuilder::parse_document(
+                schema,
+                &bytes,
+                Some(real.verifying_key().to_bytes())
+            )
+            .is_err(),
             "an ack signed by a foreign key must not verify"
         );
     }
@@ -538,7 +568,12 @@ mod tests {
             .field("count", vsf::schema::TypeConstraint::Any);
         let sk = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
         assert!(
-            vsf::schema::SectionBuilder::parse_document(schema, &bytes, Some(sk.verifying_key().to_bytes())).is_err(),
+            vsf::schema::SectionBuilder::parse_document(
+                schema,
+                &bytes,
+                Some(sk.verifying_key().to_bytes())
+            )
+            .is_err(),
             "an ack with no ge must not verify against a pinned key"
         );
     }

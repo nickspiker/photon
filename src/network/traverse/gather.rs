@@ -47,7 +47,10 @@ fn peer_lan_reachable(peer_v4: std::net::Ipv4Addr, our_v4: Option<std::net::Ipv4
 /// `our_v4` is OUR own LAN IPv4 when we have one.
 /// A peer's private-v4 candidate is only added when it shares our `/24` (see [`peer_lan_reachable`]) — a foreign private address from a different network is dropped so we never punch/PT toward a black hole.
 /// The convenience [`gather_peer_candidates`] preserves the older subnet-agnostic behaviour for callers with no our-LAN context; send-decision sites that DO know it call this `_from` form so a genuinely same-subnet peer still gets its fast LAN path.
-pub fn gather_peer_candidates_from(contact: &Contact, our_v4: Option<std::net::Ipv4Addr>) -> CandidateSet {
+pub fn gather_peer_candidates_from(
+    contact: &Contact,
+    our_v4: Option<std::net::Ipv4Addr>,
+) -> CandidateSet {
     let mut set = CandidateSet::new();
 
     if let Some(ip) = contact.ip {
@@ -58,7 +61,8 @@ pub fn gather_peer_candidates_from(contact: &Contact, our_v4: Option<std::net::I
 
     if let (Some(local_v4), Some(port)) = (contact.local_ip, contact.local_port) {
         // Skip an unreachable LAN candidate: the 464XLAT CLAT `192.0.0.4` family (is_usable_lan_ipv4), AND a foreign LAN not on our subnet (peer_lan_reachable).
-        if crate::network::udp::is_usable_lan_ipv4(local_v4) && peer_lan_reachable(local_v4, our_v4) {
+        if crate::network::udp::is_usable_lan_ipv4(local_v4) && peer_lan_reachable(local_v4, our_v4)
+        {
             let lan = SocketAddr::new(IpAddr::V4(local_v4), port);
             set.add(Candidate::new(lan, CandidateKind::HostV4Lan));
         }
@@ -122,7 +126,9 @@ pub fn gather_peer_candidates(contact: &Contact) -> CandidateSet {
 /// A public/global v4 is never foreign (returns false).
 pub fn is_foreign_peer_lan(peer: &SocketAddr, our_v4: Option<std::net::Ipv4Addr>) -> bool {
     match peer.ip() {
-        IpAddr::V4(v4) if crate::network::udp::is_private_ipv4(v4) => !peer_lan_reachable(v4, our_v4),
+        IpAddr::V4(v4) if crate::network::udp::is_private_ipv4(v4) => {
+            !peer_lan_reachable(v4, our_v4)
+        }
         _ => false,
     }
 }

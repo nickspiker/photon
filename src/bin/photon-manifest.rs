@@ -30,8 +30,23 @@ fn main() {
             "--out" => out = args.next(),
             "--merge" => merge = args.next(),
             "--artefact" => {
-                let (Some(platform), Some(arch), Some(version), Some(commit_hex), Some(url), Some(hash_hex), Some(size_str)) =
-                    (args.next(), args.next(), args.next(), args.next(), args.next(), args.next(), args.next())
+                let (
+                    Some(platform),
+                    Some(arch),
+                    Some(version),
+                    Some(commit_hex),
+                    Some(url),
+                    Some(hash_hex),
+                    Some(size_str),
+                ) = (
+                    args.next(),
+                    args.next(),
+                    args.next(),
+                    args.next(),
+                    args.next(),
+                    args.next(),
+                    args.next(),
+                )
                 else {
                     fail("--artefact needs 7 values: platform arch major.minor.patch commit-sha1-hex url blake3-hex size-bytes");
                 };
@@ -40,7 +55,8 @@ fn main() {
                     Err(_) => fail("--artefact size must be the artefact's byte count"),
                 };
                 let mut v = version.split('.').map(|p| p.parse::<usize>());
-                let (Some(Ok(major)), Some(Ok(minor)), Some(Ok(patch)), None) = (v.next(), v.next(), v.next(), v.next())
+                let (Some(Ok(major)), Some(Ok(minor)), Some(Ok(patch)), None) =
+                    (v.next(), v.next(), v.next(), v.next())
                 else {
                     fail("--artefact version must be major.minor.patch");
                 };
@@ -53,7 +69,15 @@ fn main() {
                     Ok(h) => h,
                     Err(_) => fail("--artefact hash must be 64 hex chars (BLAKE3)"),
                 };
-                rows.push(ManifestRow { platform, arch, version: (major, minor, patch), commit, url, hash, size });
+                rows.push(ManifestRow {
+                    platform,
+                    arch,
+                    version: (major, minor, patch),
+                    commit,
+                    url,
+                    hash,
+                    size,
+                });
             }
             other => fail(&format!("unknown arg {other}")),
         }
@@ -74,12 +98,17 @@ fn main() {
             Ok(bytes) => match parse_manifest(&bytes, channel) {
                 Ok(existing) => {
                     for row in existing {
-                        if !rows.iter().any(|r| r.platform == row.platform && r.arch == row.arch) {
+                        if !rows
+                            .iter()
+                            .any(|r| r.platform == row.platform && r.arch == row.arch)
+                        {
                             rows.push(row);
                         }
                     }
                 }
-                Err(e) => eprintln!("photon-manifest: merge source unverifiable ({e}) — starting fresh"),
+                Err(e) => {
+                    eprintln!("photon-manifest: merge source unverifiable ({e}) — starting fresh")
+                }
             },
             Err(e) => eprintln!("photon-manifest: merge source unreadable ({e}) — starting fresh"),
         }
@@ -137,14 +166,20 @@ fn main() {
         section.add_field_multi("hash", vec![VsfType::hb(r.hash.to_vec())]);
         builder = builder.add_section_direct(section);
     }
-    let unsigned = builder.build().unwrap_or_else(|e| fail(&format!("build: {e}")));
+    let unsigned = builder
+        .build()
+        .unwrap_or_else(|e| fail(&format!("build: {e}")));
     let signed = vsf::verification::sign_file(unsigned, &key)
         .unwrap_or_else(|e| fail(&format!("sign: {e}")));
 
     // Round-trip gate before publish: what we just wrote must pass the exact client-side check.
     match parse_manifest(&signed, channel) {
         Ok(parsed) if parsed.len() == rows.len() => {}
-        Ok(parsed) => fail(&format!("self-check row count mismatch: wrote {}, parsed {}", rows.len(), parsed.len())),
+        Ok(parsed) => fail(&format!(
+            "self-check row count mismatch: wrote {}, parsed {}",
+            rows.len(),
+            parsed.len()
+        )),
         Err(e) => fail(&format!("self-check failed: {e}")),
     }
     std::fs::write(&out, &signed).unwrap_or_else(|e| fail(&format!("write: {e}")));

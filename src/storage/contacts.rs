@@ -11,9 +11,7 @@
 //! All encryption, addressing, and atomicity is handled by FlatStorage.
 
 use crate::storage::{FlatStorage, StorageError};
-use crate::types::{
-    ClutchState, Contact, ContactId, DevicePubkey, FriendshipId, Seed, TrustLevel,
-};
+use crate::types::{ClutchState, Contact, ContactId, DevicePubkey, FriendshipId, Seed, TrustLevel};
 use vsf::schema::{SectionBuilder, SectionSchema, TypeConstraint};
 use vsf::types::EagleTime;
 use vsf::VsfType;
@@ -210,7 +208,9 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
         builder = builder
             .set(
                 "ip",
-                VsfType::v_u3(vsf::types::Vector { data: crate::network::fgtw::protocol::socketaddr_to_bytes(ip) }),
+                VsfType::v_u3(vsf::types::Vector {
+                    data: crate::network::fgtw::protocol::socketaddr_to_bytes(ip),
+                }),
             )
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
@@ -430,7 +430,11 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     contact.roster_updated = added;
 
     // Optional fields
-    if let Some(VsfType::v_u3(v)) = section.get_fields("ip").first().and_then(|f| f.values.first()) {
+    if let Some(VsfType::v_u3(v)) = section
+        .get_fields("ip")
+        .first()
+        .and_then(|f| f.values.first())
+    {
         contact.ip = crate::network::fgtw::protocol::bytes_to_socketaddr(&v.data);
     }
     if let Ok(name) = section.get_value::<String>("published_name") {
@@ -442,7 +446,11 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     if let Ok(fid) = section.get_value::<[u8; 32]>("friendship_id") {
         contact.friendship_id = Some(FriendshipId::from_bytes(fid));
     }
-    if let Some(v) = section.get_fields("last_seen").first().and_then(|f| f.values.first()) {
+    if let Some(v) = section
+        .get_fields("last_seen")
+        .first()
+        .and_then(|f| f.values.first())
+    {
         contact.last_seen = Some(vsf_to_oscillations(v));
     }
     if let Ok(id) = section.get_value::<[u8; 32]>("id") {
@@ -461,7 +469,11 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
         contact.chain_advanced_by_ack = true;
     }
     // History-recovery cursor: reconstruct the runtime state machine so an incomplete backfill resumes on the next drive_history_recovery pass (next_request_osc = 0 → immediately eligible; urgent stays false — resume is background work).
-    if let Some(v) = section.get_fields("hist_oldest").first().and_then(|f| f.values.first()) {
+    if let Some(v) = section
+        .get_fields("hist_oldest")
+        .first()
+        .and_then(|f| f.values.first())
+    {
         let oldest = vsf_to_oscillations(v);
         let complete = section.get_value::<bool>("hist_complete").unwrap_or(false);
         contact.history_recovery = Some(crate::types::HistoryRecovery {
@@ -490,7 +502,10 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
             contact.deposited_blinds.push((dev, blob, at));
         }
     }
-    if section.get_value::<bool>("blind_deposited").unwrap_or(false) {
+    if section
+        .get_value::<bool>("blind_deposited")
+        .unwrap_or(false)
+    {
         contact.blind_deposited = true;
     }
     // Folded fleet: restore the adopted set + arm flag + tip ts. Order-independent — fleet_folded_once=true makes knows_device members-only immediately on load. All absent (old vault) = empty set + false + 0 = bootstrap.
@@ -503,18 +518,33 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
             }
         }
     }
-    if section.get_value::<bool>("fleet_folded_once").unwrap_or(false) {
+    if section
+        .get_value::<bool>("fleet_folded_once")
+        .unwrap_or(false)
+    {
         contact.fleet_folded_once = true;
     }
-    if let Some(v) = section.get_fields("fleet_members_ts").first().and_then(|f| f.values.first()) {
+    if let Some(v) = section
+        .get_fields("fleet_members_ts")
+        .first()
+        .and_then(|f| f.values.first())
+    {
         contact.fleet_members_ts = vsf_to_oscillations(v);
     }
     // Roster LWW clock: absent = never bumped past creation, so `added` (set by the index-row load) stands.
-    if let Some(v) = section.get_fields("roster_updated").first().and_then(|f| f.values.first()) {
+    if let Some(v) = section
+        .get_fields("roster_updated")
+        .first()
+        .and_then(|f| f.values.first())
+    {
         contact.roster_updated = vsf_to_oscillations(v);
     }
     // §4.2 ceremony-owner claim + the owner's woven display truth (absent = unclaimed / not woven).
-    if let Some(VsfType::ke(k)) = section.get_fields("ceremony_owner").first().and_then(|f| f.values.first()) {
+    if let Some(VsfType::ke(k)) = section
+        .get_fields("ceremony_owner")
+        .first()
+        .and_then(|f| f.values.first())
+    {
         if k.len() == 32 {
             let mut o = [0u8; 32];
             o.copy_from_slice(k);
@@ -525,7 +555,11 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
         contact.owner_woven = true;
     }
     // Generation pin + end-of-identity flags (docs/lifecycle.md).
-    if let Some(VsfType::hb(h)) = section.get_fields("pin_genesis").first().and_then(|f| f.values.first()) {
+    if let Some(VsfType::hb(h)) = section
+        .get_fields("pin_genesis")
+        .first()
+        .and_then(|f| f.values.first())
+    {
         if h.len() == 32 {
             contact.pinned_genesis.copy_from_slice(h);
         }
@@ -533,7 +567,10 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     if section.get_value::<bool>("identity_ended").unwrap_or(false) {
         contact.identity_ended = true;
     }
-    if section.get_value::<bool>("identity_superseded").unwrap_or(false) {
+    if section
+        .get_value::<bool>("identity_superseded")
+        .unwrap_or(false)
+    {
         contact.identity_superseded = true;
     }
 
@@ -586,10 +623,7 @@ pub fn load_sibling_list(storage: &FlatStorage) -> Result<Vec<[u8; 32]>, Storage
 }
 
 /// Load all persisted fleet-sibling contacts: walk the sibling index, rebuild each via `Contact::new_sibling` (party id re-derived from the device pubkey), then apply its saved state. A missing state entry yields a fresh Pending sibling — the ceremony machinery re-runs CLUTCH.
-pub fn load_all_siblings(
-    our_handle_proof: [u8; 32],
-    storage: &FlatStorage,
-) -> Vec<Contact> {
+pub fn load_all_siblings(our_handle_proof: [u8; 32], storage: &FlatStorage) -> Vec<Contact> {
     let devices = match load_sibling_list(storage) {
         Ok(d) => d,
         Err(e) => {
@@ -604,12 +638,20 @@ pub fn load_all_siblings(
         match storage.read_addr(&contact_key(&c.handle_hash, "state")) {
             Ok(Some(vsf_bytes)) => {
                 if let Err(e) = apply_contact_state(&mut c, &vsf_bytes) {
-                    crate::logf!("Failed to parse sibling state for device {}: {}", hex::encode(&device[..4]), e);
+                    crate::logf!(
+                        "Failed to parse sibling state for device {}: {}",
+                        hex::encode(&device[..4]),
+                        e
+                    );
                 }
             }
             Ok(None) => {} // Fresh Pending sibling — ceremony re-runs
             Err(e) => {
-                crate::logf!("Failed to read sibling state for device {}: {}", hex::encode(&device[..4]), e);
+                crate::logf!(
+                    "Failed to read sibling state for device {}: {}",
+                    hex::encode(&device[..4]),
+                    e
+                );
             }
         }
         // The applied state's stored pubkey/id equal the index-derived ones by construction; the sibling flag is authoritative from new_sibling, not the blob.
@@ -657,9 +699,15 @@ pub fn save_contact(contact: &Contact, storage: &FlatStorage) -> Result<(), Stor
         name: contact.petname.clone(),
         avatar_pin: contact.avatar_pin,
     };
-    match list.iter_mut().find(|c| c.handle_proof == contact.handle_proof) {
+    match list
+        .iter_mut()
+        .find(|c| c.handle_proof == contact.handle_proof)
+    {
         Some(row) => {
-            if row.party_id != fresh.party_id || row.name != fresh.name || row.avatar_pin != fresh.avatar_pin {
+            if row.party_id != fresh.party_id
+                || row.name != fresh.name
+                || row.avatar_pin != fresh.avatar_pin
+            {
                 *row = fresh;
                 save_contact_list(&list, storage)?;
             }
@@ -688,7 +736,11 @@ pub fn load_all_contacts(storage: &FlatStorage) -> Vec<Contact> {
         match load_contact_state(&identity, storage) {
             Ok(contact) => contacts.push(contact),
             Err(e) => {
-                crate::logf!("Failed to load contact state for '{}': {}", identity.name, e);
+                crate::logf!(
+                    "Failed to load contact state for '{}': {}",
+                    identity.name,
+                    e
+                );
             }
         }
     }
@@ -857,7 +909,11 @@ pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), Sto
     }
 
     #[cfg(feature = "development")]
-    crate::logf!("STORAGE: Saved {} messages for seed {}", contact.messages.len(), hex::encode(&contact.handle_hash[..4]));
+    crate::logf!(
+        "STORAGE: Saved {} messages for seed {}",
+        contact.messages.len(),
+        hex::encode(&contact.handle_hash[..4])
+    );
 
     Ok(())
 }
@@ -909,7 +965,11 @@ pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(),
     }
 
     #[cfg(feature = "development")]
-    crate::logf!("STORAGE: Loaded {} messages for seed {}", contact.messages.len(), hex::encode(&contact.handle_hash[..4]));
+    crate::logf!(
+        "STORAGE: Loaded {} messages for seed {}",
+        contact.messages.len(),
+        hex::encode(&contact.handle_hash[..4])
+    );
 
     Ok(())
 }
@@ -964,7 +1024,11 @@ pub fn load_message_page_before(
         .map_err(|e| StorageError::Vault(e.to_string()))?;
 
     // All keys strictly older than the cursor, ascending.
-    let before = if before_osc <= 0 { 0u64 } else { before_osc as u64 };
+    let before = if before_osc <= 0 {
+        0u64
+    } else {
+        before_osc as u64
+    };
     let mut keys: Vec<u64> = pks
         .into_iter()
         .filter_map(|pk| match pk {
@@ -1232,14 +1296,22 @@ mod tests {
         let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
         let identity = ContactIdentity {
             handle_proof: [0x66; 32],
-            party_id: crate::crypto::clutch::identity_party_id(&crate::types::Handle::to_identity_seed("carol")),
+            party_id: crate::crypto::clutch::identity_party_id(
+                &crate::types::Handle::to_identity_seed("carol"),
+            ),
             name: String::new(),
             avatar_pin: [0u8; 64],
         };
         let loaded = load_contact_state(&identity, &storage).unwrap();
         assert_eq!(loaded.deposited_blinds.len(), 2);
-        assert_eq!(loaded.deposited_blinds[0], ([0x10; 32], vec![0xAB; 64], 1_000));
-        assert_eq!(loaded.deposited_blinds[1], ([0x11; 32], vec![0xCD; 64], 2_000));
+        assert_eq!(
+            loaded.deposited_blinds[0],
+            ([0x10; 32], vec![0xAB; 64], 1_000)
+        );
+        assert_eq!(
+            loaded.deposited_blinds[1],
+            ([0x11; 32], vec![0xCD; 64], 2_000)
+        );
         assert!(loaded.blind_deposited);
 
         if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
@@ -1268,7 +1340,9 @@ mod tests {
 
         let identity = ContactIdentity {
             handle_proof: [0x77; 32],
-            party_id: crate::crypto::clutch::identity_party_id(&crate::types::Handle::to_identity_seed("dave")),
+            party_id: crate::crypto::clutch::identity_party_id(
+                &crate::types::Handle::to_identity_seed("dave"),
+            ),
             name: String::new(),
             avatar_pin: [0u8; 64],
         };
@@ -1285,7 +1359,11 @@ mod tests {
         // A contact with none of the fields set (pre-feature vault) loads as bootstrap.
         {
             let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
-            let bare = Contact::new(HandleText::new("dave"), [0x77; 32], DevicePubkey::from_bytes([0x20; 32]));
+            let bare = Contact::new(
+                HandleText::new("dave"),
+                [0x77; 32],
+                DevicePubkey::from_bytes([0x20; 32]),
+            );
             save_contact_state(&bare, &storage).unwrap();
             let loaded = load_contact_state(&identity, &storage).unwrap();
             assert!(loaded.fleet_members.is_empty(), "absent = empty folded set");

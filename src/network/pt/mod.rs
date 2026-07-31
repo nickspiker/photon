@@ -203,7 +203,14 @@ impl PTManager {
         // Mark SPEC as sent for retry tracking
         transfer.mark_spec_sent();
 
-        crate::logf!("PT: Starting outbound transfer #{} to {} ({} bytes, stream '{}', relay={})", transfer_id, peer_addr, transfer.send_buffer.total_size(), stream_id as char, recipient_pubkey.is_some());
+        crate::logf!(
+            "PT: Starting outbound transfer #{} to {} ({} bytes, stream '{}', relay={})",
+            transfer_id,
+            peer_addr,
+            transfer.send_buffer.total_size(),
+            stream_id as char,
+            recipient_pubkey.is_some()
+        );
 
         // Push to vec - allows multiple concurrent transfers to same peer
         self.outbound.push(transfer);
@@ -213,7 +220,14 @@ impl PTManager {
 
     /// Handle received SPEC (start receiving)
     pub fn handle_spec(&mut self, peer_addr: SocketAddr, spec: PTSpec) -> Vec<u8> {
-        crate::logf!("PT: Received SPEC from {} - stream '{}', {} packets, {} bytes, hash {}", peer_addr, spec.stream_id as char, spec.total_packets, spec.total_size, hex::encode(&spec.data_hash[..4]));
+        crate::logf!(
+            "PT: Received SPEC from {} - stream '{}', {} packets, {} bytes, hash {}",
+            peer_addr,
+            spec.stream_id as char,
+            spec.total_packets,
+            spec.total_size,
+            hex::encode(&spec.data_hash[..4])
+        );
 
         let stream_id = spec.stream_id;
 
@@ -245,7 +259,9 @@ impl PTManager {
 
         // Find the transfer by stream_id, accepting the ACK from either the primary path or the raced alternate (LAN vs WAN). Whichever address answered is the reachable one, so lock the transfer onto it and drop the alternate — DATA/ACK route by (peer_addr, stream_id), so all subsequent packets must use the path that ACKed.
         if let Some(transfer) = self.outbound.iter_mut().find(|t| {
-            t.stream_id == stream_id && (same_addr(t.peer_addr, peer_addr) || t.alt_addr.map_or(false, |a| same_addr(a, peer_addr)))
+            t.stream_id == stream_id
+                && (same_addr(t.peer_addr, peer_addr)
+                    || t.alt_addr.map_or(false, |a| same_addr(a, peer_addr)))
         }) {
             if !same_addr(transfer.peer_addr, peer_addr) {
                 crate::logf!("PT: SPEC ACK arrived on alternate path {} (was {}) for stream '{}' - locking onto it", peer_addr, transfer.peer_addr, stream_id as char);
@@ -258,14 +274,23 @@ impl PTManager {
             // Fresh stale budget for the just-proven path: whatever was burned before the lock (SPEC rounds against a dead primary can run 10+ seconds) must not bill the DATA phase.
             transfer.retries = 0;
 
-            crate::logf!("PT: SPEC ACK received from {} for stream '{}', starting DATA transfer", peer_addr, stream_id as char);
+            crate::logf!(
+                "PT: SPEC ACK received from {} for stream '{}', starting DATA transfer",
+                peer_addr,
+                stream_id as char
+            );
 
             // Send initial window of DATA packets
             for data in transfer.packets_to_send() {
                 packets.push(data.to_bytes());
             }
         } else {
-            crate::logf!("PT: SPEC ACK from {} for unknown stream '{}' (hash {})", peer_addr, stream_id as char, hex::encode(&data_hash[..4]));
+            crate::logf!(
+                "PT: SPEC ACK from {} for unknown stream '{}' (hash {})",
+                peer_addr,
+                stream_id as char,
+                hex::encode(&data_hash[..4])
+            );
         }
 
         packets
@@ -322,16 +347,20 @@ impl PTManager {
     /// Handle received DATA packet Routes by (peer_addr, stream_id) to support concurrent transfers
     pub fn handle_data(&mut self, peer_addr: SocketAddr, data: PTData) -> Option<Vec<u8>> {
         // Find inbound transfer by peer AND stream_id
-        if let Some(transfer) = self
-            .inbound
-            .iter_mut()
-            .find(|t| same_addr(t.peer_addr, peer_addr) && t.stream_id == data.stream_id && !t.is_complete())
-        {
+        if let Some(transfer) = self.inbound.iter_mut().find(|t| {
+            same_addr(t.peer_addr, peer_addr) && t.stream_id == data.stream_id && !t.is_complete()
+        }) {
             if let Some(ack) = transfer.handle_data(&data) {
                 let (recv, total) = transfer.progress();
                 // Log at milestones: every 50 packets (but not 0) or completion
                 if recv == total || (recv > 0 && recv % 50 == 0) {
-                    crate::logf!("PT: Received {}/{} from {} stream '{}'", recv, total, peer_addr, data.stream_id as char);
+                    crate::logf!(
+                        "PT: Received {}/{} from {} stream '{}'",
+                        recv,
+                        total,
+                        peer_addr,
+                        data.stream_id as char
+                    );
                 }
 
                 return Some(ack.to_vsf_bytes(&self.keypair));
@@ -369,9 +398,21 @@ impl PTManager {
             // Only log progress at milestones (every 100 packets or completion) Avoids spamming logs with per-ACK updates
             let (acked, total) = transfer.send_buffer.progress();
             if acked == total {
-                crate::logf!("PT: All {}/{} ACK'd to {} stream '{}'", acked, total, peer_addr, ack.stream_id as char);
+                crate::logf!(
+                    "PT: All {}/{} ACK'd to {} stream '{}'",
+                    acked,
+                    total,
+                    peer_addr,
+                    ack.stream_id as char
+                );
             } else if acked > 0 && acked % 100 == 0 {
-                crate::logf!("PT: Progress {}/{} to {} stream '{}'", acked, total, peer_addr, ack.stream_id as char);
+                crate::logf!(
+                    "PT: Progress {}/{} to {} stream '{}'",
+                    acked,
+                    total,
+                    peer_addr,
+                    ack.stream_id as char
+                );
             }
 
             // Send more packets (pipelining phase sends packets_per_ack new packets)
@@ -392,7 +433,11 @@ impl PTManager {
             .iter_mut()
             .find(|t| same_addr(t.peer_addr, peer_addr) && t.state == TransferState::Transferring)
         {
-            crate::logf!("PT: NAK received from {} - retransmitting {} packets", peer_addr, nak.missing_sequences.len());
+            crate::logf!(
+                "PT: NAK received from {} - retransmitting {} packets",
+                peer_addr,
+                nak.missing_sequences.len()
+            );
 
             for data in transfer.handle_nak(&nak) {
                 packets.push(data.to_bytes());
@@ -418,11 +463,9 @@ impl PTManager {
                 crate::logf!("PT: Peer {} requested resume", peer_addr);
             }
             ControlCommand::SlowDown => {
-                if let Some(transfer) = self
-                    .outbound
-                    .iter_mut()
-                    .find(|t| same_addr(t.peer_addr, peer_addr) && t.state == TransferState::Transferring)
-                {
+                if let Some(transfer) = self.outbound.iter_mut().find(|t| {
+                    same_addr(t.peer_addr, peer_addr) && t.state == TransferState::Transferring
+                }) {
                     transfer.window.on_loss(); // Treat SlowDown like loss - backs off send ratio
                     crate::logf!("PT: Slowing down to {}", peer_addr);
                 }
@@ -433,11 +476,9 @@ impl PTManager {
     /// Handle received COMPLETE
     pub fn handle_complete(&mut self, peer_addr: SocketAddr, complete: PTComplete) {
         // Find transfer by peer and final_hash
-        if let Some(transfer) = self
-            .outbound
-            .iter_mut()
-            .find(|t| same_addr(t.peer_addr, peer_addr) && t.send_buffer.data_hash() == complete.final_hash)
-        {
+        if let Some(transfer) = self.outbound.iter_mut().find(|t| {
+            same_addr(t.peer_addr, peer_addr) && t.send_buffer.data_hash() == complete.final_hash
+        }) {
             let (packets, bytes, retransmits, duration_ms, max_window, rtt_ms, packet_size) =
                 transfer.stats();
             transfer.handle_complete(&complete);
@@ -463,14 +504,23 @@ impl PTManager {
 
                 crate::logf!("PT: → {} OK | {} | {:.1}s | {}B pkt | win {} | RTT {}ms | {:.0}% util ({} retx)", peer_addr, thruput_str, duration_ms as f64 / 1000.0, packet_size, max_window, rtt_ms, utilization, retransmits);
             } else {
-                crate::logf!("PT: → {} FAILED verification ({} packets, {} bytes)", peer_addr, packets, bytes);
+                crate::logf!(
+                    "PT: → {} FAILED verification ({} packets, {} bytes)",
+                    peer_addr,
+                    packets,
+                    bytes
+                );
             }
         }
     }
 
     /// Check if a SPECIFIC inbound transfer (peer + stream) is complete, return its COMPLETE packet.
     /// Stream-scoped: a peer can have several concurrent transfers (e.g. a CLUTCH offer AND a KEM response in flight at once), and they must not be confused — matching by address alone grabs whichever happens to be first in the vec, which silently drops the other.
-    pub fn check_inbound_complete(&mut self, peer_addr: SocketAddr, stream_id: u8) -> Option<Vec<u8>> {
+    pub fn check_inbound_complete(
+        &mut self,
+        peer_addr: SocketAddr,
+        stream_id: u8,
+    ) -> Option<Vec<u8>> {
         if let Some(transfer) = self.inbound.iter().find(|t| {
             same_addr(t.peer_addr, peer_addr) && t.stream_id == stream_id && t.is_complete()
         }) {
@@ -533,7 +583,11 @@ impl PTManager {
         self.outbound.retain(|t| t.peer_addr != *peer_addr);
         let removed = before - self.outbound.len();
         if removed > 0 {
-            crate::logf!("PT: Cleared {} outbound transfers to {} (forced)", removed, peer_addr);
+            crate::logf!(
+                "PT: Cleared {} outbound transfers to {} (forced)",
+                removed,
+                peer_addr
+            );
         }
     }
 
@@ -607,19 +661,33 @@ impl PTManager {
                         transfer.original_payload.as_ref(),
                     ) {
                         (Some(pubkey), Some(payload)) => {
-                            crate::logf!("PT: SPEC stream '{}' to {} - falling back to relay", transfer.stream_id as char, transfer.peer_addr);
+                            crate::logf!(
+                                "PT: SPEC stream '{}' to {} - falling back to relay",
+                                transfer.stream_id as char,
+                                transfer.peer_addr
+                            );
                             Some(RelayInfo {
                                 recipient_pubkey: pubkey,
                                 payload: payload.clone(),
                             })
                         }
                         _ => {
-                            crate::logf!("PT: SPEC stream '{}' to {} - relay needed but no pubkey/payload", transfer.stream_id as char, transfer.peer_addr);
+                            crate::logf!(
+                                "PT: SPEC stream '{}' to {} - relay needed but no pubkey/payload",
+                                transfer.stream_id as char,
+                                transfer.peer_addr
+                            );
                             None
                         }
                     }
                 } else {
-                    crate::logf!("PT: Retrying SPEC stream '{}' to {} (attempt {}, tcp={})", transfer.stream_id as char, transfer.peer_addr, transfer.spec_retry_count, transfer.spec_tcp_fallback);
+                    crate::logf!(
+                        "PT: Retrying SPEC stream '{}' to {} (attempt {}, tcp={})",
+                        transfer.stream_id as char,
+                        transfer.peer_addr,
+                        transfer.spec_retry_count,
+                        transfer.spec_tcp_fallback
+                    );
                     None
                 };
 
@@ -681,9 +749,19 @@ impl PTManager {
             {
                 next.mark_sent();
                 let (paddr, payload, alt) = (next.peer_addr, next.payload.clone(), next.alt_addr);
-                to_send.push(TickSend { peer_addr: paddr, wire_bytes: payload.clone(), tcp_payload: None, relay: None });
+                to_send.push(TickSend {
+                    peer_addr: paddr,
+                    wire_bytes: payload.clone(),
+                    tcp_payload: None,
+                    relay: None,
+                });
                 if let Some(alt) = alt {
-                    to_send.push(TickSend { peer_addr: alt, wire_bytes: payload, tcp_payload: None, relay: None });
+                    to_send.push(TickSend {
+                        peer_addr: alt,
+                        wire_bytes: payload,
+                        tcp_payload: None,
+                        relay: None,
+                    });
                 }
             }
         }
@@ -692,7 +770,12 @@ impl PTManager {
         for pkt in self.outbound_packets.iter_mut() {
             if pkt.in_flight && pkt.needs_retransmit() {
                 pkt.mark_retransmit();
-                crate::logf!("PT: Retransmitting packet to {} (attempt {}, next backoff {}s)", pkt.peer_addr, pkt.retry_count, pkt.next_delay.as_secs());
+                crate::logf!(
+                    "PT: Retransmitting packet to {} (attempt {}, next backoff {}s)",
+                    pkt.peer_addr,
+                    pkt.retry_count,
+                    pkt.next_delay.as_secs()
+                );
                 to_send.push(TickSend {
                     peer_addr: pkt.peer_addr,
                     wire_bytes: pkt.payload.clone(),
@@ -785,7 +868,10 @@ mod tests {
 
         // A real address still works — the guard must not be a blanket refusal.
         let real: SocketAddr = "127.0.0.1:12345".parse().unwrap();
-        assert!(!mgr.send(real, vec![0xCD; 64]).is_empty(), "a routable address must still send");
+        assert!(
+            !mgr.send(real, vec![0xCD; 64]).is_empty(),
+            "a routable address must still send"
+        );
     }
 
     #[test]
@@ -887,7 +973,10 @@ mod tests {
         assert_eq!(manager.outbound.len(), 2);
 
         // Both should have the same peer_addr
-        assert!(manager.outbound.iter().all(|t| same_addr(t.peer_addr, peer_addr)));
+        assert!(manager
+            .outbound
+            .iter()
+            .all(|t| same_addr(t.peer_addr, peer_addr)));
 
         // But different stream_ids (sequentially assigned 'a', 'b')
         let stream_ids: Vec<_> = manager.outbound.iter().map(|t| t.stream_id).collect();
@@ -927,11 +1016,19 @@ mod tests {
         // Deliver both final packets (order intentionally b-then-a to prove drain isn't positional).
         mgr.handle_data(
             peer,
-            PTData { stream_id: b'b', sequence: 0, payload: data_b.clone() },
+            PTData {
+                stream_id: b'b',
+                sequence: 0,
+                payload: data_b.clone(),
+            },
         );
         mgr.handle_data(
             peer,
-            PTData { stream_id: b'a', sequence: 0, payload: data_a.clone() },
+            PTData {
+                stream_id: b'a',
+                sequence: 0,
+                payload: data_a.clone(),
+            },
         );
 
         // Drain by stream — each must yield ITS OWN payload, not whichever is first in the vec.

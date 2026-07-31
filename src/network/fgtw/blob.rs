@@ -252,7 +252,10 @@ pub fn put_blob_blocking(
         .map_err(|e| BlobError::Network(format!("PUT request failed: {}", e)))?;
 
     #[cfg(feature = "development")]
-    crate::logf!("Cloud: put_blob_blocking: response status {}", response.status());
+    crate::logf!(
+        "Cloud: put_blob_blocking: response status {}",
+        response.status()
+    );
 
     let status = response.status();
     let body = response.bytes().unwrap_or_default();
@@ -286,8 +289,8 @@ pub fn put_log_blocking(
 
     // Seal the log (and note) on the client BEFORE it leaves the device — ChaCha20-Poly1305 under a key derived from the identity seed, so no plaintext ever hits the wire and the R2 blob is opaque to anyone who can't re-derive the key from the handle. The `v'e'` encoding byte marks the value encrypted (VSF-proper); the worker stores the ciphertext verbatim.
     let key = crate::log_encryption_key(identity_seed);
-    let sealed_log =
-        crate::storage::encrypt_bytes(log_bytes, &key).map_err(|e| BlobError::Network(format!("Log encrypt: {e}")))?;
+    let sealed_log = crate::storage::encrypt_bytes(log_bytes, &key)
+        .map_err(|e| BlobError::Network(format!("Log encrypt: {e}")))?;
     // The retrieval tag is what indexes this log on the server: spaghettify(domain ‖ seed), a one-way capability. The worker stores under it; a puller who knows the seed re-derives it to find the log. The seed itself never leaves the device.
     let tag = crate::log_retrieval_tag(identity_seed);
     // Anti-spam gate: an explicit device-key signature over the tag (the worker verifies this, mirroring blob_put's signature-over-key — build_signed_blob_vsf's header signature is provenance-only and not read_verified-checkable).
@@ -298,16 +301,22 @@ pub fn put_log_blocking(
             "timestamp".to_string(),
             VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations())),
         ),
-        ("handle_proof".to_string(), VsfType::hP(handle_proof.to_vec())),
+        (
+            "handle_proof".to_string(),
+            VsfType::hP(handle_proof.to_vec()),
+        ),
         ("tag".to_string(), VsfType::v(b'r', tag.to_vec())),
-        ("signature".to_string(), VsfType::ge(tag_signature.to_bytes().to_vec())),
+        (
+            "signature".to_string(),
+            VsfType::ge(tag_signature.to_bytes().to_vec()),
+        ),
         ("data".to_string(), VsfType::v(b'e', sealed_log)),
     ];
     // The optional note rides only when the user typed one — a blank field is simply absent (the worker treats a missing note as "").
     // Sealed under the same key as the log — the note can carry sensitive context too, so it never hits the wire in the clear either.
     if !note.is_empty() {
-        let sealed_note =
-            crate::storage::encrypt_bytes(note.as_bytes(), &key).map_err(|e| BlobError::Network(format!("Note encrypt: {e}")))?;
+        let sealed_note = crate::storage::encrypt_bytes(note.as_bytes(), &key)
+            .map_err(|e| BlobError::Network(format!("Note encrypt: {e}")))?;
         fields.push(("note".to_string(), VsfType::v(b'e', sealed_note)));
     }
 
@@ -342,7 +351,10 @@ pub fn log_delete_blocking(tag: &[u8; 32]) -> Result<(), BlobError> {
         .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
     let vsf_bytes = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .add_section("log_delete", vec![("tag".to_string(), VsfType::v(b'r', tag.to_vec()))])
+        .add_section(
+            "log_delete",
+            vec![("tag".to_string(), VsfType::v(b'r', tag.to_vec()))],
+        )
         .build()
         .map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
     let response = client
@@ -366,7 +378,10 @@ pub fn log_list_blocking(tag: &[u8; 32]) -> Result<Vec<String>, BlobError> {
 
     let vsf_bytes = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .add_section("log_list", vec![("tag".to_string(), VsfType::v(b'r', tag.to_vec()))])
+        .add_section(
+            "log_list",
+            vec![("tag".to_string(), VsfType::v(b'r', tag.to_vec()))],
+        )
         .build()
         .map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
 
@@ -386,7 +401,11 @@ pub fn log_list_blocking(tag: &[u8; 32]) -> Result<Vec<String>, BlobError> {
     let section = vsf::schema::SectionBuilder::parse_document(schema, &bytes, None)
         .map_err(|e| BlobError::Network(format!("Parse log_list_ack: {}", e)))?;
     let joined = section.get_value::<String>("keys").unwrap_or_default();
-    Ok(joined.lines().filter(|l| !l.is_empty()).map(|l| l.to_string()).collect())
+    Ok(joined
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect())
 }
 
 /// Fetch one submitted log blob (still ChaCha20-Poly1305 ciphertext) by its full storage key.
@@ -399,7 +418,10 @@ pub fn log_get_blocking(key: &str) -> Result<Vec<u8>, BlobError> {
 
     let vsf_bytes = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .add_section("log_get", vec![("key".to_string(), VsfType::d(key.to_string()))])
+        .add_section(
+            "log_get",
+            vec![("key".to_string(), VsfType::d(key.to_string()))],
+        )
         .build()
         .map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
 
@@ -447,7 +469,10 @@ pub fn inbox_drain_blocking(
     let unsigned = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .signed_only(VsfType::ke(device_keypair.public.as_bytes().to_vec()))
-        .add_section("inbox_drain", vec![("hp".to_string(), VsfType::hP(handle_proof.to_vec()))])
+        .add_section(
+            "inbox_drain",
+            vec![("hp".to_string(), VsfType::hP(handle_proof.to_vec()))],
+        )
         .build()
         .map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
     let vsf_bytes = vsf::verification::sign_file(unsigned, device_keypair.secret.as_bytes())
@@ -493,7 +518,12 @@ fn parse_inbox_events(blob: &[u8]) -> Vec<FleetInboxEvent> {
         let mut attempted_by = [0u8; 32];
         attempted_by.copy_from_slice(&rec[33..65]);
         let t_osc = i64::from_be_bytes(rec[65..73].try_into().unwrap());
-        out.push(FleetInboxEvent { kind, device, attempted_by, t_osc });
+        out.push(FleetInboxEvent {
+            kind,
+            device,
+            attempted_by,
+            t_osc,
+        });
     }
     out
 }
@@ -682,10 +712,17 @@ mod log_capability_tests {
 
         let tag = crate::log_retrieval_tag(&seed);
         let keys = log_list_blocking(&tag).expect("list");
-        assert!(!keys.is_empty(), "no keys listed under the tag after submit");
+        assert!(
+            !keys.is_empty(),
+            "no keys listed under the tag after submit"
+        );
 
         let ct = log_get_blocking(&keys[0]).expect("get");
-        let plain = crate::storage::decrypt_bytes(&ct, &crate::log_encryption_key(&seed)).expect("decrypt");
-        assert_eq!(plain, payload, "decrypted log must match what was submitted");
+        let plain =
+            crate::storage::decrypt_bytes(&ct, &crate::log_encryption_key(&seed)).expect("decrypt");
+        assert_eq!(
+            plain, payload,
+            "decrypted log must match what was submitted"
+        );
     }
 }

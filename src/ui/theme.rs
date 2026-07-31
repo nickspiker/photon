@@ -131,6 +131,6 @@ pub const DISABLED_LABEL_RGB: u32 = 0x00_70_70_6E;
 
 /// Dim a stored α+darkness colour to ~half opacity — the undelivered-outgoing message treatment (delivered = the same colour at full α; the RGB never changes, only presence). The stored high byte is opacity, so halving it makes the glyph fainter against the background.
 pub fn dim_colour(c: u32) -> u32 {
-    let a = ((c >> 24) & 0xFF) >>1;
+    let a = ((c >> 24) & 0xFF) >> 2;
     (c & 0x00FF_FFFF) | (a << 24)
 }
