@@ -53,8 +53,6 @@ pub struct CloudContact {
     pub party_id: [u8; 32],
     /// The pinned avatar-wall material: AES key ‖ lookup hash (zero = unpinned).
     pub avatar_pin: [u8; 64],
-    /// Local petname (may be empty — renders as the keyed pseudonym).
-    pub name: String,
     pub device_pubkey: [u8; 32],
     pub trust_level: u8,
     pub added: i64,
@@ -66,7 +64,6 @@ impl From<&Contact> for CloudContact {
             handle_proof: c.handle_proof,
             party_id: c.handle_hash,
             avatar_pin: c.avatar_pin,
-            name: c.petname.clone(),
             device_pubkey: *c.public_identity.as_bytes(),
             trust_level: trust_level_to_u8(c.trust_level),
             added: c.added,
@@ -136,7 +133,6 @@ pub fn encode_contacts(
                     VsfType::hP(c.handle_proof.to_vec()),
                     VsfType::ke(c.party_id.to_vec()),
                     VsfType::ge(c.avatar_pin.to_vec()),
-                    VsfType::x(c.name.clone()),
                     VsfType::ke(c.device_pubkey.to_vec()),
                     VsfType::u3(c.trust_level),
                     VsfType::e(vsf::types::EtType::e6(c.added)),
@@ -196,7 +192,6 @@ fn decode_contact_rows<'a>(
         let mut party_id: Option<[u8; 32]> = None;
         let mut device_pubkey: Option<[u8; 32]> = None;
         let mut avatar_pin: Option<[u8; 64]> = None;
-        let mut name: Option<String> = None;
         let mut trust_level = 0u8;
         let mut added = 0i64;
 
@@ -217,7 +212,7 @@ fn decode_contact_rows<'a>(
                 VsfType::ge(b) if b.len() == 64 => {
                     avatar_pin = b.as_slice().try_into().ok();
                 }
-                VsfType::x(s) => name = Some(s.clone()),
+                // A stray `x` is a pre-removal petname value — dead, ignored.
                 VsfType::u3(t) => trust_level = *t,
                 VsfType::e(vsf::types::EtType::e6(osc)) => added = *osc,
                 _ => {}
@@ -225,8 +220,8 @@ fn decode_contact_rows<'a>(
         }
 
         // A row is only a contact if every identifying part is present. Old 5-value handle-bearing rows are flag-day dead and simply never fill these.
-        let (Some(handle_proof), Some(party_id), Some(device_pubkey), Some(avatar_pin), Some(name)) =
-            (handle_proof, party_id, device_pubkey, avatar_pin, name)
+        let (Some(handle_proof), Some(party_id), Some(device_pubkey), Some(avatar_pin)) =
+            (handle_proof, party_id, device_pubkey, avatar_pin)
         else {
             continue;
         };
@@ -235,7 +230,6 @@ fn decode_contact_rows<'a>(
             handle_proof,
             party_id,
             avatar_pin,
-            name,
             device_pubkey,
             trust_level,
             added,
@@ -249,7 +243,6 @@ fn decode_contact_rows<'a>(
 impl CloudContact {
     pub fn to_contact(&self) -> Contact {
         let mut contact = Contact::from_pin(
-            self.name.clone(),
             self.avatar_pin,
             self.handle_proof,
             self.party_id,
@@ -409,7 +402,6 @@ mod tests {
                 handle_proof: [1u8; 32],
                 party_id: [0xA1u8; 32],
                 avatar_pin: [0xA2u8; 64],
-                name: "alice".to_string(),
                 device_pubkey: [2u8; 32],
                 trust_level: 1,
                 added: 1234567890,
@@ -418,7 +410,6 @@ mod tests {
                 handle_proof: [3u8; 32],
                 party_id: [0xB1u8; 32],
                 avatar_pin: [0xB2u8; 64],
-                name: "bob".to_string(),
                 device_pubkey: [4u8; 32],
                 trust_level: 2,
                 added: 1234567891,
@@ -430,9 +421,7 @@ mod tests {
         let decoded = decode_contacts(&encrypted, &key).unwrap();
 
         assert_eq!(decoded.len(), 2);
-        assert_eq!(decoded[0].name, "alice");
         assert_eq!(decoded[0].handle_proof, [1u8; 32]);
-        assert_eq!(decoded[1].name, "bob");
         assert_eq!(decoded[1].trust_level, 2);
     }
 
@@ -442,7 +431,6 @@ mod tests {
             handle_proof: [1u8; 32],
             party_id: [0xA1u8; 32],
             avatar_pin: [0xA2u8; 64],
-            name: "alice".to_string(),
             device_pubkey: [2u8; 32],
             trust_level: 1,
             added: 1234567890,
@@ -468,7 +456,6 @@ mod document_tests {
                 handle_proof: [0x11; 32],
                 party_id: [0x22; 32],
                 avatar_pin: [0x33; 64],
-                name: "alice".to_string(),
                 device_pubkey: [0x44; 32],
                 trust_level: 2,
                 added: 1234567890,
@@ -477,7 +464,6 @@ mod document_tests {
                 handle_proof: [0x55; 32],
                 party_id: [0x66; 32],
                 avatar_pin: [0u8; 64],
-                name: String::new(),
                 device_pubkey: [0x77; 32],
                 trust_level: 0,
                 added: -42,
@@ -570,7 +556,8 @@ mod document_tests {
                         VsfType::hP(c.handle_proof.to_vec()),
                         VsfType::ke(c.party_id.to_vec()),
                         VsfType::ge(c.avatar_pin.to_vec()),
-                        VsfType::x(c.name.clone()),
+                        // The legacy row carried a petname string here — kept in the rebuilt OLD wire form.
+                        VsfType::x("alice".to_string()),
                         VsfType::ke(c.device_pubkey.to_vec()),
                         VsfType::u3(c.trust_level),
                         VsfType::e(vsf::types::EtType::e6(c.added)),

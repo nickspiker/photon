@@ -27,14 +27,12 @@ fn vsf_to_oscillations(v: &VsfType) -> i64 {
     }
 }
 
-/// Static identity data stored in the contact list index — the PIN-SET (docs/identity-profile.md): party id (identity pubkey), avatar-wall key, petname. Never a handle string, which would re-park the seed-deriving input in the vault.
+/// Static identity data stored in the contact list index — the PIN-SET (docs/identity-profile.md): party id (identity pubkey), avatar-wall key. Never a handle string, which would re-park the seed-deriving input in the vault. (The index once carried a petname column too — the concept was removed 2026-07-31; names live in the per-contact state as published_name.)
 #[derive(Clone, Debug)]
 pub struct ContactIdentity {
     pub handle_proof: [u8; 32],
     /// The pinned identity pubkey — the party id every per-contact state entry is keyed under.
     pub party_id: [u8; 32],
-    /// Local petname (empty = keyed pseudonym at render).
-    pub name: String,
     /// The pinned avatar-wall material: AES key ‖ lookup hash (zero = unpinned).
     pub avatar_pin: [u8; 64],
 }
@@ -81,7 +79,6 @@ pub fn save_contact_list(
                     VsfType::hP(c.handle_proof.to_vec()),
                     VsfType::ke(c.party_id.to_vec()),
                     VsfType::ge(c.avatar_pin.to_vec()),
-                    VsfType::x(c.name.clone()),
                 ],
             )
             .map_err(|e| StorageError::Parse(e.to_string()))?;
@@ -119,25 +116,23 @@ pub fn load_contact_list(storage: &FlatStorage) -> Result<Vec<ContactIdentity>, 
         let mut handle_proof: Option<[u8; 32]> = None;
         let mut party_id: Option<[u8; 32]> = None;
         let mut avatar_pin: Option<[u8; 64]> = None;
-        let mut name: Option<String> = None;
 
         for v in &field.values {
             match v {
                 VsfType::hP(b) if b.len() == 32 => handle_proof = b.as_slice().try_into().ok(),
                 VsfType::ke(b) if b.len() == 32 => party_id = b.as_slice().try_into().ok(),
                 VsfType::ge(b) if b.len() == 64 => avatar_pin = b.as_slice().try_into().ok(),
-                VsfType::x(s) => name = Some(s.clone()),
+                // A stray `x` is a pre-removal petname row — the value is dead, the row is fine.
                 _ => {}
             }
         }
 
-        if let (Some(handle_proof), Some(party_id), Some(avatar_pin), Some(name)) =
-            (handle_proof, party_id, avatar_pin, name)
+        if let (Some(handle_proof), Some(party_id), Some(avatar_pin)) =
+            (handle_proof, party_id, avatar_pin)
         {
             contacts.push(ContactIdentity {
                 handle_proof,
                 party_id,
-                name,
                 avatar_pin,
             });
         }
@@ -172,7 +167,7 @@ fn contact_state_schema() -> SectionSchema {
         .field("fleet_member", TypeConstraint::Ed25519Key) // multi-value: one folded member device pubkey. Absent = empty folded set (bootstrap).
         .field("fleet_folded_once", TypeConstraint::AnyUnsigned) // bool: chain folded ≥1 time (arms members-only trust). Absent = false (bootstrap).
         .field("fleet_members_ts", TypeConstraint::Any) // e6: chain-tip eagle time of last adopted fold (monotonic floor). Absent = 0.
-        .field("roster_updated", TypeConstraint::Any) // e6: roster LWW clock — last change to the synced identity fields (petname/avatar_pin). Absent = `added` (pre-feature contacts).
+        .field("roster_updated", TypeConstraint::Any) // e6: roster LWW clock — last change to the synced identity fields (published_name/avatar_pin). Absent = `added` (pre-feature contacts).
         .field("ceremony_owner", TypeConstraint::Ed25519Key) // The fleet device that owns this friendship's CLUTCH (§4.2 one-ceremony claim, roster-synced). Absent = unclaimed.
         .field("owner_woven", TypeConstraint::AnyUnsigned) // bool: the owner's ceremony completed (display truth for parked siblings). Absent = false.
         .field("pin_genesis", TypeConstraint::AnyHash) // The generation pin: genesis op hash of the friendship's chain (docs/lifecycle.md). Absent = not yet pinned.
@@ -371,7 +366,6 @@ pub fn load_contact_state(
             // No state yet - return contact with just identity info
             let pubkey = DevicePubkey::from_bytes([0u8; 32]); // placeholder
             let contact = Contact::from_pin(
-                identity.name.clone(),
                 identity.avatar_pin,
                 identity.handle_proof,
                 identity.party_id,
@@ -386,7 +380,6 @@ pub fn load_contact_state(
 
     let pubkey = state_pubkey(&vsf_bytes)?;
     let mut contact = Contact::from_pin(
-        identity.name.clone(),
         identity.avatar_pin,
         identity.handle_proof,
         identity.party_id,
@@ -690,13 +683,12 @@ pub fn save_contact(contact: &Contact, storage: &FlatStorage) -> Result<(), Stor
         return Ok(());
     }
 
-    // Update contact list: UPSERT by handle_proof — the index carries the mutable pin-set fields (petname, avatar key), so a rename or a fresh pin rewrites its row.
+    // Update contact list: UPSERT by handle_proof — the index carries the mutable pin-set fields (avatar key), so a fresh pin rewrites its row.
     let mut list = load_contact_list(storage).unwrap_or_default();
 
     let fresh = ContactIdentity {
         handle_proof: contact.handle_proof,
         party_id: contact.handle_hash,
-        name: contact.petname.clone(),
         avatar_pin: contact.avatar_pin,
     };
     match list
@@ -704,10 +696,7 @@ pub fn save_contact(contact: &Contact, storage: &FlatStorage) -> Result<(), Stor
         .find(|c| c.handle_proof == contact.handle_proof)
     {
         Some(row) => {
-            if row.party_id != fresh.party_id
-                || row.name != fresh.name
-                || row.avatar_pin != fresh.avatar_pin
-            {
+            if row.party_id != fresh.party_id || row.avatar_pin != fresh.avatar_pin {
                 *row = fresh;
                 save_contact_list(&list, storage)?;
             }
@@ -737,8 +726,8 @@ pub fn load_all_contacts(storage: &FlatStorage) -> Vec<Contact> {
             Ok(contact) => contacts.push(contact),
             Err(e) => {
                 crate::logf!(
-                    "Failed to load contact state for '{}': {}",
-                    identity.name,
+                    "Failed to load contact state for {}: {}",
+                    crate::fp(&identity.handle_proof),
                     e
                 );
             }
@@ -1089,7 +1078,6 @@ mod tests {
         let identity = ContactIdentity {
             handle_proof: [1u8; 32],
             party_id: [2u8; 32],
-            name: "alice".to_string(),
             avatar_pin: [3u8; 64],
         };
 
@@ -1101,7 +1089,6 @@ mod tests {
                 VsfType::hP(identity.handle_proof.to_vec()),
                 VsfType::ke(identity.party_id.to_vec()),
                 VsfType::ge(identity.avatar_pin.to_vec()),
-                VsfType::x(identity.name.clone()),
             ],
         );
 
@@ -1113,19 +1100,13 @@ mod tests {
 
         let fields = parsed.get_fields("contact");
         assert_eq!(fields.len(), 1);
-        assert_eq!(fields[0].values.len(), 4);
+        assert_eq!(fields[0].values.len(), 3);
 
         let proof: [u8; 32] = match &fields[0].values[0] {
             VsfType::hP(v) if v.len() == 32 => v.as_slice().try_into().unwrap(),
             _ => panic!("Expected hP"),
         };
-        let name = match &fields[0].values[3] {
-            VsfType::x(s) => s.clone(),
-            _ => panic!("Expected x"),
-        };
-
         assert_eq!(proof, identity.handle_proof);
-        assert_eq!(name, identity.name);
 
         // Party id round-trips (no derivation — it IS the pin)
         assert_eq!(identity.party_id(), [2u8; 32]);
@@ -1299,7 +1280,6 @@ mod tests {
             party_id: crate::crypto::clutch::identity_party_id(
                 &crate::types::Handle::to_identity_seed("carol"),
             ),
-            name: String::new(),
             avatar_pin: [0u8; 64],
         };
         let loaded = load_contact_state(&identity, &storage).unwrap();
@@ -1343,7 +1323,6 @@ mod tests {
             party_id: crate::crypto::clutch::identity_party_id(
                 &crate::types::Handle::to_identity_seed("dave"),
             ),
-            name: String::new(),
             avatar_pin: [0u8; 64],
         };
 

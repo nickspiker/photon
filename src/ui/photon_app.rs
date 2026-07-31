@@ -6010,7 +6010,7 @@ impl FluorApp for PhotonApp {
                             *theme::LABEL_COLOUR,
                             400,
                         );
-                        // The deterministic two-word voca pseudonym, always shown even when a petname/published name renders elsewhere: it derives from the party id, so it's the one name that can't be changed or spoofed — the human-checkable identity anchor (compare it out-of-band and you've verified the contact).
+                        // The deterministic two-word voca pseudonym, always shown even when a published name renders elsewhere: it derives from the party id, so it's the one name that can't be changed or spoofed — the human-checkable identity anchor (compare it out-of-band and you've verified the contact).
                         settings_line(
                             &mut canvas,
                             ctx.text,
@@ -6332,7 +6332,7 @@ impl FluorApp for PhotonApp {
                         },
                     );
 
-                    // ONE LAYOUT, ONE LAYER (user spec, 2026-07-26): the conversation is a single scrolling stream whose ENTRY #0 is the avatar + petname (+ ceremony status while pending) — visible ONLY at the conversation GENESIS, at the literal top of the content area, scrolling like any message. The fixed centred header is DEAD for every state (its pre-woven survival was the root of the "different layer" saga). The fixed strip holds ONLY the tiny always-on name, the orb, and the sliding "‹ Contacts".
+                    // ONE LAYOUT, ONE LAYER (user spec, 2026-07-26): the conversation is a single scrolling stream whose ENTRY #0 is the avatar + name (+ ceremony status while pending) — visible ONLY at the conversation GENESIS, at the literal top of the content area, scrolling like any message. The fixed centred header is DEAD for every state (its pre-woven survival was the root of the "different layer" saga). The fixed strip holds ONLY the tiny always-on name, the orb, and the sliding "‹ Contacts".
                     let (_, _, avatar_r) = conv_layout.avatar_center_radius();
                     let avatar_diam = (avatar_r * 2.0) as usize;
                     let avatar_cx = buf_w as f32 * 0.5;
@@ -6401,7 +6401,7 @@ impl FluorApp for PhotonApp {
                             .shear(0.2126)
                     };
 
-                    // CLUTCH/lifecycle status — computed here, DRAWN inside stream entry #0 (under the petname, at genesis). End-of-identity states outrank the ceremony line; a woven chain shows no line at all (the working conversation is its own proof); self shows one only while empty.
+                    // CLUTCH/lifecycle status — computed here, DRAWN inside stream entry #0 (under the name, at genesis). End-of-identity states outrank the ceremony line; a woven chain shows no line at all (the working conversation is its own proof); self shows one only while empty.
                     let show_status = contact.identity_superseded
                         || contact.identity_ended
                         || (is_self_contact && contact.messages.is_empty())
@@ -6443,7 +6443,7 @@ impl FluorApp for PhotonApp {
                         None
                     };
 
-                    // The stream renders for EVERY conversation state — an empty one is just entry #0 (avatar/petname/status) alone. Only the COMPOSE box stays gated below (sending needs a chain somewhere).
+                    // The stream renders for EVERY conversation state — an empty one is just entry #0 (avatar/name/status) alone. Only the COMPOSE box stays gated below (sending needs a chain somewhere).
                     {
                         // ── Message list ─────────────────────────────────────────── Text-only, right-aligned (outgoing) / left-aligned (incoming), one thin white divider after every message. Newest at the bottom, just above the compose bar; older scroll up off-screen.
                         // Our text is the neutral-grey anchor (same Y = 0.5, zero chroma); theirs is the relationship colour computed above.
@@ -6482,7 +6482,7 @@ impl FluorApp for PhotonApp {
                             .filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted)
                             .collect();
                         let n = visible.len();
-                        // Stream entry #0 (avatar + petname + optional status) is the oldest item: its height joins content_h so scrolling to genesis reveals it above message 1. Unconditional — every conversation has entry #0.
+                        // Stream entry #0 (avatar + name + optional status) is the oldest item: its height joins content_h so scrolling to genesis reveals it above message 1. Unconditional — every conversation has entry #0.
                         let header_block_h = avatar_r * 2.0
                             + unit * 3.0
                             + if status_in_stream.is_some() {
@@ -6534,7 +6534,7 @@ impl FluorApp for PhotonApp {
                         self.msg_hit_rows.clear();
                         // TOP-ANCHOR while the conversation fits the view: the stream reads avatar/name → msg 1 → msg 2 from the top, ONE strip — bottom-anchoring a short history floated the header block mid-screen above a clump of bottom messages ("rendered in a different layer"). Once content outgrows the view the min() saturates and the classic newest-at-bottom anchor takes over seamlessly.
                         let mut y = (list_top + content_h).min(list_bottom) - msg_size + scroll;
-                        // Whether the walk reached the conversation's FIRST message (no early break): the scroll-top avatar/name block may only draw then — drawing it at the break position floated it mid-stream over recent messages in any long conversation ("the avatar and petname are rendered in a different block").
+                        // Whether the walk reached the conversation's FIRST message (no early break): the scroll-top avatar/name block may only draw then — drawing it at the break position floated it mid-stream over recent messages in any long conversation ("the avatar and name are rendered in a different block").
                         let mut reached_oldest = true;
                         // Hold the cached wrap strings for the whole walk (disjoint field from everything the loop mutates).
                         let wrap_cache: &Vec<Vec<String>> =
@@ -6805,7 +6805,7 @@ impl FluorApp for PhotonApp {
                             }
                             y -= line_h + block_extra;
                         }
-                        // STREAM ENTRY #0 — avatar, petname, optional ceremony/lifecycle status: drawn ONLY when the walk reached message 1 (genesis on screen); `y` then sits just above it and the entry is the stream's literal first item. Ordinary stream content: same clip as every message, no pinning, no slide. Off-screen anywhere but genesis.
+                        // STREAM ENTRY #0 — avatar, name, optional ceremony/lifecycle status: drawn ONLY when the walk reached message 1 (genesis on screen); `y` then sits just above it and the entry is the stream's literal first item. Ordinary stream content: same clip as every message, no pinning, no slide. Off-screen anywhere but genesis.
                         if reached_oldest && y > list_top - header_block_h - line_h {
                             let (block_status, status_h) = match &status_in_stream {
                                 Some((label, colour)) => {
@@ -10536,7 +10536,6 @@ impl PhotonApp {
                 handle_proof: c.handle_proof,
                 handle_hash: c.handle_hash,
                 public_identity: *c.public_identity.as_bytes(),
-                name: c.petname.clone(),
                 published_name: c.published_name.clone(),
                 avatar_pin: c.avatar_pin,
                 added: c.added,
@@ -10550,7 +10549,7 @@ impl PhotonApp {
             .collect()
     }
 
-    /// Merge pulled roster entries into the live contact list — the local half of the roster CRDT. New entries add as Pending stubs (then ONE serialized keygen re-CLUTCHes them; the tick loop does the rest one McEliece at a time so a multi-contact join doesn't starve the UI). For contacts we already hold, a strictly NEWER entry wins last-writer: its petname/avatar_pin overwrite ours, and a newer tombstone removes the contact (state + index row; conversation content stays in rārangi — ostracism not erasure). Ties keep ours — the slot-side merge_rosters resolves exact ties deterministically, so pushing our copy converges.
+    /// Merge pulled roster entries into the live contact list — the local half of the roster CRDT. New entries add as Pending stubs (then ONE serialized keygen re-CLUTCHes them; the tick loop does the rest one McEliece at a time so a multi-contact join doesn't starve the UI). For contacts we already hold, a strictly NEWER entry wins last-writer: its published_name/avatar_pin overwrite ours, and a newer tombstone removes the contact (state + index row; conversation content stays in rārangi — ostracism not erasure). Ties keep ours — the slot-side merge_rosters resolves exact ties deterministically, so pushing our copy converges.
     fn merge_roster_entries(&mut self, entries: Vec<crate::network::fgtw::fleet::RosterEntry>) {
         let mut added = 0usize;
         let mut adopted = 0usize;
@@ -10610,11 +10609,7 @@ impl PhotonApp {
                 }
                 let c = &mut self.contacts[pos];
                 let pin_changed = c.avatar_pin != e.avatar_pin && e.avatar_pin != [0u8; 64];
-                // Same empty-guard the avatar pin has always had, and the reason "only the avatar synced" after a wipe: the re-attest roster re-push carries stub entries (empty names, fresh LWW clocks), and without this guard those stubs clobbered every restored petname while the pin guard rejected the same stubs. Cost: clearing a petname on one device resurrects it from siblings — the pin accepted that trade long ago, and an empty name is far more often a stub than an intent.
-                if c.petname != e.name && !e.name.is_empty() {
-                    c.petname = e.name.clone();
-                }
-                // The friend's chosen name rides the roster like the pin does (PRST4), so a fresh sibling shows real names without waiting for each friend's pong. Same stub-guard as the petname: empty means "never received", not "erase yours".
+                // The friend's chosen name rides the roster like the pin does (PRST4), so a fresh sibling shows real names without waiting for each friend's pong. Same empty-guard as the pin: a stub entry (re-attest re-push, empty fields, fresh LWW clock) means "never received", not "erase yours".
                 if c.published_name != e.published_name && !e.published_name.is_empty() {
                     c.published_name = e.published_name.clone();
                 }
@@ -10622,7 +10617,7 @@ impl PhotonApp {
                     c.avatar_pin = e.avatar_pin;
                     c.avatar_pin_dirty = true; // post-drain sweep persists the index + refetches the avatar
                 }
-                // Trust rides the same last-writer-wins clock as the petname above (PRST3): a trust decision belongs to the identity, not to whichever device it was typed on. We are already past the `e.updated` gate, so a strictly-newer entry wins and ties keep ours.
+                // Trust rides the same last-writer-wins clock as the fields above (PRST3): a trust decision belongs to the identity, not to whichever device it was typed on. We are already past the `e.updated` gate, so a strictly-newer entry wins and ties keep ours.
                 c.trust_level = crate::storage::cloud::u8_to_trust_level(e.trust_level);
                 // §4.2 claim + the owner's completion, newest entry wins (same LWW as the fields above).
                 let new_owner = (e.ceremony_owner != [0u8; 32]).then_some(e.ceremony_owner);
@@ -10661,7 +10656,6 @@ impl PhotonApp {
             }
             let device_pubkey = crate::types::DevicePubkey::from_bytes(e.public_identity);
             let mut contact = crate::types::Contact::from_pin(
-                e.name.clone(),
                 e.avatar_pin,
                 e.handle_proof,
                 e.handle_hash,
@@ -10689,7 +10683,6 @@ impl PhotonApp {
                     .map(|c| crate::storage::contacts::ContactIdentity {
                         handle_proof: c.handle_proof,
                         party_id: c.handle_hash,
-                        name: c.petname.clone(),
                         avatar_pin: c.avatar_pin,
                     })
                     .collect();
@@ -15113,7 +15106,6 @@ impl PhotonApp {
                 handle_proof: c.handle_proof,
                 handle_hash: c.handle_hash,
                 public_identity: *c.public_identity.as_bytes(),
-                name: String::new(),
                 published_name: String::new(),
                 avatar_pin: [0u8; 64],
                 added: 0,
@@ -15158,7 +15150,6 @@ impl PhotonApp {
                 .map(|c| crate::storage::contacts::ContactIdentity {
                     handle_proof: c.handle_proof,
                     party_id: c.handle_hash,
-                    name: c.petname.clone(),
                     avatar_pin: c.avatar_pin,
                 })
                 .collect();
@@ -15188,7 +15179,6 @@ impl PhotonApp {
         }
         let device_pubkey = crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes());
         let mut contact = crate::types::Contact::from_pin(
-            String::new(),
             [0u8; 64],
             session.handle_proof,
             our_pid,
@@ -16977,7 +16967,7 @@ impl PhotonApp {
                                 }
                             }
 
-                            // Always-granted name slot off the pong: adopt the friend's chosen display name (petname still wins at render — see display_name()). Persisted below via the state-save the name-change marks.
+                            // Always-granted name slot off the pong: adopt the friend's chosen display name. Persisted below via the state-save the name-change marks.
                             if let Some(name) = display_name.as_ref() {
                                 if !contact.is_sibling && contact.published_name != *name {
                                     crate::logf!(
@@ -20559,7 +20549,7 @@ impl PhotonApp {
             self.update_sync_records();
         }
 
-        // Persist any published-name adoptions from this drain (deferred: saving inside the loop would fight the contacts borrow). Only the per-contact STATE entry carries published_name — the index row's name is the petname.
+        // Persist any published-name adoptions from this drain (deferred: saving inside the loop would fight the contacts borrow). The name lives in the per-contact STATE entry, not the index.
         let name_adopted = self.contacts.iter().any(|c| c.published_name_dirty);
         if name_adopted {
             if let Some(storage) = self.storage.as_ref() {
@@ -20593,7 +20583,6 @@ impl PhotonApp {
                     .map(|c| crate::storage::contacts::ContactIdentity {
                         handle_proof: c.handle_proof,
                         party_id: c.handle_hash,
-                        name: c.petname.clone(),
                         avatar_pin: c.avatar_pin,
                     })
                     .collect();
