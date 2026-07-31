@@ -51,6 +51,7 @@ Ordered; land + 2-device-test each before the next, relay tier (above) is last. 
 ## UI / UX
 
 - ~~Friend avatar-change refresh~~ CLOSED 2026-07-17: the pin now ROTATES on every avatar set (fresh key+lookup, old wall slot deleted after the new upload lands) — friends see the new pin on their next pong and refetch; siblings ride the profile.avatar_ts ding. Rotation also self-heals any cross-identity pin pollution (the cross-identity-avatar incident).
+- **Connection-flow narrative revision** (Nick, 2026-07-31): the clutch/weave status strings ("braiding eggs" etc.) read as whimsical noise — make the staged flow coherent and explanatory about WHAT is being exchanged at each step (offer → key exchange → proof → sealed), in `contact_status_line` + the CLUTCH step details in `photon_app.rs`. Fold in quieting the proof-echo ping-pong ("Re-arming proof resend" — each side's retransmit train re-arms the other's; bounded but noisy, and it re-fires on every relaunch until one side learns the other received it).
 - **Textbox glow on search state**: legacy tinted the search pill yellow-during / green-or-red-after a search; fluor's glow is focus-driven — recolouring per state needs a small fluor affordance (`set_glow_colour`?) + photon wiring.
 - **Party colours are placeholder**: swap to perceptual L≈50% via vsf spectral/LMS (decided; supersedes the old Fibonacci-sphere colourize sketch this file used to carry).
 - **Contacts search-box focus glow damage (parked)**: stale glow lingers/clips on deselect — bg pass dirty-gating skips the glow bbox.
