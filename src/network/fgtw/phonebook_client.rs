@@ -120,13 +120,12 @@ pub async fn resolve_device_address(device_pubkey: &[u8; 32]) -> Result<Record, 
     Ok(rec)
 }
 
-/// Pull the raw 256-byte record out of a `pb_rec` response frame.
+/// Pull the raw 256-byte record out of a `pb_rec` response frame. Verified read: header + provenance self-consistency before any field is trusted; the record's own signature is checked by the caller on top.
 fn parse_pb_rec(bytes: &[u8]) -> Option<Record> {
-    use vsf::file_format::{VsfHeader, VsfSection};
-    let (_, header_end) = VsfHeader::decode(bytes).ok()?;
-    let mut ptr = 0;
-    let section = VsfSection::parse(&bytes[header_end..], &mut ptr).ok()?;
-    match section.get_field("rec").and_then(|f| f.values.first()) {
+    let schema = vsf::schema::SectionSchema::new("pb_rec")
+        .field("rec", vsf::schema::TypeConstraint::Any);
+    let section = vsf::schema::SectionBuilder::parse_document(schema, bytes, None).ok()?;
+    match section.get_fields("rec").first().and_then(|f| f.values.first()) {
         Some(VsfType::v(_, b)) if b.len() == STRIDE => {
             let mut a = [0u8; STRIDE];
             a.copy_from_slice(b);
