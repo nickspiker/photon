@@ -10609,7 +10609,8 @@ impl PhotonApp {
                 }
                 let c = &mut self.contacts[pos];
                 let pin_changed = c.avatar_pin != e.avatar_pin && e.avatar_pin != [0u8; 64];
-                if c.petname != e.name {
+                // Same empty-guard the avatar pin has always had, and the reason "only the avatar synced" after a wipe: the re-attest roster re-push carries stub entries (empty names, fresh LWW clocks), and without this guard those stubs clobbered every restored petname while the pin guard rejected the same stubs. Cost: clearing a petname on one device resurrects it from siblings — the pin accepted that trade long ago, and an empty name is far more often a stub than an intent.
+                if c.petname != e.name && !e.name.is_empty() {
                     c.petname = e.name.clone();
                 }
                 if pin_changed {
