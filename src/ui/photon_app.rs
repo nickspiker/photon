@@ -15904,7 +15904,7 @@ impl PhotonApp {
                                                     peer_addr: sender_addr,
                                                     alt_addr: None,
                                                     recipient_pubkey: *sender_pubkey.as_bytes(),
-                                                    relay_to: if sender_addr.ip().is_unspecified() { vec![*sender_pubkey.as_bytes()] } else { Vec::new() },
+                                                    relay_to: vec![*sender_pubkey.as_bytes()], // response ALWAYS carries its one-device relay copy: requests arrive fine while responses die on one-directional reverse paths (2322 re-requests in one peer_b session) — one relayed page is cheaper than the re-request storm
                                                     vsf_bytes,
                                                 },
                                             );
@@ -15961,7 +15961,7 @@ impl PhotonApp {
                                                         alt_addr: None,
                                                         recipient_pubkey: sender_pubkey.key,
                                                         vsf_bytes,
-                                                        relay_to: if via_relay { vec![sender_pubkey.key] } else { Vec::new() },
+                                                        relay_to: vec![sender_pubkey.key], // always the one-device relay copy — see the page-serve site: responses die on one-directional reverse paths
                                                     });
                                                 }
                                             }
@@ -16020,7 +16020,7 @@ impl PhotonApp {
                                             alt_addr: None,
                                             recipient_pubkey: sender_pubkey.key,
                                             vsf_bytes,
-                                            relay_to: if via_relay { vec![sender_pubkey.key] } else { Vec::new() },
+                                            relay_to: vec![sender_pubkey.key], // always the one-device relay copy — see the page-serve site: responses die on one-directional reverse paths
                                         });
                                         crate::log("ATTACH: served blob request");
                                     }
