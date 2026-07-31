@@ -9560,44 +9560,42 @@ impl PhotonApp {
         }
 
         let eagle_time = vsf::eagle_time_oscillations();
-        // The wire half (weave + braid advance + persist + PT dispatch) lives in chain_transmit so the fleet-forward drain can transmit sibling-merged rows thru the identical path.
-        if !self.chain_transmit(ci, &text, eagle_time) {
-            // FLEET-FORWARD (compose anywhere): THIS device holds no usable chain for the friendship, but a sibling does — insert the bubble locally (delivered=false) and push it thru the fleet; the chain-owning sibling's merge drain transmits it on the braid with THIS timestamp (one row identity fleet-wide), and the delivered upgrade flows back thru the same sync. Probes never forward (they prove THIS device's chain, which doesn't exist here).
-            let has_fleet = self.contacts.iter().any(|c| c.is_sibling);
-            let is_friend = self.contacts.get(ci).map_or(false, |c| !c.is_sibling);
-            if !suppress_bubble && has_fleet && is_friend {
-                let msg = ChatMessage::new_with_timestamp(text, true, eagle_time);
-                if let Some(contact) = self.contacts.get_mut(ci) {
-                    contact.insert_message_sorted(msg.clone());
-                    contact.message_scroll_offset = 0.0;
-                    if let Some(storage) = self.storage.as_ref() {
-                        if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
-                            crate::logf!("STORAGE: failed to save forwarded message: {}", e);
-                        }
-                    }
-                }
-                self.push_rows_to_siblings(ci, std::slice::from_ref(&msg), None);
-                crate::log("CHAT: no local chain — fleet-forwarded to the chain-owning sibling (delivered tick follows its ACK)");
-                return true;
-            }
-            return false;
+        // A suppressed send (the hidden chain-weave probe) shows no UI — wire half only.
+        if suppress_bubble {
+            return self.chain_transmit(ci, &text, eagle_time);
         }
 
-        // Append the outgoing bubble (delivered=false until the ACK lands) and persist — unless this is a suppressed send (the hidden chain-weave probe: it must ride the chain but show no UI).
-        if !suppress_bubble && self.contacts.get(ci).is_some() {
-            let msg = ChatMessage::new_with_timestamp(text, true, eagle_time);
-            if let Some(contact) = self.contacts.get_mut(ci) {
-                contact.insert_message_sorted(msg.clone());
-                contact.message_scroll_offset = 0.0;
-                if let Some(storage) = self.storage.as_ref() {
-                    if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
-                        crate::logf!("STORAGE: failed to save messages: {}", e);
-                    }
+        // BUBBLE FIRST, WIRE SECOND. The pending-grey bubble appears the instant the user hits send — chain_transmit does weave selection, braid advance, chains persist and PT dispatch, and running it first meant the message rendered as NOTHING for that whole stretch, then grey, then white. The user's mental model (grey immediately, everything else follows) is also the honest one: the row exists the moment they authored it; the wire is delivery, not existence.
+        let msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
+        if let Some(contact) = self.contacts.get_mut(ci) {
+            contact.insert_message_sorted(msg.clone());
+            contact.message_scroll_offset = 0.0;
+            if let Some(storage) = self.storage.as_ref() {
+                if let Err(e) = crate::storage::contacts::save_messages(contact, storage) {
+                    crate::logf!("STORAGE: failed to save messages: {}", e);
                 }
             }
-            // Live fleet propagation: our own outgoing message exists ONLY on this device until a sibling hears about it — push it now so the conversation follows the user across their devices.
-            self.push_rows_to_siblings(ci, std::slice::from_ref(&msg), None);
         }
+
+        if !self.chain_transmit(ci, &text, eagle_time) {
+            // FLEET-FORWARD (compose anywhere): THIS device holds no usable chain for the friendship, but a sibling does — the bubble is already in; push it thru the fleet and the chain-owning sibling's merge drain transmits it on the braid with THIS timestamp (one row identity fleet-wide); the delivered upgrade flows back thru the same sync.
+            let has_fleet = self.contacts.iter().any(|c| c.is_sibling);
+            let is_friend = self.contacts.get(ci).map_or(false, |c| !c.is_sibling);
+            if !(has_fleet && is_friend) {
+                // No chain here and no sibling to forward thru — the send genuinely cannot go anywhere. Take the bubble back out so the UI doesn't show a message nothing will ever deliver (callers rely on false meaning "nothing happened").
+                if let Some(contact) = self.contacts.get_mut(ci) {
+                    contact.messages.retain(|m| !(m.timestamp == eagle_time && m.is_outgoing && m.content == text));
+                    if let Some(storage) = self.storage.as_ref() {
+                        let _ = crate::storage::contacts::save_messages(contact, storage);
+                    }
+                }
+                return false;
+            }
+            crate::log("CHAT: no local chain — fleet-forwarded to the chain-owning sibling (delivered tick follows its ACK)");
+        }
+
+        // Live fleet propagation: our own outgoing message exists ONLY on this device until a sibling hears about it — push it now so the conversation follows the user across their devices. (Same push carries the fleet-forward case.)
+        self.push_rows_to_siblings(ci, std::slice::from_ref(&msg), None);
         return true;
     }
 
