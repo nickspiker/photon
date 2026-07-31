@@ -549,6 +549,8 @@ struct ProfileField {
     tb: Textbox,
     /// Companion tag box (phone instances: home / work / custom, free text). Persisted as `profile.<id>_label`. `None` for untagged fields.
     tag_tb: Option<Textbox>,
+    /// Default-share checkbox: checked = this field auto-shares with NEW contacts (per-contact toggles live on the contact panel). `None` for the display name, which is public and always shared. Persisted as `share.<id>`, fleet-synced like the value.
+    share_cb: Option<crate::ui::settings_widgets::Checkbox>,
 }
 
 /// Multi-instance ("expandable") field bases: filling the LAST instance reveals an empty next one (addr → addr2 → addr3 …), so a second address/email/phone/website is always one keystroke away — and never shown before it's needed. Singletons (SSN, passport, licence, …) are NOT here and never expand. The bool = instances carry a companion tag box (phone: home/work/custom).
@@ -1895,6 +1897,9 @@ impl PhotonApp {
                         f(&mut pf.tb);
                         if let Some(tag) = pf.tag_tb.as_mut() {
                             f(tag);
+                        }
+                        if let Some(cb) = pf.share_cb.as_mut() {
+                            f(cb);
                         }
                     }
                     if let Some(tb) = self.you_add_textbox.as_mut() {
@@ -7580,7 +7585,8 @@ impl FluorApp for PhotonApp {
                                 );
                             }
                             YouRow::Field(idx) => {
-                                let cols = r.split_h([0.4, 0.6]);
+                                // Label | value | share box — the third column is the default-share checkbox (absent on the display name row).
+                                let cols = r.split_h([0.4, 0.54, 0.06]);
                                 let label = self.you_fields[*idx].label.clone();
                                 ctx.text.draw_text_left(
                                     &mut canvas,
@@ -7615,6 +7621,14 @@ impl FluorApp for PhotonApp {
                                         None,
                                         Some(&mut chrome.hit_test_map),
                                         tid,
+                                    );
+                                }
+                                if let Some(cb) = pf.share_cb.as_mut() {
+                                    cb.render_content_into(
+                                        &mut canvas,
+                                        ctx.text,
+                                        Some(content_clip),
+                                        Some(&mut chrome.hit_test_map),
                                     );
                                 }
                             }
@@ -9143,6 +9157,22 @@ impl PhotonApp {
             needs_redraw = true;
         }
 
+        // You-page default-share toggles: checked = the field auto-shares with NEW contacts (the always-shared display name has no box). Poll-then-set keeps the borrow simple; the key syncs fleet-wide like the value it gates.
+        let share_writes: Vec<(String, bool)> = self
+            .you_fields
+            .iter_mut()
+            .filter_map(|pf| {
+                let cb = pf.share_cb.as_mut()?;
+                cb.take_toggle().then(|| (pf.field_id.clone(), cb.is_checked()))
+            })
+            .collect();
+        for (fid, checked) in share_writes {
+            if self.settings_set(&format!("share.{fid}"), vec![checked as u8]) {
+                crate::logf!("SETTINGS: share.{} = {} (default-share)", fid, checked);
+            }
+            needs_redraw = true;
+        }
+
         // Desktop resident-mode toggle: the OS autostart artifact IS the stored setting (platform::autostart — nothing in the vault to desync), and the live flag follows it immediately, so unchecking makes the very next close a real quit. A write failure reverts the box and says why.
         #[cfg(not(target_os = "android"))]
         {
@@ -9689,6 +9719,8 @@ impl PhotonApp {
                     }
                     // Expansion check each frame: filling the last Address/Email/Phone/… reveals its empty successor as you type (event-driven off the box content — no timers).
                     self.sync_expandable_fields();
+                    // Every field except the always-shared display name carries its default-share checkbox; late-born fields (expansion, custom add) get theirs here.
+                    self.ensure_share_checkboxes();
                     // Position every box using the SAME row plan + row rects the render pass draws through, so a box sits exactly under its label.
                     let plan = you_rows_plan(&self.you_fields);
                     for (i, row) in plan.iter().enumerate() {
@@ -9696,7 +9728,14 @@ impl PhotonApp {
                         match row {
                             YouRow::Field(idx) => {
                                 let pf = &mut self.you_fields[*idx];
-                                let col = r.split_h([0.4, 0.6])[1];
+                                // Same three columns the render pass draws through: label | value | share box.
+                                let three = r.split_h([0.4, 0.54, 0.06]);
+                                let col = three[1];
+                                if let Some(cb) = pf.share_cb.as_mut() {
+                                    let sq = three[2];
+                                    cb.set_rect(sq.center_x(), sq.center_y(), ctrl_h, ctrl_h);
+                                    cb.set_font_size(ctrl_font);
+                                }
                                 if pf.tag_tb.is_some() {
                                     // Value + tag share the column: value left ~60%, tag right ~32% (a phone's home/work/custom).
                                     let boxr = fluor::region::Region::new(
@@ -11288,6 +11327,7 @@ impl PhotonApp {
                 custom: false,
                 tb,
                 tag_tb,
+                share_cb: None,
             });
         }
         let custom = self
@@ -11315,7 +11355,32 @@ impl PhotonApp {
                 custom: true,
                 tb,
                 tag_tb: None,
+                share_cb: None,
             });
+        }
+    }
+
+    /// Attach a default-share checkbox to every field that lacks one — except the display name, which is public and always shared (no box at all). Checked state loads from `share.<id>`; runs each frame on the You page so expansion/custom fields born after load get theirs too.
+    fn ensure_share_checkboxes(&mut self) {
+        for pf in self.you_fields.iter_mut() {
+            if pf.field_id == "name" || pf.share_cb.is_some() {
+                continue;
+            }
+            let checked = self
+                .fleet_settings
+                .as_ref()
+                .and_then(|fs| fs.effective(&format!("share.{}", pf.field_id)))
+                .is_some_and(|v| v.first() == Some(&1));
+            pf.share_cb = Some(crate::ui::settings_widgets::Checkbox::new(
+                &mut self.hit_counter,
+                "",
+                0.,
+                0.,
+                1.,
+                1.,
+                12.,
+                checked,
+            ));
         }
     }
 
@@ -11374,6 +11439,7 @@ impl PhotonApp {
                     custom: false,
                     tb,
                     tag_tb,
+                    share_cb: None,
                 },
             );
             added = true;
@@ -11421,6 +11487,7 @@ impl PhotonApp {
                         custom: false,
                         tb,
                         tag_tb,
+                        share_cb: None,
                     },
                 );
             }
@@ -11551,6 +11618,7 @@ impl PhotonApp {
             custom: true,
             tb,
             tag_tb: None,
+            share_cb: None,
         });
         // Persist the whole custom registry (id\tlabel per line) so the field survives a relaunch.
         let reg = self
