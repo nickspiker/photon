@@ -738,19 +738,20 @@ impl Contact {
         // Display doctrine: dozenal is the acclimation surface for VERSION + REPUTATION only; a step counter stays in current mixed arabic units.
         let n = Self::CLUTCH_STEPS;
         let eggs = Self::CLUTCH_EGGS;
+        // Vocabulary doctrine (2026-07-31): describe the EXCHANGE, not our internals — no "eggs", no "braiding", no "KEMs" in user-facing text. Each step reads as part of one sentence (make keys → swap public halves → lock secrets to each other → combine → prove → confirm → secured), and every "waiting" step names whose side the ball is on, so "it's stuck on 5/8" is a diagnosis by itself. The one flourish kept: the honest facts (8 secrets, 3 crypto families) carry the personality.
         match self.clutch_state {
             ClutchState::Complete => {
                 if self.chain_woven {
                     "secured".to_string()
                 } else {
-                    "testing · weaving the chain".to_string()
+                    "testing the secure channel".to_string()
                 }
             }
             ClutchState::AwaitingProof => {
                 if self.clutch_their_eggs_proof.is_some() {
-                    format!("{n}/{n} · verifying proof")
+                    format!("{n}/{n} · confirming both proofs match")
                 } else {
-                    format!("7/{n} · braided · awaiting their proof")
+                    format!("7/{n} · sent our proof — waiting for theirs")
                 }
             }
             ClutchState::Pending => {
@@ -761,20 +762,20 @@ impl Contact {
                 let all_kem = self.all_slots_complete();
                 // Walk the milestones in order; report the earliest one not yet reached.
                 if self.clutch_ceremony_in_progress {
-                    format!("6/{n} · braiding {eggs} eggs")
+                    format!("6/{n} · combining all {eggs} shared secrets")
                 } else if self.clutch_our_keypairs.is_none() {
-                    // Keygen (McEliece dominates the ~1-2s) — name the egg families being forged.
-                    format!("1/{n} · forging {eggs} eggs (4 EC · 2 lattice · 2 code)")
+                    // Keygen (McEliece dominates the ~1-2s).
+                    format!("1/{n} · creating {eggs} key pairs (3 families of crypto)")
                 } else if self.clutch_kem_encap_in_progress {
-                    format!("4/{n} · sealing KEMs (McEliece·HQC·Frodo·NTRU)")
+                    format!("4/{n} · locking secrets to their keys")
                 } else if all_kem {
-                    format!("6/{n} · braiding {eggs} eggs")
+                    format!("6/{n} · combining all {eggs} shared secrets")
                 } else if their_offer || self.clutch_pending_kem.is_some() {
-                    format!("5/{n} · awaiting their KEMs")
+                    format!("5/{n} · waiting for their locked secrets")
                 } else if self.clutch_offer_sent {
-                    format!("3/{n} · awaiting their eggs")
+                    format!("3/{n} · waiting for their public keys")
                 } else {
-                    format!("2/{n} · sending offer")
+                    format!("2/{n} · sending our public keys")
                 }
             }
         }

@@ -21432,7 +21432,7 @@ fn contact_status_line(
                 return if c.owner_woven {
                     format!("secured on {name} \u{2014} replies visible here; send from there (for now)")
                 } else {
-                    format!("weaving on {name}\u{2026}")
+                    format!("securing on {name}\u{2026}")
                 };
             }
             // A sibling's roster says the friendship is woven but no owner claim survived (pre-§4.2 ceremony) — still HONEST: it is secured elsewhere, not "weaving" here. The owner backfill in seal_chain_if_ready names the device once the owner pushes a fresh roster.
