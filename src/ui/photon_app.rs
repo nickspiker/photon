@@ -940,6 +940,9 @@ pub struct PhotonApp {
             std::sync::Arc<crate::storage::FlatStorage>,
         )>,
     >,
+    /// Last zoom value actually persisted, with its debounce deadline: pinch-zoom (Android) has no modifier-release moment, so persistence keys off ru STABILITY — any settled change saves after ~1s. Desktop's modifier-release save still fires too (harmless double).
+    zoom_saved_ru: f32,
+    zoom_save_deadline: Option<Instant>,
     /// Monotonic tick counter — the frame-gap fence for `pending_chain_sends` (see `drain_pending_chain_sends`).
     tick_serial: u64,
     /// Outgoing sends whose WIRE half is deferred: (contact idx, text, eagle_time, tick_serial at enqueue). The pending-grey bubble is inserted synchronously in `send_chain_message`; chain_transmit (weave selection, braid advance, chains persist, PT dispatch) runs from this queue AFTER the frame presents — running it inline meant the bubble, though inserted first, couldn't render until the whole wire half finished (the "message goes into the void" report).
@@ -1208,6 +1211,8 @@ impl PhotonApp {
             our_reflexive: None,
             self_record_published_for: None,
             peer_store_loaded: false,
+            zoom_saved_ru: 1.0,
+            zoom_save_deadline: None,
             persist_tx: None,
             tick_serial: 0,
             pending_chain_sends: Vec::new(),
@@ -1907,7 +1912,12 @@ impl PhotonApp {
 impl FluorApp for PhotonApp {
     /// One-shot absolute-zoom restore: the persisted per-device `display.zoom`, set when settings load; the host applies it exactly like a user zoom.
     fn take_zoom_request(&mut self) -> Option<f32> {
-        self.pending_zoom_restore.take()
+        let r = self.pending_zoom_restore.take();
+        if let Some(v) = r {
+            // Seed the persistence tracker with the restored value so launch doesn't immediately re-save what's already on disk.
+            self.zoom_saved_ru = v;
+        }
+        r
     }
 
     type UserEvent = PhotonEvent;
@@ -4186,6 +4196,21 @@ impl FluorApp for PhotonApp {
                 self.last_fleet_sweep = Some(now);
                 self.kick_fleet_history_sweep("periodic backstop");
             }
+        }
+
+        // Modifier-free zoom persistence: Android pinch has no Ctrl/Cmd release to hook (the desktop save site), so ANY settled ru change persists after 1s of stability. zoom_saved_ru tracks what's on disk; the deadline debounces mid-pinch churn.
+        if (ctx.viewport.ru - self.zoom_saved_ru).abs() > 0.001 {
+            match self.zoom_save_deadline {
+                Some(t) if now >= t => {
+                    self.zoom_saved_ru = ctx.viewport.ru;
+                    self.zoom_save_deadline = None;
+                    self.save_zoom_setting(ctx.viewport.ru);
+                }
+                Some(_) => {}
+                None => self.zoom_save_deadline = Some(now + Duration::from_secs(1)),
+            }
+        } else {
+            self.zoom_save_deadline = None;
         }
 
         // IME-inset watch (Android): the surface never resizes for the keyboard, so an inset change arrives with NO resize event — diff it here and relayout the bottom-anchored widgets + repaint. Cheap atomic read per tick.
