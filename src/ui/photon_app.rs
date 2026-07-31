@@ -10537,6 +10537,7 @@ impl PhotonApp {
                 handle_hash: c.handle_hash,
                 public_identity: *c.public_identity.as_bytes(),
                 name: c.petname.clone(),
+                published_name: c.published_name.clone(),
                 avatar_pin: c.avatar_pin,
                 added: c.added,
                 updated: c.roster_updated,
@@ -10613,6 +10614,10 @@ impl PhotonApp {
                 if c.petname != e.name && !e.name.is_empty() {
                     c.petname = e.name.clone();
                 }
+                // The friend's chosen name rides the roster like the pin does (PRST4), so a fresh sibling shows real names without waiting for each friend's pong. Same stub-guard as the petname: empty means "never received", not "erase yours".
+                if c.published_name != e.published_name && !e.published_name.is_empty() {
+                    c.published_name = e.published_name.clone();
+                }
                 if pin_changed {
                     c.avatar_pin = e.avatar_pin;
                     c.avatar_pin_dirty = true; // post-drain sweep persists the index + refetches the avatar
@@ -10663,6 +10668,8 @@ impl PhotonApp {
                 device_pubkey,
             );
             contact.added = e.added;
+            // The roster-carried published name lands on the stub immediately — this is the "avatars load instantly but names don't" fix for the re-attest path.
+            contact.published_name = e.published_name.clone();
             // Carry the fleet's trust decision onto the stub. Defaulting here would silently DOWNGRADE a friend the user already promoted on another device — and a downgrade that arrives as "new contact" is exactly the case nothing would ever correct.
             contact.trust_level = crate::storage::cloud::u8_to_trust_level(e.trust_level);
             contact.roster_updated = e.updated;
@@ -15107,6 +15114,7 @@ impl PhotonApp {
                 handle_hash: c.handle_hash,
                 public_identity: *c.public_identity.as_bytes(),
                 name: String::new(),
+                published_name: String::new(),
                 avatar_pin: [0u8; 64],
                 added: 0,
                 updated: vsf::eagle_time_oscillations(),
@@ -16980,6 +16988,8 @@ impl PhotonApp {
                                     );
                                     contact.published_name = name.clone();
                                     contact.published_name_dirty = true;
+                                    // Roster LWW clock: the published name is a synced identity field as of PRST4 — same rule as the pin adoption below.
+                                    contact.roster_updated = vsf::eagle_time_oscillations();
                                     changed = true;
                                 }
                             }
@@ -20550,7 +20560,8 @@ impl PhotonApp {
         }
 
         // Persist any published-name adoptions from this drain (deferred: saving inside the loop would fight the contacts borrow). Only the per-contact STATE entry carries published_name — the index row's name is the petname.
-        if self.contacts.iter().any(|c| c.published_name_dirty) {
+        let name_adopted = self.contacts.iter().any(|c| c.published_name_dirty);
+        if name_adopted {
             if let Some(storage) = self.storage.as_ref() {
                 for contact in self.contacts.iter_mut().filter(|c| c.published_name_dirty) {
                     contact.published_name_dirty = false;
@@ -20569,7 +20580,8 @@ impl PhotonApp {
             .filter(|(_, c)| c.avatar_pin_dirty)
             .map(|(i, _)| i)
             .collect();
-        if !avatar_adopted.is_empty() {
+        let avatar_changed = !avatar_adopted.is_empty();
+        if avatar_changed {
             for c in self.contacts.iter_mut() {
                 c.avatar_pin_dirty = false;
             }
@@ -20592,7 +20604,9 @@ impl PhotonApp {
             for i in avatar_adopted {
                 self.spawn_avatar_download(i);
             }
-            // A fresh pin is roster state — push so offline-at-the-time siblings still converge (merge-idempotent, so a pin that ARRIVED via roster merge just round-trips a no-op).
+        }
+        // A fresh pin or published name is roster state (PRST4) — push so offline-at-the-time siblings still converge (merge-idempotent, so a field that ARRIVED via roster merge just round-trips a no-op).
+        if name_adopted || avatar_changed {
             self.spawn_roster_push();
         }
 
