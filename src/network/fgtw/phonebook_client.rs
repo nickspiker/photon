@@ -83,7 +83,10 @@ pub async fn publish_address(
 
     let body = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .add_section("pb_put", vec![("rec".to_string(), VsfType::v(b'r', rec.0.to_vec()))])
+        .add_section(
+            "pb_put",
+            vec![("rec".to_string(), VsfType::v(b'r', rec.0.to_vec()))],
+        )
         .build()
         .map_err(|e| PhonebookError::Network(format!("build: {}", e)))?;
     post(body).await?;
@@ -93,13 +96,14 @@ pub async fn publish_address(
 /// Resolve one device's published address.
 ///
 /// The returned record is signature-verified HERE, so the caller can rely on "the holder of `device_pubkey` claims this address". The caller may NOT conclude the device belongs to any particular fleet — `handle_proof` is inside the signature, so the device did claim it, but nothing yet proves a current member of that fleet ever vouched for the device. Use it to ADDRESS a device you already have reason to care about (a contact's known device pubkey), not to accept a stranger into a fleet.
-pub async fn resolve_device_address(
-    device_pubkey: &[u8; 32],
-) -> Result<Record, PhonebookError> {
+pub async fn resolve_device_address(device_pubkey: &[u8; 32]) -> Result<Record, PhonebookError> {
     let key: Key = key_address(device_pubkey);
     let body = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .add_section("pb_get", vec![("key".to_string(), VsfType::v(b'r', key.to_vec()))])
+        .add_section(
+            "pb_get",
+            vec![("key".to_string(), VsfType::v(b'r', key.to_vec()))],
+        )
         .build()
         .map_err(|e| PhonebookError::Network(format!("build: {}", e)))?;
     let bytes = post(body).await?;
@@ -200,7 +204,10 @@ mod tests {
         );
         assert!(rec.verify_address());
         assert_eq!(record_socket_addr(&rec), Some(addr));
-        assert_eq!(record_local_addr(&rec), Some(std::net::SocketAddr::new(lan, 4383)));
+        assert_eq!(
+            record_local_addr(&rec),
+            Some(std::net::SocketAddr::new(lan, 4383))
+        );
     }
 
     /// An all-zero address slot is ABSENCE, not `0.0.0.0` — adopting it as a peer endpoint is the relay-sentinel poisoning that made sends go nowhere while `validated_path` looked Some.
@@ -218,7 +225,10 @@ mod tests {
         let ours = key(1);
         let theirs = key(9);
         let rec = Record::sign_device_address(&theirs, &[3u8; 32], &[1u8; 16], 4383, &[0u8; 16], 5);
-        assert!(rec.verify_address(), "their record is genuinely valid — validity is not enough");
+        assert!(
+            rec.verify_address(),
+            "their record is genuinely valid — validity is not enough"
+        );
         assert_ne!(
             rec.key(),
             Some(key_address(&ours.verifying_key().to_bytes())),
@@ -264,11 +274,25 @@ mod tests {
 
         rt.block_on(publish_address(&dev, &[0xABu8; 32], addr, Some(lan)))
             .expect("publish succeeds");
-        let rec = rt.block_on(resolve_device_address(&pubkey)).expect("resolve finds it");
+        let rec = rt
+            .block_on(resolve_device_address(&pubkey))
+            .expect("resolve finds it");
         assert!(rec.verify_address());
-        assert_eq!(record_socket_addr(&rec), Some(addr), "the public address round trips");
-        assert_eq!(rec.handle_proof(), [0xABu8; 32], "the signed handle_proof round trips");
-        println!("live round trip OK: {} lan={:?}", addr, record_local_addr(&rec));
+        assert_eq!(
+            record_socket_addr(&rec),
+            Some(addr),
+            "the public address round trips"
+        );
+        assert_eq!(
+            rec.handle_proof(),
+            [0xABu8; 32],
+            "the signed handle_proof round trips"
+        );
+        println!(
+            "live round trip OK: {} lan={:?}",
+            addr,
+            record_local_addr(&rec)
+        );
     }
 
     /// The exact frame the worker's `pb_get` builds must parse here. This is the wire contract between the two halves; a type or stride change on either side breaks discovery silently.
@@ -278,7 +302,10 @@ mod tests {
         let rec = Record::sign_device_address(&dev, &[3u8; 32], &[7u8; 16], 4383, &[8u8; 16], 12);
         let frame = vsf::VsfBuilder::new()
             .creation_time_oscillations(vsf::eagle_time_oscillations())
-            .add_section("pb_rec", vec![("rec".to_string(), VsfType::v(b'r', rec.0.to_vec()))])
+            .add_section(
+                "pb_rec",
+                vec![("rec".to_string(), VsfType::v(b'r', rec.0.to_vec()))],
+            )
             .build()
             .expect("frame builds");
         let parsed = parse_pb_rec(&frame).expect("frame parses");

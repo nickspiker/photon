@@ -202,7 +202,6 @@ pub struct FriendshipChains {
     /// Last received message time per participant (for duplicate detection). Index matches chain index. None = no message received yet from that sender. If incoming message has eagle_time <= this value, it's a duplicate (skip).
     last_received_times: Vec<Option<i64>>,
 
-
     // ==================== HASH CHAIN STATE ====================
     /// First message anchor per participant (deterministic starting point). Derived from: BLAKE3(DOMAIN_ANCHOR || participant_handle_hash || chain_fingerprint) where chain_fingerprint = BLAKE3(chain[256..512]). Both parties compute identical anchors from CLUTCH ceremony.
     first_message_anchors: Vec<[u8; 32]>,
@@ -752,7 +751,6 @@ impl FriendshipChains {
             self.last_received_times[idx] = Some(eagle_time);
         }
     }
-
 
     // ==================== HASH CHAIN METHODS ====================
 
@@ -1314,7 +1312,11 @@ mod tests {
         }
         fids.sort_unstable();
         fids.dedup();
-        assert_eq!(fids.len(), 3, "each sibling pair must get a distinct friendship id");
+        assert_eq!(
+            fids.len(),
+            3,
+            "each sibling pair must get a distinct friendship id"
+        );
 
         // pid-keyed chains: both participants resolve, other_participant round-trips, and an advance moves only the sender's strand.
         let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
@@ -1479,7 +1481,15 @@ mod tests {
 
         // Record one pending message at t0 (attempts=1, next_retry = t0 + 1s).
         let t0 = 1_000_000_000i64;
-        chains.add_pending(t0, vec![1], [0xAA; 32], [0; 32], [9; 32], vec![7, 7, 7], vec![]);
+        chains.add_pending(
+            t0,
+            vec![1],
+            [0xAA; 32],
+            [0; 32],
+            [9; 32],
+            vec![7, 7, 7],
+            vec![],
+        );
 
         // Before the first deadline: nothing due.
         assert!(chains.collect_due_retransmits(t0).is_empty());
@@ -1531,14 +1541,25 @@ mod tests {
 
         // Two pending messages: an older one at t0 and a newer one at t0+10s.
         chains.add_pending(t0, vec![1], [0xAA; 32], [0; 32], [9; 32], vec![1], vec![]);
-        chains.add_pending(t0 + 10 * one_s, vec![2], [0xBB; 32], [9; 32], [10; 32], vec![2], vec![]);
+        chains.add_pending(
+            t0 + 10 * one_s,
+            vec![2],
+            [0xBB; 32],
+            [9; 32],
+            [10; 32],
+            vec![2],
+            vec![],
+        );
 
         // Exhaust both by asking far in the future repeatedly.
         for k in 1..20 {
             let _ = chains.collect_due_retransmits(t0 + one_s * 60 * k);
         }
         let far = t0 + one_s * 1_000_000;
-        assert!(chains.collect_due_retransmits(far).is_empty(), "both exhausted");
+        assert!(
+            chains.collect_due_retransmits(far).is_empty(),
+            "both exhausted"
+        );
 
         // Peer's contiguous tip is t0 (it has the first message, is stalled missing the second). Re-arm should revive ONLY the newer message (eagle_time > tip), not the already-delivered one.
         let rearmed = chains.rearm_pending_after(t0, far);

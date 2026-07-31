@@ -66,7 +66,11 @@ pub fn blob_seal_key(identity_seed: &[u8; 32]) -> [u8; 32] {
 }
 
 /// Store an attachment blob: seal plaintext under the device blob key, write `<blobs>/<hash-hex>.bin`. Idempotent — an existing file is left alone (content-addressed, same hash = same bytes).
-pub fn blob_store(identity_seed: &[u8; 32], content_hash: &[u8; 32], plaintext: &[u8]) -> Result<(), String> {
+pub fn blob_store(
+    identity_seed: &[u8; 32],
+    content_hash: &[u8; 32],
+    plaintext: &[u8],
+) -> Result<(), String> {
     let dir = blob_dir().map_err(|e| e.to_string())?;
     let path = dir.join(format!("{}.bin", hex::encode(content_hash)));
     if path.exists() {
@@ -90,7 +94,12 @@ pub fn blob_load(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Ve
 
 /// Whether the blob for `content_hash` is held locally (no decrypt — presence only).
 pub fn blob_present(content_hash: &[u8; 32]) -> bool {
-    blob_dir().map(|d| d.join(format!("{}.bin", hex::encode(content_hash))).exists()).unwrap_or(false)
+    blob_dir()
+        .map(|d| {
+            d.join(format!("{}.bin", hex::encode(content_hash)))
+                .exists()
+        })
+        .unwrap_or(false)
 }
 
 /// Delete a blob file (attachment tombstone follow-through — blobs CAN truly shred; only row content is braid-bound).
@@ -202,14 +211,23 @@ pub fn write_file(path: &Path, data: &[u8], label: &str) -> Result<(), std::io::
     match fs::read(path) {
         Ok(readback) if readback.len() == data.len() && readback == data => Ok(()),
         Ok(readback) => {
-            crate::logf!("STORAGE: Write verification failed for {} (wrote {} bytes, read back {} bytes)", label, data.len(), readback.len());
+            crate::logf!(
+                "STORAGE: Write verification failed for {} (wrote {} bytes, read back {} bytes)",
+                label,
+                data.len(),
+                readback.len()
+            );
             Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "write verification failed: data mismatch",
             ))
         }
         Err(e) => {
-            crate::logf!("STORAGE: Write verification read-back failed for {}: {}", label, e);
+            crate::logf!(
+                "STORAGE: Write verification read-back failed for {}: {}",
+                label,
+                e
+            );
             Err(e)
         }
     }

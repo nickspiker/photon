@@ -6,11 +6,11 @@
 pub const AVATAR_SIZE: usize = 256;
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use vsf::VsfType;
 use img_parts::jpeg::Jpeg;
 use img_parts::png::Png;
 use img_parts::ImageICC;
 use rav1e::prelude::*;
+use vsf::VsfType;
 
 #[cfg(not(target_os = "android"))]
 use winit::event_loop::EventLoopProxy;
@@ -71,7 +71,10 @@ pub fn encode_avatar_rgb_f32(vsf_rgb_f32: &[f32]) -> Result<Vec<u8>, String> {
 
 /// Quantize the prepared f32 γ2 pixels to the u8 form the display path uses (identical to what the AV1 round-trip decodes to, 8-bit) — so the UI can show the avatar the same frame it was picked, before the encode even starts.
 pub fn avatar_rgb_f32_to_u8(vsf_rgb_f32: &[f32]) -> Vec<u8> {
-    vsf_rgb_f32.iter().map(|v| (v * 255.0 + 0.5) as u8).collect()
+    vsf_rgb_f32
+        .iter()
+        .map(|v| (v * 255.0 + 0.5) as u8)
+        .collect()
 }
 
 /// The FAST half of avatar-set: decode + EXIF/ICC handling + centre-crop + Lanczos resize + circular mask + γ2 — everything except the AV1 encode. Milliseconds; safe on the UI thread for the instant-display path.
@@ -85,7 +88,11 @@ pub fn probe_image_dims(bytes: &[u8]) -> Option<(u32, u32)> {
 }
 
 /// Attachment resample: decode (EXIF-rotated, same treatment as avatars), downscale so the long edge fits `long_edge` (never upscales), encode JPEG at `quality`. Returns (jpeg_bytes, w, h). JPEG over AV1 deliberately — the saved file must open EVERYWHERE, not just inside photon.
-pub fn resample_to_jpeg(bytes: &[u8], long_edge: u32, quality: u8) -> Result<(Vec<u8>, u32, u32), String> {
+pub fn resample_to_jpeg(
+    bytes: &[u8],
+    long_edge: u32,
+    quality: u8,
+) -> Result<(Vec<u8>, u32, u32), String> {
     use image::ImageDecoder;
     let mut decoder = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
@@ -95,7 +102,8 @@ pub fn resample_to_jpeg(bytes: &[u8], long_edge: u32, quality: u8) -> Result<(Ve
     let orientation = decoder
         .orientation()
         .unwrap_or(image::metadata::Orientation::NoTransforms);
-    let mut img = image::DynamicImage::from_decoder(decoder).map_err(|e| format!("decode: {}", e))?;
+    let mut img =
+        image::DynamicImage::from_decoder(decoder).map_err(|e| format!("decode: {}", e))?;
     img.apply_orientation(orientation);
     let (w, h) = (img.width(), img.height());
     let long = w.max(h);
@@ -109,7 +117,8 @@ pub fn resample_to_jpeg(bytes: &[u8], long_edge: u32, quality: u8) -> Result<(Ve
     let (ow, oh) = (rgb.width(), rgb.height());
     let mut out = Vec::new();
     let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100));
-    rgb.write_with_encoder(enc).map_err(|e| format!("jpeg: {}", e))?;
+    rgb.write_with_encoder(enc)
+        .map_err(|e| format!("jpeg: {}", e))?;
     Ok((out, ow, oh))
 }
 
@@ -924,7 +933,10 @@ pub fn download_avatar_pinned(
         return Some(cached);
     }
     let storage_key = URL_SAFE_NO_PAD.encode(&avatar_pin[32..]);
-    crate::logf!("Avatar: Fetching pinned contact avatar from FGTW ({}...)", &storage_key[..8]);
+    crate::logf!(
+        "Avatar: Fetching pinned contact avatar from FGTW ({}...)",
+        &storage_key[..8]
+    );
     let get_vsf = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .add_section(
@@ -962,7 +974,11 @@ fn save_avatar_to_cache(
     vsf_data: &[u8],
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Result<(), crate::storage::StorageError> {
-    save_avatar_to_cache_from_seed(&crate::types::Handle::to_identity_seed(handle), vsf_data, storage)
+    save_avatar_to_cache_from_seed(
+        &crate::types::Handle::to_identity_seed(handle),
+        vsf_data,
+        storage,
+    )
 }
 
 pub fn save_avatar_to_cache_from_seed(
@@ -1005,8 +1021,9 @@ fn avatar_image_schema() -> vsf::schema::SectionSchema {
 
 /// Verified read of an avatar VSF document → the encrypted AV1 payload. Goes thru `parse_document`, so verification (hp + hb or signature) is un-skippable — tampered or anchor-less bytes never reach the decrypt step.
 fn avatar_encrypted_payload(vsf_data: &[u8]) -> Result<Vec<u8>, String> {
-    let section = vsf::schema::SectionBuilder::parse_document(avatar_image_schema(), vsf_data, None)
-        .map_err(|e| format!("verified avatar parse: {}", e))?;
+    let section =
+        vsf::schema::SectionBuilder::parse_document(avatar_image_schema(), vsf_data, None)
+            .map_err(|e| format!("verified avatar parse: {}", e))?;
     section
         .get_value::<Vec<u8>>("pixels")
         .map_err(|e| format!("avatar pixels field: {}", e))
@@ -1017,7 +1034,10 @@ pub fn load_avatar_from_bytes_from_seed(
     vsf_data: &[u8],
     identity_seed: &[u8; 32],
 ) -> Option<(usize, Vec<u8>)> {
-    load_avatar_from_bytes_with_key(vsf_data, &derive_avatar_encryption_key_from_seed(identity_seed))
+    load_avatar_from_bytes_with_key(
+        vsf_data,
+        &derive_avatar_encryption_key_from_seed(identity_seed),
+    )
 }
 
 /// `load_avatar_from_bytes` with the pinned AES key (a contact under the pin-set).
@@ -1066,7 +1086,11 @@ pub fn save_avatar(
     handle: &str,
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Result<(), crate::storage::StorageError> {
-    save_avatar_from_seed(av1_data, &crate::types::Handle::to_identity_seed(handle), storage)
+    save_avatar_from_seed(
+        av1_data,
+        &crate::types::Handle::to_identity_seed(handle),
+        storage,
+    )
 }
 
 /// `save_avatar` from the already-derived `identity_seed`. String-free owner path.
@@ -1209,7 +1233,10 @@ pub fn derive_avatar_keypair(
     device_secret: &SigningKey,
     handle: &str,
 ) -> (SigningKey, VerifyingKey) {
-    derive_avatar_keypair_from_seed(device_secret, &crate::types::Handle::to_identity_seed(handle))
+    derive_avatar_keypair_from_seed(
+        device_secret,
+        &crate::types::Handle::to_identity_seed(handle),
+    )
 }
 
 /// `derive_avatar_keypair` from the already-derived `identity_seed` (= `ihi::handle_to_hash` bytes), so the owner never needs the handle string post-attest. Byte-identical to the handle path.
@@ -1301,7 +1328,10 @@ pub fn encrypt_av1_data_from_seed(
     av1_data: &[u8],
     identity_seed: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
-    encrypt_av1_data_with_key(av1_data, &derive_avatar_encryption_key_from_seed(identity_seed))
+    encrypt_av1_data_with_key(
+        av1_data,
+        &derive_avatar_encryption_key_from_seed(identity_seed),
+    )
 }
 
 /// Encrypt AV1 data under an EXPLICIT key — the avatar-pin's key half — with ChaCha20-Poly1305, the SAME AEAD the rest of Photon's at-rest layer uses (kete vault, sealed log, blind blobs): constant-time in software, no AES-NI dependence on mobile. The friend-gated upload path: neither this key nor the FGTW lookup is derivable from the handle, so possession of the handle no longer decrypts the avatar (docs/identity-profile.md). Format: `[nonce:12][ciphertext+tag]`.
@@ -1312,8 +1342,8 @@ pub fn encrypt_av1_data_with_key(av1_data: &[u8], key: &[u8; 32]) -> Result<Vec<
     // Build v'a' wrapped AV1 data
     let va_wrapped = encode_va_wrapper(av1_data);
 
-    let cipher =
-        ChaCha20Poly1305::new_from_slice(key).map_err(|e| format!("Failed to create cipher: {}", e))?;
+    let cipher = ChaCha20Poly1305::new_from_slice(key)
+        .map_err(|e| format!("Failed to create cipher: {}", e))?;
 
     // Generate random nonce
     let mut nonce_bytes = [0u8; 12];
@@ -1350,7 +1380,10 @@ pub fn decrypt_av1_data_from_seed(
     encrypted: &[u8],
     identity_seed: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
-    decrypt_av1_data_with_key(encrypted, &derive_avatar_encryption_key_from_seed(identity_seed))
+    decrypt_av1_data_with_key(
+        encrypted,
+        &derive_avatar_encryption_key_from_seed(identity_seed),
+    )
 }
 
 /// `decrypt_av1_data` with an explicit avatar key (ChaCha20-Poly1305) — the pin's first half; how a contact's avatar decrypts from the pin alone, no handle/seed.
@@ -1370,8 +1403,8 @@ pub fn decrypt_av1_data_with_key(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec
         .map_err(|_| "Failed to extract nonce")?;
     let ciphertext = &encrypted[12..];
 
-    let cipher =
-        ChaCha20Poly1305::new_from_slice(key).map_err(|e| format!("Failed to create cipher: {}", e))?;
+    let cipher = ChaCha20Poly1305::new_from_slice(key)
+        .map_err(|e| format!("Failed to create cipher: {}", e))?;
 
     // Decrypt
     let va_wrapped = cipher
@@ -1632,7 +1665,10 @@ pub fn upload_avatar_from_seed(
         .bytes()
         .map_err(|e| format!("Avatar upload: read response body: {}", e))?;
     if let Some((reason, detail)) = fgtw::client::error_frame(&body) {
-        return Err(format!("Avatar upload rejected by FGTW {}: {}", reason, detail));
+        return Err(format!(
+            "Avatar upload rejected by FGTW {}: {}",
+            reason, detail
+        ));
     }
 
     crate::logf!("Avatar: Uploaded to FGTW (key: {}...)", &storage_key[..8]);
@@ -1682,7 +1718,10 @@ pub fn delete_avatar_blocking(
             "avatar_delete",
             vec![
                 ("key".to_string(), VsfType::d(key)),
-                ("signature".to_string(), VsfType::ge(sig.to_bytes().to_vec())),
+                (
+                    "signature".to_string(),
+                    VsfType::ge(sig.to_bytes().to_vec()),
+                ),
             ],
         )
         .build()
@@ -1705,11 +1744,12 @@ fn fetch_avatar_tail(
     handle: &str,
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Option<(usize, Vec<u8>)> {
-
     // Not cached locally, fetch from FGTW
     let storage_key = avatar_storage_key(handle);
-    crate::logf!("Avatar: Fetching from FGTW ({}...)", // storage_key is the public lookup id; the handle is not logged
-        &storage_key[..8]);
+    crate::logf!(
+        "Avatar: Fetching from FGTW ({}...)", // storage_key is the public lookup id; the handle is not logged
+        &storage_key[..8]
+    );
 
     // Same VSF conduit as everything else: POST / with an `avatar_get` section (server route at route_vsf_request -> handle_avatar_get). The old GET /avatar/{key} had no router arm → 404.
     let get_vsf = vsf::VsfBuilder::new()
@@ -1774,7 +1814,10 @@ pub fn download_avatar_from_seed(
     }
 
     let storage_key = avatar_storage_key_from_seed(identity_seed);
-    crate::logf!("Avatar: Fetching own avatar from FGTW ({}...)", &storage_key[..8]);
+    crate::logf!(
+        "Avatar: Fetching own avatar from FGTW ({}...)",
+        &storage_key[..8]
+    );
 
     let get_vsf = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
@@ -1863,7 +1906,8 @@ pub fn sync_avatar_bidirectional_from_seed(
         match handle_proof {
             Some(hp) => {
                 crate::logf!("Avatar sync: {}, uploading local", label);
-                match upload_avatar_from_seed(device_secret, identity_seed, avatar_pin, hp, storage) {
+                match upload_avatar_from_seed(device_secret, identity_seed, avatar_pin, hp, storage)
+                {
                     Ok(_) => AvatarSyncResult::LocalNewer,
                     Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
                 }
@@ -1965,7 +2009,11 @@ pub fn sync_avatar_bidirectional_from_seed(
             } else if server > local {
                 // Adopt the server copy only if it validates — never overwrite a good local avatar with a body that fails to decode.
                 if adopt_server_avatar(&vsf_data, identity_seed, avatar_pin, storage) {
-                    crate::logf!("Avatar sync: Server newer ({} > {}), caching", server, local);
+                    crate::logf!(
+                        "Avatar sync: Server newer ({} > {}), caching",
+                        server,
+                        local
+                    );
                     AvatarSyncResult::ServerNewer
                 } else {
                     AvatarSyncResult::Error(
@@ -2039,7 +2087,10 @@ pub fn sync_avatar_background(
             }
         };
 
-        let _ = tx.send(AvatarDownloadResult { owner: None, pixels });
+        let _ = tx.send(AvatarDownloadResult {
+            owner: None,
+            pixels,
+        });
 
         // Wake the event loop on desktop
         #[cfg(not(target_os = "android"))]

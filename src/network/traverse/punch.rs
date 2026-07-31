@@ -79,7 +79,13 @@ impl PendingProbes {
         Self::default()
     }
 
-    pub fn insert(&mut self, provenance: [u8; 32], peer: DevicePubkey, target: SocketAddr, now: Instant) {
+    pub fn insert(
+        &mut self,
+        provenance: [u8; 32],
+        peer: DevicePubkey,
+        target: SocketAddr,
+        now: Instant,
+    ) {
         self.inner.insert(
             provenance,
             PendingProbe {
@@ -129,7 +135,10 @@ mod tests {
             signature: [0u8; 64],
         };
         let bytes = probe.to_vsf_bytes();
-        assert!(bytes.starts_with(b"R\xC3\x85"), "must be full VSF file with magic");
+        assert!(
+            bytes.starts_with(b"R\xC3\x85"),
+            "must be full VSF file with magic"
+        );
         match FgtwMessage::from_vsf_bytes(&bytes).expect("parse probe") {
             FgtwMessage::PunchProbe {
                 provenance_hash, ..
@@ -180,7 +189,12 @@ mod tests {
     fn pending_probe_expires() {
         let mut p = PendingProbes::new();
         let past = Instant::now() - (PROBE_TIMEOUT + Duration::from_secs(1));
-        p.insert([1u8; 32], DevicePubkey::from_bytes([1u8; 32]), addr("1.2.3.4:1"), past);
+        p.insert(
+            [1u8; 32],
+            DevicePubkey::from_bytes([1u8; 32]),
+            addr("1.2.3.4:1"),
+            past,
+        );
         assert_eq!(p.expire(Instant::now()), 1);
         assert!(p.is_empty());
     }

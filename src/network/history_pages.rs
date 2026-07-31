@@ -51,7 +51,10 @@ fn page_schema() -> SectionSchema {
 pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<u8>, String> {
     let mut builder = page_schema()
         .build()
-        .set("oldest", VsfType::e(vsf::types::EtType::e6(page.oldest_osc)))
+        .set(
+            "oldest",
+            VsfType::e(vsf::types::EtType::e6(page.oldest_osc)),
+        )
         .map_err(|e| e.to_string())?
         .set("more", page.more)
         .map_err(|e| e.to_string())?;

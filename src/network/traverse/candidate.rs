@@ -115,8 +115,14 @@ mod tests {
     fn lan_is_primary_public_is_alt_matching_race_addrs() {
         // The current race_addrs behaviour: LAN primary, public alternate.
         let mut set = CandidateSet::new();
-        set.add(Candidate::new(a("203.0.113.7:4383"), CandidateKind::Reflexive));
-        set.add(Candidate::new(a("192.168.1.2:4383"), CandidateKind::HostV4Lan));
+        set.add(Candidate::new(
+            a("203.0.113.7:4383"),
+            CandidateKind::Reflexive,
+        ));
+        set.add(Candidate::new(
+            a("192.168.1.2:4383"),
+            CandidateKind::HostV4Lan,
+        ));
         assert_eq!(
             set.best_pair(),
             Some((a("192.168.1.2:4383"), Some(a("203.0.113.7:4383"))))
@@ -126,16 +132,28 @@ mod tests {
     #[test]
     fn public_only_has_no_alternate() {
         let mut set = CandidateSet::new();
-        set.add(Candidate::new(a("203.0.113.7:4383"), CandidateKind::Reflexive));
+        set.add(Candidate::new(
+            a("203.0.113.7:4383"),
+            CandidateKind::Reflexive,
+        ));
         assert_eq!(set.best_pair(), Some((a("203.0.113.7:4383"), None)));
     }
 
     #[test]
     fn ipv6_host_wins_when_present() {
         let mut set = CandidateSet::new();
-        set.add(Candidate::new(a("192.168.1.2:4383"), CandidateKind::HostV4Lan));
-        set.add(Candidate::new(a("203.0.113.7:4383"), CandidateKind::Reflexive));
-        set.add(Candidate::new(a("[2001:db8::1]:4383"), CandidateKind::HostV6));
+        set.add(Candidate::new(
+            a("192.168.1.2:4383"),
+            CandidateKind::HostV4Lan,
+        ));
+        set.add(Candidate::new(
+            a("203.0.113.7:4383"),
+            CandidateKind::Reflexive,
+        ));
+        set.add(Candidate::new(
+            a("[2001:db8::1]:4383"),
+            CandidateKind::HostV6,
+        ));
         let (primary, _) = set.best_pair().unwrap();
         assert_eq!(primary, a("[2001:db8::1]:4383"));
     }
@@ -143,7 +161,10 @@ mod tests {
     #[test]
     fn duplicate_address_keeps_higher_priority_kind() {
         let mut set = CandidateSet::new();
-        set.add(Candidate::new(a("203.0.113.7:4383"), CandidateKind::Reflexive));
+        set.add(Candidate::new(
+            a("203.0.113.7:4383"),
+            CandidateKind::Reflexive,
+        ));
         set.add(Candidate::new(a("203.0.113.7:4383"), CandidateKind::HostV6)); // same addr, higher kind
         assert_eq!(set.sorted().len(), 1);
         assert_eq!(set.sorted()[0].kind, CandidateKind::HostV6);

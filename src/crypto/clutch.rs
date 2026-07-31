@@ -52,13 +52,20 @@ pub fn derive_history_key(friendship_id: &[u8; 32], active_chains_sorted: &[&[u8
 
 /// OUR OWN party id as a FRIEND sees it: the Ed25519 identity pubkey derived from the identity seed — the same value a contact pins at first-met, so both sides sort/slot/derive on identical ids. Public by design (it rides CLUTCH offers for contact matching); the SECRET identity binding moved to [`identity_friendship_secret`]. Supersedes using the raw identity seed as the party id, which parked the friend's SIGNING SEED in every contact row (docs/identity-profile.md).
 pub fn identity_party_id(identity_seed: &[u8; 32]) -> [u8; 32] {
-    ed25519_dalek::SigningKey::from_bytes(identity_seed).verifying_key().to_bytes()
+    ed25519_dalek::SigningKey::from_bytes(identity_seed)
+        .verifying_key()
+        .to_bytes()
 }
 
 /// The static identity Diffie-Hellman secret for a FRIEND ceremony: x25519 between OUR identity scalar and THEIR pinned identity pubkey's Montgomery form — computable by exactly the two identity holders, from the pin-set alone, no wire exchange. Same Ed25519→X25519 construction as the fgtw fan-out (`to_scalar_bytes` / `to_montgomery` agree on the same point), hashed under a domain so the raw DH point never leaves this function. `None` when the pinned bytes don't decode as a curve point; an old-format row that happens to decode anyway just derives a secret the peer won't match, failing the ceremony at proof verification — the same flag-day outcome, one step later. Fleet siblings don't DH (their party ids aren't curve points): both devices share the identity seed itself, so the caller passes that instead.
-pub fn identity_friendship_secret(our_identity_seed: &[u8; 32], their_identity_pubkey: &[u8; 32]) -> Option<[u8; 32]> {
+pub fn identity_friendship_secret(
+    our_identity_seed: &[u8; 32],
+    their_identity_pubkey: &[u8; 32],
+) -> Option<[u8; 32]> {
     let their_vk = ed25519_dalek::VerifyingKey::from_bytes(their_identity_pubkey).ok()?;
-    let our_x = StaticSecret::from(ed25519_dalek::SigningKey::from_bytes(our_identity_seed).to_scalar_bytes());
+    let our_x = StaticSecret::from(
+        ed25519_dalek::SigningKey::from_bytes(our_identity_seed).to_scalar_bytes(),
+    );
     let shared = our_x.diffie_hellman(&PublicKey::from(their_vk.to_montgomery().to_bytes()));
     let mut hasher = Hasher::new();
     hasher.update(b"PHOTON_FRIENDSHIP_DH_v1");
@@ -88,7 +95,11 @@ mod identity_binding_tests {
         let seed_a = [1u8; 32];
         let seed_b = [2u8; 32];
         let seed_c = [3u8; 32];
-        let (pk_a, pk_b, pk_c) = (identity_party_id(&seed_a), identity_party_id(&seed_b), identity_party_id(&seed_c));
+        let (pk_a, pk_b, pk_c) = (
+            identity_party_id(&seed_a),
+            identity_party_id(&seed_b),
+            identity_party_id(&seed_c),
+        );
         // Both identity holders compute the SAME secret from opposite ends — the static DH that replaced mutual-handle-knowledge.
         let ab = identity_friendship_secret(&seed_a, &pk_b).unwrap();
         let ba = identity_friendship_secret(&seed_b, &pk_a).unwrap();
@@ -653,8 +664,6 @@ impl ClutchAllKeypairs {
         self.mceliece_secret.zeroize();
         self.hqc256_secret.zeroize();
     }
-
-
 }
 
 // ============================================================================= CLUTCH PAYLOAD STRUCTS FOR NETWORK TRANSFER =============================================================================
@@ -679,7 +688,10 @@ impl ClutchOfferPayload {
     /// Create from our keypairs (extract public keys)
     pub fn from_keypairs(keys: &ClutchAllKeypairs) -> Self {
         #[cfg(feature = "development")]
-        crate::logf!("CLUTCH: Building offer with HQC pub[..8]={}", hex::encode(&keys.hqc256_public[..8]));
+        crate::logf!(
+            "CLUTCH: Building offer with HQC pub[..8]={}",
+            hex::encode(&keys.hqc256_public[..8])
+        );
 
         Self {
             x25519_public: keys.x25519_public,
@@ -714,8 +726,6 @@ impl ClutchOfferPayload {
         bytes.extend_from_slice(&self.hqc256_public);
         bytes
     }
-
-
 }
 
 /// KEM response with 4 PQC ciphertexts + 4 EC ephemeral pubkeys (~31KB). Sent by both parties after receiving peer's full offer.
@@ -758,7 +768,11 @@ impl ClutchKemResponsePayload {
         let (hqc256_ciphertext, hqc_ss) = hqc256_encapsulate(&their_offer.hqc256_public);
 
         #[cfg(feature = "development")]
-        crate::logf!("CLUTCH: HQC encap: their_pub[..8]={} → ct[..8]={}", hex::encode(&their_offer.hqc256_public[..8]), hex::encode(&hqc256_ciphertext[..8]));
+        crate::logf!(
+            "CLUTCH: HQC encap: their_pub[..8]={} → ct[..8]={}",
+            hex::encode(&their_offer.hqc256_public[..8]),
+            hex::encode(&hqc256_ciphertext[..8])
+        );
 
         // ===== EC ECIES-style: generate ephemeral keypairs, ECDH with peer's offer pubkeys ===== This gives distinct shared secrets per direction (we→them vs them→us)
         let (x25519_eph_secret, x25519_ephemeral) = generate_x25519_ephemeral();
@@ -838,7 +852,10 @@ impl ClutchKemSharedSecrets {
         // ===== PQC KEMs =====
         let frodo = frodo976_decapsulate(&our_keys.frodo976_secret, &response.frodo976_ciphertext);
         #[cfg(feature = "development")]
-        crate::logf!("CLUTCH: ✓ Frodo976 decap OK ({}B shared secret)", frodo.len());
+        crate::logf!(
+            "CLUTCH: ✓ Frodo976 decap OK ({}B shared secret)",
+            frodo.len()
+        );
 
         let ntru = ntru701_decapsulate(&our_keys.ntru701_secret, &response.ntru701_ciphertext);
         #[cfg(feature = "development")]
@@ -862,7 +879,11 @@ impl ClutchKemSharedSecrets {
         };
 
         #[cfg(feature = "development")]
-        crate::logf!("CLUTCH: HQC256 decap: our_sk[..8]={} their_ct[..8]={}", hex::encode(&our_keys.hqc256_secret[..8]), hex::encode(&response.hqc256_ciphertext[..8]));
+        crate::logf!(
+            "CLUTCH: HQC256 decap: our_sk[..8]={} their_ct[..8]={}",
+            hex::encode(&our_keys.hqc256_secret[..8]),
+            hex::encode(&response.hqc256_ciphertext[..8])
+        );
 
         let hqc = hqc256_decapsulate(&our_keys.hqc256_secret, &response.hqc256_ciphertext);
         #[cfg(feature = "development")]
@@ -881,7 +902,10 @@ impl ClutchKemSharedSecrets {
 
         let secp256k1 = secp256k1_ecdh(&our_keys.secp256k1_secret, &response.secp256k1_ephemeral);
         #[cfg(feature = "development")]
-        crate::logf!("CLUTCH: ✓ secp256k1 decap OK ({}B shared secret)", secp256k1.len());
+        crate::logf!(
+            "CLUTCH: ✓ secp256k1 decap OK ({}B shared secret)",
+            secp256k1.len()
+        );
 
         let p256 = p256_ecdh(&our_keys.p256_secret, &response.p256_ephemeral);
         #[cfg(feature = "development")]
@@ -910,8 +934,6 @@ impl ClutchKemSharedSecrets {
         self.secp256k1.zeroize();
         self.p256.zeroize();
     }
-
-
 }
 
 /// Sent by both parties after computing eggs to verify agreement.
@@ -1092,7 +1114,11 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
     let start_time = std::time::Instant::now();
 
     #[cfg(feature = "development")]
-    crate::logf!("CLUTCH: Collecting {} eggs for avalanche ({} bytes input)...", eggs.eggs.len(), eggs.eggs.len() * 32);
+    crate::logf!(
+        "CLUTCH: Collecting {} eggs for avalanche ({} bytes input)...",
+        eggs.eggs.len(),
+        eggs.eggs.len() * 32
+    );
 
     const MIN_SIZE: usize = 1_048_576; // 1MB ish
     const TOTAL_SIZE: usize = MIN_SIZE * 2; // 2MB
@@ -1719,7 +1745,11 @@ mod tests {
         }
         tokens.sort_unstable();
         tokens.dedup();
-        assert_eq!(tokens.len(), 3, "each sibling pair must get a distinct token");
+        assert_eq!(
+            tokens.len(),
+            3,
+            "each sibling pair must get a distinct token"
+        );
     }
 
     #[test]
@@ -1853,16 +1883,26 @@ mod tests {
 
         let a_prov = clutch_offer_provenance(&a_device, a_time);
         let b_prov = clutch_offer_provenance(&b_device, b_time);
-        assert_ne!(a_prov, b_prov, "distinct parties/times → distinct provenances");
+        assert_ne!(
+            a_prov, b_prov,
+            "distinct parties/times → distinct provenances"
+        );
 
         // A collected [its own, then B's]; B collected [its own, then A's] — opposite order. derive() sorts, so both land on the same id.
         let id_from_a = CeremonyId::derive(&[a_handle, b_handle], &[a_prov, b_prov]);
         let id_from_b = CeremonyId::derive(&[b_handle, a_handle], &[b_prov, a_prov]);
-        assert_eq!(id_from_a.as_bytes(), id_from_b.as_bytes(), "both sides derive the SAME ceremony_id from the sorted provenance pair");
+        assert_eq!(
+            id_from_a.as_bytes(),
+            id_from_b.as_bytes(),
+            "both sides derive the SAME ceremony_id from the sorted provenance pair"
+        );
 
         // Re-sending the SAME offer (same pinned time) yields the SAME provenance → same id → no rotation.
         let a_prov_resend = clutch_offer_provenance(&a_device, a_time);
-        assert_eq!(a_prov, a_prov_resend, "a re-send with the pinned time is byte-identical — the clutch does not rotate");
+        assert_eq!(
+            a_prov, a_prov_resend,
+            "a re-send with the pinned time is byte-identical — the clutch does not rotate"
+        );
     }
 
     #[test]

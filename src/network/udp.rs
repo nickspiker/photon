@@ -179,14 +179,16 @@ pub fn parse_lan_discovery(
     };
 
     // Sender's device pubkey (ke) — optional for wire compat with pre-ke beacons
-    let device_pubkey = section.get_field("ke").and_then(|f| match f.values.first() {
-        Some(VsfType::ke(bytes)) if bytes.len() == 32 => {
-            let mut k = [0u8; 32];
-            k.copy_from_slice(bytes);
-            Some(k)
-        }
-        _ => None,
-    });
+    let device_pubkey = section
+        .get_field("ke")
+        .and_then(|f| match f.values.first() {
+            Some(VsfType::ke(bytes)) if bytes.len() == 32 => {
+                let mut k = [0u8; 32];
+                k.copy_from_slice(bytes);
+                Some(k)
+            }
+            _ => None,
+        });
 
     // Handle both native IPv4 and IPv4-mapped IPv6 addresses
     let src_ip = match src_addr.ip() {

@@ -25,7 +25,11 @@ pub fn install_unix_listener(data_dir: &std::path::Path) {
     let _ = std::fs::remove_file(&path);
     match std::os::unix::net::UnixListener::bind(&path) {
         Ok(l) => *LISTENER.lock().unwrap() = Some(ControlListener::Unix(l)),
-        Err(e) => crate::logf!("CONTROL: bind {} failed: {} (second-launch handoff disabled)", path.display(), e),
+        Err(e) => crate::logf!(
+            "CONTROL: bind {} failed: {} (second-launch handoff disabled)",
+            path.display(),
+            e
+        ),
     }
 }
 
@@ -35,12 +39,17 @@ pub fn install_tcp_listener(listener: std::net::TcpListener) {
 }
 
 /// Resident side: start the accept loop, forwarding each `show` to the UI thread via the wake proxy. Called once from `set_event_proxy`; a no-op if `main` never parked a listener (handoff disabled, nothing to serve).
-pub fn spawn_accept_thread(proxy: std::sync::Arc<dyn fluor::host::WakeSender<crate::ui::PhotonEvent>>) {
+pub fn spawn_accept_thread(
+    proxy: std::sync::Arc<dyn fluor::host::WakeSender<crate::ui::PhotonEvent>>,
+) {
     let Some(listener) = LISTENER.lock().unwrap().take() else {
         return;
     };
     std::thread::spawn(move || {
-        let handle = |buf: &[u8], proxy: &std::sync::Arc<dyn fluor::host::WakeSender<crate::ui::PhotonEvent>>| {
+        let handle = |buf: &[u8],
+                      proxy: &std::sync::Arc<
+            dyn fluor::host::WakeSender<crate::ui::PhotonEvent>,
+        >| {
             if buf.starts_with(b"show") {
                 crate::log("CONTROL: show requested by a second launch — surfacing the window");
                 let _ = proxy.send(crate::ui::PhotonEvent::ShowWindow);

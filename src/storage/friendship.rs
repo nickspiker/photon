@@ -203,7 +203,10 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
 
     // Mutation stamp (v7) — the replication ordering key.
     builder = builder
-        .set("mutated_osc", VsfType::e(vsf::types::EtType::e6(chains.mutated_osc)))
+        .set(
+            "mutated_osc",
+            VsfType::e(vsf::types::EtType::e6(chains.mutated_osc)),
+        )
         .map_err(|e| StorageError::Parse(e.to_string()))?;
 
     // A COMPLETE VSF FILE, not a bare section (AGENT.md: "VSF Transport Rule: COMPLETE FILES ONLY"). These bytes are not disk-only: `chains_to_vsf_bytes` also feeds fleet chain replication (photon_app.rs `push_chains_to_siblings`), sealed under the fleet key and pushed to every sibling, and the adopt path on the far side parses them back into live RATCHET STATE — chain keys, last plaintexts, mutation stamps. A bare section gave that path nothing to verify: the AEAD proves only "someone in the fleet wrote this", which the signed outer frame already proved. The header's BLAKE3 provenance hash is what makes the payload self-consistent.
@@ -282,7 +285,10 @@ fn migrate_pre_document_chains(
             hex::encode(&chains.id().as_bytes()[..8])
         ),
         // The chains are usable in memory regardless; a failed rewrite just means we migrate again next load.
-        Err(e) => crate::logf!("MIGRATION: chains rewrite failed (will retry next load): {}", e),
+        Err(e) => crate::logf!(
+            "MIGRATION: chains rewrite failed (will retry next load): {}",
+            e
+        ),
     }
     Some(chains)
 }
@@ -524,7 +530,11 @@ pub fn load_all_friendships(
                 result.push((*friendship_id, chains));
             }
             Err(e) => {
-                crate::logf!("Failed to load friendship {}: {}", hex::encode(&friendship_id.as_bytes()[..8]), e);
+                crate::logf!(
+                    "Failed to load friendship {}: {}",
+                    hex::encode(&friendship_id.as_bytes()[..8]),
+                    e
+                );
             }
         }
     }
@@ -592,7 +602,8 @@ mod tests {
     #[test]
     fn pre_document_vault_blob_migrates_on_load() {
         // A distinct seed from the other tests in this module so the two vaults can't collide.
-        let storage = FlatStorage::new(crate::storage::APP, [0xC1; 32], [0xC2; 32]).expect("storage");
+        let storage =
+            FlatStorage::new(crate::storage::APP, [0xC1; 32], [0xC2; 32]).expect("storage");
 
         let alice = [1u8; 32];
         let bob = [2u8; 32];
@@ -605,14 +616,19 @@ mod tests {
         let section = vsf::schema::SectionBuilder::parse_document(chains_schema(), &doc, None)
             .expect("parse");
         let bare = section.encode().expect("bare section");
-        storage.write_addr(&chains_key(&fid), &bare).expect("plant legacy blob");
+        storage
+            .write_addr(&chains_key(&fid), &bare)
+            .expect("plant legacy blob");
 
         // Loads (via the migration) and returns the right chains.
         let loaded = load_friendship_chains(&fid, &storage).expect("legacy blob must still load");
         assert_eq!(loaded.participants(), chains.participants());
 
         // And the blob on disk is now a document, so the migration is self-terminating: the strict decoder alone can read it, with no fallback involved.
-        let on_disk = storage.read_addr(&chains_key(&fid)).unwrap().expect("still there");
+        let on_disk = storage
+            .read_addr(&chains_key(&fid))
+            .unwrap()
+            .expect("still there");
         assert!(
             chains_from_vsf_bytes(&on_disk).is_ok(),
             "the migration must leave behind something the STRICT decoder accepts"
@@ -670,9 +686,6 @@ mod tests {
         assert_ne!(a_side.history_key(), rekeyed.history_key());
 
         // And it must differ from the conversation token (domain separation actually separates).
-        assert_ne!(
-            a_side.history_key().unwrap(),
-            &a_side.conversation_token
-        );
+        assert_ne!(a_side.history_key().unwrap(), &a_side.conversation_token);
     }
 }

@@ -3,11 +3,11 @@
 //! STUB scope: the checkbox flips its own `checked` flag on click (a control "toggling its own visual state" is explicitly allowed); nothing downstream reads it yet.
 
 use fluor::canvas::{Canvas, PixelRect};
-use fluor::text::TextStyle;
 use fluor::coord::Coord;
 use fluor::paint::{self, Clip, HitId, HIT_NONE};
 use fluor::region::Region;
 use fluor::text::TextRenderer;
+use fluor::text::TextStyle;
 
 /// A labelled on/off box. The box sits at the left of the widget's rect; the label is drawn to its right. Click (or Space/Enter while focused) flips `checked` and bumps a change counter the app polls via [`Self::take_toggle`].
 pub struct Checkbox {
@@ -197,7 +197,15 @@ impl Checkbox {
 
         // Label to the right of the box.
         if !self.label.is_empty() {
-            text.draw_text_left(canvas, &self.label, box_x0 + side + self.font_size * 0.5, self.center_y, &TextStyle::new(self.font_size, fluor::theme::TEXTBOX_TEXT), clip, None);
+            text.draw_text_left(
+                canvas,
+                &self.label,
+                box_x0 + side + self.font_size * 0.5,
+                self.center_y,
+                &TextStyle::new(self.font_size, fluor::theme::TEXTBOX_TEXT),
+                clip,
+                None,
+            );
         }
 
         // Stamp the hit id over the whole widget rect (box + label) so the entire row is clickable.

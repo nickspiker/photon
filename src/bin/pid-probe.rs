@@ -11,8 +11,13 @@ fn main() {
     };
     // --hp mode: no handle, no seed — just fold the chain for a raw handle_proof (whose devices are these?).
     if handle == "--hp" {
-        let hex_hp = std::env::args().nth(2).expect("--hp needs a 64-hex handle_proof");
-        let bytes = (0..64).step_by(2).map(|i| u8::from_str_radix(&hex_hp[i..i + 2], 16).expect("bad hex")).collect::<Vec<u8>>();
+        let hex_hp = std::env::args()
+            .nth(2)
+            .expect("--hp needs a 64-hex handle_proof");
+        let bytes = (0..64)
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex_hp[i..i + 2], 16).expect("bad hex"))
+            .collect::<Vec<u8>>();
         let hp: [u8; 32] = bytes.try_into().unwrap();
         match photon_messenger::network::fgtw::fleet::current_members(&hp) {
             Ok(members) => {
@@ -28,10 +33,17 @@ fn main() {
     let seed = photon_messenger::storage::contacts::derive_identity_seed(&handle);
     println!("identity_seed        = {}…", hex::encode(&seed[..8]));
     let hp = Handle::username_to_handle_proof(&handle);
-    println!("handle_proof         = {}…  (what ceremony/punch logs print for SIBLING contacts)", hex::encode(&hp[..8]));
+    println!(
+        "handle_proof         = {}…  (what ceremony/punch logs print for SIBLING contacts)",
+        hex::encode(&hp[..8])
+    );
     let idp = photon_messenger::crypto::clutch::identity_party_id(&seed);
-    println!("identity_party_id    = {}…  (self-contact pid)", hex::encode(&idp[..8]));
-    let members = photon_messenger::network::fgtw::fleet::current_members(&hp).expect("fetch fleet chain");
+    println!(
+        "identity_party_id    = {}…  (self-contact pid)",
+        hex::encode(&idp[..8])
+    );
+    let members =
+        photon_messenger::network::fgtw::fleet::current_members(&hp).expect("fetch fleet chain");
     println!("fleet members: {}", members.len());
     for m in &members {
         let pid = photon_messenger::crypto::clutch::sibling_party_id(m);

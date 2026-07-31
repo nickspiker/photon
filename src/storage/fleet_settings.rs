@@ -18,7 +18,11 @@ pub struct FleetSettings {
 
 impl FleetSettings {
     pub fn new(our_device: [u8; 32]) -> Self {
-        Self { global: Vec::new(), devices: Vec::new(), our_device }
+        Self {
+            global: Vec::new(),
+            devices: Vec::new(),
+            our_device,
+        }
     }
 
     fn our_entry(&self, key: &str) -> Option<&DeviceSetting> {
@@ -41,7 +45,10 @@ impl FleetSettings {
     pub fn effective(&self, key: &str) -> Option<&[u8]> {
         match self.our_entry(key) {
             Some(e) if !e.linked => Some(&e.value),
-            own => self.global_entry(key).map(|g| g.value.as_slice()).or(own.map(|e| e.value.as_slice())),
+            own => self
+                .global_entry(key)
+                .map(|g| g.value.as_slice())
+                .or(own.map(|e| e.value.as_slice())),
         }
     }
 
@@ -58,10 +65,25 @@ impl FleetSettings {
         }
         if self.linked(key) {
             self.global.retain(|e| e.key != key);
-            self.global.push(SettingEntry { key: key.to_string(), value, updated: now, tombstone: false });
+            self.global.push(SettingEntry {
+                key: key.to_string(),
+                value,
+                updated: now,
+                tombstone: false,
+            });
             self.global.sort_by(|a, b| a.key.cmp(&b.key));
         } else {
-            self.upsert_own(key, |e| e.value = value.clone(), DeviceSetting { key: key.to_string(), value: value.clone(), updated: now, linked: false }, now);
+            self.upsert_own(
+                key,
+                |e| e.value = value.clone(),
+                DeviceSetting {
+                    key: key.to_string(),
+                    value: value.clone(),
+                    updated: now,
+                    linked: false,
+                },
+                now,
+            );
         }
         true
     }
@@ -75,20 +97,39 @@ impl FleetSettings {
         self.upsert_own(
             key,
             |e| e.linked = linked,
-            DeviceSetting { key: key.to_string(), value: snapshot.clone(), updated: now, linked },
+            DeviceSetting {
+                key: key.to_string(),
+                value: snapshot.clone(),
+                updated: now,
+                linked,
+            },
             now,
         );
         true
     }
 
-    fn upsert_own(&mut self, key: &str, mutate: impl FnOnce(&mut DeviceSetting), insert: DeviceSetting, now: i64) {
+    fn upsert_own(
+        &mut self,
+        key: &str,
+        mutate: impl FnOnce(&mut DeviceSetting),
+        insert: DeviceSetting,
+        now: i64,
+    ) {
         let our = self.our_device;
         let map = match self.devices.iter_mut().find(|d| d.device_pubkey == our) {
             Some(d) => d,
             None => {
-                self.devices.push(DeviceSettings { device_pubkey: our, updated: now, entries: Vec::new() });
-                self.devices.sort_by(|a, b| a.device_pubkey.cmp(&b.device_pubkey));
-                self.devices.iter_mut().find(|d| d.device_pubkey == our).unwrap()
+                self.devices.push(DeviceSettings {
+                    device_pubkey: our,
+                    updated: now,
+                    entries: Vec::new(),
+                });
+                self.devices
+                    .sort_by(|a, b| a.device_pubkey.cmp(&b.device_pubkey));
+                self.devices
+                    .iter_mut()
+                    .find(|d| d.device_pubkey == our)
+                    .unwrap()
             }
         };
         match map.entries.iter_mut().find(|e| e.key == key) {
@@ -102,7 +143,11 @@ impl FleetSettings {
     }
 
     /// Fold a pulled remote state in (global LWW + device newest-copy-wins). Returns true if our cached state changed (caller persists + re-applies live values).
-    pub fn merge_from(&mut self, remote_global: Vec<SettingEntry>, remote_devices: Vec<DeviceSettings>) -> bool {
+    pub fn merge_from(
+        &mut self,
+        remote_global: Vec<SettingEntry>,
+        remote_devices: Vec<DeviceSettings>,
+    ) -> bool {
         let before = settings_to_bytes(&self.global, &self.devices);
         self.global = merge_global_settings(std::mem::take(&mut self.global), remote_global);
         self.devices = merge_device_settings(std::mem::take(&mut self.devices), remote_devices);
@@ -121,7 +166,9 @@ pub fn save_fleet_settings(fs: &FleetSettings, storage: &FlatStorage) -> Result<
 /// Load the settings state (empty on first run).
 pub fn load_fleet_settings(storage: &FlatStorage, our_device: [u8; 32]) -> FleetSettings {
     let mut fs = FleetSettings::new(our_device);
-    if let Ok(Some(bytes)) = storage.read_addr(&crate::storage::vault_key("settings", storage.vault_seed())) {
+    if let Ok(Some(bytes)) =
+        storage.read_addr(&crate::storage::vault_key("settings", storage.vault_seed()))
+    {
         match settings_from_bytes(&bytes) {
             Ok((g, d)) => {
                 fs.global = g;
@@ -147,7 +194,11 @@ mod tests {
 
         let mut fs = FleetSettings::new(US);
         // We have never set a zoom: device_local must be None, so nothing is restored.
-        assert_eq!(fs.device_local("display.zoom"), None, "no zoom of our own to start");
+        assert_eq!(
+            fs.device_local("display.zoom"),
+            None,
+            "no zoom of our own to start"
+        );
 
         // A sibling (a phone) pushes ITS zoom. This arrives through the normal fleet pull.
         let sibling_zoom = 0.5f32.to_le_bytes().to_vec();
@@ -164,7 +215,10 @@ mod tests {
         fs.merge_from(Vec::new(), remote);
 
         // The sibling's map is now in our cached state -- that is correct, we mirror the fleet.
-        assert!(fs.devices.iter().any(|d| d.device_pubkey == SIBLING), "sibling map is cached");
+        assert!(
+            fs.devices.iter().any(|d| d.device_pubkey == SIBLING),
+            "sibling map is cached"
+        );
         // But it must NOT be OUR value. If this fails, every fleet poll re-zooms this window.
         assert_eq!(
             fs.device_local("display.zoom"),
@@ -176,13 +230,21 @@ mod tests {
         fs.set_link("display.zoom", false, 600);
         fs.set("display.zoom", 1.0f32.to_le_bytes().to_vec(), 600);
         assert_eq!(
-            fs.device_local("display.zoom").map(|v| f32::from_le_bytes([v[0], v[1], v[2], v[3]])),
+            fs.device_local("display.zoom")
+                .map(|v| f32::from_le_bytes([v[0], v[1], v[2], v[3]])),
             Some(1.0),
             "our own zoom wins for us"
         );
         // And the sibling's own value is untouched by ours -- the fleet map still carries both.
-        let sib = fs.devices.iter().find(|d| d.device_pubkey == SIBLING).expect("sibling still present");
-        assert_eq!(sib.entries[0].value, sibling_zoom, "we did not overwrite the sibling's ergonomics");
+        let sib = fs
+            .devices
+            .iter()
+            .find(|d| d.device_pubkey == SIBLING)
+            .expect("sibling still present");
+        assert_eq!(
+            sib.entries[0].value, sibling_zoom,
+            "we did not overwrite the sibling's ergonomics"
+        );
     }
 
     #[test]
@@ -202,7 +264,7 @@ mod tests {
         assert!(fs.set("updates.auto", vec![0], 300));
         assert_eq!(fs.effective("updates.auto"), Some(&[0u8][..]));
         assert_eq!(fs.global[0].value, vec![1]); // global untouched by the local set
-        // Re-link: follows the global again, local kept only as fallback.
+                                                 // Re-link: follows the global again, local kept only as fallback.
         assert!(fs.set_link("updates.auto", true, 400));
         assert_eq!(fs.effective("updates.auto"), Some(&[1u8][..]));
         // No-op set returns false (nothing to persist or push).
@@ -217,8 +279,13 @@ mod tests {
         fs.set("theme", b"amber".to_vec(), 100);
         fs.set_link("theme", true, 150);
         assert_eq!(fs.effective("theme"), Some(&b"amber"[..])); // fallback: no global yet
-        // A remote global arrives via merge — the linked key follows it.
-        let remote = vec![SettingEntry { key: "theme".into(), value: b"green".to_vec(), updated: 200, tombstone: false }];
+                                                                // A remote global arrives via merge — the linked key follows it.
+        let remote = vec![SettingEntry {
+            key: "theme".into(),
+            value: b"green".to_vec(),
+            updated: 200,
+            tombstone: false,
+        }];
         assert!(fs.merge_from(remote, Vec::new()));
         assert_eq!(fs.effective("theme"), Some(&b"green"[..]));
         // Idempotent: merging the same state again changes nothing.

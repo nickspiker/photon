@@ -14,8 +14,8 @@ pub use fgtw::fleet::{
 };
 pub use fgtw::fstate::{merge_rosters, roster_from_bytes, roster_to_bytes, RosterEntry};
 pub use fgtw::pair::{
-    device_name_default, first_bad_pair_word, keyed_pseudonym, masked_device_words,
-    pair_word_list, pair_word_tokens, pair_words, parse_pair_event, word_mask, PAIR_WORD_COUNT,
+    device_name_default, first_bad_pair_word, keyed_pseudonym, masked_device_words, pair_word_list,
+    pair_word_tokens, pair_words, parse_pair_event, word_mask, PAIR_WORD_COUNT,
 };
 
 use crate::network::fgtw::Keypair;
@@ -83,13 +83,18 @@ pub fn current_members(handle_proof: &[u8; 32]) -> Result<Vec<[u8; 32]>, String>
 }
 
 /// The current member set for OUR OWN fleet, refusing a chain whose genesis isn't co-signed by `Ed25519(identity_seed)` — the every-fetch genesis check (docs/pairing-v2.md). Use this wherever the fetch feeds a trust decision about our own fleet; `current_members` stays for contact chains.
-pub fn current_members_verified(handle_proof: &[u8; 32], identity_seed: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
+pub fn current_members_verified(
+    handle_proof: &[u8; 32],
+    identity_seed: &[u8; 32],
+) -> Result<Vec<[u8; 32]>, String> {
     fgtw::client::current_members_verified(&PhotonTransport, handle_proof, identity_seed)
 }
 
 /// The current member set + chain-tip eagle time (monotonic freshness guard for the fold-respecting trust rule).
 /// Members + tip + generation id (genesis hash) + existed — the contact-refresh read (docs/lifecycle.md genesis pin).
-pub fn current_members_full(handle_proof: &[u8; 32]) -> Result<(Vec<[u8; 32]>, i64, [u8; 32], bool), String> {
+pub fn current_members_full(
+    handle_proof: &[u8; 32],
+) -> Result<(Vec<[u8; 32]>, i64, [u8; 32], bool), String> {
     fgtw::client::current_members_full(&PhotonTransport, handle_proof)
 }
 
@@ -130,7 +135,11 @@ pub fn retired_devices(handle_proof: &[u8; 32]) -> Result<Vec<[u8; 32]>, String>
 }
 
 /// OWNER frees a retired device's hardware brand — the second signature of the two-signature retire (the first was the device's own departure). `member_key` must be a current fleet member; the worker refuses releasing a device still in the fold.
-pub fn release_device(member_key: &Keypair, handle_proof: &[u8; 32], released: &[u8; 32]) -> Result<(), String> {
+pub fn release_device(
+    member_key: &Keypair,
+    handle_proof: &[u8; 32],
+    released: &[u8; 32],
+) -> Result<(), String> {
     fgtw::client::device_release(&PhotonTransport, member_key, handle_proof, released)
 }
 
@@ -141,7 +150,13 @@ pub fn bindreq_put(
     handle_proof: &[u8; 32],
     nfc_secret: &[u8; 32],
 ) -> Result<i64, String> {
-    fgtw::client::bindreq_put(&PhotonTransport, device_key, identity_seed, handle_proof, nfc_secret)
+    fgtw::client::bindreq_put(
+        &PhotonTransport,
+        device_key,
+        identity_seed,
+        handle_proof,
+        nfc_secret,
+    )
 }
 
 /// NEW device: withdraw its own request (on green, or on ceremony cancel). Best-effort — the stamp lapses anyway.
@@ -205,7 +220,14 @@ pub fn push_fstate(
     fleet_key: &[u8; 32],
     state: &fgtw::fstate::FleetState,
 ) -> Result<(), String> {
-    fgtw::client::push_fstate(&PhotonTransport, &PhotonSealer, handle_proof, device_key, fleet_key, state)
+    fgtw::client::push_fstate(
+        &PhotonTransport,
+        &PhotonSealer,
+        handle_proof,
+        device_key,
+        fleet_key,
+        state,
+    )
 }
 
 /// Fetch + open the fleet-shared state (None if none published yet; a pre-settings roster-only blob reads as settings-empty).
@@ -267,8 +289,12 @@ mod tests {
 
         // Existing device claims the fleet (identity-signed genesis) and establishes the fan-out.
         ensure_member(&member, &handle_proof, &identity_seed).expect("genesis");
-        assert_eq!(current_members(&handle_proof).unwrap(), vec![member.public.to_bytes()]);
-        let (_, k1) = rotate_fleet_key(&handle_proof, &member, &[member.public.to_bytes()]).expect("establish");
+        assert_eq!(
+            current_members(&handle_proof).unwrap(),
+            vec![member.public.to_bytes()]
+        );
+        let (_, k1) = rotate_fleet_key(&handle_proof, &member, &[member.public.to_bytes()])
+            .expect("establish");
 
         // New device: post its binding request (device-signed + identity-co-signed) and display its masked words.
         bindreq_put(&newdev, &identity_seed, &handle_proof, &[0u8; 32]).expect("post request");
@@ -276,8 +302,14 @@ mod tests {
 
         // Existing device: pull the member-gated candidate set — the request is there, verified, and its expected words match what the new device is showing (the matcher's full-match condition).
         let reqs = bindreq_list(&member, &handle_proof, &identity_seed).expect("list");
-        let req = reqs.iter().find(|r| r.device_pubkey == newdev.public.to_bytes()).expect("our request in the set");
-        assert_eq!(masked_device_words(&req.device_pubkey, &identity_seed), shown);
+        let req = reqs
+            .iter()
+            .find(|r| r.device_pubkey == newdev.public.to_bytes())
+            .expect("our request in the set");
+        assert_eq!(
+            masked_device_words(&req.device_pubkey, &identity_seed),
+            shown
+        );
 
         // Bind (carrying the request's consent) + rotate: the new device is a member and recovers the NEW epoch key with its own device key.
         bind_device(&member, &handle_proof, req).expect("bind");
@@ -285,11 +317,16 @@ mod tests {
         assert!(members2.contains(&newdev.public.to_bytes()));
         let (_, k2) = rotate_fleet_key(&handle_proof, &member, &members2).expect("rotate");
         assert_ne!(k2, k1);
-        assert_eq!(recover_fleet_key(&handle_proof, &newdev).unwrap().unwrap(), k2);
+        assert_eq!(
+            recover_fleet_key(&handle_proof, &newdev).unwrap().unwrap(),
+            k2
+        );
 
         // The author withdraws its request (the exit act) — the set reads empty afterwards.
         bindreq_withdraw(&newdev, &handle_proof).expect("withdraw");
-        assert!(bindreq_list(&member, &handle_proof, &identity_seed).unwrap().is_empty());
+        assert!(bindreq_list(&member, &handle_proof, &identity_seed)
+            .unwrap()
+            .is_empty());
 
         // A non-member can't read the registry (the member gate).
         let stranger = Keypair::from_seed(&rand::random::<[u8; 32]>());
@@ -331,7 +368,10 @@ mod tests {
         // A sponsors B (B's request carries its consent), then rotates to [A, B]: a fresh key both can open.
         bindreq_put(&b, &identity_seed, &handle_proof, &[0u8; 32]).expect("B posts request");
         let reqs = bindreq_list(&a, &handle_proof, &identity_seed).expect("list");
-        let req_b = reqs.iter().find(|r| r.device_pubkey == pk(&b)).expect("B's request");
+        let req_b = reqs
+            .iter()
+            .find(|r| r.device_pubkey == pk(&b))
+            .expect("B's request");
         bind_device(&a, &handle_proof, req_b).expect("bind B");
         let members2 = current_members(&handle_proof).unwrap();
         let (e2, k2) = rotate_fleet_key(&handle_proof, &a, &members2).expect("rotate to A,B");
@@ -370,36 +410,79 @@ mod tests {
         assert_eq!(e1, 1);
         bindreq_put(&b, &identity_seed, &handle_proof, &[0u8; 32]).expect("B posts request");
         let reqs = bindreq_list(&a, &handle_proof, &identity_seed).expect("list");
-        let req_b = reqs.iter().find(|r| r.device_pubkey == pk(&b)).expect("B's request");
+        let req_b = reqs
+            .iter()
+            .find(|r| r.device_pubkey == pk(&b))
+            .expect("B's request");
         bind_device(&a, &handle_proof, req_b).expect("bind B");
-        let (e2, k2) = rotate_fleet_key(&handle_proof, &a, &current_members(&handle_proof).unwrap()).expect("rotate to A,B");
+        let (e2, k2) =
+            rotate_fleet_key(&handle_proof, &a, &current_members(&handle_proof).unwrap())
+                .expect("rotate to A,B");
         assert_eq!(e2, 2);
-        let marker = SettingEntry { key: "test.heal_marker".into(), value: b"survives".to_vec(), updated: 700, tombstone: false };
-        let state = FleetState { roster: vec![roster_entry(7, 500, false)], global_settings: vec![marker], device_settings: Vec::new() };
+        let marker = SettingEntry {
+            key: "test.heal_marker".into(),
+            value: b"survives".to_vec(),
+            updated: 700,
+            tombstone: false,
+        };
+        let state = FleetState {
+            roster: vec![roster_entry(7, 500, false)],
+            global_settings: vec![marker],
+            device_settings: Vec::new(),
+        };
         push_fstate(&handle_proof, &a, &k2, &state).expect("seed the slot under k2");
 
         // B departs. The sentinel condition A's next key sync sees: the fan-out still wraps 2 devices, the fold holds 1.
         depart_device(&b, &handle_proof).expect("B departs");
         let members = current_members(&handle_proof).unwrap();
         assert_eq!(members, vec![pk(&a)]);
-        let (_, wraps) = fetch_fanout(&handle_proof).expect("fetch").expect("a fan-out");
-        assert!(fanout_needs_rotation(wraps.len(), members.len()), "shrink must trip the sentinel");
+        let (_, wraps) = fetch_fanout(&handle_proof)
+            .expect("fetch")
+            .expect("a fan-out");
+        assert!(
+            fanout_needs_rotation(wraps.len(), members.len()),
+            "shrink must trip the sentinel"
+        );
 
         // The heal, in spawn_fleet_key_sync's exact order: preserve under the old key, rotate to the survivors, re-push the merge under the new epoch.
-        let preserved = pull_fstate(&handle_proof, &k2).expect("pull").expect("slot readable under the old key");
+        let preserved = pull_fstate(&handle_proof, &k2)
+            .expect("pull")
+            .expect("slot readable under the old key");
         let (e3, k3) = rotate_fleet_key(&handle_proof, &a, &members).expect("heal rotation");
         assert_eq!(e3, 3);
-        push_fstate(&handle_proof, &a, &k3, &merge_fstate(preserved, FleetState::default())).expect("re-seal under k3");
+        push_fstate(
+            &handle_proof,
+            &a,
+            &k3,
+            &merge_fstate(preserved, FleetState::default()),
+        )
+        .expect("re-seal under k3");
 
         // The survivor recovers the new epoch and the marker survived the re-seal; the leaver recovers nothing and its old key no longer opens the slot.
         assert_eq!(recover_fleet_key(&handle_proof, &a).unwrap().unwrap(), k3);
-        let healed = pull_fstate(&handle_proof, &k3).expect("pull under k3").expect("re-sealed slot");
-        assert!(healed.global_settings.iter().any(|s| s.key == "test.heal_marker" && s.value == b"survives"), "settings must survive the re-seal");
+        let healed = pull_fstate(&handle_proof, &k3)
+            .expect("pull under k3")
+            .expect("re-sealed slot");
+        assert!(
+            healed
+                .global_settings
+                .iter()
+                .any(|s| s.key == "test.heal_marker" && s.value == b"survives"),
+            "settings must survive the re-seal"
+        );
         assert_eq!(healed.roster.len(), 1, "roster must survive the re-seal");
-        assert!(recover_fleet_key(&handle_proof, &b).unwrap().is_none(), "the leaver must not recover the healed epoch");
-        assert!(pull_fstate(&handle_proof, &k2).is_err(), "the leaver's cached key must not open the re-sealed slot");
+        assert!(
+            recover_fleet_key(&handle_proof, &b).unwrap().is_none(),
+            "the leaver must not recover the healed epoch"
+        );
+        assert!(
+            pull_fstate(&handle_proof, &k2).is_err(),
+            "the leaver's cached key must not open the re-sealed slot"
+        );
         // Post-heal steady state: the sentinel is quiet again.
-        let (_, wraps) = fetch_fanout(&handle_proof).expect("fetch").expect("a fan-out");
+        let (_, wraps) = fetch_fanout(&handle_proof)
+            .expect("fetch")
+            .expect("a fan-out");
         assert!(!fanout_needs_rotation(wraps.len(), members.len()));
     }
 
@@ -415,7 +498,9 @@ mod tests {
         let fleet_key = new_fleet_key();
         let entries = vec![roster_entry(7, 500, false), roster_entry(9, 600, true)];
         push_roster(&handle_proof, &member, &fleet_key, &entries).expect("push roster");
-        let pulled = pull_roster(&handle_proof, &fleet_key).expect("pull").expect("a roster");
+        let pulled = pull_roster(&handle_proof, &fleet_key)
+            .expect("pull")
+            .expect("a roster");
         assert_eq!(pulled, entries);
 
         // A non-member can't publish (fold gate rejects the write).
@@ -435,22 +520,33 @@ mod tests {
 
         // A claims the fleet with device D.
         ensure_member(&device, &a_hp, &a_seed).expect("A genesis");
-        assert_eq!(current_members(&a_hp).unwrap(), vec![device.public.to_bytes()]);
+        assert_eq!(
+            current_members(&a_hp).unwrap(),
+            vec![device.public.to_bytes()]
+        );
 
         // B tries to enrol the SAME device D — rejected (device_owned, wrapped by ensure_member's establish-membership message); B's fleet stays empty.
         ensure_member(&device, &b_hp, &b_seed).expect_err("B enrol must be rejected");
-        assert!(current_members(&b_hp).unwrap().is_empty(), "B must not have claimed the device");
+        assert!(
+            current_members(&b_hp).unwrap().is_empty(),
+            "B must not have claimed the device"
+        );
 
         // A drains its inbox: a bind_attempt naming B's handle_proof.
         let events = crate::network::fgtw::inbox_drain_blocking(&device, &a_hp).expect("drain");
         assert!(
-            events.iter().any(|e| e.kind == "bind_attempt" && e.attempted_by == b_hp),
+            events
+                .iter()
+                .any(|e| e.kind == "bind_attempt" && e.attempted_by == b_hp),
             "expected a bind_attempt alert naming B; got {events:?}"
         );
 
         // Consume semantics: a second drain is empty.
         let again = crate::network::fgtw::inbox_drain_blocking(&device, &a_hp).expect("drain2");
-        assert!(again.is_empty(), "inbox should be empty after drain; got {again:?}");
+        assert!(
+            again.is_empty(),
+            "inbox should be empty after drain; got {again:?}"
+        );
 
         // A non-member device can't drain A's inbox (member gate).
         let stranger = Keypair::from_seed(&rand::random::<[u8; 32]>());
@@ -462,4 +558,3 @@ mod tests {
         );
     }
 }
-

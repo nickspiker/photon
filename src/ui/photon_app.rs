@@ -1,7 +1,6 @@
 //! [`PhotonApp`]: the [`fluor::host::app::FluorApp`] impl that hosts Photon on desktop. Owns the app state machine (`AppState`), network handles, contact list, and the per-screen widgets (Launch / Ready / Searching / Conversation), drawing the chrome (perimeter, shadow, window buttons, app-icon orb) plus each screen's content, and routing cross-thread wake-ups thru `FluorApp::on_user_event` with the [`super::PhotonEvent`] payload.
 
 use super::chromatic_wave::chromatic_wave;
-use fluor::text::TextStyle;
 use super::launch_layout::{AttestBlockLayout, LaunchLayout};
 use super::photon_logo::paint_photon_logo;
 use super::ready_layout::ReadyLayout;
@@ -15,6 +14,7 @@ use crate::network::fgtw::{derive_device_keypair, PeerStore};
 use crate::network::{
     ClutchCeremonyResult, ClutchKemEncapResult, ClutchKeygenResult, HandleQuery, QueryResult,
 };
+use fluor::text::TextStyle;
 // Types used by the CLUTCH ceremony + message machinery extracted from app.rs (referenced bare in those blocks).
 use crate::network::status::AckRequest;
 use crate::types::{ChatMessage, ContactId, FriendshipChains, FriendshipId};
@@ -37,7 +37,6 @@ use fluor::host::WakeSender;
 
 /// How long after a `[`/`]` release we still treat the bracket as "held" for chord purposes. X11 fires a synthetic Release for the held bracket the instant the action key is pressed; this grace absorbs that round-trip so chords fire reliably.
 const CHORD_RELEASE_GRACE: Duration = Duration::from_millis(40);
-
 
 /// Deploy version = the crate's MINOR number, baked in at compile time. The scheme: `major.minor.patch` where `deploy.sh` bumps the MINOR and ships `X.Y.0` (patch 0 is RESERVED for releases), and every dev publish bumps the PATCH (≥1, reset to 1 after each release). The dozenal display cues off the minor; a dev build appends `.patch` (also dozenal).
 fn deploy_version() -> u32 {
@@ -278,7 +277,6 @@ fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u
     }
 }
 
-
 // Tiered presence-ping cadence — frequent while the user is engaged, sparse once they've walked away, so an idle/unfocused window isn't waking the radio every few seconds for rings nobody is watching. The tier is chosen by time-since-last-interaction; any interaction (input or focus gain) resets the clock AND fires an immediate sweep, so presence is always fresh the moment the user looks, regardless of how far the cadence had backed off.
 /// Active tier: sweep every 5s while interacting (idle < `PRESENCE_IDLE_NEAR`).
 const PRESENCE_PING_ACTIVE: std::time::Duration = std::time::Duration::from_secs(5);
@@ -320,7 +318,9 @@ fn vsf_rgb_to_stored(rgb_vsf: [f32; 3]) -> u32 {
     #[cfg(not(target_os = "macos"))]
     let out = vsf::colour::convert::apply_matrix_3x3_f32(&vsf::colour::VSF_RGB2REC2020, &rgb_vsf);
     let e = |x: f32| (x.clamp(0.0, 1.0).sqrt() * 255.0).round() as u32;
-    fluor::theme::dark(fluor::theme::fmt((e(out[0]) << 16) | (e(out[1]) << 8) | e(out[2])))
+    fluor::theme::dark(fluor::theme::fmt(
+        (e(out[0]) << 16) | (e(out[1]) << 8) | e(out[2]),
+    ))
 }
 
 /// Self renders in the system's achromatic anchor: VSF grey (0.5, 0.5, 0.5) — photopic Y = 0.5 like every contact colour, zero chroma. It is literally the chroma-0 point of every party's colour ray (Illuminant-E neutral, so a hair warm on a D65 display — that's equal-energy white, the pipeline's honest neutral).
@@ -402,7 +402,6 @@ fn party_colour(digest: &[u8; 32]) -> u32 {
     vsf_rgb_to_stored(rgb_vsf)
 }
 
-
 /// Greedy word-wrap for the message list: split `s` into lines that each measure ≤ `max_w` under `style`. Word widths are measured individually and summed (kerning across a space is negligible at chat sizes), so the cost is O(words), not O(words²) re-shapes. A single word wider than the line hard-breaks by chars — a pasted URL/hash must wrap, not vanish off-screen. Empty input yields one empty line so the row keeps its height.
 /// Bubble DISPLAY text for a row: attachment rows render as a pill line — paperclip, name, dozenal size, and an actions hint while the blob isn't held locally. Everything else passes thru. The raw marker string never reaches a glyph.
 /// Attachment resample card geometry: (centre_x, centre_y, w, h) — shared by layout + render + hit rects.
@@ -427,14 +426,29 @@ fn attach_curve(t: f32) -> (u32, u8) {
 fn display_content(content: &str) -> String {
     if let Some((hash, name, size)) = crate::types::parse_attachment_content(content) {
         let (units, label) = crate::types::size_units(size);
-        let state = if crate::storage::blob_present(&hash) { "" } else { " \u{2014} tap for actions" };
-        format!("\u{1F4CE} {} \u{00B7} {}\u{202F}{}{}", name, crate::dozenal_glyphs(units), label, state)
+        let state = if crate::storage::blob_present(&hash) {
+            ""
+        } else {
+            " \u{2014} tap for actions"
+        };
+        format!(
+            "\u{1F4CE} {} \u{00B7} {}\u{202F}{}{}",
+            name,
+            crate::dozenal_glyphs(units),
+            label,
+            state
+        )
     } else {
         content.to_string()
     }
 }
 
-fn wrap_text_lines(tr: &mut fluor::text::TextRenderer, s: &str, style: &TextStyle, max_w: f32) -> Vec<String> {
+fn wrap_text_lines(
+    tr: &mut fluor::text::TextRenderer,
+    s: &str,
+    style: &TextStyle,
+    max_w: f32,
+) -> Vec<String> {
     let space_w = tr.measure_text(" ", style);
     let mut lines: Vec<String> = Vec::new();
     let mut cur = String::new();
@@ -489,7 +503,10 @@ const CHORD_HINTS: &[(&str, &str)] = &[
     ("b", "Finalize copy-pass blue tint"),
     ("n", "Nuke vault — keeps you attested (dev only)"),
     ("u", "Un-attest — clear session, keep vault (dev only)"),
-    ("x", "Nuke vault + un-attest + wipe logs + EXIT for a clean relaunch (dev only)"),
+    (
+        "x",
+        "Nuke vault + un-attest + wipe logs + EXIT for a clean relaunch (dev only)",
+    ),
 ];
 
 /// Bounding rect the chord hint panel covers — matches `paint::draw_chord_hint`'s positioning math so `damage_rect` can union it when both brackets are held. Pulled out of the panes example with the same math; if fluor's hint geometry changes, this needs updating in lockstep.
@@ -535,8 +552,13 @@ struct ProfileField {
 }
 
 /// Multi-instance ("expandable") field bases: filling the LAST instance reveals an empty next one (addr → addr2 → addr3 …), so a second address/email/phone/website is always one keystroke away — and never shown before it's needed. Singletons (SSN, passport, licence, …) are NOT here and never expand. The bool = instances carry a companion tag box (phone: home/work/custom).
-const EXPANDABLE_FIELDS: &[(&str, bool)] =
-    &[("addr", false), ("email", false), ("phone", true), ("web", false), ("alt_msg", false)];
+const EXPANDABLE_FIELDS: &[(&str, bool)] = &[
+    ("addr", false),
+    ("email", false),
+    ("phone", true),
+    ("web", false),
+    ("alt_msg", false),
+];
 
 /// The standard profile fields in taxonomy order: (field_id, display label, tier). `name` is the always-granted display-name slot (formerly the lone name box); every other field defaults UNSHARED. Mirrors the table in docs/contact-system.md — keep the two in sync.
 const STD_PROFILE_FIELDS: &[(&str, &str, &str)] = &[
@@ -888,9 +910,11 @@ pub struct PhotonApp {
     /// Stop flag for the fleet-event subscription task (dropped app / de-attest).
     fleet_evt_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Off-thread contact-fleet refresh results: (contact handle_proof, current member pubkeys folded from their chain, chain-tip eagle time). Drained in tick into the matching contact's `fleet_members`, gated on the tip being fresher than the last adopted one, then `reseed_contact_pubkeys`. Lets a friend's NEW device be honoured — and a REMOVED device revoked — without waiting for our next launch.
-    contact_members_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)>>,
+    contact_members_rx:
+        Option<std::sync::mpsc::Receiver<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)>>,
     /// Sender half of the contact-fleet-refresh channel, kept alive so successive refreshes reuse one channel (the receiver is drained in tick).
-    contact_members_tx: Option<std::sync::mpsc::Sender<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)>>,
+    contact_members_tx:
+        Option<std::sync::mpsc::Sender<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)>>,
     /// Launch add-mode (NEW device joining a fleet): orb on Launch toggles it, and a failed attest against an existing fleet auto-enters it. Enter the handle; this device then generates + displays its pairing words and waits for the other device to match and bind.
     launch_add_mode: bool,
     /// Join flow: the handle once entered; `None` while still awaiting it.
@@ -910,7 +934,12 @@ pub struct PhotonApp {
     /// In-flight fleet-roster pull; its `Ok` result merges into contacts, its `Err` triggers a retry — both drained in `tick`. `Some` = a pull is running, which also debounces re-spawns.
     roster_pull_rx: Option<std::sync::mpsc::Receiver<Result<fgtw::fstate::FleetState, String>>>,
     /// Message-table persist worker: conversation snapshots go over this channel to ONE background thread that coalesces (latest snapshot per handle_hash wins) and writes. `save_messages` is a full encrypted table rewrite — on the UI thread it was the named 600ms–5.7s stall behind every ChatMessage/MessageAck arm; off it, an ack is a field flip.
-    persist_tx: Option<std::sync::mpsc::Sender<(crate::types::Contact, std::sync::Arc<crate::storage::FlatStorage>)>>,
+    persist_tx: Option<
+        std::sync::mpsc::Sender<(
+            crate::types::Contact,
+            std::sync::Arc<crate::storage::FlatStorage>,
+        )>,
+    >,
     /// Monotonic tick counter — the frame-gap fence for `pending_chain_sends` (see `drain_pending_chain_sends`).
     tick_serial: u64,
     /// Outgoing sends whose WIRE half is deferred: (contact idx, text, eagle_time, tick_serial at enqueue). The pending-grey bubble is inserted synchronously in `send_chain_message`; chain_transmit (weave selection, braid advance, chains persist, PT dispatch) runs from this queue AFTER the frame presents — running it inline meant the bubble, though inserted first, couldn't render until the whole wire half finished (the "message goes into the void" report).
@@ -1502,14 +1531,18 @@ impl PhotonApp {
         self.publish_avatar_pin();
         let avatar_pin = Some(new_pin);
         // Sibling ding: bump the fleet-synced avatar stamp so the fstate event wakes the fleet and their next avatar sync pulls the fresh copy. Bumped at SET time — a sibling racing the upload just gets the old copy once and heals on the next sync (newest-wins).
-        self.settings_set("profile.avatar_ts", vsf::eagle_time_oscillations().to_le_bytes().to_vec());
+        self.settings_set(
+            "profile.avatar_ts",
+            vsf::eagle_time_oscillations().to_le_bytes().to_vec(),
+        );
         let kp = self.device_keypair.clone();
         let (px_tx, px_rx) = std::sync::mpsc::channel();
         self.avatar_set_rx = Some(px_rx);
         let wake = self.event_proxy.clone();
         std::thread::spawn(move || {
             #[cfg(not(target_os = "redox"))]
-            let _ = thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min);
+            let _ =
+                thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min);
             let rgb_f32 = match crate::ui::avatar::image_to_avatar_rgb_f32(&image_bytes) {
                 Ok(p) => p,
                 Err(e) => {
@@ -1550,7 +1583,8 @@ impl PhotonApp {
                             crate::log("avatar picker: FGTW upload ok");
                             // The rotation's second half: the OLD slot dies once the new one is live — no orphan blobs, and a polluted/shared slot stops serving this identity's history.
                             if let Some(op) = old_pin.filter(|op| *op != pin) {
-                                let sk = ed25519_dalek::SigningKey::from_bytes(kp.secret.as_bytes());
+                                let sk =
+                                    ed25519_dalek::SigningKey::from_bytes(kp.secret.as_bytes());
                                 match crate::ui::avatar::delete_avatar_blocking(&sk, &identity_seed, &op) {
                                     Ok(()) => crate::log("avatar picker: old wall slot deleted (pin rotated)"),
                                     Err(e) => crate::logf!("avatar picker: old slot delete failed (orphan blob remains): {}", e),
@@ -1560,7 +1594,9 @@ impl PhotonApp {
                         Err(e) => crate::logf!("avatar picker: FGTW upload failed: {}", e),
                     }
                 }
-                _ => crate::log("avatar picker: skipping FGTW upload — keypair / proof / pin unavailable"),
+                _ => crate::log(
+                    "avatar picker: skipping FGTW upload — keypair / proof / pin unavailable",
+                ),
             }
         });
     }
@@ -1585,15 +1621,26 @@ fn dev_gradient_orb() -> fluor::host::icon::Icon {
         f.seek(SeekFrom::End(-(tail as i64))).ok()?;
         let mut buf = vec![0u8; tail];
         f.read_exact(&mut buf).ok()?;
-        Some(u64::from_le_bytes(blake3::hash(&buf).as_bytes()[..8].try_into().unwrap()))
+        Some(u64::from_le_bytes(
+            blake3::hash(&buf).as_bytes()[..8].try_into().unwrap(),
+        ))
     })()
     .unwrap_or(0xDEAD_BEEF_CAFE_F00D);
     let unit = |s: &mut u64| (splitmix(s) >> 11) as f64 / (1u64 << 53) as f64; // [0,1)
-    // Per-channel slopes a,b ∈ [-1,1): red, green, blue each get their own gradient plane.
-    // Slopes CUBED: still [-1,1] (extremes still reach the full [-4pi,4pi] → 4 periods) but concentrated near zero, so most channels are gentle low-frequency gradients — not a busy 4x plaid.
-    let (r_a, r_b) = ((unit(&mut seed) * 2.0 - 1.0).powi(3), (unit(&mut seed) * 2.0 - 1.0).powi(3));
-    let (g_a, g_b) = ((unit(&mut seed) * 2.0 - 1.0).powi(3), (unit(&mut seed) * 2.0 - 1.0).powi(3));
-    let (b_a, b_b) = ((unit(&mut seed) * 2.0 - 1.0).powi(3), (unit(&mut seed) * 2.0 - 1.0).powi(3));
+                                                                               // Per-channel slopes a,b ∈ [-1,1): red, green, blue each get their own gradient plane.
+                                                                               // Slopes CUBED: still [-1,1] (extremes still reach the full [-4pi,4pi] → 4 periods) but concentrated near zero, so most channels are gentle low-frequency gradients — not a busy 4x plaid.
+    let (r_a, r_b) = (
+        (unit(&mut seed) * 2.0 - 1.0).powi(3),
+        (unit(&mut seed) * 2.0 - 1.0).powi(3),
+    );
+    let (g_a, g_b) = (
+        (unit(&mut seed) * 2.0 - 1.0).powi(3),
+        (unit(&mut seed) * 2.0 - 1.0).powi(3),
+    );
+    let (b_a, b_b) = (
+        (unit(&mut seed) * 2.0 - 1.0).powi(3),
+        (unit(&mut seed) * 2.0 - 1.0).powi(3),
+    );
     // Each channel is a sine plane wave: map the disk to [-4pi, 4pi] per axis, z = a*x + b*y (slopes in [-1,1]), then (sin(z)+1)/2 -> [0,1] with NO normalization and NO clipping (sine is bounded). Circle vignette darkens the rim over the top.
     const N: u32 = 256;
     let s = 4.0 * std::f64::consts::PI;
@@ -1604,12 +1651,17 @@ fn dev_gradient_orb() -> fluor::host::icon::Icon {
             let yc = 2.0 * (py as f64 / (N - 1) as f64) - 1.0;
             let (x, y) = (xc * s, yc * s);
             let vignette = (1.0 - xc * xc - yc * yc).max(0.0).sqrt();
-            let ch = |a: f64, b: f64| ((((a * x + b * y).sin() + 1.0) / 2.0) * vignette * 255.0) as u32;
+            let ch =
+                |a: f64, b: f64| ((((a * x + b * y).sin() + 1.0) / 2.0) * vignette * 255.0) as u32;
             let (cr, cg, cb) = (ch(r_a, r_b), ch(g_a, g_b), ch(b_a, b_b));
             pixels.push(0xFF00_0000 | ((255 - cr) << 16) | ((255 - cg) << 8) | (255 - cb));
         }
     }
-    fluor::host::icon::Icon { width: N, height: N, pixels }
+    fluor::host::icon::Icon {
+        width: N,
+        height: N,
+        pixels,
+    }
 }
 
 /// The default UNSET avatar: a deterministic per-identity gradient (seeded from the public proof), spherical-shaded like the dev orb, as a `diam×diam×3` visible-RGB buffer for `draw_avatar`. Replaces the flat grey placeholder — everyone without a set avatar shows a distinct little lit orb keyed to their identity, identical on every device that knows the proof. Each channel is its own plane `z = a·x + b·y` (`a,b ∈ [-1,1]`, raw clamped z, no normalization) × the dome `√(1−x_c²−y_c²)`.
@@ -1622,10 +1674,19 @@ fn gradient_avatar_rgb(mut seed: u64, diam: usize) -> Vec<u8> {
         z ^ (z >> 31)
     }
     let unit = |s: &mut u64| (splitmix(s) >> 11) as f64 / (1u64 << 53) as f64; // [0,1)
-    // Slopes CUBED: still [-1,1] (extremes still reach the full [-4pi,4pi] → 4 periods) but concentrated near zero, so most channels are gentle low-frequency gradients — not a busy 4x plaid.
-    let (r_a, r_b) = ((unit(&mut seed) * 2.0 - 1.0).powi(3), (unit(&mut seed) * 2.0 - 1.0).powi(3));
-    let (g_a, g_b) = ((unit(&mut seed) * 2.0 - 1.0).powi(3), (unit(&mut seed) * 2.0 - 1.0).powi(3));
-    let (b_a, b_b) = ((unit(&mut seed) * 2.0 - 1.0).powi(3), (unit(&mut seed) * 2.0 - 1.0).powi(3));
+                                                                               // Slopes CUBED: still [-1,1] (extremes still reach the full [-4pi,4pi] → 4 periods) but concentrated near zero, so most channels are gentle low-frequency gradients — not a busy 4x plaid.
+    let (r_a, r_b) = (
+        (unit(&mut seed) * 2.0 - 1.0).powi(3),
+        (unit(&mut seed) * 2.0 - 1.0).powi(3),
+    );
+    let (g_a, g_b) = (
+        (unit(&mut seed) * 2.0 - 1.0).powi(3),
+        (unit(&mut seed) * 2.0 - 1.0).powi(3),
+    );
+    let (b_a, b_b) = (
+        (unit(&mut seed) * 2.0 - 1.0).powi(3),
+        (unit(&mut seed) * 2.0 - 1.0).powi(3),
+    );
     // Each channel is a sine plane wave: disk mapped to [-4pi, 4pi] per axis, z = a*x + b*y, then (sin(z)+1)/2 -> [0,1] (bounded, no clip); circle vignette over the top.
     let denom = diam.saturating_sub(1).max(1) as f64;
     let s = 4.0 * std::f64::consts::PI;
@@ -1636,7 +1697,8 @@ fn gradient_avatar_rgb(mut seed: u64, diam: usize) -> Vec<u8> {
             let yc = 2.0 * (py as f64 / denom) - 1.0;
             let (x, y) = (xc * s, yc * s);
             let vignette = (1.0 - xc * xc - yc * yc).max(0.0).sqrt();
-            let ch = |a: f64, b: f64| ((((a * x + b * y).sin() + 1.0) / 2.0) * vignette * 255.0) as u8;
+            let ch =
+                |a: f64, b: f64| ((((a * x + b * y).sin() + 1.0) / 2.0) * vignette * 255.0) as u8;
             let i = (py * diam + px) * 3;
             out[i] = ch(r_a, r_b);
             out[i + 1] = ch(g_a, g_b);
@@ -1656,7 +1718,11 @@ fn orb_tint_for(online: bool) -> fluor::host::chrome::OrbTint {
     // Visible RGB(64, 224, 64) green: darkness = (0xBF, 0x1F, 0xBF); packed α=0xFF. Visible RGB(224, 64, 64) red:   darkness = (0x1F, 0xBF, 0xBF); packed α=0xFF.
     // These are hand-authored in darkness-space (pre-inverted, so no `dark()`), but they STILL need `fmt()` — the platform channel-order pass (identity on desktop, R↔B swap on Android). Every other photon colour rides `fmt`; the orb ring skipping it was the Android "red-blue swapped ring". `fmt` only reorders RGB and preserves the α byte, so it's correct on the already-darkened constants.
     fluor::host::chrome::OrbTint::Custom {
-        ring: fluor::theme::fmt(if online { crate::ui::theme::ORB_ONLINE } else { crate::ui::theme::ORB_OFFLINE }),
+        ring: fluor::theme::fmt(if online {
+            crate::ui::theme::ORB_ONLINE
+        } else {
+            crate::ui::theme::ORB_OFFLINE
+        }),
         brighten: online,
     }
 }
@@ -1874,7 +1940,13 @@ impl FluorApp for PhotonApp {
     }
 
     /// Honest-IME write: TRUE range replacement on the focused textbox — how voice dictation rewrites earlier words (setComposingRegion) without the backspace-replay hack.
-    fn ime_replace_chars(&mut self, start: usize, end: usize, s: &str, text: &mut fluor::text::TextRenderer) {
+    fn ime_replace_chars(
+        &mut self,
+        start: usize,
+        end: usize,
+        s: &str,
+        text: &mut fluor::text::TextRenderer,
+    ) {
         let Some(focus) = self.focused else { return };
         if let Some(tb) = self.textbox_by_hit_mut(focus) {
             tb.replace_char_range(start, end, s, text);
@@ -1908,7 +1980,9 @@ impl FluorApp for PhotonApp {
     fn on_close_requested(&mut self) -> bool {
         // Deliberate-quit overrides: Shift+Escape's one-shot flag, or shift held on the close itself (shift+✕, shift+Alt-F4). Either way the user asked for the REAL exit — decline residency this once and let the host exit.
         if self.exit_requested || self.shift_held {
-            crate::log("EXIT: deliberate quit (shift+close / Shift+Escape) — bypassing resident hide");
+            crate::log(
+                "EXIT: deliberate quit (shift+close / Shift+Escape) — bypassing resident hide",
+            );
             return false;
         }
         // Resident mode: close = hide, keep running (network, timers, notifications). The host does the set_visible(false); we track "nobody's looking" for the notification gate. Non-resident closes exit as ever.
@@ -2070,11 +2144,23 @@ impl FluorApp for PhotonApp {
             12.,
             vec!["Dark chrome".to_string(), "Light chrome".to_string()],
         ));
-        self.settings_zoom_slider =
-            Some(fluor::widgets::Slider::new(&mut self.hit_counter, 0., 0., 1., 1., 0.5));
+        self.settings_zoom_slider = Some(fluor::widgets::Slider::new(
+            &mut self.hit_counter,
+            0.,
+            0.,
+            1.,
+            1.,
+            0.5,
+        ));
         // Attachment resample overlay: quality/size slider (default 0.7 ≈ 4K decent) + the send-original checkbox that disables it, plus a 3-id pill block (send / cancel / paperclip).
-        self.attach_slider =
-            Some(fluor::widgets::Slider::new(&mut self.hit_counter, 0., 0., 1., 1., 0.7));
+        self.attach_slider = Some(fluor::widgets::Slider::new(
+            &mut self.hit_counter,
+            0.,
+            0.,
+            1.,
+            1.,
+            0.7,
+        ));
         self.attach_original_check = Some(crate::ui::settings_widgets::Checkbox::new(
             &mut self.hit_counter,
             "send original",
@@ -2122,7 +2208,11 @@ impl FluorApp for PhotonApp {
         self.settings_autoupdate_check = Some(crate::ui::settings_widgets::Checkbox::new(
             &mut self.hit_counter,
             // Platform-honest: desktop release builds self-apply + re-exec, so "install" is literal. Android auto-CHECKS and notifies but deliberately doesn't auto-DOWNLOAD the APK in the background (metered-data safety — the tap-to-install then rides the unattended session installer, silent after the one-time confirm), so the label there says "check", not "install".
-            if cfg!(target_os = "android") { "Check for updates automatically" } else { "Install updates automatically" },
+            if cfg!(target_os = "android") {
+                "Check for updates automatically"
+            } else {
+                "Install updates automatically"
+            },
             0.,
             0.,
             1.,
@@ -2280,7 +2370,8 @@ impl FluorApp for PhotonApp {
                             .iter()
                             .filter(|c| {
                                 c.clutch_our_keypairs.is_some()
-                                    && c.clutch_round_started.map_or(false, |t| now - t < ROUND_TTL_OSC)
+                                    && c.clutch_round_started
+                                        .map_or(false, |t| now - t < ROUND_TTL_OSC)
                             })
                             .map(|c| {
                                 (
@@ -2300,8 +2391,16 @@ impl FluorApp for PhotonApp {
                             .collect();
                         self.contacts = crate::storage::contacts::load_all_contacts(&s);
                         for c in self.contacts.iter_mut() {
-                            if let Some((kp, slots, provs, cid, started, offer_sent, pending_kem, state)) =
-                                inflight.get(&c.handle_hash)
+                            if let Some((
+                                kp,
+                                slots,
+                                provs,
+                                cid,
+                                started,
+                                offer_sent,
+                                pending_kem,
+                                state,
+                            )) = inflight.get(&c.handle_hash)
                             {
                                 c.clutch_our_keypairs = kp.clone();
                                 c.clutch_slots = slots.clone();
@@ -2324,20 +2423,33 @@ impl FluorApp for PhotonApp {
                                 &s,
                             );
                             if !siblings.is_empty() {
-                                crate::logf!("SIBLING: loaded {} sibling(s) from local vault on resume", siblings.len());
+                                crate::logf!(
+                                    "SIBLING: loaded {} sibling(s) from local vault on resume",
+                                    siblings.len()
+                                );
                             }
                             self.contacts.extend(siblings);
                         }
                         // Load each contact's conversation history too — load_all_contacts only loads per-peer contact STATE from the vault, not the messages (those live in the rārangi DB, loaded separately). Without this the resume frame paints contacts with empty message lists, and the later query_resume result can't fix it: on_query_result merges by handle_proof and SKIPS already-loaded contacts as duplicates, so the message-bearing copy is discarded → history looks wiped until the next app launch. Loading here makes resume show full history at once.
                         for contact in &mut self.contacts {
                             if let Err(e) = crate::storage::contacts::load_messages(contact, &s) {
-                                crate::logf!("UI: resume failed to load messages for {}: {}", crate::fp(&contact.handle_proof).as_str(), e);
+                                crate::logf!(
+                                    "UI: resume failed to load messages for {}: {}",
+                                    crate::fp(&contact.handle_proof).as_str(),
+                                    e
+                                );
                             }
                         }
-                        crate::logf!("UI: loaded {} contact(s) from local vault on resume", self.contacts.len());
+                        crate::logf!(
+                            "UI: loaded {} contact(s) from local vault on resume",
+                            self.contacts.len()
+                        );
                         // Load friendship chains NOW too, not just contacts. Resume paints Ready and the status checker starts answering immediately, but chains used to arrive only later via query_resume — so any chat that landed in that window hit "No friendship found for conversation_token" and was DROPPED (no chain = no decrypt, no buffer). Loading chains here closes that gap so a peer messaging us the instant we come back online doesn't lose messages. query_resume still merges (and won't clobber these — it only adds ids we don't already hold).
-                        let friendship_ids: Vec<crate::types::FriendshipId> =
-                            self.contacts.iter().filter_map(|c| c.friendship_id).collect();
+                        let friendship_ids: Vec<crate::types::FriendshipId> = self
+                            .contacts
+                            .iter()
+                            .filter_map(|c| c.friendship_id)
+                            .collect();
                         let loaded_chains =
                             crate::storage::friendship::load_all_friendships(&friendship_ids, &s);
                         for (fid, chains) in loaded_chains {
@@ -2370,7 +2482,11 @@ impl FluorApp for PhotonApp {
                                         contact.clutch_our_keypairs = Some(keypairs);
                                     }
                                     Ok(None) => {}
-                                    Err(e) => crate::logf!("CLUTCH: failed to rehydrate keypairs for {}: {}", crate::fp(&contact.handle_proof), e),
+                                    Err(e) => crate::logf!(
+                                        "CLUTCH: failed to rehydrate keypairs for {}: {}",
+                                        crate::fp(&contact.handle_proof),
+                                        e
+                                    ),
                                 }
                             }
                         }
@@ -2501,7 +2617,12 @@ impl FluorApp for PhotonApp {
         {
             let idx = (hit_id - self.add_candidate_hit_base) as usize;
             // Filter identically to the render — only proximity-heard candidates are tap targets (a flooded registry never populates a tappable row).
-            if let Some(cand) = self.add_device_candidates.iter().filter(|c| c.heard_ble).nth(idx) {
+            if let Some(cand) = self
+                .add_device_candidates
+                .iter()
+                .filter(|c| c.heard_ble)
+                .nth(idx)
+            {
                 let req = cand.req.clone();
                 self.add_device_bind_ble = true;
                 self.spawn_bind_device(req);
@@ -2648,9 +2769,13 @@ impl FluorApp for PhotonApp {
                         if let Some((pk, _, _, true, name)) = devices.get(idx).cloned() {
                             if self.fleet_release_armed == Some(pk) {
                                 self.fleet_release_armed = None;
-                                let hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
+                                let hp = self
+                                    .handle_query
+                                    .as_ref()
+                                    .and_then(|hq| hq.get_handle_proof());
                                 if let (Some(hp), Some(kp)) = (hp, self.device_keypair.clone()) {
-                                    match crate::network::fgtw::fleet::release_device(&kp, &hp, &pk) {
+                                    match crate::network::fgtw::fleet::release_device(&kp, &hp, &pk)
+                                    {
                                         Ok(()) => {
                                             crate::logf!("FLEET: released the brand on {} — hardware free for a new identity", name);
                                             let mut rel: Vec<u8> = self
@@ -2665,7 +2790,10 @@ impl FluorApp for PhotonApp {
                                             self.ready_toast = Some(format!("{name} released \u{2014} it can join a new identity now."));
                                         }
                                         Err(e) => {
-                                            crate::logf!("FLEET: release failed ({}) — brand kept", e);
+                                            crate::logf!(
+                                                "FLEET: release failed ({}) — brand kept",
+                                                e
+                                            );
                                             self.ready_toast = Some("Couldn't release \u{2014} check connection and retry.".to_string());
                                         }
                                     }
@@ -2713,10 +2841,14 @@ impl FluorApp for PhotonApp {
                         // "Remove & shred" → UNSIGN (self-departure from the fleet chain — the only chain remove that exists, self-signed + idempotent), THEN crypto-wipe. Two-tap confirm. The wipe is GATED on the departure landing: if the signed remove can't publish (offline, races exhausted), nothing is wiped — otherwise the fleet would forever list a device whose keys are gone. Plain Shred (orange) remains the wipe-without-departing path.
                         if self.settings_removeshred_armed {
                             self.settings_removeshred_armed = false;
-                            let hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
+                            let hp = self
+                                .handle_query
+                                .as_ref()
+                                .and_then(|hq| hq.get_handle_proof());
                             // LAST-MEMBER GATE (identity never dies — supersedes lifecycle D3's LastRites): the fleet's final member cannot sign out, full stop. There is no terminal op — an identity always lives somewhere (the worker refuses zero-member folds too, so this isn't just UI courtesy). Want out of this hardware? Add another device first, then retire this one. A fetch failure counts as last (fail toward refusal, never past it).
                             if let Some(ref hp_v) = hp {
-                                let last = match crate::network::fgtw::fleet::current_members(hp_v) {
+                                let last = match crate::network::fgtw::fleet::current_members(hp_v)
+                                {
                                     Ok(m) => m.len() <= 1,
                                     Err(e) => {
                                         crate::logf!("SECURITY: member count fetch failed ({}) — treating as last device", e);
@@ -2738,13 +2870,21 @@ impl FluorApp for PhotonApp {
                                         self.clean_device_for_reuse();
                                     }
                                     Err(e) => {
-                                        crate::logf!("SECURITY: fleet departure failed ({}) — NOT wiping", e);
+                                        crate::logf!(
+                                            "SECURITY: fleet departure failed ({}) — NOT wiping",
+                                            e
+                                        );
                                         self.ready_toast = Some("Couldn't sign out of the fleet — nothing wiped. Check connection and retry.".to_string());
                                     }
                                 }
                             } else {
-                                crate::log("SECURITY: no session/keypair to depart with — NOT wiping");
-                                self.ready_toast = Some("No signed-in identity to remove — use Shred instead.".to_string());
+                                crate::log(
+                                    "SECURITY: no session/keypair to depart with — NOT wiping",
+                                );
+                                self.ready_toast = Some(
+                                    "No signed-in identity to remove — use Shred instead."
+                                        .to_string(),
+                                );
                             }
                         } else {
                             self.settings_removeshred_armed = true;
@@ -2769,7 +2909,8 @@ impl FluorApp for PhotonApp {
                         }
                         #[cfg(not(target_os = "android"))]
                         {
-                            self.ready_toast = Some("Drag & drop an image onto the Photon window".to_string());
+                            self.ready_toast =
+                                Some("Drag & drop an image onto the Photon window".to_string());
                         }
                     } else if slot == 2 {
                         // "Add" → register the typed label as a custom field (e.g. "Address 2") and append its box.
@@ -2830,7 +2971,11 @@ impl FluorApp for PhotonApp {
                         self.about_version_spelled = !self.about_version_spelled;
                     }
                 } else {
-                    crate::logf!("settings-stub: pill {} on {} (no behaviour wired)", slot, format!("{:?}", page));
+                    crate::logf!(
+                        "settings-stub: pill {} on {} (no behaviour wired)",
+                        slot,
+                        format!("{:?}", page)
+                    );
                 }
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
@@ -2852,7 +2997,10 @@ impl FluorApp for PhotonApp {
         {
             let ci = (hit_id - self.contact_hit_base) as usize;
             if ci < self.contacts.len() {
-                crate::logf!("contact-tap: opening conversation with '{}'", self.contacts[ci].display_name());
+                crate::logf!(
+                    "contact-tap: opening conversation with '{}'",
+                    self.contacts[ci].display_name()
+                );
                 self.active_contact = Some(ci);
                 self.state = AppState::Conversation;
                 self.conv_topbar_off = 0.0;
@@ -2871,13 +3019,19 @@ impl FluorApp for PhotonApp {
         // Message-row tap (conversation) — toggle that message's details strip (direction, age, delivery, copy). The copy pill copies the message text via the platform clipboard (arboard / Kotlin poll bridge).
         if matches!(self.state, AppState::Conversation) && self.msg_hit_base != HIT_NONE {
             // Attachment overlay pills: send (arms the deferred encode — "encoding…" paints first) / cancel. Paperclip (base+2): Android opens the system picker; desktop hints the drop gesture.
-            if self.attach_ui_base != HIT_NONE && hit_id == self.attach_ui_base && self.pending_attach.is_some() {
+            if self.attach_ui_base != HIT_NONE
+                && hit_id == self.attach_ui_base
+                && self.pending_attach.is_some()
+            {
                 self.pending_attach_encode = Some(false);
                 self.scene_dirty = true;
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
-            if self.attach_ui_base != HIT_NONE && hit_id == self.attach_ui_base.wrapping_add(1) && self.pending_attach.is_some() {
+            if self.attach_ui_base != HIT_NONE
+                && hit_id == self.attach_ui_base.wrapping_add(1)
+                && self.pending_attach.is_some()
+            {
                 self.pending_attach = None;
                 self.pending_attach_encode = None;
                 self.scene_dirty = true;
@@ -2891,7 +3045,8 @@ impl FluorApp for PhotonApp {
                 }
                 #[cfg(not(target_os = "android"))]
                 {
-                    self.ready_toast = Some("drop a file on the conversation to attach".to_string());
+                    self.ready_toast =
+                        Some("drop a file on the conversation to attach".to_string());
                     self.ready_toast_screen = None;
                 }
                 self.scene_dirty = true;
@@ -2901,7 +3056,10 @@ impl FluorApp for PhotonApp {
             if hit_id == self.msg_copy_id && hit_id != HIT_NONE {
                 if let Some((sci, ts, out)) = self.selected_msg {
                     let text_opt = self.contacts.get(sci).and_then(|c| {
-                        c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out).map(|m| m.content.clone())
+                        c.messages
+                            .iter()
+                            .find(|m| m.timestamp == ts && m.is_outgoing == out)
+                            .map(|m| m.content.clone())
                     });
                     if let Some(text) = text_opt.map(|t| display_content(&t)) {
                         if self.copy_to_clipboard(&text) {
@@ -2926,16 +3084,24 @@ impl FluorApp for PhotonApp {
                         // REPLY: quote-prefill the compose box and focus it — works today with no wire change; true reply threading (a reply_to field) rides the message-format rework.
                         0 => {
                             let excerpt: Option<String> = self.contacts.get(sci).and_then(|c| {
-                                c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out).map(|m| {
-                                    let d = display_content(&m.content);
-                                    let mut e: String = d.chars().take(40).collect();
-                                    if d.chars().count() > 40 { e.push('\u{2026}'); }
-                                    e
-                                })
+                                c.messages
+                                    .iter()
+                                    .find(|m| m.timestamp == ts && m.is_outgoing == out)
+                                    .map(|m| {
+                                        let d = display_content(&m.content);
+                                        let mut e: String = d.chars().take(40).collect();
+                                        if d.chars().count() > 40 {
+                                            e.push('\u{2026}');
+                                        }
+                                        e
+                                    })
                             });
                             if let (Some(e), Some(tb)) = (excerpt, self.message_textbox.as_mut()) {
                                 tb.clear();
-                                tb.insert_str(&format!("\u{21a9} \u{201c}{}\u{201d} \u{2014} ", e), ctx.text);
+                                tb.insert_str(
+                                    &format!("\u{21a9} \u{201c}{}\u{201d} \u{2014} ", e),
+                                    ctx.text,
+                                );
                                 let id = tb.hit_id();
                                 self.change_focus(Some(id));
                             }
@@ -2947,15 +3113,34 @@ impl FluorApp for PhotonApp {
                         }
                         // RESEND: manually re-fire an undelivered outgoing on the chain with its ORIGINAL timestamp (identity preserved — the friend dedups + re-ACKs, so this is always safe); chainless devices re-push thru the fleet instead.
                         2 => {
-                            let text_opt = self.contacts.get(sci).and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out && !m.delivered).map(|m| m.content.clone()));
+                            let text_opt = self.contacts.get(sci).and_then(|c| {
+                                c.messages
+                                    .iter()
+                                    .find(|m| {
+                                        m.timestamp == ts && m.is_outgoing == out && !m.delivered
+                                    })
+                                    .map(|m| m.content.clone())
+                            });
                             if let Some(text) = text_opt {
                                 if self.chain_transmit(sci, &text, ts) {
                                     self.ready_toast = Some("re-sent on the chain".to_string());
                                 } else {
-                                    let row = self.contacts.get(sci).and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out).cloned());
+                                    let row = self.contacts.get(sci).and_then(|c| {
+                                        c.messages
+                                            .iter()
+                                            .find(|m| m.timestamp == ts && m.is_outgoing == out)
+                                            .cloned()
+                                    });
                                     if let Some(row) = row {
-                                        self.push_rows_to_siblings(sci, std::slice::from_ref(&row), None);
-                                        self.ready_toast = Some("re-pushed thru the fleet (no chain on this device)".to_string());
+                                        self.push_rows_to_siblings(
+                                            sci,
+                                            std::slice::from_ref(&row),
+                                            None,
+                                        );
+                                        self.ready_toast = Some(
+                                            "re-pushed thru the fleet (no chain on this device)"
+                                                .to_string(),
+                                        );
                                     }
                                 }
                                 self.ready_toast_screen = None;
@@ -2963,21 +3148,33 @@ impl FluorApp for PhotonApp {
                         }
                         // SAVE / FETCH (attachments): blob held → write to Downloads; missing → ask friend + siblings over PT.
                         4 => {
-                            let att = self.contacts.get(sci).and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out)).and_then(|m| crate::types::parse_attachment_content(&m.content));
+                            let att = self
+                                .contacts
+                                .get(sci)
+                                .and_then(|c| {
+                                    c.messages
+                                        .iter()
+                                        .find(|m| m.timestamp == ts && m.is_outgoing == out)
+                                })
+                                .and_then(|m| crate::types::parse_attachment_content(&m.content));
                             if let Some((hash, name, _)) = att {
                                 if crate::storage::blob_present(&hash) {
                                     match self.attach_save(&name, &hash) {
                                         Some(dest) => {
-                                            self.ready_toast = Some(format!("saved \u{2192} {}", dest));
+                                            self.ready_toast =
+                                                Some(format!("saved \u{2192} {}", dest));
                                             crate::logf!("attach: saved to {}", dest);
                                         }
                                         None => {
-                                            self.ready_toast = Some("save failed \u{2014} see the log".to_string());
+                                            self.ready_toast = Some(
+                                                "save failed \u{2014} see the log".to_string(),
+                                            );
                                         }
                                     }
                                 } else {
                                     self.attach_fetch(sci, &hash);
-                                    self.ready_toast = Some("fetching from your devices\u{2026}".to_string());
+                                    self.ready_toast =
+                                        Some("fetching from your devices\u{2026}".to_string());
                                 }
                                 self.ready_toast_screen = None;
                             }
@@ -2995,10 +3192,16 @@ impl FluorApp for PhotonApp {
             }
             if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(64) {
                 let vis = (hit_id - self.msg_hit_base) as usize;
-                if let (Some(ci), Some(&(ts, out))) = (self.active_contact, self.msg_hit_rows.get(vis)) {
+                if let (Some(ci), Some(&(ts, out))) =
+                    (self.active_contact, self.msg_hit_rows.get(vis))
+                {
                     let key = (ci, ts, out);
                     // Toggle: same message deselects; another message moves the strip. Event-shown, interaction-cleared — no timers.
-                    self.selected_msg = if self.selected_msg == Some(key) { None } else { Some(key) };
+                    self.selected_msg = if self.selected_msg == Some(key) {
+                        None
+                    } else {
+                        Some(key)
+                    };
                     // A fresh selection (or a close) resets the copy pill to its ready state.
                     self.selected_msg_copied = false;
                     self.scene_dirty = true;
@@ -3190,7 +3393,10 @@ impl FluorApp for PhotonApp {
                             reach,
                         )
                         .round() as isize;
-                    } else if matches!(self.state, AppState::Settings(_) | AppState::ContactPanel(_)) {
+                    } else if matches!(
+                        self.state,
+                        AppState::Settings(_) | AppState::ContactPanel(_)
+                    ) {
                         // Settings + the contact panel (its structural mirror): the wheel scrolls the nav rail when the cursor is over it, else the content pane. Down-scroll (negative dy) reveals lower rows → add.
                         let over_rail = {
                             let sl = SettingsLayout::compute(&ctx.viewport);
@@ -3199,15 +3405,28 @@ impl FluorApp for PhotonApp {
                         // The foreground panes (rail + content) position rows as `inset.y − scroll`, the OPPOSITE sign to the background texture's `row − scroll` — so with the raw wheel delta they scrolled against the background (the "foreground inverted" report). Negate the delta here so the foreground gesture lands on the OS natural-scroll convention (down-scroll reveals lower rows); the background is handed the negated offsets below so ITS direction is unchanged (it reads correct already). Android touch rides the same `step`, so this one sign serves both.
                         let step = -(dy as f32);
                         if over_rail {
-                            self.settings_rail_scroll = rubber_step(self.settings_rail_scroll, step, self.settings_rail_extent, reach);
+                            self.settings_rail_scroll = rubber_step(
+                                self.settings_rail_scroll,
+                                step,
+                                self.settings_rail_extent,
+                                reach,
+                            );
                         } else {
-                            self.settings_content_scroll = rubber_step(self.settings_content_scroll, step, self.settings_content_extent, reach);
+                            self.settings_content_scroll = rubber_step(
+                                self.settings_content_scroll,
+                                step,
+                                self.settings_content_extent,
+                                reach,
+                            );
                             // Log viewer tail-follow rides where the user LEAVES the scroll: at (or past) the extent = pinned to the newest record; anywhere above = reading history, appends must not yank the view.
                             if self.diag_log_view
-                                && matches!(self.state, AppState::Settings(SettingsPage::Diagnostics))
+                                && matches!(
+                                    self.state,
+                                    AppState::Settings(SettingsPage::Diagnostics)
+                                )
                             {
-                                self.diag_log_follow =
-                                    self.settings_content_scroll >= self.settings_content_extent - 1.0;
+                                self.diag_log_follow = self.settings_content_scroll
+                                    >= self.settings_content_extent - 1.0;
                             }
                         }
                     } else if matches!(self.state, AppState::Conversation) {
@@ -3223,10 +3442,17 @@ impl FluorApp for PhotonApp {
                                 );
                                 // Top-bar slide: the strip rides the SAME deltas as the content, sliding off as you scroll one way and back on with the other — position-tied like a browser toolbar, no snap, no timers. Only when the conversation can actually scroll.
                                 if self.msg_max_scroll > 0.0 {
-                                    let unit_b = ReadyLayout::compute(ctx.viewport.width_px as usize, ctx.viewport.height_px as usize, ctx.viewport.ru).unit_height;
-                                    let bar_h = ctx.viewport.height_px as f32 * 0.06 + unit_b * 2.15;
+                                    let unit_b = ReadyLayout::compute(
+                                        ctx.viewport.width_px as usize,
+                                        ctx.viewport.height_px as usize,
+                                        ctx.viewport.ru,
+                                    )
+                                    .unit_height;
+                                    let bar_h =
+                                        ctx.viewport.height_px as f32 * 0.06 + unit_b * 2.15;
                                     // Sign: scrolling toward the NEWEST slides the bar off; heading back into history brings it with you (the first mapping shipped inverted — user: "the contacts thing is backwards").
-                                    let step = -(dy as f32) * if is_pixel_delta { 1.0 } else { (1 << 3) as f32 };
+                                    let step = -(dy as f32)
+                                        * if is_pixel_delta { 1.0 } else { (1 << 3) as f32 };
                                     let off = (self.conv_topbar_off + step).clamp(0.0, bar_h);
                                     if (off - self.conv_topbar_off).abs() > 0.01 {
                                         self.conv_topbar_off = off;
@@ -3270,7 +3496,11 @@ impl FluorApp for PhotonApp {
 
                 // Permanence interstitial ("Yes — forever"): a press ANYWHERE other than the attest button cancels back to the pre-proof Fresh state. Editing the handle already cancels; this makes a tap on empty space, the field, the orb — anything else — cancel too, so a stray tap can never corner the user into the forever-claim (on Android "click elsewhere" was otherwise swipe-up → home → long-press → switch away). The attest button press itself is the deliberate confirm, so it's excluded; we fall thru afterwards so the tap still does its normal thing (focus the field, start a drag, open settings, …).
                 if matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
-                    let attest_hit = self.attest_btn.as_ref().map(|b| b.hit_id()).unwrap_or(HIT_NONE);
+                    let attest_hit = self
+                        .attest_btn
+                        .as_ref()
+                        .map(|b| b.hit_id())
+                        .unwrap_or(HIT_NONE);
                     if hit_id != attest_hit {
                         self.clear_launch_error();
                         ctx.window.request_redraw();
@@ -3283,8 +3513,13 @@ impl FluorApp for PhotonApp {
                         if let Some(session) = self.probed_session.take() {
                             // ONE IDENTITY PER DEVICE holds HERE too (docs/lifecycle.md D2): this path bypasses submit_handle's marker gate, and the worker's bindreq gate would only fire AFTER the words screen showed. A device bound to a different identity never gets to the words.
                             if let Some(kp) = self.device_keypair.as_ref() {
-                                if let Some(bound) = crate::storage::device_binding::bound_party_id(kp.secret.as_bytes()) {
-                                    if crate::crypto::clutch::identity_party_id(&session.identity_seed) != bound {
+                                if let Some(bound) = crate::storage::device_binding::bound_party_id(
+                                    kp.secret.as_bytes(),
+                                ) {
+                                    if crate::crypto::clutch::identity_party_id(
+                                        &session.identity_seed,
+                                    ) != bound
+                                    {
                                         crate::log("KnownHandle: DEVICE BUSY — bound to another identity; refusing the join");
                                         self.state = AppState::Launch(LaunchState::Error(
                                             "this device already carries an identity \u{2014} wipe it first (Settings \u{2192} Security)".to_string(),
@@ -3295,7 +3530,9 @@ impl FluorApp for PhotonApp {
                                     }
                                 }
                             }
-                            crate::log("KnownHandle: it's-mine → pairing words (the ceremony posts NOW)");
+                            crate::log(
+                                "KnownHandle: it's-mine → pairing words (the ceremony posts NOW)",
+                            );
                             self.probed_handle = None;
                             self.launch_add_mode = true;
                             self.state = AppState::Launch(LaunchState::Fresh);
@@ -3332,7 +3569,9 @@ impl FluorApp for PhotonApp {
                         && ctx.cursor_y <= inset.y + inset.h
                     {
                         let row_h = line * 0.5;
-                        let idx = ((ctx.cursor_y - band_top + self.settings_content_scroll) / row_h).floor();
+                        let idx = ((ctx.cursor_y - band_top + self.settings_content_scroll)
+                            / row_h)
+                            .floor();
                         if idx >= 0.0 {
                             let idx = idx as usize;
                             if let Some(rec) = self.diag_log_rows.get(idx) {
@@ -3344,7 +3583,11 @@ impl FluorApp for PhotonApp {
                                     .lines()
                                     .map(|l| ansi_line_to_spans(l, *theme::LABEL_COLOUR))
                                     .collect();
-                                crate::logf!("LOGVIEW: inspecting record {} ({} line(s))", idx, lines.len());
+                                crate::logf!(
+                                    "LOGVIEW: inspecting record {} ({} line(s))",
+                                    idx,
+                                    lines.len()
+                                );
                                 self.diag_log_inspect = Some((idx, lines));
                                 self.diag_log_follow = false;
                                 self.settings_content_scroll = 0.0; // inspector opens at the TOP of the record
@@ -3520,7 +3763,11 @@ impl FluorApp for PhotonApp {
                         if matches!(self.state, AppState::Settings(_)) {
                             // Mirror the panel's Back affordance: Settings closes to the contacts screen (post-attest) or the launch screen.
                             self.change_focus(None);
-                            self.state = if self.session.is_some() { AppState::Ready } else { AppState::Launch(LaunchState::Fresh) };
+                            self.state = if self.session.is_some() {
+                                AppState::Ready
+                            } else {
+                                AppState::Launch(LaunchState::Fresh)
+                            };
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
@@ -3765,10 +4012,20 @@ impl FluorApp for PhotonApp {
         let pairing = (self.add_join_rx.is_some() || self.add_device_rx.is_some())
             .then(|| Instant::now() + std::time::Duration::from_millis(500));
         // Periodic own-chain re-fold (the fleet-membership doorbell) — scheduled on the screens where a stale fleet view matters, so it fires even while the desktop window sits idle on the Fleet page. 45s matches advance_protocol's cadence.
-        let fleet_refold = matches!(self.state, AppState::Ready | AppState::Conversation | AppState::Settings(_))
-            .then(|| self.last_fleet_refold.map_or_else(Instant::now, |last| last + std::time::Duration::from_secs(45)));
+        let fleet_refold = matches!(
+            self.state,
+            AppState::Ready | AppState::Conversation | AppState::Settings(_)
+        )
+        .then(|| {
+            self.last_fleet_refold.map_or_else(Instant::now, |last| {
+                last + std::time::Duration::from_secs(45)
+            })
+        });
         // Soonest of all scheduled wakeups.
-        [blink, anim, presence, pairing, fleet_refold].into_iter().flatten().min()
+        [blink, anim, presence, pairing, fleet_refold]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     fn tick(&mut self, ctx: &mut Context) -> bool {
@@ -3784,16 +4041,33 @@ impl FluorApp for PhotonApp {
         if self.pending_attach_encode == Some(true) {
             if let Some((ci, name, bytes, _dims)) = self.pending_attach.take() {
                 self.pending_attach_encode = None;
-                let send_original = self.attach_original_check.as_ref().map(|c| c.is_checked()).unwrap_or(false);
+                let send_original = self
+                    .attach_original_check
+                    .as_ref()
+                    .map(|c| c.is_checked())
+                    .unwrap_or(false);
                 if send_original {
                     self.attach_send_now(ci, name, bytes);
                 } else {
-                    let t = self.attach_slider.as_ref().map(|s| s.value()).unwrap_or(0.7);
+                    let t = self
+                        .attach_slider
+                        .as_ref()
+                        .map(|s| s.value())
+                        .unwrap_or(0.7);
                     let (edge, q) = attach_curve(t);
                     match crate::ui::avatar::resample_to_jpeg(&bytes, edge, q) {
                         Ok((jpeg, w, h)) => {
-                            let stem = name.rsplit_once('.').map(|(st, _)| st.to_string()).unwrap_or(name);
-                            crate::logf!("attach: resampled to {}x{} q{} ({} bytes)", w, h, q, jpeg.len());
+                            let stem = name
+                                .rsplit_once('.')
+                                .map(|(st, _)| st.to_string())
+                                .unwrap_or(name);
+                            crate::logf!(
+                                "attach: resampled to {}x{} q{} ({} bytes)",
+                                w,
+                                h,
+                                q,
+                                jpeg.len()
+                            );
                             self.attach_send_now(ci, format!("{}.jpg", stem), jpeg);
                         }
                         Err(e) => {
@@ -3814,7 +4088,11 @@ impl FluorApp for PhotonApp {
             self.pending_delete = None;
             let mut tombstoned: Option<ChatMessage> = None;
             if let Some(c) = self.contacts.get_mut(sci) {
-                if let Some(m) = c.messages.iter_mut().find(|m| m.timestamp == ts && m.is_outgoing == out) {
+                if let Some(m) = c
+                    .messages
+                    .iter_mut()
+                    .find(|m| m.timestamp == ts && m.is_outgoing == out)
+                {
                     if !m.deleted {
                         m.deleted = true;
                         tombstoned = Some(m.clone());
@@ -3834,12 +4112,18 @@ impl FluorApp for PhotonApp {
                 // Fleet-wide: the tombstoned row rides the ordinary sibling push (merge upgrades true-wins).
                 self.push_rows_to_siblings(sci, std::slice::from_ref(&row), None);
                 // Cross-party: the hidden delete marker on the chain (friend conversations with a local chain; a chainless device's fleet tombstone still reaches the chain owner, which is where a follow-up marker could ride — v1 logs the gap).
-                let is_self = self.session.as_ref().map(|se| crate::crypto::clutch::identity_party_id(&se.identity_seed)) == self.contacts.get(sci).map(|c| c.handle_hash);
+                let is_self = self
+                    .session
+                    .as_ref()
+                    .map(|se| crate::crypto::clutch::identity_party_id(&se.identity_seed))
+                    == self.contacts.get(sci).map(|c| c.handle_hash);
                 let is_sib = self.contacts.get(sci).map(|c| c.is_sibling).unwrap_or(true);
                 if !is_self && !is_sib {
                     let marker = format!("{}{}", crate::types::DELETE_MARKER_PREFIX, ts);
                     if self.send_chain_message(sci, &marker, true) {
-                        crate::log("msg-details: delete marker sent to the friend (delete-for-everyone)");
+                        crate::log(
+                            "msg-details: delete marker sent to the friend (delete-for-everyone)",
+                        );
                     } else {
                         crate::log("msg-details: no local chain for the delete marker — fleet tombstone propagates; the friend keeps their copy until a chain-holding device re-sends");
                     }
@@ -3862,16 +4146,26 @@ impl FluorApp for PhotonApp {
         if !self.settings_repushed
             && self.session.is_some()
             && self.fleet_key_cached().is_some()
-            && self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()).is_some()
+            && self
+                .handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof())
+                .is_some()
             && self.device_keypair.is_some()
         {
             self.settings_repushed = true;
-            crate::log("FLEET: session roster re-push — keys settled (settings stay local until edited)");
+            crate::log(
+                "FLEET: session roster re-push — keys settled (settings stay local until edited)",
+            );
             self.spawn_roster_push();
         }
 
         // Load the persisted phonebook once the vault and session are both up. One-shot per session; the flag also stops a failed read retrying every tick.
-        if !self.peer_store_loaded && self.storage.is_some() && self.session.is_some() && self.peer_store.is_some() {
+        if !self.peer_store_loaded
+            && self.storage.is_some()
+            && self.session.is_some()
+            && self.peer_store.is_some()
+        {
             self.peer_store_loaded = true;
             self.load_peer_store();
         }
@@ -3885,7 +4179,9 @@ impl FluorApp for PhotonApp {
 
         // Periodic fleet-sweep backstop (~5 min, jittered): re-arm history recovery for every conversation so devices converge even when the edge-triggered kicks (roster merge, sibling-online) were missed. Signed-in only; a complete conversation costs one early-stop page.
         if self.session.is_some() {
-            let due = self.last_fleet_sweep.map_or(true, |t| t.elapsed() > std::time::Duration::from_secs(crate::jitter(600).max(60) as u64));
+            let due = self.last_fleet_sweep.map_or(true, |t| {
+                t.elapsed() > std::time::Duration::from_secs(crate::jitter(600).max(60) as u64)
+            });
             if due {
                 self.last_fleet_sweep = Some(now);
                 self.kick_fleet_history_sweep("periodic backstop");
@@ -3931,7 +4227,9 @@ impl FluorApp for PhotonApp {
         if self.state != self.last_screen {
             let same_screen = match (&self.state, &self.last_screen) {
                 (AppState::Launch(_), AppState::Launch(_)) => true,
-                (AppState::Ready | AppState::Searching, AppState::Ready | AppState::Searching) => true,
+                (AppState::Ready | AppState::Searching, AppState::Ready | AppState::Searching) => {
+                    true
+                }
                 (AppState::Settings(a), AppState::Settings(b)) => a == b,
                 _ => false,
             };
@@ -3970,17 +4268,23 @@ impl FluorApp for PhotonApp {
                     .iter()
                     .find(|c| {
                         c.req.nfc_hash != [0u8; 32]
-                            && fgtw::pair::nfc_secret_hash(&s, &c.req.device_pubkey, c.req.t) == c.req.nfc_hash
+                            && fgtw::pair::nfc_secret_hash(&s, &c.req.device_pubkey, c.req.t)
+                                == c.req.nfc_hash
                     })
                     .map(|c| c.req.clone());
                 match matched {
                     Some(req) if !self.add_device_checking => {
-                        crate::logf!("NFC: tap matched candidate {} — binding", crate::fp(&req.device_pubkey));
+                        crate::logf!(
+                            "NFC: tap matched candidate {} — binding",
+                            crate::fp(&req.device_pubkey)
+                        );
                         self.spawn_bind_device(req);
                         needs_redraw = true;
                     }
                     Some(_) => {}
-                    None => crate::log("NFC: tapped secret matched no candidate (stale request or foreign tag)"),
+                    None => crate::log(
+                        "NFC: tapped secret matched no candidate (stale request or foreign tag)",
+                    ),
                 }
             }
         }
@@ -4026,13 +4330,20 @@ impl FluorApp for PhotonApp {
                     return false;
                 };
                 let over = (*v - bound) * decay;
-                *v = if over.abs() < 0.3 { bound } else { bound + over };
+                *v = if over.abs() < 0.3 {
+                    bound
+                } else {
+                    bound + over
+                };
                 true
             };
             let mut spring = false;
             if matches!(self.state, AppState::Settings(_)) {
                 spring |= relax(&mut self.settings_rail_scroll, self.settings_rail_extent);
-                spring |= relax(&mut self.settings_content_scroll, self.settings_content_extent);
+                spring |= relax(
+                    &mut self.settings_content_scroll,
+                    self.settings_content_extent,
+                );
             }
             if matches!(self.state, AppState::Ready) {
                 let mut c = self.contacts_scroll as f32;
@@ -4043,7 +4354,8 @@ impl FluorApp for PhotonApp {
             }
             if matches!(self.state, AppState::Conversation) {
                 let ceiling = self.msg_max_scroll;
-                if let Some(contact) = self.active_contact.and_then(|ci| self.contacts.get_mut(ci)) {
+                if let Some(contact) = self.active_contact.and_then(|ci| self.contacts.get_mut(ci))
+                {
                     spring |= relax(&mut contact.message_scroll_offset, f32::INFINITY);
                     // Clamp the STORED offset to the last-rendered ceiling: the 0-end rubber-bands (relax above, hi=∞), but drifting PAST the top (offset > max_scroll after the viewport shrank/grew) must snap back, else the list sticks above the oldest message until you scroll down through the excess. Only pull DOWN — never fight an active drag toward 0.
                     if contact.message_scroll_offset > ceiling {
@@ -4061,7 +4373,11 @@ impl FluorApp for PhotonApp {
                 }
             }
             // Textbox TEXT-pan spring: any box carried past its scroll bounds eases home the same way. Skip the box still under the finger (the drag owns it until release). Narrow damage — the box's own text_cache_dirty → damage_rect covers the repaint, so no scene_dirty needed.
-            let panning = if self.pointer_down { self.drag_select_hit } else { HIT_NONE };
+            let panning = if self.pointer_down {
+                self.drag_select_hit
+            } else {
+                HIT_NONE
+            };
             let mut tb_spring = false;
             for (_, tb) in self.textboxes_mut() {
                 if tb.hit_id() != panning && tb.spring_scroll(decay) {
@@ -4104,13 +4420,22 @@ impl FluorApp for PhotonApp {
                     .args(std::env::args().skip(1))
                     .exec();
                 // exec only returns on failure.
-                crate::logf!("UPDATE: re-exec failed: {} — keep running the old image", err);
+                crate::logf!(
+                    "UPDATE: re-exec failed: {} — keep running the old image",
+                    err
+                );
             }
             #[cfg(windows)]
             {
-                match std::process::Command::new(&exe).args(std::env::args().skip(1)).spawn() {
+                match std::process::Command::new(&exe)
+                    .args(std::env::args().skip(1))
+                    .spawn()
+                {
                     Ok(_) => std::process::exit(0),
-                    Err(e) => crate::logf!("UPDATE: relaunch failed: {} — keep running the old image", e),
+                    Err(e) => crate::logf!(
+                        "UPDATE: relaunch failed: {} — keep running the old image",
+                        e
+                    ),
                 }
             }
             #[cfg(not(any(unix, windows)))]
@@ -4180,10 +4505,14 @@ impl FluorApp for PhotonApp {
         }
         // Dev-only: the zoom-% readout is a debugging aid, not a shipped affordance. Desktop shows it while a zoom modifier is held after a change (`zoom_hint`); Android pinch-zoom has NO keyboard modifier to arm/clear against, so there we show it whenever `ru` sits away from 100% — always accurate, no touch-release event needed (which fluor's multi-touch layer doesn't emit yet).
         let show_zoom = cfg!(feature = "development")
-            && (self.zoom_hint || (cfg!(target_os = "android") && (ctx.viewport.ru - 1.0).abs() > 0.001));
+            && (self.zoom_hint
+                || (cfg!(target_os = "android") && (ctx.viewport.ru - 1.0).abs() > 0.001));
 
         // Title-bar text by screen, computed BEFORE the chrome borrow (peer count reads `self.handle_query` / `self.session`). Launch/attest shows the "← Network" affordance; once attested (Ready) it shows the peer count — distinct identities in the store EXCLUDING our own: peers are PEOPLE, so the FGTW seed is not a peer (the old `+1` when online) and neither are our own fleet siblings (their records ride the same store for direct routing). `set_title` only re-rasterizes chrome when the string actually changes, so this is cheap to recompute each frame.
-        let title_text: String = if matches!(self.state, AppState::Conversation | AppState::ContactPanel(_)) {
+        let title_text: String = if matches!(
+            self.state,
+            AppState::Conversation | AppState::ContactPanel(_)
+        ) {
             self.active_contact
                 .and_then(|ci| self.contacts.get(ci))
                 .map(|c| c.display_name())
@@ -4230,8 +4559,7 @@ impl FluorApp for PhotonApp {
                 .filter(|c| {
                     // Must mirror the render pass's `matching` filter exactly (siblings hidden) or the two clamps disagree within a frame.
                     !c.is_sibling
-                        && (filter.is_empty()
-                            || c.display_name().to_lowercase().contains(&filter))
+                        && (filter.is_empty() || c.display_name().to_lowercase().contains(&filter))
                 })
                 .count();
             let block_bottom_at_zero = rl.rows.y0 as isize + n_matching as isize * row_h;
@@ -4246,10 +4574,14 @@ impl FluorApp for PhotonApp {
                 Some((block_bottom_at_zero + row_h - self.contacts_scroll) as f32);
         }
         // Settings scroll: clamp the rail + content offsets to their NATURAL-height extents (no clamp-to-fit in layout → content can overflow → this scroll reveals it, bounded so it can't scroll off the page). MUST run BEFORE update_widget_layout: the wheel handler writes unclamped deltas, and positioning the widgets off the raw value for one frame (then the clamped one next frame) is what made the textboxes rubber-band past the top while the immediate-mode labels (drawn from the clamped locals) hard-stopped. One clamp, then everything this frame reads the same value. Captured into locals for use inside the borrowed render block.
-        let (settings_rail_scroll, settings_content_scroll) = if let AppState::Settings(page) = self.state {
+        let (settings_rail_scroll, settings_content_scroll) = if let AppState::Settings(page) =
+            self.state
+        {
             let sl = SettingsLayout::compute(&ctx.viewport);
             // Publish the extents (rubber-band bounds) — NO hard clamp: the wheel handler resists past-the-end steps and tick() eases the overshoot back, so an out-of-range value here is the rubber-band mid-stretch, rendered as-is. Labels, widgets, and bg all read this same raw value, so the whole pane stretches together.
-            self.settings_rail_extent = (sl.nav_row_h() * (self.settings_pages().len() as Coord + 1.0) - sl.rail_inset().h).max(0.0);
+            self.settings_rail_extent =
+                (sl.nav_row_h() * (self.settings_pages().len() as Coord + 1.0) - sl.rail_inset().h)
+                    .max(0.0);
             // The You page is a dynamic form — its row count is the field set plus the fixed chrome rows, not a constant. The Diagnostics log viewer counts fractionally: two full-height header rows plus half-height record rows (matching diag_log_row_rect exactly, or the scroll bound and the drawn rows disagree).
             let content_rows_h = if page == SettingsPage::You {
                 sl.content_line_h() * you_rows_plan(&self.you_fields).len() as Coord
@@ -4275,9 +4607,12 @@ impl FluorApp for PhotonApp {
         } else if let AppState::ContactPanel(cpage) = self.state {
             // The contact panel rides the SAME scroll fields + extents machinery as settings (it's the structural mirror). Rail = pinned Back + 3 page rows; content rows are fixed per page (About carries the avatar block's extra height as virtual rows).
             let sl = SettingsLayout::compute(&ctx.viewport);
-            self.settings_rail_extent = (sl.nav_row_h() * (ContactPage::ALL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0);
+            self.settings_rail_extent = (sl.nav_row_h() * (ContactPage::ALL.len() as Coord + 1.0)
+                - sl.rail_inset().h)
+                .max(0.0);
             let n = contact_page_rows(cpage);
-            self.settings_content_extent = (sl.content_line_h() * n as Coord - sl.content_inset().h).max(0.0);
+            self.settings_content_extent =
+                (sl.content_line_h() * n as Coord - sl.content_inset().h).max(0.0);
             (self.settings_rail_scroll, self.settings_content_scroll)
         } else {
             (0.0, 0.0)
@@ -4311,8 +4646,11 @@ impl FluorApp for PhotonApp {
         let bg_scroll = self.bg_scroll;
         let shimmer = bg_scroll as usize;
         let scroll_offset = 0; // Launch only for now.
-        // Background texture origin + per-half scroll. On Settings the noise mirror-axis sits ON the rail|content divider (1/3 width), and each half scrolls with ITS pane — rail-scroll drives the left half, content-scroll the right — so the background tracks the scroll of whatever you're reading. Every other screen keeps the centred origin with both halves locked together (unified scroll).
-        let (bg_split_x, bg_left_scroll, bg_right_scroll) = if matches!(self.state, AppState::Settings(_) | AppState::ContactPanel(_)) {
+                               // Background texture origin + per-half scroll. On Settings the noise mirror-axis sits ON the rail|content divider (1/3 width), and each half scrolls with ITS pane — rail-scroll drives the left half, content-scroll the right — so the background tracks the scroll of whatever you're reading. Every other screen keeps the centred origin with both halves locked together (unified scroll).
+        let (bg_split_x, bg_left_scroll, bg_right_scroll) = if matches!(
+            self.state,
+            AppState::Settings(_) | AppState::ContactPanel(_)
+        ) {
             let sl = SettingsLayout::compute(&ctx.viewport);
             (
                 Some(sl.content.x as usize),
@@ -4323,7 +4661,7 @@ impl FluorApp for PhotonApp {
         } else {
             (None, None, scroll_offset)
         };
-                               // Launch layout: faithful proportional slicing port from legacy `Layout::new` — spectrum near the top, logo wordmark overlapping its bottom, attest block (textbox + hint + button) below. Compute every frame; cheap and lets resize flow thru without a separate cache.
+        // Launch layout: faithful proportional slicing port from legacy `Layout::new` — spectrum near the top, logo wordmark overlapping its bottom, attest block (textbox + hint + button) below. Compute every frame; cheap and lets resize flow thru without a separate cache.
         let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru);
         // Chromatic wave phase has two summands: * Scroll-driven base (`bg_scroll * 1/128 rad/scroll-unit`) — one wheel-notch ≈ 8 units → ~1/16 rad shift; user-tunable by changing the shift exponent.
         // * `attest_anim_phase` (advanced in `tick()` while `LaunchState::Attesting`) — the "query in flight" cue, 1 cycle/sec.
@@ -4370,13 +4708,38 @@ impl FluorApp for PhotonApp {
             if show_version {
                 // On the Ready screen the version rides the scroll block (positioned past the last contact row); elsewhere it stays pinned at `version_cy`.
                 let vy = ready_block_version_y.unwrap_or(version_cy);
-                text.draw_text_left(canvas, &version_glyphs, version_x, vy, &TextStyle::new(version_size, theme::VERSION_COLOUR).font("Oxanium"), None, None);
+                text.draw_text_left(
+                    canvas,
+                    &version_glyphs,
+                    version_x,
+                    vy,
+                    &TextStyle::new(version_size, theme::VERSION_COLOUR).font("Oxanium"),
+                    None,
+                    None,
+                );
             }
             // Zoom hint is independent of the version's screen gate — it shows on ANY screen, but only while actively zooming (a held zoom modifier after a `ru` change), per `show_zoom`.
             if show_zoom {
-                text.draw_text_center(canvas, &zoom_text, zoom_cx, zoom_cy, &TextStyle::new(zoom_size, theme::ZOOM_COLOUR).font("Oxanium"), None, None);
+                text.draw_text_center(
+                    canvas,
+                    &zoom_text,
+                    zoom_cx,
+                    zoom_cy,
+                    &TextStyle::new(zoom_size, theme::ZOOM_COLOUR).font("Oxanium"),
+                    None,
+                    None,
+                );
             }
-            paint::background_noise_split(canvas, shimmer, bg_fullscreen, bg_right_scroll, bg_split_x, bg_left_scroll, None, bg_base);
+            paint::background_noise_split(
+                canvas,
+                shimmer,
+                bg_fullscreen,
+                bg_right_scroll,
+                bg_split_x,
+                bg_left_scroll,
+                None,
+                bg_base,
+            );
             // Wave then logo — RMW ops that read the now-opaque noise beneath as their base. The chromatic wave quadrature-blends with the bg colour (sqrt-linear-light) so it MUST follow the noise; the logo composites over the wave/noise. (Watermarks above went before the noise so it composes under them.)
             if on_launch {
                 chromatic_wave(canvas, spectrum_rect, phase, period_scale);
@@ -4386,7 +4749,9 @@ impl FluorApp for PhotonApp {
         // Window-perimeter hairline FIRST — painted straight into `target` (not the chrome group) and carves the window-shape clip_mask. fluor is under-blend only, so whatever lands in `target` first wins at shared edge pixels; drawing the hairline before any content makes it survive over full-bleed screens (Ready/Conversation) whose content reaches the window edge. The chrome group (buttons / orb / strip / title) still composites UNDER content via `flatten_into` below. The clip_mask carve here is the SOLE source of the single window-shape alpha-trim done at the OS boundary in finalize.
         chrome.rasterize_perimeter(target, buf_w, buf_h, ctx.clip_mask);
         // Orb press glow lives IN the chrome layer now (drawn after the orb+ring, so under() blooms it beneath them): feed the pressed state each frame; the setter no-ops when unchanged and re-rasters chrome on the press/release edges.
-        chrome.set_orb_pressed(ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == chrome.app_icon_btn.id());
+        chrome.set_orb_pressed(
+            ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == chrome.app_icon_btn.id(),
+        );
         chrome.rasterize_chrome(ctx.damage, ctx.text, ctx.clip_mask);
 
         // Chord hint — painted INTO `target` BEFORE `flatten_into` so the hint glyphs sit at the TOP of the under-blend chain (chrome composes UNDER them).
@@ -4420,7 +4785,9 @@ impl FluorApp for PhotonApp {
                     Some((self.add_join_status.as_str(), (*theme::STATUS_TEXT_COLOUR)))
                 } else {
                     match launch_state {
-                        LaunchState::Attesting => Some(("Attesting\u{2026}", (*theme::STATUS_TEXT_COLOUR))),
+                        LaunchState::Attesting => {
+                            Some(("Attesting\u{2026}", (*theme::STATUS_TEXT_COLOUR)))
+                        }
                         LaunchState::Error(msg) if !msg.is_empty() => {
                             Some((msg.as_str(), (*theme::ERROR_TEXT_COLOUR)))
                         }
@@ -4434,8 +4801,20 @@ impl FluorApp for PhotonApp {
                     let cx = (error_rect.x0 + error_rect.x1) as f32 * 0.5;
                     let cy = (error_rect.y0 + error_rect.y1) as f32 * 0.5;
                     // Half-height font: status messages are short by convention; full-rect-height is too loud for one-line text and overflows wide messages off the side.
-                    ctx.text.draw_text_center(&mut canvas, text, cx, cy, &TextStyle::new(region_h * 0.5, // Medium weight — readable at small sizes; matches the Oxanium family already loaded in init().
-                        colour).weight(500).font("Oxanium"), None, None);
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        text,
+                        cx,
+                        cy,
+                        &TextStyle::new(
+                            region_h * 0.5, // Medium weight — readable at small sizes; matches the Oxanium family already loaded in init().
+                            colour,
+                        )
+                        .weight(500)
+                        .font("Oxanium"),
+                        None,
+                        None,
+                    );
                 }
             }
 
@@ -4447,14 +4826,34 @@ impl FluorApp for PhotonApp {
                 let mut y = attest.attest.y1 as f32 + line_h * 1.6;
                 // What's permanent is the IDENTITY, not the handle: a handle is a mutable label, but attesting mints crypto roots with no password / reset / recovery. Ownership binds to the HUMAN, not the hardware — the first person to attest owns that identity, while devices stay replaceable thru the fleet chain (remove the first device whenever, as long as another is added first). The warning must not mis-teach "this phone owns it" NOR "this name is a life sentence" — it's the identity behind it that can't be undone.
                 let lines: [(&str, u32); 5] = [
-                    ("This mints a permanent identity.", (*theme::ERROR_TEXT_COLOUR)),
-                    ("No password. No reset. No recovery.", (*theme::STATUS_TEXT_COLOUR)),
-                    ("The first human to attest owns it.", (*theme::STATUS_TEXT_COLOUR)),
-                    ("Devices can be replaced. The identity can't.", (*theme::STATUS_TEXT_COLOUR)),
+                    (
+                        "This mints a permanent identity.",
+                        (*theme::ERROR_TEXT_COLOUR),
+                    ),
+                    (
+                        "No password. No reset. No recovery.",
+                        (*theme::STATUS_TEXT_COLOUR),
+                    ),
+                    (
+                        "The first human to attest owns it.",
+                        (*theme::STATUS_TEXT_COLOUR),
+                    ),
+                    (
+                        "Devices can be replaced. The identity can't.",
+                        (*theme::STATUS_TEXT_COLOUR),
+                    ),
                     ("Press again if you mean it.", (*theme::STATUS_TEXT_COLOUR)),
                 ];
                 for (line, colour) in lines {
-                    ctx.text.draw_text_center(&mut canvas, line, cx, y, &TextStyle::new(line_h, colour).weight(600).font("Oxanium"), None, None);
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        line,
+                        cx,
+                        y,
+                        &TextStyle::new(line_h, colour).weight(600).font("Oxanium"),
+                        None,
+                        None,
+                    );
                     y += line_h * 1.35;
                 }
             }
@@ -4467,11 +4866,25 @@ impl FluorApp for PhotonApp {
                 let mut y = attest.attest.y1 as f32 + line_h * 1.6;
                 let lines: [(&str, u32); 3] = [
                     ("This name is already claimed.", (*theme::ERROR_TEXT_COLOUR)),
-                    ("New here? Someone else owns it \u{2014} pick another.", (*theme::STATUS_TEXT_COLOUR)),
-                    ("Yours? Approve this device from one you're signed in on.", (*theme::STATUS_TEXT_COLOUR)),
+                    (
+                        "New here? Someone else owns it \u{2014} pick another.",
+                        (*theme::STATUS_TEXT_COLOUR),
+                    ),
+                    (
+                        "Yours? Approve this device from one you're signed in on.",
+                        (*theme::STATUS_TEXT_COLOUR),
+                    ),
                 ];
                 for (line, colour) in lines {
-                    ctx.text.draw_text_center(&mut canvas, line, cx, y, &TextStyle::new(line_h, colour).weight(600).font("Oxanium"), None, None);
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        line,
+                        cx,
+                        y,
+                        &TextStyle::new(line_h, colour).weight(600).font("Oxanium"),
+                        None,
+                        None,
+                    );
                     y += line_h * 1.35;
                 }
                 y += line_h * 0.5;
@@ -4480,8 +4893,28 @@ impl FluorApp for PhotonApp {
                 let pick = fluor::region::Region::new(px, y, pw, tb_h);
                 y += tb_h * 1.3;
                 let mine = fluor::region::Region::new(px, y, pw, tb_h);
-                draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pick, "Pick another name", self.known_pick_hit, ctx.pressed_hit);
-                draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, mine, "It's mine \u{2014} show pairing words", self.known_mine_hit, ctx.pressed_hit);
+                draw_stub_pill(
+                    &mut canvas,
+                    ctx.text,
+                    &mut chrome.hit_test_map,
+                    buf_w,
+                    buf_h,
+                    pick,
+                    "Pick another name",
+                    self.known_pick_hit,
+                    ctx.pressed_hit,
+                );
+                draw_stub_pill(
+                    &mut canvas,
+                    ctx.text,
+                    &mut chrome.hit_test_map,
+                    buf_w,
+                    buf_h,
+                    mine,
+                    "It's mine \u{2014} show pairing words",
+                    self.known_mine_hit,
+                    ctx.pressed_hit,
+                );
             }
 
             // Join words phase (new device): the screen becomes display-only — this device's pairing words, drawn in rows for reading onto the other device, flipping to the found-colour when a member matches them. No textbox, no attest button.
@@ -4511,34 +4944,62 @@ impl FluorApp for PhotonApp {
                     let lines: Vec<String> = tokens.chunks(4).map(|c| c.join(" ")).collect();
                     let mut y = attest.error.y1 as f32 + line_h * 1.2;
                     for line in &lines {
-                        ctx.text.draw_text_center(&mut canvas, line, cx, y, &TextStyle::new(line_h, colour).weight(600).font("Oxanium"), None, None);
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            line,
+                            cx,
+                            y,
+                            &TextStyle::new(line_h, colour).weight(600).font("Oxanium"),
+                            None,
+                            None,
+                        );
                         y += line_h * 1.35;
                     }
                     // Name the device being enrolled, so a user pairing several devices can tell on both screens which one these words belong to. Deterministic two-word default from the device PUBLIC key + the fleet's identity seed, so the Fleet list on every device in this fleet shows this same name; the owner-edited override arrives with the devices page. Pre-attest the session isn't set yet, so derive the seed from the handle being joined (`add_join_handle`).
-                    let join_seed = self
-                        .session
-                        .as_ref()
-                        .map(|s| s.identity_seed)
-                        .or_else(|| {
-                            self.add_join_handle
-                                .as_ref()
-                                .map(|h| crate::storage::contacts::derive_identity_seed(h))
-                        });
+                    let join_seed = self.session.as_ref().map(|s| s.identity_seed).or_else(|| {
+                        self.add_join_handle
+                            .as_ref()
+                            .map(|h| crate::storage::contacts::derive_identity_seed(h))
+                    });
                     if let (Some(kp), Some(seed)) = (self.device_keypair.as_ref(), join_seed) {
-                        let name = crate::network::fgtw::fleet::device_name_default(kp.public.as_bytes(), &seed);
+                        let name = crate::network::fgtw::fleet::device_name_default(
+                            kp.public.as_bytes(),
+                            &seed,
+                        );
                         y += line_h * 0.4;
-                        ctx.text.draw_text_center(&mut canvas, &format!("this device: {name}"), cx, y, &TextStyle::new(line_h * 0.8, fluor::theme::HINT_COLOUR).weight(500).font("Oxanium"), None, None);
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            &format!("this device: {name}"),
+                            cx,
+                            y,
+                            &TextStyle::new(line_h * 0.8, fluor::theme::HINT_COLOUR)
+                                .weight(500)
+                                .font("Oxanium"),
+                            None,
+                            None,
+                        );
                     }
                     // "Copy words" tappable: puts the space-separated words on the clipboard so they can ride email/messenger to the sponsor device instead of being read + retyped. Label flips on interaction, never on a timer.
                     {
                         y += line_h * 0.9;
                         let csize = line_h * 0.7;
                         let (clabel, ccolour) = if self.join_words_copied {
-                            ("copied \u{2014} paste them on your other device", *theme::STATUS_TEXT_COLOUR)
+                            (
+                                "copied \u{2014} paste them on your other device",
+                                *theme::STATUS_TEXT_COLOUR,
+                            )
                         } else {
                             ("copy words", *theme::CONTACT_NAME_COLOUR)
                         };
-                        ctx.text.draw_text_center(&mut canvas, clabel, cx, y, &TextStyle::new(csize, ccolour).weight(600).font("Oxanium"), None, None);
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            clabel,
+                            cx,
+                            y,
+                            &TextStyle::new(csize, ccolour).weight(600).font("Oxanium"),
+                            None,
+                            None,
+                        );
                         let half_w = buf_w as f32 * 0.4;
                         restamp_hit_rect(
                             &mut chrome.hit_test_map,
@@ -4562,7 +5023,15 @@ impl FluorApp for PhotonApp {
                             "just tap this device in the list.",
                             "You'll confirm the add on that device.",
                         ] {
-                            ctx.text.draw_text_center(&mut canvas, line, cx, y, &TextStyle::new(gsize, fluor::theme::HINT_COLOUR).font("Oxanium"), None, None);
+                            ctx.text.draw_text_center(
+                                &mut canvas,
+                                line,
+                                cx,
+                                y,
+                                &TextStyle::new(gsize, fluor::theme::HINT_COLOUR).font("Oxanium"),
+                                None,
+                                None,
+                            );
                             y += gsize * 1.5;
                         }
                     }
@@ -4575,8 +5044,22 @@ impl FluorApp for PhotonApp {
                             "Wrong device? Start fresh (wipe this device)"
                         };
                         let sf_size = line_h * 0.7;
-                        let sf_colour = if self.join_startfresh_armed { *theme::ERROR_TEXT_COLOUR } else { fluor::theme::HINT_COLOUR };
-                        ctx.text.draw_text_center(&mut canvas, sf_label, cx, y, &TextStyle::new(sf_size, sf_colour).weight(500).font("Oxanium"), None, None);
+                        let sf_colour = if self.join_startfresh_armed {
+                            *theme::ERROR_TEXT_COLOUR
+                        } else {
+                            fluor::theme::HINT_COLOUR
+                        };
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            sf_label,
+                            cx,
+                            y,
+                            &TextStyle::new(sf_size, sf_colour)
+                                .weight(500)
+                                .font("Oxanium"),
+                            None,
+                            None,
+                        );
                         let half_w = buf_w as f32 * 0.4;
                         restamp_hit_rect(
                             &mut chrome.hit_test_map,
@@ -4602,7 +5085,17 @@ impl FluorApp for PhotonApp {
                     } else {
                         "handle"
                     };
-                    ctx.text.draw_text_center(&mut canvas, hint_label, cx, cy, &TextStyle::new(region_h * 0.7, fluor::theme::HINT_COLOUR).weight(500).font("Oxanium"), None, None);
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        hint_label,
+                        cx,
+                        cy,
+                        &TextStyle::new(region_h * 0.7, fluor::theme::HINT_COLOUR)
+                            .weight(500)
+                            .font("Oxanium"),
+                        None,
+                        None,
+                    );
                 }
 
                 // Resting-state gates for the attest slot. The handle textbox owns the empty/focused truth; the attest button and the infinity glyph are the two mutually-exclusive things that can occupy the slot below it.
@@ -4624,8 +5117,19 @@ impl FluorApp for PhotonApp {
                     if let Some(tb) = self.textbox.as_ref() {
                         // ∞ ink sits ~1-2px high because `draw_text_center_u32` centres on the line box (ascent+descent), and a math symbol's ink rides the math axis, slightly above where baseline-seated text reads as centred. Nudge the y anchor down by font_size/32 (≈1-2px here, scales with zoom) to seat the glyph at the pill's visual centre.
                         let baseline_nudge = tb.font_size * (1.0 / (1 << 5) as f32);
-                        ctx.text.draw_text_center(&mut canvas, "\u{221E}", tb.center_x, tb.center_y + baseline_nudge, &TextStyle::new(tb.font_size, // Same weight the textbox renders its own glyphs at (see textbox `measure_text_widths_per_char` / draw calls).
-                            fluor::theme::HINT_COLOUR).font("Oxanium"), None, None);
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            "\u{221E}",
+                            tb.center_x,
+                            tb.center_y + baseline_nudge,
+                            &TextStyle::new(
+                                tb.font_size, // Same weight the textbox renders its own glyphs at (see textbox `measure_text_widths_per_char` / draw calls).
+                                fluor::theme::HINT_COLOUR,
+                            )
+                            .font("Oxanium"),
+                            None,
+                            None,
+                        );
                     }
                 }
 
@@ -4741,7 +5245,17 @@ impl FluorApp for PhotonApp {
                 // Anchored directly below the avatar circle (not the hint slot), at half the hint slot's text size.
                 let size = (ready_layout.hint.y1 - ready_layout.hint.y0) as f32 * 0.3;
                 let hcy = cy + radius + size;
-                ctx.text.draw_text_center(&mut canvas, "drag/drop to update avatar", cx, hcy, &TextStyle::new(size, fluor::theme::HINT_COLOUR).weight(500).font("Oxanium"), None, None);
+                ctx.text.draw_text_center(
+                    &mut canvas,
+                    "drag/drop to update avatar",
+                    cx,
+                    hcy,
+                    &TextStyle::new(size, fluor::theme::HINT_COLOUR)
+                        .weight(500)
+                        .font("Oxanium"),
+                    None,
+                    None,
+                );
             }
 
             // Contacts-page textbox + plus button. The plus button is OVERLAID inside the textbox right edge and ONLY rendered when the textbox has content — empty textbox shows no button. While an add-friend search is in flight, a rotating hourglass replaces the button (and the button is not hit-stampable, so it can't be re-clicked mid-search).
@@ -4791,7 +5305,17 @@ impl FluorApp for PhotonApp {
                 .unwrap_or(false);
             if search_empty && !search_focused {
                 if let Some(tb) = self.contacts_textbox.as_ref() {
-                    ctx.text.draw_text_center(&mut canvas, "search | add", tb.center_x, tb.center_y, &TextStyle::new(tb.font_size * 0.6, fluor::theme::HINT_COLOUR).weight(500).font("Oxanium"), None, None);
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        "search | add",
+                        tb.center_x,
+                        tb.center_y,
+                        &TextStyle::new(tb.font_size * 0.6, fluor::theme::HINT_COLOUR)
+                            .weight(500)
+                            .font("Oxanium"),
+                        None,
+                        None,
+                    );
                 }
             }
             if let Some(tb) = self.contacts_textbox.as_mut() {
@@ -4821,7 +5345,17 @@ impl FluorApp for PhotonApp {
                     let region_h = (hint.y1 - hint.y0) as f32;
                     let scx = (hint.x0 + hint.x1) as f32 * 0.5;
                     let scy = (hint.y0 + hint.y1) as f32 * 0.5 - scroll;
-                    ctx.text.draw_text_center(&mut canvas, text, scx, scy, &TextStyle::new(region_h * 0.6, *colour).weight(500).font("Oxanium"), None, None);
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        text,
+                        scx,
+                        scy,
+                        &TextStyle::new(region_h * 0.6, *colour)
+                            .weight(500)
+                            .font("Oxanium"),
+                        None,
+                        None,
+                    );
                 }
             }
 
@@ -4831,9 +5365,23 @@ impl FluorApp for PhotonApp {
                 if !hint.is_empty() {
                     let region_h = (hint.y1 - hint.y0) as f32;
                     let tcx = (hint.x0 + hint.x1) as f32 * 0.5;
-                    let lift = if self.search_status.is_some() { region_h * 1.15 } else { 0.0 };
+                    let lift = if self.search_status.is_some() {
+                        region_h * 1.15
+                    } else {
+                        0.0
+                    };
                     let tcy = (hint.y0 + hint.y1) as f32 * 0.5 - scroll - lift;
-                    ctx.text.draw_text_center(&mut canvas, msg, tcx, tcy, &TextStyle::new(region_h * 0.6, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        msg,
+                        tcx,
+                        tcy,
+                        &TextStyle::new(region_h * 0.6, *theme::SEARCH_FOUND_COLOUR)
+                            .weight(600)
+                            .font("Oxanium"),
+                        None,
+                        None,
+                    );
                 }
             }
 
@@ -4870,8 +5418,7 @@ impl FluorApp for PhotonApp {
                 .filter(|(_, c)| {
                     // Fleet siblings are infrastructure, not conversations — never listed (device management gets its own page later).
                     !c.is_sibling
-                        && (filter.is_empty()
-                            || c.display_name().to_lowercase().contains(&filter))
+                        && (filter.is_empty() || c.display_name().to_lowercase().contains(&filter))
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -4885,7 +5432,10 @@ impl FluorApp for PhotonApp {
                     .map(|m| m.timestamp)
                     .max()
                     .unwrap_or(i64::MIN);
-                (u8::from(c.unread_count == 0), std::cmp::Reverse(last_activity))
+                (
+                    u8::from(c.unread_count == 0),
+                    std::cmp::Reverse(last_activity),
+                )
             });
 
             // Clamp scroll over the FULL block (user section + rows + version footer), hard-stop at both ends. Down-scroll stops when the version footer (one row past the last row) plus a row of bottom margin reaches the screen bottom; up-scroll stops at rest (0), with the avatar at its natural top. MUST match the pre-chrome clamp above (`block_end = block_bottom_at_zero + row_h*2`) so both passes agree within a frame.
@@ -4915,8 +5465,10 @@ impl FluorApp for PhotonApp {
                 }
                 // Hover/press vocabulary (block tints vetoed): hover = the NAME goes heavier + the presence ring strokes 1px wider; press = the logo's white-glow halo blooms behind the name. No fills, no deltas — weight, stroke, and light.
                 let row_hit_here = self.contact_hit_base.wrapping_add(ci as HitId);
-                let row_pressed = ci < 256 && ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == row_hit_here;
-                let row_hovered = row_pressed || (ci < 256 && ctx.pressed_hit == HIT_NONE && self.hover_hit == row_hit_here);
+                let row_pressed =
+                    ci < 256 && ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == row_hit_here;
+                let row_hovered = row_pressed
+                    || (ci < 256 && ctx.pressed_hit == HIT_NONE && self.hover_hit == row_hit_here);
                 let cy = (row_top + row_h / 2) as f32;
                 let _online = self.contacts[ci].is_online;
                 let _online_via_relay = self.contacts[ci].reached_via_relay;
@@ -4999,16 +5551,30 @@ impl FluorApp for PhotonApp {
                 // "Pending…" reads in SHEAR (the honest oblique — tan 12°): a name-shaped placeholder must not look like a name. Hover reads as WEIGHT (500 → 700), not a fill — and an unread row holds that same 700 weight until opened.
                 let row_weight = if row_hovered || unread { 700 } else { 500 };
                 let row_style = if self.contacts[ci].has_real_name() {
-                    TextStyle::new(text_size, row_colour).weight(row_weight).font("Oxanium")
+                    TextStyle::new(text_size, row_colour)
+                        .weight(row_weight)
+                        .font("Oxanium")
                 } else {
-                    TextStyle::new(text_size, row_colour).weight(row_weight).font("Oxanium").shear(0.2126)
+                    TextStyle::new(text_size, row_colour)
+                        .weight(row_weight)
+                        .font("Oxanium")
+                        .shear(0.2126)
                 };
                 let row_name = self.contacts[ci].display_name_or_pending();
-                ctx.text.draw_text_left(&mut canvas, &row_name, text_x, cy, &row_style, Some(rows_clip), None);
+                ctx.text.draw_text_left(
+                    &mut canvas,
+                    &row_name,
+                    text_x,
+                    cy,
+                    &row_style,
+                    Some(rows_clip),
+                    None,
+                );
                 if row_pressed {
                     // Press = the wordmark's halo, scoped to this row — composited AFTER the name (under() = topmost paints first, so program-order-later lands BENEATH the glyphs; the logo calls its glow last for the same reason — glow-first blew the text out to white). Full-width band like the wordmark, so the shared blur math holds.
                     let band_top = row_top.max(0) as usize;
-                    let band_h = ((row_top + row_h).min(buf_h as isize) as usize).saturating_sub(band_top);
+                    let band_h =
+                        ((row_top + row_h).min(buf_h as isize) as usize).saturating_sub(band_top);
                     if band_h >= 2 {
                         let mut scratch = vec![0u8; buf_w * band_h];
                         ctx.text.draw_text_left_legacy(
@@ -5026,7 +5592,12 @@ impl FluorApp for PhotonApp {
                         );
                         crate::ui::photon_logo::blur_horizontal_soft(&mut scratch);
                         crate::ui::photon_logo::blur_vertical_soft(&mut scratch, buf_w, band_h);
-                        crate::ui::photon_logo::composite_glow_white(canvas.pixels, buf_w, band_top, &scratch);
+                        crate::ui::photon_logo::composite_glow_white(
+                            canvas.pixels,
+                            buf_w,
+                            band_top,
+                            &scratch,
+                        );
                     }
                 }
 
@@ -5053,7 +5624,17 @@ impl FluorApp for PhotonApp {
                 let cx = buf_w as f32 * 0.5;
                 let cy = buf_h as f32 - band_h * 0.5;
                 let font_size = band_h * 0.6;
-                ctx.text.draw_text_center(&mut canvas, "storage degraded", cx, cy, &TextStyle::new(font_size, theme::DEGRADED_TEXT).weight(600).font("Oxanium"), None, None);
+                ctx.text.draw_text_center(
+                    &mut canvas,
+                    "storage degraded",
+                    cx,
+                    cy,
+                    &TextStyle::new(font_size, theme::DEGRADED_TEXT)
+                        .weight(600)
+                        .font("Oxanium"),
+                    None,
+                    None,
+                );
             }
 
             // Clock-off indicator: same amber as the degraded banner (nunc-time consensus says the system clock is grossly wrong). Warn only — Photon never corrects the clock. Stacks one band above "storage degraded" when both are showing so they don't overlap.
@@ -5075,7 +5656,17 @@ impl FluorApp for PhotonApp {
                 };
                 let dir = if offset_secs < 0 { "ahead" } else { "behind" };
                 let label = format!("clock off — {} {}", pretty, dir);
-                ctx.text.draw_text_center(&mut canvas, &label, cx, cy, &TextStyle::new(font_size, theme::CLOCK_TEXT).weight(600).font("Oxanium"), None, None);
+                ctx.text.draw_text_center(
+                    &mut canvas,
+                    &label,
+                    cx,
+                    cy,
+                    &TextStyle::new(font_size, theme::CLOCK_TEXT)
+                        .weight(600)
+                        .font("Oxanium"),
+                    None,
+                    None,
+                );
             }
 
             // (The Security / Recovery posture meters that used to sit bottom-right were removed — the security posture belongs on a dedicated Security page, not as ambient bottom-strip dots that read as noise. identity_posture/posture_colour/POSTURE_PIPS stay defined for that page.)
@@ -5089,8 +5680,13 @@ impl FluorApp for PhotonApp {
             if let Some(ci) = self.active_contact.filter(|&ci| ci < self.contacts.len()) {
                 // Clear the panel region's hit stamps before re-stamping this frame (immediate-mode stamps must not linger across page switches).
                 restamp_hit_rect(
-                    &mut chrome.hit_test_map, buf_w, buf_h,
-                    0, layout.rail.y as isize, buf_w as isize, buf_h as isize,
+                    &mut chrome.hit_test_map,
+                    buf_w,
+                    buf_h,
+                    0,
+                    layout.rail.y as isize,
+                    buf_w as isize,
+                    buf_h as isize,
                     HIT_NONE,
                 );
 
@@ -5099,35 +5695,88 @@ impl FluorApp for PhotonApp {
                 let diam = (avatar_r * 2.0) as usize;
                 if cpage == ContactPage::About
                     && self.contacts[ci].avatar_pixels.is_some()
-                    && (self.contacts[ci].avatar_scaled.is_none() || self.contacts[ci].avatar_scaled_diameter != diam)
+                    && (self.contacts[ci].avatar_scaled.is_none()
+                        || self.contacts[ci].avatar_scaled_diameter != diam)
                 {
                     let base = self.contacts[ci].avatar_pixels.as_ref().unwrap();
-                    let scaled = crate::ui::avatar_render::update_avatar_scaled(base, crate::ui::avatar::AVATAR_SIZE, diam);
+                    let scaled = crate::ui::avatar_render::update_avatar_scaled(
+                        base,
+                        crate::ui::avatar::AVATAR_SIZE,
+                        diam,
+                    );
                     self.contacts[ci].avatar_scaled = Some(scaled);
                     self.contacts[ci].avatar_scaled_diameter = diam;
                 }
                 let contact = &self.contacts[ci];
-                let our_hh = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
+                let our_hh = self
+                    .session
+                    .as_ref()
+                    .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                    .unwrap_or([0u8; 32]);
                 let is_self = contact.handle_hash == our_hh;
 
                 // --- Header: the contact's name, centred on the rail|content divider — the panel's "Settings" slot. ---
                 let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
-                let name_colour = if is_self { self_colour() } else { party_colour(&relationship_digest(&contact.handle_hash, &our_hh)) };
-                ctx.text.draw_text_center(&mut canvas, &contact.display_name_or_pending(), layout.content.x, layout.header.center_y(), &TextStyle::new(hspan, name_colour).weight(600).font("Oxanium"), None, None);
+                let name_colour = if is_self {
+                    self_colour()
+                } else {
+                    party_colour(&relationship_digest(&contact.handle_hash, &our_hh))
+                };
+                ctx.text.draw_text_center(
+                    &mut canvas,
+                    &contact.display_name_or_pending(),
+                    layout.content.x,
+                    layout.header.center_y(),
+                    &TextStyle::new(hspan, name_colour)
+                        .weight(600)
+                        .font("Oxanium"),
+                    None,
+                    None,
+                );
 
                 // --- Nav rail: pinned Back (returns to the conversation), then the page rows scrolling below — the settings rail verbatim. ---
                 let rail_inset = layout.rail_inset();
                 let nav_h = layout.nav_row_h();
                 let rspan = (layout.unit * 0.58).max(9.0);
                 {
-                    let r = fluor::region::Region::new(rail_inset.x, rail_inset.y, rail_inset.w, nav_h);
-                    let back_held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
-                    ctx.text.draw_text_left(&mut canvas, "\u{2039} Back", r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
-                    let fill = if back_held { fluor::theme::BUTTON_HELD } else { theme::BACK_BUTTON_IDLE_FILL };
-                    paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fill, None, None);
+                    let r =
+                        fluor::region::Region::new(rail_inset.x, rail_inset.y, rail_inset.w, nav_h);
+                    let back_held =
+                        ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
+                    ctx.text.draw_text_left(
+                        &mut canvas,
+                        "\u{2039} Back",
+                        r.x + rspan * 0.6,
+                        r.center_y(),
+                        &TextStyle::new(rspan, *theme::SEARCH_FOUND_COLOUR)
+                            .weight(600)
+                            .font("Oxanium"),
+                        None,
+                        None,
+                    );
+                    let fill = if back_held {
+                        fluor::theme::BUTTON_HELD
+                    } else {
+                        theme::BACK_BUTTON_IDLE_FILL
+                    };
+                    paint::fill_rect(
+                        &mut canvas,
+                        r.x as isize,
+                        r.y as isize,
+                        r.w as isize,
+                        r.h as isize,
+                        fill,
+                        None,
+                        None,
+                    );
                     restamp_hit_rect(
-                        &mut chrome.hit_test_map, buf_w, buf_h,
-                        r.x as isize, r.y as isize, r.right() as isize, r.bottom() as isize,
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        r.x as isize,
+                        r.y as isize,
+                        r.right() as isize,
+                        r.bottom() as isize,
                         self.back_btn_hit_id,
                     );
                 }
@@ -5151,23 +5800,65 @@ impl FluorApp for PhotonApp {
                     let active = *p == cpage;
                     let held = ctx.pressed_hit != HIT_NONE
                         && ctx.pressed_hit == self.contact_nav_base.wrapping_add(i as HitId);
-                    let colour = if active { *theme::CONTACT_NAME_COLOUR } else { *theme::LABEL_COLOUR };
-                    ctx.text.draw_text_left(&mut canvas, p.label(), r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, colour).weight(if active { 600 } else { 400 }).font("Oxanium"), Some(pages_clip), None);
+                    let colour = if active {
+                        *theme::CONTACT_NAME_COLOUR
+                    } else {
+                        *theme::LABEL_COLOUR
+                    };
+                    ctx.text.draw_text_left(
+                        &mut canvas,
+                        p.label(),
+                        r.x + rspan * 0.6,
+                        r.center_y(),
+                        &TextStyle::new(rspan, colour)
+                            .weight(if active { 600 } else { 400 })
+                            .font("Oxanium"),
+                        Some(pages_clip),
+                        None,
+                    );
                     if held {
-                        paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fluor::theme::BUTTON_HELD, Some(pages_clip), None);
+                        paint::fill_rect(
+                            &mut canvas,
+                            r.x as isize,
+                            r.y as isize,
+                            r.w as isize,
+                            r.h as isize,
+                            fluor::theme::BUTTON_HELD,
+                            Some(pages_clip),
+                            None,
+                        );
                     } else if active {
-                        paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, theme::SEPARATOR_COLOUR, Some(pages_clip), None);
+                        paint::fill_rect(
+                            &mut canvas,
+                            r.x as isize,
+                            r.y as isize,
+                            r.w as isize,
+                            r.h as isize,
+                            theme::SEPARATOR_COLOUR,
+                            Some(pages_clip),
+                            None,
+                        );
                     }
                     restamp_hit_rect(
-                        &mut chrome.hit_test_map, buf_w, buf_h,
-                        r.x as isize, r.y.max(pages_top) as isize,
-                        r.right() as isize, r.bottom().min(layout.rail.bottom()) as isize,
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        r.x as isize,
+                        r.y.max(pages_top) as isize,
+                        r.right() as isize,
+                        r.bottom().min(layout.rail.bottom()) as isize,
                         self.contact_nav_base.wrapping_add(i as HitId),
                     );
                 }
                 paint::fill_rect(
-                    &mut canvas, layout.content.x as isize, layout.content.y as isize,
-                    1, layout.content.h as isize, theme::SEPARATOR_COLOUR, None, None,
+                    &mut canvas,
+                    layout.content.x as isize,
+                    layout.content.y as isize,
+                    1,
+                    layout.content.h as isize,
+                    theme::SEPARATOR_COLOUR,
+                    None,
+                    None,
                 );
 
                 // --- Selected page body: natural-height rows over the shared content scroll, clipped to the reading column. ---
@@ -5184,25 +5875,58 @@ impl FluorApp for PhotonApp {
                 match cpage {
                     ContactPage::About => {
                         let n = contact_page_rows(ContactPage::About);
-                        let rows = layout.content_scrolled(n, settings_content_scroll).split_v([1.0; 12]);
+                        let rows = layout
+                            .content_scrolled(n, settings_content_scroll)
+                            .split_v([1.0; 12]);
                         // Avatar block spans the first 5 rows: presence-tier ring under the picture, centred in the column.
-                        let block = fluor::region::Region::new(rows[0].x, rows[0].y, rows[0].w, rows[0].h * 5.0);
+                        let block = fluor::region::Region::new(
+                            rows[0].x,
+                            rows[0].y,
+                            rows[0].w,
+                            rows[0].h * 5.0,
+                        );
                         let (cx, cy) = (block.center_x(), block.center_y());
                         let ring = ring_tier_colour(contact);
                         if let Some(scaled) = contact.avatar_scaled.as_ref() {
-                            crate::ui::avatar_render::draw_avatar(&mut canvas, cx, cy, avatar_r, scaled, diam, Some(content_clip));
+                            crate::ui::avatar_render::draw_avatar(
+                                &mut canvas,
+                                cx,
+                                cy,
+                                avatar_r,
+                                scaled,
+                                diam,
+                                Some(content_clip),
+                            );
                         } else {
                             let gd = diam.max(1);
                             let seed = proof_gradient_seed(&contact.handle_proof);
-                            crate::ui::avatar_render::draw_avatar(&mut canvas, cx, cy, avatar_r, &gradient_avatar_rgb(seed, gd), gd, Some(content_clip));
+                            crate::ui::avatar_render::draw_avatar(
+                                &mut canvas,
+                                cx,
+                                cy,
+                                avatar_r,
+                                &gradient_avatar_rgb(seed, gd),
+                                gd,
+                                Some(content_clip),
+                            );
                         }
-                        paint::draw_circle(&mut canvas, cx, cy, avatar_r + (avatar_r * 0.0375).max(1.0), ring, Some(content_clip));
+                        paint::draw_circle(
+                            &mut canvas,
+                            cx,
+                            cy,
+                            avatar_r + (avatar_r * 0.0375).max(1.0),
+                            ring,
+                            Some(content_clip),
+                        );
                         let shared_name = if is_self {
                             "your own notes-to-self conversation".to_string()
                         } else if contact.published_name.is_empty() {
                             "name: not shared yet".to_string()
                         } else {
-                            format!("name: \u{201c}{}\u{201d} (their published name)", contact.published_name)
+                            format!(
+                                "name: \u{201c}{}\u{201d} (their published name)",
+                                contact.published_name
+                            )
                         };
                         let shared_avatar = if is_self {
                             String::new()
@@ -5222,70 +5946,249 @@ impl FluorApp for PhotonApp {
                         } else {
                             "identity not yet folded (first contact still settling)".to_string()
                         };
-                        settings_line(&mut canvas, ctx.text, rows[5], "What they share with you", tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                        settings_line(&mut canvas, ctx.text, rows[6], &shared_name, hspan2, *theme::LABEL_COLOUR, 400);
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[5],
+                            "What they share with you",
+                            tspan,
+                            *theme::CONTACT_NAME_COLOUR,
+                            600,
+                        );
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[6],
+                            &shared_name,
+                            hspan2,
+                            *theme::LABEL_COLOUR,
+                            400,
+                        );
                         if !shared_avatar.is_empty() {
-                            settings_line(&mut canvas, ctx.text, rows[7], &shared_avatar, hspan2, *theme::LABEL_COLOUR, 400);
+                            settings_line(
+                                &mut canvas,
+                                ctx.text,
+                                rows[7],
+                                &shared_avatar,
+                                hspan2,
+                                *theme::LABEL_COLOUR,
+                                400,
+                            );
                         }
-                        settings_line(&mut canvas, ctx.text, rows[9], "Identity", tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                        settings_line(&mut canvas, ctx.text, rows[10], &identity_line, hspan2, *theme::LABEL_COLOUR, 400);
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[9],
+                            "Identity",
+                            tspan,
+                            *theme::CONTACT_NAME_COLOUR,
+                            600,
+                        );
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[10],
+                            &identity_line,
+                            hspan2,
+                            *theme::LABEL_COLOUR,
+                            400,
+                        );
                     }
                     ContactPage::Stats => {
                         let n = contact_page_rows(ContactPage::Stats);
-                        let rows = layout.content_scrolled(n, settings_content_scroll).split_v([1.0; 9]);
+                        let rows = layout
+                            .content_scrolled(n, settings_content_scroll)
+                            .split_v([1.0; 9]);
                         // Hidden probe rows are bookkeeping, not conversation — keep them out of every human-facing count.
-                        let human: Vec<&crate::types::ChatMessage> = contact.messages.iter().filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted).collect();
+                        let human: Vec<&crate::types::ChatMessage> = contact
+                            .messages
+                            .iter()
+                            .filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted)
+                            .collect();
                         let sent = human.iter().filter(|m| m.is_outgoing).count();
                         let recv = human.len() - sent;
-                        let delivered = human.iter().filter(|m| m.is_outgoing && m.delivered).count();
+                        let delivered = human
+                            .iter()
+                            .filter(|m| m.is_outgoing && m.delivered)
+                            .count();
                         let span_days = {
                             let first = human.iter().map(|m| m.timestamp).min();
                             let last = human.iter().map(|m| m.timestamp).max();
                             match (first, last) {
-                                (Some(a), Some(b)) if b > a => ((b - a) / (vsf::OSCILLATIONS_PER_SECOND as i64 * 86_400)).max(0) as usize,
+                                (Some(a), Some(b)) if b > a => {
+                                    ((b - a) / (vsf::OSCILLATIONS_PER_SECOND as i64 * 86_400))
+                                        .max(0) as usize
+                                }
                                 _ => 0,
                             }
                         };
-                        let history_line = match contact.history_recovery.as_ref().map(|r| r.complete) {
-                            Some(true) => "history: complete on this device".to_string(),
-                            Some(false) => "history: still syncing".to_string(),
-                            None => "history: idle (no sweep this session)".to_string(),
-                        };
+                        let history_line =
+                            match contact.history_recovery.as_ref().map(|r| r.complete) {
+                                Some(true) => "history: complete on this device".to_string(),
+                                Some(false) => "history: still syncing".to_string(),
+                                None => "history: idle (no sweep this session)".to_string(),
+                            };
                         let chain_line = if is_self {
                             "no chain \u{2014} delivered by definition".to_string()
                         } else if contact.chain_woven {
                             "chain woven \u{2014} secured end-to-end".to_string()
                         } else {
-                            contact_status_line(contact, self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()), self.session.as_ref().map(|se| &se.identity_seed))
+                            contact_status_line(
+                                contact,
+                                self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()),
+                                self.session.as_ref().map(|se| &se.identity_seed),
+                            )
                         };
                         let connection_line = if is_self {
                             "always reachable (this is you)".to_string()
                         } else if contact.is_online {
-                            if contact.reached_via_relay { "connected \u{00b7} via relay".to_string() } else { "connected \u{00b7} direct".to_string() }
+                            if contact.reached_via_relay {
+                                "connected \u{00b7} via relay".to_string()
+                            } else {
+                                "connected \u{00b7} direct".to_string()
+                            }
                         } else {
                             "offline".to_string()
                         };
                         // These rows should CONVERGE across your fleet devices — two devices showing different numbers here IS the sync bug, made visible.
-                        settings_line(&mut canvas, ctx.text, rows[0], "Between you", tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                        settings_line(&mut canvas, ctx.text, rows[1], &format!("{} message(s) \u{00b7} {} sent \u{00b7} {} received", human.len(), sent, recv), hspan2, *theme::LABEL_COLOUR, 400);
-                        settings_line(&mut canvas, ctx.text, rows[2], &format!("{} of your messages delivered", delivered), hspan2, *theme::LABEL_COLOUR, 400);
-                        settings_line(&mut canvas, ctx.text, rows[3], &format!("chatting across {} day(s)", span_days), hspan2, *theme::LABEL_COLOUR, 400);
-                        settings_line(&mut canvas, ctx.text, rows[4], &history_line, hspan2, *theme::LABEL_COLOUR, 400);
-                        settings_line(&mut canvas, ctx.text, rows[5], &chain_line, hspan2, *theme::LABEL_COLOUR, 400);
-                        settings_line(&mut canvas, ctx.text, rows[6], &connection_line, hspan2, *theme::LABEL_COLOUR, 400);
-                        settings_line(&mut canvas, ctx.text, rows[8], "these rows should match on every one of your devices", hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[0],
+                            "Between you",
+                            tspan,
+                            *theme::CONTACT_NAME_COLOUR,
+                            600,
+                        );
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[1],
+                            &format!(
+                                "{} message(s) \u{00b7} {} sent \u{00b7} {} received",
+                                human.len(),
+                                sent,
+                                recv
+                            ),
+                            hspan2,
+                            *theme::LABEL_COLOUR,
+                            400,
+                        );
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[2],
+                            &format!("{} of your messages delivered", delivered),
+                            hspan2,
+                            *theme::LABEL_COLOUR,
+                            400,
+                        );
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[3],
+                            &format!("chatting across {} day(s)", span_days),
+                            hspan2,
+                            *theme::LABEL_COLOUR,
+                            400,
+                        );
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[4],
+                            &history_line,
+                            hspan2,
+                            *theme::LABEL_COLOUR,
+                            400,
+                        );
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[5],
+                            &chain_line,
+                            hspan2,
+                            *theme::LABEL_COLOUR,
+                            400,
+                        );
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[6],
+                            &connection_line,
+                            hspan2,
+                            *theme::LABEL_COLOUR,
+                            400,
+                        );
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[8],
+                            "these rows should match on every one of your devices",
+                            hspan2 * 0.9,
+                            *theme::LABEL_COLOUR,
+                            400,
+                        );
                     }
                     ContactPage::Manage => {
                         let n = contact_page_rows(ContactPage::Manage);
-                        let rows = layout.content_scrolled(n, settings_content_scroll).split_v([1.0; 6]);
-                        settings_line(&mut canvas, ctx.text, rows[0], "Manage", tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                        let rows = layout
+                            .content_scrolled(n, settings_content_scroll)
+                            .split_v([1.0; 6]);
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[0],
+                            "Manage",
+                            tspan,
+                            *theme::CONTACT_NAME_COLOUR,
+                            600,
+                        );
                         if is_self || contact.is_sibling {
-                            settings_line(&mut canvas, ctx.text, rows[1], if is_self { "your own notes can\u{2019}t be booted" } else { "a fleet device signs itself out \u{2014} see Settings \u{2192} Fleet" }, hspan2, *theme::LABEL_COLOUR, 400);
+                            settings_line(
+                                &mut canvas,
+                                ctx.text,
+                                rows[1],
+                                if is_self {
+                                    "your own notes can\u{2019}t be booted"
+                                } else {
+                                    "a fleet device signs itself out \u{2014} see Settings \u{2192} Fleet"
+                                },
+                                hspan2,
+                                *theme::LABEL_COLOUR,
+                                400,
+                            );
                         } else {
-                            let pill = fluor::region::Region::new(rows[2].x + rows[2].w * 0.1, rows[2].y, rows[2].w * 0.5, rows[2].h * 0.95);
-                            let label = if self.contact_boot_armed { "Tap again \u{2014} boot them" } else { "Boot" };
-                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill, label, self.contact_panel_btn_base, ctx.pressed_hit);
-                            settings_line(&mut canvas, ctx.text, rows[3], "removes them from every device of YOUR fleet", hspan2, *theme::LABEL_COLOUR, 400);
+                            let pill = fluor::region::Region::new(
+                                rows[2].x + rows[2].w * 0.1,
+                                rows[2].y,
+                                rows[2].w * 0.5,
+                                rows[2].h * 0.95,
+                            );
+                            let label = if self.contact_boot_armed {
+                                "Tap again \u{2014} boot them"
+                            } else {
+                                "Boot"
+                            };
+                            draw_stub_pill(
+                                &mut canvas,
+                                ctx.text,
+                                &mut chrome.hit_test_map,
+                                buf_w,
+                                buf_h,
+                                pill,
+                                label,
+                                self.contact_panel_btn_base,
+                                ctx.pressed_hit,
+                            );
+                            settings_line(
+                                &mut canvas,
+                                ctx.text,
+                                rows[3],
+                                "removes them from every device of YOUR fleet",
+                                hspan2,
+                                *theme::LABEL_COLOUR,
+                                400,
+                            );
                             settings_line(&mut canvas, ctx.text, rows[4], "they are not told \u{2014} their records stay theirs (ostracism, not erasure)", hspan2, *theme::LABEL_COLOUR, 400);
                         }
                     }
@@ -5330,15 +6233,31 @@ impl FluorApp for PhotonApp {
                     let back_text = "\u{2039} Contacts";
                     let topbar_visible = bar_off < bar_h * 0.75;
                     // Same hover/press vocabulary as the contact rows: hover = weight 500 → 700, press = the wordmark's glow behind the label (composited AFTER the text — under() layers beneath).
-                    let back_pressed = topbar_visible && ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
-                    let back_hovered = back_pressed || (topbar_visible && ctx.pressed_hit == HIT_NONE && self.hover_hit == self.back_btn_hit_id);
+                    let back_pressed = topbar_visible
+                        && ctx.pressed_hit != HIT_NONE
+                        && ctx.pressed_hit == self.back_btn_hit_id;
+                    let back_hovered = back_pressed
+                        || (topbar_visible
+                            && ctx.pressed_hit == HIT_NONE
+                            && self.hover_hit == self.back_btn_hit_id);
                     let back_weight = if back_hovered { 700 } else { 500 };
                     if back_y > -back_size {
-                        ctx.text.draw_text_left(&mut canvas, back_text, unit, back_y, &TextStyle::new(back_size, *theme::CONTACT_NAME_COLOUR).weight(back_weight).font("Oxanium"), None, None);
+                        ctx.text.draw_text_left(
+                            &mut canvas,
+                            back_text,
+                            unit,
+                            back_y,
+                            &TextStyle::new(back_size, *theme::CONTACT_NAME_COLOUR)
+                                .weight(back_weight)
+                                .font("Oxanium"),
+                            None,
+                            None,
+                        );
                     }
                     if back_pressed {
                         let band_top = (back_y - back_size).max(0.) as usize;
-                        let band_h = (((back_y + back_size) as usize).min(buf_h)).saturating_sub(band_top);
+                        let band_h =
+                            (((back_y + back_size) as usize).min(buf_h)).saturating_sub(band_top);
                         if band_h >= 2 {
                             let mut scratch = vec![0u8; buf_w * band_h];
                             ctx.text.draw_text_left_legacy(
@@ -5356,13 +6275,21 @@ impl FluorApp for PhotonApp {
                             );
                             crate::ui::photon_logo::blur_horizontal_soft(&mut scratch);
                             crate::ui::photon_logo::blur_vertical_soft(&mut scratch, buf_w, band_h);
-                            crate::ui::photon_logo::composite_glow_white(canvas.pixels, buf_w, band_top, &scratch);
+                            crate::ui::photon_logo::composite_glow_white(
+                                canvas.pixels,
+                                buf_w,
+                                band_top,
+                                &scratch,
+                            );
                         }
                     }
                     // Stamp the back button hit rect.
-                    let back_w = ctx
-                        .text
-                        .measure_text(back_text, &TextStyle::new(back_size, 0).weight(back_weight).font("Oxanium"));
+                    let back_w = ctx.text.measure_text(
+                        back_text,
+                        &TextStyle::new(back_size, 0)
+                            .weight(back_weight)
+                            .font("Oxanium"),
+                    );
                     restamp_hit_rect(
                         &mut chrome.hit_test_map,
                         buf_w,
@@ -5371,27 +6298,54 @@ impl FluorApp for PhotonApp {
                         (back_y - back_size) as isize,
                         (unit + back_w + unit) as isize,
                         (back_y + back_size) as isize,
-                        if topbar_visible { self.back_btn_hit_id } else { HIT_NONE },
+                        if topbar_visible {
+                            self.back_btn_hit_id
+                        } else {
+                            HIT_NONE
+                        },
                     );
-
 
                     // ONE LAYOUT, ONE LAYER (user spec, 2026-07-26): the conversation is a single scrolling stream whose ENTRY #0 is the avatar + petname (+ ceremony status while pending) — visible ONLY at the conversation GENESIS, at the literal top of the content area, scrolling like any message. The fixed centred header is DEAD for every state (its pre-woven survival was the root of the "different layer" saga). The fixed strip holds ONLY the tiny always-on name, the orb, and the sliding "‹ Contacts".
                     let (_, _, avatar_r) = conv_layout.avatar_center_radius();
                     let avatar_diam = (avatar_r * 2.0) as usize;
                     let avatar_cx = buf_w as f32 * 0.5;
                     // Stamp the avatar disc + tier ring at a given centre-y — stream entry #0's avatar. Clip rides in as a parameter and the caller passes the LIST clip: the avatar obeys exactly the same boundary as every message (a hardcoded None once let it paint through the top edge onto its own visual layer).
-                    let draw_conv_avatar = |canvas: &mut Canvas, cy: f32, clip: Option<fluor::paint::Clip>| {
-                        if let Some(scaled) = contact.avatar_scaled.as_ref() {
-                            crate::ui::avatar_render::draw_avatar(canvas, avatar_cx, cy, avatar_r, scaled, avatar_diam, clip);
-                        } else {
-                            let gd = (avatar_r * 2.0).max(1.0) as usize;
-                            let seed = proof_gradient_seed(&contact.handle_proof);
-                            crate::ui::avatar_render::draw_avatar(canvas, avatar_cx, cy, avatar_r, &gradient_avatar_rgb(seed, gd), gd, clip);
-                        }
-                        let ring = ring_tier_colour(contact);
-                        let ring_thick = (avatar_r * 0.0375).max(1.0);
-                        paint::draw_circle(canvas, avatar_cx, cy, avatar_r + ring_thick, ring, clip);
-                    };
+                    let draw_conv_avatar =
+                        |canvas: &mut Canvas, cy: f32, clip: Option<fluor::paint::Clip>| {
+                            if let Some(scaled) = contact.avatar_scaled.as_ref() {
+                                crate::ui::avatar_render::draw_avatar(
+                                    canvas,
+                                    avatar_cx,
+                                    cy,
+                                    avatar_r,
+                                    scaled,
+                                    avatar_diam,
+                                    clip,
+                                );
+                            } else {
+                                let gd = (avatar_r * 2.0).max(1.0) as usize;
+                                let seed = proof_gradient_seed(&contact.handle_proof);
+                                crate::ui::avatar_render::draw_avatar(
+                                    canvas,
+                                    avatar_cx,
+                                    cy,
+                                    avatar_r,
+                                    &gradient_avatar_rgb(seed, gd),
+                                    gd,
+                                    clip,
+                                );
+                            }
+                            let ring = ring_tier_colour(contact);
+                            let ring_thick = (avatar_r * 0.0375).max(1.0);
+                            paint::draw_circle(
+                                canvas,
+                                avatar_cx,
+                                cy,
+                                avatar_r + ring_thick,
+                                ring,
+                                clip,
+                            );
+                        };
 
                     // Relationship colour for this contact: everything handle-specific on this screen (name, their message text) renders in it. Self is the neutral-grey anchor.
                     let our_handle_hash = self
@@ -5410,24 +6364,52 @@ impl FluorApp for PhotonApp {
                     // Petname style for stream entry #0 (pending names shear italic like everywhere else).
                     let name_size = unit * 1.2;
                     let header_style = if contact.has_real_name() {
-                        TextStyle::new(name_size, their_colour).weight(600).font("Oxanium")
+                        TextStyle::new(name_size, their_colour)
+                            .weight(600)
+                            .font("Oxanium")
                     } else {
-                        TextStyle::new(name_size, their_colour).weight(600).font("Oxanium").shear(0.2126)
+                        TextStyle::new(name_size, their_colour)
+                            .weight(600)
+                            .font("Oxanium")
+                            .shear(0.2126)
                     };
 
                     // CLUTCH/lifecycle status — computed here, DRAWN inside stream entry #0 (under the petname, at genesis). End-of-identity states outrank the ceremony line; a woven chain shows no line at all (the working conversation is its own proof); self shows one only while empty.
-                    let show_status = contact.identity_superseded || contact.identity_ended || (is_self_contact && contact.messages.is_empty()) || (!is_self_contact && !contact.chain_woven);
+                    let show_status = contact.identity_superseded
+                        || contact.identity_ended
+                        || (is_self_contact && contact.messages.is_empty())
+                        || (!is_self_contact && !contact.chain_woven);
                     let status_in_stream: Option<(String, u32)> = if show_status {
                         Some(if contact.identity_superseded {
-                            ("name re-claimed by someone new \u{2014} this is NOT them".to_string(), *theme::ERROR_TEXT_COLOUR)
+                            (
+                                "name re-claimed by someone new \u{2014} this is NOT them"
+                                    .to_string(),
+                                *theme::ERROR_TEXT_COLOUR,
+                            )
                         } else if contact.identity_ended {
-                            ("identity ended \u{2014} conversation frozen".to_string(), *theme::LABEL_COLOUR)
+                            (
+                                "identity ended \u{2014} conversation frozen".to_string(),
+                                *theme::LABEL_COLOUR,
+                            )
                         } else if is_self_contact {
                             ("notes to self".to_string(), *theme::SEARCH_FOUND_COLOUR)
                         } else {
                             (
-                                format!("CLUTCH: {}", contact_status_line(contact, self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()), self.session.as_ref().map(|se| &se.identity_seed))),
-                                if contact.clutch_state == crate::types::ClutchState::Complete { *theme::SEARCH_FOUND_COLOUR } else { *theme::HOURGLASS_COLOUR },
+                                format!(
+                                    "CLUTCH: {}",
+                                    contact_status_line(
+                                        contact,
+                                        self.device_keypair
+                                            .as_ref()
+                                            .map(|kp| *kp.public.as_bytes()),
+                                        self.session.as_ref().map(|se| &se.identity_seed)
+                                    )
+                                ),
+                                if contact.clutch_state == crate::types::ClutchState::Complete {
+                                    *theme::SEARCH_FOUND_COLOUR
+                                } else {
+                                    *theme::HOURGLASS_COLOUR
+                                },
                             )
                         })
                     } else {
@@ -5443,14 +6425,19 @@ impl FluorApp for PhotonApp {
                         let msg_size = unit * 0.62;
                         let line_h = msg_size * 1.6; // text + breathing room per message
                         let pad_x = unit; // left/right inset
-                        // Woven chat reclaims the whole header strip for the message list (the avatar/name ride the scroll-top instead, drawn below); pre-woven keeps the status header space.
-                        // The floor clears the CHROME title strip on desktop plus the tiny always-on name; Android draws no strip (full-edge) so a slim margin stands.
-                        let top_floor = if cfg!(target_os = "android") { unit * 1.1 } else { fluor::host::chrome::strip_height(ctx.viewport) + unit * 0.9 };
+                                          // Woven chat reclaims the whole header strip for the message list (the avatar/name ride the scroll-top instead, drawn below); pre-woven keeps the status header space.
+                                          // The floor clears the CHROME title strip on desktop plus the tiny always-on name; Android draws no strip (full-edge) so a slim margin stands.
+                        let top_floor = if cfg!(target_os = "android") {
+                            unit * 1.1
+                        } else {
+                            fluor::host::chrome::strip_height(ctx.viewport) + unit * 0.9
+                        };
                         let list_top = (back_y + unit).max(top_floor);
                         // Compose bar reserves the bottom strip, lifted off the bottom edge by `compose_margin` — and above the soft keyboard (`ime_lift`; the surface never resizes for the IME). The list lives between list_top and list_bottom. Must match the layout pass's `compose_h`/`compose_margin` below.
                         let compose_h = unit * 1.8;
                         let compose_margin = unit * 0.8;
-                        let list_bottom = buf_h as f32 - ime_lift - compose_h - compose_margin - unit * 0.5;
+                        let list_bottom =
+                            buf_h as f32 - ime_lift - compose_h - compose_margin - unit * 0.5;
                         // Clamp so a short window (tall header) can never invert the clip (list_top > list_bottom) — that's what made every message vanish on resize. When there's no room, list_bottom collapses to list_top and the list is simply empty rather than drawing with a negative-height (inverted) clip.
                         let list_bottom = list_bottom.max(list_top);
                         let list_clip = fluor::paint::Clip::new(
@@ -5469,11 +6456,24 @@ impl FluorApp for PhotonApp {
                             .collect();
                         let n = visible.len();
                         // Stream entry #0 (avatar + petname + optional status) is the oldest item: its height joins content_h so scrolling to genesis reveals it above message 1. Unconditional — every conversation has entry #0.
-                        let header_block_h = avatar_r * 2.0 + unit * 3.0 + if status_in_stream.is_some() { unit * 1.0 } else { 0.0 };
+                        let header_block_h = avatar_r * 2.0
+                            + unit * 3.0
+                            + if status_in_stream.is_some() {
+                                unit * 1.0
+                            } else {
+                                0.0
+                            };
                         // Details-strip selection for THIS conversation (identity-keyed): one strip line joins content_h so the stream shifts to make room rather than overdrawing a neighbour row.
-                        let sel_key = self.selected_msg.filter(|(sci, _, _)| *sci == ci).map(|(_, ts, out)| (ts, out));
+                        let sel_key = self
+                            .selected_msg
+                            .filter(|(sci, _, _)| *sci == ci)
+                            .map(|(_, ts, out)| (ts, out));
                         let detail_h = line_h * 2.0; // two strip lines: meta (sent/age/state) + the action row (reply · edit · copy · resend · delete)
-                        let sel_in_stream = sel_key.is_some_and(|(ts, out)| visible.iter().any(|m| m.timestamp == ts && m.is_outgoing == out));
+                        let sel_in_stream = sel_key.is_some_and(|(ts, out)| {
+                            visible
+                                .iter()
+                                .any(|m| m.timestamp == ts && m.is_outgoing == out)
+                        });
                         // WORD-WRAP: messages wrap to the pane width instead of trailing off-screen. Metrics style matches the draw style below minus colour (colour never changes glyph widths). `intra` = spacing between a message's own wrapped lines; the inter-message gap stays line_h on the last line, so single-line spacing is pixel-identical to the pre-wrap layout. The line-count CACHE (see msg_wrap) covers all of history for content_h; drawn messages re-wrap for their actual strings.
                         let wrap_style = TextStyle::new(msg_size, 0).weight(500);
                         let avail_w = (buf_w as f32 - pad_x * 2.0).max(msg_size);
@@ -5483,14 +6483,22 @@ impl FluorApp for PhotonApp {
                             let mut all_lines: Vec<Vec<String>> = Vec::with_capacity(n);
                             let mut total = 0usize;
                             for m in &visible {
-                                let lines = wrap_text_lines(ctx.text, &display_content(&m.content), &wrap_style, avail_w);
+                                let lines = wrap_text_lines(
+                                    ctx.text,
+                                    &display_content(&m.content),
+                                    &wrap_style,
+                                    avail_w,
+                                );
                                 total += lines.len();
                                 all_lines.push(lines);
                             }
                             self.msg_wrap = Some((wrap_key, all_lines, total));
                         }
                         let total_lines = self.msg_wrap.as_ref().map(|(_, _, t)| *t).unwrap_or(n);
-                        let content_h = n as f32 * line_h + (total_lines.saturating_sub(n)) as f32 * intra + header_block_h + if sel_in_stream { detail_h } else { 0.0 };
+                        let content_h = n as f32 * line_h
+                            + (total_lines.saturating_sub(n)) as f32 * intra
+                            + header_block_h
+                            + if sel_in_stream { detail_h } else { 0.0 };
                         let view_h = (list_bottom - list_top).max(0.0);
                         let max_scroll = (content_h - view_h).max(0.0);
                         // Publish the ceiling so the tick can clamp the STORED offset (this field write is disjoint from the `contact` borrow above); the local `scroll` only fixes THIS frame's draw.
@@ -5502,7 +6510,8 @@ impl FluorApp for PhotonApp {
                         // Whether the walk reached the conversation's FIRST message (no early break): the scroll-top avatar/name block may only draw then — drawing it at the break position floated it mid-stream over recent messages in any long conversation ("the avatar and petname are rendered in a different block").
                         let mut reached_oldest = true;
                         // Hold the cached wrap strings for the whole walk (disjoint field from everything the loop mutates).
-                        let wrap_cache: &Vec<Vec<String>> = &self.msg_wrap.as_ref().expect("wrap cache built above").1;
+                        let wrap_cache: &Vec<Vec<String>> =
+                            &self.msg_wrap.as_ref().expect("wrap cache built above").1;
                         for (vi, msg) in visible.iter().enumerate().rev() {
                             if y < list_top - line_h {
                                 reached_oldest = false;
@@ -5513,19 +6522,42 @@ impl FluorApp for PhotonApp {
                             let lines: &Vec<String> = wrap_cache.get(vi).unwrap_or(&EMPTY_LINES);
                             let block_extra = (lines.len() as f32 - 1.0) * intra;
                             // Attachment transfer progress: a thin fill under the pill while a matching PT transfer runs (outbound for our un-confirmed sends, inbound for blobs we're missing). Matched loosely by direction — the throttled snapshot only ever contains big sharded transfers.
-                            if let Some((hash, _, _)) = crate::types::parse_attachment_content(&msg.content) {
+                            if let Some((hash, _, _)) =
+                                crate::types::parse_attachment_content(&msg.content)
+                            {
                                 let want_outbound = msg.is_outgoing;
-                                let relevant = if want_outbound { !self.attach_confirmed.contains(&hash) } else { !crate::storage::blob_present(&hash) };
+                                let relevant = if want_outbound {
+                                    !self.attach_confirmed.contains(&hash)
+                                } else {
+                                    !crate::storage::blob_present(&hash)
+                                };
                                 if relevant {
-                                    if let Some((_, done, total, _)) = self.attach_progress.iter().find(|(_, _, _, ob)| *ob == want_outbound) {
-                                        let frac = (*done as f32 / (*total).max(1) as f32).clamp(0.0, 1.0);
+                                    if let Some((_, done, total, _)) = self
+                                        .attach_progress
+                                        .iter()
+                                        .find(|(_, _, _, ob)| *ob == want_outbound)
+                                    {
+                                        let frac =
+                                            (*done as f32 / (*total).max(1) as f32).clamp(0.0, 1.0);
                                         let bar_w = (buf_w as f32 - pad_x * 2.0) * frac;
                                         let (bx, bw) = if msg.is_outgoing {
-                                            ((buf_w as f32 - pad_x - bar_w) as isize, bar_w as isize)
+                                            (
+                                                (buf_w as f32 - pad_x - bar_w) as isize,
+                                                bar_w as isize,
+                                            )
                                         } else {
                                             (pad_x as isize, bar_w as isize)
                                         };
-                                        paint::fill_rect(&mut canvas, bx, (y + msg_size * 0.55) as isize, bw, (ru.max(1.0) * 2.0) as isize, *theme::PROGRESS_FILL, Some(list_clip), None);
+                                        paint::fill_rect(
+                                            &mut canvas,
+                                            bx,
+                                            (y + msg_size * 0.55) as isize,
+                                            bw,
+                                            (ru.max(1.0) * 2.0) as isize,
+                                            *theme::PROGRESS_FILL,
+                                            Some(list_clip),
+                                            None,
+                                        );
                                     }
                                 }
                             }
@@ -5542,8 +6574,12 @@ impl FluorApp for PhotonApp {
                                 None,
                             );
                             // Details strip for the SELECTED message: occupies this slot (directly under the message, above the newer row + divider); the message itself shifts up by detail_h. Direction + age + delivery on the left, the copy pill on the right (stamped msg_copy_id).
-                            if sel_key.is_some_and(|(ts, out)| msg.timestamp == ts && msg.is_outgoing == out) {
-                                let secs = ((vsf::eagle_time_oscillations() - msg.timestamp) / crate::OSC_PER_SEC).max(0);
+                            if sel_key.is_some_and(|(ts, out)| {
+                                msg.timestamp == ts && msg.is_outgoing == out
+                            }) {
+                                let secs = ((vsf::eagle_time_oscillations() - msg.timestamp)
+                                    / crate::OSC_PER_SEC)
+                                    .max(0);
                                 let age = if secs >= 86400 {
                                     format!("{}d ago", secs / 86400)
                                 } else if secs >= 3600 {
@@ -5554,7 +6590,15 @@ impl FluorApp for PhotonApp {
                                     format!("{}s ago", secs)
                                 };
                                 let mut detail = if msg.is_outgoing {
-                                    format!("sent · {} · {}", age, if msg.delivered { "delivered" } else { "sending" })
+                                    format!(
+                                        "sent · {} · {}",
+                                        age,
+                                        if msg.delivered {
+                                            "delivered"
+                                        } else {
+                                            "sending"
+                                        }
+                                    )
                                 } else {
                                     format!("received · {}", age)
                                 };
@@ -5562,43 +6606,88 @@ impl FluorApp for PhotonApp {
                                     detail.push_str(" · recovered");
                                 }
                                 // Attachment blob state joins the meta line: held/confirmed vs still travelling.
-                                if let Some((hash, _, _)) = crate::types::parse_attachment_content(&msg.content) {
+                                if let Some((hash, _, _)) =
+                                    crate::types::parse_attachment_content(&msg.content)
+                                {
                                     if msg.is_outgoing {
-                                        detail.push_str(if self.attach_confirmed.contains(&hash) { " · blob delivered" } else { " · blob sending" });
+                                        detail.push_str(if self.attach_confirmed.contains(&hash) {
+                                            " · blob delivered"
+                                        } else {
+                                            " · blob sending"
+                                        });
                                     } else if !crate::storage::blob_present(&hash) {
                                         detail.push_str(" · blob not here yet");
                                     }
                                 }
                                 let detail_size = msg_size * 0.75;
-                                let detail_style = TextStyle::new(detail_size, *theme::LABEL_COLOUR).weight(500).font("Oxanium");
+                                let detail_style =
+                                    TextStyle::new(detail_size, *theme::LABEL_COLOUR)
+                                        .weight(500)
+                                        .font("Oxanium");
                                 // Upper strip line: the meta text.
-                                ctx.text.draw_text_left(&mut canvas, &detail, pad_x, y - line_h, &detail_style, Some(list_clip), None);
+                                ctx.text.draw_text_left(
+                                    &mut canvas,
+                                    &detail,
+                                    pad_x,
+                                    y - line_h,
+                                    &detail_style,
+                                    Some(list_clip),
+                                    None,
+                                );
                                 // Lower strip line: the ACTION ROW — reply · edit · copy/copied · resend · delete. Conditional pills: edit only for outgoing (stub until the message-format rework), resend only for undelivered outgoing (manual re-fire on the chain), delete always (LOCAL until tombstones — fleet sync may resurrect it), reply always. Each pill stamps its own hit id with generous padding.
                                 let (copy_label, copy_colour) = if self.selected_msg_copied {
                                     ("copied", *theme::SEARCH_FOUND_COLOUR)
                                 } else {
                                     ("copy", *theme::COPY_PILL_COLOUR)
                                 };
-                                let mut pills: Vec<(&str, u32, HitId)> = vec![
-                                    ("reply", *theme::COPY_PILL_COLOUR, self.msg_action_base),
-                                ];
+                                let mut pills: Vec<(&str, u32, HitId)> =
+                                    vec![("reply", *theme::COPY_PILL_COLOUR, self.msg_action_base)];
                                 if msg.is_outgoing {
-                                    pills.push(("edit", *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(1)));
+                                    pills.push((
+                                        "edit",
+                                        *theme::COPY_PILL_COLOUR,
+                                        self.msg_action_base.wrapping_add(1),
+                                    ));
                                 }
                                 pills.push((copy_label, copy_colour, self.msg_copy_id));
                                 if msg.is_outgoing && !msg.delivered {
-                                    pills.push(("resend", *theme::HOURGLASS_COLOUR, self.msg_action_base.wrapping_add(2)));
+                                    pills.push((
+                                        "resend",
+                                        *theme::HOURGLASS_COLOUR,
+                                        self.msg_action_base.wrapping_add(2),
+                                    ));
                                 }
                                 // Attachment rows: save (blob held) or fetch (blob missing — ask friend + siblings for it).
-                                if let Some((hash, _, _)) = crate::types::parse_attachment_content(&msg.content) {
+                                if let Some((hash, _, _)) =
+                                    crate::types::parse_attachment_content(&msg.content)
+                                {
                                     if crate::storage::blob_present(&hash) {
-                                        pills.push(("save", *theme::SEARCH_FOUND_COLOUR, self.msg_action_base.wrapping_add(4)));
+                                        pills.push((
+                                            "save",
+                                            *theme::SEARCH_FOUND_COLOUR,
+                                            self.msg_action_base.wrapping_add(4),
+                                        ));
                                     } else {
-                                        pills.push(("fetch", *theme::HOURGLASS_COLOUR, self.msg_action_base.wrapping_add(4)));
+                                        pills.push((
+                                            "fetch",
+                                            *theme::HOURGLASS_COLOUR,
+                                            self.msg_action_base.wrapping_add(4),
+                                        ));
                                     }
                                 }
-                                let deleting = self.pending_delete.as_ref().is_some_and(|(k, _)| *k == (ci, msg.timestamp, msg.is_outgoing));
-                                pills.push((if deleting { "deleting\u{2026}" } else { "delete" }, *theme::ERROR_TEXT_COLOUR, self.msg_action_base.wrapping_add(3)));
+                                let deleting =
+                                    self.pending_delete.as_ref().is_some_and(|(k, _)| {
+                                        *k == (ci, msg.timestamp, msg.is_outgoing)
+                                    });
+                                pills.push((
+                                    if deleting {
+                                        "deleting\u{2026}"
+                                    } else {
+                                        "delete"
+                                    },
+                                    *theme::ERROR_TEXT_COLOUR,
+                                    self.msg_action_base.wrapping_add(3),
+                                ));
                                 if deleting {
                                     // The feedback frame is on screen — the tick may do the heavy lift now.
                                     if let Some((_, painted)) = self.pending_delete.as_mut() {
@@ -5608,9 +6697,19 @@ impl FluorApp for PhotonApp {
                                 let pad_hit = detail_size;
                                 let mut px_cursor = pad_x;
                                 for (label, colour, hid) in pills {
-                                    let style = TextStyle::new(detail_size, colour).weight(600).font("Oxanium");
+                                    let style = TextStyle::new(detail_size, colour)
+                                        .weight(600)
+                                        .font("Oxanium");
                                     let w = ctx.text.measure_text(label, &style);
-                                    ctx.text.draw_text_left(&mut canvas, label, px_cursor, y, &style, Some(list_clip), None);
+                                    ctx.text.draw_text_left(
+                                        &mut canvas,
+                                        label,
+                                        px_cursor,
+                                        y,
+                                        &style,
+                                        Some(list_clip),
+                                        None,
+                                    );
                                     restamp_hit_rect(
                                         &mut chrome.hit_test_map,
                                         buf_w,
@@ -5639,14 +6738,32 @@ impl FluorApp for PhotonApp {
                             for (k, line) in lines.iter().enumerate() {
                                 let ly = y - (lines.len() - 1 - k) as f32 * intra;
                                 if msg.is_outgoing || is_self_contact {
-                                    ctx.text.draw_text_right(&mut canvas, line, buf_w as f32 - pad_x, ly, &msg_style, Some(list_clip), None);
+                                    ctx.text.draw_text_right(
+                                        &mut canvas,
+                                        line,
+                                        buf_w as f32 - pad_x,
+                                        ly,
+                                        &msg_style,
+                                        Some(list_clip),
+                                        None,
+                                    );
                                 } else {
-                                    ctx.text.draw_text_left(&mut canvas, line, pad_x, ly, &msg_style, Some(list_clip), None);
+                                    ctx.text.draw_text_left(
+                                        &mut canvas,
+                                        line,
+                                        pad_x,
+                                        ly,
+                                        &msg_style,
+                                        Some(list_clip),
+                                        None,
+                                    );
                                 }
                             }
                             // Stamp the row band — the WHOLE wrapped block — so a tap selects this message (details strip). Clamped to the list region so header/compose never lose their own hits; capped at the 64-id span (a taller screen than that doesn't exist).
                             if self.msg_hit_rows.len() < 64 {
-                                let row_hit = self.msg_hit_base.wrapping_add(self.msg_hit_rows.len() as HitId);
+                                let row_hit = self
+                                    .msg_hit_base
+                                    .wrapping_add(self.msg_hit_rows.len() as HitId);
                                 restamp_hit_rect(
                                     &mut chrome.hit_test_map,
                                     buf_w,
@@ -5664,21 +6781,43 @@ impl FluorApp for PhotonApp {
                         // STREAM ENTRY #0 — avatar, petname, optional ceremony/lifecycle status: drawn ONLY when the walk reached message 1 (genesis on screen); `y` then sits just above it and the entry is the stream's literal first item. Ordinary stream content: same clip as every message, no pinning, no slide. Off-screen anywhere but genesis.
                         if reached_oldest && y > list_top - header_block_h - line_h {
                             let (block_status, status_h) = match &status_in_stream {
-                                Some((label, colour)) => (Some((label.clone(), *colour)), unit * 1.0),
+                                Some((label, colour)) => {
+                                    (Some((label.clone(), *colour)), unit * 1.0)
+                                }
                                 None => (None, 0.0),
                             };
                             let block_name_y = y - unit * 0.2 - status_h;
                             let block_avatar_cy = block_name_y - unit * 1.2 - avatar_r;
                             draw_conv_avatar(&mut canvas, block_avatar_cy, Some(list_clip));
-                            ctx.text.draw_text_center(&mut canvas, &contact.display_name_or_pending(), buf_w as f32 * 0.5, block_name_y, &header_style, Some(list_clip), None);
+                            ctx.text.draw_text_center(
+                                &mut canvas,
+                                &contact.display_name_or_pending(),
+                                buf_w as f32 * 0.5,
+                                block_name_y,
+                                &header_style,
+                                Some(list_clip),
+                                None,
+                            );
                             if let Some((label, colour)) = block_status {
-                                ctx.text.draw_text_center(&mut canvas, &label, buf_w as f32 * 0.5, y - unit * 0.2, &TextStyle::new(unit * 0.6, colour).weight(500).font("Oxanium"), Some(list_clip), None);
+                                ctx.text.draw_text_center(
+                                    &mut canvas,
+                                    &label,
+                                    buf_w as f32 * 0.5,
+                                    y - unit * 0.2,
+                                    &TextStyle::new(unit * 0.6, colour)
+                                        .weight(500)
+                                        .font("Oxanium"),
+                                    Some(list_clip),
+                                    None,
+                                );
                             }
                         }
                         let _ = n;
 
                         // ── Compose box (pinned bottom) ──────────────────────────── Shown when THIS device can dispatch: a locally-woven chain (direct send), self (loopback), or COMPOSE-ANYWHERE — a friend conversation with history while a fleet exists (the send fleet-forwards to the chain-owning sibling; delivered tick follows its ACK back thru the sync). A truly fresh un-clutched contact still hides it (nothing anywhere can transmit yet).
-                        let can_fleet_forward = !contact.is_sibling && !contact.messages.is_empty() && self.contacts.iter().any(|c| c.is_sibling);
+                        let can_fleet_forward = !contact.is_sibling
+                            && !contact.messages.is_empty()
+                            && self.contacts.iter().any(|c| c.is_sibling);
                         if is_self_contact || contact.chain_woven || can_fleet_forward {
                             let compose_empty = self
                                 .message_textbox
@@ -5690,9 +6829,18 @@ impl FluorApp for PhotonApp {
                                 .as_ref()
                                 .map(|t| Some(t.hit_id()) == self.focused)
                                 .unwrap_or(false);
-                            let compose_cy = buf_h as f32 - ime_lift - compose_margin - compose_h * 0.5;
+                            let compose_cy =
+                                buf_h as f32 - ime_lift - compose_margin - compose_h * 0.5;
                             if compose_empty && !compose_focused {
-                                ctx.text.draw_text_left(&mut canvas, "message", pad_x * 1.2, compose_cy, &TextStyle::new(msg_size, *theme::LABEL_COLOUR), None, None);
+                                ctx.text.draw_text_left(
+                                    &mut canvas,
+                                    "message",
+                                    pad_x * 1.2,
+                                    compose_cy,
+                                    &TextStyle::new(msg_size, *theme::LABEL_COLOUR),
+                                    None,
+                                    None,
+                                );
                             }
                             // Send button COLOUR first (its under() blit lands on the noise), then the arrowhead over the pill (source-over). The textbox draws after — it sits over the button and clobbers the button's hit stamp with its own id — so we re-stamp the button's TRUE pill silhouette (fill + stroke, which also covers the arrowhead) AFTER the textbox, as the last writer. That's the whole click + hover region: shape-accurate, not a bbox rectangle.
                             if let Some(btn) = self.message_send_btn.as_mut() {
@@ -5729,21 +6877,42 @@ impl FluorApp for PhotonApp {
                             }
                             // Re-win the send button's hit silhouette after the textbox clobbered it.
                             if let Some(btn) = self.message_send_btn.as_ref() {
-                                btn.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, btn.hit_id());
+                                btn.stamp_hit_into(
+                                    &mut chrome.hit_test_map,
+                                    buf_w,
+                                    buf_h,
+                                    btn.hit_id(),
+                                );
                             }
                             // Paperclip, left of the compose box. Android always: it opens the system picker and is the ONLY way to attach there. Desktop only while an attachment is staged: drag-and-drop anywhere on the conversation is the attach affordance, so an always-on paperclip was a button whose entire click behavior was a toast explaining it isn't a button.
                             // Android's always-on paperclip is nixed too (Nick, 2026-07-31 — undecided on the affordance): with no drop path there, Android currently has NO way to attach. The paperclip only appears while an attachment is staged, which on Android is never.
                             let clip_visible = self.pending_attach.is_some();
-                            if let Some(tb) = self.message_textbox.as_ref().filter(|_| clip_visible) {
-                                let (tcx, tcy, tw, th) = (tb.center_x, tb.center_y, tb.width, tb.height);
+                            if let Some(tb) = self.message_textbox.as_ref().filter(|_| clip_visible)
+                            {
+                                let (tcx, tcy, tw, th) =
+                                    (tb.center_x, tb.center_y, tb.width, tb.height);
                                 let clip_size = th * 0.55;
                                 let clip_cx = tcx - tw * 0.5 - th * 0.55;
-                                let clip_style = TextStyle::new(clip_size, *theme::SEND_ARROW_COLOUR).weight(500);
-                                ctx.text.draw_text_center(&mut canvas, "\u{1F4CE}", clip_cx, tcy, &clip_style, None, None);
+                                let clip_style =
+                                    TextStyle::new(clip_size, *theme::SEND_ARROW_COLOUR)
+                                        .weight(500);
+                                ctx.text.draw_text_center(
+                                    &mut canvas,
+                                    "\u{1F4CE}",
+                                    clip_cx,
+                                    tcy,
+                                    &clip_style,
+                                    None,
+                                    None,
+                                );
                                 restamp_hit_rect(
-                                    &mut chrome.hit_test_map, buf_w, buf_h,
-                                    (clip_cx - th * 0.45) as isize, (tcy - th * 0.45) as isize,
-                                    (clip_cx + th * 0.45) as isize, (tcy + th * 0.45) as isize,
+                                    &mut chrome.hit_test_map,
+                                    buf_w,
+                                    buf_h,
+                                    (clip_cx - th * 0.45) as isize,
+                                    (tcy - th * 0.45) as isize,
+                                    (clip_cx + th * 0.45) as isize,
+                                    (tcy + th * 0.45) as isize,
                                     self.attach_ui_base.wrapping_add(2),
                                 );
                             }
@@ -5758,50 +6927,136 @@ impl FluorApp for PhotonApp {
                 let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
                 let (cx, cy, w, h) = attach_card_rect(buf_w, buf_h, unit);
                 // Dim the scene, then the card panel.
-                paint::fill_rect(&mut canvas, 0, 0, buf_w as isize, buf_h as isize, *theme::OVERLAY_DIM, None, None);
-                paint::fill_rect(&mut canvas, (cx - w * 0.5) as isize, (cy - h * 0.5) as isize, w as isize, h as isize, *theme::CARD_BG, None, None);
-                let label = TextStyle::new(unit * 0.62, *theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium");
-                let small = TextStyle::new(unit * 0.52, *theme::LABEL_COLOUR).weight(400).font("Oxanium");
+                paint::fill_rect(
+                    &mut canvas,
+                    0,
+                    0,
+                    buf_w as isize,
+                    buf_h as isize,
+                    *theme::OVERLAY_DIM,
+                    None,
+                    None,
+                );
+                paint::fill_rect(
+                    &mut canvas,
+                    (cx - w * 0.5) as isize,
+                    (cy - h * 0.5) as isize,
+                    w as isize,
+                    h as isize,
+                    *theme::CARD_BG,
+                    None,
+                    None,
+                );
+                let label = TextStyle::new(unit * 0.62, *theme::CONTACT_NAME_COLOUR)
+                    .weight(500)
+                    .font("Oxanium");
+                let small = TextStyle::new(unit * 0.52, *theme::LABEL_COLOUR)
+                    .weight(400)
+                    .font("Oxanium");
                 // Line 1: name. Line 2: dims + size (dozenal glyphs — never arabic).
-                ctx.text.draw_text_center(&mut canvas, &name, cx, cy - h * 0.5 + unit * 0.8, &label, None, None);
+                ctx.text.draw_text_center(
+                    &mut canvas,
+                    &name,
+                    cx,
+                    cy - h * 0.5 + unit * 0.8,
+                    &label,
+                    None,
+                    None,
+                );
                 let (units_n, units_l) = crate::types::size_units(bytes.len() as u64);
-                let send_original = self.attach_original_check.as_ref().map(|c| c.is_checked()).unwrap_or(false);
-                let t = self.attach_slider.as_ref().map(|s| s.value()).unwrap_or(0.7);
+                let send_original = self
+                    .attach_original_check
+                    .as_ref()
+                    .map(|c| c.is_checked())
+                    .unwrap_or(false);
+                let t = self
+                    .attach_slider
+                    .as_ref()
+                    .map(|s| s.value())
+                    .unwrap_or(0.7);
                 let (edge, q) = attach_curve(t);
                 let out_edge = edge.min(iw.max(ih));
                 let scale = out_edge as f32 / iw.max(ih) as f32;
-                let (ow, oh) = (((iw as f32 * scale).round() as u32).max(1), ((ih as f32 * scale).round() as u32).max(1));
+                let (ow, oh) = (
+                    ((iw as f32 * scale).round() as u32).max(1),
+                    ((ih as f32 * scale).round() as u32).max(1),
+                );
                 let dims_line = if send_original {
-                    format!("{}\u{00D7}{} \u{00B7} {}\u{202F}{} \u{00B7} original", crate::dozenal_glyphs(iw), crate::dozenal_glyphs(ih), crate::dozenal_glyphs(units_n), units_l)
+                    format!(
+                        "{}\u{00D7}{} \u{00B7} {}\u{202F}{} \u{00B7} original",
+                        crate::dozenal_glyphs(iw),
+                        crate::dozenal_glyphs(ih),
+                        crate::dozenal_glyphs(units_n),
+                        units_l
+                    )
                 } else {
-                    format!("{}\u{00D7}{} \u{2192} {}\u{00D7}{} \u{00B7} q{}", crate::dozenal_glyphs(iw), crate::dozenal_glyphs(ih), crate::dozenal_glyphs(ow), crate::dozenal_glyphs(oh), crate::dozenal_glyphs(q as u32))
+                    format!(
+                        "{}\u{00D7}{} \u{2192} {}\u{00D7}{} \u{00B7} q{}",
+                        crate::dozenal_glyphs(iw),
+                        crate::dozenal_glyphs(ih),
+                        crate::dozenal_glyphs(ow),
+                        crate::dozenal_glyphs(oh),
+                        crate::dozenal_glyphs(q as u32)
+                    )
                 };
-                ctx.text.draw_text_center(&mut canvas, &dims_line, cx, cy - h * 0.5 + unit * 1.7, &small, None, None);
+                ctx.text.draw_text_center(
+                    &mut canvas,
+                    &dims_line,
+                    cx,
+                    cy - h * 0.5 + unit * 1.7,
+                    &small,
+                    None,
+                    None,
+                );
                 // Widgets: slider (disabled + dimmed when sending original) and the checkbox.
                 if let Some(sl) = self.attach_slider.as_mut() {
                     sl.set_enabled(!send_original);
-                    sl.render_content_into(&mut canvas, Some(&mut chrome.hit_test_map), sl.hit_id());
+                    sl.render_content_into(
+                        &mut canvas,
+                        Some(&mut chrome.hit_test_map),
+                        sl.hit_id(),
+                    );
                 }
                 if let Some(cb) = self.attach_original_check.as_mut() {
-                    cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                    cb.render_content_into(
+                        &mut canvas,
+                        ctx.text,
+                        None,
+                        Some(&mut chrome.hit_test_map),
+                    );
                 }
                 // Pills: send / cancel. Encoding feedback frame rides the send pill (the pending_delete pattern).
                 let encoding = self.pending_attach_encode.is_some();
                 let pill_y = cy + h * 0.5 - unit * 0.8;
                 let pills: [(&str, u32, HitId); 2] = [
-                    (if encoding { "encoding\u{2026}" } else { "send" }, *theme::SEARCH_FOUND_COLOUR, self.attach_ui_base),
-                    ("cancel", *theme::ERROR_TEXT_COLOUR, self.attach_ui_base.wrapping_add(1)),
+                    (
+                        if encoding { "encoding\u{2026}" } else { "send" },
+                        *theme::SEARCH_FOUND_COLOUR,
+                        self.attach_ui_base,
+                    ),
+                    (
+                        "cancel",
+                        *theme::ERROR_TEXT_COLOUR,
+                        self.attach_ui_base.wrapping_add(1),
+                    ),
                 ];
                 let pstyle_sz = unit * 0.62;
                 let mut px = cx - w * 0.25;
                 for (plabel, colour, hid) in pills {
-                    let st = TextStyle::new(pstyle_sz, colour).weight(600).font("Oxanium");
+                    let st = TextStyle::new(pstyle_sz, colour)
+                        .weight(600)
+                        .font("Oxanium");
                     let pw = ctx.text.measure_text(plabel, &st);
-                    ctx.text.draw_text_center(&mut canvas, plabel, px, pill_y, &st, None, None);
+                    ctx.text
+                        .draw_text_center(&mut canvas, plabel, px, pill_y, &st, None, None);
                     restamp_hit_rect(
-                        &mut chrome.hit_test_map, buf_w, buf_h,
-                        (px - pw * 0.5 - unit * 0.4) as isize, (pill_y - unit * 0.6) as isize,
-                        (px + pw * 0.5 + unit * 0.4) as isize, (pill_y + unit * 0.6) as isize,
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        (px - pw * 0.5 - unit * 0.4) as isize,
+                        (pill_y - unit * 0.6) as isize,
+                        (px + pw * 0.5 + unit * 0.4) as isize,
+                        (pill_y + unit * 0.6) as isize,
                         hid,
                     );
                     px += w * 0.5;
@@ -5824,12 +7079,29 @@ impl FluorApp for PhotonApp {
                 let back_y = buf_h as f32 * 0.06 + unit;
                 let back_size = unit * 1.15;
                 let back_text = "‹ Contacts";
-                ctx.text.draw_text_left(&mut canvas, back_text, unit, back_y, &TextStyle::new(back_size, *theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium"), None, None);
-                let back_w = ctx.text.measure_text(back_text, &TextStyle::new(back_size, 0).weight(500).font("Oxanium"));
+                ctx.text.draw_text_left(
+                    &mut canvas,
+                    back_text,
+                    unit,
+                    back_y,
+                    &TextStyle::new(back_size, *theme::CONTACT_NAME_COLOUR)
+                        .weight(500)
+                        .font("Oxanium"),
+                    None,
+                    None,
+                );
+                let back_w = ctx.text.measure_text(
+                    back_text,
+                    &TextStyle::new(back_size, 0).weight(500).font("Oxanium"),
+                );
                 restamp_hit_rect(
-                    &mut chrome.hit_test_map, buf_w, buf_h,
-                    0, (back_y - back_size) as isize,
-                    (unit + back_w + unit) as isize, (back_y + back_size) as isize,
+                    &mut chrome.hit_test_map,
+                    buf_w,
+                    buf_h,
+                    0,
+                    (back_y - back_size) as isize,
+                    (unit + back_w + unit) as isize,
+                    (back_y + back_size) as isize,
                     self.back_btn_hit_id,
                 );
             }
@@ -5844,7 +7116,17 @@ impl FluorApp for PhotonApp {
             let u = tb_h;
             let gap = u * 0.45;
             // Two header rows above the field.
-            ctx.text.draw_text_center(&mut canvas, "Add a device", cx, tb_cy - u * 2.5, &TextStyle::new(u * 0.85, *theme::STATUS_TEXT_COLOUR).weight(600).font("Oxanium"), None, None);
+            ctx.text.draw_text_center(
+                &mut canvas,
+                "Add a device",
+                cx,
+                tb_cy - u * 2.5,
+                &TextStyle::new(u * 0.85, *theme::STATUS_TEXT_COLOUR)
+                    .weight(600)
+                    .font("Oxanium"),
+                None,
+                None,
+            );
             let subtitle = if self.add_device_bound.is_none() {
                 "Type the words shown on the new device"
             } else if self.add_device_checking {
@@ -5853,40 +7135,102 @@ impl FluorApp for PhotonApp {
                 // BLE/tap path only: load-bearing — the human must check the FAR (new) device's screen, not this one.
                 "Confirm only once the new device shows it's in"
             };
-            ctx.text.draw_text_center(&mut canvas, subtitle, cx, tb_cy - u * 1.35, &TextStyle::new(u * 0.45, *theme::STATUS_TEXT_COLOUR).font("Oxanium"), None, None);
+            ctx.text.draw_text_center(
+                &mut canvas,
+                subtitle,
+                cx,
+                tb_cy - u * 1.35,
+                &TextStyle::new(u * 0.45, *theme::STATUS_TEXT_COLOUR).font("Oxanium"),
+                None,
+                None,
+            );
             // Running cursor for everything BELOW the field slot (top edge of the next row).
             let mut y = tb_cy + u * 0.85;
             if self.add_device_bound.is_none() {
                 // Words-entry field (the launch textbox instance, at its rect); it stamps its hit id so click-to-focus works.
                 if let Some(tb) = self.textbox.as_mut() {
                     let id = tb.hit_id();
-                    tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
+                    tb.render_content_into(
+                        &mut canvas,
+                        0.,
+                        0.,
+                        ctx.text,
+                        None,
+                        None,
+                        Some(&mut chrome.hit_test_map),
+                        id,
+                    );
                 }
                 // Live word counter (n / 23).
-                let typed: String = self.textbox.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
+                let typed: String = self
+                    .textbox
+                    .as_ref()
+                    .map(|tb| tb.chars.iter().collect())
+                    .unwrap_or_default();
                 let count = crate::network::fgtw::fleet::pair_word_tokens(&typed);
                 let full = count == crate::network::fgtw::fleet::PAIR_WORD_COUNT;
                 let counter = format!("{count} / {}", crate::network::fgtw::fleet::PAIR_WORD_COUNT);
-                let counter_colour = if full { *theme::SEARCH_FOUND_COLOUR } else { fluor::theme::HINT_COLOUR };
-                ctx.text.draw_text_center(&mut canvas, &counter, cx, y + u * 0.25, &TextStyle::new(u * 0.5, counter_colour).weight(500).font("Oxanium"), None, None);
+                let counter_colour = if full {
+                    *theme::SEARCH_FOUND_COLOUR
+                } else {
+                    fluor::theme::HINT_COLOUR
+                };
+                ctx.text.draw_text_center(
+                    &mut canvas,
+                    &counter,
+                    cx,
+                    y + u * 0.25,
+                    &TextStyle::new(u * 0.5, counter_colour)
+                        .weight(500)
+                        .font("Oxanium"),
+                    None,
+                    None,
+                );
                 y += u * 0.5 + gap;
                 // Tappable candidate list — PROXIMITY POPULATION ONLY (docs/pairing-v2.md): only devices HEARD over the BLE announce beacon (later: NFC tap) become tap targets, NEVER the raw registry — a remote attacker who holds the handle can flood the identity-gated registry, so listing registry entries as taps would fill your finger's reach with decoys. Registry = sync only (the consent a tap binds with); proximity is what a remote attacker can't fake. Not-nearby devices don't appear — you type their words (reading them off the physical screen IS the proximity check). Index i = position in the HEARD-only subset; the tap dispatch filters identically.
-                let nearby: Vec<&AddCandidate> =
-                    self.add_device_candidates.iter().filter(|c| c.heard_ble).take(7).collect();
+                let nearby: Vec<&AddCandidate> = self
+                    .add_device_candidates
+                    .iter()
+                    .filter(|c| c.heard_ble)
+                    .take(7)
+                    .collect();
                 if !nearby.is_empty() {
-                    ctx.text.draw_text_center(&mut canvas, "or tap the nearby device asking to join:", cx, y + u * 0.2, &TextStyle::new(u * 0.4, fluor::theme::HINT_COLOUR).font("Oxanium"), None, None);
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        "or tap the nearby device asking to join:",
+                        cx,
+                        y + u * 0.2,
+                        &TextStyle::new(u * 0.4, fluor::theme::HINT_COLOUR).font("Oxanium"),
+                        None,
+                        None,
+                    );
                     y += u * 0.4 + gap * 0.5;
                     let row_h = u * 0.85;
                     for (i, cand) in nearby.iter().enumerate() {
                         let label = format!("{}   · nearby", cand.name);
                         let held = ctx.pressed_hit != HIT_NONE
-                            && ctx.pressed_hit == self.add_candidate_hit_base.wrapping_add(i as HitId);
-                        ctx.text.draw_text_center(&mut canvas, &label, cx, y + row_h * 0.5, &TextStyle::new(u * 0.55, *theme::SEARCH_FOUND_COLOUR).weight(if held { 700 } else { 500 }).font("Oxanium"), None, None);
+                            && ctx.pressed_hit
+                                == self.add_candidate_hit_base.wrapping_add(i as HitId);
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            &label,
+                            cx,
+                            y + row_h * 0.5,
+                            &TextStyle::new(u * 0.55, *theme::SEARCH_FOUND_COLOUR)
+                                .weight(if held { 700 } else { 500 })
+                                .font("Oxanium"),
+                            None,
+                            None,
+                        );
                         let half_w = buf_w as f32 * 0.42;
                         restamp_hit_rect(
-                            &mut chrome.hit_test_map, buf_w, buf_h,
-                            (cx - half_w) as isize, y as isize,
-                            (cx + half_w) as isize, (y + row_h) as isize,
+                            &mut chrome.hit_test_map,
+                            buf_w,
+                            buf_h,
+                            (cx - half_w) as isize,
+                            y as isize,
+                            (cx + half_w) as isize,
+                            (y + row_h) as isize,
                             self.add_candidate_hit_base.wrapping_add(i as HitId),
                         );
                         y += row_h;
@@ -5895,12 +7239,26 @@ impl FluorApp for PhotonApp {
                 }
             } else if !self.add_device_checking {
                 // Green-confirm affordance (two-phase) — sits IN the field slot (tb_cy), the same place the words field would be. On the WORDS path the Bound handler auto-fires the rotation, so this never renders; it's the tap/BLE gate. Hit-stamped so Android taps land.
-                ctx.text.draw_text_center(&mut canvas, "Yes, it's green \u{2014} finish", cx, tb_cy, &TextStyle::new(u * 0.7, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
+                ctx.text.draw_text_center(
+                    &mut canvas,
+                    "Yes, it's green \u{2014} finish",
+                    cx,
+                    tb_cy,
+                    &TextStyle::new(u * 0.7, *theme::SEARCH_FOUND_COLOUR)
+                        .weight(600)
+                        .font("Oxanium"),
+                    None,
+                    None,
+                );
                 let half_w = buf_w as f32 * 0.4;
                 restamp_hit_rect(
-                    &mut chrome.hit_test_map, buf_w, buf_h,
-                    (cx - half_w) as isize, (tb_cy - u * 0.7) as isize,
-                    (cx + half_w) as isize, (tb_cy + u * 0.7) as isize,
+                    &mut chrome.hit_test_map,
+                    buf_w,
+                    buf_h,
+                    (cx - half_w) as isize,
+                    (tb_cy - u * 0.7) as isize,
+                    (cx + half_w) as isize,
+                    (tb_cy + u * 0.7) as isize,
                     self.add_confirm_hit_id,
                 );
             }
@@ -5913,11 +7271,27 @@ impl FluorApp for PhotonApp {
                 } else {
                     *theme::STATUS_TEXT_COLOUR
                 };
-                ctx.text.draw_text_center(&mut canvas, &self.add_device_status, cx, y + u * 0.28, &TextStyle::new(u * 0.5, status_colour).font("Oxanium"), None, None);
+                ctx.text.draw_text_center(
+                    &mut canvas,
+                    &self.add_device_status,
+                    cx,
+                    y + u * 0.28,
+                    &TextStyle::new(u * 0.5, status_colour).font("Oxanium"),
+                    None,
+                    None,
+                );
                 y += u * 0.56 + gap;
             }
             // Cancel hint (the orb cancels; matching words bind automatically).
-            ctx.text.draw_text_center(&mut canvas, "tap the orb to cancel", cx, y + u * 0.22, &TextStyle::new(u * 0.4, *theme::STATUS_TEXT_COLOUR).font("Oxanium"), None, None);
+            ctx.text.draw_text_center(
+                &mut canvas,
+                "tap the orb to cancel",
+                cx,
+                y + u * 0.22,
+                &TextStyle::new(u * 0.4, *theme::STATUS_TEXT_COLOUR).font("Oxanium"),
+                None,
+                None,
+            );
         }
 
         // Settings panel (STUB) — nav rail + selected page body. Controls render but wire nothing (a checkbox may flip its own visual state; every button / dropdown / slider is inert).
@@ -5927,27 +7301,57 @@ impl FluorApp for PhotonApp {
 
             // Clear the whole settings region in the shared hit_test_map before re-stamping this frame's rail rows + pills — same reason as the launch block: immediate-mode stamps must not linger across page switches.
             restamp_hit_rect(
-                &mut chrome.hit_test_map, buf_w, buf_h,
-                0, layout.rail.y as isize, buf_w as isize, buf_h as isize,
+                &mut chrome.hit_test_map,
+                buf_w,
+                buf_h,
+                0,
+                layout.rail.y as isize,
+                buf_w as isize,
+                buf_h as isize,
                 HIT_NONE,
             );
 
             // Open dropdown popup FIRST (under-blend: topmost content paints first) so it composites over everything painted after it.
             if page == SettingsPage::Appearance {
                 if let Some(dd) = self.settings_theme_dropdown.as_mut() {
-                    dd.render_popup_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                    dd.render_popup_into(
+                        &mut canvas,
+                        ctx.text,
+                        None,
+                        Some(&mut chrome.hit_test_map),
+                    );
                 }
             }
 
             // Status toast ("Sending log (N KiB)…", "Log sent √", "Device removed √", ...) — the Ready screen draws `ready_toast` in its hint slot, but settings is a different AppState, so without this the toasts fired FROM settings pages (log submit, device remove) were invisible. Bottom of the content pane, painted early so under-blend keeps it above the page body; event-shown, cleared on the next interaction via clear_hints, never time-based.
             if let Some(msg) = &self.ready_toast {
                 let ts = (layout.unit * 0.72).max(9.0);
-                ctx.text.draw_text_center(&mut canvas, msg, layout.content.x + layout.content.w * 0.5, layout.content.bottom() - ts, &TextStyle::new(ts, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
+                ctx.text.draw_text_center(
+                    &mut canvas,
+                    msg,
+                    layout.content.x + layout.content.w * 0.5,
+                    layout.content.bottom() - ts,
+                    &TextStyle::new(ts, *theme::SEARCH_FOUND_COLOUR)
+                        .weight(600)
+                        .font("Oxanium"),
+                    None,
+                    None,
+                );
             }
 
             // --- Header: title, centered ON the rail|content divider hairline (1/3 width) — it caps the column split rather than floating at the far-left edge. ---
             let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
-            ctx.text.draw_text_center(&mut canvas, "Settings", layout.content.x, layout.header.center_y(), &TextStyle::new(hspan, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium"), None, None);
+            ctx.text.draw_text_center(
+                &mut canvas,
+                "Settings",
+                layout.content.x,
+                layout.header.center_y(),
+                &TextStyle::new(hspan, *theme::CONTACT_NAME_COLOUR)
+                    .weight(600)
+                    .font("Oxanium"),
+                None,
+                None,
+            );
             // --- Nav rail: Back is PINNED at the top (never scrolls — you never have to scroll up to go back); the nine page labels scroll BELOW it. Natural row height, no clamp-to-fit. Fills are painted AFTER the label so, under the settings pane's topmost-first (under-blend) compositing, the text sits in FRONT of the fill. ---
             let rail_inset = layout.rail_inset();
             let nav_h = layout.nav_row_h();
@@ -5955,14 +7359,43 @@ impl FluorApp for PhotonApp {
             // Pinned Back row at the very top of the rail.
             {
                 let r = fluor::region::Region::new(rail_inset.x, rail_inset.y, rail_inset.w, nav_h);
-                let back_held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
+                let back_held =
+                    ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
                 // Text FIRST (topmost-first → in front), THEN the fill behind it. 50%-black (α = 0x80) in darkness space is 0x80_FF_FF_FF (visible black is 0xFFFFFF in the RGB bytes); brighter when held.
-                ctx.text.draw_text_left(&mut canvas, "‹ Back", r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
-                let fill = if back_held { fluor::theme::BUTTON_HELD } else { theme::BACK_BUTTON_IDLE_FILL };
-                paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fill, None, None);
+                ctx.text.draw_text_left(
+                    &mut canvas,
+                    "‹ Back",
+                    r.x + rspan * 0.6,
+                    r.center_y(),
+                    &TextStyle::new(rspan, *theme::SEARCH_FOUND_COLOUR)
+                        .weight(600)
+                        .font("Oxanium"),
+                    None,
+                    None,
+                );
+                let fill = if back_held {
+                    fluor::theme::BUTTON_HELD
+                } else {
+                    theme::BACK_BUTTON_IDLE_FILL
+                };
+                paint::fill_rect(
+                    &mut canvas,
+                    r.x as isize,
+                    r.y as isize,
+                    r.w as isize,
+                    r.h as isize,
+                    fill,
+                    None,
+                    None,
+                );
                 restamp_hit_rect(
-                    &mut chrome.hit_test_map, buf_w, buf_h,
-                    r.x as isize, r.y as isize, r.right() as isize, r.bottom() as isize,
+                    &mut chrome.hit_test_map,
+                    buf_w,
+                    buf_h,
+                    r.x as isize,
+                    r.y as isize,
+                    r.right() as isize,
+                    r.bottom() as isize,
                     self.back_btn_hit_id,
                 );
             }
@@ -5988,28 +7421,70 @@ impl FluorApp for PhotonApp {
                 let active = *p == page;
                 let held = ctx.pressed_hit != HIT_NONE
                     && ctx.pressed_hit == self.settings_nav_base.wrapping_add(i as HitId);
-                let colour = if active { *theme::CONTACT_NAME_COLOUR } else { *theme::LABEL_COLOUR };
+                let colour = if active {
+                    *theme::CONTACT_NAME_COLOUR
+                } else {
+                    *theme::LABEL_COLOUR
+                };
                 // Label FIRST (in front), then the highlight fill behind it.
-                ctx.text.draw_text_left(&mut canvas, p.label(), r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, colour).weight(if active { 600 } else { 400 }).font("Oxanium"), Some(pages_clip), None);
+                ctx.text.draw_text_left(
+                    &mut canvas,
+                    p.label(),
+                    r.x + rspan * 0.6,
+                    r.center_y(),
+                    &TextStyle::new(rspan, colour)
+                        .weight(if active { 600 } else { 400 })
+                        .font("Oxanium"),
+                    Some(pages_clip),
+                    None,
+                );
                 if held {
                     // Held (pointer down, release switches to this page) reads brightest.
-                    paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, fluor::theme::BUTTON_HELD, Some(pages_clip), None);
+                    paint::fill_rect(
+                        &mut canvas,
+                        r.x as isize,
+                        r.y as isize,
+                        r.w as isize,
+                        r.h as isize,
+                        fluor::theme::BUTTON_HELD,
+                        Some(pages_clip),
+                        None,
+                    );
                 } else if active {
                     // Active-row backing bar (faint) so the selected page reads at a glance.
-                    paint::fill_rect(&mut canvas, r.x as isize, r.y as isize, r.w as isize, r.h as isize, theme::SEPARATOR_COLOUR, Some(pages_clip), None);
+                    paint::fill_rect(
+                        &mut canvas,
+                        r.x as isize,
+                        r.y as isize,
+                        r.w as isize,
+                        r.h as isize,
+                        theme::SEPARATOR_COLOUR,
+                        Some(pages_clip),
+                        None,
+                    );
                 }
                 restamp_hit_rect(
-                    &mut chrome.hit_test_map, buf_w, buf_h,
-                    r.x as isize, r.y.max(pages_top) as isize,
-                    r.right() as isize, r.bottom().min(layout.rail.bottom()) as isize,
+                    &mut chrome.hit_test_map,
+                    buf_w,
+                    buf_h,
+                    r.x as isize,
+                    r.y.max(pages_top) as isize,
+                    r.right() as isize,
+                    r.bottom().min(layout.rail.bottom()) as isize,
                     self.settings_nav_base.wrapping_add(i as HitId),
                 );
             }
 
             // Hairline between rail and content.
             paint::fill_rect(
-                &mut canvas, layout.content.x as isize, layout.content.y as isize,
-                1, layout.content.h as isize, theme::SEPARATOR_COLOUR, None, None,
+                &mut canvas,
+                layout.content.x as isize,
+                layout.content.y as isize,
+                1,
+                layout.content.h as isize,
+                theme::SEPARATOR_COLOUR,
+                None,
+                None,
             );
 
             // --- Selected page body ---
@@ -6065,52 +7540,159 @@ impl FluorApp for PhotonApp {
                         }
                         match row {
                             YouRow::Header(title) => {
-                                ctx.text.draw_text_left(&mut canvas, title, r.x + tspan * 0.3, r.center_y(), &TextStyle::new(tspan, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium"), Some(content_clip), None);
+                                ctx.text.draw_text_left(
+                                    &mut canvas,
+                                    title,
+                                    r.x + tspan * 0.3,
+                                    r.center_y(),
+                                    &TextStyle::new(tspan, *theme::CONTACT_NAME_COLOUR)
+                                        .weight(600)
+                                        .font("Oxanium"),
+                                    Some(content_clip),
+                                    None,
+                                );
                             }
                             YouRow::Field(idx) => {
                                 let cols = r.split_h([0.4, 0.6]);
                                 let label = self.you_fields[*idx].label.clone();
-                                ctx.text.draw_text_left(&mut canvas, &label, cols[0].x + hspan2 * 0.3, cols[0].center_y(), &TextStyle::new(hspan2, *theme::LABEL_COLOUR).font("Oxanium"), Some(content_clip), None);
+                                ctx.text.draw_text_left(
+                                    &mut canvas,
+                                    &label,
+                                    cols[0].x + hspan2 * 0.3,
+                                    cols[0].center_y(),
+                                    &TextStyle::new(hspan2, *theme::LABEL_COLOUR).font("Oxanium"),
+                                    Some(content_clip),
+                                    None,
+                                );
                                 let pf = &mut self.you_fields[*idx];
                                 let id = pf.tb.hit_id();
-                                pf.tb.render_content_into(&mut canvas, 0., 0., ctx.text, Some(glow_clip), None, Some(&mut chrome.hit_test_map), id);
+                                pf.tb.render_content_into(
+                                    &mut canvas,
+                                    0.,
+                                    0.,
+                                    ctx.text,
+                                    Some(glow_clip),
+                                    None,
+                                    Some(&mut chrome.hit_test_map),
+                                    id,
+                                );
                                 // Companion tag box (phone: home / work / custom) rides the right end of the same row.
                                 if let Some(tag) = pf.tag_tb.as_mut() {
                                     let tid = tag.hit_id();
-                                    tag.render_content_into(&mut canvas, 0., 0., ctx.text, Some(glow_clip), None, Some(&mut chrome.hit_test_map), tid);
+                                    tag.render_content_into(
+                                        &mut canvas,
+                                        0.,
+                                        0.,
+                                        ctx.text,
+                                        Some(glow_clip),
+                                        None,
+                                        Some(&mut chrome.hit_test_map),
+                                        tid,
+                                    );
                                 }
                             }
                             YouRow::AddHeader => {
-                                ctx.text.draw_text_left(&mut canvas, "Add a custom field", r.x + tspan * 0.3, r.center_y(), &TextStyle::new(tspan, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium"), Some(content_clip), None);
+                                ctx.text.draw_text_left(
+                                    &mut canvas,
+                                    "Add a custom field",
+                                    r.x + tspan * 0.3,
+                                    r.center_y(),
+                                    &TextStyle::new(tspan, *theme::CONTACT_NAME_COLOUR)
+                                        .weight(600)
+                                        .font("Oxanium"),
+                                    Some(content_clip),
+                                    None,
+                                );
                             }
                             YouRow::AddInput => {
                                 let cols = r.split_h([0.62, 0.38]);
                                 if let Some(tb) = self.you_add_textbox.as_mut() {
                                     let id = tb.hit_id();
-                                    tb.render_content_into(&mut canvas, 0., 0., ctx.text, Some(glow_clip), None, Some(&mut chrome.hit_test_map), id);
+                                    tb.render_content_into(
+                                        &mut canvas,
+                                        0.,
+                                        0.,
+                                        ctx.text,
+                                        Some(glow_clip),
+                                        None,
+                                        Some(&mut chrome.hit_test_map),
+                                        id,
+                                    );
                                 }
-                                draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, cols[1].center_h(0.72), "Add", btn_base.wrapping_add(2), ctx.pressed_hit);
+                                draw_stub_pill(
+                                    &mut canvas,
+                                    ctx.text,
+                                    &mut chrome.hit_test_map,
+                                    buf_w,
+                                    buf_h,
+                                    cols[1].center_h(0.72),
+                                    "Add",
+                                    btn_base.wrapping_add(2),
+                                    ctx.pressed_hit,
+                                );
                             }
                             YouRow::Note => {
                                 ctx.text.draw_text_left(&mut canvas, "Your handle IS your identity — you don't have to set any of this.", r.x + hspan2 * 0.3, r.center_y(), &TextStyle::new(hspan2, *theme::LABEL_COLOUR).font("Oxanium"), Some(content_clip), None);
                             }
                             YouRow::IdentityHeader => {
-                                ctx.text.draw_text_left(&mut canvas, "Identity", r.x + tspan * 0.3, r.center_y(), &TextStyle::new(tspan, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium"), Some(content_clip), None);
+                                ctx.text.draw_text_left(
+                                    &mut canvas,
+                                    "Identity",
+                                    r.x + tspan * 0.3,
+                                    r.center_y(),
+                                    &TextStyle::new(tspan, *theme::CONTACT_NAME_COLOUR)
+                                        .weight(600)
+                                        .font("Oxanium"),
+                                    Some(content_clip),
+                                    None,
+                                );
                             }
                             YouRow::IdentityFp => {
                                 let fp = self
                                     .session
                                     .as_ref()
-                                    .map(|s| crate::fp(&crate::crypto::clutch::identity_party_id(&s.identity_seed)))
+                                    .map(|s| {
+                                        crate::fp(&crate::crypto::clutch::identity_party_id(
+                                            &s.identity_seed,
+                                        ))
+                                    })
                                     .unwrap_or_else(|| "—".to_string());
-                                ctx.text.draw_text_left(&mut canvas, &fp, r.x + hspan2 * 0.3, r.center_y(), &TextStyle::new(hspan2, *theme::LABEL_COLOUR).font("Oxanium"), Some(content_clip), None);
+                                ctx.text.draw_text_left(
+                                    &mut canvas,
+                                    &fp,
+                                    r.x + hspan2 * 0.3,
+                                    r.center_y(),
+                                    &TextStyle::new(hspan2, *theme::LABEL_COLOUR).font("Oxanium"),
+                                    Some(content_clip),
+                                    None,
+                                );
                             }
                             YouRow::SavePill => {
-                                draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, r.center_h(pillf(0.5)), "Update", btn_base.wrapping_add(0), ctx.pressed_hit);
+                                draw_stub_pill(
+                                    &mut canvas,
+                                    ctx.text,
+                                    &mut chrome.hit_test_map,
+                                    buf_w,
+                                    buf_h,
+                                    r.center_h(pillf(0.5)),
+                                    "Update",
+                                    btn_base.wrapping_add(0),
+                                    ctx.pressed_hit,
+                                );
                             }
                             YouRow::Blank => {}
                             YouRow::AvatarPill => {
-                                draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, r.center_h(pillf(0.5)), "Change avatar…", btn_base.wrapping_add(1), ctx.pressed_hit);
+                                draw_stub_pill(
+                                    &mut canvas,
+                                    ctx.text,
+                                    &mut chrome.hit_test_map,
+                                    buf_w,
+                                    buf_h,
+                                    r.center_h(pillf(0.5)),
+                                    "Change avatar…",
+                                    btn_base.wrapping_add(1),
+                                    ctx.pressed_hit,
+                                );
                             }
                         }
                     }
@@ -6118,16 +7700,38 @@ impl FluorApp for PhotonApp {
                 SettingsPage::Fleet => {
                     // Live device inventory (gathered above the chrome borrow): this device + our siblings, then the retired rows (signed out, brand still ours — refreshed on page entry). Rows 1..=6 hold up to 6 devices (fleets are usually ≤5; a scroll follows if this grows past the row budget). Member rows are tap-to-copy (btn_base+16+index); retired rows carry a per-row Release pill instead (btn_base+24+index, two-tap).
                     let devices = &fleet_devices;
-                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
-                    settings_line(&mut canvas, ctx.text, rows[0], "Your devices", tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    let rows = layout
+                        .content_scrolled(8, settings_content_scroll)
+                        .split_v([1.0; 8]);
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[0],
+                        "Your devices",
+                        tspan,
+                        *theme::CONTACT_NAME_COLOUR,
+                        600,
+                    );
                     // "click to copy" — lighter/smaller, right-aligned in the header, over the same (right) side the device NAMES sit on, so it labels the tap-to-copy target.
                     {
                         let cc = "click to copy";
                         let cc_size = hspan2 * 0.82;
-                        let cc_w = ctx.text.measure_text(cc, &TextStyle::new(cc_size, 0).font("Oxanium"));
-                        ctx.text.draw_text_left(&mut canvas, cc, rows[0].right() - cc_w - hspan2 * 0.3, rows[0].center_y(), &TextStyle::new(cc_size, *theme::LABEL_COLOUR).font("Oxanium"), None, None);
+                        let cc_w = ctx
+                            .text
+                            .measure_text(cc, &TextStyle::new(cc_size, 0).font("Oxanium"));
+                        ctx.text.draw_text_left(
+                            &mut canvas,
+                            cc,
+                            rows[0].right() - cc_w - hspan2 * 0.3,
+                            rows[0].center_y(),
+                            &TextStyle::new(cc_size, *theme::LABEL_COLOUR).font("Oxanium"),
+                            None,
+                            None,
+                        );
                     }
-                    for (i, (pk, is_self, online, retired, name)) in devices.iter().take(6).enumerate() {
+                    for (i, (pk, is_self, online, retired, name)) in
+                        devices.iter().take(6).enumerate()
+                    {
                         let row = rows[1 + i];
                         // Status on the LEFT (this device / online / offline / retired), device NAME right-aligned so it lines up under "click to copy" — the name is what a tap copies.
                         let (status, status_colour) = if *is_self {
@@ -6139,13 +7743,38 @@ impl FluorApp for PhotonApp {
                         } else {
                             ("offline", (*theme::LABEL_COLOUR))
                         };
-                        settings_line(&mut canvas, ctx.text, row, status, hspan2 * 0.85, status_colour, 400);
-                        let name_w = ctx.text.measure_text(name, &TextStyle::new(hspan2, 0).weight(500).font("Oxanium"));
-                        ctx.text.draw_text_left(&mut canvas, name, row.right() - name_w - hspan2 * 0.3, row.center_y(), &TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium"), None, None);
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            row,
+                            status,
+                            hspan2 * 0.85,
+                            status_colour,
+                            400,
+                        );
+                        let name_w = ctx.text.measure_text(
+                            name,
+                            &TextStyle::new(hspan2, 0).weight(500).font("Oxanium"),
+                        );
+                        ctx.text.draw_text_left(
+                            &mut canvas,
+                            name,
+                            row.right() - name_w - hspan2 * 0.3,
+                            row.center_y(),
+                            &TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR)
+                                .weight(500)
+                                .font("Oxanium"),
+                            None,
+                            None,
+                        );
                         // Retired rows carry the owner's Release pill (two-tap): the second signature of the two-signature retire — the departed device signed itself out, this frees its hardware for a new identity. Mid-row, between the status and the name.
                         if *retired {
                             let armed = self.fleet_release_armed.as_ref() == Some(pk);
-                            let label = if armed { "Release \u{2014} sure?" } else { "Release" };
+                            let label = if armed {
+                                "Release \u{2014} sure?"
+                            } else {
+                                "Release"
+                            };
                             let pill = row.split_h([1.0, 1.0, 1.0])[1].center_h(0.8);
                             draw_stub_pill_filled(
                                 &mut canvas,
@@ -6178,89 +7807,428 @@ impl FluorApp for PhotonApp {
                     // No Remove pill: expulsion is not a verb (sovereign records) — a device leaves by its own signed departure. And leaving never frees the hardware: the brand outlives the membership until the owner releases it above.
                     settings_line(&mut canvas, ctx.text, rows[6], "A device can only sign itself out \u{2014} and its hardware stays yours until you release it.", hspan2, *theme::LABEL_COLOUR, 400);
                     let pr = rows[7].split_h([1.0, 1.0]);
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Add device", btn_base.wrapping_add(0), ctx.pressed_hit);
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Rename", btn_base.wrapping_add(1), ctx.pressed_hit);
+                    draw_stub_pill(
+                        &mut canvas,
+                        ctx.text,
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        pr[0].center_h(0.85),
+                        "Add device",
+                        btn_base.wrapping_add(0),
+                        ctx.pressed_hit,
+                    );
+                    draw_stub_pill(
+                        &mut canvas,
+                        ctx.text,
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        pr[1].center_h(0.85),
+                        "Rename",
+                        btn_base.wrapping_add(1),
+                        ctx.pressed_hit,
+                    );
                 }
                 SettingsPage::Security => {
                     // Destructiveness ramp, least → most, one blank row between each pill so they breathe: Lock (green, reversible) · fleet self-removal (yellow) · Shred (orange, wipe this device) · Remove & shred (red, sign out of the fleet THEN wipe). The two wipers are two-tap confirmed, mutually exclusive.
-                    let rows = layout.content_scrolled(11, settings_content_scroll).split_v([1.0; 11]);
-                    settings_line(&mut canvas, ctx.text, rows[0], "Security", tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], "Named by destructiveness.", hspan2, *theme::LABEL_COLOUR, 400);
-                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[2].center_h(pillf(0.55)), "Lock (re-unlock with your handle)", btn_base.wrapping_add(0), ctx.pressed_hit, true, Some(*theme::PILL_GREEN), "Open Sans");
-                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[4].center_h(pillf(0.55)), "Remove this device from fleet", btn_base.wrapping_add(1), ctx.pressed_hit, true, Some(*theme::PILL_YELLOW), "Open Sans");
-                    let shred_label = if self.settings_shred_armed { "Shred — tap again to confirm" } else { "Shred (crypto-wipe)" };
-                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(pillf(0.55)), shred_label, btn_base.wrapping_add(2), ctx.pressed_hit, true, Some(*theme::PILL_ORANGE), "Open Sans");
-                    let rs_label = if self.settings_removeshred_armed { "Remove & shred — tap again to confirm" } else { "Remove & shred (sign out, then wipe)" };
-                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[8].center_h(pillf(0.55)), rs_label, btn_base.wrapping_add(3), ctx.pressed_hit, true, Some(*theme::PILL_RED), "Open Sans");
+                    let rows = layout
+                        .content_scrolled(11, settings_content_scroll)
+                        .split_v([1.0; 11]);
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[0],
+                        "Security",
+                        tspan,
+                        *theme::CONTACT_NAME_COLOUR,
+                        600,
+                    );
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[1],
+                        "Named by destructiveness.",
+                        hspan2,
+                        *theme::LABEL_COLOUR,
+                        400,
+                    );
+                    draw_stub_pill_filled(
+                        &mut canvas,
+                        ctx.text,
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        rows[2].center_h(pillf(0.55)),
+                        "Lock (re-unlock with your handle)",
+                        btn_base.wrapping_add(0),
+                        ctx.pressed_hit,
+                        true,
+                        Some(*theme::PILL_GREEN),
+                        "Open Sans",
+                    );
+                    draw_stub_pill_filled(
+                        &mut canvas,
+                        ctx.text,
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        rows[4].center_h(pillf(0.55)),
+                        "Remove this device from fleet",
+                        btn_base.wrapping_add(1),
+                        ctx.pressed_hit,
+                        true,
+                        Some(*theme::PILL_YELLOW),
+                        "Open Sans",
+                    );
+                    let shred_label = if self.settings_shred_armed {
+                        "Shred — tap again to confirm"
+                    } else {
+                        "Shred (crypto-wipe)"
+                    };
+                    draw_stub_pill_filled(
+                        &mut canvas,
+                        ctx.text,
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        rows[6].center_h(pillf(0.55)),
+                        shred_label,
+                        btn_base.wrapping_add(2),
+                        ctx.pressed_hit,
+                        true,
+                        Some(*theme::PILL_ORANGE),
+                        "Open Sans",
+                    );
+                    let rs_label = if self.settings_removeshred_armed {
+                        "Remove & shred — tap again to confirm"
+                    } else {
+                        "Remove & shred (sign out, then wipe)"
+                    };
+                    draw_stub_pill_filled(
+                        &mut canvas,
+                        ctx.text,
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        rows[8].center_h(pillf(0.55)),
+                        rs_label,
+                        btn_base.wrapping_add(3),
+                        ctx.pressed_hit,
+                        true,
+                        Some(*theme::PILL_RED),
+                        "Open Sans",
+                    );
                     if self.settings_shred_armed {
-                        settings_line(&mut canvas, ctx.text, rows[9], "Wipes the vault AND identity on this device — irreversible.", hspan2, *theme::ERROR_TEXT_COLOUR, 500);
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[9],
+                            "Wipes the vault AND identity on this device — irreversible.",
+                            hspan2,
+                            *theme::ERROR_TEXT_COLOUR,
+                            500,
+                        );
                     } else if self.settings_removeshred_armed {
-                        settings_line(&mut canvas, ctx.text, rows[9], "Signs this device out of your fleet, then wipes it — irreversible.", hspan2, *theme::ERROR_TEXT_COLOUR, 500);
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[9],
+                            "Signs this device out of your fleet, then wipes it — irreversible.",
+                            hspan2,
+                            *theme::ERROR_TEXT_COLOUR,
+                            500,
+                        );
                     }
-                    settings_line(&mut canvas, ctx.text, rows[10], "Security: strong   ·   Recovery: not set up", hspan2, *theme::LABEL_COLOUR, 400);
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[10],
+                        "Security: strong   ·   Recovery: not set up",
+                        hspan2,
+                        *theme::LABEL_COLOUR,
+                        400,
+                    );
                 }
                 SettingsPage::Recovery => {
-                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
-                    settings_line(&mut canvas, ctx.text, rows[0], "Recovery", tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], &format!("Custodians (v{})", crate::dozenal_glyphs(1)), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                    let rows = layout
+                        .content_scrolled(8, settings_content_scroll)
+                        .split_v([1.0; 8]);
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[0],
+                        "Recovery",
+                        tspan,
+                        *theme::CONTACT_NAME_COLOUR,
+                        600,
+                    );
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[1],
+                        &format!("Custodians (v{})", crate::dozenal_glyphs(1)),
+                        hspan2,
+                        *theme::CONTACT_NAME_COLOUR,
+                        600,
+                    );
                     if let Some(cb) = self.settings_custodian_check.as_mut() {
-                        cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                        cb.render_content_into(
+                            &mut canvas,
+                            ctx.text,
+                            None,
+                            Some(&mut chrome.hit_test_map),
+                        );
                     }
-                    settings_line(&mut canvas, ctx.text, rows[4], "Identity backup", hspan2, *theme::CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[5], "Reinstalling won't ask for your handle.", hspan2, *theme::LABEL_COLOUR, 400);
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(pillf(0.5)), "Back up identity…", btn_base.wrapping_add(0), ctx.pressed_hit);
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[4],
+                        "Identity backup",
+                        hspan2,
+                        *theme::CONTACT_NAME_COLOUR,
+                        600,
+                    );
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[5],
+                        "Reinstalling won't ask for your handle.",
+                        hspan2,
+                        *theme::LABEL_COLOUR,
+                        400,
+                    );
+                    draw_stub_pill(
+                        &mut canvas,
+                        ctx.text,
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        rows[6].center_h(pillf(0.5)),
+                        "Back up identity…",
+                        btn_base.wrapping_add(0),
+                        ctx.pressed_hit,
+                    );
                 }
                 SettingsPage::Appearance => {
-                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
-                    settings_line(&mut canvas, ctx.text, rows[0], "Appearance", tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], "Theme", hspan2, *theme::LABEL_COLOUR, 400);
+                    let rows = layout
+                        .content_scrolled(8, settings_content_scroll)
+                        .split_v([1.0; 8]);
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[0],
+                        "Appearance",
+                        tspan,
+                        *theme::CONTACT_NAME_COLOUR,
+                        600,
+                    );
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[1],
+                        "Theme",
+                        hspan2,
+                        *theme::LABEL_COLOUR,
+                        400,
+                    );
                     if let Some(dd) = self.settings_theme_dropdown.as_mut() {
-                        dd.render_content_into(&mut canvas, 0., 0., ctx.text, None, Some(&mut chrome.hit_test_map));
+                        dd.render_content_into(
+                            &mut canvas,
+                            0.,
+                            0.,
+                            ctx.text,
+                            None,
+                            Some(&mut chrome.hit_test_map),
+                        );
                     }
-                    settings_line(&mut canvas, ctx.text, rows[3], "Party colours (placeholder → perceptual L≈50%)", hspan2, *theme::LABEL_COLOUR, 400);
-                    settings_line(&mut canvas, ctx.text, rows[4], "Zoom / text size", hspan2, *theme::LABEL_COLOUR, 400);
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[3],
+                        "Party colours (placeholder → perceptual L≈50%)",
+                        hspan2,
+                        *theme::LABEL_COLOUR,
+                        400,
+                    );
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[4],
+                        "Zoom / text size",
+                        hspan2,
+                        *theme::LABEL_COLOUR,
+                        400,
+                    );
                     if let Some(sl) = self.settings_zoom_slider.as_mut() {
-                        sl.render_content_into(&mut canvas, Some(&mut chrome.hit_test_map), sl.hit_id());
+                        sl.render_content_into(
+                            &mut canvas,
+                            Some(&mut chrome.hit_test_map),
+                            sl.hit_id(),
+                        );
                     }
-                    settings_line(&mut canvas, ctx.text, rows[6], "Colour calibration (Android panel)", hspan2, *theme::LABEL_COLOUR, 400);
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[6],
+                        "Colour calibration (Android panel)",
+                        hspan2,
+                        *theme::LABEL_COLOUR,
+                        400,
+                    );
                 }
                 SettingsPage::Notifications => {
-                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
-                    settings_line(&mut canvas, ctx.text, rows[0], "Notifications", tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    let rows = layout
+                        .content_scrolled(8, settings_content_scroll)
+                        .split_v([1.0; 8]);
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[0],
+                        "Notifications",
+                        tspan,
+                        *theme::CONTACT_NAME_COLOUR,
+                        600,
+                    );
                     if let Some(cb) = self.settings_chime_check.as_mut() {
-                        cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                        cb.render_content_into(
+                            &mut canvas,
+                            ctx.text,
+                            None,
+                            Some(&mut chrome.hit_test_map),
+                        );
                     }
-                    settings_line(&mut canvas, ctx.text, rows[2], "Per-contact override lives in each conversation.", hspan2, *theme::LABEL_COLOUR, 400);
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[2],
+                        "Per-contact override lives in each conversation.",
+                        hspan2,
+                        *theme::LABEL_COLOUR,
+                        400,
+                    );
                     if let Some(cb) = self.settings_presence_check.as_mut() {
-                        cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                        cb.render_content_into(
+                            &mut canvas,
+                            ctx.text,
+                            None,
+                            Some(&mut chrome.hit_test_map),
+                        );
                     }
                     if let Some(cb) = self.settings_background_check.as_mut() {
-                        cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                        cb.render_content_into(
+                            &mut canvas,
+                            ctx.text,
+                            None,
+                            Some(&mut chrome.hit_test_map),
+                        );
                     }
                 }
                 SettingsPage::Updates => {
                     // Rows (blanks between the pills for vertical breathing room): 0 title · 1 current version · 2 blank · 3 release pill · 4 blank · 5 dev pill · 6 blank · 7 status.
-                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
-                    settings_line(&mut canvas, ctx.text, rows[0], "Updates", tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], &format!("Photon {}", version_dozenal_glyphs()), hspan2, *theme::CONTACT_NAME_COLOUR, 400);
+                    let rows = layout
+                        .content_scrolled(8, settings_content_scroll)
+                        .split_v([1.0; 8]);
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[0],
+                        "Updates",
+                        tspan,
+                        *theme::CONTACT_NAME_COLOUR,
+                        600,
+                    );
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[1],
+                        &format!("Photon {}", version_dozenal_glyphs()),
+                        hspan2,
+                        *theme::CONTACT_NAME_COLOUR,
+                        400,
+                    );
                     if let Some(cb) = self.settings_autoupdate_check.as_mut() {
-                        cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                        cb.render_content_into(
+                            &mut canvas,
+                            ctx.text,
+                            None,
+                            Some(&mut chrome.hit_test_map),
+                        );
                     }
                     // One channel button: label + colour driven by the auto-check state. Release = green when an update is available, Dev = amber; either goes inert dark grey ("Already on …") when the remote version equals ours. Disabled while an install is in flight.
                     let ours = crate::network::updates::our_version();
-                    let button = |canvas: &mut Canvas, text: &mut fluor::text::TextRenderer, hit_map: &mut [HitId], rect: fluor::region::Region, slot: HitId, kind: &str, avail_fill: (u32, u32), state: &ChannelCheck, busy: bool| {
+                    let button = |canvas: &mut Canvas,
+                                  text: &mut fluor::text::TextRenderer,
+                                  hit_map: &mut [HitId],
+                                  rect: fluor::region::Region,
+                                  slot: HitId,
+                                  kind: &str,
+                                  avail_fill: (u32, u32),
+                                  state: &ChannelCheck,
+                                  busy: bool| {
                         let (label, fill, enabled) = match state {
-                            ChannelCheck::Idle | ChannelCheck::Checking => (format!("Checking {kind}\u{2026}"), (*theme::PILL_GREY), false),
-                            ChannelCheck::Failed => (format!("{kind} unavailable"), (*theme::PILL_GREY), false),
-                            ChannelCheck::Ready(None) => (format!("No {kind} build for this device"), (*theme::PILL_GREY), false),
+                            ChannelCheck::Idle | ChannelCheck::Checking => (
+                                format!("Checking {kind}\u{2026}"),
+                                (*theme::PILL_GREY),
+                                false,
+                            ),
+                            ChannelCheck::Failed => {
+                                (format!("{kind} unavailable"), (*theme::PILL_GREY), false)
+                            }
+                            ChannelCheck::Ready(None) => (
+                                format!("No {kind} build for this device"),
+                                (*theme::PILL_GREY),
+                                false,
+                            ),
                             // Tuple equality IS the truth: patch 0 is the release marker and the version scheme guarantees a dev build never wears it (deploy.sh opens the dev line at .1; publishes are publish-current-then-bump) — so a dev build and the release can never be tuple-equal, and "already on" needs no flavour check.
-                            ChannelCheck::Ready(Some(row)) if row.version == ours => (format!("Already on {kind} {}", dozenal_version_tuple(row.version)), (*theme::PILL_GREY), false),
-                            ChannelCheck::Ready(Some(row)) => (format!("Get {kind} {}", dozenal_version_tuple(row.version)), avail_fill, !busy),
+                            ChannelCheck::Ready(Some(row)) if row.version == ours => (
+                                format!("Already on {kind} {}", dozenal_version_tuple(row.version)),
+                                (*theme::PILL_GREY),
+                                false,
+                            ),
+                            ChannelCheck::Ready(Some(row)) => (
+                                format!("Get {kind} {}", dozenal_version_tuple(row.version)),
+                                avail_fill,
+                                !busy,
+                            ),
                         };
-                        draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, &label, slot, ctx.pressed_hit, enabled, Some(fill), "Oxanium");
+                        draw_stub_pill_filled(
+                            canvas,
+                            text,
+                            hit_map,
+                            buf_w,
+                            buf_h,
+                            rect,
+                            &label,
+                            slot,
+                            ctx.pressed_hit,
+                            enabled,
+                            Some(fill),
+                            "Oxanium",
+                        );
                     };
-                    button(&mut canvas, ctx.text, &mut chrome.hit_test_map, rows[3].center_h(pillf(0.7)), btn_base.wrapping_add(1), "release", *theme::PILL_GREEN, &self.update_release, self.update_busy);
-                    button(&mut canvas, ctx.text, &mut chrome.hit_test_map, rows[5].center_h(pillf(0.7)), btn_base.wrapping_add(2), "dev", *theme::PILL_AMBER, &self.update_dev, self.update_busy);
+                    button(
+                        &mut canvas,
+                        ctx.text,
+                        &mut chrome.hit_test_map,
+                        rows[3].center_h(pillf(0.7)),
+                        btn_base.wrapping_add(1),
+                        "release",
+                        *theme::PILL_GREEN,
+                        &self.update_release,
+                        self.update_busy,
+                    );
+                    button(
+                        &mut canvas,
+                        ctx.text,
+                        &mut chrome.hit_test_map,
+                        rows[5].center_h(pillf(0.7)),
+                        btn_base.wrapping_add(2),
+                        "dev",
+                        *theme::PILL_AMBER,
+                        &self.update_dev,
+                        self.update_busy,
+                    );
                     // Status line: the download bar while bytes stream (label flips "Downloading" → "Updating…" at the end), else the last APPLY outcome (installing / failed / restarting).
                     if let Some((done, total)) = self.update_progress {
                         let finishing = total > 0 && done >= total;
@@ -6274,18 +8242,52 @@ impl FluorApp for PhotonApp {
                         };
                         let label = label.as_str();
                         let r = rows[7];
-                        settings_line(&mut canvas, ctx.text, fluor::region::Region::new(r.x, r.y, r.w, r.h * 0.5), label, hspan2, *theme::CONTACT_NAME_COLOUR, 500);
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            fluor::region::Region::new(r.x, r.y, r.w, r.h * 0.5),
+                            label,
+                            hspan2,
+                            *theme::CONTACT_NAME_COLOUR,
+                            500,
+                        );
                         // The bar: proportional fill THEN full-width track. fluor is under-blend (FIRST paint wins), so the lime fill MUST be painted before the black track — draw the track first and it wins every pixel, burying the fill (the "permanent grey bar" bug). Fill goes down first over [0..fill_w], then the track over the whole width fills only the un-painted remainder.
                         let bar_y = (r.y + r.h * 0.55) as isize;
                         let bar_h = (r.h * 0.25).max(3.0) as isize;
                         let bar_w = r.w as isize;
                         if total > 0 {
                             let fill_w = (r.w as f64 * (done as f64 / total as f64)) as isize;
-                            paint::fill_rect(&mut canvas, r.x as isize, bar_y, fill_w.clamp(0, bar_w), bar_h, *theme::PROGRESS_FILL, None, None);
+                            paint::fill_rect(
+                                &mut canvas,
+                                r.x as isize,
+                                bar_y,
+                                fill_w.clamp(0, bar_w),
+                                bar_h,
+                                *theme::PROGRESS_FILL,
+                                None,
+                                None,
+                            );
                         }
-                        paint::fill_rect(&mut canvas, r.x as isize, bar_y, bar_w, bar_h, *theme::PROGRESS_TRACK, None, None);
+                        paint::fill_rect(
+                            &mut canvas,
+                            r.x as isize,
+                            bar_y,
+                            bar_w,
+                            bar_h,
+                            *theme::PROGRESS_TRACK,
+                            None,
+                            None,
+                        );
                     } else if let Some(status) = &self.update_status {
-                        settings_line(&mut canvas, ctx.text, rows[7], status, hspan2, *theme::CONTACT_NAME_COLOUR, 500);
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[7],
+                            status,
+                            hspan2,
+                            *theme::CONTACT_NAME_COLOUR,
+                            500,
+                        );
                     }
                 }
                 SettingsPage::Diagnostics if self.diag_log_view => {
@@ -6301,8 +8303,26 @@ impl FluorApp for PhotonApp {
                     );
                     let header = layout.content_scrolled(2, 0.0).split_v([1.0; 2]);
                     let hr = header[0].split_h([2.0, 1.0]);
-                    settings_line(&mut canvas, ctx.text, hr[0], "Log", tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, hr[1].center_h(0.85), "Back", btn_base.wrapping_add(3), ctx.pressed_hit);
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        hr[0],
+                        "Log",
+                        tspan,
+                        *theme::CONTACT_NAME_COLOUR,
+                        600,
+                    );
+                    draw_stub_pill(
+                        &mut canvas,
+                        ctx.text,
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        hr[1].center_h(0.85),
+                        "Back",
+                        btn_base.wrapping_add(3),
+                        ctx.pressed_hit,
+                    );
                     let meta = if let Some((idx, lines)) = &self.diag_log_inspect {
                         let ts = self
                             .diag_log_rows
@@ -6315,7 +8335,11 @@ impl FluorApp for PhotonApp {
                                     .to_string()
                             })
                             .unwrap_or_default();
-                        format!("Record VSF · {} · {} line(s) · tap Back for the list", ts, lines.len())
+                        format!(
+                            "Record VSF · {} · {} line(s) · tap Back for the list",
+                            ts,
+                            lines.len()
+                        )
                     } else if self.diag_log_rx.is_some() {
                         "Decoding log\u{2026}".to_string()
                     } else if self.diag_log_rows.is_empty() {
@@ -6328,7 +8352,15 @@ impl FluorApp for PhotonApp {
                             if self.diag_log_rows.len() >= DIAG_LOG_MAX_ROWS { " · oldest trimmed" } else { "" },
                         )
                     };
-                    settings_line(&mut canvas, ctx.text, header[1], &meta, hspan2, *theme::LABEL_COLOUR, 400);
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        header[1],
+                        &meta,
+                        hspan2,
+                        *theme::LABEL_COLOUR,
+                        400,
+                    );
 
                     let row_h = line * 0.5;
                     // INSPECTOR: the tapped record's coloured VSF pretty-print, span by span (the same output vsfinfo pipes to a terminal, ANSI parsed to fluor colours). Same culling/extent math as the list — one branch, then done.
@@ -6343,63 +8375,166 @@ impl FluorApp for PhotonApp {
                             }
                             let mut x = r.x;
                             for (span, colour) in &ins_lines[i] {
-                                ctx.text.draw_text_left(&mut canvas, span, x, r.center_y(), &TextStyle::new(size, *colour).font("Oxanium"), Some(content_clip), None);
-                                x += ctx.text.measure_text(span, &TextStyle::new(size, 0).font("Oxanium"));
+                                ctx.text.draw_text_left(
+                                    &mut canvas,
+                                    span,
+                                    x,
+                                    r.center_y(),
+                                    &TextStyle::new(size, *colour).font("Oxanium"),
+                                    Some(content_clip),
+                                    None,
+                                );
+                                x += ctx
+                                    .text
+                                    .measure_text(span, &TextStyle::new(size, 0).font("Oxanium"));
                             }
                         }
                         // The list rendering below is the OTHER mode.
                     } else {
-                    // First visible record: the band's top scrolls as inset.y + 2·line − scroll, the clip top sits at inset.y + 2·line, so the first index is simply scroll/row_h. +2 rows of slack covers the fractional edges.
-                    let first = ((settings_content_scroll / row_h).floor().max(0.)) as usize;
-                    let visible = (inset.h / row_h).ceil() as usize + 2;
-                    let size = row_h * 0.62;
-                    for i in first..(first + visible).min(self.diag_log_rows.len()) {
-                        let r = diag_log_row_rect(&layout, settings_content_scroll, i);
-                        if r.y > inset.y + inset.h {
-                            break;
+                        // First visible record: the band's top scrolls as inset.y + 2·line − scroll, the clip top sits at inset.y + 2·line, so the first index is simply scroll/row_h. +2 rows of slack covers the fractional edges.
+                        let first = ((settings_content_scroll / row_h).floor().max(0.)) as usize;
+                        let visible = (inset.h / row_h).ceil() as usize + 2;
+                        let size = row_h * 0.62;
+                        for i in first..(first + visible).min(self.diag_log_rows.len()) {
+                            let r = diag_log_row_rect(&layout, settings_content_scroll, i);
+                            if r.y > inset.y + inset.h {
+                                break;
+                            }
+                            let rec = &self.diag_log_rows[i];
+                            // Display-edge time render (records store eagle time binary).
+                            let ts = if rec.osc != 0 {
+                                vsf::types::EagleTime::from_oscillations(rec.osc)
+                                    .to_datetime()
+                                    .format("%m-%d %H:%M:%S%.3f")
+                                    .to_string()
+                            } else {
+                                "\u{2014}".to_string()
+                            };
+                            let (lvl, colour) = match rec.level {
+                                4 => ("E", (*theme::ERROR_TEXT_COLOUR)),
+                                3 => ("W", (*theme::HOURGLASS_COLOUR)),
+                                2 => ("I", (*theme::CONTACT_NAME_COLOUR)),
+                                1 => ("D", (*theme::LABEL_COLOUR)),
+                                0 => ("T", (*theme::LABEL_COLOUR)),
+                                _ => ("?", (*theme::LABEL_COLOUR)),
+                            };
+                            ctx.text.draw_text_left(
+                                &mut canvas,
+                                &format!("{ts} {lvl}  {}", rec.msg),
+                                r.x,
+                                r.center_y(),
+                                &TextStyle::new(size, colour).font("Oxanium"),
+                                Some(content_clip),
+                                None,
+                            );
                         }
-                        let rec = &self.diag_log_rows[i];
-                        // Display-edge time render (records store eagle time binary).
-                        let ts = if rec.osc != 0 {
-                            vsf::types::EagleTime::from_oscillations(rec.osc)
-                                .to_datetime()
-                                .format("%m-%d %H:%M:%S%.3f")
-                                .to_string()
-                        } else {
-                            "\u{2014}".to_string()
-                        };
-                        let (lvl, colour) = match rec.level {
-                            4 => ("E", (*theme::ERROR_TEXT_COLOUR)),
-                            3 => ("W", (*theme::HOURGLASS_COLOUR)),
-                            2 => ("I", (*theme::CONTACT_NAME_COLOUR)),
-                            1 => ("D", (*theme::LABEL_COLOUR)),
-                            0 => ("T", (*theme::LABEL_COLOUR)),
-                            _ => ("?", (*theme::LABEL_COLOUR)),
-                        };
-                        ctx.text.draw_text_left(&mut canvas, &format!("{ts} {lvl}  {}", rec.msg), r.x, r.center_y(), &TextStyle::new(size, colour).font("Oxanium"), Some(content_clip), None);
-                    }
                     }
                 }
                 SettingsPage::Diagnostics => {
-                    let rows = layout.content_scrolled(10, settings_content_scroll).split_v([1.0; 10]);
-                    settings_line(&mut canvas, ctx.text, rows[0], "Diagnostics", tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                    settings_line(&mut canvas, ctx.text, rows[1], "On-device log · 16 MiB · self-expires 24–48h", hspan2, *theme::LABEL_COLOUR, 400);
+                    let rows = layout
+                        .content_scrolled(10, settings_content_scroll)
+                        .split_v([1.0; 10]);
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[0],
+                        "Diagnostics",
+                        tspan,
+                        *theme::CONTACT_NAME_COLOUR,
+                        600,
+                    );
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[1],
+                        "On-device log · 16 MiB · self-expires 24–48h",
+                        hspan2,
+                        *theme::LABEL_COLOUR,
+                        400,
+                    );
                     let pr = rows[3].split_h([1.0, 1.0, 1.0, 1.0]);
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(0.85), "Clear", btn_base.wrapping_add(0), ctx.pressed_hit);
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(0.85), "Snapshot", btn_base.wrapping_add(1), ctx.pressed_hit);
+                    draw_stub_pill(
+                        &mut canvas,
+                        ctx.text,
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        pr[0].center_h(0.85),
+                        "Clear",
+                        btn_base.wrapping_add(0),
+                        ctx.pressed_hit,
+                    );
+                    draw_stub_pill(
+                        &mut canvas,
+                        ctx.text,
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        pr[1].center_h(0.85),
+                        "Snapshot",
+                        btn_base.wrapping_add(1),
+                        ctx.pressed_hit,
+                    );
                     // Submit greys while an upload is in flight or the log hasn't grown past the last successful submit — a resend then would be a byte-identical duplicate. Any new record (or Clear) moves the size and re-arms it.
                     let submit_disabled = self.log_submit_inflight
                         || self.log_submitted_len == Some(crate::log_size_bytes());
                     if submit_disabled {
-                        draw_stub_pill_disabled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[2].center_h(0.85), "Submit", btn_base.wrapping_add(2), ctx.pressed_hit);
+                        draw_stub_pill_disabled(
+                            &mut canvas,
+                            ctx.text,
+                            &mut chrome.hit_test_map,
+                            buf_w,
+                            buf_h,
+                            pr[2].center_h(0.85),
+                            "Submit",
+                            btn_base.wrapping_add(2),
+                            ctx.pressed_hit,
+                        );
                     } else {
-                        draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[2].center_h(0.85), "Submit", btn_base.wrapping_add(2), ctx.pressed_hit);
+                        draw_stub_pill(
+                            &mut canvas,
+                            ctx.text,
+                            &mut chrome.hit_test_map,
+                            buf_w,
+                            buf_h,
+                            pr[2].center_h(0.85),
+                            "Submit",
+                            btn_base.wrapping_add(2),
+                            ctx.pressed_hit,
+                        );
                     }
-                    draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[3].center_h(0.85), "View", btn_base.wrapping_add(3), ctx.pressed_hit);
-                    settings_line(&mut canvas, ctx.text, rows[6], "Optional note", hspan2, *theme::LABEL_COLOUR, 400);
+                    draw_stub_pill(
+                        &mut canvas,
+                        ctx.text,
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        pr[3].center_h(0.85),
+                        "View",
+                        btn_base.wrapping_add(3),
+                        ctx.pressed_hit,
+                    );
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[6],
+                        "Optional note",
+                        hspan2,
+                        *theme::LABEL_COLOUR,
+                        400,
+                    );
                     if let Some(tb) = self.settings_note_textbox.as_mut() {
                         let id = tb.hit_id();
-                        tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
+                        tb.render_content_into(
+                            &mut canvas,
+                            0.,
+                            0.,
+                            ctx.text,
+                            None,
+                            None,
+                            Some(&mut chrome.hit_test_map),
+                            id,
+                        );
                     }
                 }
                 SettingsPage::About => {
@@ -6419,38 +8554,130 @@ impl FluorApp for PhotonApp {
                         if lx1 > lx0 && ly1 > ly0 {
                             let logo_rect = fluor::canvas::PixelRect::new(lx0, ly0, lx1, ly1);
                             chromatic_wave(&mut canvas, logo_rect, wave_phase, 1.0);
-                            crate::ui::photon_logo::paint_photon_logo(&mut canvas, ctx.text, logo_rect);
+                            crate::ui::photon_logo::paint_photon_logo(
+                                &mut canvas,
+                                ctx.text,
+                                logo_rect,
+                            );
                         }
                     }
                     y += logo_h + line_h * 0.4;
                     // The two headline properties — the whole pitch in two words each.
-                    ctx.text.draw_text_center(&mut canvas, "killswitch ready", cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        "killswitch ready",
+                        cx,
+                        y + line_h * 0.5,
+                        &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
+                            .weight(600)
+                            .font("Oxanium"),
+                        None,
+                        None,
+                    );
                     y += line_h;
-                    ctx.text.draw_text_center(&mut canvas, "passless", cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        "passless",
+                        cx,
+                        y + line_h * 0.5,
+                        &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
+                            .weight(600)
+                            .font("Oxanium"),
+                        None,
+                        None,
+                    );
                     y += line_h * 1.2;
                     // Version — dozenal glyphs (weight 400 → the Oxanium +glyphs face draws the reserved control bytes as dozenal digits), NEVER arabic. Tap toggles the reveal (spelled form + cheat sheet). Whole row is the tap target (btn_base + 3).
                     let ver = format!("Version {}", version_dozenal_glyphs());
-                    ctx.text.draw_text_center(&mut canvas, &ver, cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR).weight(400).font("Oxanium"), None, None);
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        &ver,
+                        cx,
+                        y + line_h * 0.5,
+                        &TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR)
+                            .weight(400)
+                            .font("Oxanium"),
+                        None,
+                        None,
+                    );
                     restamp_hit_rect(
-                        &mut chrome.hit_test_map, buf_w, buf_h,
-                        inset.x as isize, y as isize,
-                        (inset.x + inset.w) as isize, (y + line_h) as isize,
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        inset.x as isize,
+                        y as isize,
+                        (inset.x + inset.w) as isize,
+                        (y + line_h) as isize,
                         btn_base.wrapping_add(3),
                     );
                     y += line_h;
                     if self.about_version_spelled {
                         // Spelled-out (voca words), then the dozenal cheat sheet: all twelve digits as GLYPH = name, two columns of six.
-                        let spelled = format!("{}{}", crate::dozenal_spell(deploy_version()), if dev_patch() > 0 { format!(" point {}", crate::dozenal_spell(dev_patch())) } else { String::new() });
-                        ctx.text.draw_text_center(&mut canvas, &spelled, cx, y + line_h * 0.5, &TextStyle::new(hspan2 * 0.85, *theme::LABEL_COLOUR).weight(400).font("Oxanium"), None, None);
+                        let spelled = format!(
+                            "{}{}",
+                            crate::dozenal_spell(deploy_version()),
+                            if dev_patch() > 0 {
+                                format!(" point {}", crate::dozenal_spell(dev_patch()))
+                            } else {
+                                String::new()
+                            }
+                        );
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            &spelled,
+                            cx,
+                            y + line_h * 0.5,
+                            &TextStyle::new(hspan2 * 0.85, *theme::LABEL_COLOUR)
+                                .weight(400)
+                                .font("Oxanium"),
+                            None,
+                            None,
+                        );
                         y += line_h * 1.4;
-                        ctx.text.draw_text_center(&mut canvas, "dozenal", cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium"), None, None);
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            "dozenal",
+                            cx,
+                            y + line_h * 0.5,
+                            &TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR)
+                                .weight(600)
+                                .font("Oxanium"),
+                            None,
+                            None,
+                        );
                         y += line_h;
                         let col_l = inset.x + inset.w * 0.32;
                         let col_r = inset.x + inset.w * 0.68;
                         for d in 0..6usize {
-                            let cell = |digit: usize| format!("{}  {}", char::from(0x10 + digit as u8), crate::DOZENAL_NAMES[digit]);
-                            ctx.text.draw_text_center(&mut canvas, &cell(d), col_l, y + line_h * 0.5, &TextStyle::new(hspan2 * 0.85, *theme::LABEL_COLOUR).weight(400).font("Oxanium"), None, None);
-                            ctx.text.draw_text_center(&mut canvas, &cell(d + 6), col_r, y + line_h * 0.5, &TextStyle::new(hspan2 * 0.85, *theme::LABEL_COLOUR).weight(400).font("Oxanium"), None, None);
+                            let cell = |digit: usize| {
+                                format!(
+                                    "{}  {}",
+                                    char::from(0x10 + digit as u8),
+                                    crate::DOZENAL_NAMES[digit]
+                                )
+                            };
+                            ctx.text.draw_text_center(
+                                &mut canvas,
+                                &cell(d),
+                                col_l,
+                                y + line_h * 0.5,
+                                &TextStyle::new(hspan2 * 0.85, *theme::LABEL_COLOUR)
+                                    .weight(400)
+                                    .font("Oxanium"),
+                                None,
+                                None,
+                            );
+                            ctx.text.draw_text_center(
+                                &mut canvas,
+                                &cell(d + 6),
+                                col_r,
+                                y + line_h * 0.5,
+                                &TextStyle::new(hspan2 * 0.85, *theme::LABEL_COLOUR)
+                                    .weight(400)
+                                    .font("Oxanium"),
+                                None,
+                                None,
+                            );
                             y += line_h;
                         }
                     }
@@ -6474,8 +8701,28 @@ impl FluorApp for PhotonApp {
             );
             let span = 2. * buf_w as f32 * buf_h as f32 / (buf_w + buf_h) as f32;
             let cx = buf_w as f32 * 0.5;
-            ctx.text.draw_text_center(&mut canvas, "Selected!", cx, buf_h as f32 * 0.4, &TextStyle::new(span / 8., *theme::CONTACT_NAME_COLOUR).weight(800).font("Oxanium"), None, None);
-            ctx.text.draw_text_center(&mut canvas, "Confirm on your other device to finish.", cx, buf_h as f32 * 0.58, &TextStyle::new(span / 24., *theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium"), None, None);
+            ctx.text.draw_text_center(
+                &mut canvas,
+                "Selected!",
+                cx,
+                buf_h as f32 * 0.4,
+                &TextStyle::new(span / 8., *theme::CONTACT_NAME_COLOUR)
+                    .weight(800)
+                    .font("Oxanium"),
+                None,
+                None,
+            );
+            ctx.text.draw_text_center(
+                &mut canvas,
+                "Confirm on your other device to finish.",
+                cx,
+                buf_h as f32 * 0.58,
+                &TextStyle::new(span / 24., *theme::CONTACT_NAME_COLOUR)
+                    .weight(500)
+                    .font("Oxanium"),
+                None,
+                None,
+            );
         }
 
         chrome.flatten_into(target, buf_w, buf_h, None);
@@ -6591,12 +8838,19 @@ impl PhotonApp {
 
         // Periodic OWN-chain re-fold — the reliable doorbell for fleet membership changes (docs/pairing-v2.md). The hub `fleet` event is the instant path but best-effort; this catches a device add/remove that arrived while our WebSocket was down. Reconciling siblings re-seeds the answerable-pubkey set, so a newly-added device starts getting pong answers (stops showing offline) and appears in the Fleet list without a relaunch. 45s: brisk enough that a just-added device goes live within a sweep, slow enough to be a negligible one-fetch background poll.
         const FLEET_REFOLD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(45);
-        if matches!(self.state, AppState::Ready | AppState::Conversation | AppState::Settings(_)) {
+        if matches!(
+            self.state,
+            AppState::Ready | AppState::Conversation | AppState::Settings(_)
+        ) {
             let due = self
                 .last_fleet_refold
                 .is_none_or(|last| now.duration_since(last) >= FLEET_REFOLD_INTERVAL);
             if due {
-                if let Some(our_hp) = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()) {
+                if let Some(our_hp) = self
+                    .handle_query
+                    .as_ref()
+                    .and_then(|hq| hq.get_handle_proof())
+                {
                     self.last_fleet_refold = Some(now);
                     self.spawn_contact_fleet_refresh(vec![our_hp]);
                 }
@@ -6606,7 +8860,10 @@ impl PhotonApp {
         // Stalled-address re-fetch — the deadlock breaker for flaky-fgtw address discovery.
         // A contact whose address fetch failed sits with `ip = None`: its CLUTCH offer can't send (send needs an address), name/avatar never arrive (they ride the pong, which needs a reachable path), and the ceremony loops keygen forever. There is no periodic address re-fetch otherwise, so while any non-self contact is Pending-CLUTCH with no address, pulse a lightweight background resume (re-runs the announce + peer fetch → refresh_contact_addrs_from_peers). A single success learns the address, fire-on-learn punches, the offer sends, and the pong then carries name/avatar. Self-limiting: stops the moment the address lands. (Stopgap for the peer-gossip fix, TICKETS T0.)
         const STALLED_ADDR_REFETCH: std::time::Duration = std::time::Duration::from_secs(15);
-        if matches!(self.state, AppState::Ready | AppState::Conversation | AppState::Settings(_)) {
+        if matches!(
+            self.state,
+            AppState::Ready | AppState::Conversation | AppState::Settings(_)
+        ) {
             let our_pid = self
                 .session
                 .as_ref()
@@ -6745,8 +9002,10 @@ impl PhotonApp {
             match update {
                 AddDeviceUpdate::Candidates(reqs) => {
                     // Precompute each candidate's expected word tokens + keyed name once per refresh, so the per-keystroke matcher is a plain string walk. Requests were already signature-verified in bindreq_list; the seed is in-session by definition on this screen. `heard_ble` marks candidates whose beacon we're hearing right now (proximity) — resolved by matching each heard service UUID's keyed tag to the candidate's pubkey under our fleet key.
-                    if let Some((seed, hp)) =
-                        self.session.as_ref().map(|s| (s.identity_seed, s.handle_proof))
+                    if let Some((seed, hp)) = self
+                        .session
+                        .as_ref()
+                        .map(|s| (s.identity_seed, s.handle_proof))
                     {
                         use crate::network::fgtw::fleet;
                         let heard = crate::network::pairing_beacon::heard();
@@ -6759,7 +9018,12 @@ impl PhotonApp {
                                     tokens: fleet::pair_word_list(&words),
                                     // Recompute this candidate's beacon id from its OWN published (pubkey, eagle_time) under our handle key; a heard match = proximity.
                                     heard_ble: heard.iter().any(|b| {
-                                        fgtw::pair::beacon_matches(&b.uuid, &hp, &req.device_pubkey, req.t)
+                                        fgtw::pair::beacon_matches(
+                                            &b.uuid,
+                                            &hp,
+                                            &req.device_pubkey,
+                                            req.t,
+                                        )
                                     }),
                                     req,
                                 }
@@ -6774,7 +9038,9 @@ impl PhotonApp {
                     let name = self
                         .session
                         .as_ref()
-                        .map(|s| crate::network::fgtw::fleet::device_name_default(&pk, &s.identity_seed))
+                        .map(|s| {
+                            crate::network::fgtw::fleet::device_name_default(&pk, &s.identity_seed)
+                        })
                         .unwrap_or_default();
                     if self.add_device_bind_ble {
                         // BLE / list-tap select: the candidate was picked by proximity + name, NOT by typing its full 256-bit key — so a wrong pick is possible. Hold the fleet-key rotation behind the human's "did it turn green?" confirm (two-phase); a wrong bind stays a keyless ledger entry.
@@ -6795,8 +9061,10 @@ impl PhotonApp {
                     // The confirm rotated the fleet key — recover the new epoch AND re-seal the roster under it in one ordered pass, so the just-joined device's roster pull decrypts instead of failing aead::Error until a relaunch. (Was a bare key-sync that left the roster stale-sealed forever, since the periodic re-push only fires on a non-in-app attest.)
                     self.spawn_roster_republish();
                     // And re-fold our own chain immediately so the freshly-bound device gets its sibling contact (fleet weave kickoff) without waiting for the next fleet event.
-                    if let Some(our_hp) =
-                        self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof())
+                    if let Some(our_hp) = self
+                        .handle_query
+                        .as_ref()
+                        .and_then(|hq| hq.get_handle_proof())
                     {
                         self.spawn_contact_fleet_refresh(vec![our_hp]);
                     }
@@ -6866,7 +9134,11 @@ impl PhotonApp {
                         // The veto marker is the durable half of the choice — background is default-ON, so "off" must survive restarts (the artifact alone would just re-enroll next launch).
                         crate::platform::autostart::set_background_desired(checked);
                         self.resident_mode = checked;
-                        crate::logf!("RESIDENT: background mode {} (login item {})", if checked { "ON" } else { "OFF" }, if checked { "written" } else { "removed" });
+                        crate::logf!(
+                            "RESIDENT: background mode {} (login item {})",
+                            if checked { "ON" } else { "OFF" },
+                            if checked { "written" } else { "removed" }
+                        );
                         if checked && !self.tray_spawned {
                             if let Some(proxy) = self.event_proxy.clone() {
                                 crate::platform::tray::spawn(proxy);
@@ -6888,7 +9160,11 @@ impl PhotonApp {
 
         // AddDevice flow: the status line is EVENT-driven, re-derived on every edit by the LIVE MATCHER — the typed entry prefix-matches against the candidate word strings from the binding-request registry (docs/pairing-v2.md), so a typo flags at the exact word it happens and a full 23-word match auto-binds.
         if matches!(self.state, AppState::AddDevice) {
-            let text: String = self.textbox.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
+            let text: String = self
+                .textbox
+                .as_ref()
+                .map(|tb| tb.chars.iter().collect())
+                .unwrap_or_default();
             if text != self.add_device_wordcheck_text {
                 self.add_device_wordcheck_text = text;
                 self.refresh_add_device_match();
@@ -6906,12 +9182,15 @@ impl PhotonApp {
             match update {
                 JoinUpdate::ShowWords(words) => {
                     self.add_join_words = Some(words);
-                    self.add_join_status = "Add this device from one that's already signed in:".to_string();
+                    self.add_join_status =
+                        "Add this device from one that's already signed in:".to_string();
                 }
                 JoinUpdate::Joined(fleet_key, session) => {
                     if fleet_key.is_none() {
                         // JOINER SELECTED (docs/lifecycle.md): bound into the chain but the sponsor's human hasn't confirmed — THIS screen going green IS what they're being asked to verify. Flood green, say "Selected!", and HOLD; sign-in fires when the confirm rotation releases the fleet key. The poller re-emits Joined(Some(key)) thru a fresh channel, so the Some-branch below is the single sign-in path.
-                        crate::log("JOIN: bound — GREEN (Selected!), holding for the sponsor's confirm");
+                        crate::log(
+                            "JOIN: bound — GREEN (Selected!), holding for the sponsor's confirm",
+                        );
                         self.add_join_words = None;
                         self.add_join_status.clear();
                         self.joiner_selected = true;
@@ -6926,7 +9205,9 @@ impl PhotonApp {
                             // ~15 min of 2s polls — the sponsor is a human mid-tap, not a batch job; past this the ceremony is abandoned and a relaunch re-joins cleanly.
                             for _ in 0..(15 * 30) {
                                 std::thread::sleep(std::time::Duration::from_secs(2));
-                                if let Ok(Some(k)) = crate::network::fgtw::fleet::recover_fleet_key(&hp, &kp) {
+                                if let Ok(Some(k)) =
+                                    crate::network::fgtw::fleet::recover_fleet_key(&hp, &kp)
+                                {
                                     if tx.send(JoinUpdate::Joined(Some(k), session)).is_err() {
                                         return; // screen left — nobody waiting
                                     }
@@ -6987,7 +9268,10 @@ impl PhotonApp {
             .map(|rx| rx.try_iter().collect())
             .unwrap_or_default();
         if !fleet_evts.is_empty() {
-            let our_hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
+            let our_hp = self
+                .handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof());
             let mut refresh_contacts: Vec<[u8; 32]> = Vec::new();
             for (kind, evt_hp) in &fleet_evts {
                 if *kind == "release" {
@@ -6999,7 +9283,9 @@ impl PhotonApp {
                 if Some(*evt_hp) == our_hp {
                     // OUR fleet: shared-state or membership change — pull it now.
                     match *kind {
-                        "fstate" | "friendship" if self.roster_pull_rx.is_none() => self.spawn_roster_pull(),
+                        "fstate" | "friendship" if self.roster_pull_rx.is_none() => {
+                            self.spawn_roster_pull()
+                        }
                         "fleet" => {
                             self.spawn_fleet_key_sync();
                             // Membership changed: re-fold our own chain so sibling contacts reconcile (fleet weave) — this is how existing members learn about a freshly-added device within ~a second.
@@ -7030,7 +9316,10 @@ impl PhotonApp {
             .map(|rx| rx.try_iter().collect())
             .unwrap_or_default();
         if !member_updates.is_empty() {
-            let our_hp = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof());
+            let our_hp = self
+                .handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof());
             let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
             let siblings = sibling_presence_snapshot(&self.contacts);
             let mut changed = false;
@@ -7071,16 +9360,25 @@ impl PhotonApp {
                 }
                 if c.identity_ended {
                     // Same genesis came back — the not_found was a blip, not a death.
-                    crate::logf!("FLEET: {}'s chain is back (same genesis) — un-ending", crate::fp(&hp));
+                    crate::logf!(
+                        "FLEET: {}'s chain is back (same genesis) — un-ending",
+                        crate::fp(&hp)
+                    );
                     c.identity_ended = false;
                     changed = true;
                 }
                 // Monotonic freshness gate FIRST, before any mutation: never adopt a fold whose tip is older than the last one we adopted (an R2 eventual-consistency read serving a stale pre-removal set must not overwrite a fresh post-removal one). A first fold (fleet_members_ts == 0) always passes since real eagle times are positive.
                 if c.fleet_folded_once && tip_ts < c.fleet_members_ts {
-                    crate::logf!("FLEET: ignoring stale fold for {} (tip {} < adopted {})", crate::fp(&hp), tip_ts, c.fleet_members_ts);
+                    crate::logf!(
+                        "FLEET: ignoring stale fold for {} (tip {} < adopted {})",
+                        crate::fp(&hp),
+                        tip_ts,
+                        c.fleet_members_ts
+                    );
                     continue;
                 }
-                let shrank = c.fleet_folded_once && c.fleet_members.iter().any(|m| !members.contains(m));
+                let shrank =
+                    c.fleet_folded_once && c.fleet_members.iter().any(|m| !members.contains(m));
                 let grew = members.iter().any(|m| !c.fleet_members.contains(m));
                 let set_changed = c.fleet_members != members;
                 let arming = !c.fleet_folded_once;
@@ -7118,7 +9416,9 @@ impl PhotonApp {
                     to_persist.sort_unstable();
                     to_persist.dedup();
                     for idx in to_persist {
-                        if let Err(e) = crate::storage::contacts::save_contact(&self.contacts[idx], &storage) {
+                        if let Err(e) =
+                            crate::storage::contacts::save_contact(&self.contacts[idx], &storage)
+                        {
                             crate::logf!("FLEET: persist folded set failed: {}", e);
                         }
                     }
@@ -7138,8 +9438,12 @@ impl PhotonApp {
                         .unwrap()
                         .merge_from(state.global_settings, state.device_settings);
                     if changed {
-                        if let (Some(fs), Some(storage)) = (self.fleet_settings.as_ref(), self.storage.as_ref()) {
-                            if let Err(e) = crate::storage::fleet_settings::save_fleet_settings(fs, storage) {
+                        if let (Some(fs), Some(storage)) =
+                            (self.fleet_settings.as_ref(), self.storage.as_ref())
+                        {
+                            if let Err(e) =
+                                crate::storage::fleet_settings::save_fleet_settings(fs, storage)
+                            {
                                 crate::logf!("SETTINGS: persist after merge failed: {}", e);
                             }
                         }
@@ -7154,12 +9458,19 @@ impl PhotonApp {
                     }
                 }
                 // Reconcile check BEFORE the merge consumes the pulled roster: do we hold contacts the slot lacks (added while a sibling was the last pusher, or pre-CRDT) or newer LWW stamps? Only then push back — an all-covered pull must NOT push, or the push's fstate event re-pulls every sibling in a ping-pong.
-                let our_pid = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                let our_pid = self
+                    .session
+                    .as_ref()
+                    .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
                 let slot_missing_ours = self.contacts.iter().any(|c| {
                     if c.is_sibling || our_pid == Some(c.handle_hash) {
                         return false;
                     }
-                    match state.roster.iter().find(|e| e.handle_proof == c.handle_proof) {
+                    match state
+                        .roster
+                        .iter()
+                        .find(|e| e.handle_proof == c.handle_proof)
+                    {
                         None => true,
                         Some(e) => c.roster_updated > e.updated,
                     }
@@ -7289,7 +9600,9 @@ impl PhotonApp {
             match page {
                 SettingsPage::Appearance => {
                     // Rows: [0]=title [1]=Theme label [2]=Theme dropdown [3]=Party colours [4]=Zoom label [5]=Zoom slider [6]=Calibration.
-                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
+                    let rows = layout
+                        .content_scrolled(8, settings_content_scroll)
+                        .split_v([1.0; 8]);
                     if let Some(dd) = self.settings_theme_dropdown.as_mut() {
                         let r = rows[2].center_h(0.7);
                         dd.set_rect(r.center_x(), r.center_y(), r.w, ctrl_h);
@@ -7301,7 +9614,9 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Recovery => {
-                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
+                    let rows = layout
+                        .content_scrolled(8, settings_content_scroll)
+                        .split_v([1.0; 8]);
                     if let Some(cb) = self.settings_custodian_check.as_mut() {
                         let r = rows[2];
                         cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
@@ -7309,7 +9624,9 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Notifications => {
-                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
+                    let rows = layout
+                        .content_scrolled(8, settings_content_scroll)
+                        .split_v([1.0; 8]);
                     if let Some(cb) = self.settings_chime_check.as_mut() {
                         let r = rows[1];
                         cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
@@ -7327,7 +9644,9 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Updates => {
-                    let rows = layout.content_scrolled(8, settings_content_scroll).split_v([1.0; 8]);
+                    let rows = layout
+                        .content_scrolled(8, settings_content_scroll)
+                        .split_v([1.0; 8]);
                     if let Some(cb) = self.settings_autoupdate_check.as_mut() {
                         let r = rows[2];
                         cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
@@ -7351,23 +9670,53 @@ impl PhotonApp {
                                 let col = r.split_h([0.4, 0.6])[1];
                                 if pf.tag_tb.is_some() {
                                     // Value + tag share the column: value left ~60%, tag right ~32% (a phone's home/work/custom).
-                                    let boxr = fluor::region::Region::new(col.x + col.w * 0.02, col.y, col.w * 0.60, col.h);
-                                    let tagr = fluor::region::Region::new(col.x + col.w * 0.66, col.y, col.w * 0.32, col.h);
-                                    pf.tb.set_rect(boxr.center_x(), boxr.center_y(), boxr.w, ctrl_h * 1.2);
+                                    let boxr = fluor::region::Region::new(
+                                        col.x + col.w * 0.02,
+                                        col.y,
+                                        col.w * 0.60,
+                                        col.h,
+                                    );
+                                    let tagr = fluor::region::Region::new(
+                                        col.x + col.w * 0.66,
+                                        col.y,
+                                        col.w * 0.32,
+                                        col.h,
+                                    );
+                                    pf.tb.set_rect(
+                                        boxr.center_x(),
+                                        boxr.center_y(),
+                                        boxr.w,
+                                        ctrl_h * 1.2,
+                                    );
                                     pf.tb.set_font_size(ctrl_font, ctx.text);
                                     let tag = pf.tag_tb.as_mut().unwrap();
-                                    tag.set_rect(tagr.center_x(), tagr.center_y(), tagr.w, ctrl_h * 1.2);
+                                    tag.set_rect(
+                                        tagr.center_x(),
+                                        tagr.center_y(),
+                                        tagr.w,
+                                        ctrl_h * 1.2,
+                                    );
                                     tag.set_font_size(ctrl_font * 0.9, ctx.text);
                                 } else {
                                     let boxr = col.center_h(0.92);
-                                    pf.tb.set_rect(boxr.center_x(), boxr.center_y(), boxr.w, ctrl_h * 1.2);
+                                    pf.tb.set_rect(
+                                        boxr.center_x(),
+                                        boxr.center_y(),
+                                        boxr.w,
+                                        ctrl_h * 1.2,
+                                    );
                                     pf.tb.set_font_size(ctrl_font, ctx.text);
                                 }
                             }
                             YouRow::AddInput => {
                                 let boxr = r.split_h([0.62, 0.38])[0].center_h(0.92);
                                 if let Some(tb) = self.you_add_textbox.as_mut() {
-                                    tb.set_rect(boxr.center_x(), boxr.center_y(), boxr.w, ctrl_h * 1.2);
+                                    tb.set_rect(
+                                        boxr.center_x(),
+                                        boxr.center_y(),
+                                        boxr.w,
+                                        ctrl_h * 1.2,
+                                    );
                                     tb.set_font_size(ctrl_font, ctx.text);
                                 }
                             }
@@ -7376,7 +9725,9 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Diagnostics => {
-                    let rows = layout.content_scrolled(10, settings_content_scroll).split_v([1.0; 10]);
+                    let rows = layout
+                        .content_scrolled(10, settings_content_scroll)
+                        .split_v([1.0; 10]);
                     if let Some(tb) = self.settings_note_textbox.as_mut() {
                         let r = rows[7].center_h(0.95);
                         tb.set_rect(r.center_x(), r.center_y(), r.w, ctrl_h * 1.2);
@@ -7398,7 +9749,9 @@ impl PhotonApp {
             return;
         }
 
-        let typed_pid = crate::crypto::clutch::identity_party_id(&crate::types::Handle::to_identity_seed(&handle));
+        let typed_pid = crate::crypto::clutch::identity_party_id(
+            &crate::types::Handle::to_identity_seed(&handle),
+        );
         if self.contacts.iter().any(|c| c.handle_hash == typed_pid) {
             crate::log("add-friend: handle already in contacts");
             // Feedback instead of a silent no-op — the whole reason the search "looked broken". Callers request the redraw.
@@ -7430,7 +9783,8 @@ impl PhotonApp {
                         }
                     }
                 }
-                self.search_status = Some((format!("added {handle}"), (*theme::SEARCH_FOUND_COLOUR)));
+                self.search_status =
+                    Some((format!("added {handle}"), (*theme::SEARCH_FOUND_COLOUR)));
                 if let Some(tb) = self.contacts_textbox.as_mut() {
                     tb.clear();
                 }
@@ -7517,7 +9871,9 @@ impl PhotonApp {
                     if let Ok(s) = clip.get_text() {
                         // Words entry accepts only letters and space — strip everything else from the paste (newlines/tabs become nothing; the camelCase/space tokenizer handles the rest).
                         let s: String = if words_filter {
-                            s.chars().filter(|c| c.is_ascii_alphabetic() || *c == ' ').collect()
+                            s.chars()
+                                .filter(|c| c.is_ascii_alphabetic() || *c == ' ')
+                                .collect()
                         } else {
                             s
                         };
@@ -7617,7 +9973,9 @@ impl PhotonApp {
         use crate::network::fgtw::fleet;
         use std::sync::atomic::{AtomicBool, Ordering};
         let (Some(hp), Some(kp), Some(seed), Some(tx)) = (
-            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof()),
             self.device_keypair.clone(),
             self.session.as_ref().map(|s| s.identity_seed),
             self.add_device_tx.clone(),
@@ -7685,7 +10043,10 @@ impl PhotonApp {
     /// Re-derive the AddDevice status from the current entry + candidate set — the live matcher (docs/pairing-v2.md). Per candidate: every completed typed token must equal the expected token exactly; the still-being-typed last token passes while it's a prefix of the candidate's next word. Divergence flags the exact word; a full 23-token exact match IS the selection and auto-binds (correct words are the confirmation — the fleet key still waits behind the green confirm).
     fn refresh_add_device_match(&mut self) {
         use crate::network::fgtw::fleet;
-        if !matches!(self.state, AppState::AddDevice) || self.add_device_bound.is_some() || self.add_device_checking {
+        if !matches!(self.state, AppState::AddDevice)
+            || self.add_device_bound.is_some()
+            || self.add_device_checking
+        {
             return;
         }
         let text = self.add_device_wordcheck_text.clone();
@@ -7696,7 +10057,9 @@ impl PhotonApp {
             self.add_device_typo = fleet::first_bad_pair_word(&text);
             self.add_device_status = match &self.add_device_typo {
                 Some(w) => format!("'{w}' isn't one of the words"),
-                None => "Waiting for the new device\u{2026} it should be showing its words".to_string(),
+                None => {
+                    "Waiting for the new device\u{2026} it should be showing its words".to_string()
+                }
             };
             return;
         }
@@ -7705,7 +10068,9 @@ impl PhotonApp {
             self.add_device_status = if n == 1 {
                 "Type the words shown on the new device".to_string()
             } else {
-                format!("{n} devices asking to join \u{2014} type the words on the one in your hand")
+                format!(
+                    "{n} devices asking to join \u{2014} type the words on the one in your hand"
+                )
             };
             return;
         }
@@ -7793,7 +10158,11 @@ impl PhotonApp {
         if self.fleet_evt_rx.is_some() {
             return;
         }
-        let Some(hp) = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()) else {
+        let Some(hp) = self
+            .handle_query
+            .as_ref()
+            .and_then(|hq| hq.get_handle_proof())
+        else {
             return;
         };
         let (tx, rx) = std::sync::mpsc::channel::<(&'static str, [u8; 32])>();
@@ -7857,7 +10226,8 @@ impl PhotonApp {
             return;
         }
         if self.contact_members_tx.is_none() {
-            let (tx, rx) = std::sync::mpsc::channel::<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)>();
+            let (tx, rx) =
+                std::sync::mpsc::channel::<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)>();
             self.contact_members_rx = Some(rx);
             self.contact_members_tx = Some(tx);
         }
@@ -7871,7 +10241,11 @@ impl PhotonApp {
                             return; // app dropped the receiver
                         }
                     }
-                    Err(e) => crate::logf!("FLEET: contact fleet refresh failed for {}: {}", crate::fp(&hp), e),
+                    Err(e) => crate::logf!(
+                        "FLEET: contact fleet refresh failed for {}: {}",
+                        crate::fp(&hp),
+                        e
+                    ),
                 }
             }
             if let Some(w) = wake.as_ref() {
@@ -7882,11 +10256,14 @@ impl PhotonApp {
 
     /// Reconcile OUR OWN folded fleet membership into sibling contacts (the fleet weave). For each member device that isn't us and has no sibling contact yet: create one as `ClutchState::Pending` — the serialized keygen queue picks it up and the full CLUTCH ceremony + weave runs against it exactly like a friend. For each sibling contact whose device fell out of the fold: remove it and delete its state + chains (revocation hygiene — an ex-member must not stay ceremony-eligible). Idempotent; triggered from attest/resume, our-hp `fleet` events, and the binder's `AddDeviceUpdate::Bound`.
     fn reconcile_fleet_siblings(&mut self, members: &[[u8; 32]]) {
-        let Some(our_device) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes())
-        else {
+        let Some(our_device) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else {
             return;
         };
-        let Some(our_hp) = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()) else {
+        let Some(our_hp) = self
+            .handle_query
+            .as_ref()
+            .and_then(|hq| hq.get_handle_proof())
+        else {
             return;
         };
         let mut changed = false;
@@ -7907,7 +10284,10 @@ impl PhotonApp {
                 our_hp,
                 crate::types::DevicePubkey::from_bytes(*device),
             );
-            crate::logf!("SIBLING: reconciled +1 (device {}) — fleet weave pending", hex::encode(&device[..4]));
+            crate::logf!(
+                "SIBLING: reconciled +1 (device {}) — fleet weave pending",
+                hex::encode(&device[..4])
+            );
             if let Some(storage) = self.storage.as_ref() {
                 if let Err(e) = crate::storage::contacts::save_contact(&sib, storage) {
                     crate::logf!("SIBLING: failed to persist sibling: {}", e);
@@ -7928,7 +10308,10 @@ impl PhotonApp {
             }
         });
         for c in &removed {
-            crate::logf!("SIBLING: reconciled -1 (device {} left the fold)", hex::encode(&c.public_identity.key[..4]));
+            crate::logf!(
+                "SIBLING: reconciled -1 (device {} left the fold)",
+                hex::encode(&c.public_identity.key[..4])
+            );
             changed = true;
             if let Some(storage) = self.storage.as_ref() {
                 if let Err(e) =
@@ -7966,7 +10349,9 @@ impl PhotonApp {
     fn spawn_fleet_key_sync(&self) {
         use crate::network::fgtw::fleet;
         let (Some(hp), Some(device_key), Some(storage), Some(session)) = (
-            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof()),
             self.device_keypair.clone(),
             self.storage.as_ref().cloned(),
             self.session.as_ref(),
@@ -7981,8 +10366,16 @@ impl PhotonApp {
         // This device's shareable state, snapshotted on the UI thread — the heal's re-seal push carries it even when the old-key pull comes up empty.
         let ours = fgtw::fstate::FleetState {
             roster: self.current_roster(),
-            global_settings: self.fleet_settings.as_ref().map(|fs| fs.global.clone()).unwrap_or_default(),
-            device_settings: self.fleet_settings.as_ref().map(|fs| fs.devices.clone()).unwrap_or_default(),
+            global_settings: self
+                .fleet_settings
+                .as_ref()
+                .map(|fs| fs.global.clone())
+                .unwrap_or_default(),
+            device_settings: self
+                .fleet_settings
+                .as_ref()
+                .map(|fs| fs.devices.clone())
+                .unwrap_or_default(),
         };
         std::thread::spawn(move || {
             use std::sync::atomic::Ordering;
@@ -7996,12 +10389,21 @@ impl PhotonApp {
                 fleet::fanout_needs_rotation(wraps.len(), members.len()).then_some(members)
             })();
             if let Some(members) = heal_members {
-                if busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+                if busy
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+                {
                     return;
                 }
                 // Preserve the slot BEFORE the re-key makes it unopenable. A racing sibling's re-push can already have re-sealed it (AEAD miss → default) — then our push carries `ours` alone, and whatever the slot uniquely held rides back on that sibling's next write (CRDT union, no tombstone loss).
-                let old_key = storage.read_addr(&addr).ok().flatten().and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
-                let preserved = old_key.and_then(|k| fleet::pull_fstate(&hp, &k).ok().flatten()).unwrap_or_default();
+                let old_key = storage
+                    .read_addr(&addr)
+                    .ok()
+                    .flatten()
+                    .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
+                let preserved = old_key
+                    .and_then(|k| fleet::pull_fstate(&hp, &k).ok().flatten())
+                    .unwrap_or_default();
                 match fleet::rotate_fleet_key(&hp, &device_key, &members) {
                     Ok((epoch, new_key)) => {
                         if let Err(e) = storage.write_addr(&addr, &new_key) {
@@ -8047,7 +10449,9 @@ impl PhotonApp {
         use crate::network::fgtw::fleet;
         let entries = self.current_roster();
         let (Some(hp), Some(kp), Some(storage), Some(session)) = (
-            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof()),
             self.device_keypair.clone(),
             self.storage.as_ref().cloned(),
             self.session.as_ref(),
@@ -8055,23 +10459,28 @@ impl PhotonApp {
             return;
         };
         let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
-        std::thread::spawn(move || match fleet::recover_or_establish_fleet_key(&hp, &kp) {
-            Ok(Some(k)) => {
-                if let Err(e) = storage.write_addr(&addr, &k) {
-                    crate::logf!("FLEET: fleet key cache failed: {}", e);
+        std::thread::spawn(
+            move || match fleet::recover_or_establish_fleet_key(&hp, &kp) {
+                Ok(Some(k)) => {
+                    if let Err(e) = storage.write_addr(&addr, &k) {
+                        crate::logf!("FLEET: fleet key cache failed: {}", e);
+                    }
+                    crate::log("FLEET: fleet key synced from fan-out (post-bind)");
+                    if entries.is_empty() {
+                        return; // no contacts to share, but the key is now current for the roster PULL
+                    }
+                    match fleet::push_roster(&hp, &kp, &k, &entries) {
+                        Ok(()) => crate::logf!(
+                            "FLEET: roster re-pushed under rotated epoch ({} entr(ies))",
+                            entries.len()
+                        ),
+                        Err(e) => crate::logf!("FLEET: roster re-push failed: {}", e),
+                    }
                 }
-                crate::log("FLEET: fleet key synced from fan-out (post-bind)");
-                if entries.is_empty() {
-                    return; // no contacts to share, but the key is now current for the roster PULL
-                }
-                match fleet::push_roster(&hp, &kp, &k, &entries) {
-                    Ok(()) => crate::logf!("FLEET: roster re-pushed under rotated epoch ({} entr(ies))", entries.len()),
-                    Err(e) => crate::logf!("FLEET: roster re-push failed: {}", e),
-                }
-            }
-            Ok(None) => {}
-            Err(e) => crate::logf!("FLEET: post-bind key sync failed: {}", e),
-        });
+                Ok(None) => {}
+                Err(e) => crate::logf!("FLEET: post-bind key sync failed: {}", e),
+            },
+        );
     }
 
     /// Persist a fleet key received over pairing (new device), overwriting any local placeholder so this device converges on the founder's key.
@@ -8087,7 +10496,10 @@ impl PhotonApp {
     /// Build the fleet roster from the live contact list — the syncable subset, minus self-contacts (notes-to-self are device-local, not a friend to share) and minus fleet siblings (infrastructure, not friends — a sibling pid leaking into the roster would merge as a bogus contact on every device).
     fn current_roster(&self) -> Vec<crate::network::fgtw::fleet::RosterEntry> {
         use crate::network::fgtw::fleet::RosterEntry;
-        let our_pid = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let our_pid = self
+            .session
+            .as_ref()
+            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
         self.contacts
             .iter()
             .filter(|c| !c.is_sibling && our_pid != Some(c.handle_hash))
@@ -8126,13 +10538,19 @@ impl PhotonApp {
                 }
                 if e.tombstone {
                     let gone = self.contacts.remove(pos);
-                    crate::logf!("FLEET: roster tombstone — removed contact {}", crate::fp(&gone.handle_proof).as_str());
+                    crate::logf!(
+                        "FLEET: roster tombstone — removed contact {}",
+                        crate::fp(&gone.handle_proof).as_str()
+                    );
                     // Index fixup: the remove shifts every later contact down one. If the REMOVED contact's conversation (or panel) is open on THIS device, pop to the contact list — rendering a shifted index would silently show someone else's conversation.
                     match self.active_contact {
                         Some(ci) if ci == pos => {
                             self.active_contact = None;
                             self.contact_boot_armed = false;
-                            if matches!(self.state, AppState::Conversation | AppState::ContactPanel(_)) {
+                            if matches!(
+                                self.state,
+                                AppState::Conversation | AppState::ContactPanel(_)
+                            ) {
                                 self.state = AppState::Ready;
                             }
                         }
@@ -8140,13 +10558,20 @@ impl PhotonApp {
                         _ => {}
                     }
                     if let Some(storage) = self.storage.as_ref() {
-                        if let Err(err) = crate::storage::contacts::delete_contact(&gone.handle_hash, storage) {
+                        if let Err(err) =
+                            crate::storage::contacts::delete_contact(&gone.handle_hash, storage)
+                        {
                             crate::logf!("FLEET: tombstoned contact state delete failed: {}", err);
                         }
                         if let Some(fid) = gone.friendship_id {
                             self.friendship_chains.retain(|(id, _)| *id != fid);
-                            if let Err(err) = crate::storage::friendship::delete_friendship_chains(&fid, storage) {
-                                crate::logf!("FLEET: tombstoned contact chain delete failed: {}", err);
+                            if let Err(err) =
+                                crate::storage::friendship::delete_friendship_chains(&fid, storage)
+                            {
+                                crate::logf!(
+                                    "FLEET: tombstoned contact chain delete failed: {}",
+                                    err
+                                );
                             }
                         }
                     }
@@ -8172,7 +10597,10 @@ impl PhotonApp {
                     || c.clutch_offer_sent
                     || !c.clutch_slots.is_empty()
                     || c.ceremony_id.is_some();
-                if owner_is_other && c.clutch_state != crate::types::ClutchState::Complete && holds_round {
+                if owner_is_other
+                    && c.clutch_state != crate::types::ClutchState::Complete
+                    && holds_round
+                {
                     crate::logf!(
                         "CLUTCH §4.2: discarding parked round for {} — ceremony owner is {}",
                         crate::fp(&c.handle_proof).as_str(),
@@ -8184,7 +10612,9 @@ impl PhotonApp {
                 c.owner_woven = e.woven;
                 c.roster_updated = e.updated;
                 if let Some(storage) = self.storage.as_ref() {
-                    if let Err(err) = crate::storage::contacts::save_contact(&self.contacts[pos], storage) {
+                    if let Err(err) =
+                        crate::storage::contacts::save_contact(&self.contacts[pos], storage)
+                    {
                         crate::logf!("FLEET: roster-adopted contact save failed: {}", err);
                     }
                 }
@@ -8195,7 +10625,13 @@ impl PhotonApp {
                 continue; // removal of a contact we never held — nothing to do locally
             }
             let device_pubkey = crate::types::DevicePubkey::from_bytes(e.public_identity);
-            let mut contact = crate::types::Contact::from_pin(e.name.clone(), e.avatar_pin, e.handle_proof, e.handle_hash, device_pubkey);
+            let mut contact = crate::types::Contact::from_pin(
+                e.name.clone(),
+                e.avatar_pin,
+                e.handle_proof,
+                e.handle_hash,
+                device_pubkey,
+            );
             contact.added = e.added;
             // Carry the fleet's trust decision onto the stub. Defaulting here would silently DOWNGRADE a friend the user already promoted on another device — and a downgrade that arrives as "new contact" is exactly the case nothing would ever correct.
             contact.trust_level = crate::storage::cloud::u8_to_trust_level(e.trust_level);
@@ -8227,12 +10663,19 @@ impl PhotonApp {
             self.reseed_contact_pubkeys();
         }
         if adopted > 0 {
-            crate::logf!("FLEET: adopted {} newer roster entr(ies) from siblings", adopted);
+            crate::logf!(
+                "FLEET: adopted {} newer roster entr(ies) from siblings",
+                adopted
+            );
         }
         if added == 0 {
             return;
         }
-        crate::logf!("FLEET: merged {} contact(s) from fleet roster (total: {})", added, self.contacts.len());
+        crate::logf!(
+            "FLEET: merged {} contact(s) from fleet roster (total: {})",
+            added,
+            self.contacts.len()
+        );
         self.reseed_contact_pubkeys();
         // Re-fold every contact's fleet after a roster merge (newly-merged contacts have no members yet).
         let mut hps: Vec<[u8; 32]> = self
@@ -8266,7 +10709,9 @@ impl PhotonApp {
             return;
         }
         let (Some(hp), Some(fleet_key)) = (
-            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof()),
             self.fleet_key_cached(),
         ) else {
             return;
@@ -8297,10 +10742,14 @@ impl PhotonApp {
         if self.fleet_settings.is_some() {
             return true;
         }
-        let (Some(storage), Some(kp)) = (self.storage.as_ref(), self.device_keypair.as_ref()) else {
+        let (Some(storage), Some(kp)) = (self.storage.as_ref(), self.device_keypair.as_ref())
+        else {
             return false;
         };
-        self.fleet_settings = Some(crate::storage::fleet_settings::load_fleet_settings(storage, kp.public.to_bytes()));
+        self.fleet_settings = Some(crate::storage::fleet_settings::load_fleet_settings(
+            storage,
+            kp.public.to_bytes(),
+        ));
         self.apply_settings_to_ui();
         self.publish_profile_name();
         self.publish_avatar_pin();
@@ -8341,14 +10790,16 @@ impl PhotonApp {
         let now = vsf::eagle_time_oscillations();
         if self.next_update_check_osc == 0 {
             // First check a jittered minute-or-two after launch — let attest + the network settle first.
-            self.next_update_check_osc = now + 60 * crate::OSC_PER_SEC + crate::jitter(60 * crate::OSC_PER_SEC);
+            self.next_update_check_osc =
+                now + 60 * crate::OSC_PER_SEC + crate::jitter(60 * crate::OSC_PER_SEC);
             return;
         }
         if now < self.next_update_check_osc {
             return;
         }
         // 4h + jitter(4h) → a 6–8h cadence, de-synchronized across the fleet.
-        self.next_update_check_osc = now + (4 * 3600 + crate::jitter(4 * 3600)) * crate::OSC_PER_SEC;
+        self.next_update_check_osc =
+            now + (4 * 3600 + crate::jitter(4 * 3600)) * crate::OSC_PER_SEC;
         let tx = self.update_sender();
         std::thread::spawn(move || {
             use crate::network::updates::{fetch_manifest_stamped_blocking, our_row, Channel};
@@ -8362,7 +10813,11 @@ impl PhotonApp {
     }
 
     /// Policy for a finished automatic check: tuple-forward only (a downgrade is never automatic), then the stamp window `floor < t ≤ now` with the STAGED clock — system eagle time on the happy path, the nunc consensus verdict (conservative edge) consulted exactly when the check fails forward, a fresh consensus requested when none is in hand. Clearing all gates: desktop release builds self-apply + re-exec; dev builds and Android get a once-per-version toast pointing at Settings → Updates.
-    fn on_auto_update_check(&mut self, stamp_osc: i64, row: Option<crate::network::updates::ManifestRow>) {
+    fn on_auto_update_check(
+        &mut self,
+        stamp_osc: i64,
+        row: Option<crate::network::updates::ManifestRow>,
+    ) {
         use crate::network::updates::{our_version, stamp_window, StampVerdict};
         let Some(row) = row else {
             return; // no artefact for this platform — nothing to move to
@@ -8375,9 +10830,10 @@ impl PhotonApp {
         let verdict = match stamp_window(stamp_osc, now_sys) {
             StampVerdict::ForwardDated => match self.clock_consensus {
                 // Honest-clock tiebreak: the LOWEST plausible now (offset minus the confidence half-width), so a lagging system clock delays an update rather than rejecting it, and a forward-dated stamp still can't slip in.
-                Some((offset, confidence)) => {
-                    stamp_window(stamp_osc, now_sys + (offset - confidence) * crate::OSC_PER_SEC)
-                }
+                Some((offset, confidence)) => stamp_window(
+                    stamp_osc,
+                    now_sys + (offset - confidence) * crate::OSC_PER_SEC,
+                ),
                 None => {
                     crate::log("UPDATE: manifest ahead of the system clock and no consensus verdict in hand — requesting one, deferring");
                     #[cfg(not(target_os = "android"))]
@@ -8397,7 +10853,9 @@ impl PhotonApp {
                 return;
             }
             StampVerdict::ForwardDated => {
-                crate::log("UPDATE: manifest is forward-dated — not yet (re-evaluated next cadence)");
+                crate::log(
+                    "UPDATE: manifest is forward-dated — not yet (re-evaluated next cadence)",
+                );
                 return;
             }
             StampVerdict::Accept => {}
@@ -8405,7 +10863,10 @@ impl PhotonApp {
         // A dev build never hops channels on its own, and Android can't self-install — both announce instead. patch == 0 IS the release-build predicate: the version scheme guarantees a dev build never wears .0 (deploy opens the dev line at .1; dev publishes are publish-current-then-bump).
         let desktop_release = cfg!(not(target_os = "android")) && ours.2 == 0;
         if desktop_release {
-            crate::logf!("UPDATE: auto-applying release {} (stamp window clear)", row.version_string());
+            crate::logf!(
+                "UPDATE: auto-applying release {} (stamp window clear)",
+                row.version_string()
+            );
             self.update_release = ChannelCheck::Ready(Some(row));
             self.spawn_update_apply(crate::network::updates::Channel::Release);
         } else if self.update_toasted != Some(row.version) {
@@ -8452,8 +10913,16 @@ impl PhotonApp {
         }
         let row = row.clone();
         self.update_busy = true;
-        self.update_status = Some(format!("Installing {} {}\u{2026}", channel.label(), dozenal_version_tuple(row.version)));
-        crate::logf!("UPDATE: applying {} {}", channel.label(), row.version_string());
+        self.update_status = Some(format!(
+            "Installing {} {}\u{2026}",
+            channel.label(),
+            dozenal_version_tuple(row.version)
+        ));
+        crate::logf!(
+            "UPDATE: applying {} {}",
+            channel.label(),
+            row.version_string()
+        );
         let tx = self.update_sender();
         let wake = self.event_proxy.clone();
         std::thread::spawn(move || {
@@ -8461,7 +10930,11 @@ impl PhotonApp {
             let last_pct = std::sync::atomic::AtomicU64::new(u64::MAX);
             let txp = tx.clone();
             let progress = move |done: u64, total: u64| {
-                let pct = if total > 0 { done * 100 / total } else { done >> 20 };
+                let pct = if total > 0 {
+                    done * 100 / total
+                } else {
+                    done >> 20
+                };
                 if last_pct.swap(pct, std::sync::atomic::Ordering::Relaxed) != pct {
                     let _ = txp.send(UpdateEvent::Progress(done, total));
                     #[cfg(not(target_os = "android"))]
@@ -8523,12 +10996,28 @@ impl PhotonApp {
                         let ours = crate::network::updates::our_version();
                         match row_opt {
                             Some(row) => {
-                                let manifest_v = format!("{}.{}.{}", row.version.0, row.version.1, row.version.2);
+                                let manifest_v = format!(
+                                    "{}.{}.{}",
+                                    row.version.0, row.version.1, row.version.2
+                                );
                                 let ours_v = format!("{}.{}.{}", ours.0, ours.1, ours.2);
-                                let verdict = if row.version > ours { " → UPDATE AVAILABLE" } else { "" };
-                                crate::logf!("UPDATE: {} check settled — manifest has {}, running {}{}", channel.label(), manifest_v, ours_v, verdict);
+                                let verdict = if row.version > ours {
+                                    " → UPDATE AVAILABLE"
+                                } else {
+                                    ""
+                                };
+                                crate::logf!(
+                                    "UPDATE: {} check settled — manifest has {}, running {}{}",
+                                    channel.label(),
+                                    manifest_v,
+                                    ours_v,
+                                    verdict
+                                );
                             }
-                            None => crate::logf!("UPDATE: {} check settled — no artefact row for this platform", channel.label()),
+                            None => crate::logf!(
+                                "UPDATE: {} check settled — no artefact row for this platform",
+                                channel.label()
+                            ),
                         }
                     } else {
                         crate::logf!("UPDATE: {} check settled (failed)", channel.label());
@@ -8556,7 +11045,8 @@ impl PhotonApp {
                 UpdateEvent::ApkReady(path) => {
                     self.update_busy = false;
                     self.update_progress = None;
-                    self.update_status = Some("Downloaded \u{221a} confirm the install prompt".to_string());
+                    self.update_status =
+                        Some("Downloaded \u{221a} confirm the install prompt".to_string());
                     self.pending_apk_install = Some(path);
                 }
                 UpdateEvent::ApplyFailed(e) => {
@@ -8578,7 +11068,11 @@ impl PhotonApp {
         if !self.ensure_fleet_settings() {
             return None;
         }
-        if let Some(v) = self.fleet_settings.as_ref().and_then(|fs| fs.effective("profile.avatar_pin")) {
+        if let Some(v) = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("profile.avatar_pin"))
+        {
             if v.len() == 64 {
                 let mut p = [0u8; 64];
                 p.copy_from_slice(&v);
@@ -8608,7 +11102,9 @@ impl PhotonApp {
         let (Some(storage), Some(kp), Some(hp)) = (
             self.storage.clone(),
             self.device_keypair.clone(),
-            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof()),
         ) else {
             return;
         };
@@ -8640,10 +11136,14 @@ impl PhotonApp {
         }
         self.settings_set("profile.avatar_pin", new_pin.to_vec());
         self.publish_avatar_pin();
-        self.settings_set("profile.avatar_ts", vsf::eagle_time_oscillations().to_le_bytes().to_vec());
+        self.settings_set(
+            "profile.avatar_ts",
+            vsf::eagle_time_oscillations().to_le_bytes().to_vec(),
+        );
         std::thread::spawn(move || {
             #[cfg(not(target_os = "redox"))]
-            let _ = thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min);
+            let _ =
+                thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min);
             match crate::ui::avatar::upload_avatar_from_seed(&kp.secret, &identity_seed, &new_pin, &hp, &storage) {
                 Ok(_) => {
                     crate::log("AVATAR: re-uploaded under the rotated pin (removal heal)");
@@ -8751,7 +11251,14 @@ impl PhotonApp {
             let tagged = EXPANDABLE_FIELDS.iter().any(|&(b, tag)| b == id && tag);
             let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
             let tag_tb = tagged.then(|| Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
-            self.you_fields.push(ProfileField { field_id: id.to_string(), label: label.to_string(), tier, custom: false, tb, tag_tb });
+            self.you_fields.push(ProfileField {
+                field_id: id.to_string(),
+                label: label.to_string(),
+                tier,
+                custom: false,
+                tb,
+                tag_tb,
+            });
         }
         let custom = self
             .fleet_settings
@@ -8771,7 +11278,14 @@ impl PhotonApp {
                 continue;
             }
             let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
-            self.you_fields.push(ProfileField { field_id: id, label, tier: "custom", custom: true, tb, tag_tb: None });
+            self.you_fields.push(ProfileField {
+                field_id: id,
+                label,
+                tier: "custom",
+                custom: true,
+                tb,
+                tag_tb: None,
+            });
         }
     }
 
@@ -8784,7 +11298,9 @@ impl PhotonApp {
                 Some(s) => s,
                 None => continue,
             };
-            if suffix.is_empty() || (!suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit())) {
+            if suffix.is_empty()
+                || (!suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()))
+            {
                 last = Some(i);
                 count += 1;
             }
@@ -8821,7 +11337,14 @@ impl PhotonApp {
             let tag_tb = tagged.then(|| Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
             self.you_fields.insert(
                 li + 1,
-                ProfileField { field_id: id, label: format!("{base_label} {n}"), tier, custom: false, tb, tag_tb },
+                ProfileField {
+                    field_id: id,
+                    label: format!("{base_label} {n}"),
+                    tier,
+                    custom: false,
+                    tb,
+                    tag_tb,
+                },
             );
             added = true;
         }
@@ -8857,10 +11380,18 @@ impl PhotonApp {
                     .unwrap_or_else(|| base.to_string());
                 let tier = self.you_fields[li].tier;
                 let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
-                let tag_tb = tagged.then(|| Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+                let tag_tb =
+                    tagged.then(|| Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
                 self.you_fields.insert(
                     li + 1,
-                    ProfileField { field_id: id, label: format!("{base_label} {n}"), tier, custom: false, tb, tag_tb },
+                    ProfileField {
+                        field_id: id,
+                        label: format!("{base_label} {n}"),
+                        tier,
+                        custom: false,
+                        tb,
+                        tag_tb,
+                    },
                 );
             }
         }
@@ -8876,7 +11407,12 @@ impl PhotonApp {
                         .map(|v| String::from_utf8_lossy(&v).into_owned())
                         .unwrap_or_default()
                 };
-                (get(&format!("profile.{}", f.field_id)), f.tag_tb.as_ref().map(|_| get(&format!("profile.{}_label", f.field_id))))
+                (
+                    get(&format!("profile.{}", f.field_id)),
+                    f.tag_tb
+                        .as_ref()
+                        .map(|_| get(&format!("profile.{}_label", f.field_id))),
+                )
             })
             .collect();
         for (f, (val, tag_val)) in self.you_fields.iter_mut().zip(stored) {
@@ -8908,10 +11444,16 @@ impl PhotonApp {
         let mut pairs: Vec<(String, Vec<u8>)> = Vec::new();
         for f in &self.you_fields {
             let v: String = f.tb.chars.iter().collect();
-            pairs.push((format!("profile.{}", f.field_id), v.trim().as_bytes().to_vec()));
+            pairs.push((
+                format!("profile.{}", f.field_id),
+                v.trim().as_bytes().to_vec(),
+            ));
             if let Some(tag_tb) = &f.tag_tb {
                 let t: String = tag_tb.chars.iter().collect();
-                pairs.push((format!("profile.{}_label", f.field_id), t.trim().as_bytes().to_vec()));
+                pairs.push((
+                    format!("profile.{}_label", f.field_id),
+                    t.trim().as_bytes().to_vec(),
+                ));
             }
         }
         let fs = self.fleet_settings.as_mut().unwrap();
@@ -8972,7 +11514,14 @@ impl PhotonApp {
             return;
         }
         let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
-        self.you_fields.push(ProfileField { field_id: id, label: label.clone(), tier: "custom", custom: true, tb, tag_tb: None });
+        self.you_fields.push(ProfileField {
+            field_id: id,
+            label: label.clone(),
+            tier: "custom",
+            custom: true,
+            tb,
+            tag_tb: None,
+        });
         // Persist the whole custom registry (id\tlabel per line) so the field survives a relaunch.
         let reg = self
             .you_fields
@@ -9009,7 +11558,9 @@ impl PhotonApp {
             device_settings: fs.devices.clone(),
         };
         let (Some(hp), Some(kp), Some(fleet_key)) = (
-            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof()),
             self.device_keypair.clone(),
             self.fleet_key_cached(),
         ) else {
@@ -9044,7 +11595,9 @@ impl PhotonApp {
             return;
         }
         let (Some(hp), Some(kp), Some(fleet_key)) = (
-            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof()),
             self.device_keypair.clone(),
             self.fleet_key_cached(),
         ) else {
@@ -9064,7 +11617,9 @@ impl PhotonApp {
         self.add_device_status = "Words match \u{2014} adding\u{2026}".to_string();
         self.add_device_checking = true;
         if let (Some(hp), Some(kp), Some(tx)) = (
-            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof()),
             self.device_keypair.clone(),
             self.add_device_tx.clone(),
         ) {
@@ -9086,7 +11641,9 @@ impl PhotonApp {
         self.add_device_status = "Finishing\u{2026}".to_string();
         self.add_device_checking = true;
         if let (Some(hp), Some(kp), Some(tx)) = (
-            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof()),
             self.device_keypair.clone(),
             self.add_device_tx.clone(),
         ) {
@@ -9115,7 +11672,13 @@ impl PhotonApp {
         }
         for c in self.contacts.iter().filter(|c| c.is_sibling) {
             let pk = c.public_identity.key;
-            rows.push((pk, false, c.is_online, false, device_name_default(&pk, &seed)));
+            rows.push((
+                pk,
+                false,
+                c.is_online,
+                false,
+                device_name_default(&pk, &seed),
+            ));
         }
         for pk in &self.fleet_retired {
             rows.push((*pk, false, false, true, device_name_default(pk, &seed)));
@@ -9127,21 +11690,35 @@ impl PhotonApp {
     fn refresh_fleet_retired(&mut self) {
         self.fleet_release_armed = None;
         self.fleet_retired.clear();
-        let Some(hp) = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()) else {
+        let Some(hp) = self
+            .handle_query
+            .as_ref()
+            .and_then(|hq| hq.get_handle_proof())
+        else {
             return;
         };
         match crate::network::fgtw::fleet::retired_devices(&hp) {
             Ok(list) => {
                 let released = self.released_brands();
-                self.fleet_retired = list.into_iter().filter(|pk| !released.contains(pk)).collect();
+                self.fleet_retired = list
+                    .into_iter()
+                    .filter(|pk| !released.contains(pk))
+                    .collect();
             }
-            Err(e) => crate::logf!("FLEET: retired fetch failed ({}) — rows hidden this visit", e),
+            Err(e) => crate::logf!(
+                "FLEET: retired fetch failed ({}) — rows hidden this visit",
+                e
+            ),
         }
     }
 
     /// The `fleet.released` setting decoded: concatenated 32-byte device pubkeys the owner has already released (binary at rest, fleet-synced so a release on one device drops the row everywhere).
     fn released_brands(&self) -> Vec<[u8; 32]> {
-        let Some(bytes) = self.fleet_settings.as_ref().and_then(|fs| fs.effective("fleet.released")) else {
+        let Some(bytes) = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("fleet.released"))
+        else {
             return Vec::new();
         };
         bytes
@@ -9246,20 +11823,31 @@ impl PhotonApp {
         }
         // hp comes from the SESSION itself, not HandleQuery's worker-populated cache: a sticky-broadcast resume can reach Ready with `last_handle_proof` still unset, which made this gate claim "not signed in" to a user who plainly was (peer_a, twice). Signed in ⇒ session ⇒ handle_proof; the cache is only a fallback.
         if let (Some(hp), Some(kp), Some(seed), Some(tx)) = (
-            self.session.as_ref().map(|s| s.handle_proof).or_else(|| self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof())),
+            self.session.as_ref().map(|s| s.handle_proof).or_else(|| {
+                self.handle_query
+                    .as_ref()
+                    .and_then(|hq| hq.get_handle_proof())
+            }),
             self.device_keypair.clone(),
             self.session.as_ref().map(|s| s.identity_seed),
             self.log_submit_tx.clone(),
         ) {
             // Immediate press feedback — the read + upload run seconds on a big log, and silence here read as "the button did nothing". Replaced by "Log sent √" / "Send failed" when the worker thread reports.
-            self.ready_toast = Some(format!("Sending log ({} KiB)\u{2026}", (total as usize + 1023) / 1024));
+            self.ready_toast = Some(format!(
+                "Sending log ({} KiB)\u{2026}",
+                (total as usize + 1023) / 1024
+            ));
             std::thread::spawn(move || {
                 let Some(bytes) = crate::snapshot_log_bytes() else {
                     let _ = tx.send(Err("log unreadable".to_string()));
                     return;
                 };
-                crate::logf!("DIAG: submitting log ({} bytes) to FGTW (sealed)", bytes.len());
-                let r = put_log_blocking(&bytes, &note, &kp, &hp, &seed).map_err(|e| format!("{e}"));
+                crate::logf!(
+                    "DIAG: submitting log ({} bytes) to FGTW (sealed)",
+                    bytes.len()
+                );
+                let r =
+                    put_log_blocking(&bytes, &note, &kp, &hp, &seed).map_err(|e| format!("{e}"));
                 let _ = tx.send(r);
             });
             self.log_submit_inflight = true;
@@ -9362,12 +11950,16 @@ impl PhotonApp {
             return;
         };
         // ONE IDENTITY PER DEVICE at the join door (docs/lifecycle.md D2): the direct join-mode entry (orb toggle → type handle) skips submit_handle's marker gate, and the worker's bindreq gate would only reject AFTER the words screen showed. Refuse a device bound to a different identity BEFORE any words, any beacon, any registry post.
-        if let Some(bound) = crate::storage::device_binding::bound_party_id(device_key.secret.as_bytes()) {
+        if let Some(bound) =
+            crate::storage::device_binding::bound_party_id(device_key.secret.as_bytes())
+        {
             let typed_pid = crate::crypto::clutch::identity_party_id(
                 &crate::types::Handle::to_identity_seed(&handle),
             );
             if typed_pid != bound {
-                crate::log("join: DEVICE BUSY — bound to another identity; refusing before the words");
+                crate::log(
+                    "join: DEVICE BUSY — bound to another identity; refusing before the words",
+                );
                 self.add_join_status = "this device already carries an identity \u{2014} wipe it first (Settings \u{2192} Security)".to_string();
                 return;
             }
@@ -9387,9 +11979,13 @@ impl PhotonApp {
             let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
             let me = device_key.public.to_bytes();
             // SHOW THE WORDS FIRST — they only need identity_seed (microseconds) + the device pubkey, NOT the ~1s memory-hard handle_proof or the radio. Deferring this behind either left the screen on "Preparing…" for the whole proof (and, on Android, behind a blocking BLE-advertise JNI call) — the "stuck on Preparing" report. The words are this device's OWN pubkey masked to the fleet: shoulder-surfing them is inert (nothing binds without the request signature below; the mask makes them noise outside this fleet).
-            let _ = tx.send(JoinUpdate::ShowWords(fleet::masked_device_words(&me, &identity_seed)));
+            let _ = tx.send(JoinUpdate::ShowWords(fleet::masked_device_words(
+                &me,
+                &identity_seed,
+            )));
             // NOW the expensive derivation (reused from the probe when the caller passed it; else the ~1s proof here) — the words are already up, so this cost is invisible.
-            let handle_proof = precomputed_proof.unwrap_or_else(|| crate::types::Handle::username_to_handle_proof(&handle));
+            let handle_proof = precomputed_proof
+                .unwrap_or_else(|| crate::types::Handle::username_to_handle_proof(&handle));
             let session = tohu::SessionIdentity {
                 identity_seed,
                 vault_seed: identity_seed,
@@ -9453,7 +12049,11 @@ impl PhotonApp {
             // PUSH-DRIVEN, no deadline, no poll cadence. The hub events (request / fleet) wake each check instantly; the ONLY timers are the ones the protocol/transport demand — the binding request's 5-minute freshness (re-post at ~3.5min when no event arrives sooner) and a degraded-transport fallback cadence when the socket is dead. The user standing at the screen is the timeout: the ceremony ends when the bind lands, when they tap the orb (the stop flag), or on a hard network error. The request is WITHDRAWN by this device (its author) on every exit — green, cancel, or wrong-fleet — and lapses by stamp if the thread dies unclean.
             let withdraw = |why: &str| {
                 if let Err(e) = fleet::bindreq_withdraw(&device_key, &hp) {
-                    crate::logf!("JOIN: request withdraw ({}) failed (lapses anyway): {}", why, e);
+                    crate::logf!(
+                        "JOIN: request withdraw ({}) failed (lapses anyway): {}",
+                        why,
+                        e
+                    );
                 }
             };
             let mut last_repost = std::time::Instant::now();
@@ -9480,16 +12080,28 @@ impl PhotonApp {
                         crate::log("JOIN: bound — this device is in the fleet chain");
                         withdraw("green");
                         let fleet_key = fleet::recover_fleet_key(&hp, &device_key).ok().flatten();
-                        crate::logf!("JOIN: fleet key {} — attesting", if fleet_key.is_some() { "recovered from fan-out" } else { "follows the sponsor's confirm (event-synced)" });
+                        crate::logf!(
+                            "JOIN: fleet key {} — attesting",
+                            if fleet_key.is_some() {
+                                "recovered from fan-out"
+                            } else {
+                                "follows the sponsor's confirm (event-synced)"
+                            }
+                        );
                         let _ = tx.send(JoinUpdate::Joined(fleet_key, session));
                         return;
                     }
                     Ok(_) => {} // not bound yet — keep the request fresh and wait
                     Err(e) if e.contains("not rooted in this identity") => {
                         // Wrong-fleet is a VERDICT, not a blip: the chain now folds to a genesis that isn't ours, mid-ceremony. Scream and stop — retrying would just poll an imposter chain forever.
-                        crate::log("JOIN: chain genesis no longer matches this identity — aborting");
+                        crate::log(
+                            "JOIN: chain genesis no longer matches this identity — aborting",
+                        );
                         withdraw("wrong-fleet");
-                        let _ = tx.send(JoinUpdate::Failed("this handle's fleet is not ours — the chain changed hands mid-join".into()));
+                        let _ = tx.send(JoinUpdate::Failed(
+                            "this handle's fleet is not ours — the chain changed hands mid-join"
+                                .into(),
+                        ));
                         return;
                     }
                     Err(e) => {
@@ -9507,7 +12119,9 @@ impl PhotonApp {
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                         if last_repost.elapsed() >= REPOST_EVERY {
                             // Restamp the offer, then re-emit the beacon under the NEW eagle_time so the aired id keeps matching the list entry the sponsor now reads.
-                            if let Ok(et) = fleet::bindreq_put(&device_key, &identity_seed, &hp, &nfc_secret) {
+                            if let Ok(et) =
+                                fleet::bindreq_put(&device_key, &identity_seed, &hp, &nfc_secret)
+                            {
                                 crate::network::pairing_beacon::reannounce(&hp, &me, et);
                             }
                             last_repost = std::time::Instant::now();
@@ -9518,7 +12132,9 @@ impl PhotonApp {
                         std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(8)));
                         if last_repost.elapsed() >= REPOST_EVERY {
                             // Restamp the offer, then re-emit the beacon under the NEW eagle_time so the aired id keeps matching the list entry the sponsor now reads.
-                            if let Ok(et) = fleet::bindreq_put(&device_key, &identity_seed, &hp, &nfc_secret) {
+                            if let Ok(et) =
+                                fleet::bindreq_put(&device_key, &identity_seed, &hp, &nfc_secret)
+                            {
                                 crate::network::pairing_beacon::reannounce(&hp, &me, et);
                             }
                             last_repost = std::time::Instant::now();
@@ -9554,12 +12170,20 @@ impl PhotonApp {
     }
 
     /// Encrypt + send + persist one chat message to `contact_idx` over the friendship chain, appending an outgoing bubble only when `!suppress_bubble`. Returns `true` if the message was dispatched to the network (so callers like the chain-weave probe only latch `probe_sent` on an actual send, and retry next cycle if the contact had no address yet). This is the reusable core factored out of the old open-contact send: it works for ANY contact index (not just `active_contact`), so the hidden chain-weave probe can ride the exact same ratchet path with its UI suppressed. Chain math (`prepare_send`, salt/advance) is untouched — the probe is a normal message whose only difference is a reserved marker content and a hidden bubble.
-    fn send_chain_message(&mut self, contact_idx: usize, text: &str, suppress_bubble: bool) -> bool {
+    fn send_chain_message(
+        &mut self,
+        contact_idx: usize,
+        text: &str,
+        suppress_bubble: bool,
+    ) -> bool {
         let ci = contact_idx;
         let text = text.to_string();
 
         // Notes-to-self: no peer, no chains, no network — the message is delivered by definition (we already hold it). Insert the bubble + persist to the self conversation table (keyed off handle_hash like every conversation, so fleet history sync later carries it across our devices). Without this branch the send dead-ended at the missing friendship chain while submit_message cleared the box anyway — typed notes vanished. Probes never target self (maybe_send_chain_probe guard), so suppress_bubble can't arrive true here.
-        let is_self = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        let is_self = self
+            .session
+            .as_ref()
+            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
             == self.contacts.get(ci).map(|c| c.handle_hash);
         if is_self {
             let Some(contact) = self.contacts.get_mut(ci) else {
@@ -9591,16 +12215,24 @@ impl PhotonApp {
         self.persist_messages_async(ci);
 
         // The wire half is DEFERRED to the next tick (drain_pending_chain_sends): the bubble above can only reach the screen when this handler returns, so running chain_transmit inline here — crypto, chains persist, dispatch — held the frame hostage for its whole duration. Queue it and let the grey bubble present first.
-        self.pending_chain_sends.push((ci, text, eagle_time, self.tick_serial));
+        self.pending_chain_sends
+            .push((ci, text, eagle_time, self.tick_serial));
         return true;
     }
 
     /// Persist a contact's message table WITHOUT blocking the UI thread. Snapshots the contact and hands it to one background writer that coalesces bursts (latest snapshot per handle_hash wins — an older snapshot can never clobber a newer one because the drain keeps only the last). The write itself is the same `save_messages` full-table rewrite; only the thread changed.
     fn persist_messages_async(&mut self, ci: usize) {
-        let Some(contact) = self.contacts.get(ci).cloned() else { return };
-        let Some(storage) = self.storage.as_ref().cloned() else { return };
+        let Some(contact) = self.contacts.get(ci).cloned() else {
+            return;
+        };
+        let Some(storage) = self.storage.as_ref().cloned() else {
+            return;
+        };
         // Storage rides WITH each snapshot (not captured once): logout/login swaps the vault, and a worker holding the first session's Arc would write a dead vault forever.
-        type PersistItem = (crate::types::Contact, std::sync::Arc<crate::storage::FlatStorage>);
+        type PersistItem = (
+            crate::types::Contact,
+            std::sync::Arc<crate::storage::FlatStorage>,
+        );
         let tx = self.persist_tx.get_or_insert_with(|| {
             let (tx, rx) = std::sync::mpsc::channel::<PersistItem>();
             std::thread::spawn(move || {
@@ -9630,7 +12262,9 @@ impl PhotonApp {
         }
         // FRAME FENCE: only take entries queued on an EARLIER tick. The drain runs in the same tick pass that renders, so an entry queued by this pass's input handler would still hold the frame hostage thru the whole wire half -- exactly the void this deferral exists to kill (field-observed surviving the first version of it).
         let serial = self.tick_serial;
-        let (sends, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_chain_sends).into_iter().partition(|(_, _, _, q)| q.wrapping_add(1) < serial);
+        let (sends, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_chain_sends)
+            .into_iter()
+            .partition(|(_, _, _, q)| q.wrapping_add(1) < serial);
         self.pending_chain_sends = keep;
         if sends.is_empty() {
             return false;
@@ -9642,10 +12276,14 @@ impl PhotonApp {
                 let is_friend = self.contacts.get(ci).map_or(false, |c| !c.is_sibling);
                 if !(has_fleet && is_friend) {
                     if let Some(contact) = self.contacts.get_mut(ci) {
-                        contact.messages.retain(|m| !(m.timestamp == eagle_time && m.is_outgoing && m.content == text));
+                        contact.messages.retain(|m| {
+                            !(m.timestamp == eagle_time && m.is_outgoing && m.content == text)
+                        });
                     }
                     self.persist_messages_async(ci);
-                    crate::log("CHAT: send had nowhere to go (no chain, no fleet) — bubble withdrawn");
+                    crate::log(
+                        "CHAT: send had nowhere to go (no chain, no fleet) — bubble withdrawn",
+                    );
                     continue;
                 }
                 crate::log("CHAT: no local chain — fleet-forwarded to the chain-owning sibling (delivered tick follows its ACK)");
@@ -9682,7 +12320,13 @@ impl PhotonApp {
             } else {
                 Vec::new()
             };
-            (fid, contact.public_identity.key, contact.race_addrs(), our_pid, relay_to)
+            (
+                fid,
+                contact.public_identity.key,
+                contact.race_addrs(),
+                our_pid,
+                relay_to,
+            )
         };
         let Some((peer_addr, alt_addr)) = addr_pair else {
             crate::log("CHAT: cannot send — no known address for contact");
@@ -9762,7 +12406,13 @@ impl PhotonApp {
             let salt_text = text.to_string().into_bytes();
 
             let conv_token = chains.conversation_token;
-            match chains.prepare_send(&our_handle_hash, payload, salt_text, eagle_time, woven_strands) {
+            match chains.prepare_send(
+                &our_handle_hash,
+                payload,
+                salt_text,
+                eagle_time,
+                woven_strands,
+            ) {
                 Some((ct, prev, _msg_hp, _ph)) => (ct, prev, conv_token),
                 None => {
                     crate::log("CHAT: prepare_send failed (not a participant)");
@@ -9841,7 +12491,8 @@ impl PhotonApp {
     fn attach_send_now(&mut self, ci: usize, name: String, bytes: Vec<u8>) {
         const MAX_ATTACH: usize = 25 * 1024 * 1024;
         if bytes.is_empty() || bytes.len() > MAX_ATTACH {
-            self.ready_toast = Some("attachment limit is 25 MB \u{2014} resample the image down".to_string());
+            self.ready_toast =
+                Some("attachment limit is 25 MB \u{2014} resample the image down".to_string());
             self.ready_toast_screen = None;
             crate::logf!("attach: rejected ({} bytes)", bytes.len());
             return;
@@ -9863,7 +12514,11 @@ impl PhotonApp {
         self.send_attach_blob(ci, &hash);
         self.msg_wrap = None;
         self.scene_dirty = true;
-        crate::logf!("attach: sent {} ({} bytes)", crate::deglyph_for_log(&name), bytes.len());
+        crate::logf!(
+            "attach: sent {} ({} bytes)",
+            crate::deglyph_for_log(&name),
+            bytes.len()
+        );
     }
 
     /// The wire seal key for an attachment exchanged with `device`: fleet key when the device is one of OUR siblings, else the conversation's friendship history key. (Blob files at rest use a separate local-only key.)
@@ -9883,14 +12538,22 @@ impl PhotonApp {
 
     /// Seal + push the blob for `content_hash` to contact `ci`'s device over PT (skips self/sibling contacts — they fetch lazily).
     fn send_attach_blob(&mut self, ci: usize, content_hash: &[u8; 32]) {
-        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else { return };
+        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+            return;
+        };
         let Some(plain) = crate::storage::blob_load(&seed, content_hash) else {
             crate::log("attach: blob missing locally — nothing to push");
             return;
         };
         let (device, addr_pair, relay_to, token) = {
-            let Some(c) = self.contacts.get(ci) else { return };
-            let is_self = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) == Some(c.handle_hash);
+            let Some(c) = self.contacts.get(ci) else {
+                return;
+            };
+            let is_self = self
+                .session
+                .as_ref()
+                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                == Some(c.handle_hash);
             if is_self || c.is_sibling {
                 return;
             }
@@ -9903,17 +12566,35 @@ impl PhotonApp {
                 crate::log("attach: no chains yet — blob waits for attach_req");
                 return;
             };
-            let relay_to = if c.validated_path.is_none() { c.relay_device_list() } else { Vec::new() };
+            let relay_to = if c.validated_path.is_none() {
+                c.relay_device_list()
+            } else {
+                Vec::new()
+            };
             (c.public_identity.key, c.race_addrs(), relay_to, token)
         };
-        let Some((peer_addr, alt_addr)) = addr_pair else { return };
+        let Some((peer_addr, alt_addr)) = addr_pair else {
+            return;
+        };
         let Some(wire_key) = self.attach_wire_key(&device, &token) else {
             crate::log("attach: no wire key (history key not derived yet)");
             return;
         };
-        let Ok(sealed) = kete::encrypt_bytes(&plain, &wire_key) else { return };
-        let (Some(kp), Some(checker)) = (self.device_keypair.as_ref(), self.status_checker.as_ref()) else { return };
-        match crate::network::fgtw::protocol::build_attach_blob_vsf(&token, content_hash, sealed, kp.public.as_bytes(), kp.secret.as_bytes()) {
+        let Ok(sealed) = kete::encrypt_bytes(&plain, &wire_key) else {
+            return;
+        };
+        let (Some(kp), Some(checker)) =
+            (self.device_keypair.as_ref(), self.status_checker.as_ref())
+        else {
+            return;
+        };
+        match crate::network::fgtw::protocol::build_attach_blob_vsf(
+            &token,
+            content_hash,
+            sealed,
+            kp.public.as_bytes(),
+            kp.secret.as_bytes(),
+        ) {
             Ok(vsf_bytes) => {
                 checker.send_history(crate::network::status::HistorySendRequest {
                     peer_addr,
@@ -9943,10 +12624,26 @@ impl PhotonApp {
         }) else {
             return;
         };
-        let (Some(kp), Some(checker)) = (self.device_keypair.as_ref(), self.status_checker.as_ref()) else { return };
-        let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_attach_req_vsf(&token, content_hash, kp.public.as_bytes(), kp.secret.as_bytes()) else { return };
+        let (Some(kp), Some(checker)) =
+            (self.device_keypair.as_ref(), self.status_checker.as_ref())
+        else {
+            return;
+        };
+        let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_attach_req_vsf(
+            &token,
+            content_hash,
+            kp.public.as_bytes(),
+            kp.secret.as_bytes(),
+        ) else {
+            return;
+        };
         // Friend device + all siblings; race_addrs handles LAN/WAN, relay list covers the unreachable.
-        let mut targets: Vec<(std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32], Vec<[u8; 32]>)> = Vec::new();
+        let mut targets: Vec<(
+            std::net::SocketAddr,
+            Option<std::net::SocketAddr>,
+            [u8; 32],
+            Vec<[u8; 32]>,
+        )> = Vec::new();
         for c in &self.contacts {
             let is_target = c.is_sibling
                 || self.contacts.get(sci).map(|t| t.handle_hash) == Some(c.handle_hash);
@@ -9954,7 +12651,11 @@ impl PhotonApp {
                 continue;
             }
             if let Some((a, alt)) = c.race_addrs() {
-                let relay = if c.validated_path.is_none() { c.relay_device_list() } else { Vec::new() };
+                let relay = if c.validated_path.is_none() {
+                    c.relay_device_list()
+                } else {
+                    Vec::new()
+                };
                 targets.push((a, alt, c.public_identity.key, relay));
             }
         }
@@ -10043,7 +12744,9 @@ impl PhotonApp {
         let Some(c) = self.contacts.get_mut(contact_idx) else {
             return;
         };
-        crate::log("CHAIN-PROBE: chain woven — end-to-end verified, ceremony rebroadcast cancelled");
+        crate::log(
+            "CHAIN-PROBE: chain woven — end-to-end verified, ceremony rebroadcast cancelled",
+        );
         // A fresh weave re-opens the blind conversation with this friend: re-probe for a deposit (reset side) and allow a fresh put (their reset wiped nothing of ours, but a re-key on OUR side after []n starts from scratch).
         c.blind_probe_missed = false;
         c.blind_in_flight = None;
@@ -10100,7 +12803,9 @@ impl PhotonApp {
         }
         // ONE IDENTITY PER DEVICE (docs/lifecycle.md D2): the binding marker names the identity this device carries; a different typed handle refuses HERE — before the ~1s memory-hard proof is spent. The check is cheap (the typed handle's party id derives without the proof). Typing the BOUND identity's own handle passes and resumes normally; unbinding is a wipe (Panel → Security). The worker's one-owner index backstops a scrubbed marker.
         if let Some(kp) = self.device_keypair.as_ref() {
-            if let Some(bound) = crate::storage::device_binding::bound_party_id(kp.secret.as_bytes()) {
+            if let Some(bound) =
+                crate::storage::device_binding::bound_party_id(kp.secret.as_bytes())
+            {
                 let typed_pid = crate::crypto::clutch::identity_party_id(
                     &crate::types::Handle::to_identity_seed(&handle),
                 );
@@ -10127,7 +12832,9 @@ impl PhotonApp {
                 self.fire_attest_query_with_roots(session);
                 return;
             }
-            crate::log("attest: confirm-press text no longer matches the probed handle — re-probing");
+            crate::log(
+                "attest: confirm-press text no longer matches the probed handle — re-probing",
+            );
         }
         // First press: PROBE the handle against the network before deciding anything. The ~1s proof runs here (once); the branch (permanence warning / add-this-device / resume / taken) is chosen in `on_query_result` from the probe outcome, so "forever" is never shown for a handle that already has a fleet.
         if let Some(hq) = self.handle_query.as_ref() {
@@ -10164,10 +12871,9 @@ impl PhotonApp {
                     ProbeOutcome::Fresh => {
                         // Genuine fresh claim — NOW show the permanence warning, stashing the probed roots (and the canonical handle they belong to) so the confirm press claims without re-deriving the proof.
                         self.probed_session = Some(session);
-                        self.probed_handle = self
-                            .textbox
-                            .as_ref()
-                            .map(|tb| crate::types::Handle::canonical(&tb.chars.iter().collect::<String>()));
+                        self.probed_handle = self.textbox.as_ref().map(|tb| {
+                            crate::types::Handle::canonical(&tb.chars.iter().collect::<String>())
+                        });
                         self.state = AppState::Launch(LaunchState::Confirm);
                         if let Some(btn) = self.attest_btn.as_mut() {
                             btn.set_label("Yes — forever");
@@ -10200,7 +12906,10 @@ impl PhotonApp {
                 // Live fleet propagation: subscribe to hub events for this identity (idempotent across resumes/re-attests in one run).
                 self.spawn_fleet_event_sub();
                 // Pubkey emitted as voca-encoded camelCase so a user reading the log can double-click + paste the value as a single word (matches `Development:` key lines from handle_query.rs). The handle is deliberately NOT logged — Photon never surfaces the plaintext handle.
-                crate::logf!("attestation success: pubkey = {}", voca::encode(BigUint::from_bytes_be(&data.handle_proof)));
+                crate::logf!(
+                    "attestation success: pubkey = {}",
+                    voca::encode(BigUint::from_bytes_be(&data.handle_proof))
+                );
                 // Adopt the session roots the worker just derived + persisted (register-shaped, no handle string). Shared across the user's TOKEN apps, gone at logout; a close/reopen resumes from these without re-typing or recomputing the proof. Fall back to the roots carried in the attest result if the tohu READ-BACK comes up empty (a persist failure must not leave THIS RUN sessionless — that made the avatar picker report "not attested" seconds after a successful attest). vault_seed == identity_seed mirrors the worker's derivation (handle_query FirstAttest).
                 self.session = tohu::session().or(Some(tohu::SessionIdentity {
                     identity_seed: data.identity_seed,
@@ -10216,7 +12925,10 @@ impl PhotonApp {
                 }
                 self.pending_broadcast_signal = 1;
                 // Re-anchor the sticky-freshness timer off this fresh post so the periodic ensure doesn't immediately double-fire (and so a re-attest after a logout re-schedules cleanly rather than riding a stale pre-logout deadline).
-                self.next_session_broadcast = Some(Instant::now() + std::time::Duration::from_secs(crate::jitter(3600).max(60) as u64));
+                self.next_session_broadcast = Some(
+                    Instant::now()
+                        + std::time::Duration::from_secs(crate::jitter(3600).max(60) as u64),
+                );
                 self.vault_degraded = data.vault_degraded;
                 // The worker already loaded this device's avatar (keyed on identity_seed) into `data.avatar_pixels`; colour-convert it to BT.2020 γ=2.0 for the Ready screen. `None` = storage-miss → grey placeholder.
                 if let Some(vsf_rgb) = &data.avatar_pixels {
@@ -10272,7 +12984,11 @@ impl PhotonApp {
                     }
                 }
                 if added > 0 {
-                    crate::logf!("UI: merged {} new contact(s) from FGTW (total: {})", added, self.contacts.len());
+                    crate::logf!(
+                        "UI: merged {} new contact(s) from FGTW (total: {})",
+                        added,
+                        self.contacts.len()
+                    );
                     // Register the merged contacts' pubkeys so the checker answers their pings, and kick CLUTCH keygen for any that arrived Pending without keypairs. The resume path (load_all_contacts) already does this for locally-stored contacts, but cloud/FGTW-merged contacts land here AFTER that ran — without this they sit Pending forever with no keypairs, no offer, no connection (exactly what broke after a []n nuke wiped the local vault and contacts came back only via cloud).
                     self.reseed_contact_pubkeys();
                     // A merged self-contact (notes-to-self) needs no key exchange — force it Complete so it's skipped by the keygen filter below.
@@ -10289,7 +13005,11 @@ impl PhotonApp {
                     }
                 }
                 if merged_chains > 0 {
-                    crate::logf!("UI: merged {} friendship chain(s) from disk (total: {})", merged_chains, self.friendship_chains.len());
+                    crate::logf!(
+                        "UI: merged {} friendship chain(s) from disk (total: {})",
+                        merged_chains,
+                        self.friendship_chains.len()
+                    );
                     self.update_sync_records();
                 }
                 // Refresh existing contacts' WAN + LAN addresses from the FGTW peer list. FGTW reports both a public and a same-LAN address per device; pulling the LAN address in lets the offer/KEM send race the LAN path against the WAN path right away, instead of waiting for LAN multicast (which routers often drop) or a pong. This is what unblocks a same-router peer whose stored WAN IPv6 says "No route to host" — the case where m never received an offer. Retain the echo so a sibling contact created LATER (by the async fleet fold below) can be addressed from the same rows.
@@ -10315,7 +13035,10 @@ impl PhotonApp {
                             &storage,
                         );
                         if !siblings.is_empty() {
-                            crate::logf!("SIBLING: loaded {} sibling(s) from local vault on attest", siblings.len());
+                            crate::logf!(
+                                "SIBLING: loaded {} sibling(s) from local vault on attest",
+                                siblings.len()
+                            );
                             let fids: Vec<crate::types::FriendshipId> =
                                 siblings.iter().filter_map(|c| c.friendship_id).collect();
                             for (fid, chains) in
@@ -10344,7 +13067,10 @@ impl PhotonApp {
                     "handle already attested by another device (pubkey {})",
                     voca::encode(BigUint::from_bytes_be(peer.device_pubkey.as_bytes()))
                 );
-                crate::log_at(crate::LogLevel::Error, &format!("attestation rejected: {msg}"));
+                crate::log_at(
+                    crate::LogLevel::Error,
+                    &format!("attestation rejected: {msg}"),
+                );
                 // AlreadyAttested is now sent ONLY on a CHAIN-PROVEN takeover: the worker fold-verified a fleet chain whose genesis identity is not ours (handle_query.rs verdict). This is the genuine takeover case, so clearing the contested roots is correct — an indeterminate result (fold/parse/transport error) arrives as QueryResult::Error below, which does NOT clear the session. Clear so the next launch can't auto-resume into the same rejection, and bail to the attest screen (even from an optimistic Ready).
                 tohu::clear_session();
                 self.session = None;
@@ -10401,12 +13127,19 @@ impl PhotonApp {
             SearchResult::Found(peer) => {
                 // peer.handle is the user's TYPED search input riding along locally — the first-met seam. Dedup by the party id it derives, never by a stored string.
                 let handle = peer.handle.as_str().to_string();
-                let typed_pid = crate::crypto::clutch::identity_party_id(&crate::types::Handle::to_identity_seed(&handle));
+                let typed_pid = crate::crypto::clutch::identity_party_id(
+                    &crate::types::Handle::to_identity_seed(&handle),
+                );
                 let already = self.contacts.iter().any(|c| c.handle_hash == typed_pid);
                 if already {
-                    crate::logf!("search-result: '{}' already in contacts — skipping add", handle);
-                    self.search_status =
-                        Some((format!("{handle} already added"), (*theme::SEARCH_FOUND_COLOUR)));
+                    crate::logf!(
+                        "search-result: '{}' already in contacts — skipping add",
+                        handle
+                    );
+                    self.search_status = Some((
+                        format!("{handle} already added"),
+                        (*theme::SEARCH_FOUND_COLOUR),
+                    ));
                     return;
                 }
                 let mut contact = crate::types::Contact::new(
@@ -10417,10 +13150,14 @@ impl PhotonApp {
                 .with_ip(peer.ip)
                 .with_local_ip(peer.local_ip, peer.ip.port());
                 // §4.2 one-ceremony claim: the ADDING device owns this friendship's CLUTCH. The claim rides the roster entry this add is about to push, so siblings park instead of racing their own rounds at the friend.
-                contact.ceremony_owner = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+                contact.ceremony_owner =
+                    self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
                 // Self-contact: same identity, no key exchange needed.
-                let is_self =
-                    self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) == Some(contact.handle_hash);
+                let is_self = self
+                    .session
+                    .as_ref()
+                    .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                    == Some(contact.handle_hash);
                 if is_self {
                     contact.clutch_state = crate::types::ClutchState::Complete;
                 }
@@ -10431,7 +13168,11 @@ impl PhotonApp {
                 if !is_self {
                     contact.clutch_keygen_in_progress = true;
                 }
-                crate::logf!("search-result: added contact '{}' (total: {})", crate::fp(&contact.handle_proof).as_str(), self.contacts.len() + 1);
+                crate::logf!(
+                    "search-result: added contact '{}' (total: {})",
+                    crate::fp(&contact.handle_proof).as_str(),
+                    self.contacts.len() + 1
+                );
                 self.contacts.push(contact);
                 // Register the new contact (and its fleet, once refreshed) so the checker answers pings/offers from any of its devices, and kick CLUTCH keypair generation so the contact becomes offer-ready when it comes online.
                 self.reseed_contact_pubkeys();
@@ -10451,7 +13192,8 @@ impl PhotonApp {
                         }
                     }
                 }
-                self.search_status = Some((format!("added {handle}"), (*theme::SEARCH_FOUND_COLOUR)));
+                self.search_status =
+                    Some((format!("added {handle}"), (*theme::SEARCH_FOUND_COLOUR)));
                 if let Some(tb) = self.contacts_textbox.as_mut() {
                     tb.clear();
                 }
@@ -10511,18 +13253,28 @@ impl PhotonApp {
         }
         self.orb_contact = target;
         self.orb_had_avatar = has_avatar;
-        let Some(chrome) = self.chrome.as_mut() else { return };
+        let Some(chrome) = self.chrome.as_mut() else {
+            return;
+        };
         match target {
             Some(ci) => {
                 let c = &self.contacts[ci];
                 // VSF-RGB source (256² avatar, or the deterministic gradient placeholder) → α+darkness packed, exactly the brand orb's format, so the chrome renders it thru the identical pipeline.
                 let (src, diam): (Vec<u8>, usize) = match c.avatar_pixels.as_ref() {
-                    Some(px) if px.len() == crate::ui::avatar::AVATAR_SIZE * crate::ui::avatar::AVATAR_SIZE * 3 => {
+                    Some(px)
+                        if px.len()
+                            == crate::ui::avatar::AVATAR_SIZE
+                                * crate::ui::avatar::AVATAR_SIZE
+                                * 3 =>
+                    {
                         (px.clone(), crate::ui::avatar::AVATAR_SIZE)
                     }
                     _ => {
                         let d = 64usize;
-                        (gradient_avatar_rgb(proof_gradient_seed(&c.handle_proof), d), d)
+                        (
+                            gradient_avatar_rgb(proof_gradient_seed(&c.handle_proof), d),
+                            d,
+                        )
                     }
                 };
                 let pixels: Vec<u32> = src
@@ -10541,7 +13293,10 @@ impl PhotonApp {
                     height: diam as u32,
                     pixels,
                 });
-                chrome.set_orb_tint(fluor::host::chrome::OrbTint::Custom { ring, brighten: online });
+                chrome.set_orb_tint(fluor::host::chrome::OrbTint::Custom {
+                    ring,
+                    brighten: online,
+                });
             }
             None => {
                 chrome.app_icon = self.photon_orb.clone();
@@ -10564,7 +13319,13 @@ impl PhotonApp {
         let was_textbox = self.is_textbox(old);
         let is_textbox = self.is_textbox(new);
         #[cfg(feature = "development")]
-        crate::logf!("FOCUS: {} -> {} (textbox {} -> {})", format!("{:?}", old), format!("{:?}", new), was_textbox, is_textbox);
+        crate::logf!(
+            "FOCUS: {} -> {} (textbox {} -> {})",
+            format!("{:?}", old),
+            format!("{:?}", new),
+            was_textbox,
+            is_textbox
+        );
         if is_textbox {
             // ANY focus landing on a textbox raises the soft keyboard — not only the off→on transition. Tapping a textbox that's already focused (keyboard was dismissed by a back-press) must re-raise it; the old transition-only guard left the box focused with no keyboard and no way up. Leaving a textbox still requests hide.
             self.pending_keyboard_request = Some(true);
@@ -10603,11 +13364,18 @@ impl PhotonApp {
     }
 
     /// CLUTCH-gate trust for a `sender_pubkey` offering/KEMing/proving against the contact resolved by conversation-token. For a FRIEND that contact is asked `knows_device` (fold-respecting: first-met pre-fold, any current fleet member post-fold). For a SIBLING it's different in kind: a sibling contact only knows its OWN device, so `knows_device` on one sibling can NEVER recognize a DIFFERENT sibling's offer (the "untrusted/removed device — dropping" braid-in stall). The right question for a sibling target is "is the sender any device of OUR OWN fleet" — the sibling set is exactly our other devices, so accept a sender that is another of our siblings (or, defensively, our own device echoed back over the relay).
-    fn sender_trusted_for(&self, contact: &crate::types::Contact, sender_pubkey: &[u8; 32]) -> bool {
+    fn sender_trusted_for(
+        &self,
+        contact: &crate::types::Contact,
+        sender_pubkey: &[u8; 32],
+    ) -> bool {
         if contact.is_sibling {
             let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
             our_device == Some(*sender_pubkey)
-                || self.contacts.iter().any(|c| c.is_sibling && c.public_identity.key == *sender_pubkey)
+                || self
+                    .contacts
+                    .iter()
+                    .any(|c| c.is_sibling && c.public_identity.key == *sender_pubkey)
         } else {
             contact.knows_device(sender_pubkey)
         }
@@ -10618,7 +13386,9 @@ impl PhotonApp {
         if contact.is_sibling {
             self.our_sibling_pid()
         } else {
-            self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+            self.session
+                .as_ref()
+                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
         }
     }
 
@@ -10641,25 +13411,27 @@ impl PhotonApp {
 
             if let Some(last_received_osc) = max_time {
                 // Anti-entropy digest over the conversation's rows: order-free XOR fold of blake3(timestamp ‖ content_hash), probe rows excluded (they never sync) and DIRECTION excluded (both sides hold the same set with flipped flags). Digests equal ⇒ provably the same message set; the pong receiver full-walks recovery on mismatch.
-                let (row_count, row_digest) = self
-                    .contacts
-                    .iter()
-                    .find(|c| c.friendship_id == Some(*fid))
-                    .map(|c| {
-                        let mut fold = [0u8; 32];
-                        let mut n: u32 = 0;
-                        for m in c.messages.iter().filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted) {
-                            let mut h = blake3::Hasher::new();
-                            h.update(&m.timestamp.to_le_bytes());
-                            h.update(blake3::hash(m.content.as_bytes()).as_bytes());
-                            for (f, b) in fold.iter_mut().zip(h.finalize().as_bytes()) {
-                                *f ^= b;
+                let (row_count, row_digest) =
+                    self.contacts
+                        .iter()
+                        .find(|c| c.friendship_id == Some(*fid))
+                        .map(|c| {
+                            let mut fold = [0u8; 32];
+                            let mut n: u32 = 0;
+                            for m in c.messages.iter().filter(|m| {
+                                !crate::types::is_control_content(&m.content) && !m.deleted
+                            }) {
+                                let mut h = blake3::Hasher::new();
+                                h.update(&m.timestamp.to_le_bytes());
+                                h.update(blake3::hash(m.content.as_bytes()).as_bytes());
+                                for (f, b) in fold.iter_mut().zip(h.finalize().as_bytes()) {
+                                    *f ^= b;
+                                }
+                                n += 1;
                             }
-                            n += 1;
-                        }
-                        (n, fold)
-                    })
-                    .unwrap_or((0, [0u8; 32]));
+                            (n, fold)
+                        })
+                        .unwrap_or((0, [0u8; 32]));
                 records.push(SyncRecord {
                     conversation_token: chains.conversation_token,
                     last_received_osc,
@@ -10694,7 +13466,8 @@ impl PhotonApp {
                 && c.clutch_state == crate::types::ClutchState::Pending
                 && c.clutch_our_keypairs.is_none()
                 && !c.clutch_keygen_in_progress
-                && c.clutch_round_started.map_or(true, |t| now - t >= ROUND_TTL_OSC)
+                && c.clutch_round_started
+                    .map_or(true, |t| now - t >= ROUND_TTL_OSC)
                 && !ceremony_parked_by(c, our_device, &siblings)
         });
         if let Some(i) = next_idx {
@@ -10707,7 +13480,8 @@ impl PhotonApp {
                 if let Some(ours) = our_device {
                     if self.contacts[i].ceremony_owner != Some(ours) {
                         // Belt-and-braces: never take over a WOVEN friendship even if a caller reaches here with one (ceremony_parked_by already excludes them) — the chain lives on the owner and a re-clutch clobbers the friend's side.
-                        if self.contacts[i].ceremony_owner.is_some() && self.contacts[i].owner_woven {
+                        if self.contacts[i].ceremony_owner.is_some() && self.contacts[i].owner_woven
+                        {
                             return false;
                         }
                         let old_owner = self.contacts[i].ceremony_owner;
@@ -10726,7 +13500,8 @@ impl PhotonApp {
                             ),
                         }
                         if let Some(storage) = self.storage.as_ref() {
-                            let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
+                            let _ =
+                                crate::storage::contacts::save_contact(&self.contacts[i], storage);
                         }
                         self.spawn_roster_push();
                     }
@@ -10752,12 +13527,19 @@ impl PhotonApp {
         ) else {
             return;
         };
-        let Some(handle_proof) = self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof())
+        let Some(handle_proof) = self
+            .handle_query
+            .as_ref()
+            .and_then(|hq| hq.get_handle_proof())
         else {
             return;
         };
         // Read the fleet-synced avatar pin (random key ‖ lookup) immutably; absent = no avatar set for this identity yet, so nothing to sync.
-        let avatar_pin = match self.fleet_settings.as_ref().and_then(|fs| fs.effective("profile.avatar_pin")) {
+        let avatar_pin = match self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("profile.avatar_pin"))
+        {
             Some(v) if v.len() == 64 => {
                 let mut p = [0u8; 64];
                 p.copy_from_slice(&v);
@@ -10783,8 +13565,9 @@ impl PhotonApp {
                 AvatarSyncResult::ServerNewer => {
                     // FGTW had a newer copy — it's now re-cached; load it and push to the UI.
                     crate::log("Avatar: FGTW copy newer — adopted it (startup sync)");
-                    let pixels = crate::ui::avatar::load_cached_avatar_from_seed(&identity_seed, &storage)
-                        .map(|(_, p)| p);
+                    let pixels =
+                        crate::ui::avatar::load_cached_avatar_from_seed(&identity_seed, &storage)
+                            .map(|(_, p)| p);
                     if pixels.is_some() {
                         let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
                             owner: None, // self
@@ -10843,7 +13626,9 @@ impl PhotonApp {
 
     /// half of the avatar feature — the self avatar loads from the local vault; peers fetch by handle.
     fn spawn_avatar_download(&mut self, ci: usize) {
-        let Some(c) = self.contacts.get(ci) else { return };
+        let Some(c) = self.contacts.get(ci) else {
+            return;
+        };
         let (hp, party_id, avatar_pin) = (c.handle_proof, c.handle_hash, c.avatar_pin);
         if avatar_pin == [0u8; 64] {
             return; // unpinned (old row / sibling) — nothing to decrypt with
@@ -10860,8 +13645,13 @@ impl PhotonApp {
         let proxy = self.event_proxy.clone();
         std::thread::spawn(move || {
             // Cache-first, FGTW on a miss — everything keyed off the pin (docs/identity-profile.md).
-            let pixels = crate::ui::avatar::download_avatar_pinned(&party_id, &avatar_pin, &storage).map(|(_, p)| p);
-            let _ = tx.send(crate::ui::avatar::AvatarDownloadResult { owner: Some(hp), pixels });
+            let pixels =
+                crate::ui::avatar::download_avatar_pinned(&party_id, &avatar_pin, &storage)
+                    .map(|(_, p)| p);
+            let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
+                owner: Some(hp),
+                pixels,
+            });
             #[cfg(not(target_os = "android"))]
             if let Some(p) = proxy.as_ref() {
                 let _ = p.send(crate::ui::PhotonEvent::NetworkUpdate);
@@ -10892,7 +13682,10 @@ impl PhotonApp {
                 contact.avatar_pixels = Some(display);
                 contact.avatar_scaled = None; // force rebuild at the current diameter on next render
                 contact.avatar_scaled_diameter = 0;
-                crate::logf!("Avatar: installed peer avatar for {}", crate::fp(&contact.handle_proof));
+                crate::logf!(
+                    "Avatar: installed peer avatar for {}",
+                    crate::fp(&contact.handle_proof)
+                );
             }
         }
     }
@@ -10910,7 +13703,13 @@ impl PhotonApp {
                     sources_used,
                     sources_queried,
                 } => {
-                    crate::logf!("Clock: nunc consensus offset = {}s (±{}s, {}/{} sources)", offset_secs, confidence_secs, sources_used, sources_queried);
+                    crate::logf!(
+                        "Clock: nunc consensus offset = {}s (±{}s, {}/{} sources)",
+                        offset_secs,
+                        confidence_secs,
+                        sources_used,
+                        sources_queried
+                    );
                     // Kept regardless of the banner threshold — the update stamp window's forward-fail tiebreak reads the raw verdict.
                     self.clock_consensus = Some((offset_secs, confidence_secs as i64));
                     self.clock_off = if offset_secs.abs() > CLOCK_OFF_THRESHOLD_SECS {
@@ -10930,7 +13729,9 @@ impl PhotonApp {
     /// Kick a one-shot fleet-inbox drain off-thread (blocking HTTPS). Pulls this identity's pending worker-observed events (bind-attempt alerts) and posts them over `inbox_check_tx`; `drain_fleet_inbox` surfaces them on a later tick. No-op without a handle_proof + device key (not yet attested).
     fn spawn_inbox_drain(&self) {
         if let (Some(hp), Some(kp), tx) = (
-            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof()),
             self.device_keypair.clone(),
             self.inbox_check_tx.clone(),
         ) {
@@ -10955,7 +13756,12 @@ impl PhotonApp {
             let mut bind_attempts = 0usize;
             let mut named: Option<String> = None;
             for ev in &events {
-                crate::logf!("INBOX: {} — device {} attempted-by {}", ev.kind, crate::fp(&ev.device), crate::fp(&ev.attempted_by));
+                crate::logf!(
+                    "INBOX: {} — device {} attempted-by {}",
+                    ev.kind,
+                    crate::fp(&ev.device),
+                    crate::fp(&ev.attempted_by)
+                );
                 if ev.kind == "bind_attempt" {
                     bind_attempts += 1;
                     if named.is_none() {
@@ -10989,8 +13795,8 @@ impl PhotonApp {
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
         std::thread::spawn(move || {
-            let pixels =
-                crate::ui::avatar::download_avatar_from_seed(&identity_seed, &storage).map(|(_, p)| p);
+            let pixels = crate::ui::avatar::download_avatar_from_seed(&identity_seed, &storage)
+                .map(|(_, p)| p);
             if pixels.is_some() {
                 let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
                     owner: None, // self
@@ -11217,7 +14023,11 @@ impl PhotonApp {
         )> = None;
 
         // Our party id for CLUTCH: the identity pubkey (public; contacts pin it — never the seed).
-        let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+        let our_handle_hash = match self
+            .session
+            .as_ref()
+            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        {
             Some(h) => h,
             None => return changed,
         };
@@ -11236,7 +14046,10 @@ impl PhotonApp {
 
         while let Ok(result) = self.clutch_keygen_rx.try_recv() {
             let result_id_hex = hex::encode(&result.contact_id.as_bytes()[..4]);
-            crate::logf!("CLUTCH: Processing keygen result for contact_id {}...", result_id_hex);
+            crate::logf!(
+                "CLUTCH: Processing keygen result for contact_id {}...",
+                result_id_hex
+            );
 
             let siblings = sibling_presence_snapshot(&self.contacts);
             let mut found = false;
@@ -11288,7 +14101,11 @@ impl PhotonApp {
                             &contact.handle_hash,
                             storage,
                         ) {
-                            crate::logf!("CLUTCH: Failed to save keypairs for {}: {}", crate::fp(&contact.handle_proof), e);
+                            crate::logf!(
+                                "CLUTCH: Failed to save keypairs for {}: {}",
+                                crate::fp(&contact.handle_proof),
+                                e
+                            );
                         }
                     }
 
@@ -11308,9 +14125,15 @@ impl PhotonApp {
                         let our_offer = ClutchOfferPayload::from_keypairs(keypairs);
                         if let Some(local_slot) = contact.get_slot_mut(&our_handle_hash) {
                             local_slot.offer = Some(our_offer);
-                            crate::logf!("CLUTCH: Stored local offer in local slot for {}", crate::fp(&contact.handle_proof));
+                            crate::logf!(
+                                "CLUTCH: Stored local offer in local slot for {}",
+                                crate::fp(&contact.handle_proof)
+                            );
                         } else {
-                            crate::logf!("CLUTCH: Could not find local slot for {} - handle_hash mismatch?", crate::fp(&contact.handle_proof));
+                            crate::logf!(
+                                "CLUTCH: Could not find local slot for {} - handle_hash mismatch?",
+                                crate::fp(&contact.handle_proof)
+                            );
                         }
                     }
 
@@ -11334,7 +14157,9 @@ impl PhotonApp {
                                     &offer,
                                     &device_pubkey,
                                     &device_secret,
-                                    contact.clutch_round_started.unwrap_or_else(vsf::eagle_time_oscillations),
+                                    contact
+                                        .clutch_round_started
+                                        .unwrap_or_else(vsf::eagle_time_oscillations),
                                 ) {
                                     Ok((vsf_bytes, our_offer_provenance)) => {
                                         // Store our offer provenance (for ceremony_id derivation)
@@ -11356,7 +14181,10 @@ impl PhotonApp {
                                                     storage,
                                                 )
                                             {
-                                                crate::logf!("Failed to persist CLUTCH provenance: {}", e);
+                                                crate::logf!(
+                                                    "Failed to persist CLUTCH provenance: {}",
+                                                    e
+                                                );
                                             }
                                         }
 
@@ -11368,14 +14196,26 @@ impl PhotonApp {
                                                 alt_addr: alt,
                                                 vsf_bytes,
                                                 recipient_pubkey: contact.public_identity.key,
-                                                relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
+                                                relay_to: if contact.validated_path.is_none() {
+                                                    contact.relay_device_list()
+                                                } else {
+                                                    Vec::new()
+                                                },
                                             });
                                             contact.clutch_offer_sent = true;
-                                            crate::logf!("CLUTCH: Sent offer to {} (prov={}...)", crate::fp(&contact.handle_proof), hex::encode(&our_offer_provenance[..4]));
+                                            crate::logf!(
+                                                "CLUTCH: Sent offer to {} (prov={}...)",
+                                                crate::fp(&contact.handle_proof),
+                                                hex::encode(&our_offer_provenance[..4])
+                                            );
                                         }
                                     }
                                     Err(e) => {
-                                        crate::logf!("CLUTCH: Failed to build offer VSF for {}: {}", crate::fp(&contact.handle_proof), e);
+                                        crate::logf!(
+                                            "CLUTCH: Failed to build offer VSF for {}: {}",
+                                            crate::fp(&contact.handle_proof),
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -11393,7 +14233,11 @@ impl PhotonApp {
                         )
                         .as_bytes();
                         contact.ceremony_id = Some(ceremony_id);
-                        crate::logf!("CLUTCH: Computed ceremony_id for {} from {} offer provenances", crate::fp(&contact.handle_proof), contact.offer_provenances.len());
+                        crate::logf!(
+                            "CLUTCH: Computed ceremony_id for {} from {} offer provenances",
+                            crate::fp(&contact.handle_proof),
+                            contact.offer_provenances.len()
+                        );
                     }
 
                     // Send KEM response if we have ceremony_id and their offer
@@ -11407,7 +14251,8 @@ impl PhotonApp {
                             if let Some(ceremony_id) = contact.ceremony_id {
                                 // No address → RELAY sentinel; the KEM response fans out over relay_to like every ceremony message. Gating on ip stalled the middle of the weave the same way it stalled the offer.
                                 {
-                                    let ip = contact.ip.unwrap_or(crate::network::status::RELAY_ADDR);
+                                    let ip =
+                                        contact.ip.unwrap_or(crate::network::status::RELAY_ADDR);
                                     let conv_token = derive_conversation_token(&[
                                         our_handle_hash,
                                         contact.handle_hash,
@@ -11444,12 +14289,18 @@ impl PhotonApp {
                             )
                             .as_bytes();
                             contact.ceremony_id = Some(ceremony_id);
-                            crate::logf!("CLUTCH: Computed ceremony_id for {} while draining queued KEM", crate::fp(&contact.handle_proof));
+                            crate::logf!(
+                                "CLUTCH: Computed ceremony_id for {} while draining queued KEM",
+                                crate::fp(&contact.handle_proof)
+                            );
                         }
                     }
 
                     if let Some(pending_kem) = contact.clutch_pending_kem.take() {
-                        crate::logf!("CLUTCH: Processing queued KEM response from {}", crate::fp(&contact.handle_proof));
+                        crate::logf!(
+                            "CLUTCH: Processing queued KEM response from {}",
+                            crate::fp(&contact.handle_proof)
+                        );
                         // Decapsulate remote KEM (remote encapsulated to local pubkeys)
                         if let Some(ref local_keys) = contact.clutch_our_keypairs {
                             let remote_secrets = ClutchKemSharedSecrets::decapsulate_from_peer(
@@ -11460,7 +14311,10 @@ impl PhotonApp {
                             let remote_hash = contact.handle_hash;
                             if let Some(remote_slot) = contact.get_slot_mut(&remote_hash) {
                                 remote_slot.kem_secrets_from_them = Some(remote_secrets);
-                                crate::logf!("CLUTCH: Decapsulated queued KEM from {} - stored in slot", crate::fp(&contact.handle_proof));
+                                crate::logf!(
+                                    "CLUTCH: Decapsulated queued KEM from {} - stored in slot",
+                                    crate::fp(&contact.handle_proof)
+                                );
                             }
 
                             // If we haven't sent our own KEM encap yet, do it now. This covers the case where their KEM arrived before we had ceremony_id, so the normal encap-trigger was skipped.
@@ -11475,7 +14329,9 @@ impl PhotonApp {
                                 if let Some(ceremony_id) = contact.ceremony_id {
                                     // Same relay fallback as the sibling arm above — a queued KEM must drain even with no address.
                                     {
-                                        let ip = contact.ip.unwrap_or(crate::network::status::RELAY_ADDR);
+                                        let ip = contact
+                                            .ip
+                                            .unwrap_or(crate::network::status::RELAY_ADDR);
                                         let conv_token = derive_conversation_token(&[
                                             our_handle_hash,
                                             contact.handle_hash,
@@ -11507,7 +14363,11 @@ impl PhotonApp {
                                     &contact.handle_hash,
                                     storage,
                                 ) {
-                                    crate::logf!("CLUTCH: Failed to save slots for {}: {}", crate::fp(&contact.handle_proof), e);
+                                    crate::logf!(
+                                        "CLUTCH: Failed to save slots for {}: {}",
+                                        crate::fp(&contact.handle_proof),
+                                        e
+                                    );
                                 }
                             }
                         }
@@ -11524,7 +14384,10 @@ impl PhotonApp {
             }
 
             if !found {
-                crate::logf!("CLUTCH: Keygen result contact_id {}... not found in contacts!", result_id_hex);
+                crate::logf!(
+                    "CLUTCH: Keygen result contact_id {}... not found in contacts!",
+                    result_id_hex
+                );
             }
         }
 
@@ -11549,7 +14412,11 @@ impl PhotonApp {
 
         let mut changed = false;
         let mut ceremony_completions: Vec<usize> = Vec::new();
-        let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+        let our_handle_hash = match self
+            .session
+            .as_ref()
+            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        {
             Some(h) => h,
             None => return changed,
         };
@@ -11568,7 +14435,10 @@ impl PhotonApp {
 
         while let Ok(result) = self.clutch_kem_encap_rx.try_recv() {
             let result_id_hex = hex::encode(&result.contact_id.as_bytes()[..4]);
-            crate::logf!("CLUTCH: Processing KEM encap result for contact_id {}...", result_id_hex);
+            crate::logf!(
+                "CLUTCH: Processing KEM encap result for contact_id {}...",
+                result_id_hex
+            );
 
             // Find the contact and update state
             let mut found_idx = None;
@@ -11599,7 +14469,11 @@ impl PhotonApp {
                             &contact.handle_hash,
                             storage,
                         ) {
-                            crate::logf!("CLUTCH: Failed to save slots for {}: {}", crate::fp(&contact.handle_proof), e);
+                            crate::logf!(
+                                "CLUTCH: Failed to save slots for {}: {}",
+                                crate::fp(&contact.handle_proof),
+                                e
+                            );
                         }
                     }
 
@@ -11616,9 +14490,16 @@ impl PhotonApp {
                             device_pubkey,
                             device_secret,
                             recipient_pubkey: contact.public_identity.key,
-                            relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
+                            relay_to: if contact.validated_path.is_none() {
+                                contact.relay_device_list()
+                            } else {
+                                Vec::new()
+                            },
                         });
-                        crate::logf!("CLUTCH: Sent KEM response to {}", crate::fp(&contact.handle_proof));
+                        crate::logf!(
+                            "CLUTCH: Sent KEM response to {}",
+                            crate::fp(&contact.handle_proof)
+                        );
                     }
 
                     // Check if all slots are complete after storing our KEM encap secrets
@@ -11633,7 +14514,10 @@ impl PhotonApp {
             }
 
             if found_idx.is_none() {
-                crate::logf!("CLUTCH: KEM encap result contact_id {}... not found in contacts!", result_id_hex);
+                crate::logf!(
+                    "CLUTCH: KEM encap result contact_id {}... not found in contacts!",
+                    result_id_hex
+                );
             }
         }
 
@@ -11654,7 +14538,11 @@ impl PhotonApp {
         use crate::types::ClutchState;
 
         let mut changed = false;
-        let _our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+        let _our_handle_hash = match self
+            .session
+            .as_ref()
+            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        {
             Some(h) => h,
             None => return changed,
         };
@@ -11673,13 +14561,19 @@ impl PhotonApp {
 
         while let Ok(result) = self.clutch_ceremony_rx.try_recv() {
             let result_id_hex = hex::encode(&result.contact_id.as_bytes()[..4]);
-            crate::logf!("CLUTCH: Processing ceremony result for contact_id {}...", result_id_hex);
+            crate::logf!(
+                "CLUTCH: Processing ceremony result for contact_id {}...",
+                result_id_hex
+            );
 
             let friendship_id = *result.friendship_chains.id();
 
             // Save chains to disk first
             if let Some(storage) = self.storage.as_ref() {
-                crate::logf!("CLUTCH: Saving friendship chains to disk (fid={}...)", hex::encode(&friendship_id.as_bytes()[..8]));
+                crate::logf!(
+                    "CLUTCH: Saving friendship chains to disk (fid={}...)",
+                    hex::encode(&friendship_id.as_bytes()[..8])
+                );
                 if let Err(e) = crate::storage::friendship::save_friendship_chains(
                     &result.friendship_chains,
                     storage,
@@ -11719,7 +14613,11 @@ impl PhotonApp {
                 contact.clutch_ceremony_in_progress = false;
                 contact.friendship_id = Some(friendship_id);
 
-                crate::logf!("CLUTCH: Eggs computed with {}! (proof: {}...)", contact_handle, hex::encode(&result.eggs_proof[..8]));
+                crate::logf!(
+                    "CLUTCH: Eggs computed with {}! (proof: {}...)",
+                    contact_handle,
+                    hex::encode(&result.eggs_proof[..8])
+                );
 
                 // Store our proof for later verification
                 contact.clutch_our_eggs_proof = Some(result.eggs_proof);
@@ -11747,10 +14645,17 @@ impl PhotonApp {
                         device_pubkey,
                         device_secret,
                         recipient_pubkey: contact.public_identity.key,
-                        relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
+                        relay_to: if contact.validated_path.is_none() {
+                            contact.relay_device_list()
+                        } else {
+                            Vec::new()
+                        },
                     });
 
-                    crate::logf!("CLUTCH: Sent proof to {} via status checker", contact_handle);
+                    crate::logf!(
+                        "CLUTCH: Sent proof to {} via status checker",
+                        contact_handle
+                    );
                 }
 
                 // Check if they already sent us their proof — but only a proof from OUR round counts. An early proof stored under a different ceremony_id is echo of a superseded attempt (offer churn / an unwiped peer replaying old state): discard it and await their current-round proof instead of manufacturing a mismatch (a permanent-Pending stall).
@@ -11758,7 +14663,10 @@ impl PhotonApp {
                 let their_early_proof = match (their_early_proof, round_ok) {
                     (Some(p), true) => Some(p),
                     (Some(_), false) => {
-                        let stored_round = contact.clutch_their_proof_ceremony.map(|c| hex::encode(&c[..4])).unwrap_or_else(|| "none".to_string());
+                        let stored_round = contact
+                            .clutch_their_proof_ceremony
+                            .map(|c| hex::encode(&c[..4]))
+                            .unwrap_or_else(|| "none".to_string());
                         crate::logf!("CLUTCH: stored early proof from {} is cross-round (theirs {}… vs ours {}…) — discarded, awaiting their current-round proof", contact_handle, stored_round, hex::encode(&result.ceremony_id[..4]));
                         contact.clutch_their_eggs_proof = None;
                         contact.clutch_their_proof_ceremony = None;
@@ -11769,10 +14677,14 @@ impl PhotonApp {
                 if let Some(their_proof) = their_early_proof {
                     if their_proof == result.eggs_proof {
                         // SUCCESS! Both parties computed same eggs
-                        crate::logf!("CLUTCH: Early proof verified with {}! ✓ proof={}...", contact_handle, hex::encode(&result.eggs_proof[..8]));
+                        crate::logf!(
+                            "CLUTCH: Early proof verified with {}! ✓ proof={}...",
+                            contact_handle,
+                            hex::encode(&result.eggs_proof[..8])
+                        );
                         contact.clutch_state = ClutchState::Complete;
                         contact.clutch_completed_at = Some(std::time::Instant::now()); // arm the post-completion re-key cooldown (before the ~1s-later weave)
-                        // A FRESH ceremony just completed = a brand-new chain — any prior weave seal is void. Reset the double-toggle state so the hidden probe REFIRES for this chain. Without this, a peer that client-reset and re-CLUTCHed hits a deadlock: our persisted chain_woven=true (load latches all probe flags true) suppresses our probe, the reset peer waits forever for it ("weaving the chain"), and we dismiss their re-sent proofs as woven-duplicates. First-ceremony case: flags already false, no-op.
+                                                                                       // A FRESH ceremony just completed = a brand-new chain — any prior weave seal is void. Reset the double-toggle state so the hidden probe REFIRES for this chain. Without this, a peer that client-reset and re-CLUTCHed hits a deadlock: our persisted chain_woven=true (load latches all probe flags true) suppresses our probe, the reset peer waits forever for it ("weaving the chain"), and we dismiss their re-sent proofs as woven-duplicates. First-ceremony case: flags already false, no-op.
                         contact.chain_woven = false;
                         contact.probe_sent = false;
                         contact.void_weave_seal_from_previous_chain();
@@ -11794,7 +14706,10 @@ impl PhotonApp {
                 } else {
                     // Set state to AwaitingProof - wait for their proof
                     contact.clutch_state = ClutchState::AwaitingProof;
-                    crate::logf!("CLUTCH: Awaiting proof from {} (we sent ours)", contact_handle);
+                    crate::logf!(
+                        "CLUTCH: Awaiting proof from {} (we sent ours)",
+                        contact_handle
+                    );
                 }
 
                 // Save contact to persist friendship_id and clutch_state
@@ -11808,24 +14723,22 @@ impl PhotonApp {
                     }
 
                     // Delete slots file - ceremony is complete, slots no longer needed
-                    if let Err(e) = crate::storage::contacts::delete_clutch_slots(
-                        &contact.handle_hash,
-                        storage,
-                    ) {
+                    if let Err(e) =
+                        crate::storage::contacts::delete_clutch_slots(&contact.handle_hash, storage)
+                    {
                         crate::logf!("Failed to delete CLUTCH slots: {}", e);
                     }
                 }
                 changed = true;
             } else {
-                crate::logf!("CLUTCH: Ceremony result contact_id {}... not found in contacts!", result_id_hex);
+                crate::logf!(
+                    "CLUTCH: Ceremony result contact_id {}... not found in contacts!",
+                    result_id_hex
+                );
             }
 
             // If the early-proof branch just took this contact to Complete, fire the hidden chain-weave probe (once). Done after the mutable-borrow block above releases.
-            if let Some(idx) = self
-                .contacts
-                .iter()
-                .position(|c| c.id == result.contact_id)
-            {
+            if let Some(idx) = self.contacts.iter().position(|c| c.id == result.contact_id) {
                 self.maybe_send_chain_probe(idx);
             }
         }
@@ -11865,7 +14778,10 @@ impl PhotonApp {
 
         // Check if ceremony already in progress
         if contact.clutch_ceremony_in_progress {
-            crate::logf!("CLUTCH: Ceremony already in progress for {}", crate::fp(&contact.handle_proof));
+            crate::logf!(
+                "CLUTCH: Ceremony already in progress for {}",
+                crate::fp(&contact.handle_proof)
+            );
             return;
         }
 
@@ -11944,14 +14860,20 @@ impl PhotonApp {
             None => {
                 #[cfg(feature = "development")]
                 #[cfg(feature = "development")]
-                crate::logf!("CLUTCH: No ceremony_id for {}", crate::fp(&contact.handle_proof));
+                crate::logf!(
+                    "CLUTCH: No ceremony_id for {}",
+                    crate::fp(&contact.handle_proof)
+                );
                 return;
             }
         };
 
         let conversation_token = derive_conversation_token(&[our_handle_hash, their_handle_hash]);
 
-        crate::logf!("CLUTCH: Spawning ceremony completion for {}", contact_handle);
+        crate::logf!(
+            "CLUTCH: Spawning ceremony completion for {}",
+            contact_handle
+        );
 
         // Determine low/high ordering by handle hash
         let we_are_low = our_handle_hash < their_handle_hash;
@@ -12052,7 +14974,10 @@ impl PhotonApp {
                     let ep = contact.endpoint_mut(peer.device_pubkey.as_bytes());
                     ep.public = Some(peer.ip);
                     if let Some(std::net::IpAddr::V4(v4)) = peer.local_ip {
-                        ep.lan = Some(std::net::SocketAddr::new(std::net::IpAddr::V4(v4), peer.ip.port()));
+                        ep.lan = Some(std::net::SocketAddr::new(
+                            std::net::IpAddr::V4(v4),
+                            peer.ip.port(),
+                        ));
                     }
                 }
             }
@@ -12066,7 +14991,13 @@ impl PhotonApp {
                     if let Some(std::net::IpAddr::V4(v4)) = peer.local_ip {
                         contact.local_ip = Some(v4);
                         contact.local_port = Some(peer.ip.port());
-                        crate::logf!("UI: refreshed {} addrs from FGTW — WAN {} / LAN {}:{}", crate::fp(&contact.handle_proof), peer.ip, v4, peer.ip.port());
+                        crate::logf!(
+                            "UI: refreshed {} addrs from FGTW — WAN {} / LAN {}:{}",
+                            crate::fp(&contact.handle_proof),
+                            peer.ip,
+                            v4,
+                            peer.ip.port()
+                        );
                     }
                     // If the address actually moved while a CLUTCH offer was already sent, that offer is in flight to a now-dead address (the "No route to host" retries we kept hammering). Cancel the stale transfer and reset clutch_offer_sent so the contact's next online pong re-sends the offer to the fresh address, with the LAN path now raced alongside. Without this the one-shot flag blocks re-send and the ceremony stalls forever on the dead path.
                     let addr_changed = old_ip != contact.ip || old_local != contact.local_ip;
@@ -12121,7 +15052,9 @@ impl PhotonApp {
         }
         // Sticky tombstone into the fleet roster slot — off-thread, same shape as every roster push. push_roster pull-merges, so the tombstone joins the slot without clobbering concurrent sibling writes.
         if let (Some(hp), Some(kp), Some(fleet_key)) = (
-            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof()),
             self.device_keypair.clone(),
             self.fleet_key_cached(),
         ) {
@@ -12155,12 +15088,16 @@ impl PhotonApp {
             }
             if let Some(fid) = gone.friendship_id {
                 self.friendship_chains.retain(|(id, _)| *id != fid);
-                if let Err(e) = crate::storage::friendship::delete_friendship_chains(&fid, storage) {
+                if let Err(e) = crate::storage::friendship::delete_friendship_chains(&fid, storage)
+                {
                     crate::logf!("BOOT: chain delete failed: {}", e);
                 }
             }
         }
-        crate::logf!("BOOT: contact {} removed (ostracism, not erasure — their side keeps its own records)", crate::fp(&gone.handle_proof).as_str());
+        crate::logf!(
+            "BOOT: contact {} removed (ostracism, not erasure — their side keeps its own records)",
+            crate::fp(&gone.handle_proof).as_str()
+        );
         // Rewrite the contact index too (same as the tombstone-receive path) — or the next launch resurrects the row from the list until the next roster pull re-tombstones it.
         if let Some(storage) = self.storage.as_ref() {
             let index: Vec<crate::storage::contacts::ContactIdentity> = self
@@ -12186,11 +15123,16 @@ impl PhotonApp {
 
     /// Notes-to-self bootstrap: every device of the fleet deterministically holds the self-contact, not just the device where the user first typed their own handle (vaults converge — notes follow the identity). Everything derives from the session registers alone — party id, conversation token, handle_proof — so NO handle string, NO ceremony, and NO outgoing chain exist for it: the send path stores rows directly ("delivered by definition") and the rows travel between siblings under the FLEET key via the history sweep/live push, which both already serve the [our_pid, our_pid] conversation. Created settled (Complete + online, same shape as the manual add-friend self path); `settle_self_contacts` re-applies the settle on every reload. Idempotent by pid.
     fn ensure_self_contact(&mut self) {
-        let (Some(session), Some(kp)) = (self.session.as_ref(), self.device_keypair.as_ref()) else {
+        let (Some(session), Some(kp)) = (self.session.as_ref(), self.device_keypair.as_ref())
+        else {
             return;
         };
         let our_pid = crate::crypto::clutch::identity_party_id(&session.identity_seed);
-        if self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == our_pid) {
+        if self
+            .contacts
+            .iter()
+            .any(|c| !c.is_sibling && c.handle_hash == our_pid)
+        {
             return;
         }
         let device_pubkey = crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes());
@@ -12213,7 +15155,11 @@ impl PhotonApp {
     }
 
     fn settle_self_contacts(&mut self) -> bool {
-        let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+        let Some(our_pid) = self
+            .session
+            .as_ref()
+            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        else {
             return false;
         };
         let mut changed = false;
@@ -12228,7 +15174,10 @@ impl PhotonApp {
                     contact.clutch_state = crate::types::ClutchState::Complete;
                     contact.clutch_keygen_in_progress = false;
                     changed = true;
-                    crate::logf!("CLUTCH: self-contact '{}' auto-completed (no key exchange with self)", crate::fp(&contact.handle_proof));
+                    crate::logf!(
+                        "CLUTCH: self-contact '{}' auto-completed (no key exchange with self)",
+                        crate::fp(&contact.handle_proof)
+                    );
                     if let Some(storage) = self.storage.as_ref() {
                         let _ = crate::storage::contacts::save_contact(contact, storage);
                     }
@@ -12290,7 +15239,8 @@ impl PhotonApp {
                 && c.clutch_state == crate::types::ClutchState::Pending
                 && c.clutch_offer_sent
                 && c.validated_path.is_some()
-                && c.get_slot(&c.handle_hash).map_or(true, |s| s.offer.is_none())
+                && c.get_slot(&c.handle_hash)
+                    .map_or(true, |s| s.offer.is_none())
                 && !ceremony_parked_by(c, our_device, &siblings);
             if stalled {
                 c.clutch_offer_stall_cycles = c.clutch_offer_stall_cycles.saturating_add(1);
@@ -12305,8 +15255,10 @@ impl PhotonApp {
             if c.clutch_state == crate::types::ClutchState::Pending
                 && c.clutch_offer_sent
                 && c.validated_path.is_none()
-                && c.last_heard.map_or(true, |t| t.elapsed() >= std::time::Duration::from_secs(90))
-                && c.last_ring.map_or(true, |t| t.elapsed() >= std::time::Duration::from_secs(300))
+                && c.last_heard
+                    .map_or(true, |t| t.elapsed() >= std::time::Duration::from_secs(90))
+                && c.last_ring
+                    .map_or(true, |t| t.elapsed() >= std::time::Duration::from_secs(300))
                 && !ceremony_parked_by(c, our_device, &siblings)
             {
                 c.last_ring = Some(std::time::Instant::now());
@@ -12316,7 +15268,10 @@ impl PhotonApp {
         if !dozed_rings.is_empty() {
             if let Some(secret) = self.device_keypair.as_ref().map(|kp| *kp.secret.as_bytes()) {
                 for i in dozed_rings {
-                    crate::logf!("DOORBELL: {} ceremony parked with no path and no traffic — ringing", crate::fp(&self.contacts[i].handle_proof));
+                    crate::logf!(
+                        "DOORBELL: {} ceremony parked with no path and no traffic — ringing",
+                        crate::fp(&self.contacts[i].handle_proof)
+                    );
                     crate::network::doorbell::spawn_ring(secret, self.contacts[i].handle_proof);
                 }
             }
@@ -12366,8 +15321,16 @@ impl PhotonApp {
                     }
                 }
                 if !punch.is_empty() {
-                    let set = punch.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(" , ");
-                    crate::logf!("PUNCH: {} probing {}", crate::fp(&contact.handle_proof), set);
+                    let set = punch
+                        .iter()
+                        .map(|a| a.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" , ");
+                    crate::logf!(
+                        "PUNCH: {} probing {}",
+                        crate::fp(&contact.handle_proof),
+                        set
+                    );
                 }
             }
             let mut sent = false;
@@ -12449,8 +15412,14 @@ impl PhotonApp {
         if let Some((project, token)) = crate::platform::jni_android::fcm_bell() {
             let bell = format!("fcm:{}:{}", project, token);
             if self.published_bell.as_deref() != Some(bell.as_str()) {
-                if let (Some(kp), Some(session)) = (self.device_keypair.as_ref(), self.session.as_ref()) {
-                    crate::network::doorbell::spawn_publish_bells(*kp.secret.as_bytes(), session.handle_proof, vec![bell.clone()]);
+                if let (Some(kp), Some(session)) =
+                    (self.device_keypair.as_ref(), self.session.as_ref())
+                {
+                    crate::network::doorbell::spawn_publish_bells(
+                        *kp.secret.as_bytes(),
+                        session.handle_proof,
+                        vec![bell.clone()],
+                    );
                     self.published_bell = Some(bell);
                 }
             }
@@ -12523,7 +15492,11 @@ impl PhotonApp {
         use crate::network::status::ClutchCompleteRequest;
 
         // PARTY ID (not raw seed): the last un-migrated seam site. First-completion sends derived the token from party ids; this retransmit path used the raw identity seed, so every friend-proof RETRANSMIT rode a token no receiver recognizes ("unknown conversation_token" forever at the peer) — a proof lost once could never land, and stalls that needed a proof retransmit never converged (peer_b↔Jennifer 2026-07-24: proofs for round 933db663 arriving under acbaf3c9 instead of 8586b07e).
-        let Some(our_handle_hash) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+        let Some(our_handle_hash) = self
+            .session
+            .as_ref()
+            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        else {
             return;
         };
         let Some(kp) = self.device_keypair.as_ref() else {
@@ -12565,10 +15538,18 @@ impl PhotonApp {
                 device_pubkey,
                 device_secret,
                 recipient_pubkey: contact.public_identity.key,
-                relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
+                relay_to: if contact.validated_path.is_none() {
+                    contact.relay_device_list()
+                } else {
+                    Vec::new()
+                },
             });
             contact.clutch_proof_resends_left -= 1;
-            crate::logf!("CLUTCH: Retransmitted proof to {} ({} resends left)", crate::fp(&contact.handle_proof), contact.clutch_proof_resends_left);
+            crate::logf!(
+                "CLUTCH: Retransmitted proof to {} ({} resends left)",
+                crate::fp(&contact.handle_proof),
+                contact.clutch_proof_resends_left
+            );
             // Budget exhausted — stop holding the proof.
             if contact.clutch_proof_resends_left == 0
                 && contact.clutch_state == crate::types::ClutchState::Complete
@@ -12585,11 +15566,18 @@ impl PhotonApp {
 
         // §4.2: a parked ceremony never re-fires its offer — the owner drives; our re-send would hand the friend a competing instance.
         if self.ceremony_parked(&self.contacts[idx]) {
-            crate::logf!("CLUTCH: not re-sending offer to {} — ceremony is parked (owner drives)", crate::fp(&self.contacts[idx].handle_proof));
+            crate::logf!(
+                "CLUTCH: not re-sending offer to {} — ceremony is parked (owner drives)",
+                crate::fp(&self.contacts[idx].handle_proof)
+            );
             return;
         }
         // PARTY ID (not raw seed) + the sibling seam: the fresh-send paths derive the token from party ids, but this RE-SEND path used the raw identity seed — every re-fired offer (stall re-fire, queued-KEM recovery, addr-change re-arm) rode a token the peer can't place, which is exactly the "offers under an unknown token" storms in the field logs (peer_a's 0d9b7fc0 flood was OUR re-sends, not a ghost device).
-        let Some(our_handle_hash) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+        let Some(our_handle_hash) = self
+            .session
+            .as_ref()
+            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        else {
             return;
         };
         let our_handle_hash = if self.contacts[idx].is_sibling {
@@ -12619,11 +15607,25 @@ impl PhotonApp {
         let ip = contact.ip.unwrap_or(crate::network::status::RELAY_ADDR);
 
         let payload = crate::crypto::clutch::ClutchOfferPayload::from_keypairs(keypairs);
-        let conversation_token =
-            crate::crypto::clutch::derive_conversation_token(&[our_handle_hash, contact.handle_hash]);
-        match build_clutch_offer_vsf(&conversation_token, &payload, &device_pubkey, &device_secret, contact.clutch_round_started.unwrap_or_else(vsf::eagle_time_oscillations)) {
+        let conversation_token = crate::crypto::clutch::derive_conversation_token(&[
+            our_handle_hash,
+            contact.handle_hash,
+        ]);
+        match build_clutch_offer_vsf(
+            &conversation_token,
+            &payload,
+            &device_pubkey,
+            &device_secret,
+            contact
+                .clutch_round_started
+                .unwrap_or_else(vsf::eagle_time_oscillations),
+        ) {
             Ok((vsf_bytes, our_offer_provenance)) => {
-                crate::logf!("CLUTCH: re-sending full offer to {} (prov={}...)", crate::fp(&contact.handle_proof), hex::encode(&our_offer_provenance[..4]));
+                crate::logf!(
+                    "CLUTCH: re-sending full offer to {} (prov={}...)",
+                    crate::fp(&contact.handle_proof),
+                    hex::encode(&our_offer_provenance[..4])
+                );
                 if !contact.offer_provenances.contains(&our_offer_provenance) {
                     contact.offer_provenances.push(our_offer_provenance);
                 }
@@ -12633,7 +15635,11 @@ impl PhotonApp {
                     alt_addr: alt,
                     vsf_bytes,
                     recipient_pubkey: contact.public_identity.key,
-                    relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
+                    relay_to: if contact.validated_path.is_none() {
+                        contact.relay_device_list()
+                    } else {
+                        Vec::new()
+                    },
                 });
                 contact.clutch_offer_sent = true;
                 if let Some(storage) = self.storage.as_ref() {
@@ -12650,7 +15656,11 @@ impl PhotonApp {
                 }
             }
             Err(e) => {
-                crate::logf!("CLUTCH: Failed to build offer VSF for {}: {}", crate::fp(&self.contacts[idx].handle_proof), e);
+                crate::logf!(
+                    "CLUTCH: Failed to build offer VSF for {}: {}",
+                    crate::fp(&self.contacts[idx].handle_proof),
+                    e
+                );
             }
         }
     }
@@ -12725,7 +15735,11 @@ impl PhotonApp {
                 if exhausted {
                     crate::logf!("CHAT: retransmit GAVE UP on msg eagle_time {} after {} attempts (undelivered)", eagle_time, attempts);
                 } else {
-                    crate::logf!("CHAT: retransmit msg eagle_time {} (attempt {})", eagle_time, attempts);
+                    crate::logf!(
+                        "CHAT: retransmit msg eagle_time {} (attempt {})",
+                        eagle_time,
+                        attempts
+                    );
                 }
             }
             if any_due {
@@ -12743,11 +15757,17 @@ impl PhotonApp {
                     if !undelivered_fids.contains(&fid) {
                         continue;
                     }
-                    let dozed = c.last_heard.map_or(true, |t| t.elapsed() >= DOZED_THRESHOLD);
+                    let dozed = c
+                        .last_heard
+                        .map_or(true, |t| t.elapsed() >= DOZED_THRESHOLD);
                     let ring_ok = c.last_ring.map_or(true, |t| t.elapsed() >= RE_RING_MIN);
                     if dozed && ring_ok {
                         c.last_ring = Some(std::time::Instant::now());
-                        crate::logf!("DOORBELL: {} has undelivered traffic and {}s+ of silence — ringing", crate::fp(&c.handle_proof), DOZED_THRESHOLD.as_secs());
+                        crate::logf!(
+                            "DOORBELL: {} has undelivered traffic and {}s+ of silence — ringing",
+                            crate::fp(&c.handle_proof),
+                            DOZED_THRESHOLD.as_secs()
+                        );
                         crate::network::doorbell::spawn_ring(secret, c.handle_proof);
                     }
                 }
@@ -12771,7 +15791,9 @@ impl PhotonApp {
         let Some(fleet_key) = self.fleet_key_cached() else {
             return;
         };
-        let (Some(kp), Some(checker)) = (self.device_keypair.as_ref(), self.status_checker.as_ref()) else {
+        let (Some(kp), Some(checker)) =
+            (self.device_keypair.as_ref(), self.status_checker.as_ref())
+        else {
             return;
         };
         let has_sibling = self.contacts.iter().any(|c| c.is_sibling);
@@ -12832,7 +15854,15 @@ impl PhotonApp {
             let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
             for sib in self.contacts.iter().filter(|c| c.is_sibling) {
                 let (primary, alt, relay_to) = match sib.race_addrs() {
-                    Some((p, a)) => (p, a, if sib.validated_path.is_none() { sib.relay_device_list() } else { Vec::new() }),
+                    Some((p, a)) => (
+                        p,
+                        a,
+                        if sib.validated_path.is_none() {
+                            sib.relay_device_list()
+                        } else {
+                            Vec::new()
+                        },
+                    ),
                     None => {
                         let relays = sib.relay_device_list();
                         if relays.is_empty() {
@@ -12851,7 +15881,11 @@ impl PhotonApp {
                 pushed_to += 1;
             }
             self.chain_pushed_osc.insert(fid_bytes, osc);
-            crate::logf!("CHAIN-SYNC: pushed chain state ({}) to {} sibling(s)", crate::fp(&fid_bytes), pushed_to);
+            crate::logf!(
+                "CHAIN-SYNC: pushed chain state ({}) to {} sibling(s)",
+                crate::fp(&fid_bytes),
+                pushed_to
+            );
         }
     }
 
@@ -12890,7 +15924,8 @@ impl PhotonApp {
             return;
         }
         let our_pid = crate::crypto::clutch::identity_party_id(&session.identity_seed);
-        let token = crate::crypto::clutch::derive_conversation_token(&[our_pid, contact.handle_hash]);
+        let token =
+            crate::crypto::clutch::derive_conversation_token(&[our_pid, contact.handle_hash]);
         let page = HistoryPagePlain {
             oldest_osc: hist_rows.iter().map(|r| r.timestamp).min().unwrap_or(0),
             more: false,
@@ -12924,7 +15959,11 @@ impl PhotonApp {
                 Some((p, a)) => (
                     p,
                     a,
-                    if sib.validated_path.is_none() { sib.relay_device_list() } else { Vec::new() },
+                    if sib.validated_path.is_none() {
+                        sib.relay_device_list()
+                    } else {
+                        Vec::new()
+                    },
                 ),
                 // No known address: relay-only (the unspecified primary skips the direct legs in the send worker).
                 None => {
@@ -12946,15 +15985,26 @@ impl PhotonApp {
             pushed += 1;
         }
         // ALWAYS log, zero included — a silently-no-op fleet push is exactly how this path shipped broken.
-        crate::logf!("FLEET-HIST: live push {} row(s) for {} → {} sibling(s) ({} unreachable)", rows.len(), crate::fp(&self.contacts[idx].handle_proof), pushed, skipped);
+        crate::logf!(
+            "FLEET-HIST: live push {} row(s) for {} → {} sibling(s) ({} unreachable)",
+            rows.len(),
+            crate::fp(&self.contacts[idx].handle_proof),
+            pushed,
+            skipped
+        );
         if pushed > 0 {
-            crate::logf!("FLEET-HIST: pushed {} row(s) to {} sibling device(s)", page.rows.len(), pushed);
+            crate::logf!(
+                "FLEET-HIST: pushed {} row(s) to {} sibling device(s)",
+                page.rows.len(),
+                pushed
+            );
         }
     }
 
     /// Sibling fork repair, the APPLY half: deterministically rebuild the sibling 1:1 chains from `nonce`, reset the weave, persist, optionally echo the frame (once — the nonce dedup in the drain stops the ping-pong), and re-probe. Both sides run exactly this from the same nonce and land on byte-identical chains: synthetic "eggs" = BLAKE3-XOF(domain ‖ fleet_key ‖ nonce ‖ sorted sibling pids), fed thru the SAME from_clutch path a real ceremony uses. Fleet-key-derived is sound here because a sibling 1:1 is between two devices of ONE owner — the chain provides transport integrity, not inter-device secrecy. Rarangi rows are untouched: history survives, only chain state re-anchors. The 2MB avalanche expand runs inline (~1s, rare repair event — same UI-thread cost as the known ceremony hitch).
     fn apply_sibling_chain_reset(&mut self, idx: usize, nonce: [u8; 32], echo: bool) {
-        let (Some(fleet_key), Some(kp)) = (self.fleet_key_cached(), self.device_keypair.as_ref()) else {
+        let (Some(fleet_key), Some(kp)) = (self.fleet_key_cached(), self.device_keypair.as_ref())
+        else {
             crate::log("CHAIN-RESET: missing fleet key or device key — cannot apply");
             return;
         };
@@ -12972,9 +16022,21 @@ impl PhotonApp {
         hasher.update(&sorted[1]);
         let mut egg_bytes = [0u8; 640];
         hasher.finalize_xof().fill(&mut egg_bytes);
-        let eggs: Vec<[u8; 32]> = egg_bytes.chunks_exact(32).map(|c| { let mut e = [0u8; 32]; e.copy_from_slice(c); e }).collect();
-        crate::logf!("CHAIN-RESET: rebuilding sibling chains with {} (nonce {})", crate::fp(&self.contacts[idx].handle_proof), hex::encode(&nonce[..4]));
-        let chains = crate::types::friendship::FriendshipChains::from_clutch(&[our_pid, their_pid], &eggs);
+        let eggs: Vec<[u8; 32]> = egg_bytes
+            .chunks_exact(32)
+            .map(|c| {
+                let mut e = [0u8; 32];
+                e.copy_from_slice(c);
+                e
+            })
+            .collect();
+        crate::logf!(
+            "CHAIN-RESET: rebuilding sibling chains with {} (nonce {})",
+            crate::fp(&self.contacts[idx].handle_proof),
+            hex::encode(&nonce[..4])
+        );
+        let chains =
+            crate::types::friendship::FriendshipChains::from_clutch(&[our_pid, their_pid], &eggs);
         let fid = chains.friendship_id;
         let conversation_token = chains.conversation_token;
         self.friendship_chains.retain(|(id, _)| *id != fid);
@@ -13008,14 +16070,26 @@ impl PhotonApp {
                     return;
                 }
             };
-            match crate::network::fgtw::protocol::build_chain_reset_vsf(&conversation_token, sealed, &device_pub, &device_sec) {
+            match crate::network::fgtw::protocol::build_chain_reset_vsf(
+                &conversation_token,
+                sealed,
+                &device_pub,
+                &device_sec,
+            ) {
                 Ok(vsf_bytes) => {
-                    if let (Some(checker), Some((primary, alt))) = (self.status_checker.as_ref(), self.contacts[idx].race_addrs()) {
+                    if let (Some(checker), Some((primary, alt))) = (
+                        self.status_checker.as_ref(),
+                        self.contacts[idx].race_addrs(),
+                    ) {
                         checker.send_history(crate::network::status::HistorySendRequest {
                             peer_addr: primary,
                             alt_addr: alt,
                             recipient_pubkey: *self.contacts[idx].public_identity.as_bytes(),
-                            relay_to: if self.contacts[idx].validated_path.is_none() { self.contacts[idx].relay_device_list() } else { Vec::new() },
+                            relay_to: if self.contacts[idx].validated_path.is_none() {
+                                self.contacts[idx].relay_device_list()
+                            } else {
+                                Vec::new()
+                            },
                             vsf_bytes,
                         });
                     }
@@ -13030,11 +16104,17 @@ impl PhotonApp {
     /// Friend fork repair: a woven pair whose chains diverged has no shared key to rebuild from, but a fresh ceremony is always legal — nuke our chains + round, claim the ceremony (§4.2, so our siblings park), and let the keygen queue mint the new offer; the friend's Complete-rekey path accepts it, both weave fresh, history rows survive, and recovery backfills anything the fork swallowed. Rate-limited on the same cooldown slot as the sibling reset.
     fn initiate_friend_rekey(&mut self, idx: usize) {
         const RESET_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
-        if self.contacts[idx].last_chain_reset_sent.is_some_and(|t| t.elapsed() < RESET_COOLDOWN) {
+        if self.contacts[idx]
+            .last_chain_reset_sent
+            .is_some_and(|t| t.elapsed() < RESET_COOLDOWN)
+        {
             return;
         }
         self.contacts[idx].last_chain_reset_sent = Some(std::time::Instant::now());
-        crate::logf!("CHAIN-REKEY: {} — forked woven chain; discarding for a fresh ceremony", crate::fp(&self.contacts[idx].handle_proof));
+        crate::logf!(
+            "CHAIN-REKEY: {} — forked woven chain; discarding for a fresh ceremony",
+            crate::fp(&self.contacts[idx].handle_proof)
+        );
         if let Some(fid) = self.contacts[idx].friendship_id.take() {
             for (id, chains) in self.friendship_chains.iter_mut() {
                 if *id == fid {
@@ -13070,7 +16150,10 @@ impl PhotonApp {
     /// Sibling fork repair, the INITIATE half: rate-limited nonce mint + local apply + frame send (the apply's echo path IS the send). The responder applies on receipt and echoes once; the initiator's nonce dedup swallows the echo. A lost frame self-heals: the fork persists, the detector re-fires past the rate-limit window with a fresh nonce.
     fn initiate_sibling_chain_reset(&mut self, idx: usize) {
         const RESET_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
-        if self.contacts[idx].last_chain_reset_sent.is_some_and(|t| t.elapsed() < RESET_COOLDOWN) {
+        if self.contacts[idx]
+            .last_chain_reset_sent
+            .is_some_and(|t| t.elapsed() < RESET_COOLDOWN)
+        {
             return;
         }
         self.contacts[idx].last_chain_reset_sent = Some(std::time::Instant::now());
@@ -13104,7 +16187,11 @@ impl PhotonApp {
             kicked += 1;
         }
         if kicked > 0 {
-            crate::logf!("HISTORY: fleet sweep armed {} conversation(s) ({})", kicked, reason);
+            crate::logf!(
+                "HISTORY: fleet sweep armed {} conversation(s) ({})",
+                kicked,
+                reason
+            );
         }
     }
 
@@ -13123,35 +16210,64 @@ impl PhotonApp {
         let device_secret = *kp.secret.as_bytes();
 
         // Route material computed once: a sibling serves fleet-route requests, and the fleet key gates them (the sibling seals under it). NOT gated on is_online — sibling presence has been unreliable (see the pong liveness salvage), and a pull gated on it starved the fleet backfill exactly like the push did: prefer an online sibling with a direct address, else ANY addressed sibling (relay fallback riding along), else relay-only.
-        let sibling_target: Option<(std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32], Vec<[u8; 32]>)> =
-            if self.fleet_key_cached().is_some() {
-                let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
-                self.contacts
-                    .iter()
-                    .filter(|c| c.is_sibling && c.is_online)
-                    .find_map(|c| c.race_addrs().map(|(p, a)| (p, a, *c.public_identity.as_bytes(), if c.validated_path.is_none() { c.relay_device_list() } else { Vec::new() })))
-                    .or_else(|| {
-                        self.contacts
-                            .iter()
-                            .filter(|c| c.is_sibling)
-                            .find_map(|c| c.race_addrs().map(|(p, a)| (p, a, *c.public_identity.as_bytes(), c.relay_device_list())))
+        let sibling_target: Option<(
+            std::net::SocketAddr,
+            Option<std::net::SocketAddr>,
+            [u8; 32],
+            Vec<[u8; 32]>,
+        )> = if self.fleet_key_cached().is_some() {
+            let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
+            self.contacts
+                .iter()
+                .filter(|c| c.is_sibling && c.is_online)
+                .find_map(|c| {
+                    c.race_addrs().map(|(p, a)| {
+                        (
+                            p,
+                            a,
+                            *c.public_identity.as_bytes(),
+                            if c.validated_path.is_none() {
+                                c.relay_device_list()
+                            } else {
+                                Vec::new()
+                            },
+                        )
                     })
-                    .or_else(|| {
-                        self.contacts.iter().filter(|c| c.is_sibling).find_map(|c| {
-                            let relays = c.relay_device_list();
-                            if relays.is_empty() { None } else { Some((unspecified, None, *c.public_identity.as_bytes(), relays)) }
+                })
+                .or_else(|| {
+                    self.contacts.iter().filter(|c| c.is_sibling).find_map(|c| {
+                        c.race_addrs().map(|(p, a)| {
+                            (p, a, *c.public_identity.as_bytes(), c.relay_device_list())
                         })
                     })
-            } else {
-                None
-            };
+                })
+                .or_else(|| {
+                    self.contacts.iter().filter(|c| c.is_sibling).find_map(|c| {
+                        let relays = c.relay_device_list();
+                        if relays.is_empty() {
+                            None
+                        } else {
+                            Some((unspecified, None, *c.public_identity.as_bytes(), relays))
+                        }
+                    })
+                })
+        } else {
+            None
+        };
         let our_pid = self
             .session
             .as_ref()
             .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
 
         // Candidate pass (read-only): eligible contacts + the best available route. FRIEND route (woven keyed chain, friend online) is preferred — it's the authoritative two-party copy; otherwise the FLEET route asks an online sibling under the fleet key, which needs no chain at all (a roster-merged contact backfills before its first CLUTCH, and the self notes conversation only ever has this route).
-        let candidates: Vec<(usize, [u8; 32], std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32], Vec<[u8; 32]>)> = self
+        let candidates: Vec<(
+            usize,
+            [u8; 32],
+            std::net::SocketAddr,
+            Option<std::net::SocketAddr>,
+            [u8; 32],
+            Vec<[u8; 32]>,
+        )> = self
             .contacts
             .iter()
             .enumerate()
@@ -13163,11 +16279,17 @@ impl PhotonApp {
                 // Friend route: token from the chain (identical to the derived one — same participant set).
                 if c.is_online && c.chain_woven {
                     if let Some(fid) = c.friendship_id {
-                        if let Some((_, chains)) = self.friendship_chains.iter().find(|(id, _)| *id == fid) {
+                        if let Some((_, chains)) =
+                            self.friendship_chains.iter().find(|(id, _)| *id == fid)
+                        {
                             if chains.history_key().is_some() {
                                 if let Some((primary, alt)) = c.race_addrs() {
                                     // No validated direct path → the request ALSO rides the relay immediately (chat's relay_to rule); PT's own ladder-then-relay takes longer than the requester's expiry, so relay-only friends starved on it forever.
-                                    let relay_to = if c.validated_path.is_none() { c.relay_device_list() } else { Vec::new() };
+                                    let relay_to = if c.validated_path.is_none() {
+                                        c.relay_device_list()
+                                    } else {
+                                        Vec::new()
+                                    };
                                     return Some((
                                         idx,
                                         chains.conversation_token,
@@ -13232,7 +16354,15 @@ impl PhotonApp {
                     rec.in_flight = Some((rid, now_osc, before));
                     rec.next_request_osc = now_osc + HIST_TRICKLE_OSC;
                     rec.urgent = false;
-                    crate::logf!("HISTORY: requesting page before {} from {}", if before == i64::MAX { "HEAD".to_string() } else { before.to_string() }, primary);
+                    crate::logf!(
+                        "HISTORY: requesting page before {} from {}",
+                        if before == i64::MAX {
+                            "HEAD".to_string()
+                        } else {
+                            before.to_string()
+                        },
+                        primary
+                    );
                     checker.send_history(crate::network::status::HistorySendRequest {
                         peer_addr: primary,
                         alt_addr: alt,
@@ -13262,8 +16392,10 @@ impl PhotonApp {
         let device_secret = *kp.secret.as_bytes();
         let s_known = !matches!(self.private_s, PrivateS::None);
         // A stack copy for blob building inside the contacts borrow; lives only this call.
-        let s_copy: Option<zeroize::Zeroizing<[u8; 32]>> =
-            self.private_s.secret().map(|s| zeroize::Zeroizing::new(**s));
+        let s_copy: Option<zeroize::Zeroizing<[u8; 32]>> = self
+            .private_s
+            .secret()
+            .map(|s| zeroize::Zeroizing::new(**s));
         let Some(checker) = self.status_checker.as_ref() else {
             return;
         };
@@ -13308,7 +16440,8 @@ impl PhotonApp {
                 )
             } else {
                 let Some(s) = s_copy.as_ref() else { continue };
-                let pad = crate::crypto::blind::derive_blind_pad(&device_secret, &contact.handle_hash);
+                let pad =
+                    crate::crypto::blind::derive_blind_pad(&device_secret, &contact.handle_hash);
                 let blob = crate::crypto::blind::make_blind_blob(s, &pad);
                 crate::network::fgtw::protocol::build_blind_put_vsf(
                     &token,
@@ -13321,11 +16454,15 @@ impl PhotonApp {
             match built {
                 Ok(vsf_bytes) => {
                     contact.blind_in_flight = Some((rid, now_osc, want_probe));
-                    crate::logf!("BLIND: {} {}", if want_probe {
+                    crate::logf!(
+                        "BLIND: {} {}",
+                        if want_probe {
                             "probing for our deposit at"
                         } else {
                             "depositing our blind with"
-                        }, crate::fp(&contact.handle_proof));
+                        },
+                        crate::fp(&contact.handle_proof)
+                    );
                     // BLIND frames ALWAYS ride the relay alongside any direct path. A validated path can be one-directional (their probes reach us, our answers vanish — observed live: peer_b served found=0 every 15s while peer_a's probe expired every 15s, forever), and a lost blind frame stalls S-recovery silently. The frames are tiny and idempotent by request id, so the duplicate costs nothing.
                     checker.send_history(crate::network::status::HistorySendRequest {
                         peer_addr: primary,
@@ -13471,56 +16608,55 @@ impl PhotonApp {
         }
         // Steady state: every contact already has an avatar → skip the sweep entirely (no timestamp read, no allocation) since this runs every tick. Only do the work when something's missing.
         if self.contacts.iter().any(|c| c.avatar_pixels.is_none()) {
-        let now = vsf::eagle_time_oscillations();
-        let plans: Vec<AvatarPlan> = self
-            .contacts
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| c.avatar_pixels.is_none())
-            .map(|(ci, c)| {
-                // Local vault first — a cheap `read_addr` (encrypted blob, no decode). If we have it, the network never runs. This is what stops the every-launch redundant P2P request: the friend's avatar is already cached, so we don't re-ask them for it.
-                let cached = self
-                    .storage
-                    .as_ref()
-                    .is_some_and(|s| crate::ui::avatar::has_cached_avatar_from_seed(&c.handle_hash, s));
-                if cached {
-                    return AvatarPlan::LocalCached { ci };
+            let now = vsf::eagle_time_oscillations();
+            let plans: Vec<AvatarPlan> = self
+                .contacts
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.avatar_pixels.is_none())
+                .map(|(ci, c)| {
+                    // Local vault first — a cheap `read_addr` (encrypted blob, no decode). If we have it, the network never runs. This is what stops the every-launch redundant P2P request: the friend's avatar is already cached, so we don't re-ask them for it.
+                    let cached = self.storage.as_ref().is_some_and(|s| {
+                        crate::ui::avatar::has_cached_avatar_from_seed(&c.handle_hash, s)
+                    });
+                    if cached {
+                        return AvatarPlan::LocalCached { ci };
+                    }
+                    if c.is_mutual() {
+                        if let Some((addr, _alt)) = c.race_addrs() {
+                            return AvatarPlan::P2pThenFgtw {
+                                peer_addr: addr,
+                                recipient_pubkey: *c.public_identity.as_bytes(),
+                                ci,
+                            };
+                        }
+                    }
+                    AvatarPlan::FgtwOnly { ci }
+                })
+                .collect();
+            for plan in plans {
+                match plan {
+                    // Cache-first background load; never hits the network for an already-cached avatar.
+                    AvatarPlan::LocalCached { ci } => self.spawn_avatar_download(ci),
+                    AvatarPlan::FgtwOnly { ci } => self.spawn_avatar_download(ci),
+                    AvatarPlan::P2pThenFgtw {
+                        peer_addr,
+                        recipient_pubkey,
+                        ci,
+                    } => match self.avatar_req_pending.get(&recipient_pubkey).copied() {
+                        // Never asked this peer — send the P2P request now, record when.
+                        None => {
+                            self.spawn_avatar_request_p2p(peer_addr, recipient_pubkey, now);
+                        }
+                        // Asked, but the peer hasn't answered within the window — fall back to FGTW (dedup'd by avatar_dl_started, so this fires at most once per peer).
+                        Some(sent_at) if now.saturating_sub(sent_at) > AVATAR_P2P_FALLBACK_OSC => {
+                            self.spawn_avatar_download(ci);
+                        }
+                        // Asked recently — still waiting on the peer; do nothing this tick.
+                        Some(_) => {}
+                    },
                 }
-                if c.is_mutual() {
-                    if let Some((addr, _alt)) = c.race_addrs() {
-                        return AvatarPlan::P2pThenFgtw {
-                            peer_addr: addr,
-                            recipient_pubkey: *c.public_identity.as_bytes(),
-                            ci,
-                        };
-                    }
-                }
-                AvatarPlan::FgtwOnly { ci }
-            })
-            .collect();
-        for plan in plans {
-            match plan {
-                // Cache-first background load; never hits the network for an already-cached avatar.
-                AvatarPlan::LocalCached { ci } => self.spawn_avatar_download(ci),
-                AvatarPlan::FgtwOnly { ci } => self.spawn_avatar_download(ci),
-                AvatarPlan::P2pThenFgtw {
-                    peer_addr,
-                    recipient_pubkey,
-                    ci,
-                } => match self.avatar_req_pending.get(&recipient_pubkey).copied() {
-                    // Never asked this peer — send the P2P request now, record when.
-                    None => {
-                        self.spawn_avatar_request_p2p(peer_addr, recipient_pubkey, now);
-                    }
-                    // Asked, but the peer hasn't answered within the window — fall back to FGTW (dedup'd by avatar_dl_started, so this fires at most once per peer).
-                    Some(sent_at) if now.saturating_sub(sent_at) > AVATAR_P2P_FALLBACK_OSC => {
-                        self.spawn_avatar_download(ci);
-                    }
-                    // Asked recently — still waiting on the peer; do nothing this tick.
-                    Some(_) => {}
-                },
             }
-        }
         } // end avatar sweep (skipped when every contact already has an avatar)
 
         let checker = match &self.status_checker {
@@ -13529,7 +16665,11 @@ impl PhotonApp {
         };
 
         // Our party id for CLUTCH: the identity PUBKEY (the value contacts pin at first-met). It rides CLUTCH offers for contact matching — public by design; the secret identity binding is the friendship-secret egg, never this id. (Was the raw identity seed, which also parked our seed in every peer's contact row — docs/identity-profile.md.)
-        let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+        let our_handle_hash = match self
+            .session
+            .as_ref()
+            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        {
             Some(h) => h,
             None => return false, // Can't do CLUTCH without our party id
         };
@@ -13545,7 +16685,7 @@ impl PhotonApp {
 
         let mut changed = false;
         let mut ceremony_completions: Vec<usize> = Vec::new(); // Contact indices to complete after loop
-        // Fleet-forwarded rows to transmit on OUR chain (collected in the drain, executed after the checker borrow releases — chain_transmit needs &mut self).
+                                                               // Fleet-forwarded rows to transmit on OUR chain (collected in the drain, executed after the checker borrow releases — chain_transmit needs &mut self).
         let mut fleet_tx_rows: Vec<(usize, String, i64)> = Vec::new();
         let mut lan_ping_indices: Vec<usize> = Vec::new(); // Contact indices to ping immediately on new LAN discovery
                                                            // Collect pending message retransmit requests (friendship_id, ip, handle, device_pubkey, last_received_ef6) to process after loop last_received_ef6 from pong tells us what they already have - only retransmit newer
@@ -13568,7 +16708,7 @@ impl PhotonApp {
         let mut friend_rekey_initiate: Vec<usize> = Vec::new(); // friend-side fork hits — full re-key fired after loop
         let mut chain_reset_apply: Vec<(usize, [u8; 32], bool)> = Vec::new(); // (contact idx, nonce, echo_back) from ChainResetReceived — applied after loop
         let mut chain_probe_indices: Vec<usize> = Vec::new(); // maybe_send_chain_probe after loop
-        // Parked-ceremony offer re-fires on a path-up edge (resend_clutch_offer needs &mut self) — same deferral discipline.
+                                                              // Parked-ceremony offer re-fires on a path-up edge (resend_clutch_offer needs &mut self) — same deferral discipline.
         let mut offer_refire_indices: Vec<usize> = Vec::new();
         // Fleet history sweep deferral: a sibling coming online means it may hold conversation rows we don't — arm the per-conversation walk after the loop (the sweep needs &mut contacts).
         let mut fleet_sweep_due = false;
@@ -13613,7 +16753,11 @@ impl PhotonApp {
                 if let Some((label, t)) = arm_timer.take() {
                     let ms = t.elapsed().as_millis();
                     if ms > 100 {
-                        crate::logf!("PERF: status arm {} took {}ms (UI thread)", label, ms as u64);
+                        crate::logf!(
+                            "PERF: status arm {} took {}ms (UI thread)",
+                            label,
+                            ms as u64
+                        );
                     }
                 }
             };
@@ -13653,33 +16797,52 @@ impl PhotonApp {
                             // ANTI-ENTROPY: the pong carries the peer's (row_count, XOR-fold) for this conversation. A digest mismatch means the two sides provably hold DIFFERENT message sets — the heuristic cursor walk left a hole (the greyed sends peer_m never got, 2026-07-25) — so force a FULL recovery walk (early-stop disabled). Zero count+digest = legacy peer, no comparison. Cooldown per contact so a persistent mismatch (peer can't serve) re-fires at a polite cadence instead of every pong.
                             if record.row_count != 0 || record.row_digest != [0u8; 32] {
                                 let fid = *fid;
-                                if let Some(c) = self.contacts.iter_mut().find(|c| c.friendship_id == Some(fid)) {
+                                if let Some(c) = self
+                                    .contacts
+                                    .iter_mut()
+                                    .find(|c| c.friendship_id == Some(fid))
+                                {
                                     if !c.is_sibling && c.chain_woven {
                                         let mut fold = [0u8; 32];
                                         let mut n_rows: u32 = 0;
-                                        for m in c.messages.iter().filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted) {
+                                        for m in c.messages.iter().filter(|m| {
+                                            !crate::types::is_control_content(&m.content)
+                                                && !m.deleted
+                                        }) {
                                             let mut h = blake3::Hasher::new();
                                             h.update(&m.timestamp.to_le_bytes());
                                             h.update(blake3::hash(m.content.as_bytes()).as_bytes());
-                                            for (f, b) in fold.iter_mut().zip(h.finalize().as_bytes()) {
+                                            for (f, b) in
+                                                fold.iter_mut().zip(h.finalize().as_bytes())
+                                            {
                                                 *f ^= b;
                                             }
                                             n_rows += 1;
                                         }
-                                        let mismatch = n_rows != record.row_count || fold != record.row_digest;
-                                        const DIGEST_KICK_COOLDOWN_OSC: i64 = 120 * vsf::OSCILLATIONS_PER_SECOND as i64;
-                                        let idle = c.history_recovery.as_ref().map_or(true, |r| r.complete);
-                                        if mismatch && idle && now_osc.saturating_sub(c.digest_kick_osc) > DIGEST_KICK_COOLDOWN_OSC {
+                                        let mismatch =
+                                            n_rows != record.row_count || fold != record.row_digest;
+                                        const DIGEST_KICK_COOLDOWN_OSC: i64 =
+                                            120 * vsf::OSCILLATIONS_PER_SECOND as i64;
+                                        let idle = c
+                                            .history_recovery
+                                            .as_ref()
+                                            .map_or(true, |r| r.complete);
+                                        if mismatch
+                                            && idle
+                                            && now_osc.saturating_sub(c.digest_kick_osc)
+                                                > DIGEST_KICK_COOLDOWN_OSC
+                                        {
                                             c.digest_kick_osc = now_osc;
                                             crate::logf!("HISTORY: digest mismatch with {} (ours {} rows, theirs {}) — full resync walk", crate::fp(&c.handle_proof), n_rows, record.row_count);
-                                            c.history_recovery = Some(crate::types::HistoryRecovery {
-                                                oldest_recovered_osc: i64::MAX,
-                                                complete: false,
-                                                in_flight: None,
-                                                next_request_osc: 0,
-                                                urgent: true,
-                                                was_complete_before: false,
-                                            });
+                                            c.history_recovery =
+                                                Some(crate::types::HistoryRecovery {
+                                                    oldest_recovered_osc: i64::MAX,
+                                                    complete: false,
+                                                    in_flight: None,
+                                                    next_request_osc: 0,
+                                                    urgent: true,
+                                                    was_complete_before: false,
+                                                });
                                         }
                                     }
                                 }
@@ -13704,7 +16867,8 @@ impl PhotonApp {
                             // A relayed pong proves the peer is reachable — but ONLY via the relay — so mark the link relay-only (→ lime-yellow) and DO NOT learn its address (storing 0.0.0.0:0 as an endpoint would poison direct sends, and a relayed pong carries no reachable address anyway). A direct pong clears the flag: a real UDP path always wins over the relay.
                             let via_relay = peer_addr == Some(crate::network::status::RELAY_ADDR);
                             // An UNSPECIFIED address (0.0.0.0 / ::) is never a reachable peer endpoint — it's the relay sentinel, OR a pong whose observed_addr echo is our own not-yet-learned reflexive (a sibling on a fresh device pongs back the 0.0.0.0 it saw). Adopting it as the contact's `ip` sends the next CLUTCH offer to 0.0.0.0 (a black hole), which is exactly why a freshly-paired sibling's weave never completes — the offer is fired at nowhere. Treat it like a relayed pong: proves liveness, carries no address to learn.
-                            let addr_unspecified = peer_addr.map_or(false, |a| a.ip().is_unspecified());
+                            let addr_unspecified =
+                                peer_addr.map_or(false, |a| a.ip().is_unspecified());
                             let learn_addr = !via_relay && !addr_unspecified;
                             // PER-DEVICE addressing: a DIRECT pong updates the SENDING device's endpoint (public/LAN split by source privacy), and only the ACTIVE device's pong may move the contact-level `ip`/`local_*` slot. A friend's other devices each keep their own endpoint — the old any-device-writes-the-one-slot rule made three-device fleets flip-flop the slot every cycle, which broke presence (pings chased the last ponger) AND cancelled mid-flight CLUTCH offer transfers ("address changed — cancelling"). First pong with no active device adopts the sender (bootstrap); inbound DATA (chat/CLUTCH) re-elects it (the device in their hand).
                             if let Some(addr) = peer_addr.filter(|_| learn_addr) {
@@ -13752,7 +16916,12 @@ impl PhotonApp {
                             // Always-granted name slot off the pong: adopt the friend's chosen display name (petname still wins at render — see display_name()). Persisted below via the state-save the name-change marks.
                             if let Some(name) = display_name.as_ref() {
                                 if !contact.is_sibling && contact.published_name != *name {
-                                    crate::logf!("CONTACT: {} published name {} -> {}", crate::fp(&contact.handle_proof), format!("{:?}", contact.published_name), format!("{:?}", name));
+                                    crate::logf!(
+                                        "CONTACT: {} published name {} -> {}",
+                                        crate::fp(&contact.handle_proof),
+                                        format!("{:?}", contact.published_name),
+                                        format!("{:?}", name)
+                                    );
                                     contact.published_name = name.clone();
                                     contact.published_name_dirty = true;
                                     changed = true;
@@ -13761,7 +16930,10 @@ impl PhotonApp {
                             // Always-granted AVATAR slot off the pong: adopt the friend's avatar pin (random key ‖ lookup). This is the ONLY way a friend learns the pin — it's never handle-derivable — so it arrives here, gated by the pong only answering authenticated contacts. A new/changed pin marks the contact for a fresh avatar fetch.
                             if let Some(pin) = avatar_pin.as_ref() {
                                 if !contact.is_sibling && contact.avatar_pin != *pin {
-                                    crate::logf!("CONTACT: {} avatar pin adopted", crate::fp(&contact.handle_proof));
+                                    crate::logf!(
+                                        "CONTACT: {} avatar pin adopted",
+                                        crate::fp(&contact.handle_proof)
+                                    );
                                     contact.avatar_pin = *pin;
                                     contact.avatar_pin_dirty = true;
                                     // Roster LWW clock: the pin is a synced identity field, so this adoption must win the merge on every sibling (the post-drain sweep pushes the roster).
@@ -13786,7 +16958,13 @@ impl PhotonApp {
                             if contact.is_online != identity_online {
                                 contact.is_online = identity_online;
                                 changed = true;
-                                crate::logf!("Status: {} is now {} (device {} {})", crate::fp(&contact.handle_proof), if identity_online { "ONLINE" } else { "offline" }, hex::encode(&peer_pubkey.key[..4]), if is_online { "up" } else { "down" });
+                                crate::logf!(
+                                    "Status: {} is now {} (device {} {})",
+                                    crate::fp(&contact.handle_proof),
+                                    if identity_online { "ONLINE" } else { "offline" },
+                                    hex::encode(&peer_pubkey.key[..4]),
+                                    if is_online { "up" } else { "down" }
+                                );
                             }
                             // A sibling coming online is the fleet-history catch-up trigger: it may hold conversation rows written while we were apart. Deferred — the sweep needs &mut contacts.
                             if came_online && contact.is_sibling {
@@ -13798,7 +16976,10 @@ impl PhotonApp {
                                 let next = contact
                                     .device_endpoints
                                     .iter()
-                                    .filter(|ep| Some(ep.pubkey) != cur && (ep.public.is_some() || ep.lan.is_some()))
+                                    .filter(|ep| {
+                                        Some(ep.pubkey) != cur
+                                            && (ep.public.is_some() || ep.lan.is_some())
+                                    })
                                     .map(|ep| (ep.pubkey, ep.public, ep.lan))
                                     .next();
                                 if let Some((pk, public, lan)) = next {
@@ -13843,7 +17024,9 @@ impl PhotonApp {
 
                                     // This is the send that a RELAYED pong triggers — and a relayed pong never sets `contact.ip`, so gating on it here meant the exact peer whose liveness the relay just proved could never receive our offer. The RELAY sentinel + relay_to fan-out is the delivery path that pong itself arrived on.
                                     {
-                                        let ip = contact.ip.unwrap_or(crate::network::status::RELAY_ADDR);
+                                        let ip = contact
+                                            .ip
+                                            .unwrap_or(crate::network::status::RELAY_ADDR);
                                         // Build VSF and capture our offer_provenance
                                         let conversation_token =
                                             clutch::derive_conversation_token(&[
@@ -13863,10 +17046,16 @@ impl PhotonApp {
                                                 .expect("device_keypair set in init")
                                                 .secret
                                                 .as_bytes(),
-                                            contact.clutch_round_started.unwrap_or_else(vsf::eagle_time_oscillations),
+                                            contact
+                                                .clutch_round_started
+                                                .unwrap_or_else(vsf::eagle_time_oscillations),
                                         ) {
                                             Ok((vsf_bytes, our_offer_provenance)) => {
-                                                crate::logf!("CLUTCH: Sending full offer to {} (prov={}...)", crate::fp(&contact.handle_proof), hex::encode(&our_offer_provenance[..4]));
+                                                crate::logf!(
+                                                    "CLUTCH: Sending full offer to {} (prov={}...)",
+                                                    crate::fp(&contact.handle_proof),
+                                                    hex::encode(&our_offer_provenance[..4])
+                                                );
 
                                                 // Store our offer provenance (for ceremony_id derivation)
                                                 if !contact
@@ -13900,13 +17089,20 @@ impl PhotonApp {
                                                     alt_addr: alt,
                                                     vsf_bytes,
                                                     recipient_pubkey: contact.public_identity.key,
-                                                    relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
+                                                    relay_to: if contact.validated_path.is_none() {
+                                                        contact.relay_device_list()
+                                                    } else {
+                                                        Vec::new()
+                                                    },
                                                 });
                                                 contact.clutch_offer_sent = true;
                                                 changed = true;
                                             }
                                             Err(e) => {
-                                                crate::logf!("CLUTCH: Failed to build offer VSF: {}", e);
+                                                crate::logf!(
+                                                    "CLUTCH: Failed to build offer VSF: {}",
+                                                    e
+                                                );
                                             }
                                         }
                                     }
@@ -13955,7 +17151,12 @@ impl PhotonApp {
                     sender_addr,
                 } => {
                     // Get our handle_hash for chain lookups
-                    let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {  // PARTY ID: the friendship chain + slots are keyed on party ids (from_clutch + send both use our_party_id); matching on the raw seed here dropped every incoming message/probe as "not a participant" and hung the weave.
+                    let our_handle_hash = match self
+                        .session
+                        .as_ref()
+                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                    {
+                        // PARTY ID: the friendship chain + slots are keyed on party ids (from_clutch + send both use our_party_id); matching on the raw seed here dropped every incoming message/probe as "not a participant" and hung the weave.
                         Some(h) => h,
                         None => {
                             crate::log("CHAT: No user_identity_seed - cannot decrypt");
@@ -14009,7 +17210,10 @@ impl PhotonApp {
                         let (contact_idx, handle) = match contact_info {
                             Some((idx, h)) => (idx, h),
                             None => {
-                                crate::logf!("CHAT: Contact not found for handle_hash {}...", hex::encode(&from_handle_hash[..8]));
+                                crate::logf!(
+                                    "CHAT: Contact not found for handle_hash {}...",
+                                    hex::encode(&from_handle_hash[..8])
+                                );
                                 continue;
                             }
                         };
@@ -14018,7 +17222,9 @@ impl PhotonApp {
                         // DURABLE second gate: is_duplicate lives inside the chain object, and a ceremony reset / braid-in mints a FRESH chain with last_received_times = None — so a frame arriving again post-reset (direct + relay dual-path, or an inbox-drain replay) sailed past it and was processed against the wrong chain state, forking the pair (the 2026-07-23 sibling desync). The rarangi row store keys on the same eagle_time, persists, and survives every chain reset — a stored inbound row at this timestamp means this exact frame was already processed, whatever the in-memory chain thinks.
                         // RECOVERED rows are excluded from the gate: a friend-attested backfill row was never chain-processed and carries no ack_hash, so treating it as "already processed" deadlocked the sender — recovery raced live delivery and peer_m's retransmits were skipped un-ACKably forever while her chain waited (2026-07-24). The wire frame must process normally; insert_message_sorted upgrades the recovered row in place.
                         let row_dup = self.contacts.get(contact_idx).map_or(false, |c| {
-                            c.messages.iter().any(|m| !m.is_outgoing && !m.recovered && m.timestamp == timestamp)
+                            c.messages
+                                .iter()
+                                .any(|m| !m.is_outgoing && !m.recovered && m.timestamp == timestamp)
                         });
                         if chains.is_duplicate(&from_handle_hash, timestamp) || row_dup {
                             // Re-ACK from the stored message, looked up by its eagle_time. Unlike the old single-slot last_acked (which only remembered the MOST RECENT ack and so dropped any earlier duplicate → permanent sender stall), every received message persists its own ack_hash, so ANY duplicate self-heals a lost ACK.
@@ -14033,7 +17239,11 @@ impl PhotonApp {
                             if let Some((ph, recipient_pubkey)) = stored {
                                 if let Some(ref checker) = self.status_checker {
                                     // The ACK ALWAYS rides the relay alongside any direct leg. Gating on the sentinel missed the case that actually lagged in the field: a message received DIRECT whose reverse direction is dead — the direct ACK vanished, the sender retransmitted, and only the duplicate's re-ACK (relayed) landed. Acks are tiny and idempotent, so the duplicate delivery is free.
-                                    let relay_to = self.contacts.get(contact_idx).map(|c| c.relay_device_list()).unwrap_or_default();
+                                    let relay_to = self
+                                        .contacts
+                                        .get(contact_idx)
+                                        .map(|c| c.relay_device_list())
+                                        .unwrap_or_default();
                                     checker.send_ack(AckRequest {
                                         peer_addr: sender_addr,
                                         recipient_pubkey,
@@ -14060,7 +17270,11 @@ impl PhotonApp {
                                 let key = u64::from_le_bytes(expected[..8].try_into().unwrap())
                                     ^ u64::from_le_bytes(prev_msg_hp[..8].try_into().unwrap());
                                 let c = &mut self.contacts[contact_idx];
-                                if c.gap_streak.0 == key { c.gap_streak.1 = c.gap_streak.1.saturating_add(1); } else { c.gap_streak = (key, 1); }
+                                if c.gap_streak.0 == key {
+                                    c.gap_streak.1 = c.gap_streak.1.saturating_add(1);
+                                } else {
+                                    c.gap_streak = (key, 1);
+                                }
                                 if c.gap_streak.1 == 6 {
                                     c.gap_streak.1 = 0;
                                     if c.is_sibling {
@@ -14082,7 +17296,12 @@ impl PhotonApp {
                             continue;
                         }
 
-                        crate::logf!("CHAT: Received message from {} (eagle_time {}), {} bytes ciphertext", handle, timestamp, ciphertext.len());
+                        crate::logf!(
+                            "CHAT: Received message from {} (eagle_time {}), {} bytes ciphertext",
+                            handle,
+                            timestamp,
+                            ciphertext.len()
+                        );
 
                         use crate::crypto::chain::{
                             decrypt_layers, derive_salt, generate_scratch, CURRENT_KEY_INDEX,
@@ -14123,7 +17342,10 @@ impl PhotonApp {
                         );
 
                         // DEBUG: Log raw decrypted bytes
-                        crate::logf!("CHAIN DECRYPT: raw plaintext bytes = {}", format!("{:?}", &plaintext));
+                        crate::logf!(
+                            "CHAIN DECRYPT: raw plaintext bytes = {}",
+                            format!("{:?}", &plaintext)
+                        );
 
                         // Parse VSF field: (d{message}:x{text},hp{inc_hp},hR{pad}) Uses VsfField::parse() per AGENT.md
                         let mut ptr = 0usize;
@@ -14138,11 +17360,13 @@ impl PhotonApp {
                                 crate::logf!("CHAT: VsfField parse error: {}", e);
                                 // FORK DETECTOR: the frame passed signature + chain-link verification but decrypted to garbage — the two sides hold different key material at this position. One hit can be a stray; consecutive hits are a fork. Siblings repair via the fleet-key chain_reset at 2; FRIENDS repair via a full RE-KEY at 3 (no shared key to rebuild from, but a fresh ceremony is always legal: our new-keys offer hits their Complete-rekey path, history rows survive, recovery backfills after the re-weave). Observed live: peer_m↔peer_b woven pair forked mid-conversation — her side decrypted one message as garbage and every later one buffered "ahead" forever, greying every send (2026-07-25).
                                 if let Some(contact) = self.contacts.get_mut(contact_idx) {
-                                    contact.chain_fail_streak = contact.chain_fail_streak.saturating_add(1);
+                                    contact.chain_fail_streak =
+                                        contact.chain_fail_streak.saturating_add(1);
                                     if contact.chain_fail_streak >= 2 && contact.is_sibling {
                                         crate::logf!("CHAIN FORK SUSPECTED: {} — {} consecutive garbage decrypts past chain-link verify — initiating sibling chain reset", crate::fp(&contact.handle_proof), contact.chain_fail_streak);
                                         chain_reset_initiate.push(contact_idx);
-                                    } else if contact.chain_fail_streak >= 3 && !contact.is_sibling {
+                                    } else if contact.chain_fail_streak >= 3 && !contact.is_sibling
+                                    {
                                         crate::logf!("CHAIN FORK SUSPECTED: {} — {} consecutive garbage decrypts past chain-link verify — initiating friend re-key", crate::fp(&contact.handle_proof), contact.chain_fail_streak);
                                         friend_rekey_initiate.push(contact_idx);
                                     }
@@ -14152,7 +17376,10 @@ impl PhotonApp {
                         };
 
                         if field.name != "message" {
-                            crate::logf!("CHAT: Expected field name 'message', got '{}'", field.name);
+                            crate::logf!(
+                                "CHAT: Expected field name 'message', got '{}'",
+                                field.name
+                            );
                             continue;
                         }
                         // A clean decrypt+parse clears the fork detector.
@@ -14175,7 +17402,10 @@ impl PhotonApp {
                                 },
                                 vsf::VsfType::hR(_) => {} // Random padding - ignore
                                 other => {
-                                    crate::logf!("CHAT: Unexpected type in message: {}", format!("{:?}", other));
+                                    crate::logf!(
+                                        "CHAT: Unexpected type in message: {}",
+                                        format!("{:?}", other)
+                                    );
                                 }
                             }
                         }
@@ -14188,7 +17418,16 @@ impl PhotonApp {
                         // Hidden chain-weave probe: a reserved-marker message that proves the ratchet works but must show NO chat bubble. Everything else on the receive path (chain advance, set_last_plaintext, mark_received, ACK send) still runs so the sender's chain advances and dedup works — only the UI is suppressed.
                         let is_chain_probe = message_text == crate::types::CHAIN_PROBE_MARKER;
 
-                        crate::logf!("CHAT: Decrypted message from {}: \"{}\" (incorporated_hp={}...)", handle, if is_chain_probe { "<chain-weave probe>" } else { &message_text }, hex::encode(&incorporated_hp[..8]));
+                        crate::logf!(
+                            "CHAT: Decrypted message from {}: \"{}\" (incorporated_hp={}...)",
+                            handle,
+                            if is_chain_probe {
+                                "<chain-weave probe>"
+                            } else {
+                                &message_text
+                            },
+                            hex::encode(&incorporated_hp[..8])
+                        );
 
                         // Compute plaintext hash for ACK
                         let plaintext_hash = *blake3::hash(&plaintext).as_bytes();
@@ -14198,7 +17437,10 @@ impl PhotonApp {
                         let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, timestamp);
 
                         // Update their last_plaintext for next message's salt — the x-text ONLY (must match what the sender stored: salt source is text, never the full payload/pad).
-                        chains.set_last_plaintext(&from_handle_hash, message_text.clone().into_bytes());
+                        chains.set_last_plaintext(
+                            &from_handle_hash,
+                            message_text.clone().into_bytes(),
+                        );
 
                         // Update bidirectional entropy state (derive weave hash from full message context)
                         chains.update_received_for_mixing(timestamp, msg_hp, &plaintext);
@@ -14239,7 +17481,11 @@ impl PhotonApp {
 
                         // Update hash chain state for next message verification
                         chains.update_received_hash(&from_handle_hash, msg_hp);
-                        crate::logf!("CHAT: Updated hash chain for {} - msg_hp={}...", handle, hex::encode(&msg_hp[..8]));
+                        crate::logf!(
+                            "CHAT: Updated hash chain for {} - msg_hp={}...",
+                            handle,
+                            hex::encode(&msg_hp[..8])
+                        );
 
                         // Layer 1 gap-buffer drain: this message's msg_hp is now our last_received_hash, so any buffered message that was waiting on THIS as its predecessor is now contiguous. Replay them (front of the queue) so they're processed in order immediately — and each can cascade to fill the next gap when IT advances.
                         let ready = chains.take_buffered_for(&msg_hp);
@@ -14271,22 +17517,34 @@ impl PhotonApp {
 
                         // Add message to contact's message list and persist — UNLESS this is the hidden chain-weave probe, which advances/ACKs the chain but must never surface a bubble or chime. For the probe we flip `their_probe_seen` (their TX / our RX proven), PERSIST a hidden row, and try to seal the chain.
                         // Hidden DELETE marker: the friend tombstoned a message — apply it here (either direction, matched by timestamp), persist a HIDDEN marker row for re-ACK durability (the probe pattern), and gossip the tombstoned row to our siblings. No bubble, no chime, no notify.
-                        if let Some(ts_str) = message_text.strip_prefix(crate::types::DELETE_MARKER_PREFIX) {
+                        if let Some(ts_str) =
+                            message_text.strip_prefix(crate::types::DELETE_MARKER_PREFIX)
+                        {
                             let target_ts: i64 = ts_str.trim().parse().unwrap_or(0);
                             if let Some(contact) = self.contacts.get_mut(contact_idx) {
                                 let mut tombstoned: Option<ChatMessage> = None;
-                                if let Some(m) = contact.messages.iter_mut().find(|m| m.timestamp == target_ts && !crate::types::is_control_content(&m.content)) {
+                                if let Some(m) = contact.messages.iter_mut().find(|m| {
+                                    m.timestamp == target_ts
+                                        && !crate::types::is_control_content(&m.content)
+                                }) {
                                     if !m.deleted {
                                         m.deleted = true;
                                         tombstoned = Some(m.clone());
                                     }
                                 }
                                 // The marker row itself (hidden, ack_hash-bearing) — a lost ACK re-ACKs from it.
-                                let marker_row = ChatMessage::new_with_timestamp(message_text.clone(), false, timestamp).with_ack_hash(plaintext_hash);
+                                let marker_row = ChatMessage::new_with_timestamp(
+                                    message_text.clone(),
+                                    false,
+                                    timestamp,
+                                )
+                                .with_ack_hash(plaintext_hash);
                                 contact.insert_message_sorted(marker_row);
                                 persist_hashes.push(contact.handle_hash);
                                 if let Some(row) = tombstoned {
-                                    if let Some((hash, _, _)) = crate::types::parse_attachment_content(&row.content) {
+                                    if let Some((hash, _, _)) =
+                                        crate::types::parse_attachment_content(&row.content)
+                                    {
                                         crate::storage::blob_delete(&hash);
                                     }
                                     crate::logf!("CHAT: friend deleted a message (ts {}) — tombstone applied + gossiped", target_ts);
@@ -14312,14 +17570,18 @@ impl PhotonApp {
                                 contact.insert_message_sorted(probe_row);
                                 persist_hashes.push(contact.handle_hash);
                             }
-                            crate::log("CHAIN-PROBE: received peer's chain-weave probe — RX chain proven");
+                            crate::log(
+                                "CHAIN-PROBE: received peer's chain-weave probe — RX chain proven",
+                            );
                             recv_seal_idx = Some(contact_idx);
                         } else if let Some(contact) = self.contacts.get_mut(contact_idx) {
                             // Any real received message means the chain is demonstrably working end-to-end in at least the RX direction — belt-and-suspenders toward woven.
                             contact.their_probe_seen = true;
                             contact.their_probe_ceremony = contact.ceremony_id;
                             // A real message that DECRYPTED and advanced the chain is DEFINITIVE proof the ratchet works — stronger than the hidden probe ever was. Seal here unconditionally on a Complete contact, WITHOUT waiting for chain_advanced_by_ack. That flag is runtime-only and resets on reload, so a chain that completed but never sealed before a restart (probe lost, or the seal raced) reloaded chain_woven=false with no way back: the compose box stayed hidden, so no outgoing message could ever set chain_advanced_by_ack, so it could never seal — a functional chain locked out of composing forever (peer_m↔peer_b after her re-attest, 2026-07-25). Receiving a decryptable message breaks that deadlock.
-                            if !contact.chain_woven && contact.clutch_state == crate::types::ClutchState::Complete {
+                            if !contact.chain_woven
+                                && contact.clutch_state == crate::types::ClutchState::Complete
+                            {
                                 contact.chain_advanced_by_ack = true;
                             }
                             // Use actual eagle_time and sorted insert for correct chronological order
@@ -14338,18 +17600,24 @@ impl PhotonApp {
                             persist_hashes.push(contact.handle_hash);
 
                             // Unread gate: is the user plausibly looking at THIS conversation right now? "Looking" = this contact's conversation (or its contact-scoped panel) is the active view AND, on desktop, the window is visible + focused. Event-shown, interaction-cleared doctrine: the counter only ever moves on a message landing or the user opening the conversation — no timers anywhere.
-                            let conversation_open = matches!(self.state, AppState::Conversation | AppState::ContactPanel(_))
-                                && self.active_contact == Some(contact_idx);
+                            let conversation_open = matches!(
+                                self.state,
+                                AppState::Conversation | AppState::ContactPanel(_)
+                            ) && self.active_contact == Some(contact_idx);
                             #[cfg(not(target_os = "android"))]
-                            let looking = conversation_open && crate::platform::desktop_notify::window_attended();
+                            let looking = conversation_open
+                                && crate::platform::desktop_notify::window_attended();
                             // Android: conversation-open AND the Activity actually on screen (the onResume/onPause JNI mirror). Either alone is not "looking": app foregrounded on ANOTHER screen must still alert (the silent-message hole), and app backgrounded while parked ON this conversation must too.
                             #[cfg(target_os = "android")]
-                            let looking = conversation_open && crate::platform::jni_android::app_in_foreground();
+                            let looking = conversation_open
+                                && crate::platform::jni_android::app_in_foreground();
                             if !contact.is_sibling && !looking {
                                 // A real friend message landed while nobody was looking — bump the persistent unread counter (contacts-list inner ring + float-to-top; cleared at conversation-open).
                                 contact.unread_count += 1;
                                 if let Some(storage) = self.storage.as_ref() {
-                                    if let Err(e) = crate::storage::contacts::save_contact_state(contact, storage) {
+                                    if let Err(e) = crate::storage::contacts::save_contact_state(
+                                        contact, storage,
+                                    ) {
                                         crate::logf!("STORAGE: Failed to save unread state: {}", e);
                                     }
                                 }
@@ -14361,11 +17629,21 @@ impl PhotonApp {
                                 // The notification chirp seeds from the RELATIONSHIP DIGEST — the same value the desktop in-app chirp and the contact's colours use — so peer_m sounds like peer_m on EVERY device. It seeded from the pinned device key before, which differs per device (each pins its own first-met device) and per platform: "messages from peer_m sound different on each device".
                                 #[cfg(target_os = "android")]
                                 {
-                                    let chirp_seed = relationship_digest(&contact.handle_hash, &our_handle_hash);
-                                    crate::platform::jni_android::notify_new_message(&msg_hp, &chirp_seed, &sender_name, &msg.content);
+                                    let chirp_seed =
+                                        relationship_digest(&contact.handle_hash, &our_handle_hash);
+                                    crate::platform::jni_android::notify_new_message(
+                                        &msg_hp,
+                                        &chirp_seed,
+                                        &sender_name,
+                                        &msg.content,
+                                    );
                                 }
                                 #[cfg(not(target_os = "android"))]
-                                crate::platform::desktop_notify::notify_new_message(&msg_hp, &sender_name, &msg.content);
+                                crate::platform::desktop_notify::notify_new_message(
+                                    &msg_hp,
+                                    &sender_name,
+                                    &msg.content,
+                                );
                             }
 
                             // Live fleet propagation: the friend only delivered this to the device in hand — our other devices hear it from us (pushed after the `chains` borrow ends, below).
@@ -14374,10 +17652,14 @@ impl PhotonApp {
                             // Per-contact notification chime: the sender's relationship digest → deterministic modal bell (chirp crate) — the SAME digest that colours their handle and messages, so ears and eyes agree. The handle TEXT never touches the session store by design; the pre-PoW hashes are the canonical identity material. Synthesis (~a second of f64 modal math) + playback run on a detached thread so the receive loop never blocks; desktop-only (Android gets platform notifications).
                             // Only ding for a real human message from a friend: a chain-weave probe (hidden ceremony frame) and a sibling/fleet-sync frame (our own devices propagating a conversation) both arrive as ChatMessages, and neither is something a person sent us — so neither should ring. And only when NOT looking at this conversation (`!looking`): watching the message land IS the alert; the chirp is for everyone else's messages (the user ask: "ding when I get a message from anyone and I'm not in a conversation with them"). The old unconditional chirp over-dinged in-conversation.
                             #[cfg(not(any(target_os = "redox", target_os = "android")))]
-                            if !is_chain_probe && !self.contacts[contact_idx].is_sibling && !looking {
-                                let digest = relationship_digest(&from_handle_hash, &our_handle_hash);
+                            if !is_chain_probe && !self.contacts[contact_idx].is_sibling && !looking
+                            {
+                                let digest =
+                                    relationship_digest(&from_handle_hash, &our_handle_hash);
                                 std::thread::spawn(move || {
-                                    chirp::Chirp::from_hash(digest).play_blocking().unwrap_or_else(|e| crate::logf!("CHIME: {}", e));
+                                    chirp::Chirp::from_hash(digest)
+                                        .play_blocking()
+                                        .unwrap_or_else(|e| crate::logf!("CHIME: {}", e));
                                 });
                             }
                             // A real inbound message proves both directions once ACKed, but even the RX half alone can seal if our TX was already ACK-confirmed.
@@ -14393,7 +17675,11 @@ impl PhotonApp {
                         // The re-ACK source is now the per-message ack_hash persisted on the stored ChatMessage (see the duplicate handler above + with_ack_hash below), which heals a lost ACK for ANY message — not just the most recent. The old single-slot last_acked is retired.
                         if let Some(ref checker) = self.status_checker {
                             // ACK always rides the relay alongside any direct leg — see the re-ACK site above for the field-observed one-directional case this closes.
-                            let relay_to = self.contacts.get(contact_idx).map(|c| c.relay_device_list()).unwrap_or_default();
+                            let relay_to = self
+                                .contacts
+                                .get(contact_idx)
+                                .map(|c| c.relay_device_list())
+                                .unwrap_or_default();
                             checker.send_ack(AckRequest {
                                 peer_addr: sender_addr,
                                 recipient_pubkey,
@@ -14402,11 +17688,19 @@ impl PhotonApp {
                                 plaintext_hash,
                                 relay_to,
                             });
-                            crate::logf!("CHAT: Sent ACK to {} (eagle_time {}, hash {}...)", handle, timestamp, hex::encode(&plaintext_hash[..8]));
+                            crate::logf!(
+                                "CHAT: Sent ACK to {} (eagle_time {}, hash {}...)",
+                                handle,
+                                timestamp,
+                                hex::encode(&plaintext_hash[..8])
+                            );
                         }
                         let _ = fid; // We looked up by token, fid is available if needed
                     } else {
-                        crate::logf!("CHAT: No friendship found for conversation_token {}...", hex::encode(&conversation_token[..8]));
+                        crate::logf!(
+                            "CHAT: No friendship found for conversation_token {}...",
+                            hex::encode(&conversation_token[..8])
+                        );
                     }
 
                     // Live fleet push, now that the `chains` borrow is gone.
@@ -14430,7 +17724,12 @@ impl PhotonApp {
                     plaintext_hash,
                 } => {
                     // Get our handle_hash
-                    let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {  // PARTY ID: the friendship chain + slots are keyed on party ids (from_clutch + send both use our_party_id); matching on the raw seed here dropped every incoming message/probe as "not a participant" and hung the weave.
+                    let our_handle_hash = match self
+                        .session
+                        .as_ref()
+                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                    {
+                        // PARTY ID: the friendship chain + slots are keyed on party ids (from_clutch + send both use our_party_id); matching on the raw seed here dropped every incoming message/probe as "not a participant" and hung the weave.
                         Some(h) => h,
                         None => {
                             crate::log("CHAT: No user_identity_seed - cannot process ACK");
@@ -14481,12 +17780,20 @@ impl PhotonApp {
                         let (contact_idx, handle) = match contact_info {
                             Some((idx, h)) => (idx, h),
                             None => {
-                                crate::logf!("CHAT: Contact not found for ACK from handle_hash {}...", hex::encode(&from_handle_hash[..8]));
+                                crate::logf!(
+                                    "CHAT: Contact not found for ACK from handle_hash {}...",
+                                    hex::encode(&from_handle_hash[..8])
+                                );
                                 continue;
                             }
                         };
 
-                        crate::logf!("CHAT: ACK received from {} for eagle_time {} (hash: {}...)", handle, acked_eagle_time, hex::encode(&plaintext_hash[..8]));
+                        crate::logf!(
+                            "CHAT: ACK received from {} for eagle_time {} (hash: {}...)",
+                            handle,
+                            acked_eagle_time,
+                            hex::encode(&plaintext_hash[..8])
+                        );
 
                         // Process ACK: advance our chain and remove pending message
                         if chains.process_ack(&our_handle_hash, acked_eagle_time, &plaintext_hash) {
@@ -14504,7 +17811,10 @@ impl PhotonApp {
                             if let Some(contact) = self.contacts.get_mut(contact_idx) {
                                 if contact.clutch_our_keypairs.is_some() {
                                     let their_identity_seed = contact.handle_hash;
-                                    crate::logf!("CLUTCH: First ACK from {} - zeroizing ephemeral keypairs", crate::fp(&contact.handle_proof));
+                                    crate::logf!(
+                                        "CLUTCH: First ACK from {} - zeroizing ephemeral keypairs",
+                                        crate::fp(&contact.handle_proof)
+                                    );
                                     if let Some(ref mut keys) = contact.clutch_our_keypairs {
                                         keys.zeroize();
                                     }
@@ -14541,7 +17851,10 @@ impl PhotonApp {
                                 if let Err(e) = crate::storage::friendship::save_friendship_chains(
                                     chains, storage,
                                 ) {
-                                    crate::logf!("STORAGE CRITICAL: Failed to save chains after ACK: {}", e);
+                                    crate::logf!(
+                                        "STORAGE CRITICAL: Failed to save chains after ACK: {}",
+                                        e
+                                    );
                                 }
                             }
                         } else {
@@ -14591,10 +17904,17 @@ impl PhotonApp {
                         }
                         // Live fleet propagation of the delivered tick (the sibling merge upgrades its copy monotonically).
                         if let Some(row) = delivered_row {
-                            self.push_rows_to_siblings(contact_idx, std::slice::from_ref(&row), None);
+                            self.push_rows_to_siblings(
+                                contact_idx,
+                                std::slice::from_ref(&row),
+                                None,
+                            );
                         }
                     } else {
-                        crate::logf!("CHAT: No friendship found for ACK conversation_token {}...", hex::encode(&conversation_token[..8]));
+                        crate::logf!(
+                            "CHAT: No friendship found for ACK conversation_token {}...",
+                            hex::encode(&conversation_token[..8])
+                        );
                     }
 
                     // Defer the chain-weave seal until after the loop (outer `checker` borrow blocks `&mut self` here). No-op later unless both directions are proven.
@@ -14605,7 +17925,11 @@ impl PhotonApp {
 
                 // PT large transfer received (fallback - normally parsed in status.rs) This only fires if the PT data wasn't recognized as CLUTCH message
                 StatusUpdate::PTReceived { peer_addr, data } => {
-                    crate::logf!("PT: Received unknown {} bytes from {} (not CLUTCH)", data.len(), peer_addr);
+                    crate::logf!(
+                        "PT: Received unknown {} bytes from {} (not CLUTCH)",
+                        data.len(),
+                        peer_addr
+                    );
                 }
 
                 // PT outbound transfer completed
@@ -14628,14 +17952,23 @@ impl PhotonApp {
                     use crate::network::status::ClutchOfferRequest;
                     use crate::types::ClutchState;
 
-                    crate::logf!("CLUTCH: Processing ClutchOfferReceived from {} (contacts={})", raw_sender_addr, self.contacts.len());
+                    crate::logf!(
+                        "CLUTCH: Processing ClutchOfferReceived from {} (contacts={})",
+                        raw_sender_addr,
+                        self.contacts.len()
+                    );
 
                     // Normalize to port 4383 (TCP source port is ephemeral)
                     let sender_addr =
                         std::net::SocketAddr::new(raw_sender_addr.ip(), crate::PHOTON_PORT);
 
                     // Get our handle_hash
-                    let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {  // PARTY ID (not raw seed): the conversation token + slots key on party ids on the SEND side; the receive path must match or every friend ceremony stalls at "unknown conversation_token".
+                    let our_handle_hash = match self
+                        .session
+                        .as_ref()
+                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                    {
+                        // PARTY ID (not raw seed): the conversation token + slots key on party ids on the SEND side; the receive path must match or every friend ceremony stalls at "unknown conversation_token".
                         Some(h) => h,
                         None => {
                             #[cfg(feature = "development")]
@@ -14647,27 +17980,31 @@ impl PhotonApp {
                     let our_sibling_pid = self.our_sibling_pid();
 
                     // Find contact by conversation_token (compute token for each contact and match). Party-id seam: sibling candidates token with the device-derived pid pair; the resolved "our" id shadows the seed for the whole arm.
-                    let (their_handle_hash, our_handle_hash) = match self
-                        .contacts
-                        .iter()
-                        .find_map(|c| {
+                    let (their_handle_hash, our_handle_hash) =
+                        match self.contacts.iter().find_map(|c| {
                             let our = if c.is_sibling {
                                 our_sibling_pid?
                             } else {
                                 our_handle_hash
                             };
-                            (derive_conversation_token(&[our, c.handle_hash])
-                                == conversation_token)
+                            (derive_conversation_token(&[our, c.handle_hash]) == conversation_token)
                                 .then_some((c.handle_hash, our))
                         }) {
-                        Some(pair) => pair,
-                        None => {
-                            crate::logf!("CLUTCH: Received offer with unknown conversation_token {}", hex::encode(&conversation_token[..8]));
-                            continue;
-                        }
-                    };
+                            Some(pair) => pair,
+                            None => {
+                                crate::logf!(
+                                    "CLUTCH: Received offer with unknown conversation_token {}",
+                                    hex::encode(&conversation_token[..8])
+                                );
+                                continue;
+                            }
+                        };
 
-                    crate::logf!("CLUTCH: Received full offer (VSF verified) from {} tok={}...", sender_addr, hex::encode(&conversation_token[..8]));
+                    crate::logf!(
+                        "CLUTCH: Received full offer (VSF verified) from {} tok={}...",
+                        sender_addr,
+                        hex::encode(&conversation_token[..8])
+                    );
 
                     // Gate: the sender must be a CURRENTLY-TRUSTED device of this contact (fold-respecting `knows_device`). Post-fold this widens to ANY current fleet member (a friend's 2nd device can now CLUTCH — was pinned to first-met only) AND revokes a removed device (it fails membership); pre-fold + siblings pin to the one known device exactly as before.
                     let sender_known = self
@@ -14682,7 +18019,11 @@ impl PhotonApp {
                             continue;
                         }
                         Some(false) => {
-                            crate::logf!("CLUTCH: offer from untrusted/removed device {} for {} — dropping", hex::encode(&sender_pubkey[..8]), hex::encode(&their_handle_hash[..8]));
+                            crate::logf!(
+                                "CLUTCH: offer from untrusted/removed device {} for {} — dropping",
+                                hex::encode(&sender_pubkey[..8]),
+                                hex::encode(&their_handle_hash[..8])
+                            );
                             continue;
                         }
                         Some(true) => {} // Trusted current device — proceed
@@ -14724,7 +18065,10 @@ impl PhotonApp {
                             if !contact.is_online {
                                 contact.is_online = true;
                                 changed = true;
-                                crate::logf!("Status: {} is now ONLINE (CLUTCH)", crate::fp(&contact.handle_proof));
+                                crate::logf!(
+                                    "Status: {} is now ONLINE (CLUTCH)",
+                                    crate::fp(&contact.handle_proof)
+                                );
                             }
 
                             // Simple re-key logic: if stored keys don't match received keys, re-key. Same keys = duplicate/stale (ignore). Different/no keys = accept.
@@ -14765,11 +18109,11 @@ impl PhotonApp {
                                     //
                                     // Guard against a FALSE re-key: a peer we already completed with re-sends its offer (retransmit, or our slots got zeroized post- completion so stored_hqc_pub no longer matches). At completion we saved their HQC pubkey PREFIX precisely to recognize this. If the incoming offer matches what we completed with, it's the SAME peer — ignore it, do NOT nuke. Only a genuinely DIFFERENT key (they truly re-keyed / lost their chains) should trigger a re-key. Without this, a Complete↔Complete pair bounced back to Pending on a stray offer ("it completed, then went back to Pending after a message").
                                     if contact.clutch_state == ClutchState::Complete {
-                                        let their_prefix: [u8; 8] = their_offer.hqc256_public
-                                            [..8]
+                                        let their_prefix: [u8; 8] = their_offer.hqc256_public[..8]
                                             .try_into()
                                             .unwrap_or_default();
-                                        if contact.completed_their_hqc_prefix == Some(their_prefix) {
+                                        if contact.completed_their_hqc_prefix == Some(their_prefix)
+                                        {
                                             crate::logf!("CLUTCH: Ignoring offer from {} — matches the key we already completed with (no re-key)", crate::fp(&contact.handle_proof));
                                             continue;
                                         }
@@ -14797,7 +18141,10 @@ impl PhotonApp {
                                         if let Some(old_friendship_id) =
                                             contact.friendship_id.take()
                                         {
-                                            crate::logf!("CLUTCH: Invalidating old chains for {}", crate::fp(&contact.handle_proof));
+                                            crate::logf!(
+                                                "CLUTCH: Invalidating old chains for {}",
+                                                crate::fp(&contact.handle_proof)
+                                            );
                                             chains_to_remove.push(old_friendship_id);
                                         }
                                         rekey_request =
@@ -14805,12 +18152,17 @@ impl PhotonApp {
                                     } else {
                                         // Not Complete and they minted NEW keys — their side is running a FRESH ceremony instance (their §4.2 ceremony owner changed, or they discarded and restarted). The old "keep our keys, swap their offer" splice welded half of OUR round onto half of THEIRS: the friend then held offers/completes from mixed instances and dropped the odd one out as "unknown conversation_token" forever. Adopt their new round wholesale instead — discard ours completely; the fallthrough below re-inits slots and stores their fresh offer + provenance; fresh keys of ours arrive via keygen and the drain sends our offer.
                                         // ADOPTION COOLDOWN: a peer that can't HEAR our responses (one-way reachability) re-offers with fresh keys every ~25s; unthrottled adoption re-ran keygen+encap per round (a UI-thread hitch storm, peer_m↔peer_b livelock 2026-07-25). Hold the recently-adopted round instead — our response to it is already in flight/on the relay, and the peer only needs one to land. A genuinely new ceremony attempt survives the ignore (it persists past the window).
-                                        const ADOPTION_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
-                                        if contact.clutch_last_adoption.is_some_and(|t| t.elapsed() < ADOPTION_COOLDOWN) {
+                                        const ADOPTION_COOLDOWN: std::time::Duration =
+                                            std::time::Duration::from_secs(60);
+                                        if contact
+                                            .clutch_last_adoption
+                                            .is_some_and(|t| t.elapsed() < ADOPTION_COOLDOWN)
+                                        {
                                             crate::logf!("CLUTCH: {} re-offered fresh keys {}s after the last adoption — holding our round (adoption cooldown; their receive path is likely down)", crate::fp(&contact.handle_proof), contact.clutch_last_adoption.map(|t| t.elapsed().as_secs()).unwrap_or(0));
                                             continue;
                                         }
-                                        contact.clutch_last_adoption = Some(std::time::Instant::now());
+                                        contact.clutch_last_adoption =
+                                            Some(std::time::Instant::now());
                                         crate::logf!("CLUTCH: {} sent new keys mid-ceremony (state={}) — discarding our round and adopting theirs", crate::fp(&contact.handle_proof), format!("{:?}", contact.clutch_state));
                                         contact.discard_clutch_round();
                                         // GUARDED re-trigger: a keygen already in flight will complete this round (the drain stores + sends our offer) — spawning another here would ping-pong re-keys when both sides discard simultaneously.
@@ -14833,7 +18185,10 @@ impl PhotonApp {
                             if let Some(slot) = contact.get_slot_mut(&their_handle_hash) {
                                 slot.offer = Some(their_offer.clone());
                                 slot.offer_device = Some(sender_pubkey);
-                                crate::logf!("CLUTCH: Stored offer from {} in slot", crate::fp(&contact.handle_proof));
+                                crate::logf!(
+                                    "CLUTCH: Stored offer from {} in slot",
+                                    crate::fp(&contact.handle_proof)
+                                );
                             }
 
                             // Store OUR offer in OUR slot too — every slot needs offer + a KEM contribution to be complete (PartySlot::is_complete). When their offer arrives first and we go straight to the KEM-response path, our own slot would otherwise keep offer=None forever, so all_slots_complete never fires and the ceremony never runs (the one-sided-nuke re-key stall: we have keys + sent a KEM, but our local offer was never recorded).
@@ -14858,7 +18213,11 @@ impl PhotonApp {
                             // Store their offer_provenance for ceremony_id derivation
                             if !contact.offer_provenances.contains(&offer_provenance) {
                                 contact.offer_provenances.push(offer_provenance);
-                                crate::logf!("CLUTCH: Stored offer_provenance from {} (now have {})", crate::fp(&contact.handle_proof), contact.offer_provenances.len());
+                                crate::logf!(
+                                    "CLUTCH: Stored offer_provenance from {} (now have {})",
+                                    crate::fp(&contact.handle_proof),
+                                    contact.offer_provenances.len()
+                                );
                             }
 
                             // Compute ceremony_id if we have all provenances (2 for DM)
@@ -14873,7 +18232,11 @@ impl PhotonApp {
                                 )
                                 .as_bytes();
                                 contact.ceremony_id = Some(ceremony_id);
-                                crate::logf!("CLUTCH: Derived ceremony_id={}... from {} offer_provenances", hex::encode(&ceremony_id[..4]), contact.offer_provenances.len());
+                                crate::logf!(
+                                    "CLUTCH: Derived ceremony_id={}... from {} offer_provenances",
+                                    hex::encode(&ceremony_id[..4]),
+                                    contact.offer_provenances.len()
+                                );
 
                                 // Process any pending KEM response that arrived before ceremony_id
                                 if let Some(pending_kem) = contact.clutch_pending_kem.take() {
@@ -14906,7 +18269,11 @@ impl PhotonApp {
                                     &contact.handle_hash,
                                     storage,
                                 ) {
-                                    crate::logf!("CLUTCH: Failed to save slots for {}: {}", crate::fp(&contact.handle_proof), e);
+                                    crate::logf!(
+                                        "CLUTCH: Failed to save slots for {}: {}",
+                                        crate::fp(&contact.handle_proof),
+                                        e
+                                    );
                                 }
                             }
 
@@ -14938,7 +18305,9 @@ impl PhotonApp {
                                             .expect("device_keypair set in init")
                                             .secret
                                             .as_bytes(),
-                                        contact.clutch_round_started.unwrap_or_else(vsf::eagle_time_oscillations),
+                                        contact
+                                            .clutch_round_started
+                                            .unwrap_or_else(vsf::eagle_time_oscillations),
                                     ) {
                                         Ok((vsf_bytes, our_offer_provenance)) => {
                                             // Store our offer provenance
@@ -14961,7 +18330,11 @@ impl PhotonApp {
                                                 alt_addr: alt,
                                                 vsf_bytes,
                                                 recipient_pubkey: contact.public_identity.key,
-                                                relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
+                                                relay_to: if contact.validated_path.is_none() {
+                                                    contact.relay_device_list()
+                                                } else {
+                                                    Vec::new()
+                                                },
                                             });
                                             contact.clutch_offer_sent = true;
                                             // Store local offer in local slot too
@@ -14970,7 +18343,11 @@ impl PhotonApp {
                                             {
                                                 local_slot.offer = Some(our_offer);
                                             }
-                                            crate::logf!("CLUTCH: Sent full offer to {} (prov={}...)", crate::fp(&contact.handle_proof), hex::encode(&our_offer_provenance[..4]));
+                                            crate::logf!(
+                                                "CLUTCH: Sent full offer to {} (prov={}...)",
+                                                crate::fp(&contact.handle_proof),
+                                                hex::encode(&our_offer_provenance[..4])
+                                            );
 
                                             // Compute ceremony_id now that we have both provenances
                                             if contact.ceremony_id.is_none()
@@ -14998,12 +18375,18 @@ impl PhotonApp {
                                                         storage,
                                                     )
                                                 {
-                                                    crate::logf!("Failed to persist CLUTCH provenance: {}", e);
+                                                    crate::logf!(
+                                                        "Failed to persist CLUTCH provenance: {}",
+                                                        e
+                                                    );
                                                 }
                                             }
                                         }
                                         Err(e) => {
-                                            crate::logf!("CLUTCH: Failed to build offer VSF: {}", e);
+                                            crate::logf!(
+                                                "CLUTCH: Failed to build offer VSF: {}",
+                                                e
+                                            );
                                         }
                                     }
                                 }
@@ -15047,9 +18430,16 @@ impl PhotonApp {
                                                 .secret
                                                 .as_bytes(),
                                             recipient_pubkey: contact.public_identity.key,
-                                            relay_to: if contact.validated_path.is_none() { contact.relay_device_list() } else { Vec::new() },
+                                            relay_to: if contact.validated_path.is_none() {
+                                                contact.relay_device_list()
+                                            } else {
+                                                Vec::new()
+                                            },
                                         });
-                                        crate::logf!("CLUTCH: Re-sent KEM response to {}", crate::fp(&contact.handle_proof));
+                                        crate::logf!(
+                                            "CLUTCH: Re-sent KEM response to {}",
+                                            crate::fp(&contact.handle_proof)
+                                        );
                                     }
                                 } else if !already_sent_kem && !contact.clutch_kem_encap_in_progress
                                 {
@@ -15063,7 +18453,10 @@ impl PhotonApp {
                                             conv_token,
                                             sender_addr,
                                         ));
-                                        crate::logf!("CLUTCH: Will spawn KEM encapsulation for {}", crate::fp(&contact.handle_proof));
+                                        crate::logf!(
+                                            "CLUTCH: Will spawn KEM encapsulation for {}",
+                                            crate::fp(&contact.handle_proof)
+                                        );
                                         changed = true;
                                     } else {
                                         crate::logf!("CLUTCH: Deferring KEM response to {} - waiting for ceremony_id", crate::fp(&contact.handle_proof));
@@ -15130,7 +18523,10 @@ impl PhotonApp {
                                                     storage,
                                                 )
                                             {
-                                                crate::logf!("Failed to persist re-key CLUTCH state: {}", e);
+                                                crate::logf!(
+                                                    "Failed to persist re-key CLUTCH state: {}",
+                                                    e
+                                                );
                                             }
                                         }
 
@@ -15234,7 +18630,12 @@ impl PhotonApp {
                         std::net::SocketAddr::new(raw_sender_addr.ip(), crate::PHOTON_PORT);
 
                     // Get our handle_hash
-                    let our_handle_hash = match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {  // PARTY ID (not raw seed): the conversation token + slots key on party ids on the SEND side; the receive path must match or every friend ceremony stalls at "unknown conversation_token".
+                    let our_handle_hash = match self
+                        .session
+                        .as_ref()
+                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                    {
+                        // PARTY ID (not raw seed): the conversation token + slots key on party ids on the SEND side; the receive path must match or every friend ceremony stalls at "unknown conversation_token".
                         Some(h) => h,
                         None => {
                             #[cfg(feature = "development")]
@@ -15246,27 +18647,32 @@ impl PhotonApp {
                     let our_sibling_pid = self.our_sibling_pid();
 
                     // Find contact by conversation_token. Party-id seam: sibling candidates token with the device-derived pid pair; the resolved "our" id shadows the seed for the whole arm.
-                    let (their_handle_hash, our_handle_hash) = match self
-                        .contacts
-                        .iter()
-                        .find_map(|c| {
+                    let (their_handle_hash, our_handle_hash) = match self.contacts.iter().find_map(
+                        |c| {
                             let our = if c.is_sibling {
                                 our_sibling_pid?
                             } else {
                                 our_handle_hash
                             };
-                            (derive_conversation_token(&[our, c.handle_hash])
-                                == conversation_token)
+                            (derive_conversation_token(&[our, c.handle_hash]) == conversation_token)
                                 .then_some((c.handle_hash, our))
-                        }) {
+                        },
+                    ) {
                         Some(pair) => pair,
                         None => {
-                            crate::logf!("CLUTCH: Received KEM response with unknown conversation_token {}", hex::encode(&conversation_token[..8]));
+                            crate::logf!(
+                                "CLUTCH: Received KEM response with unknown conversation_token {}",
+                                hex::encode(&conversation_token[..8])
+                            );
                             continue;
                         }
                     };
 
-                    crate::logf!("CLUTCH: Received KEM response (VSF verified) from {} tok={}...", sender_addr, hex::encode(&conversation_token[..8]));
+                    crate::logf!(
+                        "CLUTCH: Received KEM response (VSF verified) from {} tok={}...",
+                        sender_addr,
+                        hex::encode(&conversation_token[..8])
+                    );
 
                     // Gate: sender must be a currently-trusted device of this contact (fold-respecting). See the offer gate for the widen/revoke rationale.
                     let sender_known = self
@@ -15282,7 +18688,10 @@ impl PhotonApp {
                             continue;
                         }
                         Some(false) => {
-                            crate::logf!("CLUTCH: KEM from untrusted/removed device {} — dropping", hex::encode(&sender_pubkey[..8]));
+                            crate::logf!(
+                                "CLUTCH: KEM from untrusted/removed device {} — dropping",
+                                hex::encode(&sender_pubkey[..8])
+                            );
                             continue;
                         }
                         Some(true) => {}
@@ -15313,7 +18722,10 @@ impl PhotonApp {
                             if !contact.is_online {
                                 contact.is_online = true;
                                 changed = true;
-                                crate::logf!("Status: {} is now ONLINE (CLUTCH)", crate::fp(&contact.handle_proof));
+                                crate::logf!(
+                                    "Status: {} is now ONLINE (CLUTCH)",
+                                    crate::fp(&contact.handle_proof)
+                                );
                             }
 
                             // Verify ceremony_id matches (if we have one)
@@ -15372,7 +18784,10 @@ impl PhotonApp {
                                 // Store in remote slot (secrets from remote to local)
                                 if let Some(slot) = contact.get_slot_mut(&their_handle_hash) {
                                     slot.kem_secrets_from_them = Some(remote_secrets);
-                                    crate::logf!("CLUTCH: Decapsulated KEM from {} - stored in slot", crate::fp(&contact.handle_proof));
+                                    crate::logf!(
+                                        "CLUTCH: Decapsulated KEM from {} - stored in slot",
+                                        crate::fp(&contact.handle_proof)
+                                    );
                                 }
 
                                 // Backfill OUR offer in OUR slot if missing — guarantees all_slots_complete can fire here. Covers the stall where our own offer was never recorded (offer arrived before our keygen, or the offer-received path didn't store it), leaving our slot offer=None forever even though we have keys + KEM secrets.
@@ -15401,7 +18816,11 @@ impl PhotonApp {
                                         &contact.handle_hash,
                                         storage,
                                     ) {
-                                        crate::logf!("CLUTCH: Failed to save slots for {}: {}", crate::fp(&contact.handle_proof), e);
+                                        crate::logf!(
+                                            "CLUTCH: Failed to save slots for {}: {}",
+                                            crate::fp(&contact.handle_proof),
+                                            e
+                                        );
                                     }
                                 }
                                 changed = true;
@@ -15414,11 +18833,20 @@ impl PhotonApp {
                                     // Debug: why isn't ceremony complete after KEM response?
                                     crate::logf!("CLUTCH: Slots not complete after KEM response for {} - checking state:", crate::fp(&contact.handle_proof));
                                     for (i, slot) in contact.clutch_slots.iter().enumerate() {
-                                        crate::logf!("  Slot {}: offer={} from_them={} to_them={}", i, slot.offer.is_some(), slot.kem_secrets_from_them.is_some(), slot.kem_secrets_to_them.is_some());
+                                        crate::logf!(
+                                            "  Slot {}: offer={} from_them={} to_them={}",
+                                            i,
+                                            slot.offer.is_some(),
+                                            slot.kem_secrets_from_them.is_some(),
+                                            slot.kem_secrets_to_them.is_some()
+                                        );
                                     }
                                 }
                             } else {
-                                crate::logf!("CLUTCH: Received KEM response but no keypairs for {}", crate::fp(&contact.handle_proof));
+                                crate::logf!(
+                                    "CLUTCH: Received KEM response but no keypairs for {}",
+                                    crate::fp(&contact.handle_proof)
+                                );
                             }
                             break;
                         }
@@ -15440,28 +18868,33 @@ impl PhotonApp {
                     let sender_addr =
                         std::net::SocketAddr::new(raw_sender_addr.ip(), crate::PHOTON_PORT);
 
-                    crate::logf!("CLUTCH: Received complete proof (VSF verified) from {} proof={}...", sender_addr, hex::encode(&payload.eggs_proof[..8]));
+                    crate::logf!(
+                        "CLUTCH: Received complete proof (VSF verified) from {} proof={}...",
+                        sender_addr,
+                        hex::encode(&payload.eggs_proof[..8])
+                    );
 
                     // Find contact by conversation_token. Party-id seam: BOTH participants token on their PARTY IDS (send derives ours via identity_party_id; matching on the raw seed here was the "unknown conversation_token" stall). Sibling candidates token with the device-derived pid pair. (Our id isn't needed downstream — completion derives it internally — so it's discarded.)
                     let our_sibling_pid = self.our_sibling_pid();
-                    let our_handle_hash =
-                        match self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
-                            Some(h) => h,
-                            None => continue,
-                        };
-                    let (their_handle_hash, _our_handle_hash) = match self
-                        .contacts
-                        .iter()
-                        .find_map(|c| {
+                    let our_handle_hash = match self
+                        .session
+                        .as_ref()
+                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                    {
+                        Some(h) => h,
+                        None => continue,
+                    };
+                    let (their_handle_hash, _our_handle_hash) = match self.contacts.iter().find_map(
+                        |c| {
                             let our = if c.is_sibling {
                                 our_sibling_pid?
                             } else {
                                 our_handle_hash
                             };
-                            (derive_conversation_token(&[our, c.handle_hash])
-                                == conversation_token)
+                            (derive_conversation_token(&[our, c.handle_hash]) == conversation_token)
                                 .then_some((c.handle_hash, our))
-                        }) {
+                        },
+                    ) {
                         Some(pair) => pair,
                         None => {
                             crate::logf!("CLUTCH: Received complete proof with unknown conversation_token {}", hex::encode(&conversation_token[..8]));
@@ -15483,7 +18916,10 @@ impl PhotonApp {
                             continue;
                         }
                         Some(false) => {
-                            crate::logf!("CLUTCH: proof from untrusted/removed device {} — dropping", hex::encode(&sender_pubkey[..8]));
+                            crate::logf!(
+                                "CLUTCH: proof from untrusted/removed device {} — dropping",
+                                hex::encode(&sender_pubkey[..8])
+                            );
                             continue;
                         }
                         Some(true) => {}
@@ -15512,13 +18948,19 @@ impl PhotonApp {
                             if !contact.is_online {
                                 contact.is_online = true;
                                 changed = true;
-                                crate::logf!("Status: {} is now ONLINE (CLUTCH)", crate::fp(&contact.handle_proof));
+                                crate::logf!(
+                                    "Status: {} is now ONLINE (CLUTCH)",
+                                    crate::fp(&contact.handle_proof)
+                                );
                             }
                             // We just received + VSF-verified an authenticated message from them — they're reachable NOW, so reflect online immediately instead of waiting for the next pong (fixes "CLUTCH completed but still shows offline").
                             if !contact.is_online {
                                 contact.is_online = true;
                                 changed = true;
-                                crate::logf!("Status: {} is now ONLINE (CLUTCH complete)", crate::fp(&contact.handle_proof));
+                                crate::logf!(
+                                    "Status: {} is now ONLINE (CLUTCH complete)",
+                                    crate::fp(&contact.handle_proof)
+                                );
                             }
 
                             // ROUND SCOPING (a permanent-Pending stall): a proof is only meaningful within ITS ceremony round — the wire carries ceremony_id for exactly this, but it was parsed and discarded, so a proof from a superseded round (offer churn, address change, an unwiped peer replaying old state) got compared against OUR round and manufactured "PROOF MISMATCH" out of ordinary echo. If we know our round and theirs differs, drop it here: never stored, never compared. Their CURRENT round's proof rides the resend budget and arrives on its own.
@@ -15535,10 +18977,15 @@ impl PhotonApp {
                                     if let Some(our_proof) = contact.clutch_our_eggs_proof {
                                         if payload.eggs_proof == our_proof {
                                             // SUCCESS! Both parties computed same eggs
-                                            crate::logf!("CLUTCH: Proof verified with {}! ✓ proof={}...", crate::fp(&contact.handle_proof), hex::encode(&our_proof[..8]));
+                                            crate::logf!(
+                                                "CLUTCH: Proof verified with {}! ✓ proof={}...",
+                                                crate::fp(&contact.handle_proof),
+                                                hex::encode(&our_proof[..8])
+                                            );
                                             contact.clutch_state = ClutchState::Complete;
-                                            contact.clutch_completed_at = Some(std::time::Instant::now()); // arm the post-completion re-key cooldown (before the ~1s-later weave)
-                                            // Fresh ceremony = fresh chain: void any prior weave seal so the probe refires (see the twin reset at the Early-proof-verified site for the full deadlock story).
+                                            contact.clutch_completed_at =
+                                                Some(std::time::Instant::now()); // arm the post-completion re-key cooldown (before the ~1s-later weave)
+                                                                                 // Fresh ceremony = fresh chain: void any prior weave seal so the probe refires (see the twin reset at the Early-proof-verified site for the full deadlock story).
                                             contact.chain_woven = false;
                                             contact.probe_sent = false;
                                             contact.void_weave_seal_from_previous_chain();
@@ -15570,9 +19017,15 @@ impl PhotonApp {
                                                         contact, storage,
                                                     )
                                                 {
-                                                    crate::logf!("Failed to save Complete state: {}", e);
+                                                    crate::logf!(
+                                                        "Failed to save Complete state: {}",
+                                                        e
+                                                    );
                                                 } else {
-                                                    crate::logf!("CLUTCH: Saved {} Complete state to disk", crate::fp(&contact.handle_proof));
+                                                    crate::logf!(
+                                                        "CLUTCH: Saved {} Complete state to disk",
+                                                        crate::fp(&contact.handle_proof)
+                                                    );
                                                 }
                                             }
                                         } else {
@@ -15585,7 +19038,8 @@ impl PhotonApp {
                                         // Race condition: proof arrived before check_clutch_ceremonies processed our ceremony result. Store theirs for when we're ready.
                                         crate::logf!("CLUTCH: Storing early proof from {} (AwaitingProof but our result not processed yet)", crate::fp(&contact.handle_proof));
                                         contact.clutch_their_eggs_proof = Some(payload.eggs_proof);
-                                        contact.clutch_their_proof_ceremony = Some(received_ceremony_id);
+                                        contact.clutch_their_proof_ceremony =
+                                            Some(received_ceremony_id);
                                         changed = true;
                                     }
                                 }
@@ -15593,7 +19047,8 @@ impl PhotonApp {
                                     // We haven't computed our proof yet - store theirs for later
                                     crate::logf!("CLUTCH: Storing early proof from {} (we're still in Pending)", crate::fp(&contact.handle_proof));
                                     contact.clutch_their_eggs_proof = Some(payload.eggs_proof);
-                                    contact.clutch_their_proof_ceremony = Some(received_ceremony_id);
+                                    contact.clutch_their_proof_ceremony =
+                                        Some(received_ceremony_id);
                                     changed = true;
                                 }
                                 ClutchState::Complete => {
@@ -15608,7 +19063,9 @@ impl PhotonApp {
                                     {
                                         // Count each re-arm toward the same lifetime cap (do NOT reset it — this is not a fresh round, it's the peer re-requesting). Past the cap, latch gave-up so the ping-and-answer storm terminates.
                                         const PROOF_RETRY_LIFETIME_CAP: u16 = 40;
-                                        if contact.clutch_proof_retry_lifetime >= PROOF_RETRY_LIFETIME_CAP {
+                                        if contact.clutch_proof_retry_lifetime
+                                            >= PROOF_RETRY_LIFETIME_CAP
+                                        {
                                             contact.clutch_proof_gave_up = true;
                                             contact.clutch_our_eggs_proof = None;
                                             changed = true;
@@ -15650,7 +19107,12 @@ impl PhotonApp {
                             contact.local_ip = Some(local_ip);
                             contact.local_port = Some(port);
                             if old_local != Some(local_ip) || old_port != Some(port) {
-                                crate::logf!("LAN: Discovered {} at local {}:{}", crate::fp(&contact.handle_proof), local_ip, port);
+                                crate::logf!(
+                                    "LAN: Discovered {} at local {}:{}",
+                                    crate::fp(&contact.handle_proof),
+                                    local_ip,
+                                    port
+                                );
                                 // Ping immediately so we don't wait for next scheduled cycle
                                 lan_ping_indices.push(idx);
                                 changed = true;
@@ -15694,7 +19156,10 @@ impl PhotonApp {
                                         "Avatar: local avatar bytes failed to validate, not serving to peer",
                                     );
                                 } else {
-                                    crate::logf!("Avatar: sending our avatar to mutual peer ({} bytes)", avatar_vsf.len());
+                                    crate::logf!(
+                                        "Avatar: sending our avatar to mutual peer ({} bytes)",
+                                        avatar_vsf.len()
+                                    );
                                     checker.send_avatar_response(
                                         crate::network::status::AvatarResponseSend {
                                             peer_addr: sender_addr,
@@ -15704,7 +19169,9 @@ impl PhotonApp {
                                     );
                                 }
                             }
-                            _ => crate::log("Avatar: mutual peer requested avatar, but we have none"),
+                            _ => {
+                                crate::log("Avatar: mutual peer requested avatar, but we have none")
+                            }
                         }
                     }
                 }
@@ -15803,18 +19270,19 @@ impl PhotonApp {
                                     .copied()?;
                                 Some((key, other))
                             });
-                        let friend_route: Option<(usize, [u8; 32])> = key_and_other.and_then(|(key, other)| {
-                            self.contacts
-                                .iter()
-                                .position(|c| {
-                                    // Friend chains only — a sibling chain's "other ≠ our pid" resolution is ambiguous (both participant pids differ); sibling requests take the FLEET route below.
-                                    !c.is_sibling
-                                        && c.handle_hash == other
-                                        && c.knows_device(&sender_pubkey.key)
-                                        && c.is_mutual()
-                                })
-                                .map(|idx| (idx, key))
-                        });
+                        let friend_route: Option<(usize, [u8; 32])> =
+                            key_and_other.and_then(|(key, other)| {
+                                self.contacts
+                                    .iter()
+                                    .position(|c| {
+                                        // Friend chains only — a sibling chain's "other ≠ our pid" resolution is ambiguous (both participant pids differ); sibling requests take the FLEET route below.
+                                        !c.is_sibling
+                                            && c.handle_hash == other
+                                            && c.knows_device(&sender_pubkey.key)
+                                            && c.is_mutual()
+                                    })
+                                    .map(|idx| (idx, key))
+                            });
                         // FLEET route (fleet history sync): the requester is one of OUR OWN devices — fold-trusted sibling — asking for any conversation we hold. Serve it sealed under the FLEET key. The token resolves by DERIVATION from party ids (no chain needed), so a conversation the sibling only knows from the roster — or the self notes conversation — still serves.
                         let route = friend_route.or_else(|| {
                             let sender_is_sibling = self
@@ -15825,15 +19293,14 @@ impl PhotonApp {
                                 return None;
                             }
                             let fleet_key = self.fleet_key_cached()?;
-                            let idx = self.contact_idx_for_conversation_token(&conversation_token)?;
+                            let idx =
+                                self.contact_idx_for_conversation_token(&conversation_token)?;
                             Some((idx, fleet_key))
                         });
 
-                        if let (Some((idx, key)), Some(storage), Some(checker)) = (
-                            route,
-                            self.storage.as_ref(),
-                            self.status_checker.as_ref(),
-                        ) {
+                        if let (Some((idx, key)), Some(storage), Some(checker)) =
+                            (route, self.storage.as_ref(), self.status_checker.as_ref())
+                        {
                             use crate::network::history_pages::{
                                 seal_history_page, HistoryPagePlain, HistoryRow, MAX_PAGE_BYTES,
                                 MAX_PAGE_ROWS,
@@ -15889,7 +19356,12 @@ impl PhotonApp {
                                         )
                                     }) {
                                         Ok(vsf_bytes) => {
-                                            crate::logf!("HISTORY: serving page ({} rows, more={}) to {}", page.rows.len(), page.more, sender_addr);
+                                            crate::logf!(
+                                                "HISTORY: serving page ({} rows, more={}) to {}",
+                                                page.rows.len(),
+                                                page.more,
+                                                sender_addr
+                                            );
                                             checker.send_history(
                                                 crate::network::status::HistorySendRequest {
                                                     peer_addr: sender_addr,
@@ -15919,9 +19391,15 @@ impl PhotonApp {
                 StatusUpdate::PongSealMissing { device } => {
                     // Reseed the pong-seal map (rate-limited): the sender's tail will open on its next pong. Also retries the failed-open dedup by virtue of the RX worker clearing it on success.
                     const RESEED_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10);
-                    if self.last_seal_reseed.is_none_or(|t| t.elapsed() > RESEED_COOLDOWN) {
+                    if self
+                        .last_seal_reseed
+                        .is_none_or(|t| t.elapsed() > RESEED_COOLDOWN)
+                    {
                         self.last_seal_reseed = Some(Instant::now());
-                        crate::logf!("Status: reseeding pong-seal keys (tail from {} unopenable)", crate::fp(&device.key));
+                        crate::logf!(
+                            "Status: reseeding pong-seal keys (tail from {} unopenable)",
+                            crate::fp(&device.key)
+                        );
                         self.reseed_contact_pubkeys();
                     }
                 }
@@ -15933,18 +19411,29 @@ impl PhotonApp {
                     sender_pubkey,
                     sender_addr,
                 } => {
-                    let known = self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key));
+                    let known = self
+                        .contacts
+                        .iter()
+                        .any(|c| c.knows_device(&sender_pubkey.key));
                     if !known {
                         crate::log("ATTACH: blob from unknown device — dropped");
-                    } else if let Some(wire_key) = self.attach_wire_key(&sender_pubkey.key, &conversation_token) {
+                    } else if let Some(wire_key) =
+                        self.attach_wire_key(&sender_pubkey.key, &conversation_token)
+                    {
                         match kete::decrypt_bytes(&sealed, &wire_key) {
                             Ok(plain) if *blake3::hash(&plain).as_bytes() == content_hash => {
                                 if let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) {
                                     match crate::storage::blob_store(&seed, &content_hash, &plain) {
                                         Ok(()) => {
-                                            crate::logf!("ATTACH: blob received + stored ({} bytes)", plain.len());
+                                            crate::logf!(
+                                                "ATTACH: blob received + stored ({} bytes)",
+                                                plain.len()
+                                            );
                                             // Confirm to the pusher (attach_have) so their pill flips to delivered. Relay reply when the blob came thru the pipe.
-                                            if let (Some(kp), Some(checker)) = (self.device_keypair.as_ref(), self.status_checker.as_ref()) {
+                                            if let (Some(kp), Some(checker)) = (
+                                                self.device_keypair.as_ref(),
+                                                self.status_checker.as_ref(),
+                                            ) {
                                                 if let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_attach_have_vsf(&conversation_token, &content_hash, kp.public.as_bytes(), kp.secret.as_bytes()) {
                                                     let via_relay = sender_addr == crate::network::status::RELAY_ADDR;
                                                     checker.send_history(crate::network::status::HistorySendRequest {
@@ -15980,8 +19469,15 @@ impl PhotonApp {
                     }
                 }
                 // Blob-landed confirmation from the receiver: the sender's pill flips to delivered.
-                StatusUpdate::AttachHaveReceived { content_hash, sender_pubkey } => {
-                    if self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key)) {
+                StatusUpdate::AttachHaveReceived {
+                    content_hash,
+                    sender_pubkey,
+                } => {
+                    if self
+                        .contacts
+                        .iter()
+                        .any(|c| c.knows_device(&sender_pubkey.key))
+                    {
                         self.attach_confirmed.insert(content_hash);
                         self.msg_wrap = None;
                         self.scene_dirty = true;
@@ -15995,27 +19491,48 @@ impl PhotonApp {
                     sender_pubkey,
                     sender_addr,
                 } => {
-                    let known = self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key));
+                    let known = self
+                        .contacts
+                        .iter()
+                        .any(|c| c.knows_device(&sender_pubkey.key));
                     let seed = self.session.as_ref().map(|s| s.identity_seed);
                     if !known {
                         crate::log("ATTACH: request from unknown device — ignored");
-                    } else if let (Some(seed), Some(wire_key)) = (seed, self.attach_wire_key(&sender_pubkey.key, &conversation_token)) {
+                    } else if let (Some(seed), Some(wire_key)) = (
+                        seed,
+                        self.attach_wire_key(&sender_pubkey.key, &conversation_token),
+                    ) {
                         if let Some(plain) = crate::storage::blob_load(&seed, &content_hash) {
-                            if let (Ok(sealed), Some(kp), Some(checker)) = (kete::encrypt_bytes(&plain, &wire_key), self.device_keypair.as_ref(), self.status_checker.as_ref()) {
-                                match crate::network::fgtw::protocol::build_attach_blob_vsf(&conversation_token, &content_hash, sealed, kp.public.as_bytes(), kp.secret.as_bytes()) {
+                            if let (Ok(sealed), Some(kp), Some(checker)) = (
+                                kete::encrypt_bytes(&plain, &wire_key),
+                                self.device_keypair.as_ref(),
+                                self.status_checker.as_ref(),
+                            ) {
+                                match crate::network::fgtw::protocol::build_attach_blob_vsf(
+                                    &conversation_token,
+                                    &content_hash,
+                                    sealed,
+                                    kp.public.as_bytes(),
+                                    kp.secret.as_bytes(),
+                                ) {
                                     Ok(vsf_bytes) => {
                                         // A relay-injected request has no routable src addr — answer back thru the pipe.
-                                        let via_relay = sender_addr == crate::network::status::RELAY_ADDR;
-                                        checker.send_history(crate::network::status::HistorySendRequest {
-                                            peer_addr: sender_addr,
-                                            alt_addr: None,
-                                            recipient_pubkey: sender_pubkey.key,
-                                            vsf_bytes,
-                                            relay_to: vec![sender_pubkey.key], // always the one-device relay copy — see the page-serve site: responses die on one-directional reverse paths
-                                        });
+                                        let via_relay =
+                                            sender_addr == crate::network::status::RELAY_ADDR;
+                                        checker.send_history(
+                                            crate::network::status::HistorySendRequest {
+                                                peer_addr: sender_addr,
+                                                alt_addr: None,
+                                                recipient_pubkey: sender_pubkey.key,
+                                                vsf_bytes,
+                                                relay_to: vec![sender_pubkey.key], // always the one-device relay copy — see the page-serve site: responses die on one-directional reverse paths
+                                            },
+                                        );
                                         crate::log("ATTACH: served blob request");
                                     }
-                                    Err(e) => crate::logf!("ATTACH: serve frame build failed: {}", e),
+                                    Err(e) => {
+                                        crate::logf!("ATTACH: serve frame build failed: {}", e)
+                                    }
                                 }
                             }
                         } else {
@@ -16029,8 +19546,14 @@ impl PhotonApp {
                     sender_pubkey,
                 } => {
                     // Trust gate: only a fold-verified sibling device may replace chain state.
-                    if !self.contacts.iter().any(|c| c.is_sibling && c.knows_device(&sender_pubkey.key)) {
-                        crate::log("CHAIN-SYNC: frame from a non-sibling or unknown device — dropped");
+                    if !self
+                        .contacts
+                        .iter()
+                        .any(|c| c.is_sibling && c.knows_device(&sender_pubkey.key))
+                    {
+                        crate::log(
+                            "CHAIN-SYNC: frame from a non-sibling or unknown device — dropped",
+                        );
                         continue;
                     }
                     let Some(fleet_key) = self.fleet_key_cached() else {
@@ -16066,8 +19589,12 @@ impl PhotonApp {
                     self.friendship_chains.retain(|(id, _)| *id != fid);
                     self.friendship_chains.push((fid, incoming));
                     if let Some(storage) = self.storage.as_ref() {
-                        if let Some((_, c)) = self.friendship_chains.iter().find(|(id, _)| *id == fid) {
-                            if let Err(e) = crate::storage::friendship::save_friendship_chains(c, storage) {
+                        if let Some((_, c)) =
+                            self.friendship_chains.iter().find(|(id, _)| *id == fid)
+                        {
+                            if let Err(e) =
+                                crate::storage::friendship::save_friendship_chains(c, storage)
+                            {
                                 crate::logf!("CHAIN-SYNC: adopt persist failed: {}", e);
                             }
                         }
@@ -16077,17 +19604,24 @@ impl PhotonApp {
                     // Wire the contact: a device that never ran this ceremony gains the chain here — flip it sendable (Complete + woven; the owner proved the ratchet end-to-end before the state ever replicated).
                     if let Some(ci) = self.contact_idx_for_conversation_token(&conversation_token) {
                         let contact = &mut self.contacts[ci];
-                        let newly_enabled = contact.friendship_id != Some(fid) || contact.clutch_state != crate::types::ClutchState::Complete;
+                        let newly_enabled = contact.friendship_id != Some(fid)
+                            || contact.clutch_state != crate::types::ClutchState::Complete;
                         contact.friendship_id = Some(fid);
                         if newly_enabled {
                             contact.clutch_state = crate::types::ClutchState::Complete;
                             contact.chain_woven = true;
                             if let Some(storage) = self.storage.as_ref() {
-                                let _ = crate::storage::contacts::save_contact(&self.contacts[ci], storage);
+                                let _ = crate::storage::contacts::save_contact(
+                                    &self.contacts[ci],
+                                    storage,
+                                );
                             }
                             crate::logf!("CHAIN-SYNC: adopted chain for {} — this device can now transmit directly", crate::fp(&self.contacts[ci].handle_proof));
                         } else {
-                            crate::logf!("CHAIN-SYNC: caught up chain for {} (sibling was ahead)", crate::fp(&self.contacts[ci].handle_proof));
+                            crate::logf!(
+                                "CHAIN-SYNC: caught up chain for {} (sibling was ahead)",
+                                crate::fp(&self.contacts[ci].handle_proof)
+                            );
                         }
                     } else {
                         crate::log("CHAIN-SYNC: adopted chain state for a conversation with no matching contact yet (roster lag) — chain parked under its fid");
@@ -16100,15 +19634,24 @@ impl PhotonApp {
                     sender_pubkey,
                     sender_addr: _,
                 } => {
-                    let Some(idx) = self.contacts.iter().position(|c| c.is_sibling && c.knows_device(&sender_pubkey.key)) else {
-                        crate::log("CHAIN-RESET: frame from a non-sibling or unknown device — dropped");
+                    let Some(idx) = self
+                        .contacts
+                        .iter()
+                        .position(|c| c.is_sibling && c.knows_device(&sender_pubkey.key))
+                    else {
+                        crate::log(
+                            "CHAIN-RESET: frame from a non-sibling or unknown device — dropped",
+                        );
                         continue;
                     };
                     let Some(fleet_key) = self.fleet_key_cached() else {
                         crate::log("CHAIN-RESET: no fleet key in hand — dropped (will heal on a later frame)");
                         continue;
                     };
-                    let nonce: [u8; 32] = match kete::decrypt_bytes(&sealed, &fleet_key).ok().and_then(|p| p.try_into().ok()) {
+                    let nonce: [u8; 32] = match kete::decrypt_bytes(&sealed, &fleet_key)
+                        .ok()
+                        .and_then(|p| p.try_into().ok())
+                    {
                         Some(n) => n,
                         None => {
                             crate::log("CHAIN-RESET: sealed nonce failed to open under the fleet key — dropped");
@@ -16118,7 +19661,10 @@ impl PhotonApp {
                     // Token sanity: the frame must name OUR sibling 1:1 with this device, not some other conversation.
                     let expected_token = self.device_keypair.as_ref().map(|kp| {
                         let our_pid = crate::crypto::clutch::sibling_party_id(kp.public.as_bytes());
-                        crate::crypto::clutch::derive_conversation_token(&[our_pid, self.contacts[idx].handle_hash])
+                        crate::crypto::clutch::derive_conversation_token(&[
+                            our_pid,
+                            self.contacts[idx].handle_hash,
+                        ])
                     });
                     if expected_token != Some(conversation_token) {
                         crate::log("CHAIN-RESET: token mismatch — dropped");
@@ -16177,7 +19723,16 @@ impl PhotonApp {
 
                     if key.is_none() || contact_idx.is_none() {
                         // Torch the drop: a page dying here is indistinguishable from "sync doesn't work" in the field ("fleet sync with self is not working", 2026-07-26 — every drop in this arm was silent).
-                        crate::logf!("HISTORY: page from {} DROPPED — {} (from_sibling={})", crate::fp(&sender_pubkey.key), if key.is_none() { "no key (fleet key missing, or no chain/history_key for this token)" } else { "token resolves to no contact" }, from_sibling);
+                        crate::logf!(
+                            "HISTORY: page from {} DROPPED — {} (from_sibling={})",
+                            crate::fp(&sender_pubkey.key),
+                            if key.is_none() {
+                                "no key (fleet key missing, or no chain/history_key for this token)"
+                            } else {
+                                "token resolves to no contact"
+                            },
+                            from_sibling
+                        );
                     }
                     if let (Some(key), Some(idx)) = (key, contact_idx) {
                         // rid must match our in-flight request — a page we didn't ask for (or asked for long ago) is dropped; merging is idempotent so a raced duplicate that DOES match is harmless.
@@ -16205,23 +19760,28 @@ impl PhotonApp {
                                         } else {
                                             (!row.sender_outgoing, !row.sender_outgoing, true)
                                         };
-                                        if let Some(existing) = contact
-                                            .messages
-                                            .iter_mut()
-                                            .find(|m| {
+                                        if let Some(existing) =
+                                            contact.messages.iter_mut().find(|m| {
                                                 m.timestamp == row.timestamp
                                                     && m.content == row.content
                                             })
                                         {
                                             // Delivered AND deleted are monotonic (true wins): a copy that saw the ACK — or the tombstone — upgrades ours. Upgraded rows ride `fresh` (persist + gossip) but are NOT re-inserted.
                                             let mut upgraded = false;
-                                            if delivered && !existing.delivered && existing.is_outgoing == is_outgoing {
+                                            if delivered
+                                                && !existing.delivered
+                                                && existing.is_outgoing == is_outgoing
+                                            {
                                                 existing.delivered = true;
                                                 upgraded = true;
                                             }
                                             if row.deleted && !existing.deleted {
                                                 existing.deleted = true;
-                                                if let Some((hash, _, _)) = crate::types::parse_attachment_content(&existing.content) {
+                                                if let Some((hash, _, _)) =
+                                                    crate::types::parse_attachment_content(
+                                                        &existing.content,
+                                                    )
+                                                {
                                                     crate::storage::blob_delete(&hash);
                                                 }
                                                 upgraded = true;
@@ -16267,29 +19827,42 @@ impl PhotonApp {
                                     // Persist the new rows + the cursor (AGENT.md: every change hits disk).
                                     if let Some(storage) = self.storage.as_ref() {
                                         if !fresh.is_empty() {
-                                            if let Err(e) = crate::storage::contacts::save_messages_page(
-                                                &their_seed,
-                                                &fresh,
-                                                storage,
-                                            ) {
+                                            if let Err(e) =
+                                                crate::storage::contacts::save_messages_page(
+                                                    &their_seed,
+                                                    &fresh,
+                                                    storage,
+                                                )
+                                            {
                                                 crate::logf!("HISTORY: page persist failed: {}", e);
                                             }
                                         }
                                         let contact_ref = &self.contacts[idx];
-                                        if let Err(e) =
-                                            crate::storage::contacts::save_contact(contact_ref, storage)
-                                        {
+                                        if let Err(e) = crate::storage::contacts::save_contact(
+                                            contact_ref,
+                                            storage,
+                                        ) {
                                             crate::logf!("HISTORY: cursor persist failed: {}", e);
                                         }
                                     }
                                     // Gossip hop: anything genuinely fresh re-pushes to the OTHER online siblings (never back at the sender), so a message crosses the whole fleet even when only one device can reach its origin. Zero-fresh pages stop the echo.
                                     if !fresh.is_empty() {
-                                        self.push_rows_to_siblings(idx, &fresh, Some(sender_pubkey.key));
+                                        self.push_rows_to_siblings(
+                                            idx,
+                                            &fresh,
+                                            Some(sender_pubkey.key),
+                                        );
                                     }
                                     // FLEET-FORWARD DRAIN (compose anywhere): outgoing UNDELIVERED rows arriving from a SIBLING are messages a chain-less device composed and forwarded — if THIS device holds the woven chain, transmit them on the braid with their ORIGINAL timestamps (one row identity fleet-wide, so the friend's dedup + the delivered upgrade all cohere; a retransmit after a crash is re-ACKed harmlessly from the friend's stored ack_hash). Only FRESH rows drain — known rows were transmitted before or sit in the retransmit machinery. Deferred past the checker borrow like every other &mut-self action in this drain. v1 assumption (pre-§14): exactly ONE device holds each friendship's woven chain.
                                     if from_sibling && self.contacts[idx].chain_woven {
-                                        for m in fresh.iter().filter(|m| m.is_outgoing && !m.delivered) {
-                                            fleet_tx_rows.push((idx, m.content.clone(), m.timestamp));
+                                        for m in
+                                            fresh.iter().filter(|m| m.is_outgoing && !m.delivered)
+                                        {
+                                            fleet_tx_rows.push((
+                                                idx,
+                                                m.content.clone(),
+                                                m.timestamp,
+                                            ));
                                         }
                                     }
                                     changed = true;
@@ -16329,7 +19902,8 @@ impl PhotonApp {
                         BlindFrameKind::Put | BlindFrameKind::Get => {
                             let our_sibling_pid = self.our_sibling_pid();
                             // Friend tokens derive from the identity PARTY IDS (never the raw seed — the peer derives with pids, so a seed here rejects every legitimate frame as unknown-token).
-                            let our_friend_pid = crate::crypto::clutch::identity_party_id(&our_seed);
+                            let our_friend_pid =
+                                crate::crypto::clutch::identity_party_id(&our_seed);
                             let cidx = self.contacts.iter().position(|c| {
                                 let our = if c.is_sibling {
                                     match our_sibling_pid {
@@ -16387,13 +19961,24 @@ impl PhotonApp {
                                                     peer_addr: primary,
                                                     alt_addr: alt,
                                                     recipient_pubkey: sender_pubkey.key,
-                                                    relay_to: self.contacts[idx].relay_device_list(), // BLIND frames always ride the relay — a validated path can be one-directional, and a lost answer stalls S-recovery silently (see drive_blind_ops)
+                                                    relay_to: self.contacts[idx]
+                                                        .relay_device_list(), // BLIND frames always ride the relay — a validated path can be one-directional, and a lost answer stalls S-recovery silently (see drive_blind_ops)
                                                     vsf_bytes,
                                                 },
                                             );
-                                            crate::logf!("BLIND: served {} to sibling device {}", if blob_opt.is_some() { "sealed S" } else { "found=0 (no live S)" }, hex::encode(&sender_pubkey.key[..4]));
+                                            crate::logf!(
+                                                "BLIND: served {} to sibling device {}",
+                                                if blob_opt.is_some() {
+                                                    "sealed S"
+                                                } else {
+                                                    "found=0 (no live S)"
+                                                },
+                                                hex::encode(&sender_pubkey.key[..4])
+                                            );
                                         }
-                                        Err(e) => crate::logf!("BLIND: sibling srv build failed: {}", e),
+                                        Err(e) => {
+                                            crate::logf!("BLIND: sibling srv build failed: {}", e)
+                                        }
                                     }
                                 }
                                 continue;
@@ -16414,20 +19999,26 @@ impl PhotonApp {
                                     entry.1 = blob.clone();
                                     entry.2 = now;
                                 } else {
-                                    c.deposited_blinds.push((sender_pubkey.key, blob.clone(), now));
+                                    c.deposited_blinds
+                                        .push((sender_pubkey.key, blob.clone(), now));
                                 }
                                 // DISK COMMIT BEFORE THE ACK — the ack is the depositor's Provisional→Live edge, so it must attest durable storage, not RAM.
                                 let committed = match self.storage.as_ref() {
-                                    Some(storage) => match crate::storage::contacts::save_contact_state(
-                                        &self.contacts[idx],
-                                        storage,
-                                    ) {
-                                        Ok(()) => true,
-                                        Err(e) => {
-                                            crate::logf!("BLIND: deposit persist failed: {}", e);
-                                            false
+                                    Some(storage) => {
+                                        match crate::storage::contacts::save_contact_state(
+                                            &self.contacts[idx],
+                                            storage,
+                                        ) {
+                                            Ok(()) => true,
+                                            Err(e) => {
+                                                crate::logf!(
+                                                    "BLIND: deposit persist failed: {}",
+                                                    e
+                                                );
+                                                false
+                                            }
                                         }
-                                    },
+                                    }
                                     None => false,
                                 };
                                 if committed {
@@ -16449,13 +20040,16 @@ impl PhotonApp {
                                                         peer_addr: primary,
                                                         alt_addr: alt,
                                                         recipient_pubkey: sender_pubkey.key,
-                                                        relay_to: self.contacts[idx].relay_device_list(), // BLIND frames always ride the relay — a validated path can be one-directional, and a lost answer stalls S-recovery silently (see drive_blind_ops)
+                                                        relay_to: self.contacts[idx]
+                                                            .relay_device_list(), // BLIND frames always ride the relay — a validated path can be one-directional, and a lost answer stalls S-recovery silently (see drive_blind_ops)
                                                         vsf_bytes,
                                                     },
                                                 );
                                                 crate::logf!("BLIND: stored deposit from {} device {} — acked (disk-committed)", crate::fp(&self.contacts[idx].handle_proof), hex::encode(&sender_pubkey.key[..4]));
                                             }
-                                            Err(e) => crate::logf!("BLIND: ack build failed: {}", e),
+                                            Err(e) => {
+                                                crate::logf!("BLIND: ack build failed: {}", e)
+                                            }
                                         }
                                     }
                                 }
@@ -16485,11 +20079,21 @@ impl PhotonApp {
                                                     peer_addr: primary,
                                                     alt_addr: alt,
                                                     recipient_pubkey: sender_pubkey.key,
-                                                    relay_to: self.contacts[idx].relay_device_list(), // BLIND frames always ride the relay — a validated path can be one-directional, and a lost answer stalls S-recovery silently (see drive_blind_ops)
+                                                    relay_to: self.contacts[idx]
+                                                        .relay_device_list(), // BLIND frames always ride the relay — a validated path can be one-directional, and a lost answer stalls S-recovery silently (see drive_blind_ops)
                                                     vsf_bytes,
                                                 },
                                             );
-                                            crate::logf!("BLIND: served {} to {} device {}", if blob_opt.is_some() { "deposit" } else { "found=0 (no deposit)" }, crate::fp(&self.contacts[idx].handle_proof), hex::encode(&sender_pubkey.key[..4]));
+                                            crate::logf!(
+                                                "BLIND: served {} to {} device {}",
+                                                if blob_opt.is_some() {
+                                                    "deposit"
+                                                } else {
+                                                    "found=0 (no deposit)"
+                                                },
+                                                crate::fp(&self.contacts[idx].handle_proof),
+                                                hex::encode(&sender_pubkey.key[..4])
+                                            );
                                         }
                                         Err(e) => crate::logf!("BLIND: srv build failed: {}", e),
                                     }
@@ -16515,9 +20119,15 @@ impl PhotonApp {
                                     crate::logf!("BLIND: deposited-flag persist failed: {}", e);
                                 }
                             }
-                            crate::logf!("BLIND: deposit confirmed at {}", crate::fp(&self.contacts[idx].handle_proof));
+                            crate::logf!(
+                                "BLIND: deposit confirmed at {}",
+                                crate::fp(&self.contacts[idx].handle_proof)
+                            );
                             // First confirmation flips Provisional → Live: from here S may author tags, because at least one friend durably holds the recovery blind.
-                            if matches!(self.private_s, crate::crypto::blind::PrivateS::Provisional(_)) {
+                            if matches!(
+                                self.private_s,
+                                crate::crypto::blind::PrivateS::Provisional(_)
+                            ) {
                                 if let crate::crypto::blind::PrivateS::Provisional(s) =
                                     std::mem::take(&mut self.private_s)
                                 {
@@ -16549,15 +20159,17 @@ impl PhotonApp {
                                             .find(|(id, _)| *id == fid)
                                             .and_then(|(_, chains)| chains.history_key().copied())
                                     })
-                                    .and_then(|key| crate::crypto::blind::open_sibling_s(&blob, &key))
+                                    .and_then(|key| {
+                                        crate::crypto::blind::open_sibling_s(&blob, &key)
+                                    })
                                 };
                                 match opened {
                                     Some(s) => {
                                         let sid = crate::crypto::blind::s_id(&s);
                                         match &self.private_s {
-                                            crate::crypto::blind::PrivateS::Live { s_id, .. }
-                                                if *s_id != sid =>
-                                            {
+                                            crate::crypto::blind::PrivateS::Live {
+                                                s_id, ..
+                                            } if *s_id != sid => {
                                                 if sid < *s_id {
                                                     crate::logf!("S: CRITICAL — divergent epochs across the fleet; ADOPTING the lower ({} < {}) and redepositing everywhere", hex::encode(sid), hex::encode(s_id));
                                                     self.private_s =
@@ -16575,7 +20187,9 @@ impl PhotonApp {
                                                 }
                                             }
                                             crate::crypto::blind::PrivateS::Live { .. } => {
-                                                crate::log("S: sibling cross-check OK (same epoch)");
+                                                crate::log(
+                                                    "S: sibling cross-check OK (same epoch)",
+                                                );
                                             }
                                             _ => {
                                                 crate::logf!("S: adopted from fleet sibling (check OK, s_id={})", hex::encode(sid));
@@ -16599,7 +20213,9 @@ impl PhotonApp {
                             }
 
                             if found && blob.len() == crate::crypto::blind::BLIND_BLOB_LEN {
-                                let Some(kp) = self.device_keypair.as_ref() else { continue };
+                                let Some(kp) = self.device_keypair.as_ref() else {
+                                    continue;
+                                };
                                 let device_secret = *kp.secret.as_bytes();
                                 let pad = crate::crypto::blind::derive_blind_pad(
                                     &device_secret,
@@ -16609,9 +20225,9 @@ impl PhotonApp {
                                     Some(s) => {
                                         let sid = crate::crypto::blind::s_id(&s);
                                         match &self.private_s {
-                                            crate::crypto::blind::PrivateS::Live { s_id, .. }
-                                                if *s_id != sid =>
-                                            {
+                                            crate::crypto::blind::PrivateS::Live {
+                                                s_id, ..
+                                            } if *s_id != sid => {
                                                 // Split-brain: a friend holds a DIFFERENT epoch than the S we're running. Keep ours (it has live confirmations); the redeposit driver will overwrite theirs.
                                                 crate::logf!("BLIND: CRITICAL — divergent S epoch from {} (theirs {}, ours {}); keeping ours + redepositing", crate::fp(&self.contacts[idx].handle_proof), hex::encode(sid), hex::encode(s_id));
                                                 self.contacts[idx].blind_deposited = false;
@@ -16621,10 +20237,11 @@ impl PhotonApp {
                                             }
                                             _ => {
                                                 crate::logf!("S: reconstituted from friend blind (check OK, s_id={})", hex::encode(sid));
-                                                self.private_s = crate::crypto::blind::PrivateS::Live {
-                                                    s,
-                                                    s_id: sid,
-                                                };
+                                                self.private_s =
+                                                    crate::crypto::blind::PrivateS::Live {
+                                                        s,
+                                                        s_id: sid,
+                                                    };
                                                 // A served deposit IS a confirmed deposit at this friend.
                                                 self.contacts[idx].blind_deposited = true;
                                                 if let Some(storage) = self.storage.as_ref() {
@@ -16644,7 +20261,10 @@ impl PhotonApp {
                                     }
                                 }
                             } else {
-                                crate::logf!("BLIND: no deposit at {} (found=0)", crate::fp(&self.contacts[idx].handle_proof));
+                                crate::logf!(
+                                    "BLIND: no deposit at {} (found=0)",
+                                    crate::fp(&self.contacts[idx].handle_proof)
+                                );
                                 self.contacts[idx].blind_probe_missed = true;
                                 check_s_genesis = true;
                             }
@@ -16661,7 +20281,10 @@ impl PhotonApp {
                     }
                 }
 
-                StatusUpdate::PathValidated { peer_pubkey, remote } => {
+                StatusUpdate::PathValidated {
+                    peer_pubkey,
+                    remote,
+                } => {
                     // A hole-punch (or keepalive) round-tripped. Record/refresh it on the matching contact (any device in the friend's fleet) so `race_addrs` prefers this direct path, keeping the public/LAN as the alternate. First-wins on the address (we stop full-punching once a path is set, so among a single cycle's candidates the first to round-trip — ≈ the lowest-latency path — wins); the timestamp is refreshed on every ack for that same path (keepalive liveness). Any validation clears the graceful-failure counter.
                     let now = std::time::Instant::now();
                     let mut refire: Option<usize> = None;
@@ -16682,13 +20305,19 @@ impl PhotonApp {
                         contact.last_heard = Some(now);
                         match contact.validated_path {
                             None => {
-                                crate::logf!("TRAVERSE: path validated to {} = {}", crate::fp(&contact.handle_proof).as_str(), remote);
+                                crate::logf!(
+                                    "TRAVERSE: path validated to {} = {}",
+                                    crate::fp(&contact.handle_proof).as_str(),
+                                    remote
+                                );
                                 contact.validated_path = Some((remote, now));
                                 // Path-up EDGE doubles as the parked ceremony's second chance: the one offer send may have raced only dead records (carrier-NAT LAN + a stale registry address) before this path proved out — and the pong-driven re-send never fires for a peer whose pongs don't flow. Only when the peer's own offer hasn't arrived either (a present offer means the exchange is moving; duplicates would just burn a half-MB transfer).
                                 if !contact.is_sibling
                                     && contact.clutch_state == crate::types::ClutchState::Pending
                                     && contact.clutch_offer_sent
-                                    && contact.get_slot(&contact.handle_hash).map_or(true, |s| s.offer.is_none())
+                                    && contact
+                                        .get_slot(&contact.handle_hash)
+                                        .map_or(true, |s| s.offer.is_none())
                                 {
                                     refire = Some(idx);
                                 }
@@ -16697,12 +20326,21 @@ impl PhotonApp {
                                 // Keepalive ack for the current path — refresh liveness.
                                 contact.validated_path = Some((remote, now));
                             }
-                            Some((existing, _)) if is_private_addr(&remote.ip()) && !is_private_addr(&existing.ip()) => {
+                            Some((existing, _))
+                                if is_private_addr(&remote.ip())
+                                    && !is_private_addr(&existing.ip()) =>
+                            {
                                 // A LAN path acked while we're pinned to a public/cell one — UPGRADE. First-wins normally holds, but a private-subnet path is categorically better than a carrier one: it never rotates (the cell IPv6 privacy address churns — five in one field log — and each rotation strands the pinned path until TTL), no NAT, lowest latency. Two devices on one LAN must ride the LAN, not race a dying cell mapping. (Only LAN-supplants-public; a second public path never displaces the first-won.)
-                                crate::logf!("TRAVERSE: {} LAN path {} supplants pinned public {}", crate::fp(&contact.handle_proof).as_str(), remote, existing);
+                                crate::logf!(
+                                    "TRAVERSE: {} LAN path {} supplants pinned public {}",
+                                    crate::fp(&contact.handle_proof).as_str(),
+                                    remote,
+                                    existing
+                                );
                                 contact.validated_path = Some((remote, now));
                             }
-                            Some(_) => { /* a different candidate acked; keep the first-won path */ }
+                            Some(_) => { /* a different candidate acked; keep the first-won path */
+                            }
                         }
                     }
                     if let Some(idx) = refire {
@@ -16776,7 +20414,9 @@ impl PhotonApp {
         }
 
         // Retransmit pending messages to contacts that just came online Use last_received_ef6 from pong to only retransmit messages they don't have
-        for (fid, peer_addr, alt_addr, handle, recipient_pubkey, last_received_ef6) in retransmit_requests {
+        for (fid, peer_addr, alt_addr, handle, recipient_pubkey, last_received_ef6) in
+            retransmit_requests
+        {
             if let Some((_, chains)) = self.friendship_chains.iter().find(|(id, _)| *id == fid) {
                 let pending = chains.pending_messages();
                 if !pending.is_empty() {
@@ -16816,7 +20456,11 @@ impl PhotonApp {
                                     eagle_time: msg.eagle_time,
                                     relay_to: relay_to.clone(),
                                 });
-                                crate::logf!("CHAT: Retransmitted msg with eagle_time {} to {}", msg.eagle_time, handle);
+                                crate::logf!(
+                                    "CHAT: Retransmitted msg with eagle_time {} to {}",
+                                    msg.eagle_time,
+                                    handle
+                                );
                             }
                         }
                     } else if !pending.is_empty() {
@@ -16988,7 +20632,10 @@ impl PhotonApp {
     /// Pointer press over hit `id`: if it's a textbox, focus it, place the caret under the pointer, and grab the text for the pan (drag = the text follows the finger — see `drag_pan_text`). Multi-tap streak: double → select word, triple → select paragraph (the whole single-line box). The tap interval comes from the OS (Android's ViewConfiguration double-tap timeout via JNI, X11 XSettings on Linux, 400 ms default). Returns true if a textbox was engaged (caller consumes the press so it can't start a window drag). Works for ANY textbox on ANY screen — the uniform pointer model, every platform.
     fn textbox_press(&mut self, id: HitId, x: Coord) -> bool {
         // A busy-frozen box (`!is_enabled`) takes no pointer input — treat it as "not a textbox" so the press falls through to the normal consume, matching the pre-rework behaviour.
-        if self.textbox_by_hit_mut(id).map_or(true, |tb| !tb.is_enabled()) {
+        if self
+            .textbox_by_hit_mut(id)
+            .map_or(true, |tb| !tb.is_enabled())
+        {
             // Press landed off every (live) textbox — break any multi-tap streak so a later tap elsewhere-then-back doesn't count as a double.
             self.last_click_hit = HIT_NONE;
             self.drag_select_hit = HIT_NONE;
@@ -16997,8 +20644,14 @@ impl PhotonApp {
         let now = Instant::now();
         let interval = fluor::host::os_input::double_click_interval();
         let continues = self.last_click_hit == id
-            && self.last_click_time.map_or(false, |t| now.duration_since(t) <= interval);
-        let streak = if continues { (self.click_streak + 1).min(3) } else { 1 };
+            && self
+                .last_click_time
+                .map_or(false, |t| now.duration_since(t) <= interval);
+        let streak = if continues {
+            (self.click_streak + 1).min(3)
+        } else {
+            1
+        };
         self.last_click_hit = id;
         self.last_click_time = Some(now);
         self.click_streak = streak;
@@ -17074,7 +20727,9 @@ impl PhotonApp {
                             eprintln!("{} deleted {}", tag, p.display());
                             *count += 1;
                         }
-                        Err(e) => eprintln!("{} WARN: could not delete {}: {}", tag, p.display(), e),
+                        Err(e) => {
+                            eprintln!("{} WARN: could not delete {}: {}", tag, p.display(), e)
+                        }
                     }
                 }
             }
@@ -17151,7 +20806,9 @@ impl PhotonApp {
             self.peer_store.as_ref(),
             self.device_keypair.as_ref(),
             self.our_reflexive,
-            self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            self.handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof()),
         ) else {
             return; // pre-attest, or no reflexive echo yet — nothing honest to publish
         };
@@ -17174,7 +20831,10 @@ impl PhotonApp {
 
         store.lock().unwrap().add_peer(rec);
         self.self_record_published_for = Some(addr);
-        crate::logf!("PHONEBOOK: published our own signed record at {} — gossip can now carry it", addr);
+        crate::logf!(
+            "PHONEBOOK: published our own signed record at {} — gossip can now carry it",
+            addr
+        );
 
         // ALSO publish to the seed's registry. Gossip alone cannot bootstrap: carrying a record needs a validated path, a path needs a punch, and a punch needs an address we could only have learned from a peer we cannot yet reach. The seed breaks that circle — it is the one place reachable without already knowing anyone. Fire-and-forget off-thread: this is a discovery-path nicety, and a seed that is down must never stall the UI or the local store (which is already updated above and persists regardless).
         let secret = kp.secret.clone();
@@ -17184,7 +20844,10 @@ impl PhotonApp {
                 .await
             {
                 Ok(()) => crate::logf!("PHONEBOOK: address record published to the seed registry"),
-                Err(e) => crate::logf!("PHONEBOOK: seed publish failed ({}) — gossip still carries it", e),
+                Err(e) => crate::logf!(
+                    "PHONEBOOK: seed publish failed ({}) — gossip still carries it",
+                    e
+                ),
             }
         });
     }
@@ -17223,7 +20886,8 @@ impl PhotonApp {
                         if let Some(pubaddr) =
                             crate::network::fgtw::phonebook_client::record_socket_addr(&rec)
                         {
-                            let lan = crate::network::fgtw::phonebook_client::record_local_addr(&rec);
+                            let lan =
+                                crate::network::fgtw::phonebook_client::record_local_addr(&rec);
                             found.push((dev, pubaddr, lan));
                         }
                     }
@@ -17265,14 +20929,18 @@ impl PhotonApp {
                 }
                 let ep = contact.endpoint_mut(&dev);
                 ep.public = Some(pubaddr);
-                if let Some(l) = lan.filter(|a| !crate::network::traverse::gather::is_bogus_addr(a)) {
+                if let Some(l) = lan.filter(|a| !crate::network::traverse::gather::is_bogus_addr(a))
+                {
                     ep.lan = Some(l);
                 }
                 learned += 1;
             }
         }
         if learned > 0 {
-            crate::logf!("PHONEBOOK: resolved {} device endpoint(s) from the seed registry — punching", learned);
+            crate::logf!(
+                "PHONEBOOK: resolved {} device endpoint(s) from the seed registry — punching",
+                learned
+            );
             self.ping_contacts();
             return true;
         }
@@ -17285,12 +20953,16 @@ impl PhotonApp {
     ///
     /// Only self-signed rows persist (see `to_vsf_bytes`) — an unsigned FGTW row can never be gossiped or trusted by a peer, so carrying it across a restart would just grow the file.
     fn persist_peer_store(&self) {
-        let (Some(store), Some(storage), Some(session)) =
-            (self.peer_store.as_ref(), self.storage.as_ref(), self.session.as_ref())
-        else {
+        let (Some(store), Some(storage), Some(session)) = (
+            self.peer_store.as_ref(),
+            self.storage.as_ref(),
+            self.session.as_ref(),
+        ) else {
             return;
         };
-        let Some(kp) = self.device_keypair.as_ref() else { return };
+        let Some(kp) = self.device_keypair.as_ref() else {
+            return;
+        };
         let bytes = match store.lock().unwrap().to_vsf_bytes(kp) {
             Ok(b) => b,
             Err(e) => {
@@ -17307,9 +20979,11 @@ impl PhotonApp {
 
     /// Load the persisted phonebook into the live store, merging rather than replacing — a record learned this session (fresher `last_seen`) must win over a stale one off disk, which is what `add_peer`'s per-device upsert already does.
     fn load_peer_store(&mut self) {
-        let (Some(store), Some(storage), Some(session)) =
-            (self.peer_store.as_ref(), self.storage.as_ref(), self.session.as_ref())
-        else {
+        let (Some(store), Some(storage), Some(session)) = (
+            self.peer_store.as_ref(),
+            self.storage.as_ref(),
+            self.session.as_ref(),
+        ) else {
             return;
         };
         let addr = crate::storage::vault_key("peers", &session.vault_seed);
@@ -17327,7 +21001,10 @@ impl PhotonApp {
                 crate::logf!("PHONEBOOK: loaded {} signed record(s) from the vault", n);
             }
             // A vault a disk error touched must not inject peers — the verified read refused it.
-            Err(e) => crate::logf!("PHONEBOOK: persisted phonebook unreadable, starting fresh: {}", e),
+            Err(e) => crate::logf!(
+                "PHONEBOOK: persisted phonebook unreadable, starting fresh: {}",
+                e
+            ),
         }
     }
 
@@ -17352,7 +21029,7 @@ impl PhotonApp {
             keys.clear();
         }
         self.storage = None; // next attest re-opens a fresh vault
-        // EVERY identity-flavoured RAM slot dies here (observed: one identity's avatar surfaced under a different identity after a wipe — the in-place reset only cleared what it knew about, and the settings cache kept feeding the OLD identity's avatar pin + name into the new session's pongs and wall sync). Desktop re-execs below anyway; Android's in-place reset is exactly this list, so the list must be COMPLETE.
+                             // EVERY identity-flavoured RAM slot dies here (observed: one identity's avatar surfaced under a different identity after a wipe — the in-place reset only cleared what it knew about, and the settings cache kept feeding the OLD identity's avatar pin + name into the new session's pongs and wall sync). Desktop re-execs below anyway; Android's in-place reset is exactly this list, so the list must be COMPLETE.
         self.fleet_settings = None; // the big one: cached profile.avatar_pin / profile.name of the OLD identity
         self.device_avatar_pixels = None;
         self.device_avatar_scaled = None;
@@ -17611,7 +21288,10 @@ enum ChannelCheck {
 /// Off-thread self-update results (docs/updates.md), drained in tick.
 enum UpdateEvent {
     /// A manifest check finished: our platform's row (None = manifest has no row for us) or the error.
-    Checked(crate::network::updates::Channel, Result<Option<crate::network::updates::ManifestRow>, String>),
+    Checked(
+        crate::network::updates::Channel,
+        Result<Option<crate::network::updates::ManifestRow>, String>,
+    ),
     /// The AUTOMATIC release-channel check finished: the signed manifest's creation stamp (the window's `t`) + our platform's row. Errors land as a log line in the worker, not here — the cadence just retries later.
     AutoChecked(i64, Option<crate::network::updates::ManifestRow>),
     /// Download progress for the in-flight apply: (bytes done, total bytes; total 0 = length unknown). Throttled to whole-percent changes by the sender.
@@ -17729,7 +21409,6 @@ fn contact_status_line(
     c.clutch_status_detail()
 }
 
-
 /// Presence-ring tier (user spec, VSF-authored in theme.rs): cyan = direct in the same room (LAN), green = direct across the WAN, amber = relay-only, grey = offline. LAN = the validated direct path is a private / link-local / ULA address; a same-site GLOBAL v6 path (e.g. two phones on one home /64) still reads green — refining that needs a same-prefix check against our own addresses, later.
 fn ring_tier_colour(c: &crate::types::Contact) -> u32 {
     if !c.is_online {
@@ -17739,9 +21418,15 @@ fn ring_tier_colour(c: &crate::types::Contact) -> u32 {
     if let Some((addr, _)) = c.validated_path.as_ref() {
         let lan = match addr.ip() {
             std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
-            std::net::IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80 || (v6.segments()[0] & 0xfe00) == 0xfc00,
+            std::net::IpAddr::V6(v6) => {
+                (v6.segments()[0] & 0xffc0) == 0xfe80 || (v6.segments()[0] & 0xfe00) == 0xfc00
+            }
         };
-        return if lan { *theme::RING_LAN_COLOUR } else { *theme::RING_ONLINE_COLOUR };
+        return if lan {
+            *theme::RING_LAN_COLOUR
+        } else {
+            *theme::RING_ONLINE_COLOUR
+        };
     }
     // No validated direct path: relay if that's how we're reaching them, else online-but-still-punching (green, the direct attempt is in flight).
     if c.reached_via_relay {
@@ -17760,7 +21445,15 @@ fn settings_line(
     colour: u32,
     weight: u16,
 ) {
-    text.draw_text_left(canvas, s, row.x + size * 0.3, row.center_y(), &TextStyle::new(size, colour).weight(weight).font("Oxanium"), None, None);
+    text.draw_text_left(
+        canvas,
+        s,
+        row.x + size * 0.3,
+        row.center_y(),
+        &TextStyle::new(size, colour).weight(weight).font("Oxanium"),
+        None,
+        None,
+    );
 }
 
 /// Draw an inert stub action pill filling `rect`: a Button-family squircle (fill + two-tone raised edge) with a centred label, hit-stamped with `hit_id`. STUB only — clicks land in the settings dispatch range and log a line; nothing functional fires. Kept immediate-mode (not a persistent `Button`) because the panel has many one-off action pills and a stub doesn't need each to carry click-counter state.
@@ -17775,7 +21468,18 @@ fn draw_stub_pill(
     hit_id: HitId,
     pressed_hit: HitId,
 ) {
-    draw_stub_pill_styled(canvas, text, hit_map, buf_w, buf_h, rect, label, hit_id, pressed_hit, true);
+    draw_stub_pill_styled(
+        canvas,
+        text,
+        hit_map,
+        buf_w,
+        buf_h,
+        rect,
+        label,
+        hit_id,
+        pressed_hit,
+        true,
+    );
 }
 
 /// Greyed, inert variant of [`draw_stub_pill`]: dim label, NO hit stamp — the settings restamp pass has already cleared the region to HIT_NONE, so a click on the pill dispatches nowhere. (Guard the action's handler too: the hit map is one frame stale across an enable→disable transition.)
@@ -17790,7 +21494,18 @@ fn draw_stub_pill_disabled(
     hit_id: HitId,
     pressed_hit: HitId,
 ) {
-    draw_stub_pill_styled(canvas, text, hit_map, buf_w, buf_h, rect, label, hit_id, pressed_hit, false);
+    draw_stub_pill_styled(
+        canvas,
+        text,
+        hit_map,
+        buf_w,
+        buf_h,
+        rect,
+        label,
+        hit_id,
+        pressed_hit,
+        false,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -17806,7 +21521,20 @@ fn draw_stub_pill_styled(
     pressed_hit: HitId,
     enabled: bool,
 ) {
-    draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, label, hit_id, pressed_hit, enabled, None, "Open Sans");
+    draw_stub_pill_filled(
+        canvas,
+        text,
+        hit_map,
+        buf_w,
+        buf_h,
+        rect,
+        label,
+        hit_id,
+        pressed_hit,
+        enabled,
+        None,
+        "Open Sans",
+    );
 }
 
 /// [`draw_stub_pill_styled`] with an optional custom fill pair `(idle, held)` — the Security page's destructiveness ramp (green → yellow → orange → red). `None` = the standard BUTTON_FILL/HELD navy.
@@ -17830,7 +21558,8 @@ fn draw_stub_pill_filled(
     }
     // Held: a pointer is down on this pill and a release here will fire it (press-hold-release). Only an enabled pill can be held; a drag-off clears `pressed_hit` so the fill drops back to BUTTON_FILL.
     let held = enabled && hit_id != HIT_NONE && hit_id == pressed_hit;
-    let (fill_idle, fill_held) = fill.unwrap_or((fluor::theme::BUTTON_FILL, fluor::theme::BUTTON_HELD));
+    let (fill_idle, fill_held) =
+        fill.unwrap_or((fluor::theme::BUTTON_FILL, fluor::theme::BUTTON_HELD));
     let mut font_size = rect.h * 0.5;
     // Label first (topmost-first): centred in the pill. `label_font` is normally "Open Sans"; the version buttons pass "Oxanium" so the dozenal control-block glyphs resolve to its +glyphs face (Open Sans has no such glyphs → notdef).
     let mut tw = text.measure_text(label, &TextStyle::new(font_size, 0).font(label_font));
@@ -17842,7 +21571,11 @@ fn draw_stub_pill_filled(
         tw = text.measure_text(label, &TextStyle::new(font_size, 0).font(label_font));
     }
     let need_w = tw + font_size * 1.6;
-    let (px, pw) = if need_w > rect.w { (rect.center_x() - need_w * 0.5, need_w) } else { (rect.x, rect.w) };
+    let (px, pw) = if need_w > rect.w {
+        (rect.center_x() - need_w * 0.5, need_w)
+    } else {
+        (rect.x, rect.w)
+    };
     let w = pw as isize;
     let h = rect.h as isize;
     let x0 = px as isize;
@@ -17854,7 +21587,15 @@ fn draw_stub_pill_filled(
     } else {
         fluor::theme::dark(fluor::theme::fmt(crate::ui::theme::DISABLED_LABEL_RGB))
     };
-    text.draw_text_left(canvas, label, rect.center_x() - tw * 0.5, rect.center_y(), &TextStyle::new(font_size, label_colour).font(label_font), None, None);
+    text.draw_text_left(
+        canvas,
+        label,
+        rect.center_x() - tw * 0.5,
+        rect.center_y(),
+        &TextStyle::new(font_size, label_colour).font(label_font),
+        None,
+        None,
+    );
     let inner_w = (w - 2 * stroke).max(0);
     let inner_h = (h - 2 * stroke).max(0);
     if inner_w > 0 && inner_h > 0 {

@@ -116,7 +116,10 @@ mod tests {
 
     #[test]
     fn settings_roundtrip() {
-        let s = Settings { hex_head: 48, hex_tail: 8 };
+        let s = Settings {
+            hex_head: 48,
+            hex_tail: 8,
+        };
         let bytes = s.encode().expect("encode");
         let back = Settings::decode(&bytes);
         assert_eq!(back.hex_head, 48);

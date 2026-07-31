@@ -37,7 +37,10 @@ pub const fn our_platform() -> (&'static str, &'static str) {
         ("Android", "arm64")
     }
     #[cfg(not(any(
-        all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
         all(target_os = "windows", target_arch = "x86_64"),
         target_os = "macos",
         target_os = "android"
@@ -98,7 +101,9 @@ pub enum Channel {
 impl Channel {
     pub fn manifest_url(self) -> &'static str {
         match self {
-            Channel::Release => "https://brobdingnagian.holdmyoscilloscope.com/photon/manifest-release.vsf",
+            Channel::Release => {
+                "https://brobdingnagian.holdmyoscilloscope.com/photon/manifest-release.vsf"
+            }
             Channel::Dev => "https://brobdingnagian.holdmyoscilloscope.com/photon/manifest-dev.vsf",
         }
     }
@@ -146,7 +151,9 @@ pub fn fetch_manifest_blocking(channel: Channel) -> Result<Vec<ManifestRow>, Str
 }
 
 /// [`fetch_manifest_blocking`] plus the SIGNED header's creation stamp (eagle-time oscillations) — the `t` of the stamp window. 0 if the header carries no timestamp (treated as maximally stale by [`stamp_window`]).
-pub fn fetch_manifest_stamped_blocking(channel: Channel) -> Result<(i64, Vec<ManifestRow>), String> {
+pub fn fetch_manifest_stamped_blocking(
+    channel: Channel,
+) -> Result<(i64, Vec<ManifestRow>), String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
         .build()
@@ -172,7 +179,10 @@ pub fn parse_manifest(bytes: &[u8], channel: Channel) -> Result<Vec<ManifestRow>
 }
 
 /// [`parse_manifest`] plus the verified header's creation stamp — `t` for the stamp window. The stamp is INSIDE the signature (the whole header is signed), so it's as trustworthy as the rows.
-pub fn parse_manifest_stamped(bytes: &[u8], channel: Channel) -> Result<(i64, Vec<ManifestRow>), String> {
+pub fn parse_manifest_stamped(
+    bytes: &[u8],
+    channel: Channel,
+) -> Result<(i64, Vec<ManifestRow>), String> {
     let (header, header_end) =
         vsf::verification::read_verified(bytes, Some(crate::crypto::self_verify::AUTHOR_PUBKEY))
             .map_err(|e| format!("manifest verification: {e}"))?;
@@ -190,11 +200,15 @@ pub fn parse_manifest_stamped(bytes: &[u8], channel: Channel) -> Result<(i64, Ve
         }
         // Named single-value fields; absent numeric = 0 (major while uncounted, patch on releases).
         let text = |name: &str| -> Option<String> {
-            section.get_fields(name).first().and_then(|f| f.values.first()).and_then(|v| match v {
-                VsfType::x(s) => Some(s.clone()),
-                VsfType::nu(s) => Some(s.clone()),
-                _ => None,
-            })
+            section
+                .get_fields(name)
+                .first()
+                .and_then(|f| f.values.first())
+                .and_then(|v| match v {
+                    VsfType::x(s) => Some(s.clone()),
+                    VsfType::nu(s) => Some(s.clone()),
+                    _ => None,
+                })
         };
         let num = |name: &str| -> usize {
             section
@@ -208,10 +222,14 @@ pub fn parse_manifest_stamped(bytes: &[u8], channel: Channel) -> Result<(i64, Ve
                 })
                 .unwrap_or(0)
         };
-        let hash: Option<[u8; 32]> = section.get_fields("hash").first().and_then(|f| f.values.first()).and_then(|v| match v {
-            VsfType::hb(h) if h.len() == 32 => h.as_slice().try_into().ok(),
-            _ => None,
-        });
+        let hash: Option<[u8; 32]> = section
+            .get_fields("hash")
+            .first()
+            .and_then(|f| f.values.first())
+            .and_then(|v| match v {
+                VsfType::hb(h) if h.len() == 32 => h.as_slice().try_into().ok(),
+                _ => None,
+            });
         let commit: Vec<u8> = section
             .get_fields("commit")
             .first()
@@ -245,7 +263,9 @@ pub fn parse_manifest_stamped(bytes: &[u8], channel: Channel) -> Result<(i64, Ve
 /// The section for THIS build's platform + arch, if the manifest carries one.
 pub fn our_row(rows: &[ManifestRow]) -> Option<ManifestRow> {
     let (p, a) = our_platform();
-    rows.iter().find(|r| r.platform == p && r.arch == a).cloned()
+    rows.iter()
+        .find(|r| r.platform == p && r.arch == a)
+        .cloned()
 }
 
 /// Download an artefact to `dest`, then gate it twice: BLAKE3 against the signed manifest's hash, and (for desktop binaries) the appended Ed25519 self-signature on disk. Nothing execs unless both pass. `progress(done, total)` fires as chunks stream in (total = 0 when the server sent no length) — the Updates page renders it as the download bar.
@@ -259,10 +279,12 @@ fn download_verified(
     // Already-staged short-circuit: if the destination file already holds bytes matching the signed manifest hash, we downloaded this exact artefact on a prior attempt (user hit Update, then skipped the install). Re-verify from disk and skip the network entirely — otherwise every re-press re-pulls the full ~36MB APK / binary, hammering a metered connection for nothing (the observed "wrecks my hotspot for 30s" on a repeat Update). The hash is the same integrity anchor as a fresh download.
     if let Ok(existing) = std::fs::read(dest) {
         if blake3::hash(&existing).as_bytes() == &row.hash {
-            if !check_binary_sig
-                || crate::crypto::self_verify::verify_file(dest).is_ok()
-            {
-                let total = if row.size > 0 { row.size } else { existing.len() as u64 };
+            if !check_binary_sig || crate::crypto::self_verify::verify_file(dest).is_ok() {
+                let total = if row.size > 0 {
+                    row.size
+                } else {
+                    existing.len() as u64
+                };
                 progress(existing.len() as u64, total);
                 crate::logf!("UPDATE: artefact already staged + hash-verified on disk ({} bytes) — skipping re-download", existing.len());
                 return Ok(());
@@ -283,12 +305,23 @@ fn download_verified(
         .error_for_status()
         .map_err(|e| format!("artefact fetch: {e}"))?;
     // Denominator preference: the SIGNED manifest's size, then Content-Length. A cache-busted fresh binary is always a CDN cache MISS, and Cloudflare streams origin pulls chunked — no Content-Length at all — which is why the bar never filled before the manifest carried the size.
-    let total = if row.size > 0 { row.size } else { resp.content_length().unwrap_or(0) };
-    crate::logf!("UPDATE: downloading ({} bytes expected; manifest={}, content-length={})", total, row.size, resp.content_length().unwrap_or(0));
+    let total = if row.size > 0 {
+        row.size
+    } else {
+        resp.content_length().unwrap_or(0)
+    };
+    crate::logf!(
+        "UPDATE: downloading ({} bytes expected; manifest={}, content-length={})",
+        total,
+        row.size,
+        resp.content_length().unwrap_or(0)
+    );
     let mut bytes: Vec<u8> = Vec::with_capacity(total as usize);
     let mut chunk = vec![0u8; 1 << 16];
     loop {
-        let n = resp.read(&mut chunk).map_err(|e| format!("artefact read: {e}"))?;
+        let n = resp
+            .read(&mut chunk)
+            .map_err(|e| format!("artefact read: {e}"))?;
         if n == 0 {
             break;
         }
@@ -314,7 +347,10 @@ fn download_verified(
 
 /// Desktop one-click apply: download next to the current exe, verify (hash + appended signature), swap atomically. Returns the exe path for the caller to re-exec into. Unix: rename() over the path is atomic and the running process keeps its open inode. Windows: the running exe is locked against overwrite but CAN be renamed aside — shuffle to .old (deleted on some future launch), place the new exe, done.
 #[cfg(not(target_os = "android"))]
-pub fn apply_desktop_blocking(row: &ManifestRow, progress: &dyn Fn(u64, u64)) -> Result<PathBuf, String> {
+pub fn apply_desktop_blocking(
+    row: &ManifestRow,
+    progress: &dyn Fn(u64, u64),
+) -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     let staged = exe.with_extension("update-staged");
     download_verified(row, &staged, true, progress)?;
@@ -336,7 +372,13 @@ pub fn apply_desktop_blocking(row: &ManifestRow, progress: &dyn Fn(u64, u64)) ->
             return Err(format!("swap: {e}"));
         }
     }
-    crate::logf!("UPDATE: applied {}/{} {} ({}) — re-exec pending", row.platform, row.arch, row.version_string(), hex::encode(&row.commit));
+    crate::logf!(
+        "UPDATE: applied {}/{} {} ({}) — re-exec pending",
+        row.platform,
+        row.arch,
+        row.version_string(),
+        hex::encode(&row.commit)
+    );
     Ok(exe)
 }
 
@@ -352,7 +394,10 @@ pub fn sweep_old_binary() {
 
 /// Android: download + hash-verify the APK into the app's files dir and return its path — the caller hands it to the system installer (the second click). No appended-signature check: APKs are signed by the Android keystore and verified by the OS installer; integrity here = the BLAKE3 from the SIGNED manifest.
 #[cfg(target_os = "android")]
-pub fn download_apk_blocking(row: &ManifestRow, progress: &dyn Fn(u64, u64)) -> Result<PathBuf, String> {
+pub fn download_apk_blocking(
+    row: &ManifestRow,
+    progress: &dyn Fn(u64, u64),
+) -> Result<PathBuf, String> {
     let dir = kete::android_vault_dirs()
         .map(|(files, _)| files)
         .ok_or("android files dir not wired")?;

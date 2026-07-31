@@ -117,7 +117,8 @@ pub fn init_logging() {}
 /// Log this instead of a plaintext handle — the durable log then carries pseudonymous identifiers, never names, so it stays diagnostic (you can correlate a fingerprint across a run) without leaking who anyone is.
 /// The dozenal digit NAMES, digit 0..11 — Zil(0)/Zila(1)/Zilor(2)/Ter(3)/Tera(4)/Teror(5)/Lun(6)/Luna(7)/Lunor(8)/Stel(9)/Stela(10)/Stelor(11); the same set the Oxanium `+glyphs` face draws at 0x10..0x1B. UI shows the GLYPHS, logs/read-aloud show these WORDS. Never arabic.
 pub const DOZENAL_NAMES: [&str; 12] = [
-    "Zil", "Zila", "Zilor", "Ter", "Tera", "Teror", "Lun", "Luna", "Lunor", "Stel", "Stela", "Stelor",
+    "Zil", "Zila", "Zilor", "Ter", "Tera", "Teror", "Lun", "Luna", "Lunor", "Stel", "Stela",
+    "Stelor",
 ];
 
 /// Render `n` in dozenal as reserved control-code bytes 0x10+digit — the Oxanium `+glyphs` face draws them as the dozenal digits. UI-only: terminals show garbage, so LOG paths use [`dozenal_words`] instead.
@@ -279,7 +280,7 @@ static LOG_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::n
 const LOG_AGE_TRIGGER_BASE_OSC: i64 = 2 * 24 * 60 * 60 * vsf::OSCILLATIONS_PER_SECOND as i64; // jittered → 24–48h
 #[cfg(feature = "logging")]
 const LOG_AGE_KEEP_BASE_OSC: i64 = 24 * 60 * 60 * vsf::OSCILLATIONS_PER_SECOND as i64; // jittered → 12–24h
-// The currently-chosen (jittered) trigger threshold; re-rolled on open and after each trim.
+                                                                                       // The currently-chosen (jittered) trigger threshold; re-rolled on open and after each trim.
 #[cfg(feature = "logging")]
 static LOG_AGE_TRIGGER_OSC: std::sync::atomic::AtomicI64 =
     std::sync::atomic::AtomicI64::new(LOG_AGE_TRIGGER_BASE_OSC);
@@ -347,7 +348,11 @@ fn append_log_record(level: LogLevel, msg: &str, vals: &[LogValue]) {
         if let Some(dir) = log_dir() {
             let _ = std::fs::create_dir_all(&dir);
             let path = dir.join("photon.log.vsf");
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
                 // Drain the pre-dir buffer FIRST so the file stays chronological, then seed the counters (metadata already includes the drained bytes).
                 if let Ok(mut pending) = LOG_PENDING.lock() {
                     if !pending.is_empty() {
@@ -416,7 +421,11 @@ fn trim_log_file(now_osc: i64) -> Option<(std::fs::File, u64, i64)> {
     #[cfg(unix)]
     let _trim_lock = {
         use std::os::unix::io::AsRawFd;
-        let lf = std::fs::OpenOptions::new().create(true).write(true).open(&path).ok()?;
+        let lf = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&path)
+            .ok()?;
         if unsafe { libc::flock(lf.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return None;
         }
@@ -436,7 +445,11 @@ fn trim_log_file(now_osc: i64) -> Option<(std::fs::File, u64, i64)> {
     w.write_all(kept).ok()?;
     w.flush().ok()?;
     drop(w);
-    let appender = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok()?;
+    let appender = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
     Some((appender, kept.len() as u64, new_oldest))
 }
 
@@ -561,7 +574,10 @@ mod log_cap_tests {
         let (keep, _oldest) = log_keep_offset(&bytes, trim_to, i64::MIN); // age disabled → size-only
 
         // The cut lands exactly on a record boundary...
-        assert!(starts.contains(&keep), "cut at {keep} is not a record boundary");
+        assert!(
+            starts.contains(&keep),
+            "cut at {keep} is not a record boundary"
+        );
         assert!(keep > 0, "should have dropped something");
         // ...the kept tail is no larger than the target (we keep from the FIRST boundary past the drop point)...
         let kept = &bytes[keep..];
@@ -576,7 +592,11 @@ mod log_cap_tests {
             off += he + p;
             n += 1;
         }
-        assert_eq!(off, kept.len(), "kept tail must end exactly on a record boundary");
+        assert_eq!(
+            off,
+            kept.len(),
+            "kept tail must end exactly on a record boundary"
+        );
         assert!(n > 0);
     }
 
@@ -803,7 +823,8 @@ pub fn parse_log_records(buf: &[u8]) -> (Vec<LogRecord>, usize) {
                     let (ip_bytes, port_bytes) = vec.data.split_at(vec.data.len() - 2);
                     let port = u16::from_le_bytes([port_bytes[0], port_bytes[1]]);
                     let ip: std::net::IpAddr = if ip_bytes.len() == 4 {
-                        std::net::Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]).into()
+                        std::net::Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3])
+                            .into()
                     } else {
                         let mut o = [0u8; 16];
                         o.copy_from_slice(ip_bytes);
@@ -825,7 +846,12 @@ pub fn parse_log_records(buf: &[u8]) -> (Vec<LogRecord>, usize) {
             Some(VsfType::e(EtType::e7(o))) => *o as i64,
             _ => 0,
         };
-        records.push(LogRecord { osc, level, msg, raw: rest[..rec].to_vec() });
+        records.push(LogRecord {
+            osc,
+            level,
+            msg,
+            raw: rest[..rec].to_vec(),
+        });
         off += rec;
     }
     (records, off)
@@ -905,8 +931,15 @@ impl log::Log for VsfLogBridge {
     fn enabled(&self, meta: &log::Metadata) -> bool {
         // Known-chatty dependencies held to Warn+ so their DEBUG streams don't drown the log: naga/wgpu flood per-shader-variable on every pipeline build; rustls/tungstenite/hyper/h2 flood per-connection handshake detail (observed burying the JOIN ceremony trace within a session).
         const NOISY: &[&str] = &[
-            "cosmic_text", "reqwest", "naga", "wgpu",
-            "rustls", "tungstenite", "tokio_tungstenite", "hyper", "h2",
+            "cosmic_text",
+            "reqwest",
+            "naga",
+            "wgpu",
+            "rustls",
+            "tungstenite",
+            "tokio_tungstenite",
+            "hyper",
+            "h2",
             // jni logs an attach/detach DEBUG pair on every status-thread hop — ~16,000 lines per Android session, the single largest consumer of the 16 MiB log window (it shortens how much real history a submission carries).
             "jni",
         ];

@@ -32,7 +32,6 @@ pub fn seed_pipe_url(device_pubkey_hex: &str) -> String {
     format!("wss://{SEED_HOST}/pipe?dev={device_pubkey_hex}")
 }
 
-
 /// The process-wide async runtime. Every FGTW `block_on` / spawn uses this one, so reqwest's connection pool stays warm across calls. Multi-thread so the worker threads (query, status, …) can `block_on` it concurrently.
 pub fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
