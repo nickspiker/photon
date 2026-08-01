@@ -1556,6 +1556,28 @@ impl PhotonApp {
             vsf::eagle_time_oscillations().to_le_bytes().to_vec(),
         );
         let kp = self.device_keypair.clone();
+        // The scoped-blob reader set (docs/scoped-blobs.md), gathered here because it needs `&self`: our own fleet key so every sibling can read, plus the CLUTCH pair secret for each friend. A friend with no pair secret yet is simply not a reader this round — their slot appears the next time we publish after their ceremony completes.
+        let scoped_readers: Vec<[u8; 32]> = {
+            let mut r = Vec::new();
+            if let Some(fk) = self.fleet_key_cached() {
+                r.push(fk);
+            }
+            if let (Some(ours), Some(storage)) = (
+                self.device_keypair.as_ref().map(|k| *k.public.as_bytes()),
+                self.storage.as_ref(),
+            ) {
+                for c in self.contacts.iter().filter(|c| !c.is_sibling) {
+                    if let Some(ps) = crate::storage::fanout_pairs::load(
+                        &ours,
+                        c.public_identity.as_bytes(),
+                        storage,
+                    ) {
+                        r.push(ps);
+                    }
+                }
+            }
+            r
+        };
         let (px_tx, px_rx) = std::sync::mpsc::channel();
         self.avatar_set_rx = Some(px_rx);
         let wake = self.event_proxy.clone();
@@ -1601,6 +1623,21 @@ impl PhotonApp {
                     ) {
                         Ok(_) => {
                             crate::log("avatar picker: FGTW upload ok");
+                            // Scoped publish: one ciphertext plus a private slot per reader. This is what friends actually read now — the pin upload above stays only until every avatar in the fleet has been re-set under the new scheme.
+                            if scoped_readers.is_empty() {
+                                crate::log("SCOPED: no readers yet (no fleet key, no egged friends) — slots follow the next publish");
+                            } else {
+                                match crate::ui::avatar_scoped::publish_blocking(
+                                    &av1_data,
+                                    &scoped_readers,
+                                    crate::ui::avatar_scoped::AVATAR_PURPOSE,
+                                    &kp,
+                                    &hp,
+                                ) {
+                                    Ok(_) => {}
+                                    Err(e) => crate::logf!("SCOPED: avatar publish failed: {}", e),
+                                }
+                            }
                             // The rotation's second half: the OLD slot dies once the new one is live — no orphan blobs, and a polluted/shared slot stops serving this identity's history.
                             if let Some(op) = old_pin.filter(|op| *op != pin) {
                                 let sk =
@@ -13997,24 +14034,52 @@ impl PhotonApp {
             return;
         };
         let (hp, party_id, avatar_pin) = (c.handle_proof, c.handle_hash, c.avatar_pin);
-        if avatar_pin == [0u8; 64] {
-            return; // unpinned (old row / sibling) — nothing to decrypt with
-        }
+        let their_device = *c.public_identity.as_bytes();
         if self.avatar_dl_started.contains(&hp) {
             return;
         }
         let Some(storage) = self.storage.as_ref().map(Arc::clone) else {
             return;
         };
+        // The scoped-blob reader key: the CLUTCH pair secret we share with this friend's device. It addresses AND opens our private slot, so no pin has to be announced to us at all — we simply look where only the two of us can look.
+        let scoped_kek = self
+            .device_keypair
+            .as_ref()
+            .map(|kp| *kp.public.as_bytes())
+            .and_then(|ours| {
+                crate::storage::fanout_pairs::load(&ours, &their_device, storage.as_ref())
+            });
+        if scoped_kek.is_none() && avatar_pin == [0u8; 64] {
+            return; // no scoped slot to read and no legacy pin — nothing to fetch with
+        }
         self.avatar_dl_started.insert(hp);
         let tx = self.avatar_dl_tx.clone();
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
         std::thread::spawn(move || {
-            // Cache-first, FGTW on a miss — everything keyed off the pin (docs/identity-profile.md).
-            let pixels =
-                crate::ui::avatar::download_avatar_pinned(&party_id, &avatar_pin, &storage)
-                    .map(|(_, p)| p);
+            // Scoped blob first (docs/scoped-blobs.md): our private slot names the ciphertext and carries its key. Falls back to the legacy pin only while avatars published under the old scheme are still out there — a friend who has re-set their avatar since is served entirely by the slot.
+            let pixels = scoped_kek
+                .and_then(|kek| {
+                    let raw = crate::ui::avatar_scoped::fetch_blocking(
+                        &kek,
+                        crate::ui::avatar_scoped::AVATAR_PURPOSE,
+                    )?;
+                    let (_, px) = crate::ui::avatar::decode_avatar_av1_to_display(&raw)?;
+                    crate::log("AVATAR: fetched from our scoped slot");
+                    Some(px)
+                })
+                .or_else(|| {
+                    (avatar_pin != [0u8; 64])
+                        .then(|| {
+                            crate::ui::avatar::download_avatar_pinned(
+                                &party_id,
+                                &avatar_pin,
+                                &storage,
+                            )
+                            .map(|(_, p)| p)
+                        })
+                        .flatten()
+                });
             let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
                 owner: Some(hp),
                 pixels,

@@ -968,6 +968,12 @@ pub fn download_avatar_pinned(
     Some(loaded)
 }
 
+/// Decode raw AV1 avatar bytes straight to display pixels. The scoped-blob path hands us plaintext AV1 already — the slot carried the key and the content object carried the image — so there is no VSF envelope to unwrap and no second decryption to perform, unlike the pin path where the bytes arrive still sealed.
+pub fn decode_avatar_av1_to_display(av1_data: &[u8]) -> Option<(usize, Vec<u8>)> {
+    let (w, h, pixels) = decode_avatar(av1_data).ok()?;
+    (w == h).then_some((w, pixels))
+}
+
 /// Recover OUR OWN avatar after a local clear, from the wall copy we published.
 ///
 /// The wall slot is addressed and keyed by the PIN (random since the pin stopped being seed-derived), while the vault copy is seed-keyed — so the old seed-addressed recovery looked in a slot nothing has written since that change and found nothing (peer_a, live 2026-08-01: picked an avatar, then "No local avatar to serve"). Only an identity whose avatar predates the random pin still has anything in the seed slot, which is why one device recovered and the other didn't.
