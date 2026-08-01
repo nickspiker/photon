@@ -1,12 +1,44 @@
 //! VSF packet inspection and logging
 //!
 //! Centralized packet inspection for all network transports (UDP, TCP, PT). Provides human-readable VSF packet formatting with optional noise filtering.
+//!
+//! SELECTIVITY (2026-08-01): the formatter is not the problem — it already summarises big payloads as `N u8 tensor` rather than dumping bytes, so a 573 KB CLUTCH offer renders in ~60 lines, not half a million. The problem is VOLUME: one session inspected 439 frames at ~58 lines each, so 25,687 of 26,715 log lines were inspection trees and only ~800 were actual log content — which also meant the 16 MiB self-trim kept eating whole sessions.
+//! So inspection is now OPT-IN per channel via the `PHOTON_INSPECT` env var, read once. `PHOTON_INSPECT=net` for wire frames, `disk` for vault reads, `all` for both, unset for none. The tool stays one flag away for the debugging it was written for; it just stops being the default in a build people run all day.
+
+use std::sync::OnceLock;
+
+/// Which inspection channels are enabled, parsed once from `PHOTON_INSPECT` (comma-separated: `net`, `disk`, `all`).
+fn inspect_channels() -> &'static (bool, bool) {
+    static CHANNELS: OnceLock<(bool, bool)> = OnceLock::new();
+    CHANNELS.get_or_init(|| {
+        let raw = std::env::var("PHOTON_INSPECT").unwrap_or_default();
+        let raw = raw.to_ascii_lowercase();
+        let all = raw.split(',').any(|t| t.trim() == "all");
+        (
+            all || raw.split(',').any(|t| t.trim() == "net"),
+            all || raw.split(',').any(|t| t.trim() == "disk"),
+        )
+    })
+}
+
+/// Wire-frame inspection enabled (`PHOTON_INSPECT=net`).
+pub fn inspect_net_enabled() -> bool {
+    inspect_channels().0
+}
+
+/// Vault-read inspection enabled (`PHOTON_INSPECT=disk`).
+pub fn inspect_disk_enabled() -> bool {
+    inspect_channels().1
+}
 
 /// Format a VSF packet as a human-readable inspection string (like vsfinfo) Public for use across network modules (FGTW transport, P2P, etc.) Returns empty string for noisy packets (ping/pong/lan_discovery) unless verbose-network is enabled
 ///
 /// Title format: `═══ VSF {transport} {TX|RX} {addr} ({bytes} bytes) ═══` Section names come from the VSF data itself (shown in parsed output below title)
 #[cfg(feature = "development")]
 pub fn vsf_inspect(data: &[u8], transport: &str, direction: &str, addr: &str) -> String {
+    if !inspect_net_enabled() {
+        return String::new();
+    }
     // PT DATA packets: stream_id ('a'-'z') + varint seq + payload - filter unless verbose-network
     #[cfg(not(feature = "verbose-network"))]
     if data.len() > 1 && (b'a'..=b'z').contains(&data[0]) {
@@ -297,6 +329,9 @@ pub fn vsf_read(path: &Path, label: &str, device_secret: &[u8; 32]) -> std::io::
 /// This is separate from vsf_read because decryption happens in the caller.
 #[cfg(feature = "development")]
 pub fn vsf_read_decrypted(decrypted: &[u8], label: &str) {
+    if !inspect_disk_enabled() {
+        return;
+    }
     let msg = section_inspect(decrypted, "Disk", "Read", &format!("{} (decrypted)", label));
     if !msg.is_empty() {
         crate::log(&msg);

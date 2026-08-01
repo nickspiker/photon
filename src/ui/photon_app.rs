@@ -20157,19 +20157,13 @@ impl PhotonApp {
                                             .as_ref()
                                             .is_some_and(|r| r.complete));
 
-                                    // Persist the new rows + the cursor (AGENT.md: every change hits disk).
+                                    // Persist the new rows + the cursor (AGENT.md: every change hits disk) — but OFF the UI thread. Both writes used to run inline, once per page: an encrypted row append plus a full contact-state rewrite. With 123 pages merged in a single session that is 246 blocking writes on the render thread, and the arm timer caught them at 159-349ms each — the biggest single source of the "everything feels laggy" the user reported.
+                                    // The coalescing writer already exists for exactly this shape (it killed the 5.7s MessageAck stalls) and keeps only the newest snapshot per contact, so a burst of pages costs ONE write instead of one per page. The cursor rides the same snapshot because it lives in the contact.
+                                    if !fresh.is_empty() {
+                                        // Deferred: the drain holds an immutable borrow of the status checker, so the queue is drained into the coalescing writer after the loop (same `persist_hashes` path every other arm uses).
+                                        persist_hashes.push(self.contacts[idx].handle_hash);
+                                    }
                                     if let Some(storage) = self.storage.as_ref() {
-                                        if !fresh.is_empty() {
-                                            if let Err(e) =
-                                                crate::storage::contacts::save_messages_page(
-                                                    &their_seed,
-                                                    &fresh,
-                                                    storage,
-                                                )
-                                            {
-                                                crate::logf!("HISTORY: page persist failed: {}", e);
-                                            }
-                                        }
                                         let contact_ref = &self.contacts[idx];
                                         if let Err(e) = crate::storage::contacts::save_contact(
                                             contact_ref,
