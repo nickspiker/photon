@@ -2587,9 +2587,9 @@ impl FluorApp for PhotonApp {
                             // No pin at rest yet (settings still loading) — the tick retries once one lands.
                             self.self_avatar_recover_pending = Some(remembered.identity_seed);
                         }
-                        // Bootstrap the notes-to-self contact on THIS device (register-derived, no handle needed), then force any self-contact Complete before re-keying so it's excluded (a self-contact has no peer to key with).
-                        self.ensure_self_contact();
+                        // Notes-to-self is NOT bootstrapped (Nick 2026-08-01): an empty conversation with yourself is not a contact you asked for, and it sat at the top of the list looking broken because it has no peer to pong a name or avatar. Add yourself deliberately and it appears; until then the list holds only people you chose. `settle_self_contacts` still runs so an EXISTING self row (added by you, or carried from an older build) is Complete before re-keying — it has no peer to key with.
                         self.settle_self_contacts();
+                        self.settle_self_display();
                         // Re-key Pending contacts that still lack keypairs after the rehydrate — but ONE AT A TIME (spawn_next_pending_keygen, repeated each tick), never all at once: parallel McEliece keygens on launch starved the UI thread.
                         self.spawn_next_pending_keygen();
                     }
@@ -9121,6 +9121,9 @@ impl PhotonApp {
             }
         }
 
+        // Keep any notes-to-self row showing OUR name and avatar — a profile edit or a fresh avatar must reach it, and nothing else ever will (no peer pongs us).
+        self.settle_self_display();
+
         // A sibling pair just became egged — rotate so its wrap exists (Phase A). Edge-driven off the ceremony drain, never polled.
         if std::mem::take(&mut self.fanout_rotate_pending) {
             crate::log("FANOUT: newly egged sibling — rotating so it gets a wrap");
@@ -13461,8 +13464,7 @@ impl PhotonApp {
                     }
                     self.spawn_contact_fleet_refresh(vec![data.handle_proof]);
                 }
-                // Bootstrap the notes-to-self contact on every attest path too (JOIN-flow first attest, re-attest after a clear) — register-derived, so it needs nothing the resume loader had.
-                self.ensure_self_contact();
+                // Notes-to-self is not created here either — see the resume path. Adding yourself is a deliberate act.
                 self.hints_dismissed = false;
                 // Only flip to Ready on the INITIAL attest (we were still on the Launch screen). This Success branch also fires on every recurring background resume refresh — if the user has already navigated in-app (Ready, or inside a Conversation), forcing Ready here would yank them out of an open chat back to the contact list each sweep.
                 if !in_app {
@@ -15539,6 +15541,41 @@ impl PhotonApp {
         if let (Some(c), Some(storage)) = (self.contacts.last(), self.storage.as_ref()) {
             if let Err(e) = crate::storage::contacts::save_contact(c, storage) {
                 crate::logf!("SELF: failed to persist self-contact: {}", e);
+            }
+        }
+    }
+
+    /// A notes-to-self row displays OUR OWN name and avatar, because there is no peer to pong them: `published_name` and `avatar_pin` are populated by a friend answering our ping, and we never ping ourselves. Left alone the row reads "Pending…" with a placeholder picture forever — the identity you are logged in as, rendered as a stranger.
+    fn settle_self_display(&mut self) {
+        let (Some(our_pid), Some(name)) = (
+            self.session
+                .as_ref()
+                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)),
+            self.fleet_settings
+                .as_ref()
+                .and_then(|fs| fs.effective("profile.name"))
+                .map(|v| String::from_utf8_lossy(&v).into_owned()),
+        ) else {
+            return;
+        };
+        if name.is_empty() {
+            return;
+        }
+        let ours = self.device_avatar_pixels.clone();
+        for c in self
+            .contacts
+            .iter_mut()
+            .filter(|c| !c.is_sibling && c.handle_hash == our_pid)
+        {
+            if c.published_name != name {
+                c.published_name = name.clone();
+            }
+            // Our own avatar pixels, already decoded for the profile header — no fetch, no pin, no slot: it is the same image one struct field away.
+            if c.avatar_pixels.is_none() {
+                if let Some(px) = ours.clone() {
+                    c.avatar_pixels = Some(px);
+                    c.avatar_scaled = None;
+                }
             }
         }
     }
