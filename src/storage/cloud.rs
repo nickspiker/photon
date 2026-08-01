@@ -53,6 +53,8 @@ pub struct CloudContact {
     pub party_id: [u8; 32],
     /// The pinned avatar-wall material: AES key ‖ lookup hash (zero = unpinned).
     pub avatar_pin: [u8; 64],
+    /// The friend's published display name. This blob is the WIPE-RECOVERY path, so whatever it omits comes back blank: when the petname column was removed (2026-08-01) nothing replaced it, and a wiped device restored every contact with its avatar but no name — all of them reading "Pending…" while the pictures showed instantly. The pin was here and the name was not.
+    pub published_name: String,
     pub device_pubkey: [u8; 32],
     pub trust_level: u8,
     pub added: i64,
@@ -64,6 +66,7 @@ impl From<&Contact> for CloudContact {
             handle_proof: c.handle_proof,
             party_id: c.handle_hash,
             avatar_pin: c.avatar_pin,
+            published_name: c.published_name.clone(),
             device_pubkey: *c.public_identity.as_bytes(),
             trust_level: trust_level_to_u8(c.trust_level),
             added: c.added,
@@ -133,6 +136,7 @@ pub fn encode_contacts(
                     VsfType::hP(c.handle_proof.to_vec()),
                     VsfType::ke(c.party_id.to_vec()),
                     VsfType::ge(c.avatar_pin.to_vec()),
+                    VsfType::x(c.published_name.clone()),
                     VsfType::ke(c.device_pubkey.to_vec()),
                     VsfType::u3(c.trust_level),
                     VsfType::e(vsf::types::EtType::e6(c.added)),
@@ -192,6 +196,7 @@ fn decode_contact_rows<'a>(
         let mut party_id: Option<[u8; 32]> = None;
         let mut device_pubkey: Option<[u8; 32]> = None;
         let mut avatar_pin: Option<[u8; 64]> = None;
+        let mut published_name = String::new();
         let mut trust_level = 0u8;
         let mut added = 0i64;
 
@@ -212,7 +217,7 @@ fn decode_contact_rows<'a>(
                 VsfType::ge(b) if b.len() == 64 => {
                     avatar_pin = b.as_slice().try_into().ok();
                 }
-                // A stray `x` is a pre-removal petname value — dead, ignored.
+                VsfType::x(s) => published_name = s.clone(),
                 VsfType::u3(t) => trust_level = *t,
                 VsfType::e(vsf::types::EtType::e6(osc)) => added = *osc,
                 _ => {}
@@ -230,6 +235,7 @@ fn decode_contact_rows<'a>(
             handle_proof,
             party_id,
             avatar_pin,
+            published_name,
             device_pubkey,
             trust_level,
             added,
@@ -248,6 +254,7 @@ impl CloudContact {
             self.party_id,
             DevicePubkey::from_bytes(self.device_pubkey),
         );
+        contact.published_name = self.published_name.clone();
         contact.trust_level = u8_to_trust_level(self.trust_level);
         contact.added = self.added;
         contact
@@ -402,6 +409,7 @@ mod tests {
                 handle_proof: [1u8; 32],
                 party_id: [0xA1u8; 32],
                 avatar_pin: [0xA2u8; 64],
+                published_name: "Chosen".to_string(),
                 device_pubkey: [2u8; 32],
                 trust_level: 1,
                 added: 1234567890,
@@ -410,6 +418,7 @@ mod tests {
                 handle_proof: [3u8; 32],
                 party_id: [0xB1u8; 32],
                 avatar_pin: [0xB2u8; 64],
+                published_name: "Chosen".to_string(),
                 device_pubkey: [4u8; 32],
                 trust_level: 2,
                 added: 1234567891,
@@ -431,6 +440,7 @@ mod tests {
             handle_proof: [1u8; 32],
             party_id: [0xA1u8; 32],
             avatar_pin: [0xA2u8; 64],
+            published_name: "Chosen".to_string(),
             device_pubkey: [2u8; 32],
             trust_level: 1,
             added: 1234567890,
@@ -456,6 +466,7 @@ mod document_tests {
                 handle_proof: [0x11; 32],
                 party_id: [0x22; 32],
                 avatar_pin: [0x33; 64],
+                published_name: "Chosen".to_string(),
                 device_pubkey: [0x44; 32],
                 trust_level: 2,
                 added: 1234567890,
@@ -464,6 +475,7 @@ mod document_tests {
                 handle_proof: [0x55; 32],
                 party_id: [0x66; 32],
                 avatar_pin: [0u8; 64],
+                published_name: "Chosen".to_string(),
                 device_pubkey: [0x77; 32],
                 trust_level: 0,
                 added: -42,
