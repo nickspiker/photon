@@ -15,6 +15,10 @@ build_sign_install() {
     source "$(dirname "${BASH_SOURCE[0]}")/migration-gate.sh"
     migration_gate
 
+    # Wrapped-comment ratchet: one line per thought, never hard-wrapped — covers photon and the fgtw path-dep, zero baseline.
+    source "$(dirname "${BASH_SOURCE[0]}")/comment-gate.sh"
+    comment_gate
+
     # Source freeze: reflink-snapshot photon + its path-dep closure THIS instant and build from the frozen copy — edits made while the build runs can't tear it. Off-btrfs (or any snapshot failure) builds the live tree exactly as before. Target stays the real ./target (see snapbuild.sh for why that's cache-coherent), so sign + install below are untouched.
     source "$(dirname "${BASH_SOURCE[0]}")/snapbuild.sh"
     local build_dir="."
