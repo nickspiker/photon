@@ -720,6 +720,11 @@ impl StatusChecker {
         let _ = self.history_sender.send(request);
     }
 
+    /// A cloneable handle for dispatching history pages from a WORKER thread. Serving a page means reading and decrypting up to 50 vault rows and sealing them — measured at 2.2s on the UI thread, which is what a peer's backfill request felt like from the inside. The work moves off the render loop; only this sender needs to travel with it.
+    pub fn history_dispatch(&self) -> Sender<HistorySendRequest> {
+        self.history_sender.clone()
+    }
+
     /// Start a PT large transfer (non-blocking) Ask a reachable peer (by address) for the peer records it holds — phonebook gossip. Used when our own fgtw is unreachable but a friend is: they answer with self-signed records that merge into the shared peer store, so a friend we can't reach gets learned from one we can.
     pub fn send_phonebook_request(&self, addr: SocketAddr) {
         let _ = self.phonebook_req_sender.send(addr);
