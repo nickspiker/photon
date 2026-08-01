@@ -2720,6 +2720,7 @@ impl FluorApp for PhotonApp {
             if matches!(self.state, AppState::ContactPanel(_)) {
                 self.contact_boot_armed = false;
                 self.state = AppState::Conversation;
+                self.reset_contact_ping_backoff();
                 // The conversation is the active view again — clear any unread that slipped in (no-op when already 0).
                 if let Some(ci) = self.active_contact {
                     self.clear_unread(ci);
@@ -3085,6 +3086,7 @@ impl FluorApp for PhotonApp {
                 );
                 self.active_contact = Some(ci);
                 self.state = AppState::Conversation;
+                self.reset_contact_ping_backoff();
                 self.conv_topbar_off = 0.0;
                 // Opening the conversation is the interaction that clears unread (ring + float drop away on the next contacts-list frame).
                 self.clear_unread(ci);
@@ -3829,6 +3831,7 @@ impl FluorApp for PhotonApp {
                         if matches!(self.state, AppState::ContactPanel(_)) {
                             self.contact_boot_armed = false;
                             self.state = AppState::Conversation;
+                self.reset_contact_ping_backoff();
                             // Same re-entry clear as the Back button — the conversation is front-of-eyes again.
                             if let Some(ci) = self.active_contact {
                                 self.clear_unread(ci);
@@ -15586,6 +15589,17 @@ impl PhotonApp {
         changed
     }
 
+    /// Collapse the ACTIVE contact's presence backoff — called when its conversation opens. Looking at someone is the clearest possible signal that their presence matters now, and it is the escape hatch that makes an hour-long backoff safe to have at all.
+    fn reset_contact_ping_backoff(&mut self) {
+        if let Some(c) = self
+            .active_contact
+            .and_then(|ci| self.contacts.get_mut(ci))
+        {
+            c.ping_backoff = 0;
+            c.last_pinged = None; // due immediately, so the ring is fresh by the time it renders
+        }
+    }
+
     /// Current presence-sweep interval, chosen by how long since the user last interacted. Active (5s) while engaged → idle (1min) → deep-idle (15min). `now` is the tick's clock. Jittered to 50–100% of the tier so a roomful of devices doesn't ping their contacts in lockstep (a synchronised presence sweep is a self-inflicted DDoS). Presence timing is soft, so the fuzziness is free.
     fn presence_ping_interval(&self, now: Instant) -> std::time::Duration {
         let idle = self
@@ -15689,7 +15703,21 @@ impl PhotonApp {
             .session
             .as_ref()
             .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
-        for contact in &self.contacts {
+        let now = std::time::Instant::now();
+        let mut due: Vec<usize> = Vec::new();
+        for (i, contact) in self.contacts.iter().enumerate() {
+            if our_pid != Some(contact.handle_hash) && contact_ping_due(contact, now) {
+                due.push(i);
+            }
+        }
+        // Stamp before sending: a contact is "pinged this round" whether or not the send succeeds, or an unreachable address would be retried at the floor rate forever.
+        for &i in &due {
+            if let Some(c) = self.contacts.get_mut(i) {
+                c.last_pinged = Some(now);
+                c.ping_backoff = c.ping_backoff.saturating_add(1).min(PING_BACKOFF_MAX);
+            }
+        }
+        for contact in due.iter().filter_map(|&i| self.contacts.get(i)) {
             // The SELF contact is this fleet, not a peer — pinging/punching it storms our own addresses (7ff3835f probe spam, wrong-responder pongs) and burns mobile radio for nothing. Sibling contacts carry our devices' presence.
             if our_pid == Some(contact.handle_hash) {
                 continue;
@@ -17352,6 +17380,8 @@ impl PhotonApp {
                             // Reachability clock: only the POSITIVE report counts (a TIMEOUT arrives thru this same arm with is_online=false — silence is exactly what the clock measures).
                             if is_online {
                                 contact.last_heard = Some(std::time::Instant::now());
+                                // They spoke: this contact matters right now, so collapse its presence backoff to the floor.
+                                contact.ping_backoff = 0;
                             }
                             let identity_online = is_online || contact.any_device_online();
                             // True only on the offline→online EDGE, not every online ping/chat. Retransmit-of-pending (below) keys off this — without the edge gate it re-fired on every received chat (now that a chat marks the sender online), resending all pending messages in a storm.
@@ -21930,6 +21960,30 @@ fn path_tier_colour(c: &crate::types::Contact) -> Option<u32> {
         // Online with no proven direct path yet: the punch is still in flight, and every frame meanwhile rides the relay — say so rather than promising a direct path we don't have.
         *theme::PATH_RELAY_COLOUR
     })
+}
+
+/// How many doublings a contact's presence cadence may take: 1 minute at level 0 up to roughly an hour. Beyond that a contact is effectively "checked hourly", which is the floor Nick asked for on battery grounds.
+const PING_BACKOFF_MAX: u8 = 6;
+/// The base cadence a contact is polled at when something is actively going on with them.
+const PING_BASE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Is this contact due for a presence ping?
+///
+/// Backoff is PER CONTACT and doubles with each quiet round — 1, 2, 4 … up to ~an hour — so the friend you have not spoken to since March costs a request an hour, not one every twenty seconds. Anything that means "this contact matters right now" resets it to the floor: they spoke, we opened their conversation, we sent to them.
+///
+/// The one exception is a contact holding a VALIDATED direct path AND recent traffic: that path exists only because something keeps its NAT mapping warm, so letting it taper would drop us to the relay mid-conversation. A path with no recent traffic is allowed to lapse — holding every path open forever was the old global clamp, and it is what made the taper cosmetic.
+fn contact_ping_due(c: &crate::types::Contact, now: std::time::Instant) -> bool {
+    let Some(last) = c.last_pinged else {
+        return true; // never pinged — always reach a contact at least once
+    };
+    let recent_traffic = c
+        .last_heard
+        .is_some_and(|t| now.duration_since(t) < std::time::Duration::from_secs(120));
+    if c.validated_path.is_some() && recent_traffic {
+        return now.duration_since(last) >= VALIDATED_PATH_KEEPALIVE;
+    }
+    let interval = PING_BASE * (1u32 << c.ping_backoff.min(PING_BACKOFF_MAX));
+    now.duration_since(last) >= crate::jitter_dur(interval)
 }
 
 fn settings_line(
