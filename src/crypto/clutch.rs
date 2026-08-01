@@ -33,6 +33,38 @@ pub fn derive_conversation_token(participant_seeds: &[[u8; 32]]) -> [u8; 32] {
 /// Domain separation for the friend-history bulk key
 const HISTORY_KEY_DOMAIN: &[u8] = b"PHOTON_HISTORY_KEY_v0";
 
+// The fan-out pair secret's domain. Version is a literal binary numeral, never an ASCII digit in the string (repo convention 2026-08-01).
+const FANOUT_PAIR_DOMAIN_TEXT: &[u8] = b"PHOTON_FANOUT_PAIR_v";
+const FANOUT_PAIR_VERSION: u8 = 0;
+
+/// Derive the durable PAIR SECRET two fleet devices share after a CLUTCH ceremony: the post-quantum half of an egged fan-out wrap (Phase A). Symmetric by construction — device pubkeys are sorted — so both sides derive the same 32 bytes and either may be the rotator.
+///
+/// input = DOMAIN ‖ version ‖ sorted device pubkeys ‖ every egg, run thru spaghettify. The eggs carry all 8 KEM families, so a wrap keyed with this survives a future x25519 break; the fan-out still mixes the fresh ECDH alongside it, so this secret alone is not a skeleton key either. Derived at ceremony completion BEFORE the eggs are zeroized, then stored per pair.
+pub fn derive_fanout_pair_secret(
+    our_device_pubkey: &[u8; 32],
+    their_device_pubkey: &[u8; 32],
+    eggs: &ClutchEggs,
+) -> [u8; 32] {
+    let (lo, hi) = if our_device_pubkey <= their_device_pubkey {
+        (our_device_pubkey, their_device_pubkey)
+    } else {
+        (their_device_pubkey, our_device_pubkey)
+    };
+    let mut input =
+        Vec::with_capacity(FANOUT_PAIR_DOMAIN_TEXT.len() + 1 + 64 + eggs.eggs.len() * 32);
+    input.extend_from_slice(FANOUT_PAIR_DOMAIN_TEXT);
+    input.push(FANOUT_PAIR_VERSION);
+    input.extend_from_slice(lo);
+    input.extend_from_slice(hi);
+    for egg in &eggs.eggs {
+        input.extend_from_slice(egg);
+    }
+    let secret = spaghettify(&input);
+    // The buffer holds live egg material — scrub it.
+    input.zeroize();
+    secret
+}
+
 /// Derive the friend-history bulk key: the AEAD key that seals history-recovery pages between the participants, OUTSIDE the ratchet (bulk backfill must not advance or pollute the live braid).
 ///
 /// input = DOMAIN ‖ friendship_id ‖ each participant's ACTIVE chain half (8KB, links[256..512]) in participant-sorted order, run thru spaghettify (domain-separated, provably lossy — the key cannot be inverted back to chain material). Both sides hold byte-identical pristine chains at ceremony birth, so the key is identical; any later advance diverges — hence derive-at-birth only, in `FriendshipChains::from_clutch`. Superseded (and zeroized) on re-key.

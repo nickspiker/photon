@@ -1,6 +1,7 @@
 pub mod cloud;
 pub mod contacts;
 pub mod device_binding;
+pub mod fanout_pairs;
 pub mod fleet_settings;
 pub mod friendship;
 pub mod settings;
