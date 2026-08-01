@@ -3271,13 +3271,23 @@ async fn run_checker(
                 udp::send(&socket, &bytes_to_send, alt).await;
             }
             // No direct path proven → store on the relay in parallel. A peer we can't reach directly (asymmetric reachability — one end v6-only, the other v4-only behind symmetric NAT) still gets the offer via dual-stack fgtw.org. We relay explicitly here because the direct transfer keeps getting cancelled on address churn before its own retry-threshold relay fallback could fire.
+            let mut relayed = 0usize;
             for dev in &request.relay_to {
                 match crate::network::fgtw::relay::send_via_relay(&keypair, dev, &vsf_bytes).await {
                     Ok(()) => {
-                        crate::logf!("RELAY: stored ClutchOffer for {}", hex::encode(&dev[..4]))
+                        relayed += 1;
+                        crate::logf!("RELAY: ClutchOffer delivered to {}", hex::encode(&dev[..4]))
                     }
-                    Err(e) => crate::logf!("RELAY: ClutchOffer store failed: {}", e),
+                    Err(e) => crate::logf!("RELAY: ClutchOffer to {} did not land: {}", hex::encode(&dev[..4]), e),
                 }
+            }
+            // Nothing landed anywhere: no direct path took it and every device's pipe was closed, so this ~570KB offer was discarded in full (the pipe has no mailbox). Say so plainly — the old code logged "stored" for exactly this case and the ceremony then stalled with nothing in either log to explain it. The re-fire rides the existing edges: the doorbell wakes a dozing peer, and the offer re-sends when they come back.
+            if !request.relay_to.is_empty() && relayed == 0 {
+                crate::logf!(
+                    "CLUTCH: offer reached NOBODY — {} device(s) all offline; waiting for the peer to wake (doorbell) rather than re-blasting {}KB",
+                    request.relay_to.len(),
+                    vsf_bytes.len() / 1024
+                );
             }
         }
 
