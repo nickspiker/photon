@@ -939,6 +939,8 @@ pub struct PhotonApp {
     pending_fleet_key: Option<[u8; 32]>,
     /// In-flight fleet-roster pull; its `Ok` result merges into contacts, its `Err` triggers a retry — both drained in `tick`. `Some` = a pull is running, which also debounces re-spawns.
     roster_pull_rx: Option<std::sync::mpsc::Receiver<Result<fgtw::fstate::FleetState, String>>>,
+    /// A fleet-state pull has SUCCEEDED at least once this session (an empty slot counts — that is a real answer). Until it has, local settings are not authoritative: they may simply be a wiped device's blank slate, and anything derived from their ABSENCE would be derived from ignorance. Gates avatar-pin minting, which otherwise orphans the avatar already published under the fleet's real pin.
+    fstate_authoritative: bool,
     /// Message-table persist worker: conversation snapshots go over this channel to ONE background thread that coalesces (latest snapshot per handle_hash wins) and writes. `save_messages` is a full encrypted table rewrite — on the UI thread it was the named 600ms–5.7s stall behind every ChatMessage/MessageAck arm; off it, an ack is a field flip.
     persist_tx: Option<
         std::sync::mpsc::Sender<(
@@ -1358,6 +1360,7 @@ impl PhotonApp {
             add_join_rx: None,
             pending_fleet_key: None,
             roster_pull_rx: None,
+            fstate_authoritative: false,
             fleet_settings: None,
             needs_initial_roster_pull: false,
             roster_pull_retries_left: 0,
@@ -9606,6 +9609,8 @@ impl PhotonApp {
             Some(Ok(Ok(state))) => {
                 self.roster_pull_rx = None;
                 self.roster_pull_retries_left = 0;
+                // A real answer from the slot — empty or not. Local settings are only trustworthy about what the fleet DOESN'T have once this has happened.
+                self.fstate_authoritative = true;
                 // Settings layers fold in first (global LWW + device newest-copy-wins); a change persists and takes effect on the next read of each key — a sibling's toggle lands here.
                 if self.ensure_fleet_settings() {
                     let changed = self
@@ -11313,6 +11318,11 @@ impl PhotonApp {
                 p.copy_from_slice(&v);
                 return Some(p);
             }
+        }
+        // MINTING IS DESTRUCTIVE: the pin both addresses and decrypts the avatar already on the wall, so a fresh one orphans it — the avatar "disappears" and no recovery can find it again (observed twice, 2026-08-01). Absence of a stored pin means "the fleet has none" ONLY once a fleet-state pull has actually answered; on a wiped device that has not yet read the slot, absence means we simply do not know yet. Wait instead: the next successful pull either hands us the fleet's pin or proves there is none.
+        if !self.fstate_authoritative {
+            crate::log("AVATAR: no pin yet and the fleet state is unread — waiting rather than minting one that would orphan the published avatar");
+            return None;
         }
         use rand::RngCore;
         let mut pin = [0u8; 64];
