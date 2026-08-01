@@ -968,6 +968,58 @@ pub fn download_avatar_pinned(
     Some(loaded)
 }
 
+/// Recover OUR OWN avatar after a local clear, from the wall copy we published.
+///
+/// The wall slot is addressed and keyed by the PIN (random since the pin stopped being seed-derived), while the vault copy is seed-keyed — so the old seed-addressed recovery looked in a slot nothing has written since that change and found nothing (peer_a, live 2026-08-01: picked an avatar, then "No local avatar to serve"). Only an identity whose avatar predates the random pin still has anything in the seed slot, which is why one device recovered and the other didn't.
+/// Recovery therefore fetches by pin lookup, decrypts with the pin key, and rewrites the vault in its CANONICAL seed-keyed form — so serving to a friend, re-uploading, and the local cache all behave exactly as if the avatar had just been picked on this device.
+pub fn recover_own_avatar_from_wall(
+    identity_seed: &[u8; 32],
+    avatar_pin: &[u8; 64],
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Option<Vec<u8>> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let mut pin_key = [0u8; 32];
+    pin_key.copy_from_slice(&avatar_pin[..32]);
+    let storage_key = URL_SAFE_NO_PAD.encode(&avatar_pin[32..]);
+    crate::logf!(
+        "Avatar: recovering own avatar from the wall ({}...)",
+        &storage_key[..8]
+    );
+    let get_vsf = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .add_section("avatar_get", vec![("key".to_string(), VsfType::d(storage_key))])
+        .build()
+        .ok()?;
+    let response = crate::network::http::blocking()
+        .post(FGTW_URL)
+        .timeout(std::time::Duration::from_secs(30))
+        .header("Content-Type", "application/octet-stream")
+        .body(get_vsf)
+        .send()
+        .ok()?;
+    if !response.status().is_success() {
+        crate::logf!("Avatar: own-avatar fetch failed ({})", response.status());
+        return None;
+    }
+    let vsf_data = response.bytes().ok()?.to_vec();
+    if fgtw::client::error_frame(&vsf_data).is_some() {
+        return None; // nothing published under this pin yet
+    }
+    // Decrypt with the pin, then re-save under the seed — the vault's canonical form.
+    let av1_data = match extract_av1_data_with_key(&vsf_data, &pin_key) {
+        Ok(d) => d,
+        Err(e) => {
+            crate::logf!("Avatar: own-avatar decrypt failed: {}", e);
+            return None;
+        }
+    };
+    if let Err(e) = save_avatar_from_seed(&av1_data, identity_seed, storage) {
+        crate::logf!("Avatar: own-avatar vault rewrite failed: {}", e);
+    }
+    let (w, h, pixels) = decode_avatar(&av1_data).ok()?;
+    (w == h).then_some(pixels)
+}
+
 /// Save avatar VSF bytes to the local vault by handle.
 fn save_avatar_to_cache(
     handle: &str,
