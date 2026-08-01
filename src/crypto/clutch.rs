@@ -282,6 +282,29 @@ pub fn p256_ecdh(local_secret: &[u8], peer_public: &[u8]) -> Vec<u8> {
     shared.raw_secret_bytes().to_vec()
 }
 
+/// Generate P-521 ephemeral keypair Returns (secret_bytes, public_bytes)
+pub fn generate_p521_ephemeral() -> (Vec<u8>, Vec<u8>) {
+    use p521::elliptic_curve::Generate;
+    use p521::SecretKey;
+
+    let secret = SecretKey::generate();
+    let public = secret.public_key();
+
+    (secret.to_bytes().to_vec(), public.to_sec1_bytes().to_vec())
+}
+
+/// Perform P-521 ECDH. Returns the raw shared secret (66 bytes at this curve size — every egg is hashed to 32 downstream, so width never matters here).
+pub fn p521_ecdh(local_secret: &[u8], peer_public: &[u8]) -> Vec<u8> {
+    use p521::elliptic_curve::ecdh::diffie_hellman;
+    use p521::{PublicKey, SecretKey};
+
+    let secret = SecretKey::from_slice(local_secret).expect("P-521 secret key invalid");
+    let public = PublicKey::from_sec1_bytes(peer_public).expect("P-521 public key invalid");
+
+    let shared = diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
+    shared.raw_secret_bytes().to_vec()
+}
+
 // ============================================================================ CLASS 1: POST-QUANTUM LATTICE KEMS ============================================================================
 
 /// Generate FrodoKEM-976-SHAKE keypair Returns (secret_key, public_key)
@@ -368,6 +391,134 @@ pub fn ntru701_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Vec<u8> 
         .expect("NTRU ciphertext invalid");
 
     let ss = ntruhrss701::decapsulate(&ct, &sk);
+
+    SharedSecret::as_bytes(&ss).to_vec()
+}
+
+/// Generate FrodoKEM-1344-SHAKE keypair Returns (secret_key, public_key). The UNSTRUCTURED-lattice member at its largest parameter: plain LWE, no ring or module structure at all, so a structural break against NTRU/ML-KEM leaves it standing.
+pub fn generate_frodo1344_keypair() -> (Vec<u8>, Vec<u8>) {
+    use frodo_kem_rs::Algorithm;
+    use rand_core::OsRng;
+
+    let alg = Algorithm::FrodoKem1344Shake;
+    let (ek, dk) = alg
+        .try_generate_keypair(OsRng)
+        .expect("FrodoKEM-1344 keygen failed");
+
+    (dk.value().to_vec(), ek.value().to_vec())
+}
+
+/// Encapsulate FrodoKEM-1344-SHAKE Returns (ciphertext, shared_secret)
+pub fn frodo1344_encapsulate(their_public_key: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    use frodo_kem_rs::{Algorithm, EncryptionKey};
+    use rand_core::OsRng;
+
+    let alg = Algorithm::FrodoKem1344Shake;
+    let ek = EncryptionKey::from_bytes(alg, their_public_key)
+        .expect("FrodoKEM-1344 pubkey parse failed");
+    let (ct, ss) = alg
+        .try_encapsulate_with_rng(&ek, OsRng)
+        .expect("FrodoKEM-1344 encapsulate failed");
+
+    (ct.value().to_vec(), ss.value().to_vec())
+}
+
+/// Decapsulate FrodoKEM-1344-SHAKE Returns shared_secret
+pub fn frodo1344_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
+    use frodo_kem_rs::{Algorithm, Ciphertext, DecryptionKey};
+
+    let alg = Algorithm::FrodoKem1344Shake;
+    let dk =
+        DecryptionKey::from_bytes(alg, our_secret_key).expect("FrodoKEM-1344 seckey parse failed");
+    let ct =
+        Ciphertext::from_bytes(alg, ciphertext).expect("FrodoKEM-1344 ciphertext parse failed");
+    let (ss, _msg) = alg
+        .decapsulate(&dk, &ct)
+        .expect("FrodoKEM-1344 decapsulate failed");
+
+    ss.value().to_vec()
+}
+
+/// Generate ML-KEM-1024 keypair Returns (secret_key, public_key). FIPS 203 — the standardised module-LWE KEM, and the one every other implementation in the world will interoperate with.
+pub fn generate_mlkem1024_keypair() -> (Vec<u8>, Vec<u8>) {
+    use pqcrypto_mlkem::mlkem1024;
+    use pqcrypto_traits::kem::{PublicKey, SecretKey};
+
+    let (pk, sk) = mlkem1024::keypair();
+
+    (
+        SecretKey::as_bytes(&sk).to_vec(),
+        PublicKey::as_bytes(&pk).to_vec(),
+    )
+}
+
+/// Encapsulate ML-KEM-1024 Returns (ciphertext, 32B shared_secret)
+pub fn mlkem1024_encapsulate(their_public_key: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    use pqcrypto_mlkem::mlkem1024;
+    use pqcrypto_traits::kem::{Ciphertext, PublicKey, SharedSecret};
+
+    let pk = <mlkem1024::PublicKey as PublicKey>::from_bytes(their_public_key)
+        .expect("ML-KEM public key invalid");
+    let (ss, ct) = mlkem1024::encapsulate(&pk);
+
+    (
+        Ciphertext::as_bytes(&ct).to_vec(),
+        SharedSecret::as_bytes(&ss).to_vec(),
+    )
+}
+
+/// Decapsulate ML-KEM-1024 Returns 32B shared_secret
+pub fn mlkem1024_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
+    use pqcrypto_mlkem::mlkem1024;
+    use pqcrypto_traits::kem::{Ciphertext, SecretKey, SharedSecret};
+
+    let sk = <mlkem1024::SecretKey as SecretKey>::from_bytes(our_secret_key)
+        .expect("ML-KEM secret key invalid");
+    let ct = <mlkem1024::Ciphertext as Ciphertext>::from_bytes(ciphertext)
+        .expect("ML-KEM ciphertext invalid");
+    let ss = mlkem1024::decapsulate(&ct, &sk);
+
+    SharedSecret::as_bytes(&ss).to_vec()
+}
+
+/// Generate Streamlined NTRU Prime 761 keypair Returns (secret_key, public_key). A deliberately DIFFERENT lattice: NTRU Prime's field has no subfields and no ring homomorphisms, so the structural shortcuts people worry about in NTRU/ML-KEM do not apply to it.
+pub fn generate_sntrup761_keypair() -> (Vec<u8>, Vec<u8>) {
+    use pqcrypto_ntruprime::ntrulpr761;
+    use pqcrypto_traits::kem::{PublicKey, SecretKey};
+
+    let (pk, sk) = ntrulpr761::keypair();
+
+    (
+        SecretKey::as_bytes(&sk).to_vec(),
+        PublicKey::as_bytes(&pk).to_vec(),
+    )
+}
+
+/// Encapsulate NTRU Prime 761 Returns (ciphertext, 32B shared_secret)
+pub fn sntrup761_encapsulate(their_public_key: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    use pqcrypto_ntruprime::ntrulpr761;
+    use pqcrypto_traits::kem::{Ciphertext, PublicKey, SharedSecret};
+
+    let pk = <ntrulpr761::PublicKey as PublicKey>::from_bytes(their_public_key)
+        .expect("NTRU Prime public key invalid");
+    let (ss, ct) = ntrulpr761::encapsulate(&pk);
+
+    (
+        Ciphertext::as_bytes(&ct).to_vec(),
+        SharedSecret::as_bytes(&ss).to_vec(),
+    )
+}
+
+/// Decapsulate NTRU Prime 761 Returns 32B shared_secret
+pub fn sntrup761_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
+    use pqcrypto_ntruprime::ntrulpr761;
+    use pqcrypto_traits::kem::{Ciphertext, SecretKey, SharedSecret};
+
+    let sk = <ntrulpr761::SecretKey as SecretKey>::from_bytes(our_secret_key)
+        .expect("NTRU Prime secret key invalid");
+    let ct = <ntrulpr761::Ciphertext as Ciphertext>::from_bytes(ciphertext)
+        .expect("NTRU Prime ciphertext invalid");
+    let ss = ntrulpr761::decapsulate(&ct, &sk);
 
     SharedSecret::as_bytes(&ss).to_vec()
 }
