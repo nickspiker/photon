@@ -964,8 +964,6 @@ pub struct PhotonApp {
     needs_initial_roster_pull: bool,
     /// Retry budget for the initial roster pull. A fresh device's pairing-recovered key is a PRE-rotation generation (adding a device rotates the fleet key via the fan-out re-key), so the first pull decrypts the current roster with a stale key and fails `aead::Error`. The in-flight `spawn_fleet_key_sync` writes the current key within ~150ms, so on a failed pull we re-arm `needs_initial_roster_pull` and retry — the pull's own ~150ms round-trip naturally spaces attempts, and this budget caps them so a genuinely-undecryptable roster gives up instead of spinning (next fleet event / relaunch re-tries).
     roster_pull_retries_left: u8,
-    /// The FGTW peer rows from the most recent attest echo (device-keyed: hp + device pubkey). Retained so `reconcile_fleet_siblings` can address a freshly-created sibling contact IMMEDIATELY from the same echo — the attest-time `refresh_contact_addrs_from_peers` runs before the async fleet-fold creates the sibling, so without this the sibling has no address, its CLUTCH offer never sends (send needs `contact.ip`), and it never pings/comes-online to retry.
-    last_peers: Vec<crate::network::fgtw::PeerRecord>,
     /// This device's avatar in BT.2020 γ=2.0 u8 RGB, sized `crate::avatar::AVATAR_SIZE × AVATAR_SIZE × 3`. `None` until `on_query_result` pulls one from local storage (no saved avatar = stays `None`, Ready screen falls back to the grey placeholder).
     device_avatar_pixels: Option<Vec<u8>>,
     /// Cached Mitchell resize of `device_avatar_pixels` at the current Ready-screen circle diameter. Rebuilt on diameter change (resize / zoom).
@@ -1356,7 +1354,6 @@ impl PhotonApp {
             roster_pull_rx: None,
             fleet_settings: None,
             needs_initial_roster_pull: false,
-            last_peers: Vec::new(),
             roster_pull_retries_left: 0,
             device_avatar_pixels: None,
             device_avatar_scaled: None,
@@ -8930,7 +8927,7 @@ impl PhotonApp {
         }
 
         // Stalled-address re-fetch — the deadlock breaker for flaky-fgtw address discovery.
-        // A contact whose address fetch failed sits with `ip = None`: its CLUTCH offer can't send (send needs an address), name/avatar never arrive (they ride the pong, which needs a reachable path), and the ceremony loops keygen forever. There is no periodic address re-fetch otherwise, so while any non-self contact is Pending-CLUTCH with no address, pulse a lightweight background resume (re-runs the announce + peer fetch → refresh_contact_addrs_from_peers). A single success learns the address, fire-on-learn punches, the offer sends, and the pong then carries name/avatar. Self-limiting: stops the moment the address lands. (Stopgap for the peer-gossip fix, TICKETS T0.)
+        // A contact whose address fetch failed sits with `ip = None`: its CLUTCH offer can't send (send needs an address), name/avatar never arrive (they ride the pong, which needs a reachable path), and the ceremony loops keygen forever. There is no periodic address re-fetch otherwise, so while any non-self contact is Pending-CLUTCH with no address, pulse a lightweight background resume (gossip + registry resolve below). A single success learns the address, fire-on-learn punches, the offer sends, and the pong then carries name/avatar. Self-limiting: stops the moment the address lands. (Stopgap for the peer-gossip fix, TICKETS T0.)
         const STALLED_ADDR_REFETCH: std::time::Duration = std::time::Duration::from_secs(15);
         if matches!(
             self.state,
@@ -10481,12 +10478,7 @@ impl PhotonApp {
 
         if changed {
             self.reseed_contact_pubkeys();
-            // Address the freshly-created siblings from the retained attest echo (device-keyed rows). Without this the sibling has no `ip`, so its CLUTCH offer — built the moment keygen finishes — silently no-ops on the missing address and never retries (no address ⇒ never pinged ⇒ never Online ⇒ Online-handler re-send never fires). The echo carried the sibling's row all along; it was just consumed before the sibling existed.
-            if !self.last_peers.is_empty() {
-                let peers = std::mem::take(&mut self.last_peers);
-                self.refresh_contact_addrs_from_peers(&peers);
-                self.last_peers = peers;
-            }
+            // Freshly-created siblings start address-less; the stalled-contact pulse resolves their devices from the registry (the announce echo that used to address them here is gone — the worker acks without a peer list).
         }
     }
 
@@ -13264,8 +13256,6 @@ impl PhotonApp {
                     );
                     self.update_sync_records();
                 }
-                // Refresh existing contacts' WAN + LAN addresses from the FGTW peer list. FGTW reports both a public and a same-LAN address per device; pulling the LAN address in lets the offer/KEM send race the LAN path against the WAN path right away, instead of waiting for LAN multicast (which routers often drop) or a pong. This is what unblocks a same-router peer whose stored WAN IPv6 says "No route to host" — the case where m never received an offer. Retain the echo so a sibling contact created LATER (by the async fleet fold below) can be addressed from the same rows.
-                self.last_peers = data.peers.clone();
                 // Seed `our_reflexive` from FGTW's signed observation if we have nothing better yet. This is what lets `publish_self_peer_record` sign a record on a FIRST launch: until now it needed a peer-echoed pong, but a pong needs a reachable path, which needs an address a peer could learn, which needs a published record -- a cycle nothing could enter, which is why `PHONEBOOK:` never appeared in a log and gossip carried zero records.
                 //
                 // Deliberately does NOT overwrite an address we already hold: a peer echo comes off the live UDP data socket and is quorum-corroborated, while the seed sees a TLS flow and is only exactly right for a cone NAT. Seed first, correct later.
@@ -13278,7 +13268,6 @@ impl PhotonApp {
                 if data.seed_identity_count > 0 {
                     self.seed_identity_count = data.seed_identity_count;
                 }
-                self.refresh_contact_addrs_from_peers(&data.peers);
                 // Fleet weave: load persisted siblings if this attest path didn't come thru the resume loader (e.g. JOIN-flow first attest, or []u→re-attest), then re-fold OUR OWN chain — the members drain routes our hp to reconcile_fleet_siblings, which creates Pending sibling contacts for any member device we don't hold yet. Fires on every background refresh too, giving a ~30s catch-up cadence for fleet changes we missed.
                 if let Some(storage) = self.storage.as_ref().cloned() {
                     if !self.contacts.iter().any(|c| c.is_sibling) {
@@ -15244,83 +15233,6 @@ impl PhotonApp {
         );
     }
 
-    /// Cross-reference the FGTW peer list into existing contacts, updating each matched contact's public address (`ip`) and same-LAN address (`local_ip`/`local_port`). Matched by handle_proof + device_pubkey so the right device's record updates the right contact. Only IPv4 LAN addresses are stored (the hairpin case the `local_ip` field is typed for); a v6-only peer just refreshes the WAN address. The send path races both (see [`crate::types::Contact::race_addrs`]).
-    fn refresh_contact_addrs_from_peers(&mut self, peers: &[crate::network::fgtw::PeerRecord]) {
-        // Addresses whose transfers must be cancelled because they went stale (collected here so the checker borrow stays out of the contact-iter loop).
-        let mut stale_addrs: Vec<std::net::SocketAddr> = Vec::new();
-        // Did any contact just learn a new/changed address? If so we fire an immediate presence sweep at the end so the punch goes out the instant we know where to aim — rather than sitting on the fresh address until the next (possibly 60s / 15min) presence tick. This is the one-sided-punch fix: a peer whose FGTW fetch was late/failed learns the other's address and punches at once, instead of the other side punching into a peer that never punches back.
-        let mut any_addr_changed = false;
-        let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
-        let siblings = sibling_presence_snapshot(&self.contacts);
-        for peer in peers {
-            // Seed the per-device endpoint for EVERY matching device row — this is how a friend's OTHER fleet devices become individually pingable (the pong path only updates a device we already ping).
-            for contact in self.contacts.iter_mut() {
-                if contact.handle_proof == peer.handle_proof {
-                    let ep = contact.endpoint_mut(peer.device_pubkey.as_bytes());
-                    ep.public = Some(peer.ip);
-                    if let Some(std::net::IpAddr::V4(v4)) = peer.local_ip {
-                        ep.lan = Some(std::net::SocketAddr::new(
-                            std::net::IpAddr::V4(v4),
-                            peer.ip.port(),
-                        ));
-                    }
-                }
-            }
-            for contact in self.contacts.iter_mut() {
-                if contact.handle_proof == peer.handle_proof
-                    && contact.public_identity.as_bytes() == peer.device_pubkey.as_bytes()
-                {
-                    let old_ip = contact.ip;
-                    let old_local = contact.local_ip;
-                    contact.ip = Some(peer.ip);
-                    if let Some(std::net::IpAddr::V4(v4)) = peer.local_ip {
-                        contact.local_ip = Some(v4);
-                        contact.local_port = Some(peer.ip.port());
-                        crate::logf!(
-                            "UI: refreshed {} addrs from FGTW — WAN {} / LAN {}:{}",
-                            crate::fp(&contact.handle_proof),
-                            peer.ip,
-                            v4,
-                            peer.ip.port()
-                        );
-                    }
-                    // If the address actually moved while a CLUTCH offer was already sent, that offer is in flight to a now-dead address (the "No route to host" retries we kept hammering). Cancel the stale transfer and reset clutch_offer_sent so the contact's next online pong re-sends the offer to the fresh address, with the LAN path now raced alongside. Without this the one-shot flag blocks re-send and the ceremony stalls forever on the dead path.
-                    let addr_changed = old_ip != contact.ip || old_local != contact.local_ip;
-                    if addr_changed {
-                        any_addr_changed = true;
-                        // Fresh address = fresh chance at a direct path; the prior unreachable cycles were counted against the old (now dead) address, so don't let them trip the premature "pending relay" threshold on the new one.
-                        contact.punch_unvalidated_cycles = 0;
-                    }
-                    // ONLY cancel when a VALIDATED direct path is what the offer was riding: then a real address move means the transfer is hitting a dead endpoint and must restart.
-                    // With NO validated path the offer rides the RELAY (address-independent) — and the routine FGTW registry refresh flip-flops contact.ip between a v4/v6-split friend's records every cycle, so cancelling here reset clutch_offer_sent and re-sent the whole 548 KB offer every few minutes, forever, never converging (observed: a friend's ceremony churned 'address changed — cancelling' for hours while the relay was carrying it fine).
-                    // No validated path ⇒ leave the offer alone; the relay delivers it and the peer's KEM comes back over the relay.
-                    if addr_changed
-                        && contact.validated_path.is_some()
-                        && contact.clutch_offer_sent
-                        && contact.clutch_state == crate::types::ClutchState::Pending
-                        && !ceremony_parked_by(contact, our_device, &siblings)
-                    {
-                        if let Some(stale) = old_ip {
-                            stale_addrs.push(stale);
-                        }
-                        contact.clutch_offer_sent = false;
-                        crate::logf!("CLUTCH: {} validated path address changed — cancelling stale offer transfer, will re-send to fresh address", crate::fp(&contact.handle_proof));
-                    }
-                    break;
-                }
-            }
-        }
-        if let Some(checker) = self.status_checker.as_ref() {
-            for addr in stale_addrs {
-                checker.clear_pt_sends(addr);
-            }
-        }
-        // Punch the freshly-learned address(es) right now instead of waiting for the next tick.
-        // Cheap (only when an address actually changed) and reuses the tested gather+punch path; a no-op before the status checker exists (ping_contacts guards on it).
-        if any_addr_changed {
-            self.ping_contacts();
-        }
-    }
 
     /// True if `handle_hash` (a party id) is our own identity — i.e. this contact is the user's self-contact (notes to self / future multi-device sync). A self-contact shares our single identity, so there is no peer to exchange keys with: CLUTCH must be forced Complete and keygen/offer/ceremony skipped entirely. Without this a self-contact runs a pointless CLUTCH loop against its own device and never settles. Party ids are identity PUBKEYS now, so the comparison derives ours.
     /// Force every self-contact in the list to CLUTCH-Complete and clear any in-flight CLUTCH work. Applied after contacts load on resume and after cloud/FGTW merges, since those paths build contacts as Pending by default. Returns true if any contact changed.

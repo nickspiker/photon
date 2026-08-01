@@ -195,14 +195,10 @@ impl HandleQuery {
         let transport_query = transport.clone();
         let transport_search = transport.clone();
         let handle_proof_store = last_handle_proof.clone();
-        let handle_proof_search = last_handle_proof.clone();
         let identity_seed_store = last_identity_seed.clone();
-        let identity_seed_search = last_identity_seed.clone();
         let keypair_query = device_keypair.clone();
-        let keypair_search = device_keypair.clone();
         let socket_query = socket.clone();
         let port_query = port.clone();
-        let port_search = port.clone();
 
         // Spawn connectivity monitoring thread
         Self::spawn_connectivity_worker(online_tx, event_proxy);
@@ -220,15 +216,7 @@ impl HandleQuery {
         );
 
         // Spawn search worker
-        Self::spawn_search_worker(
-            search_rx_worker,
-            search_tx_result,
-            transport_search,
-            keypair_search,
-            identity_seed_search,
-            handle_proof_search,
-            port_search,
-        );
+        Self::spawn_search_worker(search_rx_worker, search_tx_result, transport_search);
 
         Self {
             query_sender: query_tx,
@@ -267,14 +255,10 @@ impl HandleQuery {
         let transport_query = transport.clone();
         let transport_search = transport.clone();
         let handle_proof_store = last_handle_proof.clone();
-        let handle_proof_search = last_handle_proof.clone();
         let identity_seed_store = last_identity_seed.clone();
-        let identity_seed_search = last_identity_seed.clone();
         let keypair_query = device_keypair.clone();
-        let keypair_search = device_keypair.clone();
         let socket_query = socket.clone();
         let port_query = port.clone();
-        let port_search = port.clone();
 
         // Spawn connectivity monitoring thread (simplified for Android)
         Self::spawn_connectivity_worker_android(online_tx);
@@ -292,15 +276,7 @@ impl HandleQuery {
         );
 
         // Spawn search worker
-        Self::spawn_search_worker(
-            search_rx_worker,
-            search_tx_result,
-            transport_search,
-            keypair_search,
-            identity_seed_search,
-            handle_proof_search,
-            port_search,
-        );
+        Self::spawn_search_worker(search_rx_worker, search_tx_result, transport_search);
 
         Self {
             query_sender: query_tx,
@@ -881,10 +857,6 @@ impl HandleQuery {
         rx: Receiver<String>,
         tx: Sender<SearchResult>,
         transport: Arc<Mutex<Option<Arc<Mutex<PeerStore>>>>>,
-        keypair: Keypair,
-        identity_seed: Arc<Mutex<Option<[u8; 32]>>>,
-        our_handle_proof: Arc<Mutex<Option<[u8; 32]>>>,
-        port: Arc<Mutex<u16>>,
     ) {
         thread::spawn(move || {
             crate::log("Network: Search worker initialized");
@@ -908,10 +880,6 @@ impl HandleQuery {
                     &handle,
                     handle_proof,
                     &transport_arc,
-                    &keypair,
-                    &identity_seed,
-                    &our_handle_proof,
-                    &port,
                 );
 
                 let _ = tx.send(result);
@@ -919,70 +887,55 @@ impl HandleQuery {
         });
     }
 
-    /// Look up a handle in the local peer store. If not found, re-announce to FGTW (which refreshes the peer list) and retry once. This covers the common case where the target registered after our last announce.
+    /// Look up a handle in the local peer store; if absent, ask the registries. Existence = the membership chain (an attested handle has a fleet; garbage does not), addresses = the phonebook. This replaced the announce-echo refresh: the worker acks announces without a peer list now, so the old path merged a permanently-empty echo and always reported NotFound for anyone not already in the store.
     fn search_with_refresh(
         handle: &str,
         handle_proof: [u8; 32],
         peer_store: &Arc<Mutex<PeerStore>>,
-        keypair: &Keypair,
-        identity_seed: &Arc<Mutex<Option<[u8; 32]>>>,
-        our_handle_proof: &Arc<Mutex<Option<[u8; 32]>>>,
-        port: &Arc<Mutex<u16>>,
     ) -> SearchResult {
         // First pass — local peer store
         if let Some(result) = Self::lookup_in_store(handle, handle_proof, peer_store) {
             return result;
         }
 
-        // Not found locally — re-announce with our own credentials to pull a fresh peer list, then retry. This is the critical path for "both attested, THEN added each other": the target registered on FGTW after our last fetch, so it's absent from the local store until we re-query. Only possible once we've attested (identity_seed + handle_proof are set).
-        let (seed, our_port) = {
-            let s = identity_seed.lock().unwrap();
-            let p = port.lock().unwrap();
-            match *s {
-                Some(seed) => (seed, *p),
-                None => return SearchResult::NotFound,
-            }
-        };
-
-        // Use our cached attested handle_proof directly (set by the query worker at attest success).
-        // Earlier this scanned the peer store for our own device record and bailed to NotFound if absent — which is EXACTLY the fresh-attest case (store not yet populated with ourselves), so the refresh never ran and the peer stayed unfindable until a restart. The arc always has it post-attest.
-        let our_handle_proof = match *our_handle_proof.lock().unwrap() {
-            Some(hp) => hp,
-            None => return SearchResult::NotFound,
-        };
-
-        crate::logf!(
-            "Network: '{}' not in local store — refreshing peer list from FGTW",
-            handle
-        );
-        let refresh = crate::network::http::runtime().block_on(
-            crate::network::fgtw::bootstrap::load_bootstrap_peers(
-                keypair,
-                our_handle_proof,
-                our_port,
-                &seed,
-            ),
-        );
-
-        if refresh.peers.is_empty() {
+        let (members, _tip, _generation, existed) =
+            match crate::network::fgtw::fleet::current_members_full(&handle_proof) {
+                Ok(v) => v,
+                Err(e) => {
+                    crate::logf!("Network: '{}' chain fetch failed ({}) — reporting not found", handle, e);
+                    return SearchResult::NotFound;
+                }
+            };
+        if !existed || members.is_empty() {
             return SearchResult::NotFound;
         }
 
-        // Merge fresh peers into the store
-        let our_pubkey = keypair.public.as_bytes();
-        {
-            let mut store = peer_store.lock().unwrap();
-            for peer in refresh
-                .peers
-                .iter()
-                .filter(|p| p.device_pubkey.as_bytes() != our_pubkey)
-            {
-                store.add_peer(peer.clone());
+        // Found. The first device with a published registry record supplies the address; a found-but-unresolved handle is STILL found — the contact adds as Pending under the relay sentinel and the discovery pulse keeps resolving (exactly the state the punch machinery expects).
+        let mut ip = crate::network::status::RELAY_ADDR;
+        let mut local_ip = None;
+        let mut device = members[0];
+        for dev in &members {
+            let resolved = crate::network::http::runtime().block_on(
+                crate::network::fgtw::phonebook_client::resolve_device_address(dev),
+            );
+            if let Ok(rec) = resolved {
+                if let Some(addr) = crate::network::fgtw::phonebook_client::record_socket_addr(&rec)
+                {
+                    ip = addr;
+                    local_ip = crate::network::fgtw::phonebook_client::record_local_addr(&rec)
+                        .map(|s| s.ip());
+                    device = *dev;
+                    break;
+                }
             }
         }
-
-        // Second pass after refresh
-        Self::lookup_in_store(handle, handle_proof, peer_store).unwrap_or(SearchResult::NotFound)
+        SearchResult::Found(FoundPeer {
+            handle: HandleText::new(handle),
+            handle_proof,
+            device_pubkey: crate::types::DevicePubkey::from_bytes(device),
+            ip,
+            local_ip,
+        })
     }
 
     fn lookup_in_store(
