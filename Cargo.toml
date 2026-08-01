@@ -72,9 +72,11 @@ rand_pcg = "0.3"     # Pcg64 for dual PRNG diversity
 zeroize = { version = "1.7", features = ["derive"] }
 subtle = "2.6"  # Constant-time comparisons
 
-# Post-quantum KEMs
+# Post-quantum KEMs — four families so no single assumption is load-bearing: structured lattice (NTRU, NTRU Prime, ML-KEM), unstructured lattice (Frodo, plain LWE), and code-based (McEliece, HQC).
 frodo-kem-rs = "0.5.0"
 pqcrypto-ntru = { version = "0.5.8", default-features = false }
+pqcrypto-ntruprime = "0.1.6"
+pqcrypto-mlkem = "0.1.1"
 pqcrypto-hqc = "0.2.2"
 pqcrypto-traits = "0.3.5"
 classic-mceliece-rust = { version = "3.1.0", features = ["mceliece460896"] }
@@ -82,6 +84,7 @@ classic-mceliece-rust = { version = "3.1.0", features = ["mceliece460896"] }
 # Classical curves (additional)
 p384 = { version = "0.14.0-rc.1", features = ["ecdh"] }
 p256 = { version = "0.14.0-rc.1", features = ["ecdh"] }
+p521 = { version = "0.14.0", features = ["ecdh"] }
 k256 = { version = "0.14.0-rc.1", features = ["ecdh"] }
 
 # Post-quantum signatures
