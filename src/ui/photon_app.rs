@@ -8582,11 +8582,20 @@ impl FluorApp for PhotonApp {
                         *theme::CONTACT_NAME_COLOUR,
                         600,
                     );
+                    // The live size, not just the cap: "how much have I got to send" is the question this page exists to answer, and a number you can watch grow is also how a log that is filling too fast announces itself.
+                    let used = crate::log_size_bytes();
+                    let cap = crate::LOG_CAP_BYTES;
+                    let pct = if cap > 0 { used * 100 / cap } else { 0 };
                     settings_line(
                         &mut canvas,
                         ctx.text,
                         rows[1],
-                        "On-device log · 16 MiB · self-expires 24–48h",
+                        &format!(
+                            "On-device log · {} of {} ({}%) · self-expires 24\u{2013}48h",
+                            human_bytes(used),
+                            human_bytes(cap),
+                            pct
+                        ),
                         hspan2,
                         *theme::LABEL_COLOUR,
                         400,
@@ -22025,6 +22034,19 @@ fn contact_ping_due(c: &crate::types::Contact, now: std::time::Instant) -> bool 
     }
     let interval = PING_BASE * (1u32 << c.ping_backoff.min(PING_BACKOFF_MAX));
     now.duration_since(last) >= crate::jitter_dur(interval)
+}
+
+/// Bytes as something a person can read at a glance. Deliberately coarse — one decimal past a megabyte is noise on a figure that exists to answer "is there much in there?".
+fn human_bytes(n: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    if n >= MIB {
+        format!("{:.1} MiB", n as f64 / MIB as f64)
+    } else if n >= KIB {
+        format!("{} KiB", n / KIB)
+    } else {
+        format!("{} B", n)
+    }
 }
 
 fn settings_line(
