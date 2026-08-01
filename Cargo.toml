@@ -75,8 +75,9 @@ subtle = "2.6"  # Constant-time comparisons
 # Post-quantum KEMs — four families so no single assumption is load-bearing: structured lattice (NTRU, NTRU Prime, ML-KEM), unstructured lattice (Frodo, plain LWE), and code-based (McEliece, HQC).
 frodo-kem-rs = "0.5.0"
 pqcrypto-ntru = { version = "0.5.8", default-features = false }
-pqcrypto-ntruprime = "0.1.6"
-pqcrypto-mlkem = "0.1.1"
+# PORTABLE BUILDS ONLY (default-features = false): pqcrypto-mlkem enables `neon` by default, which compiles PQClean's hand-written aarch64 Keccak assembly. That code uses the ARMv8.2 SHA3 extension (EOR3/RAX1/XAR/BCAX), which a Snapdragon 855 does not implement — a Galaxy Note10+ died with `SIGILL, ILL_ILLOPC` in the clutch-keygen thread on every ceremony while newer devices were fine (crash buffer, 2026-08-01). Keygen runs once per ceremony, so the portable C implementation costs nothing that matters and runs on every CPU we ship to.
+pqcrypto-ntruprime = { version = "0.1.6", default-features = false, features = ["std"] }
+pqcrypto-mlkem = { version = "0.1.1", default-features = false, features = ["std"] }
 pqcrypto-hqc = "0.2.2"
 pqcrypto-traits = "0.3.5"
 classic-mceliece-rust = { version = "3.1.0", features = ["mceliece460896"] }
