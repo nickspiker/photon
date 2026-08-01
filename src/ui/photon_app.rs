@@ -908,6 +908,8 @@ pub struct PhotonApp {
     fleet_heal_busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// A sibling pair just became egged (Phase A) — mint the next fan-out epoch so that sibling finally gets a wrap. Set by the ceremony drain, consumed by the tick (the rotation needs `&self` off the drain's borrows).
     fanout_rotate_pending: bool,
+    /// Own-avatar recovery deferred until the fleet settings carry the avatar pin (the pin is what addresses and decrypts the published copy). Cleared once the recovery actually spawns.
+    self_avatar_recover_pending: Option<[u8; 32]>,
     /// Heal thread → tick: a removal rotation WE won landed; the drain runs the winner-only UI-thread follow-up (avatar bearer-pin rotate). Losers adopt the winner's key off-thread and send nothing.
     fleet_rotated_tx: std::sync::mpsc::Sender<()>,
     fleet_rotated_rx: std::sync::mpsc::Receiver<()>,
@@ -1271,6 +1273,7 @@ impl PhotonApp {
             avatar_dl_rx: std::sync::mpsc::channel().1,
             fleet_heal_busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             fanout_rotate_pending: false,
+            self_avatar_recover_pending: None,
             fleet_rotated_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
                 tx
@@ -2538,8 +2541,11 @@ impl FluorApp for PhotonApp {
                             });
                         }
                         // Local vault had no avatar (e.g. this device was cleared) — recover our own from FGTW, where it was published. Off-thread; installs via the avatar drain.
-                        if self.device_avatar_pixels.is_none() {
-                            self.spawn_self_avatar_recover(remembered.identity_seed);
+                        if self.device_avatar_pixels.is_none()
+                            && !self.spawn_self_avatar_recover(remembered.identity_seed)
+                        {
+                            // No pin at rest yet (settings still loading) — the tick retries once one lands.
+                            self.self_avatar_recover_pending = Some(remembered.identity_seed);
                         }
                         // Bootstrap the notes-to-self contact on THIS device (register-derived, no handle needed), then force any self-contact Complete before re-keying so it's excluded (a self-contact has no peer to key with).
                         self.ensure_self_contact();
@@ -9052,6 +9058,13 @@ impl PhotonApp {
             needs_redraw = true;
         }
 
+        // Deferred own-avatar recovery: the pin arrives with the fleet settings, after the session restore that wanted it.
+        if let Some(seed) = self.self_avatar_recover_pending {
+            if self.device_avatar_pixels.is_some() || self.spawn_self_avatar_recover(seed) {
+                self.self_avatar_recover_pending = None;
+            }
+        }
+
         // A sibling pair just became egged — rotate so its wrap exists (Phase A). Edge-driven off the ceremony drain, never polled.
         if std::mem::take(&mut self.fanout_rotate_pending) {
             crate::log("FANOUT: newly egged sibling — rotating so it gets a wrap");
@@ -14067,17 +14080,20 @@ impl PhotonApp {
         }
     }
 
-    /// Recover the device's OWN avatar from FGTW after a local clear (the vault load returned nothing). Off-thread (blocking FGTW round-trip); the result comes back over avatar_dl_tx with an EMPTY handle, which drain_avatar_downloads routes into device_avatar_pixels. No-op without storage.
-    fn spawn_self_avatar_recover(&self, identity_seed: [u8; 32]) {
-        let Some(storage) = self.storage.as_ref().map(Arc::clone) else {
-            return;
+    /// Recover the device's OWN avatar from the wall after a local clear (the vault load returned nothing). Needs the PIN — that is what addresses and decrypts the published copy — so it no-ops until settings carry one, and the tick retries. Off-thread (blocking FGTW round-trip); the result comes back over avatar_dl_tx with an EMPTY handle, which drain_avatar_downloads routes into device_avatar_pixels.
+    fn spawn_self_avatar_recover(&self, identity_seed: [u8; 32]) -> bool {
+        let (Some(storage), Some(pin)) = (
+            self.storage.as_ref().map(Arc::clone),
+            self.ensure_avatar_pin_readonly(),
+        ) else {
+            return false;
         };
         let tx = self.avatar_dl_tx.clone();
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
         std::thread::spawn(move || {
-            let pixels = crate::ui::avatar::download_avatar_from_seed(&identity_seed, &storage)
-                .map(|(_, p)| p);
+            let pixels =
+                crate::ui::avatar::recover_own_avatar_from_wall(&identity_seed, &pin, &storage);
             if pixels.is_some() {
                 let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
                     owner: None, // self
@@ -14089,6 +14105,7 @@ impl PhotonApp {
                 }
             }
         });
+        true
     }
 
     pub fn spawn_clutch_keygen(
