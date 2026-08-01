@@ -2808,7 +2808,7 @@ impl FluorApp for PhotonApp {
                         // Retired row's "Release" pill (two-tap): the OWNER frees the departed device's hardware brand — the second signature of the two-signature retire (the first was that device signing itself out). On success the pubkey joins the fleet-synced `fleet.released` setting so the row drops off every device; the chain rows themselves are permanent testimony, untouched.
                         let idx = (slot - 24) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((pk, _, _, true, name, _)) = devices.get(idx).cloned() {
+                        if let Some((pk, _, _, true, name, _, _)) = devices.get(idx).cloned() {
                             if self.fleet_release_armed == Some(pk) {
                                 self.fleet_release_armed = None;
                                 let hp = self
@@ -2848,7 +2848,7 @@ impl FluorApp for PhotonApp {
                         // Device-row tap → copy that device's name to the clipboard.
                         let idx = (slot - 16) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((_pk, _is_self, _online, _retired, name, _link)) = devices.get(idx) {
+                        if let Some((_pk, _is_self, _online, _retired, name, _link, _tier)) = devices.get(idx) {
                             let name = name.clone();
                             if self.copy_to_clipboard(&name) {
                                 self.ready_toast = Some(format!("Copied {name}"));
@@ -7799,10 +7799,23 @@ impl FluorApp for PhotonApp {
                             None,
                         );
                     }
-                    for (i, (pk, is_self, online, retired, name, link)) in
+                    for (i, (pk, is_self, online, retired, name, link, tier)) in
                         devices.iter().take(6).enumerate()
                     {
                         let row = rows[1 + i];
+                        // Transport dot, left of the status word: green LAN, cyan WAN, orange relay. Absent when the device isn't reachable.
+                        if let Some(colour) = tier {
+                            let r = (hspan2 * 0.26).max(2.0);
+                            paint::circle_filled(
+                                &mut canvas,
+                                (row.x + r * 1.6) as isize,
+                                row.center_y() as isize,
+                                r as isize,
+                                *colour,
+                                None,
+                                None,
+                            );
+                        }
                         // Status on the LEFT (this device / online / offline / retired), device NAME right-aligned so it lines up under "click to copy" — the name is what a tap copies.
                         let (status, status_colour) = if *is_self {
                             ("(this device)", (*theme::LABEL_COLOUR))
@@ -7816,7 +7829,7 @@ impl FluorApp for PhotonApp {
                         settings_line(
                             &mut canvas,
                             ctx.text,
-                            row,
+                            fluor::region::Region::new(row.x + hspan2 * 0.9, row.y, row.w - hspan2 * 0.9, row.h),
                             status,
                             hspan2 * 0.85,
                             status_colour,
@@ -11939,7 +11952,8 @@ impl PhotonApp {
     /// The fleet device inventory for the Fleet settings page: this device first, then our other devices (sibling contacts). Each entry is `(device_pubkey, is_self, is_online, name)`. Reuses phase-1's sibling reconcile as the live inventory (`current_members(own_hp)` is the authority; reconcile keeps the sibling set == fleet-minus-this-device) — no synchronous network fetch on render. Name = the canonical `device_name_default` (two voca words from the device PUBLIC key + our identity seed), the SAME function the pairing screen uses, so a device shows the same name here, on its own pairing screen, and on every other device in THIS fleet (a handed-off device gets a fresh name in the new owner's fleet).
     /// Rows for the Fleet page: `(pubkey, is_self, online, retired, name, link)`. Current members first (self, then siblings), then the retired inventory — signed out, brand still ours (`fleet_retired`, refreshed on page entry).
     /// `link` is the sibling's LINK STATE in plain words — how far the secure channel to that device has got, plus whether its fan-out pair is egged (Phase A). It is the one place a stuck pairing is visible without reading a log: "securing 5/8" names whose side the ball is on, and "not egged yet" says the device cannot receive the fleet key until its ceremony finishes.
-    fn fleet_device_rows(&self) -> Vec<([u8; 32], bool, bool, bool, String, String)> {
+    #[allow(clippy::type_complexity)]
+    fn fleet_device_rows(&self) -> Vec<([u8; 32], bool, bool, bool, String, String, Option<u32>)> {
         use crate::network::fgtw::fleet::device_name_default;
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return Vec::new();
@@ -11947,7 +11961,8 @@ impl PhotonApp {
         let mut rows = Vec::new();
         let ours = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
         if let Some(me) = ours {
-            rows.push((me, true, true, false, device_name_default(&me, &seed), String::new()));
+            // This device needs no tier — it IS the vantage point.
+            rows.push((me, true, true, false, device_name_default(&me, &seed), String::new(), None));
         }
         for c in self.contacts.iter().filter(|c| c.is_sibling) {
             let pk = c.public_identity.key;
@@ -11959,10 +11974,18 @@ impl PhotonApp {
             } else {
                 c.clutch_status_detail()
             };
-            rows.push((pk, false, c.is_online, false, device_name_default(&pk, &seed), link));
+            rows.push((
+                pk,
+                false,
+                c.is_online,
+                false,
+                device_name_default(&pk, &seed),
+                link,
+                path_tier_colour(c),
+            ));
         }
         for pk in &self.fleet_retired {
-            rows.push((*pk, false, false, true, device_name_default(pk, &seed), String::new()));
+            rows.push((*pk, false, false, true, device_name_default(pk, &seed), String::new(), None));
         }
         rows
     }
@@ -21775,6 +21798,33 @@ fn ring_tier_colour(c: &crate::types::Contact) -> u32 {
     } else {
         *theme::RING_ONLINE_COLOUR
     }
+}
+
+/// The transport tier of a live path as a DOT colour: LAN green (same subnet — no NAT, nothing in the middle), WAN cyan (a punched or routable direct path across the internet), relay orange (no direct path — frames ride the seed's pipe). `None` for a device that isn't reachable at all, which renders no dot.
+/// Same held-state rule the avatar ring uses: a live `validated_path` is authoritative and outranks `reached_via_relay`, because that flag tracks how the LAST frame happened to arrive and flaps every cycle for a peer reachable both ways.
+fn path_tier_colour(c: &crate::types::Contact) -> Option<u32> {
+    if !c.is_online {
+        return None;
+    }
+    if let Some((addr, _)) = c.validated_path.as_ref() {
+        let lan = match addr.ip() {
+            std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+            std::net::IpAddr::V6(v6) => {
+                (v6.segments()[0] & 0xffc0) == 0xfe80 || (v6.segments()[0] & 0xfe00) == 0xfc00
+            }
+        };
+        return Some(if lan {
+            *theme::PATH_LAN_COLOUR
+        } else {
+            *theme::PATH_WAN_COLOUR
+        });
+    }
+    Some(if c.reached_via_relay {
+        *theme::PATH_RELAY_COLOUR
+    } else {
+        // Online with no proven direct path yet: the punch is still in flight, and every frame meanwhile rides the relay — say so rather than promising a direct path we don't have.
+        *theme::PATH_RELAY_COLOUR
+    })
 }
 
 fn settings_line(
