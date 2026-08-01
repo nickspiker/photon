@@ -33,48 +33,60 @@ The fix is not a better pin. It is to stop making the pointer secret.
 
 The old pin's two jobs are now separated: the id says *where*, the wrap says *whether*.
 
-### What lands on the wall
+### Where the wraps live — one private slot per reader
 
-One object, self-contained: the wrap set travels **with** the ciphertext, so a reader needs only the blob id plus a KEK it already has. Nothing else has to be fetched, and no side channel carries a secret.
+The wrap set does **not** travel with the ciphertext. If it did, the object would enumerate its own readers: anyone who fetched it would learn how many people can read it, and that count is a fact about your life that no one is owed.
+
+Instead each reader has a **private slot** at an address only the two of you can compute:
+
+```
+slot_addr = BLAKE3( SLOT_DOMAIN ‖ [version u8] ‖ kek_secret ‖ purpose )
+```
+
+where `kek_secret` is the CLUTCH pair secret for that friend, or the fleet key for our own devices. The slot is tiny and holds only a pointer and a key:
+
+```
+blob/<base64url(slot_addr)>  →  VSF document, device-signed
+  section "slot"
+    version   z{N}
+    blob_id   hb{32}          -- which ciphertext to fetch (NOT secret)
+    wrap      v'e'{ AEAD(slot_key, DEK) }
+```
+
+The content itself is one object at a non-secret address, encrypted once:
 
 ```
 blob/<base64url(blob_id)>  →  VSF document
   section "blob"
-    version   z{N}                     -- binary numeral, never an ASCII digit in a tag
-    blob_id   hb{32}
-    wrap      [ epk ke{32}, commit hb{32}, ct v'e' ]   -- repeated, one per recipient, UNLABELLED
+    version   z{N}
     content   v'e'{ AEAD(DEK, plaintext) }
 ```
 
-**Wraps carry no recipient label.** A reader recomputes the key-commitment for each wrap and opens the one that matches — the same self-selection the fan-out uses (`fanout_keys`). The object therefore leaks a recipient *count* and nothing else: no pubkeys, no handle proofs, no idea who the readers are.
+So a reader derives their slot address, finds a ~100-byte record (or nothing at all), unwraps the DEK, and fetches the single shared ciphertext. **One ciphertext, N tiny private pointers** — putting the content in each slot instead would mean N copies, which is merely wasteful for a 22 KB avatar and ruinous for an attachment.
 
-### Wrap derivation
+Slot addresses are mutually unlinkable and reveal nothing about who holds them: a stranger cannot tell your twelve slots from twelve unrelated people's, and cannot derive an address without already holding the secret that would let them read anyway.
 
-Per wrap, mirroring `fanout_keys` so there is one construction to review, not two:
+**Squatting.** An address is only computable by the two parties, so it cannot be found by guessing. If one leaks, an attacker could occupy it — which is why a slot is device-signed and the reader rejects anything not signed by the expected device key. That reduces the worst case to a denial of service against one reader, never a spoof.
 
-```
-shared  = KEK-specific secret
-          (fleet key for our devices; CLUTCH pair secret for a friend)
-okm     = BLAKE3-XOF( DOMAIN_TEXT ‖ [version u8] ‖ blob_id ‖ epoch_le ‖ recipient_ed ‖ epk ‖ shared )
-aead_key, commit = okm[0..32], okm[32..64]
-ct      = ChaCha20-Poly1305(aead_key, nonce=0, DEK)
-```
+### What still leaks, exactly
 
-`epk` is a fresh ephemeral X25519 public per wrap, which is what makes each wrap key unique and therefore what makes the fixed zero nonce safe — the identical argument the fan-out already documents. `commit` is the key-commitment (defeats the invisible-salamander split) **and** the recipient selector. Binding `blob_id` and `epoch` stops a wrap being spliced onto a different blob or an older version.
+**A count, at publish time, and nothing else.** FGTW authenticates writes, so when you publish an avatar it observes one identity writing N slots in one burst. It does not learn who they are, the addresses are unlinkable, and reads are unlinkable. Since a publish is rare — an avatar change, not a message — this is a small and bounded signal. It is recorded here rather than called solved.
 
----
+If it ever needs closing, the lever is decoupling writes from publish time: write a slot lazily when a reader actually asks, or pad to a fixed slot count so the number carries no information.
 
 ## Operations
 
-**Publish / update.** Mint a fresh DEK, encrypt the content once, wrap for every current reader, upload one object. Cost is one upload plus ~100 bytes per reader.
+**Publish / update.** Mint a fresh DEK, encrypt the content once, upload it under a fresh blob id, then write one slot per current reader. Cost is one upload plus ~100 bytes per reader.
 
-**Add a reader** (new friend, new device). Rewrap the *existing* DEK for them and rewrite the wrap set. The ciphertext is untouched — no re-upload of content.
+**Add a reader** (new friend, new device). Write one new slot: the *existing* DEK wrapped to their secret, pointing at the existing blob id. The ciphertext is untouched, and no other reader's slot changes.
 
-**Remove a reader** (friend removed, device departed). Drop their wrap. For a device, the fleet-key rotation that already fires on membership change does the work: the departed device is not a fan-out target next epoch, so it cannot derive the KEK, so it cannot open even a wrap it still has bytes for.
+**Remove a reader** (friend removed, device departed). Mint a fresh DEK, re-encrypt the content to a **new blob id**, and write slots only for the survivors. The removed reader is not locked out of an address they still know — the object moved out from under them, and their stale slot points at something that no longer exists. **Delete the old blob object**: they hold the previous DEK and blob id from the last slot you wrote them, so a lingering old ciphertext stays readable to them. Deleting it costs nothing, since the new version supersedes it.
 
-**What removal does NOT do**, stated plainly because the honest limit belongs in the spec and not in a surprise: a reader who already fetched and decrypted **keeps that plaintext forever**. Rotation and rewrapping stop *future* versions only. This is the same SOFT/HARD line [contact-system.md](contact-system.md) already draws — the crypto is unforgeable about the future and powerless about the past.
+For a departed *device* the fleet-key rotation that already fires on membership change does the same work one level up: it cannot derive any slot address under the new key, so it cannot even find a slot to try.
 
-**Burn and republish** (the device-handoff case). Giving a phone to another person is the one case where "future only" is not enough: that device already holds the current DEK. Mint a new DEK, re-encrypt the content, rewrap for the surviving readers, delete the old object. This is a deliberate, explicit operation — cheap for a 22 KB avatar, and the reason it is a *policy step* rather than an automatic one is that for a large attachment it is not cheap at all.
+**What removal does NOT do**, stated plainly because the honest limit belongs in the spec and not in a surprise: a reader who already fetched and decrypted **keeps that plaintext forever**. Republishing stops *future* versions only. This is the same SOFT/HARD line [contact-system.md](contact-system.md) already draws — the crypto is unforgeable about the future and powerless about the past.
+
+**Burn and republish** (the device-handoff case). Giving a phone to another person is the one case where removing a reader is not enough on its own: that device already holds the current DEK, so the current content must move too. Mechanically identical to removing a reader — new DEK, new blob id, survivors' slots rewritten, old object deleted — but worth naming as its own deliberate step, because for a large attachment the re-encryption is the expensive part and should be a choice rather than a reflex.
 
 **Attribution.** Each reader has a distinct wrap, so we always know exactly who was *issued* access. We cannot tell which of them leaked a plaintext — that would need a per-reader DEK and therefore a per-reader ciphertext, which is affordable for a small avatar and absurd for a large file. Not doing it; recorded so nobody assumes otherwise.
 
@@ -108,6 +120,6 @@ Flag-day, consistent with every other wire change this week: a device publishes 
 ## Verification
 
 - Unit: round-trip for a device reader and a friend reader; a non-reader with a valid KEK of the wrong class fails; a wrap spliced onto another blob_id fails; a wrap from an older epoch fails; tampered ciphertext fails its tag; wrap-count sanity bound.
-- Property: rewrapping (add/remove a reader) leaves the ciphertext byte-identical — the whole point of the tier.
+- Property: ADDING a reader leaves the ciphertext byte-identical (one new slot, nothing else touched); REMOVING one produces a new blob id and deletes the old object.
 - Live two-device + one-friend: set an avatar, confirm both own devices and the friend render it; remove a device, rotate, confirm it can no longer open the CURRENT object; burn-and-republish, confirm the removed device fails on the new one too.
 - The acceptance test that applies to every field this codebase adds anywhere, learned the hard way on 2026-08-01: **wipe a device and confirm it comes back.**
