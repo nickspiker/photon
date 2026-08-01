@@ -2799,7 +2799,7 @@ impl FluorApp for PhotonApp {
                         // Retired row's "Release" pill (two-tap): the OWNER frees the departed device's hardware brand — the second signature of the two-signature retire (the first was that device signing itself out). On success the pubkey joins the fleet-synced `fleet.released` setting so the row drops off every device; the chain rows themselves are permanent testimony, untouched.
                         let idx = (slot - 24) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((pk, _, _, true, name)) = devices.get(idx).cloned() {
+                        if let Some((pk, _, _, true, name, _)) = devices.get(idx).cloned() {
                             if self.fleet_release_armed == Some(pk) {
                                 self.fleet_release_armed = None;
                                 let hp = self
@@ -2839,7 +2839,7 @@ impl FluorApp for PhotonApp {
                         // Device-row tap → copy that device's name to the clipboard.
                         let idx = (slot - 16) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((_pk, _is_self, _online, _retired, name)) = devices.get(idx) {
+                        if let Some((_pk, _is_self, _online, _retired, name, _link)) = devices.get(idx) {
                             let name = name.clone();
                             if self.copy_to_clipboard(&name) {
                                 self.ready_toast = Some(format!("Copied {name}"));
@@ -7790,7 +7790,7 @@ impl FluorApp for PhotonApp {
                             None,
                         );
                     }
-                    for (i, (pk, is_self, online, retired, name)) in
+                    for (i, (pk, is_self, online, retired, name, link)) in
                         devices.iter().take(6).enumerate()
                     {
                         let row = rows[1 + i];
@@ -7813,6 +7813,19 @@ impl FluorApp for PhotonApp {
                             status_colour,
                             400,
                         );
+                        // The link state rides under the status word, dimmer and smaller — present only for siblings (self and retired rows carry none).
+                        if !link.is_empty() {
+                            ctx.text.draw_text_left(
+                                &mut canvas,
+                                link,
+                                row.x + hspan2 * 0.3,
+                                row.center_y() + hspan2 * 0.85,
+                                &TextStyle::new(hspan2 * 0.7, *theme::LABEL_COLOUR)
+                                    .font("Oxanium"),
+                                None,
+                                None,
+                            );
+                        }
                         let name_w = ctx.text.measure_text(
                             name,
                             &TextStyle::new(hspan2, 0).weight(500).font("Oxanium"),
@@ -11887,29 +11900,32 @@ impl PhotonApp {
     }
 
     /// The fleet device inventory for the Fleet settings page: this device first, then our other devices (sibling contacts). Each entry is `(device_pubkey, is_self, is_online, name)`. Reuses phase-1's sibling reconcile as the live inventory (`current_members(own_hp)` is the authority; reconcile keeps the sibling set == fleet-minus-this-device) — no synchronous network fetch on render. Name = the canonical `device_name_default` (two voca words from the device PUBLIC key + our identity seed), the SAME function the pairing screen uses, so a device shows the same name here, on its own pairing screen, and on every other device in THIS fleet (a handed-off device gets a fresh name in the new owner's fleet).
-    /// Rows for the Fleet page: `(pubkey, is_self, online, retired, name)`. Current members first (self, then siblings), then the retired inventory — signed out, brand still ours (`fleet_retired`, refreshed on page entry).
-    fn fleet_device_rows(&self) -> Vec<([u8; 32], bool, bool, bool, String)> {
+    /// Rows for the Fleet page: `(pubkey, is_self, online, retired, name, link)`. Current members first (self, then siblings), then the retired inventory — signed out, brand still ours (`fleet_retired`, refreshed on page entry).
+    /// `link` is the sibling's LINK STATE in plain words — how far the secure channel to that device has got, plus whether its fan-out pair is egged (Phase A). It is the one place a stuck pairing is visible without reading a log: "securing 5/8" names whose side the ball is on, and "not egged yet" says the device cannot receive the fleet key until its ceremony finishes.
+    fn fleet_device_rows(&self) -> Vec<([u8; 32], bool, bool, bool, String, String)> {
         use crate::network::fgtw::fleet::device_name_default;
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return Vec::new();
         };
         let mut rows = Vec::new();
-        if let Some(kp) = self.device_keypair.as_ref() {
-            let me = *kp.public.as_bytes();
-            rows.push((me, true, true, false, device_name_default(&me, &seed)));
+        let ours = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+        if let Some(me) = ours {
+            rows.push((me, true, true, false, device_name_default(&me, &seed), String::new()));
         }
         for c in self.contacts.iter().filter(|c| c.is_sibling) {
             let pk = c.public_identity.key;
-            rows.push((
-                pk,
-                false,
-                c.is_online,
-                false,
-                device_name_default(&pk, &seed),
-            ));
+            // Egged = a completed CLUTCH minted this pair's fan-out secret; until then the device gets no wrap and holds no fleet key.
+            let egged = matches!((ours, self.storage.as_ref()), (Some(me), Some(st))
+                if crate::storage::fanout_pairs::load(&me, &pk, st).is_some());
+            let link = if !egged {
+                format!("{} \u{00b7} not egged yet", c.clutch_status_detail())
+            } else {
+                c.clutch_status_detail()
+            };
+            rows.push((pk, false, c.is_online, false, device_name_default(&pk, &seed), link));
         }
         for pk in &self.fleet_retired {
-            rows.push((*pk, false, false, true, device_name_default(pk, &seed)));
+            rows.push((*pk, false, false, true, device_name_default(pk, &seed), String::new()));
         }
         rows
     }
