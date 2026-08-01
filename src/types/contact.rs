@@ -329,6 +329,10 @@ pub struct Contact {
     pub presence_probed: bool,
     /// Runtime-only: when we last rang this contact's doorbell — the client-side debounce above the worker's per-target guard. One wake per re-ring window no matter how much traffic queues behind it.
     pub last_ring: Option<std::time::Instant>,
+    /// Per-contact presence backoff, doubling 1→2→4…→60 minutes while nothing is happening with THIS contact, and reset to the floor the moment something is: you open their conversation, they speak, or we send to them. Battery and data are spent per contact, so the cadence is decided per contact — a global tier spends the same on the friend you are mid-conversation with and the one you have not spoken to since March.
+    pub ping_backoff: u8,
+    /// When this contact was last pinged. `None` = never, so the first sweep always reaches them.
+    pub last_pinged: Option<std::time::Instant>,
     /// Runtime-only fork detector: consecutive inbound chat frames from this contact that passed signature + chain-link checks but decrypted to garbage (VSF parse failure) — the signature of a chain FORK (the two sides advanced different key material). Reset on any successful decrypt. At the threshold a SIBLING contact triggers the fleet-key chain_reset repair; a friend contact only logs (friend-side repair waits for the fleet-plane linearizer).
     pub chain_fail_streak: u8,
     /// Persistent-gap fork detector: (key = XOR of the repeating expected/got prev-hash pair, repeat count). A hash-chain gap that repeats IDENTICALLY is a committed fork, not latency — the missing predecessor will never arrive, and the decrypt-failure streak never sees it because buffering isn't a failure. At threshold the repair fires (sibling reset / friend re-key). Runtime-only.
@@ -473,7 +477,9 @@ impl Contact {
             clutch_offer_stall_cycles: 0, // No stalled-offer cycles yet
             last_heard: None,   // No signed traffic from them yet this session
             presence_probed: false, // No presence verdict yet this session
-            last_ring: None,    // Doorbell never rung this session
+            last_ring: None,
+            ping_backoff: 0,
+            last_pinged: None,    // Doorbell never rung this session
             chain_fail_streak: 0,
             gap_streak: (0, 0),
             last_chain_reset_nonce: None,
