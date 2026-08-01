@@ -14383,6 +14383,8 @@ impl PhotonApp {
         let proxy = self.event_proxy.clone();
 
         let thread_body = move || {
+            // A ceremony is several round trips over ~570KB with no mailbox behind it: if the machine idles out mid-exchange the in-flight frames are simply discarded and the two sides end up holding different halves. The guard drops with this closure, so it protects the ceremony and not a minute longer.
+            let _awake = crate::platform::stay_awake::SleepGuard::hold("photon: CLUTCH ceremony");
             #[cfg(feature = "development")]
             #[cfg(feature = "development")]
             crate::log("CLUTCH: Background ceremony completion started (low priority)...");
@@ -19770,84 +19772,86 @@ impl PhotonApp {
                         if let (Some((idx, key)), Some(storage), Some(checker)) =
                             (route, self.storage.as_ref(), self.status_checker.as_ref())
                         {
-                            use crate::network::history_pages::{
-                                seal_history_page, HistoryPagePlain, HistoryRow, MAX_PAGE_BYTES,
-                                MAX_PAGE_ROWS,
-                            };
+                            // OFF THE RENDER THREAD. Serving a page reads and decrypts up to 50 vault rows and then seals them — measured at 2195ms inline, which is what a peer's backfill felt like from inside our own UI. Everything the work needs is copied here (ids, keys, an Arc of storage, a cloned dispatch sender) and the whole read-seal-send runs on a worker; nothing it produces touches app state, so there is no result to drain back.
                             let their_seed = self.contacts[idx].handle_hash;
-                            let page_limit = (limit as usize).clamp(1, MAX_PAGE_ROWS);
-                            match crate::storage::contacts::load_message_page_before(
-                                &their_seed,
-                                before_osc,
-                                page_limit,
-                                MAX_PAGE_BYTES,
-                                storage,
-                            ) {
-                                Ok((rows, more)) => {
-                                    // Cursor progresses over ALL returned rows (probe rows included) so a probe-heavy stretch can't stall the walk; the probe rows themselves are filtered out of what we ship.
-                                    let oldest_osc =
-                                        rows.first().map(|m| m.timestamp).unwrap_or(before_osc);
-                                    let hist_rows: Vec<HistoryRow> = rows
-                                        .iter()
-                                        .filter(|m| !crate::types::is_control_content(&m.content))
-                                        .map(|m| HistoryRow {
-                                            timestamp: m.timestamp,
-                                            content: m.content.clone(),
-                                            sender_outgoing: m.is_outgoing,
-                                            delivered: m.delivered,
-                                            deleted: m.deleted,
-                                        })
-                                        .collect();
-                                    let page = HistoryPagePlain {
-                                        rows: hist_rows,
-                                        oldest_osc,
-                                        more,
-                                    };
-                                    let device_pubkey = *self
-                                        .device_keypair
-                                        .as_ref()
-                                        .expect("device_keypair set in init")
-                                        .public
-                                        .as_bytes();
-                                    let device_secret = *self
-                                        .device_keypair
-                                        .as_ref()
-                                        .expect("device_keypair set in init")
-                                        .secret
-                                        .as_bytes();
-                                    match seal_history_page(&page, &key).and_then(|sealed| {
-                                        crate::network::fgtw::protocol::build_history_page_vsf(
-                                            &conversation_token,
-                                            &request_id,
-                                            sealed,
-                                            &device_pubkey,
-                                            &device_secret,
-                                        )
-                                    }) {
-                                        Ok(vsf_bytes) => {
-                                            crate::logf!(
-                                                "HISTORY: serving page ({} rows, more={}) to {}",
-                                                page.rows.len(),
-                                                page.more,
-                                                sender_addr
-                                            );
-                                            checker.send_history(
-                                                crate::network::status::HistorySendRequest {
-                                                    peer_addr: sender_addr,
-                                                    alt_addr: None,
-                                                    recipient_pubkey: *sender_pubkey.as_bytes(),
-                                                    relay_to: vec![*sender_pubkey.as_bytes()], // response ALWAYS carries its one-device relay copy: requests arrive fine while responses die on one-directional reverse paths (2322 re-requests in one peer_b session) — one relayed page is cheaper than the re-request storm
-                                                    vsf_bytes,
-                                                },
-                                            );
+                            let page_limit = (limit as usize).clamp(1, crate::network::history_pages::MAX_PAGE_ROWS);
+                            let storage = Arc::clone(storage);
+                            let dispatch = checker.history_dispatch();
+                            let kp = self
+                                .device_keypair
+                                .as_ref()
+                                .expect("device_keypair set in init");
+                            let device_pubkey = *kp.public.as_bytes();
+                            let device_secret = *kp.secret.as_bytes();
+                            let recipient = *sender_pubkey.as_bytes();
+                            std::thread::spawn(move || {
+                                use crate::network::history_pages::{
+                                    seal_history_page, HistoryPagePlain, HistoryRow,
+                                };
+                                match crate::storage::contacts::load_message_page_before(
+                                    &their_seed,
+                                    before_osc,
+                                    page_limit,
+                                    crate::network::history_pages::MAX_PAGE_BYTES,
+                                    &storage,
+                                ) {
+                                    Ok((rows, more)) => {
+                                        // Cursor progresses over ALL returned rows (probe rows included) so a probe-heavy stretch can't stall the walk; the probe rows themselves are filtered out of what we ship.
+                                        let oldest_osc =
+                                            rows.first().map(|m| m.timestamp).unwrap_or(before_osc);
+                                        let hist_rows: Vec<HistoryRow> = rows
+                                            .iter()
+                                            .filter(|m| !crate::types::is_control_content(&m.content))
+                                            .map(|m| HistoryRow {
+                                                timestamp: m.timestamp,
+                                                content: m.content.clone(),
+                                                sender_outgoing: m.is_outgoing,
+                                                delivered: m.delivered,
+                                                deleted: m.deleted,
+                                            })
+                                            .collect();
+                                        let page = HistoryPagePlain {
+                                            rows: hist_rows,
+                                            oldest_osc,
+                                            more,
+                                        };
+                                        match seal_history_page(&page, &key).and_then(|sealed| {
+                                            crate::network::fgtw::protocol::build_history_page_vsf(
+                                                &conversation_token,
+                                                &request_id,
+                                                sealed,
+                                                &device_pubkey,
+                                                &device_secret,
+                                            )
+                                        }) {
+                                            Ok(vsf_bytes) => {
+                                                crate::logf!(
+                                                    "HISTORY: serving page ({} rows, more={}) to {}",
+                                                    page.rows.len(),
+                                                    page.more,
+                                                    sender_addr
+                                                );
+                                                let _ = dispatch.send(
+                                                    crate::network::status::HistorySendRequest {
+                                                        peer_addr: sender_addr,
+                                                        alt_addr: None,
+                                                        recipient_pubkey: recipient,
+                                                        // The response ALWAYS carries its one-device relay copy: requests arrive fine while responses die on one-directional reverse paths (2322 re-requests in one peer_b session) — one relayed page is cheaper than the re-request storm.
+                                                        relay_to: vec![recipient],
+                                                        vsf_bytes,
+                                                    },
+                                                );
+                                            }
+                                            Err(e) => {
+                                                crate::logf!("HISTORY: page build failed: {}", e)
+                                            }
                                         }
-                                        Err(e) => crate::logf!("HISTORY: page build failed: {}", e),
+                                    }
+                                    Err(e) => {
+                                        crate::logf!("HISTORY: page read failed: {}", e)
                                     }
                                 }
-                                Err(e) => {
-                                    crate::logf!("HISTORY: page read failed: {}", e)
-                                }
-                            }
+                            });
                         } else {
                             crate::log(
                                 "HISTORY: request rejected (no key / unknown device / not mutual)",
