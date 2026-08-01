@@ -9715,7 +9715,7 @@ impl PhotonApp {
                 }
                 needs_redraw = true;
             }
-            Some(Ok(Err(_e))) => {
+            Some(Ok(Err(ref _e))) => {
                 // Pull failed to fetch/decrypt. On a fresh join this is the pairing key still being a pre-rotation generation; the in-flight fan-out key sync writes the current key within ~150ms, so re-arm and retry until the budget runs out (the pull's own round-trip spaces the attempts).
                 self.roster_pull_rx = None;
                 if self.roster_pull_retries_left > 0 {
@@ -9724,6 +9724,11 @@ impl PhotonApp {
                     crate::logf!("FLEET: roster pull failed — retrying once the current fleet key lands ({} attempt(s) left)", self.roster_pull_retries_left);
                 } else {
                     crate::log("FLEET: roster pull retries exhausted — will re-try on the next fleet event or relaunch");
+                    // Exhausted against an UNDECRYPTABLE slot is a deadlock, not patience running out: the bytes are sealed under a superseded fleet key, so no number of re-reads will ever open them, and a device that only ever pulls will retry forever with nothing to show (peer_a's wiped device: 27 aead failures, no contacts, no name, no avatar). A push breaks it — `push_roster` re-seals from local state when it finds the slot unreadable — so fire one instead of waiting for an event that cannot help.
+                    if _e.contains("aead") || _e.contains("decrypt") {
+                        crate::log("FLEET: the slot cannot be decrypted under the current key — pushing to re-seal it rather than re-reading bytes nobody can open");
+                        self.spawn_roster_push();
+                    }
                 }
             }
             Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
