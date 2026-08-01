@@ -367,11 +367,15 @@ fn append_log_record(level: LogLevel, msg: &str, vals: &[LogValue]) {
         if let Some(dir) = log_dir() {
             let _ = std::fs::create_dir_all(&dir);
             let path = dir.join("photon.log.vsf");
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
+            let mut opts = std::fs::OpenOptions::new();
+            opts.create(true).append(true);
+            // FILE_ATTRIBUTE_TEMPORARY (0x100): the cache manager keeps the contents in RAM and skips lazy writeback unless memory pressure forces it — the file still exists, survives process exit, and reads back for submission, it just avoids physically wearing the disk while it can. Windows' answer to the tmpfs macOS doesn't have.
+            #[cfg(windows)]
             {
+                use std::os::windows::fs::OpenOptionsExt;
+                opts.attributes(0x100);
+            }
+            if let Ok(mut f) = opts.open(&path) {
                 // Drain the pre-dir buffer FIRST so the file stays chronological, then seed the counters (metadata already includes the drained bytes).
                 if let Ok(mut pending) = LOG_PENDING.lock() {
                     if !pending.is_empty() {
