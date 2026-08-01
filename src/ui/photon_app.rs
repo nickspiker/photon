@@ -12582,14 +12582,14 @@ impl PhotonApp {
                 let has_fleet = self.contacts.iter().any(|c| c.is_sibling);
                 let is_friend = self.contacts.get(ci).map_or(false, |c| !c.is_sibling);
                 if !(has_fleet && is_friend) {
-                    if let Some(contact) = self.contacts.get_mut(ci) {
-                        contact.messages.retain(|m| {
-                            !(m.timestamp == eagle_time && m.is_outgoing && m.content == text)
-                        });
-                    }
+                    // The bubble STAYS. Withdrawing it deleted what the user typed — and the commonest reason to land here is a re-key in flight (a wire flag-day, a peer that lost its chains), which resolves in seconds. The row is already persisted and marked undelivered, so it renders dim, survives a relaunch, and goes out the moment a chain exists (`rearm_undelivered_after_rekey`).
                     self.persist_messages_async(ci);
-                    crate::log(
-                        "CHAT: send had nowhere to go (no chain, no fleet) — bubble withdrawn",
+                    crate::logf!(
+                        "CHAT: no chain yet for this contact — message held undelivered, will send when the ceremony completes ({} queued)",
+                        self.contacts
+                            .get(ci)
+                            .map(|c| c.messages.iter().filter(|m| m.is_outgoing && !m.delivered).count())
+                            .unwrap_or(0)
                     );
                     continue;
                 }
@@ -12599,6 +12599,33 @@ impl PhotonApp {
             self.push_rows_to_siblings(ci, std::slice::from_ref(&msg), None);
         }
         true
+    }
+
+    /// Send every outgoing row this contact still holds as undelivered — the rows `drain_pending_chain_sends` HELD because no chain existed yet (typically a re-key in flight). Original timestamps are preserved, so the row identity is unchanged and the friend dedups anything it already has; a row that still can't go out simply stays held for the next attempt.
+    fn resend_held_messages(&mut self, ci: usize) {
+        let held: Vec<(String, i64)> = match self.contacts.get(ci) {
+            Some(c) => c
+                .messages
+                .iter()
+                .filter(|m| m.is_outgoing && !m.delivered && !m.content.is_empty())
+                .map(|m| (m.content.clone(), m.timestamp))
+                .collect(),
+            None => return,
+        };
+        if held.is_empty() {
+            return;
+        }
+        let mut sent = 0usize;
+        for (text, eagle_time) in &held {
+            if self.chain_transmit(ci, text, *eagle_time) {
+                sent += 1;
+            }
+        }
+        crate::logf!(
+            "CHAT: chain ready — flushed {}/{} held message(s)",
+            sent,
+            held.len()
+        );
     }
 
     /// The WIRE half of a chain send — weave selection, braid advance (prepare_send), chains persist, PT dispatch — with NO row bookkeeping: callers own the bubble. `send_chain_message` inserts its fresh bubble after; the fleet-forward drain transmits rows a sibling already merged (with their ORIGINAL timestamps, so the row identity — and therefore delivered-upgrades and digests — stays one fleet-wide). Returns false quietly when this device holds no usable chain (not Complete, no friendship chain, no party id, no address).
@@ -13100,6 +13127,8 @@ impl PhotonApp {
             }
             self.spawn_roster_push();
         }
+        // Last, past every contact borrow: flush anything the user typed while the chain was missing (a re-key in flight). Those rows were HELD, not withdrawn, so they go out now with their ORIGINAL timestamps — the row identity stays one fleet-wide and the friend dedups a resend.
+        self.resend_held_messages(contact_idx);
     }
 
     /// Send the current textbox contents as an attestation query and transition Launch → Attesting. Called from Enter in the textbox path and from clicking the Attest button — same submit path. No-op if the textbox is empty, HandleQuery wasn't constructed (init failure path), or the launch sub-state forbids submission (`LaunchState::Attesting` — query already in flight; second submit would double-spend the ~5s memory-hard proof).
