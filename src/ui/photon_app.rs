@@ -15232,45 +15232,37 @@ impl PhotonApp {
         // Determine low/high ordering by handle hash
         let we_are_low = our_handle_hash < their_handle_hash;
 
-        // Build shared secrets struct with proper ordering
-        let secrets = if we_are_low {
-            ClutchSharedSecrets {
-                low_x25519: our_kem_secrets.x25519,
-                high_x25519: their_kem_secrets.x25519,
-                low_p384: our_kem_secrets.p384.clone(),
-                high_p384: their_kem_secrets.p384.clone(),
-                low_secp256k1: our_kem_secrets.secp256k1.clone(),
-                high_secp256k1: their_kem_secrets.secp256k1.clone(),
-                low_p256: our_kem_secrets.p256.clone(),
-                high_p256: their_kem_secrets.p256.clone(),
-                low_frodo: our_kem_secrets.frodo.clone(),
-                high_frodo: their_kem_secrets.frodo.clone(),
-                low_ntru: our_kem_secrets.ntru.clone(),
-                high_ntru: their_kem_secrets.ntru.clone(),
-                low_mceliece: our_kem_secrets.mceliece.clone(),
-                high_mceliece: their_kem_secrets.mceliece.clone(),
-                low_hqc: our_kem_secrets.hqc.clone(),
-                high_hqc: their_kem_secrets.hqc.clone(),
-            }
+        // Pick the low/high sides ONCE, then list every algorithm once. The old form wrote the whole field list twice, mirrored — 24 lines that had to stay exact transpositions of each other, where a single mis-swap would produce a valid-but-different pad on one side only and fail as an unexplainable proof mismatch.
+        let (lo, hi) = if we_are_low {
+            (&our_kem_secrets, &their_kem_secrets)
         } else {
-            ClutchSharedSecrets {
-                low_x25519: their_kem_secrets.x25519,
-                high_x25519: our_kem_secrets.x25519,
-                low_p384: their_kem_secrets.p384.clone(),
-                high_p384: our_kem_secrets.p384.clone(),
-                low_secp256k1: their_kem_secrets.secp256k1.clone(),
-                high_secp256k1: our_kem_secrets.secp256k1.clone(),
-                low_p256: their_kem_secrets.p256.clone(),
-                high_p256: our_kem_secrets.p256.clone(),
-                low_frodo: their_kem_secrets.frodo.clone(),
-                high_frodo: our_kem_secrets.frodo.clone(),
-                low_ntru: their_kem_secrets.ntru.clone(),
-                high_ntru: our_kem_secrets.ntru.clone(),
-                low_mceliece: their_kem_secrets.mceliece.clone(),
-                high_mceliece: our_kem_secrets.mceliece.clone(),
-                low_hqc: their_kem_secrets.hqc.clone(),
-                high_hqc: our_kem_secrets.hqc.clone(),
-            }
+            (&their_kem_secrets, &our_kem_secrets)
+        };
+        let secrets = ClutchSharedSecrets {
+            low_x25519: lo.x25519,
+            high_x25519: hi.x25519,
+            low_p384: lo.p384.clone(),
+            high_p384: hi.p384.clone(),
+            low_secp256k1: lo.secp256k1.clone(),
+            high_secp256k1: hi.secp256k1.clone(),
+            low_p256: lo.p256.clone(),
+            high_p256: hi.p256.clone(),
+            low_p521: lo.p521.clone(),
+            high_p521: hi.p521.clone(),
+            low_frodo: lo.frodo.clone(),
+            high_frodo: hi.frodo.clone(),
+            low_frodo1344: lo.frodo1344.clone(),
+            high_frodo1344: hi.frodo1344.clone(),
+            low_ntru: lo.ntru.clone(),
+            high_ntru: hi.ntru.clone(),
+            low_sntrup: lo.sntrup.clone(),
+            high_sntrup: hi.sntrup.clone(),
+            low_mlkem: lo.mlkem.clone(),
+            high_mlkem: hi.mlkem.clone(),
+            low_mceliece: lo.mceliece.clone(),
+            high_mceliece: hi.mceliece.clone(),
+            low_hqc: lo.hqc.clone(),
+            high_hqc: hi.hqc.clone(),
         };
 
         // Mark ceremony in progress and spawn background thread

@@ -1304,17 +1304,33 @@ pub fn build_clutch_offer_vsf(
     // Build section with multi-value field (matches keypairs.vsf format)
     let mut section = VsfSection::new("clutch_offer");
     section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
-    // All 8 pubkeys as multi-value field (kx, kp, kk, kp, kf, kn, kl, kh order)
+    // All 12 pubkeys as LABEL-VALUE pairs: every key is preceded by its `d` name, so decode is a lookup and never a position. The previous layout leaned on arrival order to tell two same-marker `kp` values apart (P-384 then P-256) — a third curve makes that unresolvable, and it was silent corruption waiting to happen either way.
     section.add_field_multi(
         "pubkeys",
         vec![
+            VsfType::d("x25519".into()),
             VsfType::kx(payload.x25519_public.to_vec()),
+            VsfType::d("p384".into()),
             VsfType::kp(payload.p384_public.clone()),
+            VsfType::d("secp256k1".into()),
             VsfType::kk(payload.secp256k1_public.clone()),
+            VsfType::d("p256".into()),
             VsfType::kp(payload.p256_public.clone()),
+            VsfType::d("p521".into()),
+            VsfType::kp(payload.p521_public.clone()),
+            VsfType::d("frodo976".into()),
             VsfType::kf(payload.frodo976_public.clone()),
+            VsfType::d("frodo1344".into()),
+            VsfType::kf(payload.frodo1344_public.clone()),
+            VsfType::d("ntru701".into()),
             VsfType::kn(payload.ntru701_public.clone()),
+            VsfType::d("sntrup761".into()),
+            VsfType::kn(payload.sntrup761_public.clone()),
+            VsfType::d("mlkem1024".into()),
+            VsfType::kn(payload.mlkem1024_public.clone()),
+            VsfType::d("mceliece".into()),
             VsfType::kl(payload.mceliece_public.clone()),
+            VsfType::d("hqc256".into()),
             VsfType::kh(payload.hqc256_public.clone()),
         ],
     );
@@ -1335,6 +1351,116 @@ pub fn build_clutch_offer_vsf(
         crate::crypto::clutch::clutch_offer_provenance(device_pubkey, send_time_osc);
 
     Ok((signed, offer_provenance))
+}
+
+/// Decode a ClutchOffer's public keys from their LABEL-VALUE pairs. Shared by both parse entry points (recipient-checked and not) so the two can never drift.
+fn decode_offer_pubkeys(
+    fields: &[vsf::file_format::VsfField],
+) -> Result<ClutchOfferPayload, String> {
+    let pk_field = fields
+        .iter()
+        .find(|f| f.name == "pubkeys")
+        .ok_or("ClutchOffer missing pubkeys")?;
+    let mut labeled: std::collections::HashMap<&str, &VsfType> = std::collections::HashMap::new();
+    let mut it = pk_field.values.iter();
+    while let Some(v) = it.next() {
+        if let VsfType::d(name) = v {
+            if let Some(datum) = it.next() {
+                labeled.insert(name.as_str(), datum);
+            }
+        }
+    }
+    let key_bytes = |name: &str| -> Result<Vec<u8>, String> {
+        match labeled.get(name) {
+            Some(VsfType::kx(b))
+            | Some(VsfType::kp(b))
+            | Some(VsfType::kk(b))
+            | Some(VsfType::kf(b))
+            | Some(VsfType::kn(b))
+            | Some(VsfType::kl(b))
+            | Some(VsfType::kh(b)) => Ok(b.clone()),
+            _ => Err(format!("ClutchOffer missing pubkey '{name}'")),
+        }
+    };
+    let x25519_public: [u8; 32] = key_bytes("x25519")?
+        .as_slice()
+        .try_into()
+        .map_err(|_| "ClutchOffer x25519 wrong size".to_string())?;
+    Ok(ClutchOfferPayload {
+        x25519_public,
+        p384_public: key_bytes("p384")?,
+        secp256k1_public: key_bytes("secp256k1")?,
+        p256_public: key_bytes("p256")?,
+        p521_public: key_bytes("p521")?,
+        frodo976_public: key_bytes("frodo976")?,
+        frodo1344_public: key_bytes("frodo1344")?,
+        ntru701_public: key_bytes("ntru701")?,
+        sntrup761_public: key_bytes("sntrup761")?,
+        mlkem1024_public: key_bytes("mlkem1024")?,
+        mceliece_public: key_bytes("mceliece")?,
+        hqc256_public: key_bytes("hqc256")?,
+    })
+}
+
+/// Decode a ClutchKemResponse body from its LABEL-VALUE pairs. One decoder, both entry points (recipient-checked and not), so the two can never drift — and every value is found by NAME, so same-marker values (three `kn` ciphertexts, three `kp` curves) can never be transposed the way an order-based read allowed.
+fn decode_kem_payload(
+    fields: &[vsf::file_format::VsfField],
+    target_hqc_pub_prefix: [u8; 8],
+) -> Result<ClutchKemResponsePayload, String> {
+    fn labeled<'a>(
+        fields: &'a [vsf::file_format::VsfField],
+        name: &str,
+    ) -> std::collections::HashMap<&'a str, &'a VsfType> {
+        let mut map = std::collections::HashMap::new();
+        let Some(f) = fields.iter().find(|f| f.name == name) else {
+            return map;
+        };
+        let mut it = f.values.iter();
+        while let Some(v) = it.next() {
+            if let VsfType::d(label) = v {
+                if let Some(datum) = it.next() {
+                    map.insert(label.as_str(), datum);
+                }
+            }
+        }
+        map
+    }
+
+    let cts = labeled(fields, "ciphertexts");
+    let ct = |name: &str| -> Result<Vec<u8>, String> {
+        match cts.get(name) {
+            Some(VsfType::v(_, b)) => Ok(b.clone()),
+            _ => Err(format!("ClutchKemResponse missing ciphertext '{name}'")),
+        }
+    };
+    let ephs = labeled(fields, "ephemerals");
+    let eph = |name: &str| -> Result<Vec<u8>, String> {
+        match ephs.get(name) {
+            Some(VsfType::kx(b)) | Some(VsfType::kp(b)) | Some(VsfType::kk(b)) => Ok(b.clone()),
+            _ => Err(format!("ClutchKemResponse missing ephemeral '{name}'")),
+        }
+    };
+
+    let x25519_ephemeral: [u8; 32] = eph("x25519")?
+        .as_slice()
+        .try_into()
+        .map_err(|_| "ClutchKemResponse x25519 ephemeral wrong size".to_string())?;
+
+    Ok(ClutchKemResponsePayload {
+        frodo976_ciphertext: ct("frodo976")?,
+        frodo1344_ciphertext: ct("frodo1344")?,
+        ntru701_ciphertext: ct("ntru701")?,
+        sntrup761_ciphertext: ct("sntrup761")?,
+        mlkem1024_ciphertext: ct("mlkem1024")?,
+        mceliece_ciphertext: ct("mceliece")?,
+        hqc256_ciphertext: ct("hqc256")?,
+        target_hqc_pub_prefix,
+        x25519_ephemeral,
+        p384_ephemeral: eph("p384")?,
+        secp256k1_ephemeral: eph("secp256k1")?,
+        p256_ephemeral: eph("p256")?,
+        p521_ephemeral: eph("p521")?,
+    })
 }
 
 /// Parse and verify a VSF ClutchOffer message.
@@ -1391,78 +1517,7 @@ pub fn parse_clutch_offer_vsf(
         return Err("ClutchOffer conversation_token mismatch".to_string());
     }
 
-    // Extract pubkeys from multi-value "pubkeys" field (kx, kp, kk, kp, kf, kn, kl, kh order) Also support legacy individual fields for backwards compatibility
-    let (
-        x25519_public,
-        p384_public,
-        secp256k1_public,
-        p256_public,
-        frodo976_public,
-        ntru701_public,
-        mceliece_public,
-        hqc256_public,
-    ) = if let Some(pk_field) = fields.iter().find(|f| f.name == "pubkeys") {
-        // New format: multi-value field
-        let mut x25519 = [0u8; 32];
-        let mut p384 = Vec::new();
-        let mut secp256k1 = Vec::new();
-        let mut p256 = Vec::new();
-        let mut frodo = Vec::new();
-        let mut ntru = Vec::new();
-        let mut mceliece = Vec::new();
-        let mut hqc = Vec::new();
-        let mut kp_index = 0;
-        for v in &pk_field.values {
-            match v {
-                VsfType::kx(data) if data.len() == 32 => {
-                    x25519.copy_from_slice(data);
-                }
-                VsfType::kp(data) => {
-                    // P-384 (97B) comes before P-256 (65B) in order
-                    if kp_index == 0 {
-                        p384 = data.clone();
-                    } else {
-                        p256 = data.clone();
-                    }
-                    kp_index += 1;
-                }
-                VsfType::kk(data) => secp256k1 = data.clone(),
-                VsfType::kf(data) => frodo = data.clone(),
-                VsfType::kn(data) => ntru = data.clone(),
-                VsfType::kl(data) => mceliece = data.clone(),
-                VsfType::kh(data) => hqc = data.clone(),
-                _ => {}
-            }
-        }
-        (x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc)
-    } else {
-        // Legacy format: individual named fields
-        let legacy_fields: Vec<(String, VsfType)> = fields
-            .iter()
-            .flat_map(|f| f.values.first().map(|v| (f.name.clone(), v.clone())))
-            .collect();
-        (
-            extract_kx(&legacy_fields, "x25519")?,
-            extract_kp(&legacy_fields, "p384")?,
-            extract_kk(&legacy_fields, "secp256k1")?,
-            extract_kp(&legacy_fields, "p256")?,
-            extract_kf(&legacy_fields, "frodo")?,
-            extract_kn(&legacy_fields, "ntru")?,
-            extract_kl(&legacy_fields, "mceliece")?,
-            extract_kh(&legacy_fields, "hqc")?,
-        )
-    };
-
-    let payload = ClutchOfferPayload {
-        x25519_public,
-        p384_public,
-        secp256k1_public,
-        p256_public,
-        frodo976_public,
-        ntru701_public,
-        mceliece_public,
-        hqc256_public,
-    };
+    let payload = decode_offer_pubkeys(&fields)?;
 
     // TIME-based provenance: mirror the sender's build formula from the offer's creation_time header + its signer device key. Must match crate::crypto::clutch::clutch_offer_provenance exactly or the two sides derive different ceremony_ids.
     let send_time_osc = extract_header_timestamp(&header)?;
@@ -1520,24 +1575,40 @@ pub fn build_clutch_kem_response_vsf(
         "target_hqc",
         VsfType::hb(payload.target_hqc_pub_prefix.to_vec()),
     );
-    // PQC KEM ciphertexts as multi-value field (vf, vn, vl, vc order matches offer pubkeys)
+    // PQC KEM ciphertexts as LABEL-VALUE pairs — same discipline as the offer's pubkeys: decoded by name, never by position.
     section.add_field_multi(
         "ciphertexts",
         vec![
+            VsfType::d("frodo976".into()),
             VsfType::v(b'f', payload.frodo976_ciphertext.clone()),
+            VsfType::d("frodo1344".into()),
+            VsfType::v(b'f', payload.frodo1344_ciphertext.clone()),
+            VsfType::d("ntru701".into()),
             VsfType::v(b'n', payload.ntru701_ciphertext.clone()),
+            VsfType::d("sntrup761".into()),
+            VsfType::v(b'n', payload.sntrup761_ciphertext.clone()),
+            VsfType::d("mlkem1024".into()),
+            VsfType::v(b'n', payload.mlkem1024_ciphertext.clone()),
+            VsfType::d("mceliece".into()),
             VsfType::v(b'l', payload.mceliece_ciphertext.clone()),
+            VsfType::d("hqc256".into()),
             VsfType::v(b'c', payload.hqc256_ciphertext.clone()),
         ],
     );
-    // EC ephemeral pubkeys as multi-value field (kx, kp, kk, kp order matches offer pubkeys)
+    // EC ephemeral pubkeys, likewise labeled.
     section.add_field_multi(
         "ephemerals",
         vec![
+            VsfType::d("x25519".into()),
             VsfType::kx(payload.x25519_ephemeral.to_vec()),
+            VsfType::d("p384".into()),
             VsfType::kp(payload.p384_ephemeral.clone()),
+            VsfType::d("secp256k1".into()),
             VsfType::kk(payload.secp256k1_ephemeral.clone()),
+            VsfType::d("p256".into()),
             VsfType::kp(payload.p256_ephemeral.clone()),
+            VsfType::d("p521".into()),
+            VsfType::kp(payload.p521_ephemeral.clone()),
         ],
     );
 
@@ -1627,122 +1698,8 @@ pub fn parse_clutch_kem_response_vsf(
         })
         .unwrap_or([0u8; 8]);
 
-    // Extract ciphertexts from multi-value "ciphertexts" field (vf, vn, vl, vc order) Also support legacy individual fields for backwards compatibility
-    let (frodo976_ciphertext, ntru701_ciphertext, mceliece_ciphertext, hqc256_ciphertext) =
-        if let Some(ct_field) = fields.iter().find(|f| f.name == "ciphertexts") {
-            // New format: multi-value field
-            let mut frodo = Vec::new();
-            let mut ntru = Vec::new();
-            let mut mceliece = Vec::new();
-            let mut hqc = Vec::new();
-            for v in &ct_field.values {
-                match v {
-                    VsfType::v(b'f', data) => frodo = data.clone(),
-                    VsfType::v(b'n', data) => ntru = data.clone(),
-                    VsfType::v(b'l', data) => mceliece = data.clone(),
-                    VsfType::v(b'c', data) => hqc = data.clone(),
-                    _ => {}
-                }
-            }
-            (frodo, ntru, mceliece, hqc)
-        } else {
-            // Legacy format: individual named fields
-            let legacy_fields: Vec<(String, VsfType)> = fields
-                .iter()
-                .flat_map(|f| f.values.first().map(|v| (f.name.clone(), v.clone())))
-                .collect();
-            (
-                extract_v(&legacy_fields, "frodo_ct", b'f').unwrap_or_default(),
-                extract_v(&legacy_fields, "ntru_ct", b'n').unwrap_or_default(),
-                extract_v(&legacy_fields, "mceliece_ct", b'l').unwrap_or_default(),
-                extract_v(&legacy_fields, "hqc_ct", b'c').unwrap_or_default(),
-            )
-        };
-
-    // Extract EC ephemeral pubkeys from multi-value "ephemerals" field (kx, kp, kk, kp order) Also support legacy individual fields for backwards compatibility
-    let (x25519_ephemeral, p384_ephemeral, secp256k1_ephemeral, p256_ephemeral) =
-        if let Some(eph_field) = fields.iter().find(|f| f.name == "ephemerals") {
-            // New format: multi-value field
-            let mut x25519 = [0u8; 32];
-            let mut p384 = Vec::new();
-            let mut secp256k1 = Vec::new();
-            let mut p256 = Vec::new();
-            let mut kp_index = 0;
-            for v in &eph_field.values {
-                match v {
-                    VsfType::kx(data) if data.len() == 32 => {
-                        x25519.copy_from_slice(data);
-                    }
-                    VsfType::kp(data) => {
-                        // P-384 (97B) comes before P-256 (65B) in order
-                        if kp_index == 0 {
-                            p384 = data.clone();
-                        } else {
-                            p256 = data.clone();
-                        }
-                        kp_index += 1;
-                    }
-                    VsfType::kk(data) => secp256k1 = data.clone(),
-                    _ => {}
-                }
-            }
-            (x25519, p384, secp256k1, p256)
-        } else {
-            // Legacy format: individual named fields
-            let x25519 = fields
-                .iter()
-                .find(|f| f.name == "x25519_eph")
-                .and_then(|f| f.values.first())
-                .and_then(|v| match v {
-                    VsfType::kx(data) if data.len() == 32 => {
-                        let mut arr = [0u8; 32];
-                        arr.copy_from_slice(data);
-                        Some(arr)
-                    }
-                    _ => None,
-                })
-                .unwrap_or([0u8; 32]);
-            let p384 = fields
-                .iter()
-                .find(|f| f.name == "p384_eph")
-                .and_then(|f| f.values.first())
-                .and_then(|v| match v {
-                    VsfType::kp(data) => Some(data.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default();
-            let secp256k1 = fields
-                .iter()
-                .find(|f| f.name == "secp256k1_eph")
-                .and_then(|f| f.values.first())
-                .and_then(|v| match v {
-                    VsfType::kk(data) => Some(data.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default();
-            let p256 = fields
-                .iter()
-                .find(|f| f.name == "p256_eph")
-                .and_then(|f| f.values.first())
-                .and_then(|v| match v {
-                    VsfType::kp(data) => Some(data.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default();
-            (x25519, p384, secp256k1, p256)
-        };
-
-    let payload = ClutchKemResponsePayload {
-        frodo976_ciphertext,
-        ntru701_ciphertext,
-        mceliece_ciphertext,
-        hqc256_ciphertext,
-        target_hqc_pub_prefix,
-        x25519_ephemeral,
-        p384_ephemeral,
-        secp256k1_ephemeral,
-        p256_ephemeral,
-    };
+    // Ciphertexts + ephemerals arrive as LABEL-VALUE pairs; one shared decoder serves both parse entry points so the two can never drift.
+    let payload = decode_kem_payload(&fields, target_hqc_pub_prefix)?;
 
     #[cfg(feature = "development")]
     {
@@ -1822,78 +1779,7 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
         })
         .ok_or("Missing or invalid conversation_token")?;
 
-    // Extract pubkeys from multi-value "pubkeys" field (kx, kp, kk, kp, kf, kn, kl, kh order) Also support legacy individual fields for backwards compatibility
-    let (
-        x25519_public,
-        p384_public,
-        secp256k1_public,
-        p256_public,
-        frodo976_public,
-        ntru701_public,
-        mceliece_public,
-        hqc256_public,
-    ) = if let Some(pk_field) = fields.iter().find(|f| f.name == "pubkeys") {
-        // New format: multi-value field
-        let mut x25519 = [0u8; 32];
-        let mut p384 = Vec::new();
-        let mut secp256k1 = Vec::new();
-        let mut p256 = Vec::new();
-        let mut frodo = Vec::new();
-        let mut ntru = Vec::new();
-        let mut mceliece = Vec::new();
-        let mut hqc = Vec::new();
-        let mut kp_index = 0;
-        for v in &pk_field.values {
-            match v {
-                VsfType::kx(data) if data.len() == 32 => {
-                    x25519.copy_from_slice(data);
-                }
-                VsfType::kp(data) => {
-                    // P-384 (97B) comes before P-256 (65B) in order
-                    if kp_index == 0 {
-                        p384 = data.clone();
-                    } else {
-                        p256 = data.clone();
-                    }
-                    kp_index += 1;
-                }
-                VsfType::kk(data) => secp256k1 = data.clone(),
-                VsfType::kf(data) => frodo = data.clone(),
-                VsfType::kn(data) => ntru = data.clone(),
-                VsfType::kl(data) => mceliece = data.clone(),
-                VsfType::kh(data) => hqc = data.clone(),
-                _ => {}
-            }
-        }
-        (x25519, p384, secp256k1, p256, frodo, ntru, mceliece, hqc)
-    } else {
-        // Legacy format: individual named fields
-        let legacy_fields: Vec<(String, VsfType)> = fields
-            .iter()
-            .flat_map(|f| f.values.first().map(|v| (f.name.clone(), v.clone())))
-            .collect();
-        (
-            extract_kx(&legacy_fields, "x25519")?,
-            extract_kp(&legacy_fields, "p384")?,
-            extract_kk(&legacy_fields, "secp256k1")?,
-            extract_kp(&legacy_fields, "p256")?,
-            extract_kf(&legacy_fields, "frodo")?,
-            extract_kn(&legacy_fields, "ntru")?,
-            extract_kl(&legacy_fields, "mceliece")?,
-            extract_kh(&legacy_fields, "hqc")?,
-        )
-    };
-
-    let payload = ClutchOfferPayload {
-        x25519_public,
-        p384_public,
-        secp256k1_public,
-        p256_public,
-        frodo976_public,
-        ntru701_public,
-        mceliece_public,
-        hqc256_public,
-    };
+    let payload = decode_offer_pubkeys(&fields)?;
 
     // TIME-based provenance: mirror the sender's build formula from the offer's creation_time header + its signer device key. Must match crate::crypto::clutch::clutch_offer_provenance exactly or the two sides derive different ceremony_ids.
     let send_time_osc = extract_header_timestamp(&header)?;
@@ -1978,122 +1864,8 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
         })
         .unwrap_or([0u8; 8]);
 
-    // Extract ciphertexts from multi-value "ciphertexts" field (vf, vn, vl, vc order) Also support legacy individual fields for backwards compatibility
-    let (frodo976_ciphertext, ntru701_ciphertext, mceliece_ciphertext, hqc256_ciphertext) =
-        if let Some(ct_field) = fields.iter().find(|f| f.name == "ciphertexts") {
-            // New format: multi-value field
-            let mut frodo = Vec::new();
-            let mut ntru = Vec::new();
-            let mut mceliece = Vec::new();
-            let mut hqc = Vec::new();
-            for v in &ct_field.values {
-                match v {
-                    VsfType::v(b'f', data) => frodo = data.clone(),
-                    VsfType::v(b'n', data) => ntru = data.clone(),
-                    VsfType::v(b'l', data) => mceliece = data.clone(),
-                    VsfType::v(b'c', data) => hqc = data.clone(),
-                    _ => {}
-                }
-            }
-            (frodo, ntru, mceliece, hqc)
-        } else {
-            // Legacy format: individual named fields
-            let legacy_fields: Vec<(String, VsfType)> = fields
-                .iter()
-                .flat_map(|f| f.values.first().map(|v| (f.name.clone(), v.clone())))
-                .collect();
-            (
-                extract_v(&legacy_fields, "frodo_ct", b'f').unwrap_or_default(),
-                extract_v(&legacy_fields, "ntru_ct", b'n').unwrap_or_default(),
-                extract_v(&legacy_fields, "mceliece_ct", b'l').unwrap_or_default(),
-                extract_v(&legacy_fields, "hqc_ct", b'c').unwrap_or_default(),
-            )
-        };
-
-    // Extract EC ephemeral pubkeys from multi-value "ephemerals" field (kx, kp, kk, kp order) Also support legacy individual fields for backwards compatibility
-    let (x25519_ephemeral, p384_ephemeral, secp256k1_ephemeral, p256_ephemeral) =
-        if let Some(eph_field) = fields.iter().find(|f| f.name == "ephemerals") {
-            // New format: multi-value field
-            let mut x25519 = [0u8; 32];
-            let mut p384 = Vec::new();
-            let mut secp256k1 = Vec::new();
-            let mut p256 = Vec::new();
-            let mut kp_index = 0;
-            for v in &eph_field.values {
-                match v {
-                    VsfType::kx(data) if data.len() == 32 => {
-                        x25519.copy_from_slice(data);
-                    }
-                    VsfType::kp(data) => {
-                        // P-384 (97B) comes before P-256 (65B) in order
-                        if kp_index == 0 {
-                            p384 = data.clone();
-                        } else {
-                            p256 = data.clone();
-                        }
-                        kp_index += 1;
-                    }
-                    VsfType::kk(data) => secp256k1 = data.clone(),
-                    _ => {}
-                }
-            }
-            (x25519, p384, secp256k1, p256)
-        } else {
-            // Legacy format: individual named fields
-            let x25519 = fields
-                .iter()
-                .find(|f| f.name == "x25519_eph")
-                .and_then(|f| f.values.first())
-                .and_then(|v| match v {
-                    VsfType::kx(data) if data.len() == 32 => {
-                        let mut arr = [0u8; 32];
-                        arr.copy_from_slice(data);
-                        Some(arr)
-                    }
-                    _ => None,
-                })
-                .unwrap_or([0u8; 32]);
-            let p384 = fields
-                .iter()
-                .find(|f| f.name == "p384_eph")
-                .and_then(|f| f.values.first())
-                .and_then(|v| match v {
-                    VsfType::kp(data) => Some(data.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default();
-            let secp256k1 = fields
-                .iter()
-                .find(|f| f.name == "secp256k1_eph")
-                .and_then(|f| f.values.first())
-                .and_then(|v| match v {
-                    VsfType::kk(data) => Some(data.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default();
-            let p256 = fields
-                .iter()
-                .find(|f| f.name == "p256_eph")
-                .and_then(|f| f.values.first())
-                .and_then(|v| match v {
-                    VsfType::kp(data) => Some(data.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default();
-            (x25519, p384, secp256k1, p256)
-        };
-
-    let payload = ClutchKemResponsePayload {
-        frodo976_ciphertext,
-        ntru701_ciphertext,
-        mceliece_ciphertext,
-        hqc256_ciphertext,
-        target_hqc_pub_prefix,
-        x25519_ephemeral,
-        p384_ephemeral,
-        secp256k1_ephemeral,
-        p256_ephemeral,
-    };
+    // Ciphertexts + ephemerals arrive as LABEL-VALUE pairs; one shared decoder serves both parse entry points so the two can never drift.
+    let payload = decode_kem_payload(&fields, target_hqc_pub_prefix)?;
 
     #[cfg(feature = "development")]
     crate::logf!("CLUTCH: Parsed KEM response (no recipient check) HQC ct[..8]={} target_hqc[..8]={} EC ephemerals present", // `.min(8)` guards a short field so a truncated/forged ciphertext can't panic the receiver.
