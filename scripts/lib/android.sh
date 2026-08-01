@@ -9,6 +9,10 @@ android_build() {
     local features=""
     [ "$profile" = "dev" ] && features="--features logging,fluor/amber"
 
+    # CPU-feature ratchet, FIRST — and it matters most here: this is the only target where an unsupported opcode is a silent field crash rather than a dev-machine failure. A Snapdragon 855 SIGILLed in clutch-keygen on ML-KEM's aarch64 Keccak assembly (2026-08-01) while every newer device was fine. See scripts/lib/arch-gate.sh.
+    source "$(dirname "${BASH_SOURCE[0]}")/arch-gate.sh"
+    arch_gate || exit 1
+
     echo "Building Photon for Android (arm64) — $profile..."
     # Build the .so from deploy.sh's reflink snapshot when SNAP_DIR is exported (edit-safe release); standalone dev-adb builds the live tree.
     ( cd "${SNAP_DIR:-.}" && PHOTON_ALLOW_RELEASE=1 cargo build --release --lib --target aarch64-linux-android $features )
