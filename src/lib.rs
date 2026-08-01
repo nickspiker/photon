@@ -248,10 +248,11 @@ pub fn log_size_bytes() -> u64 {
     0
 }
 
-/// Live size of the open VSF log — the cheap "has anything been logged since?" probe (one atomic load, no I/O). The Diagnostics Submit pill greys while this still equals the size captured at the last successful submit: identical size = identical bytes = a duplicate upload.
+/// Live size of the VSF log — the cheap "has anything been logged since?" probe (an atomic load + an uncontended lock, no I/O). File bytes PLUS the soft-mode RAM batch: records waiting in the batch are still records to submit, and counting only the file made the Submit pill grey out with a session's worth of unsent lines sitting in memory ("no logs to send"). The pill greys while this still equals the size captured at the last successful submit: identical size = identical bytes = a duplicate upload.
 #[cfg(feature = "logging")]
 pub fn log_size_bytes() -> u64 {
-    LOG_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+    let pending = LOG_PENDING.lock().map(|p| p.len() as u64).unwrap_or(0);
+    LOG_BYTES.load(std::sync::atomic::Ordering::Relaxed) + pending
 }
 
 // The structured VSF log sink: one COMPLETE VSF record per line — {creation_time (Eagle), section "log" {lvl, msg}} — appended to `photon.log.vsf` in `log_dir()` (Android: external filesDir, pullable via `adb pull`; desktop: the OS temp dir — volatile diagnostics, see log_dir). The log is thus a stream of self-describing, Eagle-time-stamped, vsfinfo-inspectable records; read it with the `photonlog` bin. Opens lazily and RETRIES until the dir is ready — a plain Mutex<Option<File>>, NOT a OnceLock, precisely so a pre-data-dir failure isn't cached forever (the first Kotlin/JNI lines predate Android's data_dir; they buffer in LOG_PENDING below and flush when the file opens).
