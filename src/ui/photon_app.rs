@@ -906,6 +906,8 @@ pub struct PhotonApp {
     fleet_evt_rx: Option<std::sync::mpsc::Receiver<(&'static str, [u8; 32])>>,
     /// One-heal-at-a-time latch for the removal-rotates flow (braid.md §14.2), shared with the key-sync thread and cleared on its exit. Guards both the duplicate-rotation race and the stale-cache window (a plain key sync running mid-heal would re-cache the pre-rotation key over the fresh one).
     fleet_heal_busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// A sibling pair just became egged (Phase A) — mint the next fan-out epoch so that sibling finally gets a wrap. Set by the ceremony drain, consumed by the tick (the rotation needs `&self` off the drain's borrows).
+    fanout_rotate_pending: bool,
     /// Heal thread → tick: a removal rotation WE won landed; the drain runs the winner-only UI-thread follow-up (avatar bearer-pin rotate). Losers adopt the winner's key off-thread and send nothing.
     fleet_rotated_tx: std::sync::mpsc::Sender<()>,
     fleet_rotated_rx: std::sync::mpsc::Receiver<()>,
@@ -1264,6 +1266,7 @@ impl PhotonApp {
             },
             avatar_dl_rx: std::sync::mpsc::channel().1,
             fleet_heal_busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            fanout_rotate_pending: false,
             fleet_rotated_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
                 tx
@@ -9028,6 +9031,12 @@ impl PhotonApp {
             needs_redraw = true;
         }
 
+        // A sibling pair just became egged — rotate so its wrap exists (Phase A). Edge-driven off the ceremony drain, never polled.
+        if std::mem::take(&mut self.fanout_rotate_pending) {
+            crate::log("FANOUT: newly egged sibling — rotating so it gets a wrap");
+            self.spawn_fleet_key_rotate_for_compliance();
+        }
+
         // Drain handle_query results. `try_recv` is non-blocking; we collect into local Vecs so the immutable borrow on `handle_query` ends before the `&mut self` handlers run. Three channels feed in: attestation results, connectivity changes, handle searches.
         let mut drained: Vec<QueryResult> = Vec::new();
         let mut drained_searches: Vec<crate::ui::state::SearchResult> = Vec::new();
@@ -9306,6 +9315,7 @@ impl PhotonApp {
                         self.add_join_rx = Some(rx);
                         let hp = session.handle_proof;
                         let kp = self.device_keypair.clone();
+                        let store = self.storage.clone();
                         let wake = self.event_proxy.clone();
                         std::thread::spawn(move || {
                             let Some(kp) = kp else { return };
@@ -9313,7 +9323,11 @@ impl PhotonApp {
                             for _ in 0..(15 * 30) {
                                 std::thread::sleep(std::time::Duration::from_secs(2));
                                 if let Ok(Some(k)) =
-                                    crate::network::fgtw::fleet::recover_fleet_key(&hp, &kp)
+                                    crate::network::fgtw::fleet::recover_fleet_key(
+                                        &hp,
+                                        &kp,
+                                        store.as_deref(),
+                                    )
                                 {
                                     if tx.send(JoinUpdate::Joined(Some(k), session)).is_err() {
                                         return; // screen left — nobody waiting
@@ -10468,6 +10482,51 @@ impl PhotonApp {
         }
     }
 
+    /// Mint the next fan-out epoch because a sibling pair just became EGGED (Phase A): until its pair secret existed the sibling could not be wrapped, so it held no fleet key. Same rotation the sponsor's confirm runs — the worker's monotonic epoch guard makes concurrent siblings converge, and a `stale` loser simply adopts the winner's key on its next sync.
+    fn spawn_fleet_key_rotate_for_compliance(&self) {
+        use crate::network::fgtw::fleet;
+        let (Some(hp), Some(device_key), Some(storage), Some(session)) = (
+            self.handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof()),
+            self.device_keypair.clone(),
+            self.storage.as_ref().cloned(),
+            self.session.as_ref(),
+        ) else {
+            return;
+        };
+        let identity_seed = session.identity_seed;
+        let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
+        let busy = self.fleet_heal_busy.clone();
+        std::thread::spawn(move || {
+            use std::sync::atomic::Ordering;
+            if busy
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return; // a heal already holds the latch; its rotation covers this too
+            }
+            // Genesis-verified fold: never rotate toward a member set a relay could have swapped.
+            let members = match fleet::current_members_verified(&hp, &identity_seed) {
+                Ok(m) if !m.is_empty() => m,
+                _ => {
+                    busy.store(false, Ordering::Release);
+                    return;
+                }
+            };
+            match fleet::rotate_fleet_key(&hp, &device_key, &members, Some(&storage)) {
+                Ok((epoch, k)) => {
+                    if let Err(e) = storage.write_addr(&addr, &k) {
+                        crate::logf!("FANOUT: fleet key cache failed: {}", e);
+                    }
+                    crate::logf!("FANOUT: rotated to epoch {} — egged siblings wrapped", epoch);
+                }
+                Err(e) => crate::logf!("FANOUT: compliance rotation failed: {}", e),
+            }
+            busy.store(false, Ordering::Release);
+        });
+    }
+
     /// Also the removal-rotates sentinel (braid.md §14.2 / §14.12-1): before recovering, the thread folds our chain (genesis-verified) and fetches the fan-out; a fan-out wrapping MORE devices than the fold holds means a departed member's wrap lingers, so this device — any surviving member, never the leaver — mints the next epoch and re-seals the fstate slot across the re-key (pull under the OLD cached key first, push the CRDT merge under the new; skipping the pull would let `push_roster`'s AEAD fallback silently drop the settings layer). One heal at a time (`fleet_heal_busy`, also parking plain syncs so they can't re-cache the pre-rotation key mid-heal); concurrent siblings converge on the worker's monotonic epoch guard — a `stale` loser adopts the winner's key and pushes nothing. The winner's UI-thread follow-up (avatar bearer-pin rotate) rides `fleet_rotated_tx`.
     fn spawn_fleet_key_sync(&self) {
         use crate::network::fgtw::fleet;
@@ -10508,7 +10567,7 @@ impl PhotonApp {
             // Fail toward no-rotate: any fetch/verify miss here just falls thru to the plain recover path.
             let heal_members = (|| {
                 let members = fleet::current_members_verified(&hp, &identity_seed).ok()?;
-                let (_, wraps) = fleet::fetch_fanout(&hp).ok().flatten()?;
+                let (_, _, wraps) = fleet::fetch_fanout(&hp).ok().flatten()?;
                 fleet::fanout_needs_rotation(wraps.len(), members.len()).then_some(members)
             })();
             if let Some(members) = heal_members {
@@ -10527,7 +10586,7 @@ impl PhotonApp {
                 let preserved = old_key
                     .and_then(|k| fleet::pull_fstate(&hp, &k).ok().flatten())
                     .unwrap_or_default();
-                match fleet::rotate_fleet_key(&hp, &device_key, &members) {
+                match fleet::rotate_fleet_key(&hp, &device_key, &members, Some(&storage)) {
                     Ok((epoch, new_key)) => {
                         if let Err(e) = storage.write_addr(&addr, &new_key) {
                             crate::logf!("FLEET: rotated key cache failed: {}", e);
@@ -10545,7 +10604,9 @@ impl PhotonApp {
                     Err(e) => {
                         // Lost the race (or the write failed): a sibling's rotation is the live epoch — adopt it.
                         crate::logf!("FLEET: removal heal — rotation not ours ({}); adopting the current fan-out", e);
-                        if let Ok(Some(k)) = fleet::recover_fleet_key(&hp, &device_key) {
+                        if let Ok(Some(k)) =
+                            fleet::recover_fleet_key(&hp, &device_key, Some(&storage))
+                        {
                             let _ = storage.write_addr(&addr, &k);
                         }
                     }
@@ -10553,7 +10614,7 @@ impl PhotonApp {
                 busy.store(false, Ordering::Release);
                 return;
             }
-            match fleet::recover_or_establish_fleet_key(&hp, &device_key) {
+            match fleet::recover_or_establish_fleet_key(&hp, &device_key, Some(&storage)) {
                 Ok(Some(k)) => {
                     if let Err(e) = storage.write_addr(&addr, &k) {
                         crate::logf!("FLEET: fleet key cache failed: {}", e);
@@ -10583,7 +10644,7 @@ impl PhotonApp {
         };
         let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
         std::thread::spawn(
-            move || match fleet::recover_or_establish_fleet_key(&hp, &kp) {
+            move || match fleet::recover_or_establish_fleet_key(&hp, &kp, Some(&storage)) {
                 Ok(Some(k)) => {
                     if let Err(e) = storage.write_addr(&addr, &k) {
                         crate::logf!("FLEET: fleet key cache failed: {}", e);
@@ -11812,9 +11873,11 @@ impl PhotonApp {
             self.device_keypair.clone(),
             self.add_device_tx.clone(),
         ) {
+            let store = self.storage.clone();
             std::thread::spawn(move || {
-                let r = fleet::current_members(&hp)
-                    .and_then(|members| fleet::rotate_fleet_key(&hp, &kp, &members).map(|_| ()));
+                let r = fleet::current_members(&hp).and_then(|members| {
+                    fleet::rotate_fleet_key(&hp, &kp, &members, store.as_deref()).map(|_| ())
+                });
                 let _ = tx.send(match r {
                     Ok(()) => AddDeviceUpdate::Rotated,
                     Err(e) => AddDeviceUpdate::Failed(e),
@@ -12244,7 +12307,10 @@ impl PhotonApp {
                         // In the fleet — this is the green, and LEAVING THIS SCREEN is what the far-side human confirms, so it must happen NOW, not after the key. Withdraw our request (the author's exit act), try the fan-out once in case the sponsor already confirmed, and hand off — the key otherwise arrives via the post-attest fleet-event sync the moment the green-confirm rotation lands (the worker broadcasts "fleet" on fanout_put). Waiting here deadlocks the ceremony: the sponsor waits for our green before releasing the key this wait was for.
                         crate::log("JOIN: bound — this device is in the fleet chain");
                         withdraw("green");
-                        let fleet_key = fleet::recover_fleet_key(&hp, &device_key).ok().flatten();
+                        // No storage yet (the vault opens at attest), so no pair secret toward the sponsor — this attempt can only succeed once we are egged. The key arrives via the post-attest sync after our sibling CLUTCH with the sponsor mints the pair secret and the sponsor re-rotates (Phase A compliance).
+                        let fleet_key = fleet::recover_fleet_key(&hp, &device_key, None)
+                            .ok()
+                            .flatten();
                         crate::logf!(
                             "JOIN: fleet key {} — attesting",
                             if fleet_key.is_some() {
@@ -14134,6 +14200,13 @@ impl PhotonApp {
                 &secrets,
             );
 
+            // The fan-out pair secret rides the SAME eggs (Phase A) — derive it here, while they're alive, so a sibling wrap can be sealed post-quantum. Cheap next to the expansion below.
+            let fanout_pair_secret = crate::crypto::clutch::derive_fanout_pair_secret(
+                &our_device_pub,
+                &their_device_pub,
+                &result.eggs,
+            );
+
             // Phase 2: Expand to 2MB and derive chains (slow - avalanche_expand)
             let friendship_chains = FriendshipChains::from_clutch(
                 &[our_handle_hash, their_handle_hash],
@@ -14153,6 +14226,7 @@ impl PhotonApp {
                 conversation_token,
                 peer_addr,
                 their_hqc_prefix,
+                fanout_pair_secret,
             });
 
             // Wake the event loop so it processes the result
@@ -14766,6 +14840,31 @@ impl PhotonApp {
                 #[cfg(feature = "development")]
                 #[cfg(feature = "development")]
                 crate::log("CLUTCH: Cannot save chains - no storage!");
+            }
+
+            // Phase A compliance: a SIBLING ceremony mints the pair secret that lets this device be wrapped into (and open) the egged fan-out. Store it before anything else can fail — a lost secret means a dark device until the next ceremony.
+            let sibling_device = self
+                .contacts
+                .iter()
+                .find(|c| c.id == result.contact_id && c.is_sibling)
+                .map(|c| *c.public_identity.as_bytes());
+            if let (Some(their_device), Some(storage)) = (sibling_device, self.storage.as_ref()) {
+                match crate::storage::fanout_pairs::store(
+                    &device_pubkey,
+                    &their_device,
+                    &result.fanout_pair_secret,
+                    storage,
+                ) {
+                    Ok(()) => {
+                        crate::logf!(
+                            "FANOUT: pair secret minted with sibling {} — this pair is now egged",
+                            crate::fp(&their_device)
+                        );
+                        // The sibling can now be wrapped, so mint the next epoch that includes it. Idempotent by the worker's monotonic epoch guard; a loser just adopts the winner's key.
+                        self.fanout_rotate_pending = true;
+                    }
+                    Err(e) => crate::logf!("FANOUT: pair secret store failed: {}", e),
+                }
             }
 
             // Cache chains in memory
