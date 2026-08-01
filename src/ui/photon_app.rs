@@ -2242,7 +2242,7 @@ impl FluorApp for PhotonApp {
         // Hard logs default OFF: steady-state logging batches in RAM and reaches disk on edges only (wear); tick it while chasing a crash on this device — see lib.rs LOG_HARD.
         self.settings_hardlogs_check = Some(crate::ui::settings_widgets::Checkbox::new(
             &mut self.hit_counter,
-            "Hard logs (write every line to disk)",
+            "Hard logs — this device, 24h (write every line to disk)",
             0.,
             0.,
             1.,
@@ -9182,15 +9182,27 @@ impl PhotonApp {
             needs_redraw = true;
         }
 
-        // Hard-logs toggle: flip the sink NOW (toggle-on is a flush edge) and persist fleet-wide, so any device can arm another's durable logging.
+        // Hard-logs toggle: arm THIS device for 24h (the value stored is the arm time; the sink self-expires) — device-local via unlink, mirroring the display.zoom pattern. Arming flips the sink NOW (a flush edge).
         let hardlogs_toggle = self
             .settings_hardlogs_check
             .as_mut()
             .map(|cb| (cb.take_toggle(), cb.is_checked()));
         if let Some((true, checked)) = hardlogs_toggle {
-            crate::set_hard_logs(checked);
-            if self.settings_set("logs.hard", vec![checked as u8]) {
-                crate::logf!("SETTINGS: logs.hard = {} (linked write)", checked);
+            let now = vsf::eagle_time_oscillations();
+            crate::set_hard_logs(checked.then_some(now));
+            if self.ensure_fleet_settings() {
+                let fs = self.fleet_settings.as_mut().unwrap();
+                if fs.linked("logs.hard") {
+                    fs.set_link("logs.hard", false, now);
+                }
+                let val = if checked { now.to_be_bytes().to_vec() } else { Vec::new() };
+                if fs.set("logs.hard", val, now) {
+                    crate::logf!(
+                        "SETTINGS: logs.hard {} (device-local, 24h self-expiry)",
+                        if checked { "armed" } else { "disarmed" }
+                    );
+                    self.persist_and_push_settings();
+                }
             }
             needs_redraw = true;
         }
@@ -11291,16 +11303,18 @@ impl PhotonApp {
         if let Some(cb) = self.settings_autoupdate_check.as_mut() {
             cb.set_checked(auto);
         }
-        // Hard logs: default OFF (soft/batched). Applied to the SINK here too, so a fleet-adopted flip takes effect without a relaunch — that is what lets you arm hard logging on a family device remotely.
-        let hard = self
+        // Hard logs: DEVICE-LOCAL (an investigation concerns one piece of hardware — never the fleet global) and self-expiring; the stored value is the ARM TIME, the sink owns the 24h window, and the checkbox displays the sink's verdict so the two can't disagree.
+        let armed_at = self
             .fleet_settings
             .as_ref()
-            .and_then(|fs| fs.effective("logs.hard").map(|v| v == [1]))
-            .unwrap_or(false);
+            .and_then(|fs| fs.device_local("logs.hard"))
+            .and_then(|v| <[u8; 8]>::try_from(v).ok())
+            .map(i64::from_be_bytes)
+            .filter(|t| *t > 0);
+        crate::set_hard_logs(armed_at);
         if let Some(cb) = self.settings_hardlogs_check.as_mut() {
-            cb.set_checked(hard);
+            cb.set_checked(crate::hard_logs_active());
         }
-        crate::set_hard_logs(hard);
         // Restore THIS DEVICE'S persisted zoom (display.zoom, f32 LE bytes — binary at rest), device-local ONLY: never the fleet global. Zoom is monitor ergonomics, so a device that has never set one keeps the default rather than adopting another screen's value — reading it through `effective` is what made a fresh device jump to a 4K desktop's zoom seconds after launch. Handed to the host as a one-shot absolute request; applies exactly like a user zoom.
         // ONCE per process, and only at load. `apply_settings_to_ui` also runs after EVERY fleet merge that changed anything, and the fleet poll fires every ~15s -- so without this guard the stored zoom was re-applied on a timer, stomping whatever the window was actually at. That is the "scaling elements go half size a few moments after the contacts show up" report: the first pull after contacts load re-armed the restore, and every pull after it did so again. A restore is a startup action, not a steady-state one; the host applies it exactly like a user zoom and the user must stay in control after that.
         if !self.zoom_restored {

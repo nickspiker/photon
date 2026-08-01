@@ -268,19 +268,34 @@ const LOG_PENDING_CAP: usize = 4 << 20;
 /// Soft-mode batch: buffered records write thru in ONE chunk at this size — an idle session writes nothing, a busy one writes rarely and large (flash wear tracks write COUNT more than byte count).
 const SOFT_LOG_FLUSH_BYTES: usize = 512 << 10;
 
-/// Hard-logs switch (`logs.hard`, the Diagnostics checkbox): ON = write thru per record (crash-durable via the kernel page cache). OFF (the default) = records batch in RAM and reach disk on the EDGES — panic, app background, submission, threshold, toggle-on — so steady-state logging costs the disk nothing. The loss window is one un-flushed batch on a hard kill, which is exactly what the checkbox is for when a device is under investigation.
+/// Hard-logs deadline in Eagle oscillations (0 = soft). ON = write thru per record (crash-durable via the kernel page cache); OFF (the default) = records batch in RAM and reach disk on the EDGES — panic, app background, submission, threshold, arming — so steady-state logging costs the disk nothing.
+/// DEVICE-LOCAL and SELF-EXPIRING: the Diagnostics checkbox arms THIS device for 24h (`LOG_AGE_TRIGGER_BASE_OSC`), because an investigation concerns one piece of hardware and nobody remembers to untick. Expiry is evaluated lazily at each write — no timer; the first record past the deadline simply batches again.
 #[cfg(feature = "logging")]
-static LOG_HARD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static LOG_HARD_UNTIL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
+/// Arm (Some(arm_time_osc)) or disarm (None) hard logging. Arming is a flush edge — the batch drains so the durable record starts complete.
 #[cfg(feature = "logging")]
-pub fn set_hard_logs(hard: bool) {
-    let was = LOG_HARD.swap(hard, std::sync::atomic::Ordering::Relaxed);
-    if hard && !was {
+pub fn set_hard_logs(armed_at: Option<i64>) {
+    let deadline = armed_at
+        .map(|t| t.saturating_add(LOG_AGE_TRIGGER_BASE_OSC))
+        .unwrap_or(0);
+    let was = LOG_HARD_UNTIL.swap(deadline, std::sync::atomic::Ordering::Relaxed);
+    if deadline > was {
         flush_log_buffer();
     }
 }
 #[cfg(not(feature = "logging"))]
-pub fn set_hard_logs(_hard: bool) {}
+pub fn set_hard_logs(_armed_at: Option<i64>) {}
+
+/// True while the 24h hard-logs window is open — the UI reads the checkbox state from here so sink and display can't disagree.
+#[cfg(feature = "logging")]
+pub fn hard_logs_active() -> bool {
+    LOG_HARD_UNTIL.load(std::sync::atomic::Ordering::Relaxed) > vsf::eagle_time_oscillations()
+}
+#[cfg(not(feature = "logging"))]
+pub fn hard_logs_active() -> bool {
+    false
+}
 
 // Size cap for the VSF log: once the file passes 16 MiB, drop enough of the OLDEST whole records to bring it back to ~8 MiB.
 // Trimming cuts only on record boundaries (the file is a stream of complete VSF records), so the result stays fully decodable by photonlog.
@@ -474,8 +489,8 @@ fn append_log_record(level: LogLevel, msg: &str, vals: &[LogValue]) {
     let Ok(mut guard) = LOG_FILE.lock() else {
         return;
     };
-    // SOFT mode (the default): batch in RAM; the batch reaches disk on the edges (panic / background / submit / threshold / hard-toggle) via flush_log_buffer.
-    if !LOG_HARD.load(std::sync::atomic::Ordering::Relaxed) {
+    // SOFT mode (the default, and hard mode past its 24h deadline): batch in RAM; the batch reaches disk on the edges (panic / background / submit / threshold / arming) via flush_log_buffer.
+    if LOG_HARD_UNTIL.load(std::sync::atomic::Ordering::Relaxed) <= vsf::eagle_time_oscillations() {
         let over = if let (Ok(bytes), Ok(mut pending)) = (&record, LOG_PENDING.lock()) {
             if pending.len() + bytes.len() <= LOG_PENDING_CAP {
                 pending.extend_from_slice(bytes);
