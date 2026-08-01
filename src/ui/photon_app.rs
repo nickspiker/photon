@@ -1101,6 +1101,8 @@ pub struct PhotonApp {
     settings_presence_check: Option<crate::ui::settings_widgets::Checkbox>,
     /// Updates-page auto-update on/off — a custom `Checkbox`.
     settings_autoupdate_check: Option<crate::ui::settings_widgets::Checkbox>,
+    /// Diagnostics "Hard logs" toggle (`logs.hard`): ON = every record writes thru to disk; OFF (default) = RAM-batched with edge flushes — see lib.rs LOG_HARD.
+    settings_hardlogs_check: Option<crate::ui::settings_widgets::Checkbox>,
     /// Desktop "Run in background" toggle (Notifications page): the OS autostart artifact IS the stored state (`platform::autostart` — no vault setting to desync), and `resident_mode` follows it live. Never built on Android (the OS owns app lifecycle there).
     settings_background_check: Option<crate::ui::settings_widgets::Checkbox>,
     /// Desktop resident mode: close hides the window instead of exiting (`FluorApp::on_close_requested`), the process keeps serving the network, and a second launch (or a future tray click) surfaces it via the control channel. True when launched `--background` or when the autostart artifact exists; the settings toggle moves it live.
@@ -1420,6 +1422,7 @@ impl PhotonApp {
             settings_chime_check: None,
             settings_presence_check: None,
             settings_autoupdate_check: None,
+            settings_hardlogs_check: None,
             diag_log_view: false,
             diag_log_rows: Vec::new(),
             diag_log_consumed: 0,
@@ -1891,6 +1894,9 @@ impl PhotonApp {
                     if let Some(tb) = self.settings_note_textbox.as_mut() {
                         f(tb);
                     }
+                    if let Some(cb) = self.settings_hardlogs_check.as_mut() {
+                        f(cb);
+                    }
                 }
                 SettingsPage::You => {
                     for pf in self.you_fields.iter_mut() {
@@ -2232,6 +2238,17 @@ impl FluorApp for PhotonApp {
             1.,
             12.,
             true,
+        ));
+        // Hard logs default OFF: steady-state logging batches in RAM and reaches disk on edges only (wear); tick it while chasing a crash on this device — see lib.rs LOG_HARD.
+        self.settings_hardlogs_check = Some(crate::ui::settings_widgets::Checkbox::new(
+            &mut self.hit_counter,
+            "Hard logs (write every line to disk)",
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            false,
         ));
         // Desktop only: Android's lifecycle is the OS's business (foreground service + FCM), so no toggle there.
         #[cfg(not(target_os = "android"))]
@@ -8577,6 +8594,14 @@ impl FluorApp for PhotonApp {
                             id,
                         );
                     }
+                    if let Some(cb) = self.settings_hardlogs_check.as_mut() {
+                        cb.render_content_into(
+                            &mut canvas,
+                            ctx.text,
+                            None,
+                            Some(&mut chrome.hit_test_map),
+                        );
+                    }
                 }
                 SettingsPage::About => {
                     // An About CARD, not a settings list: the Photon wordmark over its chromatic wave up top, then the two headline properties (killswitch-ready, passless), then the version — tap it to reveal both the spelled-out form AND the dozenal cheat sheet. No feedback line — photon is owned by everyone. All centred under the logo; a manual vertical cursor (elements are variable-height, not equal rows).
@@ -9153,6 +9178,19 @@ impl PhotonApp {
         if let Some((true, checked)) = autoupdate_toggle {
             if self.settings_set("updates.auto", vec![checked as u8]) {
                 crate::logf!("SETTINGS: updates.auto = {} (linked write)", checked);
+            }
+            needs_redraw = true;
+        }
+
+        // Hard-logs toggle: flip the sink NOW (toggle-on is a flush edge) and persist fleet-wide, so any device can arm another's durable logging.
+        let hardlogs_toggle = self
+            .settings_hardlogs_check
+            .as_mut()
+            .map(|cb| (cb.take_toggle(), cb.is_checked()));
+        if let Some((true, checked)) = hardlogs_toggle {
+            crate::set_hard_logs(checked);
+            if self.settings_set("logs.hard", vec![checked as u8]) {
+                crate::logf!("SETTINGS: logs.hard = {} (linked write)", checked);
             }
             needs_redraw = true;
         }
@@ -9800,6 +9838,11 @@ impl PhotonApp {
                         let r = rows[7].center_h(0.95);
                         tb.set_rect(r.center_x(), r.center_y(), r.w, ctrl_h * 1.2);
                         tb.set_font_size(ctrl_font, ctx.text);
+                    }
+                    if let Some(cb) = self.settings_hardlogs_check.as_mut() {
+                        let r = rows[9];
+                        cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
+                        cb.set_font_size(ctrl_font);
                     }
                 }
                 _ => {}
@@ -11248,6 +11291,16 @@ impl PhotonApp {
         if let Some(cb) = self.settings_autoupdate_check.as_mut() {
             cb.set_checked(auto);
         }
+        // Hard logs: default OFF (soft/batched). Applied to the SINK here too, so a fleet-adopted flip takes effect without a relaunch — that is what lets you arm hard logging on a family device remotely.
+        let hard = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("logs.hard").map(|v| v == [1]))
+            .unwrap_or(false);
+        if let Some(cb) = self.settings_hardlogs_check.as_mut() {
+            cb.set_checked(hard);
+        }
+        crate::set_hard_logs(hard);
         // Restore THIS DEVICE'S persisted zoom (display.zoom, f32 LE bytes — binary at rest), device-local ONLY: never the fleet global. Zoom is monitor ergonomics, so a device that has never set one keeps the default rather than adopting another screen's value — reading it through `effective` is what made a fresh device jump to a 4K desktop's zoom seconds after launch. Handed to the host as a one-shot absolute request; applies exactly like a user zoom.
         // ONCE per process, and only at load. `apply_settings_to_ui` also runs after EVERY fleet merge that changed anything, and the fleet poll fires every ~15s -- so without this guard the stored zoom was re-applied on a timer, stomping whatever the window was actually at. That is the "scaling elements go half size a few moments after the contacts show up" report: the first pull after contacts load re-armed the restore, and every pull after it did so again. A restore is a startup action, not a steady-state one; the host applies it exactly like a user zoom and the user must stay in control after that.
         if !self.zoom_restored {

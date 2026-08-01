@@ -381,6 +381,10 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetForeground(
     foreground: jni::sys::jboolean,
 ) {
     APP_FOREGROUND.store(foreground != 0, std::sync::atomic::Ordering::Relaxed);
+    // Backgrounding is a flush edge: Android usually pauses an app before killing it, so draining the soft-mode log batch here is what keeps a later OOM/Doze kill from eating the tail.
+    if foreground == 0 {
+        crate::flush_log_buffer();
+    }
 }
 
 /// Soft-keyboard bottom inset in surface pixels, mirrored from Kotlin's WindowInsets listener. The surface itself NEVER resizes for the IME (adjustNothing — the full-screen harmonic mean is the scale by construction); the app reads this to lift its bottom-anchored strips (compose bar + message list) above the keyboard. 0 = closed.
