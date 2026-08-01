@@ -821,12 +821,20 @@ pub struct ClutchAllKeypairs {
     pub secp256k1_public: Vec<u8>, // 65B (uncompressed SEC1)
     pub p256_secret: Vec<u8>,      // 32B
     pub p256_public: Vec<u8>,      // 65B (uncompressed SEC1)
+    pub p521_secret: Vec<u8>,      // 66B
+    pub p521_public: Vec<u8>,      // 133B (uncompressed SEC1)
 
     // Class 1: Post-quantum lattice KEMs
     pub frodo976_secret: Vec<u8>, // 31296B
     pub frodo976_public: Vec<u8>, // 15632B
+    pub frodo1344_secret: Vec<u8>, // 43088B
+    pub frodo1344_public: Vec<u8>, // 21520B
     pub ntru701_secret: Vec<u8>,  // 1450B (HRSS-701)
     pub ntru701_public: Vec<u8>,  // 1138B
+    pub sntrup761_secret: Vec<u8>, // 1294B (NTRU Prime)
+    pub sntrup761_public: Vec<u8>, // 1039B
+    pub mlkem1024_secret: Vec<u8>, // 3168B
+    pub mlkem1024_public: Vec<u8>, // 1568B
 
     // Class 2: Post-quantum code-based KEMs
     pub mceliece_secret: Vec<u8>, // 13608B
@@ -842,6 +850,10 @@ impl ClutchAllKeypairs {
         self.p384_secret.zeroize();
         self.secp256k1_secret.zeroize();
         self.p256_secret.zeroize();
+        self.p521_secret.zeroize();
+        self.frodo1344_secret.zeroize();
+        self.sntrup761_secret.zeroize();
+        self.mlkem1024_secret.zeroize();
         self.frodo976_secret.zeroize();
         self.ntru701_secret.zeroize();
         self.mceliece_secret.zeroize();
@@ -861,8 +873,12 @@ pub struct ClutchOfferPayload {
     pub p384_public: Vec<u8>,
     pub secp256k1_public: Vec<u8>,
     pub p256_public: Vec<u8>,
+    pub p521_public: Vec<u8>,
     pub frodo976_public: Vec<u8>,
+    pub frodo1344_public: Vec<u8>,
     pub ntru701_public: Vec<u8>,
+    pub sntrup761_public: Vec<u8>,
+    pub mlkem1024_public: Vec<u8>,
     pub mceliece_public: Vec<u8>,
     pub hqc256_public: Vec<u8>,
 }
@@ -881,21 +897,29 @@ impl ClutchOfferPayload {
             p384_public: keys.p384_public.clone(),
             secp256k1_public: keys.secp256k1_public.clone(),
             p256_public: keys.p256_public.clone(),
+            p521_public: keys.p521_public.clone(),
             frodo976_public: keys.frodo976_public.clone(),
+            frodo1344_public: keys.frodo1344_public.clone(),
             ntru701_public: keys.ntru701_public.clone(),
+            sntrup761_public: keys.sntrup761_public.clone(),
+            mlkem1024_public: keys.mlkem1024_public.clone(),
             mceliece_public: keys.mceliece_public.clone(), // ~512KB - PT transfer handles this
             hqc256_public: keys.hqc256_public.clone(),
         }
     }
 
-    /// Serialize all 8 public keys to bytes (for ceremony instance derivation)
+    /// Serialize all 12 public keys to bytes (for ceremony instance derivation). Order is the wire order and must never change without a version bump — the ceremony instance hashes exactly these bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(
             32 + self.p384_public.len()
                 + self.secp256k1_public.len()
                 + self.p256_public.len()
+                + self.p521_public.len()
                 + self.frodo976_public.len()
+                + self.frodo1344_public.len()
                 + self.ntru701_public.len()
+                + self.sntrup761_public.len()
+                + self.mlkem1024_public.len()
                 + self.mceliece_public.len()
                 + self.hqc256_public.len(),
         );
@@ -903,8 +927,12 @@ impl ClutchOfferPayload {
         bytes.extend_from_slice(&self.p384_public);
         bytes.extend_from_slice(&self.secp256k1_public);
         bytes.extend_from_slice(&self.p256_public);
+        bytes.extend_from_slice(&self.p521_public);
         bytes.extend_from_slice(&self.frodo976_public);
+        bytes.extend_from_slice(&self.frodo1344_public);
         bytes.extend_from_slice(&self.ntru701_public);
+        bytes.extend_from_slice(&self.sntrup761_public);
+        bytes.extend_from_slice(&self.mlkem1024_public);
         bytes.extend_from_slice(&self.mceliece_public);
         bytes.extend_from_slice(&self.hqc256_public);
         bytes
@@ -921,7 +949,10 @@ impl ClutchOfferPayload {
 pub struct ClutchKemResponsePayload {
     // PQC KEM ciphertexts (encapsulated to peer's pubkeys)
     pub frodo976_ciphertext: Vec<u8>,
+    pub frodo1344_ciphertext: Vec<u8>,
     pub ntru701_ciphertext: Vec<u8>,
+    pub sntrup761_ciphertext: Vec<u8>,
+    pub mlkem1024_ciphertext: Vec<u8>,
     pub mceliece_ciphertext: Vec<u8>,
     pub hqc256_ciphertext: Vec<u8>,
     /// First 8 bytes of HQC public key this was encrypted to (for stale detection)
@@ -931,6 +962,7 @@ pub struct ClutchKemResponsePayload {
     pub p384_ephemeral: Vec<u8>,      // 97B uncompressed SEC1
     pub secp256k1_ephemeral: Vec<u8>, // 65B uncompressed SEC1
     pub p256_ephemeral: Vec<u8>,      // 65B uncompressed SEC1
+    pub p521_ephemeral: Vec<u8>,      // 133B uncompressed SEC1
 }
 
 impl ClutchKemResponsePayload {
@@ -941,11 +973,17 @@ impl ClutchKemResponsePayload {
         #[cfg(feature = "development")]
         #[cfg(feature = "development")]
         #[cfg(feature = "development")]
-        crate::log("CLUTCH: Encapsulating to peer's public keys (8 algorithms)...");
+        crate::log("CLUTCH: Encapsulating to peer's public keys (12 algorithms)...");
 
         // ===== PQC KEMs =====
         let (frodo976_ciphertext, frodo_ss) = frodo976_encapsulate(&their_offer.frodo976_public);
+        let (frodo1344_ciphertext, frodo1344_ss) =
+            frodo1344_encapsulate(&their_offer.frodo1344_public);
         let (ntru701_ciphertext, ntru_ss) = ntru701_encapsulate(&their_offer.ntru701_public);
+        let (sntrup761_ciphertext, sntrup_ss) =
+            sntrup761_encapsulate(&their_offer.sntrup761_public);
+        let (mlkem1024_ciphertext, mlkem_ss) =
+            mlkem1024_encapsulate(&their_offer.mlkem1024_public);
         let (mceliece_ciphertext, mceliece_ss) =
             mceliece460896_encapsulate(&their_offer.mceliece_public);
         let (hqc256_ciphertext, hqc_ss) = hqc256_encapsulate(&their_offer.hqc256_public);
@@ -970,6 +1008,9 @@ impl ClutchKemResponsePayload {
         let (p256_eph_secret, p256_ephemeral) = generate_p256_ephemeral();
         let p256_ss = p256_ecdh(&p256_eph_secret, &their_offer.p256_public);
 
+        let (p521_eph_secret, p521_ephemeral) = generate_p521_ephemeral();
+        let p521_ss = p521_ecdh(&p521_eph_secret, &their_offer.p521_public);
+
         #[cfg(feature = "development")]
         crate::logf!("CLUTCH: Encap ready (PQC: Frodo {}B, NTRU {}B, McEliece {}B, HQC {}B) (EC: X25519 32B, P384 {}B, secp256k1 {}B, P256 {}B)", frodo976_ciphertext.len(), ntru701_ciphertext.len(), mceliece_ciphertext.len(), hqc256_ciphertext.len(), p384_ss.len(), secp256k1_ss.len(), p256_ss.len());
 
@@ -979,7 +1020,10 @@ impl ClutchKemResponsePayload {
 
         let payload = Self {
             frodo976_ciphertext,
+            frodo1344_ciphertext,
             ntru701_ciphertext,
+            sntrup761_ciphertext,
+            mlkem1024_ciphertext,
             mceliece_ciphertext,
             hqc256_ciphertext,
             target_hqc_pub_prefix,
@@ -987,29 +1031,37 @@ impl ClutchKemResponsePayload {
             p384_ephemeral,
             secp256k1_ephemeral,
             p256_ephemeral,
+            p521_ephemeral,
         };
 
         let secrets = ClutchKemSharedSecrets {
             frodo: frodo_ss,
+            frodo1344: frodo1344_ss,
             ntru: ntru_ss,
+            sntrup: sntrup_ss,
+            mlkem: mlkem_ss,
             mceliece: mceliece_ss,
             hqc: hqc_ss,
             x25519: x25519_ss,
             p384: p384_ss,
             secp256k1: secp256k1_ss,
             p256: p256_ss,
+            p521: p521_ss,
         };
 
         (payload, secrets)
     }
 }
 
-/// Shared secrets from encapsulation (one direction) - all 8 algorithms. PQC KEMs produce variable-size secrets, EC ECDH produces 32B secrets.
+/// Shared secrets from encapsulation (one direction) - all 12 algorithms. PQC KEMs produce variable-size secrets, EC ECDH produces curve-sized secrets.
 #[derive(Clone, Debug)]
 pub struct ClutchKemSharedSecrets {
     // PQC KEM shared secrets
     pub frodo: Vec<u8>,
+    pub frodo1344: Vec<u8>,
     pub ntru: Vec<u8>,
+    pub sntrup: Vec<u8>,
+    pub mlkem: Vec<u8>,
     pub mceliece: Vec<u8>,
     pub hqc: Vec<u8>,
     // EC ECDH shared secrets (ECIES-style: ephemeral_secret × peer_offer_pubkey)
@@ -1017,6 +1069,7 @@ pub struct ClutchKemSharedSecrets {
     pub p384: Vec<u8>,      // 48B
     pub secp256k1: Vec<u8>, // 32B
     pub p256: Vec<u8>,      // 32B
+    pub p521: Vec<u8>,      // 66B
 }
 
 impl ClutchKemSharedSecrets {
@@ -1030,7 +1083,7 @@ impl ClutchKemSharedSecrets {
         #[cfg(feature = "development")]
         #[cfg(feature = "development")]
         #[cfg(feature = "development")]
-        crate::log("CLUTCH: Decapsulating from peer's response (8 algorithms)...");
+        crate::log("CLUTCH: Decapsulating from peer's response (12 algorithms)...");
 
         // ===== PQC KEMs =====
         let frodo = frodo976_decapsulate(&our_keys.frodo976_secret, &response.frodo976_ciphertext);
@@ -1040,6 +1093,12 @@ impl ClutchKemSharedSecrets {
             frodo.len()
         );
 
+        let frodo1344 =
+            frodo1344_decapsulate(&our_keys.frodo1344_secret, &response.frodo1344_ciphertext);
+        let sntrup =
+            sntrup761_decapsulate(&our_keys.sntrup761_secret, &response.sntrup761_ciphertext);
+        let mlkem =
+            mlkem1024_decapsulate(&our_keys.mlkem1024_secret, &response.mlkem1024_ciphertext);
         let ntru = ntru701_decapsulate(&our_keys.ntru701_secret, &response.ntru701_ciphertext);
         #[cfg(feature = "development")]
         crate::logf!("CLUTCH: ✓ NTRU701 decap OK ({}B shared secret)", ntru.len());
@@ -1094,15 +1153,23 @@ impl ClutchKemSharedSecrets {
         #[cfg(feature = "development")]
         crate::logf!("CLUTCH: ✓ P256 decap OK ({}B shared secret)", p256.len());
 
+        let p521 = p521_ecdh(&our_keys.p521_secret, &response.p521_ephemeral);
+        #[cfg(feature = "development")]
+        crate::logf!("CLUTCH: ✓ P521 decap OK ({}B shared secret)", p521.len());
+
         Self {
             frodo,
+            frodo1344,
             ntru,
+            sntrup,
+            mlkem,
             mceliece,
             hqc,
             x25519,
             p384,
             secp256k1,
             p256,
+            p521,
         }
     }
 
@@ -1132,17 +1199,21 @@ pub struct ClutchCompletePayload {
     pub eggs_proof: [u8; 32],
 }
 
-/// Generate all 8 ephemeral keypairs for full CLUTCH ceremony. WARNING: This generates ~512KB of public key material (mostly McEliece). Caller MUST call zeroize() on the result when done!
+/// Generate all 12 ephemeral keypairs for the full CLUTCH ceremony — 5 classical curves, 5 lattice KEMs across three distinct structural assumptions, 2 code-based. WARNING: This generates ~570KB of public key material (McEliece alone is ~512KB). Caller MUST call zeroize() on the result when done!
 pub fn generate_all_ephemeral_keypairs() -> ClutchAllKeypairs {
     // Class 0: Classical EC
     let (x25519_secret, x25519_public) = generate_x25519_ephemeral();
     let (p384_secret, p384_public) = generate_p384_ephemeral();
     let (secp256k1_secret, secp256k1_public) = generate_secp256k1_ephemeral();
     let (p256_secret, p256_public) = generate_p256_ephemeral();
+    let (p521_secret, p521_public) = generate_p521_ephemeral();
 
-    // Class 1: Post-quantum lattice KEMs
+    // Class 1: Post-quantum lattice KEMs — structured (NTRU, ML-KEM), prime-field (NTRU Prime), unstructured (Frodo, plain LWE).
     let (frodo976_secret, frodo976_public) = generate_frodo976_keypair();
+    let (frodo1344_secret, frodo1344_public) = generate_frodo1344_keypair();
     let (ntru701_secret, ntru701_public) = generate_ntru701_keypair();
+    let (sntrup761_secret, sntrup761_public) = generate_sntrup761_keypair();
+    let (mlkem1024_secret, mlkem1024_public) = generate_mlkem1024_keypair();
 
     // Class 2: Post-quantum code-based KEMs
     let (mceliece_secret, mceliece_public) = generate_mceliece460896_keypair();
@@ -1157,10 +1228,18 @@ pub fn generate_all_ephemeral_keypairs() -> ClutchAllKeypairs {
         secp256k1_public,
         p256_secret,
         p256_public,
+        p521_secret,
+        p521_public,
         frodo976_secret,
         frodo976_public,
+        frodo1344_secret,
+        frodo1344_public,
         ntru701_secret,
         ntru701_public,
+        sntrup761_secret,
+        sntrup761_public,
+        mlkem1024_secret,
+        mlkem1024_public,
         mceliece_secret,
         mceliece_public,
         hqc256_secret,
@@ -1215,22 +1294,7 @@ pub fn collect_clutch_eggs(
     our_handle_hash: &[u8; 32],
     their_handle_hash: &[u8; 32],
     friendship_secret: &[u8; 32],
-    low_x25519_shared: &[u8; 32],
-    high_x25519_shared: &[u8; 32],
-    low_p384_shared: &[u8],
-    high_p384_shared: &[u8],
-    low_secp256k1_shared: &[u8],
-    high_secp256k1_shared: &[u8],
-    low_frodo_shared: &[u8],
-    high_frodo_shared: &[u8],
-    low_ntru_shared: &[u8],
-    high_ntru_shared: &[u8],
-    low_mceliece_shared: &[u8],
-    high_mceliece_shared: &[u8],
-    low_hqc_shared: &[u8],
-    high_hqc_shared: &[u8],
-    low_p256_shared: &[u8],
-    high_p256_shared: &[u8],
+    secrets: &ClutchSharedSecrets,
 ) -> ClutchEggs {
     let mut eggs = ClutchEggs::new();
 
@@ -1245,27 +1309,35 @@ pub fn collect_clutch_eggs(
     // The SECRET identity binding (docs/identity-profile.md): party ids are now pinned PUBLIC identity pubkeys, so the out-of-band-secret role the private handle_hash used to play moves here — the static identity DH for friends ([`identity_friendship_secret`]), the shared identity seed for fleet siblings. Full-entropy where the old ingredient was only as private as handle guessability.
     eggs.add_egg("friendship_secret", friendship_secret);
 
-    // Class 0: Classical EC - low handle's secrets first, then high
-    eggs.add_egg("low_x25519", low_x25519_shared);
-    eggs.add_egg("high_x25519", high_x25519_shared);
-    eggs.add_egg("low_p384", low_p384_shared);
-    eggs.add_egg("high_p384", high_p384_shared);
-    eggs.add_egg("low_secp256k1", low_secp256k1_shared);
-    eggs.add_egg("high_secp256k1", high_secp256k1_shared);
-    eggs.add_egg("low_p256", low_p256_shared);
-    eggs.add_egg("high_p256", high_p256_shared);
+    // Class 0: Classical EC — low handle's secrets first, then high.
+    eggs.add_egg("low_x25519", &secrets.low_x25519);
+    eggs.add_egg("high_x25519", &secrets.high_x25519);
+    eggs.add_egg("low_p384", &secrets.low_p384);
+    eggs.add_egg("high_p384", &secrets.high_p384);
+    eggs.add_egg("low_secp256k1", &secrets.low_secp256k1);
+    eggs.add_egg("high_secp256k1", &secrets.high_secp256k1);
+    eggs.add_egg("low_p256", &secrets.low_p256);
+    eggs.add_egg("high_p256", &secrets.high_p256);
+    eggs.add_egg("low_p521", &secrets.low_p521);
+    eggs.add_egg("high_p521", &secrets.high_p521);
 
-    // Class 1: Post-quantum lattice KEMs
-    eggs.add_egg("low_frodo976", low_frodo_shared);
-    eggs.add_egg("high_frodo976", high_frodo_shared);
-    eggs.add_egg("low_ntru701", low_ntru_shared);
-    eggs.add_egg("high_ntru701", high_ntru_shared);
+    // Class 1: Post-quantum lattice KEMs — structured (NTRU, ML-KEM), prime-field (NTRU Prime), unstructured plain-LWE (Frodo).
+    eggs.add_egg("low_frodo976", &secrets.low_frodo);
+    eggs.add_egg("high_frodo976", &secrets.high_frodo);
+    eggs.add_egg("low_frodo1344", &secrets.low_frodo1344);
+    eggs.add_egg("high_frodo1344", &secrets.high_frodo1344);
+    eggs.add_egg("low_ntru701", &secrets.low_ntru);
+    eggs.add_egg("high_ntru701", &secrets.high_ntru);
+    eggs.add_egg("low_sntrup761", &secrets.low_sntrup);
+    eggs.add_egg("high_sntrup761", &secrets.high_sntrup);
+    eggs.add_egg("low_mlkem1024", &secrets.low_mlkem);
+    eggs.add_egg("high_mlkem1024", &secrets.high_mlkem);
 
     // Class 2: Post-quantum code-based KEMs
-    eggs.add_egg("low_mceliece460896", low_mceliece_shared);
-    eggs.add_egg("high_mceliece460896", high_mceliece_shared);
-    eggs.add_egg("low_hqc256", low_hqc_shared);
-    eggs.add_egg("high_hqc256", high_hqc_shared);
+    eggs.add_egg("low_mceliece460896", &secrets.low_mceliece);
+    eggs.add_egg("high_mceliece460896", &secrets.high_mceliece);
+    eggs.add_egg("low_hqc256", &secrets.low_hqc);
+    eggs.add_egg("high_hqc256", &secrets.high_hqc);
 
     eggs
 }
@@ -1761,12 +1833,20 @@ pub struct ClutchSharedSecrets {
     pub high_secp256k1: Vec<u8>,
     pub low_p256: Vec<u8>, // 32B
     pub high_p256: Vec<u8>,
+    pub low_p521: Vec<u8>, // 66B
+    pub high_p521: Vec<u8>,
 
     // Class 1: Post-quantum lattice KEMs (distinct secret per direction)
     pub low_frodo: Vec<u8>, // 24B
     pub high_frodo: Vec<u8>,
+    pub low_frodo1344: Vec<u8>, // 32B
+    pub high_frodo1344: Vec<u8>,
     pub low_ntru: Vec<u8>, // 32B
     pub high_ntru: Vec<u8>,
+    pub low_sntrup: Vec<u8>, // 32B
+    pub high_sntrup: Vec<u8>,
+    pub low_mlkem: Vec<u8>, // 32B
+    pub high_mlkem: Vec<u8>,
 
     // Class 2: Post-quantum code-based KEMs (distinct secret per direction)
     pub low_mceliece: Vec<u8>, // 32B
@@ -1786,10 +1866,18 @@ impl ClutchSharedSecrets {
         self.high_secp256k1.zeroize();
         self.low_p256.zeroize();
         self.high_p256.zeroize();
+        self.low_p521.zeroize();
+        self.high_p521.zeroize();
         self.low_frodo.zeroize();
         self.high_frodo.zeroize();
+        self.low_frodo1344.zeroize();
+        self.high_frodo1344.zeroize();
         self.low_ntru.zeroize();
         self.high_ntru.zeroize();
+        self.low_sntrup.zeroize();
+        self.high_sntrup.zeroize();
+        self.low_mlkem.zeroize();
+        self.high_mlkem.zeroize();
         self.low_mceliece.zeroize();
         self.high_mceliece.zeroize();
         self.low_hqc.zeroize();
@@ -1797,9 +1885,9 @@ impl ClutchSharedSecrets {
     }
 }
 
-/// Perform full 8-algorithm CLUTCH ceremony.
+/// Perform the full 12-algorithm CLUTCH ceremony.
 ///
-/// Takes all 16 shared secrets (8 algorithms × 2 directions) and produces identical (low_pad, high_pad) on both parties.
+/// Takes all 24 shared secrets (12 algorithms × 2 directions) and produces identical (low_pad, high_pad) on both parties.
 ///
 /// The low/high ordering is determined by comparing handle_hashes:
 /// - Party with lower handle_hash uses low_pad for sending
@@ -1819,29 +1907,14 @@ pub fn clutch_complete_full(
     friendship_secret: &[u8; 32],
     secrets: &ClutchSharedSecrets,
 ) -> ClutchFullResult {
-    // Collect the eggs (20 KEM/identity + the friendship-secret egg)
+    // Collect the eggs (24 KEM + 4 identity + the friendship-secret egg). Passing the struct rather than 24 positional slices is deliberate: the old call listed every secret by position, and a single transposed pair there would silently produce a different-but-valid pad on one side only.
     let eggs = collect_clutch_eggs(
         our_device_pubkey,
         their_device_pubkey,
         our_handle_hash,
         their_handle_hash,
         friendship_secret,
-        &secrets.low_x25519,
-        &secrets.high_x25519,
-        &secrets.low_p384,
-        &secrets.high_p384,
-        &secrets.low_secp256k1,
-        &secrets.high_secp256k1,
-        &secrets.low_frodo,
-        &secrets.high_frodo,
-        &secrets.low_ntru,
-        &secrets.high_ntru,
-        &secrets.low_mceliece,
-        &secrets.high_mceliece,
-        &secrets.low_hqc,
-        &secrets.high_hqc,
-        &secrets.low_p256,
-        &secrets.high_p256,
+        secrets,
     );
 
     // Compute proof from eggs (deterministic - same eggs = same proof)
@@ -1882,6 +1955,37 @@ pub fn verify_eggs_proof(eggs: &ClutchEggs, proof: &[u8; 32]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// A deterministic full secret set for tests — one place that knows all 24 slots, so a test never lists them positionally.
+    fn fixture_secrets() -> ClutchSharedSecrets {
+        let v = |b: u8, n: usize| vec![b; n];
+        ClutchSharedSecrets {
+            low_x25519: [5u8; 32],
+            high_x25519: [6u8; 32],
+            low_p384: v(7, 48),
+            high_p384: v(8, 48),
+            low_secp256k1: v(9, 32),
+            high_secp256k1: v(10, 32),
+            low_p256: v(19, 32),
+            high_p256: v(20, 32),
+            low_p521: v(21, 66),
+            high_p521: v(22, 66),
+            low_frodo: v(11, 24),
+            high_frodo: v(12, 24),
+            low_frodo1344: v(23, 32),
+            high_frodo1344: v(24, 32),
+            low_ntru: v(13, 32),
+            high_ntru: v(14, 32),
+            low_sntrup: v(25, 32),
+            high_sntrup: v(26, 32),
+            low_mlkem: v(27, 32),
+            high_mlkem: v(28, 32),
+            low_mceliece: v(15, 32),
+            high_mceliece: v(16, 32),
+            low_hqc: v(17, 64),
+            high_hqc: v(18, 64),
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -2216,49 +2320,17 @@ mod tests {
         let bob_handle = *blake3::hash(b"bob").as_bytes();
 
         // 16 shared secrets (8 algorithms × 2 directions)
-        let low_x25519 = [5u8; 32];
-        let high_x25519 = [6u8; 32];
-        let low_p384 = vec![7u8; 48];
-        let high_p384 = vec![8u8; 48];
-        let low_secp256k1 = vec![9u8; 32];
-        let high_secp256k1 = vec![10u8; 32];
-        let low_frodo = vec![11u8; 24];
-        let high_frodo = vec![12u8; 24];
-        let low_ntru = vec![13u8; 32];
-        let high_ntru = vec![14u8; 32];
-        let low_mceliece = vec![15u8; 32];
-        let high_mceliece = vec![16u8; 32];
-        let low_hqc = vec![17u8; 64];
-        let high_hqc = vec![18u8; 64];
-        let low_p256 = vec![19u8; 32];
-        let high_p256 = vec![20u8; 32];
-
         let eggs = collect_clutch_eggs(
             &alice_device,
             &bob_device,
             &alice_handle,
             &bob_handle,
             &[0x5Au8; 32], // friendship secret (symmetric fixture)
-            &low_x25519,
-            &high_x25519,
-            &low_p384,
-            &high_p384,
-            &low_secp256k1,
-            &high_secp256k1,
-            &low_frodo,
-            &high_frodo,
-            &low_ntru,
-            &high_ntru,
-            &low_mceliece,
-            &high_mceliece,
-            &low_hqc,
-            &high_hqc,
-            &low_p256,
-            &high_p256,
+            &fixture_secrets(),
         );
 
-        // 4 identity + 1 friendship secret + 16 shared secrets = 21 eggs
-        assert_eq!(eggs.eggs.len(), 21);
+        // 4 identity + 1 friendship secret + 24 shared secrets (12 algorithms x 2 directions) = 29 eggs
+        assert_eq!(eggs.eggs.len(), 29);
 
         for egg in &eggs.eggs {
             assert_eq!(egg.len(), 32);
@@ -2273,38 +2345,48 @@ mod tests {
         let bob_handle = *blake3::hash(b"bob").as_bytes();
 
         // Use same bytes for all secrets to test domain separation
-        let shared_32 = [99u8; 32];
-        let shared_48 = vec![99u8; 48];
-        let shared_24 = vec![99u8; 24];
-        let shared_64 = vec![99u8; 64];
-
+        let uniform = {
+            let mut f = fixture_secrets();
+            // Same value in every slot: proves the eggs are LABEL-separated, not value-separated.
+            let v32 = vec![99u8; 32];
+            f.low_x25519 = [99u8; 32];
+            f.high_x25519 = [99u8; 32];
+            f.low_p384 = vec![99u8; 48];
+            f.high_p384 = vec![99u8; 48];
+            f.low_secp256k1 = v32.clone();
+            f.high_secp256k1 = v32.clone();
+            f.low_p256 = v32.clone();
+            f.high_p256 = v32.clone();
+            f.low_p521 = vec![99u8; 66];
+            f.high_p521 = vec![99u8; 66];
+            f.low_frodo = vec![99u8; 24];
+            f.high_frodo = vec![99u8; 24];
+            f.low_frodo1344 = v32.clone();
+            f.high_frodo1344 = v32.clone();
+            f.low_ntru = v32.clone();
+            f.high_ntru = v32.clone();
+            f.low_sntrup = v32.clone();
+            f.high_sntrup = v32.clone();
+            f.low_mlkem = v32.clone();
+            f.high_mlkem = v32.clone();
+            f.low_mceliece = v32.clone();
+            f.high_mceliece = v32;
+            f.low_hqc = vec![99u8; 64];
+            f.high_hqc = vec![99u8; 64];
+            f
+        };
         let eggs = collect_clutch_eggs(
             &alice_device,
             &bob_device,
             &alice_handle,
             &bob_handle,
-            &[0x5Au8; 32],       // friendship secret (symmetric fixture)
-            &shared_32,          // low_x25519
-            &shared_32,          // high_x25519
-            &shared_48,          // low_p384
-            &shared_48,          // high_p384
-            &shared_32.to_vec(), // low_secp256k1
-            &shared_32.to_vec(), // high_secp256k1
-            &shared_24,          // low_frodo
-            &shared_24,          // high_frodo
-            &shared_32.to_vec(), // low_ntru
-            &shared_32.to_vec(), // high_ntru
-            &shared_32.to_vec(), // low_mceliece
-            &shared_32.to_vec(), // high_mceliece
-            &shared_64,          // low_hqc
-            &shared_64,          // high_hqc
-            &shared_32.to_vec(), // low_p256
-            &shared_32.to_vec(), // high_p256
+            &[0x5Au8; 32],
+            &uniform,
         );
 
-        // Even with same input bytes, domain separation should produce unique eggs
+        // Even with identical input bytes in every slot, the per-egg domain labels must make all 29 distinct — that is what proves the eggs are separated by NAME and not by value.
         let unique_eggs: std::collections::HashSet<[u8; 32]> = eggs.eggs.into_iter().collect();
-        assert_eq!(unique_eggs.len(), 21);
+        assert_eq!(unique_eggs.len(), 29);
     }
 
     #[test]
@@ -2345,6 +2427,11 @@ mod tests {
         let p256_shared = p256_ecdh(&alice_keys.p256_secret, &bob_keys.p256_public);
         let p256_shared_bob = p256_ecdh(&bob_keys.p256_secret, &alice_keys.p256_public);
         assert_eq!(p256_shared, p256_shared_bob);
+
+        // P-521
+        let p521_shared = p521_ecdh(&alice_keys.p521_secret, &bob_keys.p521_public);
+        let p521_shared_bob = p521_ecdh(&bob_keys.p521_secret, &alice_keys.p521_public);
+        assert_eq!(p521_shared, p521_shared_bob);
 
         // === KEM ALGORITHMS: Each encapsulates to peer, decapsulates own ===
 
@@ -2388,6 +2475,30 @@ mod tests {
         assert_eq!(hqc_ss_alice_encap, hqc_ss_bob_decap);
         assert_eq!(hqc_ss_bob_encap, hqc_ss_alice_decap);
 
+        // FrodoKEM-1344
+        let (f13_ct_to_bob, f13_alice_encap) = frodo1344_encapsulate(&bob_keys.frodo1344_public);
+        let (f13_ct_to_alice, f13_bob_encap) = frodo1344_encapsulate(&alice_keys.frodo1344_public);
+        let f13_bob_decap = frodo1344_decapsulate(&bob_keys.frodo1344_secret, &f13_ct_to_bob);
+        let f13_alice_decap = frodo1344_decapsulate(&alice_keys.frodo1344_secret, &f13_ct_to_alice);
+        assert_eq!(f13_alice_encap, f13_bob_decap);
+        assert_eq!(f13_bob_encap, f13_alice_decap);
+
+        // NTRU Prime 761
+        let (sn_ct_to_bob, sn_alice_encap) = sntrup761_encapsulate(&bob_keys.sntrup761_public);
+        let (sn_ct_to_alice, sn_bob_encap) = sntrup761_encapsulate(&alice_keys.sntrup761_public);
+        let sn_bob_decap = sntrup761_decapsulate(&bob_keys.sntrup761_secret, &sn_ct_to_bob);
+        let sn_alice_decap = sntrup761_decapsulate(&alice_keys.sntrup761_secret, &sn_ct_to_alice);
+        assert_eq!(sn_alice_encap, sn_bob_decap);
+        assert_eq!(sn_bob_encap, sn_alice_decap);
+
+        // ML-KEM-1024
+        let (ml_ct_to_bob, ml_alice_encap) = mlkem1024_encapsulate(&bob_keys.mlkem1024_public);
+        let (ml_ct_to_alice, ml_bob_encap) = mlkem1024_encapsulate(&alice_keys.mlkem1024_public);
+        let ml_bob_decap = mlkem1024_decapsulate(&bob_keys.mlkem1024_secret, &ml_ct_to_bob);
+        let ml_alice_decap = mlkem1024_decapsulate(&alice_keys.mlkem1024_secret, &ml_ct_to_alice);
+        assert_eq!(ml_alice_encap, ml_bob_decap);
+        assert_eq!(ml_bob_encap, ml_alice_decap);
+
         // === BUILD SHARED SECRETS STRUCT === low_* = from alice's perspective (alice is low handle) high_* = from bob's perspective (bob is high handle)
         //
         // For EC: both get same shared secret, but labeled by who initiated For KEM: low_* = alice→bob direction, high_* = bob→alice direction
@@ -2401,11 +2512,19 @@ mod tests {
             high_secp256k1: secp256k1_shared.clone(),
             low_p256: p256_shared.clone(),
             high_p256: p256_shared.clone(),
+            low_p521: p521_shared.clone(),
+            high_p521: p521_shared.clone(),
             // KEM: directional
             low_frodo: frodo_ss_alice_encap.clone(), // Alice→Bob
             high_frodo: frodo_ss_alice_decap.clone(), // Bob→Alice (what Alice decapsulated)
+            low_frodo1344: f13_alice_encap.clone(),
+            high_frodo1344: f13_alice_decap.clone(),
             low_ntru: ntru_ss_alice_encap.clone(),
             high_ntru: ntru_ss_alice_decap.clone(),
+            low_sntrup: sn_alice_encap.clone(),
+            high_sntrup: sn_alice_decap.clone(),
+            low_mlkem: ml_alice_encap.clone(),
+            high_mlkem: ml_alice_decap.clone(),
             low_mceliece: mce_ss_alice_encap.clone(),
             high_mceliece: mce_ss_alice_decap.clone(),
             low_hqc: hqc_ss_alice_encap.clone(),
@@ -2421,11 +2540,19 @@ mod tests {
             high_secp256k1: secp256k1_shared.clone(),
             low_p256: p256_shared.clone(),
             high_p256: p256_shared.clone(),
+            low_p521: p521_shared.clone(),
+            high_p521: p521_shared.clone(),
             // KEM: Bob's view is symmetric to Alice's
             low_frodo: frodo_ss_bob_decap.clone(), // Alice→Bob (what Bob decapsulated)
             high_frodo: frodo_ss_bob_encap.clone(), // Bob→Alice
+            low_frodo1344: f13_bob_decap.clone(),
+            high_frodo1344: f13_bob_encap.clone(),
             low_ntru: ntru_ss_bob_decap.clone(),
             high_ntru: ntru_ss_bob_encap.clone(),
+            low_sntrup: sn_bob_decap.clone(),
+            high_sntrup: sn_bob_encap.clone(),
+            low_mlkem: ml_bob_decap.clone(),
+            high_mlkem: ml_bob_encap.clone(),
             low_mceliece: mce_ss_bob_decap.clone(),
             high_mceliece: mce_ss_bob_encap.clone(),
             low_hqc: hqc_ss_bob_decap.clone(),

@@ -708,31 +708,32 @@ impl Contact {
         !self.clutch_slots.is_empty() && self.clutch_slots.iter().all(|s| s.is_complete())
     }
 
-    /// The eight independent KEM "eggs" a CLUTCH braids, across three security families — a compromise of any one family still leaves the shared secret protected by the others. Named here so the status line can say WHAT is being exchanged, not just "pending". 4 elliptic-curve (x25519, P-384, secp256k1, P-256) · 2 lattice (Frodo-976, NTRU-701) · 2 code-based (McEliece-460896, HQC-256).
-    pub const CLUTCH_EGGS: usize = 8;
+    /// The twelve independent KEM "eggs" a CLUTCH braids, across four security families — a compromise of any one family still leaves the shared secret protected by the others. Named here so the status line can say WHAT is being exchanged, not just "pending". 5 elliptic-curve (x25519, P-384, secp256k1, P-256, P-521) · 3 structured-lattice (NTRU-701, NTRU Prime 761, ML-KEM-1024) · 2 unstructured-lattice (Frodo-976, Frodo-1344) · 2 code-based (McEliece-460896, HQC-256).
+    pub const CLUTCH_EGGS: usize = 12;
 
-    /// Total ceremony milestones for a 2-party CLUTCH — the denominator of the status fraction. Keygen, our offer, their offer, our KEM, their KEM, braid, their proof, verify.
-    pub const CLUTCH_STEPS: u8 = 8;
+    /// Total ceremony milestones for a 2-party CLUTCH — the denominator of the status fraction. Steps are ZERO-INDEXED (0..=11), so the ladder reads 0/12 through 11/12; 12/12 is never rendered, because reaching it IS the conversation opening.
+    pub const CLUTCH_STEPS: u8 = 12;
 
-    /// Where the CLUTCH ceremony actually is, as `step/total · what's happening (which eggs)` — for the conversation status line and asymmetric-completion debugging. The fraction is monotonic toward `secured`; the label names the crypto in flight (the egg families) instead of a flat "pending".
+    /// Where the CLUTCH ceremony actually is, as `step/total · what's happening` — for the conversation status line and asymmetric-completion debugging. The fraction is monotonic toward `secured`; the label names what is in flight instead of a flat "pending".
     pub fn clutch_status_detail(&self) -> String {
         // Display doctrine: dozenal is the acclimation surface for VERSION + REPUTATION only; a step counter stays in current mixed arabic units.
         let n = Self::CLUTCH_STEPS;
         let eggs = Self::CLUTCH_EGGS;
-        // Vocabulary doctrine (2026-07-31): describe the EXCHANGE, not our internals — no "eggs", no "braiding", no "KEMs" in user-facing text. Each step reads as part of one sentence (make keys → swap public halves → lock secrets to each other → combine → prove → confirm → secured), and every "waiting" step names whose side the ball is on, so "it's stuck on 5/8" is a diagnosis by itself. The one flourish kept: the honest facts (8 secrets, 3 crypto families) carry the personality.
+        // Vocabulary doctrine (2026-07-31): describe the EXCHANGE, not our internals — no "eggs", no "braiding", no "KEMs" in user-facing text. Each step reads as part of one sentence (make keys → swap public halves → lock secrets to each other → combine → prove → confirm → secured), and every "waiting" step names whose side the ball is on, so "it's stuck on 9/12" is a diagnosis by itself. The one flourish kept: the honest facts (12 secrets, 4 crypto families) carry the personality.
+        // Zero-indexed (Nick 2026-08-01): the first step is 0/12 and the last VISIBLE one is 11/12. Step 12 exists only as the moment the conversation opens, so it is never drawn.
         match self.clutch_state {
             ClutchState::Complete => {
                 if self.chain_woven {
                     "secured".to_string()
                 } else {
-                    "testing the secure channel".to_string()
+                    format!("11/{n} · testing the secure channel")
                 }
             }
             ClutchState::AwaitingProof => {
                 if self.clutch_their_eggs_proof.is_some() {
-                    format!("{n}/{n} · confirming both proofs match")
+                    format!("10/{n} · confirming both proofs match")
                 } else {
-                    format!("7/{n} · sent our proof — waiting for theirs")
+                    format!("9/{n} · sent our proof — waiting for theirs")
                 }
             }
             ClutchState::Pending => {
@@ -743,20 +744,20 @@ impl Contact {
                 let all_kem = self.all_slots_complete();
                 // Walk the milestones in order; report the earliest one not yet reached.
                 if self.clutch_ceremony_in_progress {
-                    format!("6/{n} · combining all {eggs} shared secrets")
+                    format!("8/{n} · combining all {eggs} shared secrets")
                 } else if self.clutch_our_keypairs.is_none() {
                     // Keygen (McEliece dominates the ~1-2s).
-                    format!("1/{n} · creating {eggs} key pairs (3 families of crypto)")
+                    format!("0/{n} · creating {eggs} key pairs (4 families of crypto)")
                 } else if self.clutch_kem_encap_in_progress {
                     format!("4/{n} · locking secrets to their keys")
                 } else if all_kem {
-                    format!("6/{n} · combining all {eggs} shared secrets")
+                    format!("8/{n} · combining all {eggs} shared secrets")
                 } else if their_offer || self.clutch_pending_kem.is_some() {
-                    format!("5/{n} · waiting for their locked secrets")
+                    format!("6/{n} · waiting for their locked secrets")
                 } else if self.clutch_offer_sent {
-                    format!("3/{n} · waiting for their public keys")
+                    format!("2/{n} · waiting for their public keys")
                 } else {
-                    format!("2/{n} · sending our public keys")
+                    format!("1/{n} · sending our public keys")
                 }
             }
         }
