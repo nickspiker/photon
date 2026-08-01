@@ -93,6 +93,65 @@ pub async fn publish_address(
     Ok(())
 }
 
+/// Publish one already-signed registry record (primary or secondary) — the converge path's writer. The worker re-verifies the record's own signatures and the slot-local epoch before storing; a `stale` answer is fine (a racing sibling landed first) and surfaces as Rejected for the caller to ignore.
+pub async fn put_record(rec: &Record) -> Result<(), PhonebookError> {
+    let body = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .add_section(
+            "pb_put",
+            vec![("rec".to_string(), VsfType::v(b'r', rec.0.to_vec()))],
+        )
+        .build()
+        .map_err(|e| PhonebookError::Network(format!("build: {}", e)))?;
+    post(body).await?;
+    Ok(())
+}
+
+/// The one-round-trip primary+secondary read: the identity's count record, its pointer run, and every pointed device's address record. Verified document in, per-record verification here: the count and placements must verify cryptographically, addresses must verify AND belong to a pointed device. MEMBERSHIP of the signers is the caller's check, against the fold it holds.
+pub async fn fetch_devices(
+    handle_proof: &[u8; 32],
+) -> Result<(fgtw::phonebook::RegistryView, Vec<Record>), PhonebookError> {
+    let body = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .add_section(
+            "pb_devices",
+            vec![("hp".to_string(), VsfType::hP(handle_proof.to_vec()))],
+        )
+        .build()
+        .map_err(|e| PhonebookError::Network(format!("build: {}", e)))?;
+    let bytes = post(body).await?;
+
+    let schema = vsf::schema::SectionSchema::new("pb_devices")
+        .field("rec", vsf::schema::TypeConstraint::Any);
+    let section = vsf::schema::SectionBuilder::parse_document(schema, &bytes, None)
+        .map_err(|_| PhonebookError::NotFound)?;
+    let mut view = fgtw::phonebook::RegistryView::default();
+    let mut addresses = Vec::new();
+    for field in section.get_fields("rec") {
+        let Some(VsfType::v(_, b)) = field.values.first() else { continue };
+        if b.len() != STRIDE {
+            continue;
+        }
+        let mut a = [0u8; STRIDE];
+        a.copy_from_slice(b);
+        let rec = Record(a);
+        match rec.kind() {
+            fgtw::phonebook::RecordKind::IdentityCount => view.count = Some(rec),
+            fgtw::phonebook::RecordKind::DevicePointer => view.pointers.push(rec),
+            fgtw::phonebook::RecordKind::DeviceAddress => addresses.push(rec),
+            fgtw::phonebook::RecordKind::Empty => {}
+        }
+    }
+    // The pointer run arrives in read order but storage owes us nothing — sort by index, then let verify() judge density and signatures.
+    view.pointers.sort_by_key(|p| p.index());
+    if !view.verify(handle_proof) {
+        return Err(PhonebookError::Unverified);
+    }
+    let pointed: Vec<[u8; 32]> = view.devices();
+    addresses.retain(|a| a.verify_address() && a.handle_proof() == *handle_proof && pointed.contains(&a.device_pubkey()));
+    Ok((view, addresses))
+}
+
 /// Resolve one device's published address.
 ///
 /// The returned record is signature-verified HERE, so the caller can rely on "the holder of `device_pubkey` claims this address". The caller may NOT conclude the device belongs to any particular fleet — `handle_proof` is inside the signature, so the device did claim it, but nothing yet proves a current member of that fleet ever vouched for the device. Use it to ADDRESS a device you already have reason to care about (a contact's known device pubkey), not to accept a stranger into a fleet.
