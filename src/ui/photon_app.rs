@@ -1187,6 +1187,8 @@ pub struct PhotonApp {
     self_record_published_for: Option<std::net::SocketAddr>,
     /// Whether the persisted phonebook has been merged into the live store this session. One-shot: also stops an unreadable vault entry being retried every tick.
     peer_store_loaded: bool,
+    /// Store size at the last vault persist — gossip merges land on the checker thread, so the tick that OBSERVES growth writes the store down. Before this, only our own address change persisted: a session that merged rows but never moved address lost them at exit.
+    peer_store_persisted_len: usize,
 }
 
 impl PhotonApp {
@@ -1216,6 +1218,7 @@ impl PhotonApp {
             our_reflexive: None,
             self_record_published_for: None,
             peer_store_loaded: false,
+            peer_store_persisted_len: 0,
             zoom_saved_ru: 1.0,
             persist_tx: None,
             tick_serial: 0,
@@ -8972,6 +8975,11 @@ impl PhotonApp {
                     if learned {
                         self.ping_contacts();
                     }
+                }
+                // Persist on the growth edge, observed here where the store is already in hand.
+                if recs.len() != self.peer_store_persisted_len {
+                    self.peer_store_persisted_len = recs.len();
+                    self.persist_peer_store();
                 }
             }
             // Every 15s while blocked: ask every reachable peer for its phonebook AND resolve the stalled devices from the seed registry — peers first, seed last. This used to also fire `query_resume`, which replays the ENTIRE attest (contacts load, cloud sync, roster pull, fleet key sync — 749 full replays in one logged session, and the roster-pull storm rode it via needs_initial_roster_pull). The resume's only job here was the announce echo that learned addresses, and the per-record registry resolve below does that properly now.
@@ -21154,10 +21162,14 @@ impl PhotonApp {
         if self.pb_resolve_rx.is_some() {
             return; // one in flight — a slow seed must not stack requests
         }
-        // Every device of a contact we cannot address, including fleet members we have never pinged. `relay_device_list` is already exactly "every device pubkey we know for this contact", which is the set the relay addresses stores to.
+        // Every device of a contact we cannot address. `relay_device_list` alone missed the folded-but-never-contacted case: a device in the membership fold that never pinged us has no endpoint row, so it was never resolved and never punched — union the fold in.
         let mut wanted: Vec<[u8; 32]> = Vec::new();
         for c in self.contacts.iter().filter(|c| c.ip.is_none()) {
-            for dev in c.relay_device_list() {
+            for dev in c
+                .relay_device_list()
+                .into_iter()
+                .chain(c.fleet_members.iter().copied())
+            {
                 if !wanted.contains(&dev) {
                     wanted.push(dev);
                 }
@@ -21242,7 +21254,7 @@ impl PhotonApp {
 
     /// Write the phonebook to the vault so it survives a restart.
     ///
-    /// `PeerStore::new()` starts EMPTY every launch, so today the phonebook cannot accumulate — it is refilled from FGTW each time and forgotten. That is why "peers first, seed last" is structurally impossible right now regardless of what else works: there is nothing to ask first. This is Phase A item 1 of docs/peers-are-fgtw.md, listed as done-next since June.
+    /// Write the peer store to the vault so "peers first, seed last" survives a relaunch. Fires on the own-address edge (the reflexive publish site) and on the observed-growth edge in the stalled-contact harvest — gossip merges land on the checker thread, so a UI tick observes and persists them.
     ///
     /// Only self-signed rows persist (see `to_vsf_bytes`) — an unsigned FGTW row can never be gossiped or trusted by a peer, so carrying it across a restart would just grow the file.
     fn persist_peer_store(&self) {
