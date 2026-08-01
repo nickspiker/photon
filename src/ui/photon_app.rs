@@ -13075,6 +13075,17 @@ impl PhotonApp {
             return;
         }
         if !(c.their_probe_seen && c.chain_advanced_by_ack) {
+            // Not sealed yet. If OUR half is the missing one, our probe may simply have been lost — one best-effort frame, and losing it deadlocks the pair forever (each side ends up holding a different half). This runs on the EDGE of a proof arriving, never on a timer, and is bounded so an unreachable peer doesn't re-probe endlessly.
+            if c.their_probe_seen && !c.chain_advanced_by_ack && c.probe_sent && c.probe_resends_left > 0 {
+                c.probe_resends_left -= 1;
+                c.probe_sent = false;
+                let left = c.probe_resends_left;
+                crate::logf!(
+                    "CHAIN-PROBE: their probe landed but ours was never acked — re-arming our probe ({} left)",
+                    left
+                );
+                self.maybe_send_chain_probe(contact_idx);
+            }
             return;
         }
         c.chain_woven = true;

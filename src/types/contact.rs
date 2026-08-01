@@ -309,8 +309,10 @@ pub struct Contact {
     // Chain weave probe — after CLUTCH reaches Complete, both devices auto-exchange one hidden probe chat message each way to prove the ratchet works end-to-end. Once proven, the ceremony proof rebroadcast is cancelled (clutch_proof_resends_left = 0). Runtime-only, not persisted: a resumed Complete contact already has a working chain and needs no re-probe.
     /// The chain has been validated end-to-end (our probe/message got ACKed AND we saw theirs). Gates the status line from "weaving the chain" to "secured" and stops the ceremony rebroadcast.
     pub chain_woven: bool,
-    /// We've already sent (or queued) our chain-weave probe for this contact — send it once only.
+    /// We've already sent (or queued) our chain-weave probe for this contact — send it once, then only on the re-arm below.
     pub probe_sent: bool,
+    /// Re-probe budget. The seal needs BOTH halves proven ON THIS DEVICE (their probe received AND our own chain advanced by an ACK), but a probe is one best-effort frame: lose it and the pair deadlocks forever with each side holding a different half — observed live 2026-08-01, both of Nick's devices stuck on "testing the secure channel", one having seen the peer's probe and the other having had its ACK verified. Re-armed on the proof-arrival EDGE (never a timer), bounded so an unreachable peer doesn't re-probe endlessly.
+    pub probe_resends_left: u8,
     /// We've received the peer's chain-weave probe (their TX chain / our RX proven for at least one hop).
     pub their_probe_seen: bool,
     /// WHICH ceremony that probe belonged to. A completing ceremony voids a weave seal from a PREVIOUS chain, but the peer's probe for the ceremony now completing routinely arrives a few hundred ms BEFORE our own completion finishes (observed 290ms, Jon↔7ff3835f 2026-07-27) — and a reset that discriminates on timing alone throws that one away too, so `chain_woven` never seals and the proof rebroadcasts until its budget runs out. The real question is never "when" but "which chain", and this answers it.
@@ -461,7 +463,8 @@ impl Contact {
             avatar_scaled: None,        // Scaled on demand for display
             avatar_scaled_diameter: 0,
             chain_woven: false, // Chain not yet proven end-to-end (probe pending)
-            probe_sent: false,  // Chain-weave probe not sent yet
+            probe_sent: false,
+            probe_resends_left: 3,  // Chain-weave probe not sent yet
             their_probe_seen: false, // Haven't seen their chain-weave probe yet
             their_probe_ceremony: None, // …and so no ceremony to attribute one to
             chain_advanced_by_ack: false, // Our TX chain not yet ACK-advanced
