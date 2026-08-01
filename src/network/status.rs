@@ -2848,12 +2848,22 @@ async fn run_checker(
 
                 // No direct path → also ping over the relay pipe so PRESENCE works for a relay-only peer.
                 // The peer receives it on its pipe and pongs back over its own pipe; each side flips the other online (reached_via_relay). Best-effort — a live pipe means the peer is reachable; a dropped frame just means they're offline, which a missed pong already conveys.
+                // DETACHED, never awaited in the ping loop. Each relayed ping is an HTTPS round trip to the worker — ~1.3s when the recipient is offline — and awaiting them in sequence serialised the whole presence sweep behind the slowest unreachable contact: 8.1 seconds of frozen UI in one measured stall, which is what a sweep across several dozing peers costs. Presence is best-effort by design, so the result is worth nothing to us here: a live pipe means they are reachable and a dropped frame means they are not, which the missed pong already conveys.
                 for dev in &request.relay_to {
-                    if let Err(e) =
-                        crate::network::fgtw::relay::send_via_relay(&keypair, dev, &msg_bytes).await
-                    {
-                        crate::logf!("RELAY: ping to {} failed: {}", hex::encode(&dev[..4]), e);
-                    }
+                    let kp = keypair.clone();
+                    let dev = *dev;
+                    let bytes = msg_bytes.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            crate::network::fgtw::relay::send_via_relay(&kp, &dev, &bytes).await
+                        {
+                            crate::logf!(
+                                "RELAY: ping to {} failed: {}",
+                                hex::encode(&dev[..4]),
+                                e
+                            );
+                        }
+                    });
                 }
 
                 // Fire hole-punch probes at the peer's candidates (piggybacked on the ping cycle). Sending each probe opens our NAT toward that candidate; a friend's ack — matched by provenance in `pending_probes` — validates that path. Candidates arrive best-first, so the first to round-trip (usually the lowest-latency path) wins. The nonce is derived from the candidate so concurrent probes get distinct provenances.
