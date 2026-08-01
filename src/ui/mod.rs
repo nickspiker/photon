@@ -2,6 +2,8 @@
 // The legacy Android compositor (app / compositing / drawing / keyboard / mouse / text_editing / text_rasterizing / renderer_android) was deleted once fully retired — text measurement, editing, and rendering now live in fluor.
 
 pub mod avatar;
+/// Avatar sharing over scoped blobs — one ciphertext, a private slot per reader (docs/scoped-blobs.md). Replaces the bearer pin.
+pub mod avatar_scoped;
 pub mod display_profile;
 pub mod lms2006so;
 pub mod state;
