@@ -1583,6 +1583,27 @@ fn _upload_avatar_removed(
     Err("upload_avatar (handle wrapper) removed — avatar upload is pin-based now".to_string())
 }
 
+/// The avatar bytes to hand a FRIEND directly (the peer-to-peer answer to an AVATAR_REQUEST): our vault copy re-encrypted under the PIN's key half, exactly as [`upload_avatar_from_seed`] prepares the wall copy.
+///
+/// The two copies are keyed differently and always were: the vault holds the avatar under a SEED-derived key (only we know the seed), while a friend holds only the random pin we handed them over an authenticated pong. Serving the vault bytes verbatim therefore hands a friend a blob keyed to something they can never have — it verifies, then fails to decrypt (`aead::Error`, observed live 2026-08-01). This was invisible while the pin was seed-DERIVED, since both keys were then the same value; it broke the moment the pin became random (and friend-gated), and only on the direct path — the FGTW fallback always served the pin-encrypted wall copy, which is why avatars still appeared eventually.
+pub fn avatar_vsf_for_friend(
+    device_secret: &SigningKey,
+    identity_seed: &[u8; 32],
+    avatar_pin: &[u8; 64],
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Result<Vec<u8>, String> {
+    let local_vsf = storage
+        .read_addr(&crate::storage::vault_key("avatar", identity_seed))
+        .map_err(|e| format!("Failed to read avatar from vault: {}", e))?
+        .ok_or_else(|| "No local avatar to serve".to_string())?;
+    let av1_data = extract_av1_data_from_seed(&local_vsf, identity_seed)?;
+    let (avatar_signing, avatar_verifying) =
+        derive_avatar_keypair_from_seed(device_secret, identity_seed);
+    let mut enc_key = [0u8; 32];
+    enc_key.copy_from_slice(&avatar_pin[..32]);
+    build_signed_avatar_vsf_keyed(&av1_data, &enc_key, &avatar_signing, &avatar_verifying)
+}
+
 /// `upload_avatar` from the already-derived `identity_seed`. String-free owner path.
 pub fn upload_avatar_from_seed(
     device_secret: &SigningKey,
