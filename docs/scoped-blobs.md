@@ -80,11 +80,21 @@ If it ever needs closing, the lever is decoupling writes from publish time: writ
 
 **Add a reader** (new friend, new device). Write one new slot: the *existing* DEK wrapped to their secret, pointing at the existing blob id. The ciphertext is untouched, and no other reader's slot changes.
 
-**Remove a reader** (friend removed, device departed). Mint a fresh DEK, re-encrypt the content to a **new blob id**, and write slots only for the survivors. The removed reader is not locked out of an address they still know — the object moved out from under them, and their stale slot points at something that no longer exists. **Delete the old blob object**: they hold the previous DEK and blob id from the last slot you wrote them, so a lingering old ciphertext stays readable to them. Deleting it costs nothing, since the new version supersedes it.
+**Remove a reader** (friend removed, device departed). Mint a fresh DEK, re-encrypt the content to a **new blob id**, and write slots only for the survivors. The removed reader is not locked out of an address they still know — the object moved out from under them, and their stale slot points at something that no longer exists.
+
+Deleting the old object is **not required**, and nothing here depends on it. That ciphertext is opaque to everyone except the readers who were already granted it, and those readers already hold the plaintext — so an orphan left on the network leaks nothing that was not already given away. Hosts may reclaim it under their own storage policy; a signed tombstone is available as a courtesy hint to help them, never as something correctness rests on. This matters because there is no fgtw.org in the end state: a design that requires someone to obey a delete is a design that breaks the day the server retires.
 
 For a departed *device* the fleet-key rotation that already fires on membership change does the same work one level up: it cannot derive any slot address under the new key, so it cannot even find a slot to try.
 
 **What removal does NOT do**, stated plainly because the honest limit belongs in the spec and not in a surprise: a reader who already fetched and decrypted **keeps that plaintext forever**. Republishing stops *future* versions only. This is the same SOFT/HARD line [contact-system.md](contact-system.md) already draws — the crypto is unforgeable about the future and powerless about the past.
+
+### Availability — friends hold it, the wall only distributes it
+
+A reader caches the decrypted content locally the first time it fetches. **The wall is a distribution cache, not the origin**: the origin is the publishing device, and the working copies live with the people who actually need them.
+
+The consequence that decides the retention model: go off-grid for a year and your avatar still renders for every friend who already has it, because none of them need the network to show it. There is therefore NO lease, NO expiry, and no refresh obligation — an identity that decays because its owner went hiking is broken, and "refresh or lose your face" is the wrong failure. Hosts apply whatever garbage collection suits them; the protocol never punishes absence.
+
+What being away DOES cost is granting NEW access: writing a slot needs the publisher's key, so a friend made while offline gets their slot when the publisher next comes back. Granting requires presence, which is correct.
 
 **Burn and republish** (the device-handoff case). Giving a phone to another person is the one case where removing a reader is not enough on its own: that device already holds the current DEK, so the current content must move too. Mechanically identical to removing a reader — new DEK, new blob id, survivors' slots rewritten, old object deleted — but worth naming as its own deliberate step, because for a large attachment the re-encryption is the expensive part and should be a choice rather than a reflex.
 
