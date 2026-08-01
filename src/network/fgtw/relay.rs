@@ -112,11 +112,36 @@ pub async fn send_via_relay(
     if !status.is_success() {
         return Err(format!("Relay failed (transport {})", status));
     }
+    let reached = relay_reached(&body);
     crate::logf!(
-        "RELAY: Stored message for {}...",
-        hex::encode(&recipient_pubkey[..4])
+        "RELAY: {} for {}... ({} bytes)",
+        if reached {
+            "delivered"
+        } else {
+            "DROPPED — recipient's pipe is closed, no mailbox to hold it"
+        },
+        hex::encode(&recipient_pubkey[..4]),
+        message_bytes.len()
     );
+    if !reached {
+        return Err("relay: recipient offline (frame discarded)".to_string());
+    }
     Ok(())
+}
+
+/// The worker's per-frame delivery verdict, parsed from `relay_ack`. `true` = handed to a live socket, `false` = the recipient had no pipe open and the frame was DISCARDED (there is no mailbox). Absent field = an older worker; treat as delivered so a mixed fleet never silently stops relaying.
+///
+/// Use this ONLY to decide whether to retry or defer THIS send. Presence stays a receive-side fact — a pong or ACK arriving over our pipe — never a send-time inference, or two authorities start disagreeing about who is online.
+fn relay_reached(body: &[u8]) -> bool {
+    let schema = vsf::schema::SectionSchema::new("relay_ack")
+        .field("reach", vsf::schema::TypeConstraint::Any);
+    match vsf::schema::SectionBuilder::parse_document(schema, body, None) {
+        Ok(sec) => match sec.get_fields("reach").first().and_then(|f| f.values.first()) {
+            Some(vsf::VsfType::u3(n)) => *n != 0,
+            _ => true,
+        },
+        Err(_) => true,
+    }
 }
 
 /// Synchronous version of send_via_relay for non-async contexts
@@ -161,10 +186,20 @@ pub fn send_via_relay_sync(
     if !status.is_success() {
         return Err(format!("Relay failed (transport {})", status));
     }
+    let reached = relay_reached(&body);
     crate::logf!(
-        "RELAY: Stored message for {}...",
-        hex::encode(&recipient_pubkey[..4])
+        "RELAY: {} for {}... ({} bytes)",
+        if reached {
+            "delivered"
+        } else {
+            "DROPPED — recipient's pipe is closed, no mailbox to hold it"
+        },
+        hex::encode(&recipient_pubkey[..4]),
+        message_bytes.len()
     );
+    if !reached {
+        return Err("relay: recipient offline (frame discarded)".to_string());
+    }
     Ok(())
 }
 

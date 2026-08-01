@@ -14969,13 +14969,14 @@ impl PhotonApp {
                 crate::log("CLUTCH: Cannot save chains - no storage!");
             }
 
-            // Phase A compliance: a SIBLING ceremony mints the pair secret that lets this device be wrapped into (and open) the egged fan-out. Store it before anything else can fail — a lost secret means a dark device until the next ceremony.
-            let sibling_device = self
+            // EVERY completed ceremony mints a durable pair secret with the other DEVICE, sibling or friend, and it is stored before anything else can fail. A sibling's is what lets it be wrapped into the egged fan-out; a FRIEND's is the key their scoped-blob slot is addressed and sealed with (docs/scoped-blobs.md), so without it there is no way to share a file with them at all.
+            let peer = self
                 .contacts
                 .iter()
-                .find(|c| c.id == result.contact_id && c.is_sibling)
-                .map(|c| *c.public_identity.as_bytes());
-            if let (Some(their_device), Some(storage)) = (sibling_device, self.storage.as_ref()) {
+                .find(|c| c.id == result.contact_id)
+                .map(|c| (*c.public_identity.as_bytes(), c.is_sibling));
+            if let (Some((their_device, is_sibling)), Some(storage)) = (peer, self.storage.as_ref())
+            {
                 match crate::storage::fanout_pairs::store(
                     &device_pubkey,
                     &their_device,
@@ -14984,13 +14985,16 @@ impl PhotonApp {
                 ) {
                     Ok(()) => {
                         crate::logf!(
-                            "FANOUT: pair secret minted with sibling {} — this pair is now egged",
+                            "PAIR: secret minted with {} {}",
+                            if is_sibling { "sibling" } else { "friend" },
                             crate::fp(&their_device)
                         );
-                        // The sibling can now be wrapped, so mint the next epoch that includes it. Idempotent by the worker's monotonic epoch guard; a loser just adopts the winner's key.
-                        self.fanout_rotate_pending = true;
+                        // A newly egged SIBLING can now be wrapped, so mint the next fan-out epoch that includes it. Idempotent by the worker's monotonic epoch guard; a loser just adopts the winner's key. A friend's secret changes no fleet state, so no rotation.
+                        if is_sibling {
+                            self.fanout_rotate_pending = true;
+                        }
                     }
-                    Err(e) => crate::logf!("FANOUT: pair secret store failed: {}", e),
+                    Err(e) => crate::logf!("PAIR: secret store failed: {}", e),
                 }
             }
 
