@@ -1185,6 +1185,8 @@ pub struct PhotonApp {
     self_record_published_for: Option<std::net::SocketAddr>,
     /// Whether the persisted phonebook has been merged into the live store this session. One-shot: also stops an unreadable vault entry being retried every tick.
     peer_store_loaded: bool,
+    /// The last OWN fold the primary registry was converged onto — the fold-change edge detector (same fold again = no converge spawn; the plan would be empty anyway, this just saves the round trip).
+    registry_converged_fold: Vec<[u8; 32]>,
     /// Store size at the last vault persist — gossip merges land on the checker thread, so the tick that OBSERVES growth writes the store down. Before this, only our own address change persisted: a session that merged rows but never moved address lost them at exit.
     peer_store_persisted_len: usize,
 }
@@ -1216,6 +1218,7 @@ impl PhotonApp {
             our_reflexive: None,
             self_record_published_for: None,
             peer_store_loaded: false,
+            registry_converged_fold: Vec::new(),
             peer_store_persisted_len: 0,
             zoom_saved_ru: 1.0,
             persist_tx: None,
@@ -9466,6 +9469,11 @@ impl PhotonApp {
             for (hp, members, tip_ts, genesis, existed) in member_updates {
                 if Some(hp) == our_hp {
                     self.reconcile_fleet_siblings(&members);
+                    // Cutover: OUR fold is the primary registry's truth — converge on the fold-change edge (any member may; writes are idempotent and epoch-guarded, so racing siblings settle).
+                    if self.registry_converged_fold != members {
+                        self.registry_converged_fold = members.clone();
+                        self.spawn_registry_converge(hp, members.clone());
+                    }
                     needs_redraw = true;
                     continue;
                 }
@@ -9532,6 +9540,9 @@ impl PhotonApp {
                     to_persist.push(idx);
                     if shrank {
                         crate::logf!("FLEET: device revoked from {}'s fleet — dropping it from the answerable set", crate::fp(&hp));
+                        // Cutover: a departed device also loses its endpoint rows — keeping them would keep pinging and relaying to hardware the identity disowned (the fold is the truth; the registry pop-swaps it out on the owner's side).
+                        let fold = c.fleet_members.clone();
+                        c.device_endpoints.retain(|ep| fold.contains(&ep.pubkey));
                     }
                     // Fold-race self-heal: a peer's NEW device can drive the ceremony before we folded it — its CLUTCH SPEC was rejected as "not in contacts", and it gives up before our fold lands. Now that the fold makes that sibling answerable, re-arm our offer so the ceremony re-fires to it (prompting its KEM, which the PT gate now accepts). Only for an unfinished ceremony that grew a member — never disturb a Complete one.
                     if grew && c.clutch_state != crate::types::ClutchState::Complete {
@@ -11283,6 +11294,19 @@ impl PhotonApp {
         self.settings_set("profile.avatar_pin", pin.to_vec());
         crate::log("AVATAR: generated a fresh random pin (fleet-synced)");
         Some(pin)
+    }
+
+    /// The avatar pin as it stands, WITHOUT minting one — the serve path runs inside the drain's immutable borrows, and a peer's request is never a reason to create a pin (no pin means no avatar to serve anyway).
+    fn ensure_avatar_pin_readonly(&self) -> Option<[u8; 64]> {
+        let v = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("profile.avatar_pin"))?;
+        (v.len() == 64).then(|| {
+            let mut p = [0u8; 64];
+            p.copy_from_slice(&v);
+            p
+        })
     }
 
     /// Push our avatar pin into the status thread's pong slot, so friends receive the friend-gated avatar capability on their next ping cycle. Called on avatar set, on settings load, and when a sibling's merged edit lands.
@@ -19365,38 +19389,39 @@ impl PhotonApp {
                         self.storage.as_ref(),
                         self.status_checker.as_ref(),
                     ) {
-                        // Read our own avatar VSF straight from the vault (the same blob we publish to FGTW). No avatar stored → nothing to send; the peer falls back to FGTW.
-                        match storage
-                            .read_addr(&crate::storage::vault_key("avatar", &session.identity_seed))
-                        {
-                            Ok(Some(avatar_vsf)) => {
-                                // Validate the vault bytes before we device-sign and ship them: an error frame or a body that doesn't decode would be signed as a "poisoned" avatar the friend then can't decode. Reject an error frame outright, and require a full verify+decrypt+decode against our own seed before serving.
-                                let servable = fgtw::client::error_frame(&avatar_vsf).is_none()
-                                    && crate::ui::avatar::load_avatar_from_bytes_from_seed(
-                                        &avatar_vsf,
-                                        &session.identity_seed,
-                                    )
-                                    .is_some();
-                                if !servable {
-                                    crate::log(
-                                        "Avatar: local avatar bytes failed to validate, not serving to peer",
-                                    );
-                                } else {
-                                    crate::logf!(
-                                        "Avatar: sending our avatar to mutual peer ({} bytes)",
-                                        avatar_vsf.len()
-                                    );
-                                    checker.send_avatar_response(
-                                        crate::network::status::AvatarResponseSend {
-                                            peer_addr: sender_addr,
-                                            recipient_pubkey: *sender_pubkey.as_bytes(),
-                                            avatar_vsf,
-                                        },
-                                    );
-                                }
+                        // Serve the PIN-keyed copy, never the vault bytes: the vault holds the avatar under a seed-derived key that no friend can ever have, so shipping it verbatim hands them a blob that verifies and then fails to decrypt. `avatar_vsf_for_friend` re-encrypts under the pin we handed them, which is byte-for-byte what the FGTW wall serves.
+                        let served = self
+                            .ensure_avatar_pin_readonly()
+                            .ok_or_else(|| "no avatar pin yet".to_string())
+                            .and_then(|pin| {
+                                self.device_keypair
+                                    .as_ref()
+                                    .ok_or_else(|| "no device key".to_string())
+                                    .and_then(|kp| {
+                                        crate::ui::avatar::avatar_vsf_for_friend(
+                                            &kp.secret,
+                                            &session.identity_seed,
+                                            &pin,
+                                            storage,
+                                        )
+                                    })
+                            });
+                        match served {
+                            Ok(avatar_vsf) => {
+                                crate::logf!(
+                                    "Avatar: sending our avatar to mutual peer ({} bytes, pin-keyed)",
+                                    avatar_vsf.len()
+                                );
+                                checker.send_avatar_response(
+                                    crate::network::status::AvatarResponseSend {
+                                        peer_addr: sender_addr,
+                                        recipient_pubkey: *sender_pubkey.as_bytes(),
+                                        avatar_vsf,
+                                    },
+                                );
                             }
-                            _ => {
-                                crate::log("Avatar: mutual peer requested avatar, but we have none")
+                            Err(e) => {
+                                crate::logf!("Avatar: mutual peer requested avatar — not serving: {}", e)
                             }
                         }
                     }
@@ -21030,6 +21055,34 @@ impl PhotonApp {
     /// Only this device can produce this record: the signature is by the device key, over `handle_proof ‖ device_pubkey ‖ ip ‖ local_ip ‖ last_seen`. That is what lets a peer trust a record WITHOUT trusting the peer that relayed it — the property the whole gossip mesh needs, and the reason a record can propagate hop to hop instead of only from an authority.
     ///
     /// The published address is the REFLEXIVE one — what peers actually observe on the live UDP data socket — not fgtw.org's `cf-connecting-ip`, which reflects a TLS flow and is only right for cone NATs. That is also why the device can sign it at all: until reflexive discovery existed, a device did not know its own public address and could not commit to one.
+    /// Converge our identity's PRIMARY registry onto a freshly-adopted fold (cutover Phase 4): read the stored view, plan the minimal placement-signed writes, put each. A `stale` rejection means a racing sibling landed first — success by other hands, logged and dropped.
+    fn spawn_registry_converge(&self, handle_proof: [u8; 32], fold: Vec<[u8; 32]>) {
+        let Some(kp) = self.device_keypair.as_ref() else {
+            return;
+        };
+        let sk = ed25519_dalek::SigningKey::from_bytes(kp.secret.as_bytes());
+        crate::network::http::runtime().spawn(async move {
+            let view = match crate::network::fgtw::phonebook_client::fetch_devices(&handle_proof).await {
+                Ok((view, _)) => view,
+                // No registry yet (or an unreadable one): converge from empty — the plan re-mints everything.
+                Err(_) => fgtw::phonebook::RegistryView::default(),
+            };
+            let plan = fgtw::phonebook::registry_plan(&sk, &handle_proof, &fold, &view, vsf::eagle_time_oscillations(), None);
+            if plan.is_empty() {
+                return;
+            }
+            let total = plan.len();
+            let mut stored = 0usize;
+            for rec in &plan {
+                match crate::network::fgtw::phonebook_client::put_record(rec).await {
+                    Ok(()) => stored += 1,
+                    Err(e) => crate::logf!("PHONEBOOK: registry write skipped ({})", e),
+                }
+            }
+            crate::logf!("PHONEBOOK: primary registry converged — {}/{} record(s) written for a {}-device fold", stored, total, fold.len());
+        });
+    }
+
     fn publish_self_peer_record(&mut self) {
         let (Some(store), Some(kp), Some(addr), Some(hp)) = (
             self.peer_store.as_ref(),
@@ -21060,6 +21113,16 @@ impl PhotonApp {
 
         store.lock().unwrap().add_peer(rec);
         self.self_record_published_for = Some(addr);
+        // Same edge, second registry: a fresh reflexive publish is also the moment to re-check the primary registry against the last-adopted fold (empty plan when in sync — one cheap GET).
+        if !self.registry_converged_fold.is_empty() {
+            if let Some(our_hp) = self
+                .handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof())
+            {
+                self.spawn_registry_converge(our_hp, self.registry_converged_fold.clone());
+            }
+        }
         crate::logf!(
             "PHONEBOOK: published our own signed record at {} — gossip can now carry it",
             addr
@@ -21090,32 +21153,44 @@ impl PhotonApp {
         if self.pb_resolve_rx.is_some() {
             return; // one in flight — a slow seed must not stack requests
         }
-        // Every device of a contact we cannot address. `relay_device_list` alone missed the folded-but-never-contacted case: a device in the membership fold that never pinged us has no endpoint row, so it was never resolved and never punched — union the fold in.
-        let mut wanted: Vec<[u8; 32]> = Vec::new();
+        // Per stalled contact: every device we know for it, fold included — `relay_device_list` alone missed the folded-but-never-contacted case (a device in the membership fold that never pinged us has no endpoint row, so it was never resolved and never punched).
+        let mut wanted: Vec<([u8; 32], Vec<[u8; 32]>)> = Vec::new();
+        let mut budget = 16usize;
         for c in self.contacts.iter().filter(|c| c.ip.is_none()) {
+            if budget == 0 {
+                break; // bounded per pulse — a large roster must not turn one stalled tick into a burst at the seed; the next pulse takes the rest
+            }
+            let mut devs: Vec<[u8; 32]> = Vec::new();
             for dev in c
                 .relay_device_list()
                 .into_iter()
                 .chain(c.fleet_members.iter().copied())
             {
-                if !wanted.contains(&dev) {
-                    wanted.push(dev);
+                if !devs.contains(&dev) && budget > 0 {
+                    devs.push(dev);
+                    budget -= 1;
                 }
+            }
+            if !devs.is_empty() {
+                wanted.push((c.handle_proof, devs));
             }
         }
         if wanted.is_empty() {
             return;
         }
-        // Bounded per pulse. A large roster must not turn one stalled tick into a burst at the seed; the next pulse takes the next devices, and a resolved one drops out of `wanted` entirely.
-        wanted.truncate(16);
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.pb_resolve_rx = Some(rx);
         crate::network::http::runtime().spawn(async move {
             let mut found = Vec::new();
-            for dev in wanted {
-                match crate::network::fgtw::phonebook_client::resolve_device_address(&dev).await {
-                    Ok(rec) => {
+            for (hp, devs) in wanted {
+                // Registry-first: one pb_devices round trip answers the whole identity — count, chain-vouched pointers, and every published address. Absent until the contact's own fleet converges post-cutover, so the per-device path below stays as the fallback.
+                let mut covered: Vec<[u8; 32]> = Vec::new();
+                if let Ok((_view, addresses)) =
+                    crate::network::fgtw::phonebook_client::fetch_devices(&hp).await
+                {
+                    for rec in addresses {
+                        let dev = rec.device_pubkey();
                         if let Some(pubaddr) =
                             crate::network::fgtw::phonebook_client::record_socket_addr(&rec)
                         {
@@ -21123,10 +21198,26 @@ impl PhotonApp {
                                 crate::network::fgtw::phonebook_client::record_local_addr(&rec);
                             found.push((dev, pubaddr, lan));
                         }
+                        // A pointed device with no usable address is still ANSWERED — the registry spoke for it; asking again per-device would just repeat the same record.
+                        covered.push(dev);
                     }
-                    // Absence is the normal case for a device that has not published yet; only a genuine rejection is worth a line.
-                    Err(crate::network::fgtw::phonebook_client::PhonebookError::NotFound) => {}
-                    Err(e) => crate::logf!("PHONEBOOK: seed lookup failed ({})", e),
+                }
+                for dev in devs.into_iter().filter(|d| !covered.contains(d)) {
+                    match crate::network::fgtw::phonebook_client::resolve_device_address(&dev).await
+                    {
+                        Ok(rec) => {
+                            if let Some(pubaddr) =
+                                crate::network::fgtw::phonebook_client::record_socket_addr(&rec)
+                            {
+                                let lan =
+                                    crate::network::fgtw::phonebook_client::record_local_addr(&rec);
+                                found.push((dev, pubaddr, lan));
+                            }
+                        }
+                        // Absence is the normal case for a device that has not published yet; only a genuine rejection is worth a line.
+                        Err(crate::network::fgtw::phonebook_client::PhonebookError::NotFound) => {}
+                        Err(e) => crate::logf!("PHONEBOOK: seed lookup failed ({})", e),
+                    }
                 }
             }
             let _ = tx.send(found);
