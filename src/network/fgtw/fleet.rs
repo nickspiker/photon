@@ -298,6 +298,13 @@ pub fn push_roster(
     let mut state = match pull_fstate(handle_proof, fleet_key) {
         Ok(Some(s)) => s,
         Ok(None) => fgtw::fstate::FleetState::default(),
+        // A slot we cannot DECRYPT is not the same fact as a pull we could not COMPLETE. The guard below exists to stop an empty merge base clobbering good data after a transient failure — but bytes sealed under a superseded fleet key are already unreadable to every device in the fleet, including the ones that wrote them. Refusing there is not caution; it is a permanent deadlock, and it is the one Nick's log shows: 29 aead failures against 26 refused pushes, the roster never loading on any device. Re-sealing our local view is the only way the slot ever becomes readable again, and local state is strictly better than state nobody can open.
+        Err(e) if e.contains("aead") || e.contains("decrypt") => {
+            crate::logf!(
+                "FLEET: slot is sealed under a superseded key ({e}) — re-sealing from local state, since bytes no device can open are already lost"
+            );
+            fgtw::fstate::FleetState::default()
+        }
         Err(e) => {
             return Err(format!(
                 "refusing to push fleet state: the pull failed ({e}), so the merge base is unknown — pushing now would overwrite the fleet's roster and settings with this device's view alone"
