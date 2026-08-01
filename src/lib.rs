@@ -263,7 +263,24 @@ static LOG_FILE: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new
 #[cfg(feature = "logging")]
 static LOG_PENDING: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
 #[cfg(feature = "logging")]
-const LOG_PENDING_CAP: usize = 64 << 10;
+// The pending buffer doubles as the SOFT-mode batch (see LOG_HARD), so the cap is sized for that role; the pre-data-dir case it originally served never nears it.
+const LOG_PENDING_CAP: usize = 4 << 20;
+/// Soft-mode batch: buffered records write thru in ONE chunk at this size — an idle session writes nothing, a busy one writes rarely and large (flash wear tracks write COUNT more than byte count).
+const SOFT_LOG_FLUSH_BYTES: usize = 512 << 10;
+
+/// Hard-logs switch (`logs.hard`, the Diagnostics checkbox): ON = write thru per record (crash-durable via the kernel page cache). OFF (the default) = records batch in RAM and reach disk on the EDGES — panic, app background, submission, threshold, toggle-on — so steady-state logging costs the disk nothing. The loss window is one un-flushed batch on a hard kill, which is exactly what the checkbox is for when a device is under investigation.
+#[cfg(feature = "logging")]
+static LOG_HARD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(feature = "logging")]
+pub fn set_hard_logs(hard: bool) {
+    let was = LOG_HARD.swap(hard, std::sync::atomic::Ordering::Relaxed);
+    if hard && !was {
+        flush_log_buffer();
+    }
+}
+#[cfg(not(feature = "logging"))]
+pub fn set_hard_logs(_hard: bool) {}
 
 // Size cap for the VSF log: once the file passes 16 MiB, drop enough of the OLDEST whole records to bring it back to ~8 MiB.
 // Trimming cuts only on record boundaries (the file is a stream of complete VSF records), so the result stays fully decodable by photonlog.
@@ -327,6 +344,100 @@ fn log_dir() -> Option<std::path::PathBuf> {
     crate::storage::photon_config_dir().ok()
 }
 
+/// Open the sink (idempotent) and drain any buffered records into it FIRST so the file stays chronological; counters seed from post-drain metadata.
+#[cfg(feature = "logging")]
+fn ensure_log_open(guard: &mut Option<std::fs::File>) {
+    use std::io::Write;
+    if guard.is_some() {
+        return;
+    }
+    let Some(dir) = log_dir() else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("photon.log.vsf");
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    // FILE_ATTRIBUTE_TEMPORARY (0x100): the cache manager keeps the contents in RAM and skips lazy writeback unless memory pressure forces it — the file still exists, survives process exit, and reads back for submission, it just avoids physically wearing the disk while it can. Windows' answer to the tmpfs macOS doesn't have.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        opts.attributes(0x100);
+    }
+    if let Ok(mut f) = opts.open(&path) {
+        if let Ok(mut pending) = LOG_PENDING.lock() {
+            if !pending.is_empty() {
+                let _ = f.write_all(&pending);
+                pending.clear();
+                pending.shrink_to_fit();
+            }
+        }
+        let sz = f.metadata().map(|m| m.len()).unwrap_or(0);
+        LOG_BYTES.store(sz, std::sync::atomic::Ordering::Relaxed);
+        LOG_OLDEST_OSC.store(
+            first_record_osc(&path).unwrap_or(i64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        LOG_AGE_TRIGGER_OSC.store(
+            jitter(LOG_AGE_TRIGGER_BASE_OSC),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        *guard = Some(f);
+    }
+}
+
+/// Trim on EITHER cap: too big (16 MiB) or the oldest record past the jittered age trigger (24–48h). Reopens the handle on the trimmed file and re-rolls the trigger so successive trims never settle into a fixed cadence.
+#[cfg(feature = "logging")]
+fn trim_log_if_due(guard: &mut Option<std::fs::File>) {
+    let total = LOG_BYTES.load(std::sync::atomic::Ordering::Relaxed);
+    let now = vsf::eagle_time_oscillations();
+    let oldest = LOG_OLDEST_OSC.load(std::sync::atomic::Ordering::Relaxed);
+    let trigger = LOG_AGE_TRIGGER_OSC.load(std::sync::atomic::Ordering::Relaxed);
+    let aged = oldest != i64::MAX && now.saturating_sub(oldest) > trigger;
+    if total > LOG_CAP_BYTES || aged {
+        if let Some((trimmed, new_size, new_oldest)) = trim_log_file(now) {
+            *guard = Some(trimmed);
+            LOG_BYTES.store(new_size, std::sync::atomic::Ordering::Relaxed);
+            LOG_OLDEST_OSC.store(new_oldest, std::sync::atomic::Ordering::Relaxed);
+            LOG_AGE_TRIGGER_OSC.store(
+                jitter(LOG_AGE_TRIGGER_BASE_OSC),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+    }
+}
+
+/// Drain the soft-mode RAM batch to disk — THE edge reaction (panic, app background, submission, threshold, hard-toggle). No-op when nothing is buffered.
+#[cfg(feature = "logging")]
+pub fn flush_log_buffer() {
+    use std::io::Write;
+    let Ok(mut guard) = LOG_FILE.lock() else { return };
+    ensure_log_open(&mut guard);
+    let mut drained = 0usize;
+    if let Some(f) = guard.as_mut() {
+        if let Ok(mut pending) = LOG_PENDING.lock() {
+            if !pending.is_empty() {
+                if f.write_all(&pending).is_ok() {
+                    drained = pending.len();
+                }
+                pending.clear();
+                pending.shrink_to_fit();
+            }
+        }
+    }
+    if drained > 0 {
+        LOG_BYTES.fetch_add(drained as u64, std::sync::atomic::Ordering::Relaxed);
+        // A file born from this drain has no seeded oldest — these records are it.
+        let _ = LOG_OLDEST_OSC.compare_exchange(
+            i64::MAX,
+            vsf::eagle_time_oscillations(),
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        trim_log_if_due(&mut guard);
+    }
+}
+#[cfg(not(feature = "logging"))]
+pub fn flush_log_buffer() {}
+
 #[cfg(feature = "logging")]
 fn append_log_record(level: LogLevel, msg: &str, vals: &[LogValue]) {
     use std::io::Write;
@@ -363,41 +474,23 @@ fn append_log_record(level: LogLevel, msg: &str, vals: &[LogValue]) {
     let Ok(mut guard) = LOG_FILE.lock() else {
         return;
     };
-    if guard.is_none() {
-        if let Some(dir) = log_dir() {
-            let _ = std::fs::create_dir_all(&dir);
-            let path = dir.join("photon.log.vsf");
-            let mut opts = std::fs::OpenOptions::new();
-            opts.create(true).append(true);
-            // FILE_ATTRIBUTE_TEMPORARY (0x100): the cache manager keeps the contents in RAM and skips lazy writeback unless memory pressure forces it — the file still exists, survives process exit, and reads back for submission, it just avoids physically wearing the disk while it can. Windows' answer to the tmpfs macOS doesn't have.
-            #[cfg(windows)]
-            {
-                use std::os::windows::fs::OpenOptionsExt;
-                opts.attributes(0x100);
+    // SOFT mode (the default): batch in RAM; the batch reaches disk on the edges (panic / background / submit / threshold / hard-toggle) via flush_log_buffer.
+    if !LOG_HARD.load(std::sync::atomic::Ordering::Relaxed) {
+        let over = if let (Ok(bytes), Ok(mut pending)) = (&record, LOG_PENDING.lock()) {
+            if pending.len() + bytes.len() <= LOG_PENDING_CAP {
+                pending.extend_from_slice(bytes);
             }
-            if let Ok(mut f) = opts.open(&path) {
-                // Drain the pre-dir buffer FIRST so the file stays chronological, then seed the counters (metadata already includes the drained bytes).
-                if let Ok(mut pending) = LOG_PENDING.lock() {
-                    if !pending.is_empty() {
-                        let _ = f.write_all(&pending);
-                        pending.clear();
-                        pending.shrink_to_fit();
-                    }
-                }
-                let sz = f.metadata().map(|m| m.len()).unwrap_or(0);
-                LOG_BYTES.store(sz, std::sync::atomic::Ordering::Relaxed);
-                LOG_OLDEST_OSC.store(
-                    first_record_osc(&path).unwrap_or(i64::MAX),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                LOG_AGE_TRIGGER_OSC.store(
-                    jitter(LOG_AGE_TRIGGER_BASE_OSC),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                *guard = Some(f);
-            }
+            pending.len() >= SOFT_LOG_FLUSH_BYTES
+        } else {
+            false
+        };
+        drop(guard);
+        if over {
+            flush_log_buffer();
         }
+        return;
     }
+    ensure_log_open(&mut guard);
     let Some(file) = guard.as_mut() else {
         // No sink yet (Android before the JNI data dir lands): hold the built record so the earliest lines aren't lost.
         if let (Ok(bytes), Ok(mut pending)) = (&record, LOG_PENDING.lock()) {
@@ -410,26 +503,9 @@ fn append_log_record(level: LogLevel, msg: &str, vals: &[LogValue]) {
     if let Ok(bytes) = record {
         let _ = file.write_all(&bytes);
         let _ = file.flush();
-        let total = LOG_BYTES.fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed)
-            + bytes.len() as u64;
-        // Trim on EITHER cap: too big (16 MiB) or the oldest record past the jittered age trigger (24–48h).
-        let now = vsf::eagle_time_oscillations();
-        let oldest = LOG_OLDEST_OSC.load(std::sync::atomic::Ordering::Relaxed);
-        let trigger = LOG_AGE_TRIGGER_OSC.load(std::sync::atomic::Ordering::Relaxed);
-        let aged = oldest != i64::MAX && now.saturating_sub(oldest) > trigger;
-        if total > LOG_CAP_BYTES || aged {
-            // `file`'s borrow of `guard` ends above; reopen the handle on the trimmed file.
-            if let Some((trimmed, new_size, new_oldest)) = trim_log_file(now) {
-                *guard = Some(trimmed);
-                LOG_BYTES.store(new_size, std::sync::atomic::Ordering::Relaxed);
-                LOG_OLDEST_OSC.store(new_oldest, std::sync::atomic::Ordering::Relaxed);
-                // Re-roll the next age trigger so successive trims never settle into a fixed cadence.
-                LOG_AGE_TRIGGER_OSC.store(
-                    jitter(LOG_AGE_TRIGGER_BASE_OSC),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-            }
-        }
+        LOG_BYTES.fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        // `file`'s borrow of `guard` ends above; the trim reopens the handle on the trimmed file.
+        trim_log_if_due(&mut guard);
     }
 }
 
@@ -551,12 +627,18 @@ pub fn clear_log() {
         LOG_BYTES.store(0, std::sync::atomic::Ordering::Relaxed);
         LOG_OLDEST_OSC.store(i64::MAX, std::sync::atomic::Ordering::Relaxed);
     }
+    // The soft-mode batch goes with the file — a clear that left buffered records would resurrect them on the next flush.
+    if let Ok(mut pending) = LOG_PENDING.lock() {
+        pending.clear();
+        pending.shrink_to_fit();
+    }
 }
 
-/// Reads the current on-disk `photon.log.vsf` as raw bytes for submission (the "Submit" diagnostic action).
-/// A plain file read — records are written unbuffered per line, so the on-disk content is already current; no writer flush needed. `None` if the log hasn't opened yet (pre-data-dir) or can't be read.
+/// Reads the current `photon.log.vsf` as raw bytes for submission (the "Submit" diagnostic action).
+/// Submission is a flush edge: the soft-mode batch drains first so the snapshot carries everything up to this moment. `None` if the log has nothing or can't be read.
 #[cfg(feature = "logging")]
 pub fn snapshot_log_bytes() -> Option<Vec<u8>> {
+    flush_log_buffer();
     let path = log_dir()?.join("photon.log.vsf");
     std::fs::read(&path).ok().filter(|b| !b.is_empty())
 }
@@ -1024,6 +1106,8 @@ pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut std::os::raw::c_void)
         if let Some(location) = panic_info.location() {
             log::error!("PANIC location: {}:{}", location.file(), location.line());
         }
+        // A panic is THE flush edge: in-process RAM (the soft-mode batch) dies with the process.
+        flush_log_buffer();
     }));
 
     // Hand tohu the JavaVM so its device oracle can read Settings.Secure.ANDROID_ID itself (via ActivityThread.currentApplication()). Done here because JNI_OnLoad is where the vm is handed to us; the actual fetch happens later, once the Application exists.

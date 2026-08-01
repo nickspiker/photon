@@ -27,6 +27,8 @@ fn main() {
         };
 
         photon_messenger::logf!("PANIC at {}: {}", location, msg);
+        // A panic is THE flush edge: the process is about to die and in-process RAM (the soft-mode batch) dies with it.
+        photon_messenger::flush_log_buffer();
 
         // Also print backtrace if available
         let backtrace = std::backtrace::Backtrace::capture();
