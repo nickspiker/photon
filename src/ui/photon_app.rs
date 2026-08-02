@@ -10826,6 +10826,11 @@ impl PhotonApp {
         };
         let identity_seed = session.identity_seed;
         let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
+        // Live settings ride every roster push — a race-losing push must never revert a value this device already holds (the boot-minted avatar pin, peer_a 2026-08-02).
+        let live = self
+            .fleet_settings
+            .as_ref()
+            .map(|fs| (fs.global.clone(), fs.devices.clone()));
         std::thread::spawn(
             move || match fleet::recover_or_establish_fleet_key(&hp, &kp, Some(&storage)) {
                 Ok(Some(k)) => {
@@ -10838,7 +10843,7 @@ impl PhotonApp {
                     if entries.is_empty() {
                         return; // no contacts to share, but the key is now current for the roster PULL
                     }
-                    match fleet::push_roster(&hp, &kp, &k, &entries) {
+                    match fleet::push_roster_with_settings(&hp, &kp, &k, &entries, live) {
                         Ok(()) => crate::logf!(
                             "FLEET: roster re-pushed under rotated epoch ({} entr(ies))",
                             entries.len()
@@ -11987,8 +11992,9 @@ impl PhotonApp {
         let Some(fs) = self.fleet_settings.as_ref() else {
             return;
         };
+        // The live ROSTER rides too — the mirror of the roster push carrying live settings: two pull-merge-push writers race, and a loser that carries every layer it holds can revert nothing it knows (the boot pin-mint vs reconcile race, peer_a 2026-08-02).
         let ours = fgtw::fstate::FleetState {
-            roster: Vec::new(),
+            roster: self.current_roster(),
             global_settings: fs.global.clone(),
             device_settings: fs.devices.clone(),
         };
@@ -12038,8 +12044,13 @@ impl PhotonApp {
         ) else {
             return;
         };
+        // Live settings ride along so a race-losing push can't revert them (the boot pin-mint vs reconcile race).
+        let live = self
+            .fleet_settings
+            .as_ref()
+            .map(|fs| (fs.global.clone(), fs.devices.clone()));
         std::thread::spawn(move || {
-            if let Err(e) = fleet::push_roster(&hp, &kp, &fleet_key, &entries) {
+            if let Err(e) = fleet::push_roster_with_settings(&hp, &kp, &fleet_key, &entries, live) {
                 crate::logf!("FLEET: roster push failed: {}", e);
             }
         });
@@ -15731,8 +15742,18 @@ impl PhotonApp {
                 // A tombstone carries no identity payload — name, pin and owner are already blanked above for the same reason. Stranger (0) is the least-privileged value, so a tombstone that somehow lost its flag downgrades rather than promotes.
                 trust_level: 0,
             };
+            let live = self
+                .fleet_settings
+                .as_ref()
+                .map(|fs| (fs.global.clone(), fs.devices.clone()));
             std::thread::spawn(move || {
-                match crate::network::fgtw::fleet::push_roster(&hp, &kp, &fleet_key, &[entry]) {
+                match crate::network::fgtw::fleet::push_roster_with_settings(
+                    &hp,
+                    &kp,
+                    &fleet_key,
+                    &[entry],
+                    live,
+                ) {
                     Ok(()) => crate::log("BOOT: roster tombstone pushed — every fleet device drops the contact"),
                     Err(e) => crate::logf!("BOOT: tombstone push failed ({}); local removal stands, the tombstone rides the next roster push", e),
                 }
