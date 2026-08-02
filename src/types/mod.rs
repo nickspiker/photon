@@ -1,5 +1,6 @@
 pub mod contact;
 pub mod device;
+pub mod conversation;
 pub mod friendship;
 pub mod handle;
 pub mod peer;
@@ -8,6 +9,7 @@ pub mod shard;
 
 pub use contact::*;
 pub use device::*;
+pub use conversation::{Conversation, ConversationId, PartyId};
 pub use friendship::*;
 pub use handle::*;
 // pub use peer::*;
