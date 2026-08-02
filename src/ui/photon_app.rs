@@ -14263,6 +14263,7 @@ impl PhotonApp {
                 self.device_avatar_scaled = None;
                 self.device_avatar_scaled_diameter = 0;
                 crate::log("Avatar: recovered own avatar from FGTW after local clear");
+                self.refresh_self_row_avatar();
                 continue;
             };
             if let Some(contact) = self
@@ -15664,6 +15665,27 @@ impl PhotonApp {
         self.reseed_contact_pubkeys();
         self.update_sync_records();
         self.state = AppState::Ready;
+    }
+
+    /// A NEW own avatar just landed (picked, or recovered after a wipe): push it onto every zero-remote row NOW. Edge-driven — `settle_self_display` only fills an EMPTY slot, deliberately, because noticing staleness there would mean comparing full pixel buffers every pass; the install edge is the one place that KNOWS the picture changed (peer_a picked a new avatar and her notes-to-self kept the old face, 2026-08-02).
+    fn refresh_self_row_avatar(&mut self) {
+        let Some(our_pid) = self
+            .session
+            .as_ref()
+            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        else {
+            return;
+        };
+        let ours = self.device_avatar_pixels.clone();
+        for c in self
+            .contacts
+            .iter_mut()
+            .filter(|c| !c.is_sibling && c.remote_count(&our_pid) == 0)
+        {
+            c.avatar_pixels = ours.clone();
+            c.avatar_scaled = None;
+            c.avatar_scaled_diameter = 0;
+        }
     }
 
     /// A notes-to-self row displays OUR OWN name and avatar, because there is no peer to pong them: `published_name` and `avatar_pin` are populated by a friend answering our ping, and we never ping ourselves. Left alone the row reads "Pending…" with a placeholder picture forever — the identity you are logged in as, rendered as a stranger.
@@ -17146,6 +17168,7 @@ impl PhotonApp {
                 self.scene_dirty = true;
                 self.avatar_set_rx = None;
                 crate::log("avatar picker: display pixels installed");
+                self.refresh_self_row_avatar();
             }
         }
 
@@ -21179,6 +21202,10 @@ impl PhotonApp {
                 }
             }
             for i in avatar_adopted {
+                // A rotated pin names a NEW avatar: drop the once-per-session latch first, or the fetch dedups itself into a no-op and the new picture never arrives until a restart (peer_a picked, peer_b kept the old face — 2026-08-02).
+                if let Some(hp) = self.contacts.get(i).map(|c| c.handle_proof) {
+                    self.avatar_dl_started.remove(&hp);
+                }
                 self.spawn_avatar_download(i);
             }
         }
