@@ -880,6 +880,14 @@ pub fn migrate_conversation_tables(
         if !db.list_in(&fresh).unwrap_or_default().is_empty() {
             continue;
         }
+        // Rows under the OLD-DOMAIN participant key mean this migration ran in a previous generation and the conversation has since lived THERE — the seed-mixed copy is stale twice over. Without this guard, the domain flip re-armed this migration (fresh moved to a new address, empty again) and it "re-homed" a two-day-old snapshot over nothing, which then blocked the domain migration from moving the real rows (peer_b, 2026-08-02: 6 conversations reverted).
+        if !db
+            .list_in(&legacy_domain_table(&[our_pid, contact.handle_hash]))
+            .unwrap_or_default()
+            .is_empty()
+        {
+            continue;
+        }
         // Copy rows VERBATIM rather than decoding to ChatMessage and re-encoding — a migration that re-serialises is a migration that can quietly change what it moves, and every field here (ack_hash, content_hash, deleted, recovered) has to survive untouched.
         let mut copied = 0usize;
         for pk in legacy_keys {
@@ -911,9 +919,14 @@ pub fn migrate_conversation_domains(
     for contact in contacts {
         let old = legacy_domain_table(&[our_pid, contact.handle_hash]);
         let fresh = conversation_table(&[our_pid, contact.handle_hash]);
+        // Marker-terminated, NOT emptiness-terminated: the first shipped version skipped a non-empty new table, and the re-armed seed-mixed migration had just filled some new tables with two-day-stale copies — so the real rows stayed stranded under the old-domain key (peer_b, 2026-08-02). The MERGE below repairs exactly that: upserting every old-domain row wins by row key, so a stale copy is overwritten and a row minted after the flip (a fresh timestamp the old table can never hold) survives untouched. Any flag flipped in the short damaged window re-heals via the fleet's monotonic true-wins sync.
+        let marker = crate::storage::vault_key("conv_dom_merged", &fresh);
+        if matches!(storage.read_addr(&marker), Ok(Some(_))) {
+            continue;
+        }
         let mut db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
         let old_keys = db.list_in(&old).unwrap_or_default();
-        if !old_keys.is_empty() && db.list_in(&fresh).unwrap_or_default().is_empty() {
+        if !old_keys.is_empty() {
             let mut copied = 0usize;
             for pk in old_keys {
                 if let Ok(Some(rec)) = db.get_row_in(&old, pk.clone()) {
@@ -923,7 +936,7 @@ pub fn migrate_conversation_domains(
                 }
             }
             crate::logf!(
-                "MIGRATION: re-homed {} conversation row(s) onto the binary-numeral domain ({})",
+                "MIGRATION: merged {} conversation row(s) onto the binary-numeral domain ({})",
                 copied,
                 crate::fp(&contact.handle_hash)
             );
@@ -937,6 +950,7 @@ pub fn migrate_conversation_domains(
         {
             let _ = storage.write_addr(&new_state, &buf);
         }
+        let _ = storage.write_addr(&marker, &[1u8]);
     }
     Ok(moved)
 }
