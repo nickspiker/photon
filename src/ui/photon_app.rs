@@ -1881,21 +1881,15 @@ impl PhotonApp {
             }
         }
         if matches!(self.state, AppState::Conversation) {
-            // The compose box is the only focusable widget in a conversation; yielding it here wires click-to-focus, Tab, and key dispatch. MUST MIRROR THE RENDER GATE EXACTLY (the render's compose block): woven chain, self-contact, or COMPOSE-ANYWHERE (friend convo with history + a fleet to forward thru). The first unification build extended only the render gate — the box painted but wasn't in this walk, so clicks never focused it and no blinkey appeared ("textbox appears but can't type", desktop 2026-07-26).
-            let our_handle_hash = self
-                .session
-                .as_ref()
-                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
-                .unwrap_or([0u8; 32]);
+            // The compose box is the only focusable widget in a conversation; yielding it here wires click-to-focus, Tab, and key dispatch. MUST MIRROR THE RENDER GATE EXACTLY (the render's compose block): woven chain, zero remote participants, or COMPOSE-ANYWHERE (friend convo with history + a fleet to forward thru). The first unification build extended only the render gate — the box painted but wasn't in this walk, so clicks never focused it and no blinkey appeared ("textbox appears but can't type", desktop 2026-07-26).
             let has_fleet = self.contacts.iter().any(|c| c.is_sibling);
             let compose_ready = self
                 .active_contact
                 .and_then(|ci| self.contacts.get(ci))
                 .map(|c| {
-                    let is_self = c.handle_hash == our_handle_hash;
                     let can_fleet_forward = !c.is_sibling && !c.messages.is_empty() && has_fleet;
-                    // Literally the render gate's expression: is_self || chain_woven || can_fleet_forward.
-                    is_self || c.chain_woven || can_fleet_forward
+                    // Literally the render gate's expression: zero-remote || chain_woven || can_fleet_forward.
+                    self.is_zero_remote(c) || c.chain_woven || can_fleet_forward
                 })
                 .unwrap_or(false);
             // Attachment resample overlay controls ride the conversation walk while pending (independent of the compose gate).
@@ -2607,8 +2601,8 @@ impl FluorApp for PhotonApp {
                             // No pin at rest yet (settings still loading) — the tick retries once one lands.
                             self.self_avatar_recover_pending = Some(remembered.identity_seed);
                         }
-                        // Notes-to-self is NOT bootstrapped (Nick 2026-08-01): an empty conversation with yourself is not a contact you asked for, and it sat at the top of the list looking broken because it has no peer to pong a name or avatar. Add yourself deliberately and it appears; until then the list holds only people you chose. `settle_self_contacts` still runs so an EXISTING self row (added by you, or carried from an older build) is Complete before re-keying — it has no peer to key with.
-                        self.settle_self_contacts();
+                        // Notes-to-self is NOT bootstrapped (Nick 2026-08-01): an empty conversation with yourself is not a contact you asked for, and it sat at the top of the list looking broken because it has no peer to pong a name or avatar. Add yourself deliberately and it appears; until then the list holds only people you chose. The stale-key migration still runs so a self row carried from an older build is re-homed before the keygen sweep looks at it.
+                        self.migrate_stale_self_row();
                         self.settle_self_display();
                         // Re-key Pending contacts that still lack keypairs after the rehydrate — but ONE AT A TIME (spawn_next_pending_keygen, repeated each tick), never all at once: parallel McEliece keygens on launch starved the UI thread.
                         self.spawn_next_pending_keygen();
@@ -5585,8 +5579,6 @@ impl FluorApp for PhotonApp {
                 let row_hovered = row_pressed
                     || (ci < 256 && ctx.pressed_hit == HIT_NONE && self.hover_hit == row_hit_here);
                 let cy = (row_top + row_h / 2) as f32;
-                let _online = self.contacts[ci].is_online;
-                let _online_via_relay = self.contacts[ci].reached_via_relay;
 
                 // Build/refresh the contact's scaled-avatar cache at the row diameter.
                 let has_avatar = self.contacts[ci].avatar_pixels.is_some();
@@ -5629,8 +5621,8 @@ impl FluorApp for PhotonApp {
                         Some(rows_clip),
                     );
                 }
-                // The contact's relationship colour — computed ahead of the rings because the unread band below borrows it (ears and eyes and now the unread cue all agree on the one per-contact colour). Self-as-contact rows get the neutral anchor (no other party, no relationship).
-                let row_colour = if self.contacts[ci].handle_hash == our_handle_hash {
+                // The contact's relationship colour — computed ahead of the rings because the unread band below borrows it (ears and eyes and now the unread cue all agree on the one per-contact colour). A zero-remote row gets the neutral anchor (no other party, no relationship).
+                let row_colour = if self.contacts[ci].remote_count(&our_handle_hash) == 0 {
                     self_colour()
                 } else {
                     party_colour(&relationship_digest(
@@ -5642,7 +5634,10 @@ impl FluorApp for PhotonApp {
                 // Presence ring at the rim (connectivity tier), then — if unread — a MAGENTA ring OUTSIDE it (the new-message cue never overlaps or recolours the connectivity ring). Under-composite paints topmost-first, so the presence disc is drawn before the larger magenta disc and the magenta only shows in its outer annulus. Event-shown, cleared on conversation-open.
                 let unread = self.contacts[ci].unread_count > 0;
                 let unread_band = ring_thickness * 2.0;
-                let ring = ring_tier_colour(&self.contacts[ci]);
+                let ring = ring_tier_colour(
+                    &self.contacts[ci],
+                    self.contacts[ci].remote_count(&our_handle_hash) > 0,
+                );
                 paint::draw_circle(
                     &mut canvas,
                     avatar_cx,
@@ -5823,12 +5818,13 @@ impl FluorApp for PhotonApp {
                     self.contacts[ci].avatar_scaled_diameter = diam;
                 }
                 let contact = &self.contacts[ci];
+                // Our pid feeds the relationship digest below — a keyed colour, not a self-check. "Is this me" is the participant count.
                 let our_hh = self
                     .session
                     .as_ref()
                     .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
                     .unwrap_or([0u8; 32]);
-                let is_self = contact.handle_hash == our_hh;
+                let is_self = contact.remote_count(&our_hh) == 0;
 
                 // --- Header: the contact's name, centred on the rail|content divider — the panel's "Settings" slot. ---
                 let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
@@ -6001,7 +5997,7 @@ impl FluorApp for PhotonApp {
                             rows[0].h * 5.0,
                         );
                         let (cx, cy) = (block.center_x(), block.center_y());
-                        let ring = ring_tier_colour(contact);
+                        let ring = ring_tier_colour(contact, !is_self);
                         if let Some(scaled) = contact.avatar_scaled.as_ref() {
                             crate::ui::avatar_render::draw_avatar(
                                 &mut canvas,
@@ -6434,6 +6430,13 @@ impl FluorApp for PhotonApp {
                     let (_, _, avatar_r) = conv_layout.avatar_center_radius();
                     let avatar_diam = (avatar_r * 2.0) as usize;
                     let avatar_cx = buf_w as f32 * 0.5;
+                    // Relationship colour inputs, hoisted above the avatar closure so both it and the header share them. Our pid feeds the relationship digest — a keyed colour, not a self-check; "is this me" is the participant count.
+                    let our_handle_hash = self
+                        .session
+                        .as_ref()
+                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                        .unwrap_or([0u8; 32]);
+                    let is_self_contact = contact.remote_count(&our_handle_hash) == 0;
                     // Stamp the avatar disc + tier ring at a given centre-y — stream entry #0's avatar. Clip rides in as a parameter and the caller passes the LIST clip: the avatar obeys exactly the same boundary as every message (a hardcoded None once let it paint through the top edge onto its own visual layer).
                     let draw_conv_avatar =
                         |canvas: &mut Canvas, cy: f32, clip: Option<fluor::paint::Clip>| {
@@ -6460,7 +6463,7 @@ impl FluorApp for PhotonApp {
                                     clip,
                                 );
                             }
-                            let ring = ring_tier_colour(contact);
+                            let ring = ring_tier_colour(contact, !is_self_contact);
                             let ring_thick = (avatar_r * 0.0375).max(1.0);
                             paint::draw_circle(
                                 canvas,
@@ -6472,14 +6475,7 @@ impl FluorApp for PhotonApp {
                             );
                         };
 
-                    // Relationship colour for this contact: everything handle-specific on this screen (name, their message text) renders in it. Self is the neutral-grey anchor.
-                    let our_handle_hash = self
-                        .session
-                        .as_ref()
-                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
-                        .unwrap_or([0u8; 32]);
-                    // Self-as-contact (notes-to-self): there is no other party, so no relationship colour — everything is the neutral anchor.
-                    let is_self_contact = contact.handle_hash == our_handle_hash;
+                    // Relationship colour for this contact: everything handle-specific on this screen (name, their message text) renders in it. A zero-remote conversation has no other party, so no relationship colour — everything is the neutral anchor.
                     let their_colour = if is_self_contact {
                         self_colour()
                     } else {
@@ -9041,14 +9037,10 @@ impl PhotonApp {
             self.state,
             AppState::Ready | AppState::Conversation | AppState::Settings(_)
         ) {
-            let our_pid = self
-                .session
-                .as_ref()
-                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
             let blocked = self.contacts.iter().any(|c| {
                 c.ip.is_none()
                     && c.clutch_state == crate::types::ClutchState::Pending
-                    && Some(c.handle_hash) != our_pid
+                    && self.has_remote(c)
             });
             let due = self
                 .last_stalled_refetch
@@ -9738,12 +9730,9 @@ impl PhotonApp {
                     }
                 }
                 // Reconcile check BEFORE the merge consumes the pulled roster: do we hold contacts the slot lacks (added while a sibling was the last pusher, or pre-CRDT) or newer LWW stamps? Only then push back — an all-covered pull must NOT push, or the push's fstate event re-pulls every sibling in a ping-pong.
-                let our_pid = self
-                    .session
-                    .as_ref()
-                    .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                // Every non-sibling row counts — INCLUDING the self row, which rides the roster like any contact. Excluding it here meant a slot that lost it never got it pushed back, so notes-to-self stayed the one contact a reconcile couldn't restore.
                 let slot_missing_ours = self.contacts.iter().any(|c| {
-                    if c.is_sibling || our_pid == Some(c.handle_hash) {
+                    if c.is_sibling {
                         return false;
                     }
                     match state
@@ -10071,11 +10060,10 @@ impl PhotonApp {
                     .as_ref()
                     .map(|kp| crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes()))
                     .unwrap_or_else(|| crate::types::DevicePubkey::from_bytes([0u8; 32]));
-                let mut contact =
+                let contact =
                     crate::types::Contact::new(handle_text, session.handle_proof, device_pubkey);
-                contact.clutch_state = crate::types::ClutchState::Complete;
-                contact.is_online = true; // notes-to-self is always reachable — no pong will ever flip it
-                crate::log("add-friend: self-contact — CLUTCH auto-completed");
+                // No forced state: a conversation with zero remote participants is reachable and keyed BY DEFINITION, and every gate now derives that from the participant set rather than reading fields nobody maintains.
+                crate::log("add-friend: self-contact created (zero remote participants — nothing to exchange)");
                 self.contacts.push(contact);
                 if let Some(storage) = self.storage.as_ref() {
                     if let Some(c) = self.contacts.last() {
@@ -10836,12 +10824,12 @@ impl PhotonApp {
         }
     }
 
-    /// Build the fleet roster from the live contact list — the syncable subset, minus self-contacts (notes-to-self are device-local, not a friend to share) and minus fleet siblings (infrastructure, not friends — a sibling pid leaking into the roster would merge as a bogus contact on every device).
+    /// Build the fleet roster from the live contact list — the syncable subset, minus fleet siblings (infrastructure, not friends — a sibling pid leaking into the roster would merge as a bogus contact on every device).
     fn current_roster(&self) -> Vec<crate::network::fgtw::fleet::RosterEntry> {
         use crate::network::fgtw::fleet::RosterEntry;
         self.contacts
             .iter()
-            // The SELF row rides the roster too. Excluding it meant notes-to-self was the one contact a wipe could never restore — you added it deliberately and then had to add it again, every time. It is a contact you chose, so it belongs in the thing that remembers your contacts; `settle_self_contacts` marks it Complete on arrival, so it never tries to run a ceremony against itself.
+            // The SELF row rides the roster too. Excluding it meant notes-to-self was the one contact a wipe could never restore — you added it deliberately and then had to add it again, every time. It is a contact you chose, so it belongs in the thing that remembers your contacts; the keygen gate skips zero-remote conversations, so it never tries to run a ceremony against itself on arrival.
             .filter(|c| !c.is_sibling)
             .map(|c| RosterEntry {
                 handle_proof: c.handle_proof,
@@ -11028,8 +11016,8 @@ impl PhotonApp {
         hps.sort_unstable();
         hps.dedup();
         self.spawn_contact_fleet_refresh(hps);
-        // Force any merged self-contact Complete so it's skipped by the keygen filter, then persist the newly-added tail (post-settle so a self→Complete flip is saved).
-        self.settle_self_contacts();
+        // Re-home any stale-keyed self row before persisting the newly-added tail. The keygen filter skips zero-remote conversations by itself — nothing to force.
+        self.migrate_stale_self_row();
         let start = self.contacts.len() - added;
         if let Some(storage) = self.storage.as_ref().cloned() {
             for c in &self.contacts[start..] {
@@ -12092,7 +12080,8 @@ impl PhotonApp {
                 false,
                 device_name_default(&pk, &seed),
                 link,
-                path_tier_colour(c),
+                // A sibling is another physical device — always a remote participant.
+                path_tier_colour(c, true),
             ));
         }
         for pk in &self.fleet_retired {
@@ -13461,8 +13450,8 @@ impl PhotonApp {
                     );
                     // Register the merged contacts' pubkeys so the checker answers their pings, and kick CLUTCH keygen for any that arrived Pending without keypairs. The resume path (load_all_contacts) already does this for locally-stored contacts, but cloud/FGTW-merged contacts land here AFTER that ran — without this they sit Pending forever with no keypairs, no offer, no connection (exactly what broke after a []n nuke wiped the local vault and contacts came back only via cloud).
                     self.reseed_contact_pubkeys();
-                    // A merged self-contact (notes-to-self) needs no key exchange — force it Complete so it's skipped by the keygen filter below.
-                    self.settle_self_contacts();
+                    // A merged self row minted under an older pid scheme re-homes here; the keygen filter below skips zero-remote conversations by itself.
+                    self.migrate_stale_self_row();
                     // Kick at most ONE keygen now; the rest are serialized by spawn_next_pending_keygen (called each tick) so we never run two McEliece keygens at once — two in parallel on launch starved the UI thread (the "first launch hangs" symptom). The Pending + keyless contacts are picked up one at a time as each keygen completes.
                     self.spawn_next_pending_keygen();
                 }
@@ -13719,6 +13708,8 @@ impl PhotonApp {
         }
         self.orb_contact = target;
         self.orb_had_avatar = has_avatar;
+        // Computed before the chrome borrow pins `self`. A zero-remote conversation is on this machine: LAN ring, always bright.
+        let orb_has_remote = target.is_some_and(|ci| self.has_remote(&self.contacts[ci]));
         let Some(chrome) = self.chrome.as_mut() else {
             return;
         };
@@ -13752,8 +13743,8 @@ impl PhotonApp {
                             | ((255 - p[2]) as u32)
                     })
                     .collect();
-                let ring = ring_tier_colour(c);
-                let online = c.is_online;
+                let ring = ring_tier_colour(c, orb_has_remote);
+                let online = c.is_online || !orb_has_remote;
                 chrome.app_icon = Some(fluor::host::icon::Icon {
                     width: diam as u32,
                     height: diam as u32,
@@ -13860,6 +13851,16 @@ impl PhotonApp {
 
     // (Chains-first paths — chat/ACK receive — resolve our party id INLINE: whichever of (identity seed, sibling pid) is a participant. A &self helper can't be called there while the chains are mutably borrowed.)
 
+    /// Does this contact's conversation reach anyone besides us? THE question every keygen, presence, probe and offer gate actually asks — a zero-remote conversation has nothing to exchange, nobody to ping, and no offline state to show. `false` when the session isn't up, which every gate treats as "not yet".
+    fn has_remote(&self, c: &crate::types::Contact) -> bool {
+        self.our_party_id(c).is_some_and(|us| c.remote_count(&us) > 0)
+    }
+
+    /// Zero remote participants — the conversation lives entirely on this device (notes-to-self). NOT the complement of [`Self::has_remote`]: with no session both are `false`, so gates stay closed and display falls back to the peer rendering.
+    fn is_zero_remote(&self, c: &crate::types::Contact) -> bool {
+        self.our_party_id(c).is_some_and(|us| c.remote_count(&us) == 0)
+    }
+
     /// Recompute the shared sync-records (last-received-time per conversation) from `friendship_chains` and publish them to the checker, for message retransmit.
     pub fn update_sync_records(&mut self) {
         use crate::network::fgtw::protocol::SyncRecord;
@@ -13914,9 +13915,9 @@ impl PhotonApp {
 
     /// Spawn at most ONE CLUTCH keygen, for the first Pending contact that needs keypairs, but only if no keygen is already running. McEliece keygen is heavy; running several in parallel (e.g. after a multi-contact cloud merge on launch) starves the UI thread. Serializing to one-at-a-time keeps the app responsive — each completion frees the slot and `tick()` calls this again to start the next. Returns true if a keygen was spawned.
     fn spawn_next_pending_keygen(&mut self) -> bool {
-        let Some(our_seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+        if self.session.is_none() {
             return false;
-        };
+        }
         // One keygen at a time.
         if self.contacts.iter().any(|c| c.clutch_keygen_in_progress) {
             return false;
@@ -13927,8 +13928,9 @@ impl PhotonApp {
         let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
         // §4.2 one-CLUTCH-per-friendship: a friend claimed by ANOTHER of our devices PARKS here — its ceremony is the fleet's ceremony (see ceremony_parked_by for the full rules incl. the woven guard and the probed-before-takeover boot-race fix). An owner that is PROBED-offline is presence-driven takeover: the contact re-enters the queue and the pickup below re-claims it. Sibling weaves are per-device-pair by design — never parked.
         let siblings = sibling_presence_snapshot(&self.contacts);
+        // A conversation with no remote participants has nothing to exchange, so it never enters the queue. (This replaces a comparison against the raw identity SEED that could never match a pid — self was excluded from keygen only because something else forced its state Complete.)
         let next_idx = self.contacts.iter().position(|c| {
-            c.handle_hash != our_seed
+            self.has_remote(c)
                 && c.clutch_state == crate::types::ClutchState::Pending
                 && c.clutch_our_keypairs.is_none()
                 && !c.clutch_keygen_in_progress
@@ -15574,38 +15576,6 @@ impl PhotonApp {
         self.state = AppState::Ready;
     }
 
-    /// Notes-to-self bootstrap: every device of the fleet deterministically holds the self-contact, not just the device where the user first typed their own handle (vaults converge — notes follow the identity). Everything derives from the session registers alone — party id, conversation token, handle_proof — so NO handle string, NO ceremony, and NO outgoing chain exist for it: the send path stores rows directly ("delivered by definition") and the rows travel between siblings under the FLEET key via the history sweep/live push, which both already serve the [our_pid, our_pid] conversation. Created settled (Complete + online, same shape as the manual add-friend self path); `settle_self_contacts` re-applies the settle on every reload. Idempotent by pid.
-    fn ensure_self_contact(&mut self) {
-        let (Some(session), Some(kp)) = (self.session.as_ref(), self.device_keypair.as_ref())
-        else {
-            return;
-        };
-        let our_pid = crate::crypto::clutch::identity_party_id(&session.identity_seed);
-        if self
-            .contacts
-            .iter()
-            .any(|c| !c.is_sibling && (c.handle_hash == our_pid || c.handle_proof == session.handle_proof))
-        {
-            return; // an existing self row counts even under a stale pid key — settle migrates it; creating a second would double notes-to-self
-        }
-        let device_pubkey = crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes());
-        let mut contact = crate::types::Contact::from_pin(
-            [0u8; 64],
-            session.handle_proof,
-            our_pid,
-            device_pubkey,
-        );
-        contact.clutch_state = crate::types::ClutchState::Complete;
-        contact.is_online = true; // notes-to-self is always reachable — no pong will ever flip it
-        crate::log("SELF: notes-to-self contact created (register-derived — no handle, no ceremony, no outgoing chain; rows ride the fleet key)");
-        self.contacts.push(contact);
-        if let (Some(c), Some(storage)) = (self.contacts.last(), self.storage.as_ref()) {
-            if let Err(e) = crate::storage::contacts::save_contact(c, storage) {
-                crate::logf!("SELF: failed to persist self-contact: {}", e);
-            }
-        }
-    }
-
     /// A notes-to-self row displays OUR OWN name and avatar, because there is no peer to pong them: `published_name` and `avatar_pin` are populated by a friend answering our ping, and we never ping ourselves. Left alone the row reads "Pending…" with a placeholder picture forever — the identity you are logged in as, rendered as a stranger.
     fn settle_self_display(&mut self) {
         let (Some(our_pid), Some(name)) = (
@@ -15641,50 +15611,27 @@ impl PhotonApp {
         }
     }
 
-    fn settle_self_contacts(&mut self) -> bool {
+    /// One-time key migration for a self row minted under an older party-id scheme: it carries a hash no current derivation reproduces, so every participant-set check misses it — it renders as a stranger and its sends fall into the chain path and get withdrawn (peer_m's stuck notes-to-self, v0.51.12-era row on v0.51.40). Matched by our own handle_proof (excluding siblings, which also carry it); adopting the current pid re-persists contact + messages, which re-homes the rows under the current conversation table key. Self-terminating — deletable when the log line stops appearing in the field.
+    ///
+    /// This used to ALSO force `is_online = true` and `clutch_state = Complete` on every load, merge and attest — and the row still showed OFFLINE whenever a settle site was missed. Reachability and keyedness are now DERIVED from the participant set (`is_reachable` / `is_zero_remote`), so there is nothing to force and nothing to miss.
+    fn migrate_stale_self_row(&mut self) {
         let Some((our_pid, our_hp)) = self
             .session
             .as_ref()
             .map(|s| (crate::crypto::clutch::identity_party_id(&s.identity_seed), s.handle_proof))
         else {
-            return false;
+            return;
         };
-        let mut changed = false;
         for contact in self.contacts.iter_mut() {
-            // Match by pid OR by our own handle_proof (excluding siblings, which also carry it): a self row minted under an older party-id scheme carries a hash no current derivation reproduces, so every pid-keyed is_self check misses it — it renders Pending forever and its sends fall into the chain path and get withdrawn (peer_m's stuck notes-to-self, v0.51.12-era row on v0.51.40).
-            let is_self_row = contact.handle_hash == our_pid
-                || (!contact.is_sibling && contact.handle_proof == our_hp);
-            if is_self_row {
-                // One-time migration for the stale-keyed row: adopt the current pid and immediately re-persist contact + messages, which re-homes any loaded rows under the new conversation table key.
-                if contact.handle_hash != our_pid {
-                    crate::logf!("SELF: migrating stale self-contact key {} -> current party id", crate::fp(&contact.handle_hash));
-                    contact.handle_hash = our_pid;
-                    changed = true;
-                    if let Some(storage) = self.storage.as_ref() {
-                        let _ = crate::storage::contacts::save_contact(contact, storage);
-                        let _ = crate::storage::contacts::save_messages(contact, storage);
-                    }
-                }
-                // The "notes to self" contact IS this identity — always reachable, no ceremony, no pong. It never gets a pong to flip it online, so without forcing it here it shows OFFLINE forever (the reported bug). Mark it online + Complete unconditionally, on every settle (attest + resume — a reloaded-from-disk self-contact needs it re-applied).
-                if !contact.is_online {
-                    contact.is_online = true;
-                    changed = true;
-                }
-                if contact.clutch_state != crate::types::ClutchState::Complete {
-                    contact.clutch_state = crate::types::ClutchState::Complete;
-                    contact.clutch_keygen_in_progress = false;
-                    changed = true;
-                    crate::logf!(
-                        "CLUTCH: self-contact '{}' auto-completed (no key exchange with self)",
-                        crate::fp(&contact.handle_proof)
-                    );
-                    if let Some(storage) = self.storage.as_ref() {
-                        let _ = crate::storage::contacts::save_contact(contact, storage);
-                    }
+            if !contact.is_sibling && contact.handle_proof == our_hp && contact.handle_hash != our_pid {
+                crate::logf!("SELF: migrating stale self-contact key {} -> current party id", crate::fp(&contact.handle_hash));
+                contact.handle_hash = our_pid;
+                if let Some(storage) = self.storage.as_ref() {
+                    let _ = crate::storage::contacts::save_contact(contact, storage);
+                    let _ = crate::storage::contacts::save_messages(contact, storage);
                 }
             }
         }
-        changed
     }
 
     /// Collapse the ACTIVE contact's presence backoff — called when its conversation opens. Looking at someone is the clearest possible signal that their presence matters now, and it is the escape hatch that makes an hour-long backoff safe to have at all.
@@ -22005,7 +21952,11 @@ fn contact_status_line(
 }
 
 /// Presence-ring tier (user spec, VSF-authored in theme.rs): cyan = direct in the same room (LAN), green = direct across the WAN, amber = relay-only, grey = offline. LAN = the validated direct path is a private / link-local / ULA address; a same-site GLOBAL v6 path (e.g. two phones on one home /64) still reads green — refining that needs a same-prefix check against our own addresses, later.
-fn ring_tier_colour(c: &crate::types::Contact) -> u32 {
+fn ring_tier_colour(c: &crate::types::Contact, has_remote: bool) -> u32 {
+    // A conversation with no remote participants lives on this machine — nearer than the same room, so it wears the LAN tier. Derived from the participant set, never a forced `is_online` write.
+    if !has_remote {
+        return *theme::RING_LAN_COLOUR;
+    }
     if !c.is_online {
         return *theme::RING_OFFLINE_COLOUR;
     }
@@ -22033,7 +21984,11 @@ fn ring_tier_colour(c: &crate::types::Contact) -> u32 {
 
 /// The transport tier of a live path as a DOT colour: LAN green (same subnet — no NAT, nothing in the middle), WAN cyan (a punched or routable direct path across the internet), relay orange (no direct path — frames ride the seed's pipe). `None` for a device that isn't reachable at all, which renders no dot.
 /// Same held-state rule the avatar ring uses: a live `validated_path` is authoritative and outranks `reached_via_relay`, because that flag tracks how the LAST frame happened to arrive and flaps every cycle for a peer reachable both ways.
-fn path_tier_colour(c: &crate::types::Contact) -> Option<u32> {
+fn path_tier_colour(c: &crate::types::Contact, has_remote: bool) -> Option<u32> {
+    // Zero remote participants: the "path" is this machine's own memory — the LAN tier, unconditionally.
+    if !has_remote {
+        return Some(*theme::PATH_LAN_COLOUR);
+    }
     if !c.is_online {
         return None;
     }
