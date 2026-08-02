@@ -720,11 +720,26 @@ impl HandleQuery {
 
                         // Cloud contact BACKUP (download + merge). Addressed and sealed under the FLEET key, so one blob serves every device — that is what makes it a restore path rather than a per-device cache. Live cross-device contact state travels on the roster (a CRDT with a clock and tombstones); this is the cold copy.
                         // No fleet key yet (pre-join, or the fan-out hasn't landed) → SKIP the whole exchange. Falling back to a device-bound derivation would write a blob only this device could ever read, which is the v0 bug.
-                        let fleet_key: Option<[u8; 32]> = storage
+                        let mut fleet_key: Option<[u8; 32]> = storage
                             .read_addr(&crate::storage::vault_key("fleet_key", &vault_seed))
                             .ok()
                             .flatten()
                             .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
+                        // No local key = a wiped (or fresh-on-this-machine) vault. Before giving up, try OUR ORACLE RECOVERY SLOT — the wipe-surviving path that needs no live sibling: the machine re-derives the slot's address and key from its own hardware oracle. This is what makes contacts/avatar restore work with every other device off.
+                        if fleet_key.is_none() {
+                            if let Some(k) =
+                                crate::network::fgtw::fleet::recover_fleet_key_from_oracle(
+                                    &identity_seed,
+                                )
+                            {
+                                crate::log("RECOVERY: fleet key recovered from our oracle slot (no sibling needed)");
+                                let _ = storage.write_addr(
+                                    &crate::storage::vault_key("fleet_key", &vault_seed),
+                                    &k,
+                                );
+                                fleet_key = Some(k);
+                            }
+                        }
 
                         // What the cloud already holds, kept so the upload below can tell a real change from a no-op. The blob's BYTES can't answer that — encrypt_bytes draws a fresh random nonce per call, so re-encrypting identical contacts yields different ciphertext every time. Compare the decoded CONTENT instead.
                         let mut cloud_had: Option<Vec<crate::storage::cloud::CloudContact>> = None;
