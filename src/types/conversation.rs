@@ -15,7 +15,7 @@
 //! The crypto layer was always ready for this: `FriendshipId::derive` and `derive_conversation_token` both sort a participant list and hash it, and `FriendshipChains` already holds one chain per participant. Only the layer above it insisted on two.
 
 use crate::types::friendship::FriendshipId;
-use crate::types::ChatMessage;
+use crate::types::{ChatMessage, HistoryRecovery};
 
 /// A participant's PARTY ID — their pinned identity pubkey, the same value `Contact::handle_hash` carries. Never a handle string: the string derives the identity seed, so storing it anywhere re-creates the honeypot (docs/identity-profile.md).
 pub type PartyId = [u8; 32];
@@ -34,10 +34,12 @@ pub struct Conversation {
     id: ConversationId,
     /// Messages, oldest first.
     pub messages: Vec<ChatMessage>,
-    /// Unseen incoming rows. Cleared when the conversation is opened.
-    pub unread_count: usize,
-    /// Scroll position, in pixels from the bottom. Lives here rather than on a contact because it is a property of the place, not of a person.
+    /// Count of real inbound rows that landed while this conversation was NOT front-of-eyes. Drives the contacts-list unread treatment (inner coloured ring + heavier name + float-to-top — never a count glyph). Cleared and re-persisted the moment the conversation becomes the active view.
+    pub unread_count: u32,
+    /// Scroll position, in pixels from the bottom. Lives here rather than on a contact because it is a property of the place, not of a person. Runtime-only.
     pub scroll_offset: f32,
+    /// Friend-assisted history recovery state machine (newest-first cursor pagination from a participant's copy). `None` = no recovery running/known. Runtime struct; the durable cursor + complete flag persist in conversation state.
+    pub history_recovery: Option<HistoryRecovery>,
 }
 
 impl Conversation {
@@ -53,6 +55,7 @@ impl Conversation {
             messages: Vec::new(),
             unread_count: 0,
             scroll_offset: 0.0,
+            history_recovery: None,
         }
     }
 

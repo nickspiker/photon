@@ -241,20 +241,7 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
             .set("chain_woven", true)
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
-    // History-recovery cursor: persisted whenever recovery has run, so backfill resumes across restarts without waiting for a fresh weave-seal. Absent = feature never touched this contact.
-    if let Some(rec) = &contact.history_recovery {
-        builder = builder
-            .set(
-                "hist_oldest",
-                VsfType::e(vsf::types::EtType::e6(rec.oldest_recovered_osc)),
-            )
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
-        if rec.complete {
-            builder = builder
-                .set("hist_complete", true)
-                .map_err(|e| StorageError::Parse(e.to_string()))?;
-        }
-    }
+    // (hist_oldest / hist_complete / unread stay DECLARED in the schema but are no longer written here — they are conversation state, persisted by `save_conversation_state` under the conversation id. `load_legacy_conv_state` still reads them from old records.)
     if !contact.published_name.is_empty() {
         // The friend's pong-adopted display name — written only when received (absent = never).
         builder = builder
@@ -338,13 +325,6 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
             .set("owner_woven", true)
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
-    if contact.unread_count > 0 {
-        // Unread counter — written only when non-zero (absent reads back as 0), so legacy vaults and freshly-read conversations stay field-free.
-        builder = builder
-            .set("unread", contact.unread_count)
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
-    }
-
     let vsf_bytes = builder
         .encode()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
@@ -461,25 +441,7 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
         contact.their_probe_seen = true;
         contact.chain_advanced_by_ack = true;
     }
-    // History-recovery cursor: reconstruct the runtime state machine so an incomplete backfill resumes on the next drive_history_recovery pass (next_request_osc = 0 → immediately eligible; urgent stays false — resume is background work).
-    if let Some(v) = section
-        .get_fields("hist_oldest")
-        .first()
-        .and_then(|f| f.values.first())
-    {
-        let oldest = vsf_to_oscillations(v);
-        let complete = section.get_value::<bool>("hist_complete").unwrap_or(false);
-        contact.history_recovery = Some(crate::types::HistoryRecovery {
-            oldest_recovered_osc: oldest,
-            complete,
-            in_flight: None,
-            next_request_osc: 0,
-            urgent: false,
-            was_complete_before: complete,
-        });
-    }
-    // Unread counter — absent (legacy vaults, fully-read conversations) reads as 0.
-    contact.unread_count = section.get_value::<u32>("unread").unwrap_or(0);
+    // (hist_oldest / hist_complete / unread are conversation state now — `load_legacy_conv_state` reads them from old records when no conversation-state record exists yet.)
     // Friend-side blind deposits: (device ke, blob tensor, at e6) per multi-value field.
     for field in section.get_fields("blind") {
         if field.values.len() >= 3 {
@@ -921,17 +883,19 @@ pub fn migrate_conversation_tables(
     Ok(moved)
 }
 
-/// Save a contact's messages as rows in the conversation table. Idempotent: each message is written at its sequence index, so re-saving the same history overwrites row-for-row identically.
-pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), StorageError> {
-    if contact.messages.is_empty() {
+/// Save a conversation's messages as rows in its table — keyed by the conversation's own participant-set id, the same value the wire and the UI derive. Idempotent: each message is written at its sequence index, so re-saving the same history overwrites row-for-row identically.
+pub fn save_messages(
+    conv: &crate::types::Conversation,
+    storage: &FlatStorage,
+) -> Result<(), StorageError> {
+    if conv.messages.is_empty() {
         return Ok(()); // Nothing to save
     }
 
-    // Contact already carries the identity seed (handle_hash = BLAKE3(handle)); use it directly rather than re-deriving from the plaintext handle string. Identity flows as the seed, never the handle, past the contact boundary.
-    let table = conversation_table(&[our_party_id(storage), contact.handle_hash]);
+    let table = *conv.id().as_bytes();
 
     let mut db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
-    for msg in contact.messages.iter() {
+    for msg in conv.messages.iter() {
         // Key each row by the message's eagle_time, NOT a local enumerate index. eagle_time is monotonic (a clock) so it's stable + shared across both devices (the renumber-on-insert hazard of an index key is gone), it's the braid's weave reference, and Pk::Int encodes big-endian so key order == chronological. eagle_time is i64 but always positive (oscillations since Apollo 11), so `as u64` is safe and order-preserving. `content_hash` = blake3 of the message text, stored so the braid's eagle_time->text weave lookup has an integrity/tiebreak check (the adversarial multi-device-same-tick case).
         let content_hash = blake3::hash(msg.content.as_bytes());
         let mut rec = Record::new()
@@ -958,18 +922,20 @@ pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), Sto
 
     #[cfg(feature = "development")]
     crate::logf!(
-        "STORAGE: Saved {} messages for seed {}",
-        contact.messages.len(),
-        hex::encode(&contact.handle_hash[..4])
+        "STORAGE: Saved {} messages for conversation {}",
+        conv.messages.len(),
+        hex::encode(&conv.id().as_bytes()[..4])
     );
 
     Ok(())
 }
 
-/// Load a contact's messages from the conversation table, in counter order (which is chronological).
-pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(), StorageError> {
-    // Use the contact's cached identity seed (handle_hash), not a re-derivation from the handle.
-    let table = conversation_table(&[our_party_id(storage), contact.handle_hash]);
+/// Load a conversation's messages from its table, in counter order (which is chronological).
+pub fn load_messages(
+    conv: &mut crate::types::Conversation,
+    storage: &FlatStorage,
+) -> Result<(), StorageError> {
+    let table = *conv.id().as_bytes();
 
     let db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
     let pks = db
@@ -986,7 +952,7 @@ pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(),
         .collect();
     keys.sort_unstable();
 
-    contact.messages.clear();
+    conv.messages.clear();
     for key in keys {
         let Some(rec) = db
             .get_row_in(&table, Pk::Int(key))
@@ -1001,7 +967,7 @@ pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(),
             .bytes("ack_hash")
             .filter(|b| b.len() == 32)
             .map(|b| b.try_into().unwrap());
-        contact.messages.push(ChatMessage {
+        conv.messages.push(ChatMessage {
             content: content.to_string(),
             timestamp: rec.time("timestamp").unwrap_or(0),
             is_outgoing: rec.uint("is_outgoing").unwrap_or(0) != 0,
@@ -1014,12 +980,88 @@ pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(),
 
     #[cfg(feature = "development")]
     crate::logf!(
-        "STORAGE: Loaded {} messages for seed {}",
-        contact.messages.len(),
-        hex::encode(&contact.handle_hash[..4])
+        "STORAGE: Loaded {} messages for conversation {}",
+        conv.messages.len(),
+        hex::encode(&conv.id().as_bytes()[..4])
     );
 
     Ok(())
+}
+
+/// Persist the conversation-scoped durable bits — unread count and the history-recovery cursor — under the conversation id. These historically rode the contact record; a conversation is not a contact, so they get their own tiny record. Fixed-width layout: unread u32 LE ‖ hist_oldest i64 LE ‖ flags u8 (bit 0 = hist_complete, bit 1 = history has run).
+pub fn save_conversation_state(
+    conv: &crate::types::Conversation,
+    storage: &FlatStorage,
+) -> Result<(), StorageError> {
+    let mut buf = [0u8; 13];
+    buf[..4].copy_from_slice(&conv.unread_count.to_le_bytes());
+    if let Some(rec) = &conv.history_recovery {
+        buf[4..12].copy_from_slice(&rec.oldest_recovered_osc.to_le_bytes());
+        buf[12] = u8::from(rec.complete) | 0b10;
+    }
+    storage.write_addr(
+        &crate::storage::vault_key("conv_state", conv.id().as_bytes()),
+        &buf,
+    )
+}
+
+/// Hydrate a conversation's durable bits. Prefers the conversation-state record; when none exists yet, falls back to the fields old builds wrote into the CONTACT record at `legacy_contact_key` (the participant the row was filed under). The fallback is self-terminating — the first `save_conversation_state` supersedes it — and deletable once no vault in the field predates the split.
+pub fn load_conversation_state(
+    conv: &mut crate::types::Conversation,
+    legacy_contact_key: &[u8; 32],
+    storage: &FlatStorage,
+) {
+    let addr = crate::storage::vault_key("conv_state", conv.id().as_bytes());
+    if let Ok(Some(buf)) = storage.read_addr(&addr) {
+        if buf.len() == 13 {
+            conv.unread_count = u32::from_le_bytes(buf[..4].try_into().unwrap());
+            if buf[12] & 0b10 != 0 {
+                let complete = buf[12] & 1 != 0;
+                conv.history_recovery = Some(crate::types::HistoryRecovery {
+                    oldest_recovered_osc: i64::from_le_bytes(buf[4..12].try_into().unwrap()),
+                    complete,
+                    in_flight: None,
+                    next_request_osc: 0,
+                    urgent: false,
+                    was_complete_before: complete,
+                });
+            }
+            return;
+        }
+    }
+    let (unread, rec) = load_legacy_conv_state(legacy_contact_key, storage);
+    conv.unread_count = unread;
+    conv.history_recovery = rec;
+}
+
+/// Read the unread count + history cursor out of an OLD contact record — the home they had before conversation state split out. Reconstruction matches the old loader exactly: next_request_osc = 0 so an incomplete backfill is immediately eligible, urgent false because resume is background work.
+fn load_legacy_conv_state(
+    key: &[u8; 32],
+    storage: &FlatStorage,
+) -> (u32, Option<crate::types::HistoryRecovery>) {
+    let Ok(Some(bytes)) = storage.read_addr(&contact_key(key, "state")) else {
+        return (0, None);
+    };
+    let Ok(section) = SectionBuilder::parse(contact_state_schema(), &bytes) else {
+        return (0, None);
+    };
+    let unread = section.get_value::<u32>("unread").unwrap_or(0);
+    let rec = section
+        .get_fields("hist_oldest")
+        .first()
+        .and_then(|f| f.values.first())
+        .map(|v| {
+            let complete = section.get_value::<bool>("hist_complete").unwrap_or(false);
+            crate::types::HistoryRecovery {
+                oldest_recovered_osc: vsf_to_oscillations(v),
+                complete,
+                in_flight: None,
+                next_request_osc: 0,
+                urgent: false,
+                was_complete_before: complete,
+            }
+        });
+    (unread, rec)
 }
 
 /// Persist ONLY the given rows into the conversation table (same field layout as [`save_messages`]). History recovery lands pages of ~50 rows at a time — rewriting the whole conversation per page would be O(n) per page; this is O(page).
@@ -1180,12 +1222,10 @@ mod tests {
         let vault_seed = *ihi::handle_to_hash("me-messages-test").as_bytes();
         let app = crate::storage::APP;
 
-        let mut contact = Contact::new(
-            HandleText::new("bob"),
-            [3u8; 32],
-            DevicePubkey::from_bytes([0u8; 32]),
-        );
-        contact.messages = vec![
+        // A two-participant conversation: our pid derived from the vault seed the same way the app does, the peer's an arbitrary pid.
+        let our_pid = crate::crypto::clutch::identity_party_id(&vault_seed);
+        let mut conv = crate::types::Conversation::new([our_pid, [3u8; 32]]);
+        conv.messages = vec![
             ChatMessage {
                 content: "hi".to_string(),
                 timestamp: 100,
@@ -1218,16 +1258,12 @@ mod tests {
         // session 1: save, then drop the vault (closes the on-disk files)
         {
             let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
-            save_messages(&contact, &storage).unwrap();
+            save_messages(&conv, &storage).unwrap();
         }
 
-        // session 2: reopen from disk, load into a fresh contact
+        // session 2: reopen from disk, load into a fresh conversation over the same participant set
         let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
-        let mut loaded = Contact::new(
-            HandleText::new("bob"),
-            [3u8; 32],
-            DevicePubkey::from_bytes([0u8; 32]),
-        );
+        let mut loaded = crate::types::Conversation::new([our_pid, [3u8; 32]]);
         load_messages(&mut loaded, &storage).unwrap();
 
         assert_eq!(loaded.messages.len(), 3);
@@ -1471,18 +1507,14 @@ mod tests {
         assert!(small.len() < 50 && !small.is_empty());
         assert!(small_more);
 
-        // load_messages: full conversation, time-sorted despite out-of-order catalog insertion, with the recovered flag intact on the older half.
-        let mut contact = Contact::new(
-            HandleText::new("paging-peer"),
-            [9u8; 32],
-            DevicePubkey::from_bytes([0u8; 32]),
-        );
-        contact.handle_hash = their_seed;
-        load_messages(&mut contact, &storage).unwrap();
-        assert_eq!(contact.messages.len(), 120);
-        let times: Vec<i64> = contact.messages.iter().map(|m| m.timestamp).collect();
+        // load_messages: full conversation, time-sorted despite out-of-order catalog insertion, with the recovered flag intact on the older half. Same participant set the page writers derived, so the two paths hit one table.
+        let our_pid = crate::crypto::clutch::identity_party_id(&vault_seed);
+        let mut conv = crate::types::Conversation::new([our_pid, their_seed]);
+        load_messages(&mut conv, &storage).unwrap();
+        assert_eq!(conv.messages.len(), 120);
+        let times: Vec<i64> = conv.messages.iter().map(|m| m.timestamp).collect();
         assert_eq!(times, (1..=120).collect::<Vec<i64>>());
-        assert!(contact.messages[0].recovered && !contact.messages[119].recovered);
+        assert!(conv.messages[0].recovered && !conv.messages[119].recovered);
 
         // Clean up the on-disk vault so reruns start fresh.
         if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {

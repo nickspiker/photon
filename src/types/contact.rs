@@ -294,9 +294,7 @@ pub struct Contact {
     pub is_online: bool, // True when we have confirmed bidirectional comms
     /// True when the ONLY working path to this contact is the FGTW relay (no direct socket — the asymmetric-reachability case). Drives the lime-yellow presence (theme::RING_RELAY_COLOUR) instead of the direct-connection green, so a relayed link is never mistaken for a direct one. Set when a message arrives via relay / a direct path is proven unreachable; cleared the moment a direct path validates. Not persisted (a session-scoped reachability fact).
     pub reached_via_relay: bool,
-    pub messages: Vec<ChatMessage>, // Conversation history
-    pub message_scroll_offset: f32, // Vertical scroll offset for message area (pixels)
-    pub prev_is_online: bool,       // For differential rendering (not persisted)
+    pub prev_is_online: bool, // For differential rendering (not persisted)
     pub indicator_x: usize,         // Cached indicator dot X position (set during draw)
     pub indicator_y: usize,         // Cached indicator dot Y position (set during draw)
     pub text_x: f32,                // Cached text X position (set during draw)
@@ -345,8 +343,6 @@ pub struct Contact {
     pub digest_kick_osc: i64,
     /// Runtime-only stall counter: consecutive ping cycles spent in `Pending` with our offer sent, a validated direct path up, and still no offer from the peer. The ping cycle re-fires our offer each time this crosses its threshold (then zeroes it) — the pong-driven offer re-send never triggers for a peer whose pongs don't flow, and a one-shot offer whose PT transfer died leaves the ceremony parked forever. Reset whenever the stall condition doesn't hold.
     pub clutch_offer_stall_cycles: u8,
-    /// Friend-assisted history recovery state machine (newest-first cursor pagination from the friend's copy). `None` = no recovery running/known. Runtime struct; the durable cursor + complete flag persist as `hist_oldest` / `hist_complete` in contact state.
-    pub history_recovery: Option<HistoryRecovery>,
     /// Runtime-only: when the CLUTCH ceremony last reached Complete (proof verified). Guards a post-completion RE-KEY COOLDOWN: completion zeroizes our ephemeral keypairs, so a peer's offer that was in flight just before they saw our completion arrives with `clutch_our_keypairs == None` and would trip the "peer lost chains, accept re-key" path — a spurious re-key that, when both sides do it near-simultaneously, storms into divergent ceremonies (observed: two devices wedged at 5/8 and 7/8 forever, though they'd already computed matching eggs). The window opens at completion (before the ~1s-later weave), so it's armed HERE, not at weave. Within it we ignore such offers; a GENUINE reset peer keeps sending and re-keys once it passes. `Instant` — never persisted.
     pub clutch_completed_at: Option<std::time::Instant>,
     /// This "contact" is one of OUR OWN fleet devices (a sibling), not a friend. Siblings run the same full CLUTCH ceremony + braided ratchet as friends — the fleet weave — but key the ceremony on `sibling_party_id(device_pubkey)` (stored in `handle_hash`) instead of the shared handle_hash, which would collide. `handle`/`handle_proof` hold OUR OWN handle so FGTW peer-row address matching works; `public_identity` is the sibling device and `fleet_members` stays EMPTY so `knows_device` answers only that one device (load-bearing for first-match routing). Sibling contacts are excluded from the contacts UI, roster/cloud sync, and friend-history recovery, and persist under the sibling index instead of the contacts index.
@@ -359,8 +355,6 @@ pub struct Contact {
     pub blind_in_flight: Option<([u8; 32], i64, bool)>,
     /// Runtime-only: this friend answered our probe with `found=0` (no deposit for this device). When every online+woven friend has missed AND no probe is in flight, S genuinely doesn't exist and genesis may run (probe-before-generate — a reset device must RECOVER S, never regenerate it while a deposit is reachable).
     pub blind_probe_missed: bool,
-    /// Count of real inbound friend messages that landed while this conversation was NOT front-of-eyes (conversation screen not active for this contact, or the window hidden/unfocused). Drives the contacts-list unread treatment: the inner relationship-coloured ring + heavier name + float-to-top — never a count glyph, never a timer. Cleared (and re-persisted) the moment the conversation becomes the active view; persisted in contact state so unread survives a restart. Probes and sibling fleet-sync frames never bump it.
-    pub unread_count: u32,
 }
 
 /// Contact identifier - BLAKE3 hash of the contact's public identity key This provides deterministic, collision-resistant identification
@@ -456,9 +450,7 @@ impl Contact {
             last_seen: None,
             is_online: false,           // Starts offline until we confirm comms
             reached_via_relay: false,   // Direct until proven relay-only
-            messages: Vec::new(),       // No messages yet
-            message_scroll_offset: 0.0, // Starts at top (scrolled to latest when messages added)
-            prev_is_online: false,      // Match initial state
+            prev_is_online: false, // Match initial state
             indicator_x: 0,             // Set during first draw
             indicator_y: 0,             // Set during first draw
             text_x: 0.0,                // Set during first draw
@@ -485,14 +477,12 @@ impl Contact {
             last_chain_reset_nonce: None,
             last_chain_reset_sent: None,
             digest_kick_osc: 0,
-            history_recovery: None,       // No history recovery running
             clutch_completed_at: None,    // Ceremony not yet complete
             is_sibling: false,            // A friend, unless made via new_sibling
             deposited_blinds: Vec::new(), // No blinds deposited with us yet
             blind_deposited: false,       // Our blind not confirmed at this friend yet
             blind_in_flight: None,        // No blind op in flight
             blind_probe_missed: false,    // No probe answered found=0 yet
-            unread_count: 0,              // Nothing unseen yet
         }
     }
 
@@ -797,24 +787,6 @@ impl Contact {
         }
     }
 
-    /// Insert a message in sorted order by timestamp (oldest first). Uses binary search for O(log n) position finding.
-    pub fn insert_message_sorted(&mut self, msg: ChatMessage) {
-        // A witnessed wire frame UPGRADES a friend-recovered copy of the same message (same timestamp) in place — recovery can race live delivery, and keeping both would double the row and leave the recovered one un-ACKable.
-        if let Some(existing) = self
-            .messages
-            .iter_mut()
-            .find(|m| m.timestamp == msg.timestamp && m.recovered && !msg.recovered)
-        {
-            *existing = msg;
-            return;
-        }
-        // Binary search for insertion point (maintains ascending timestamp order)
-        let pos = self
-            .messages
-            .binary_search_by(|m| m.timestamp.cmp(&msg.timestamp))
-            .unwrap_or_else(|pos| pos);
-        self.messages.insert(pos, msg);
-    }
 }
 
 #[cfg(test)]
