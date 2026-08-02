@@ -5,7 +5,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroize;
 
 /// Domain separation for conversation token derivation
-const CONVERSATION_TOKEN_DOMAIN: &[u8] = b"PHOTON_CONVERSATION_TOKEN_v0";
+const CONVERSATION_TOKEN_DOMAIN: &[u8] = b"PHOTON_CONVERSATION_TOKEN_v\x01";
 
 /// Derive a privacy-preserving conversation token from participant identity seeds.
 ///
@@ -31,7 +31,7 @@ pub fn derive_conversation_token(participant_seeds: &[[u8; 32]]) -> [u8; 32] {
 }
 
 /// Domain separation for the friend-history bulk key
-const HISTORY_KEY_DOMAIN: &[u8] = b"PHOTON_HISTORY_KEY_v0";
+const HISTORY_KEY_DOMAIN: &[u8] = b"PHOTON_HISTORY_KEY_v\x01";
 
 // The fan-out pair secret's domain. Version is a literal binary numeral, never an ASCII digit in the string (repo convention 2026-08-01).
 const FANOUT_PAIR_DOMAIN_TEXT: &[u8] = b"PHOTON_FANOUT_PAIR_v";
@@ -106,7 +106,7 @@ pub fn identity_friendship_secret(
 }
 
 /// Domain separation for sibling (own-fleet device) party ids
-const SIBLING_PARTY_DOMAIN: &[u8] = b"PHOTON_SIBLING_PARTY_v0";
+const SIBLING_PARTY_DOMAIN: &[u8] = b"PHOTON_SIBLING_PARTY_v\x01";
 
 /// Derive the CLUTCH party id for a fleet sibling device.
 ///
@@ -148,7 +148,7 @@ mod identity_binding_tests {
 }
 
 /// Domain separator for ceremony instance derivation
-const CEREMONY_INSTANCE_DOMAIN: &[u8] = b"PHOTON_CEREMONY_INSTANCE_v0";
+const CEREMONY_INSTANCE_DOMAIN: &[u8] = b"PHOTON_CEREMONY_INSTANCE_v\x01";
 
 /// Derive a unique ceremony instance identifier from all parties' offers.
 ///
@@ -750,7 +750,7 @@ pub fn derive_clutch_seed_x25519(
     };
 
     let mut hasher = Hasher::new();
-    hasher.update(b"clutch_v1_x25519_only");
+    hasher.update(b"clutch_x25519_only_v\x02");
     hasher.update(first);
     hasher.update(second);
     hasher.update(x25519_shared);
@@ -1260,7 +1260,7 @@ impl ClutchEggs {
     /// Add an egg with domain-separated labeling
     fn add_egg(&mut self, label: &str, shared_secret: &[u8]) {
         let mut hasher = Hasher::new();
-        hasher.update(b"clutch EGG v4 ");
+        hasher.update(b"clutch EGG v\x05");
         hasher.update(label.as_bytes());
         hasher.update(shared_secret);
         self.eggs.push(*hasher.finalize().as_bytes());
@@ -1724,7 +1724,7 @@ pub fn avalanche_expand_eggs(eggs: &ClutchEggs) -> Vec<u8> {
 pub fn derive_chain_from_avalanche(avalanche: &[u8], participant: &[u8; 32]) -> Vec<u8> {
     // Domain separation: mix participant identity into state
     let mut hasher = Hasher::new();
-    hasher.update(b"PHOTON_CHAIN_DERIVE_v1");
+    hasher.update(b"PHOTON_CHAIN_DERIVE_v\x02");
     hasher.update(participant);
     hasher.update(avalanche);
 
@@ -1748,7 +1748,7 @@ pub fn derive_chain_from_avalanche(avalanche: &[u8], participant: &[u8; 32]) -> 
 pub fn compute_clutch_proof(seed: &Seed) -> [u8; 32] {
     let mut hasher = Hasher::new();
     hasher.update(seed.as_bytes());
-    hasher.update(b"clutch_v1_complete");
+    hasher.update(b"clutch_complete_v\x02");
     *hasher.finalize().as_bytes()
 }
 
@@ -1934,7 +1934,7 @@ pub fn compute_eggs_proof(eggs: &ClutchEggs) -> [u8; 32] {
     }
 
     // Add domain separation
-    let mut input = b"CLUTCH_EGGS_v2_proof".to_vec();
+    let mut input = b"CLUTCH_EGGS_proof_v\x03".to_vec();
     input.extend_from_slice(&egg_bytes);
 
     // Spaghettify for chaos mixing, then smear_hash for algorithm diversity This is overkill for a proof, but consistency with chain derivation is good

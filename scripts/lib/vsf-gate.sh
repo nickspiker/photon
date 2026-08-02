@@ -28,7 +28,7 @@ vsf_gate() {
         "src/network/pt/mod.rs=3"
         "src/network/status.rs=2"
         "src/network/udp.rs=2"
-        "src/storage/contacts.rs=5"
+        "src/storage/contacts.rs=6"  # +1 (2026-08-02): load_legacy_conv_state re-parses the SAME own-vault contact record the audited apply_contact_state read covers — a self-terminating migration fallback, deleted with it; shrink back to 5 then.
         "src/storage/friendship.rs=1"
         "src/storage/settings.rs=1"
     )
@@ -62,6 +62,27 @@ vsf_gate() {
         echo "$bare" | sed "s|^$root/||; s/^/  /" >&2
         fail=1
     fi
+
+    # DOMAIN VERSIONS. A hash-domain version is a literal BINARY numeral appended after the text — hash(x ‖ "PHOTON_X_v" ‖ [N u8]) — never an ASCII digit inside the byte string (repo convention 2026-08-01; the ASCII pattern breeds by being read and reproduced). Ratchet over the crypto paths: baseline = the frozen pre-convention domains (they flip only when their own layer takes a flag-day); NEVER raise one.
+    local dpattern='b"[A-Za-z_ ]*_v[0-9]'
+    local dbaselines=(
+        "src/crypto/blind.rs=3"
+        "src/crypto/clutch.rs=3"
+    )
+    while IFS= read -r f; do
+        rel="${f#"$root"/}"
+        count=$(grep -E "$dpattern" "$f" 2>/dev/null | grep -cvE '^[[:space:]]*(//|///|//!)' || true)
+        [ "${count:-0}" -eq 0 ] && continue
+        max=0
+        for entry in "${dbaselines[@]}"; do
+            if [ "${entry%=*}" = "$rel" ]; then max="${entry#*=}"; break; fi
+        done
+        if [ "$count" -gt "$max" ]; then
+            echo "VSF GATE: $rel has $count ASCII-versioned hash domain(s) (baseline $max)." >&2
+            echo "  Version bytes are binary numerals appended after the text: b\"PHOTON_X_v\\x01\", never b\"PHOTON_X_v1\"." >&2
+            fail=1
+        fi
+    done < <(find "$root/src/crypto" "$root/src/types" -name "*.rs" 2>/dev/null)
 
     if [ "$fail" = "1" ]; then
         echo "VSF GATE: build blocked — hand-rolled VSF at a trust boundary." >&2

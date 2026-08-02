@@ -835,9 +835,25 @@ fn our_party_id(storage: &FlatStorage) -> [u8; 32] {
     crate::crypto::clutch::identity_party_id(storage.vault_seed())
 }
 
-/// The pre-participant-set table key, kept ONLY so [`migrate_conversation_tables`] can find rows written under it.
+/// The ASCII-versioned friendship domain every pre-lanes table id was derived under. PINNED here as literal bytes: the live derivation moved to a binary version numeral, and a "legacy" address computed thru the CURRENT derive would point at nothing old rows ever used.
+const LEGACY_FRIENDSHIP_DOMAIN: &[u8] = b"PHOTON_FRIENDSHIP_v1";
+
+/// A participant-set table id under the OLD ASCII domain — where rows written before the domain flip actually sit. Kept ONLY for [`migrate_conversation_domains`].
+fn legacy_domain_table(participants: &[[u8; 32]]) -> [u8; 32] {
+    let mut sorted: Vec<[u8; 32]> = participants.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(LEGACY_FRIENDSHIP_DOMAIN);
+    for p in &sorted {
+        hasher.update(p);
+    }
+    *hasher.finalize().as_bytes()
+}
+
+/// The pre-participant-set table key (our RAW SEED mixed with their pid), kept ONLY so [`migrate_conversation_tables`] can find rows written under it. Both halves pinned to the OLD domain — these addresses were minted before the binary-numeral flip.
 fn legacy_conversation_id(my_seed: &[u8; 32], their_identity_seed: &[u8; 32]) -> [u8; 32] {
-    *FriendshipId::derive(&[*my_seed, *their_identity_seed]).as_bytes()
+    legacy_domain_table(&[*my_seed, *their_identity_seed])
 }
 
 /// Re-home conversation rows from the legacy seed-mixed table key onto the participant-set key.
@@ -879,6 +895,48 @@ pub fn migrate_conversation_tables(
             crate::fp(&contact.handle_hash)
         );
         moved += 1;
+    }
+    Ok(moved)
+}
+
+/// Re-home conversation rows + state from the OLD-domain participant-set key onto the binary-numeral one.
+///
+/// The friendship domain moved from ASCII `_v1` to a binary version numeral on the lanes flag-day; ceremonies re-derive for free, but message rows are keyed by the id and would be ORPHANED without this (conversations must stay intact across every flag-day). Same self-terminating shape as [`migrate_conversation_tables`]: copies only when the old table has rows AND the new one does not, verbatim, and the log line's disappearance is the signal this can be deleted.
+pub fn migrate_conversation_domains(
+    contacts: &[Contact],
+    storage: &FlatStorage,
+) -> Result<usize, StorageError> {
+    let our_pid = our_party_id(storage);
+    let mut moved = 0usize;
+    for contact in contacts {
+        let old = legacy_domain_table(&[our_pid, contact.handle_hash]);
+        let fresh = conversation_table(&[our_pid, contact.handle_hash]);
+        let mut db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
+        let old_keys = db.list_in(&old).unwrap_or_default();
+        if !old_keys.is_empty() && db.list_in(&fresh).unwrap_or_default().is_empty() {
+            let mut copied = 0usize;
+            for pk in old_keys {
+                if let Ok(Some(rec)) = db.get_row_in(&old, pk.clone()) {
+                    db.put_row_in(&fresh, pk, &rec)
+                        .map_err(|e| StorageError::Vault(e.to_string()))?;
+                    copied += 1;
+                }
+            }
+            crate::logf!(
+                "MIGRATION: re-homed {} conversation row(s) onto the binary-numeral domain ({})",
+                copied,
+                crate::fp(&contact.handle_hash)
+            );
+            moved += 1;
+        }
+        // The conversation-state record (unread + history cursor) rides the same id — copy it once too, never overwriting one already written under the new key.
+        let old_state = crate::storage::vault_key("conv_state", &old);
+        let new_state = crate::storage::vault_key("conv_state", &fresh);
+        if let (Ok(Some(buf)), Ok(None)) =
+            (storage.read_addr(&old_state), storage.read_addr(&new_state))
+        {
+            let _ = storage.write_addr(&new_state, &buf);
+        }
     }
     Ok(moved)
 }
