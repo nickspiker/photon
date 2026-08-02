@@ -9304,7 +9304,9 @@ impl PhotonApp {
                         tb.clear();
                     }
                     crate::log("DIAG: log submitted to FGTW");
-                    // Baseline AFTER the success line above so the submit flow's own records don't instantly re-arm the pill — Submit greys until something genuinely new lands in the log.
+                    // Clear on success, so the next submit carries only what happened SINCE. Submitting and then clearing by hand was the ritual this replaces, and forgetting it re-sends everything already on the server — duplicate lines that make the next log harder to read, not easier. The copy that matters is on FGTW; the local file's only remaining job is to accumulate what comes next.
+                    crate::clear_log();
+                    // Baseline AFTER the clear so the pill greys until something genuinely new lands.
                     self.log_submitted_len = Some(crate::log_size_bytes());
                 }
                 Err(e) => {
@@ -10826,13 +10828,10 @@ impl PhotonApp {
     /// Build the fleet roster from the live contact list — the syncable subset, minus self-contacts (notes-to-self are device-local, not a friend to share) and minus fleet siblings (infrastructure, not friends — a sibling pid leaking into the roster would merge as a bogus contact on every device).
     fn current_roster(&self) -> Vec<crate::network::fgtw::fleet::RosterEntry> {
         use crate::network::fgtw::fleet::RosterEntry;
-        let our_pid = self
-            .session
-            .as_ref()
-            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
         self.contacts
             .iter()
-            .filter(|c| !c.is_sibling && our_pid != Some(c.handle_hash))
+            // The SELF row rides the roster too. Excluding it meant notes-to-self was the one contact a wipe could never restore — you added it deliberately and then had to add it again, every time. It is a contact you chose, so it belongs in the thing that remembers your contacts; `settle_self_contacts` marks it Complete on arrival, so it never tries to run a ceremony against itself.
+            .filter(|c| !c.is_sibling)
             .map(|c| RosterEntry {
                 handle_proof: c.handle_proof,
                 handle_hash: c.handle_hash,
