@@ -14023,7 +14023,14 @@ impl PhotonApp {
     fn reclutch_chainless_contacts(&mut self, why: &str) {
         for ci in 0..self.contacts.len() {
             let c = &self.contacts[ci];
-            if c.clutch_state != crate::types::ClutchState::Complete || !self.has_remote(c) {
+            // Complete-and-chainless is the flag-day shape; Pending-and-chainless qualifies too when the pair COMPLETED a ceremony in some earlier life (the persisted completion prefix says so) — that is a device the first sweep build reset on BOTH sides, mid-storm, and a fresh add never has the prefix so it is never touched.
+            let ever_completed = c.completed_their_hqc_prefix.is_some();
+            let sweepable = match c.clutch_state {
+                crate::types::ClutchState::Complete => true,
+                crate::types::ClutchState::Pending => ever_completed,
+                _ => false,
+            };
+            if !sweepable || !self.has_remote(c) {
                 continue;
             }
             let missing = match c.friendship_id {
@@ -14033,13 +14040,40 @@ impl PhotonApp {
             if !missing {
                 continue;
             }
+            // ONE deterministic initiator per pair, or both sides reset simultaneously and cross offers forever — observed live (peer_b's phone, 2026-08-02): 573KB offers ping-ponging between siblings every few seconds with ceremony_id mismatches, the continuous keygen/expand churn starving the phone's main thread into "Photon isn't responding". Lower key initiates (siblings compare device pubkeys, friends compare identity pids); the higher side stays Complete-but-chainless and takes the offer thru the established "peer lost their chains, accept re-key" responder path.
+            let c = &self.contacts[ci];
+            let we_initiate = if c.is_sibling {
+                self.device_keypair
+                    .as_ref()
+                    .is_some_and(|kp| kp.public.as_bytes() < &c.public_identity.key)
+            } else {
+                self.our_party_id(c)
+                    .is_some_and(|us| us < c.handle_hash)
+            };
             let c = &mut self.contacts[ci];
             crate::logf!(
-                "LANE: {} is keyed but holds no chains ({}) — re-clutch",
+                "LANE: {} is keyed but holds no chains ({}) — {}",
                 crate::fp(&c.handle_proof).as_str(),
-                why
+                why,
+                if we_initiate {
+                    "re-clutch (we initiate)"
+                } else {
+                    "awaiting their offer (they initiate)"
+                }
             );
-            c.clutch_state = crate::types::ClutchState::Pending;
+            // Whatever round either posture holds is DISCARDED — a storm-era round left in place blocks the keygen queue (it only picks keyless contacts) while its offer keeps re-sending, which IS the churn.
+            if let Some(ref mut keys) = c.clutch_our_keypairs {
+                keys.zeroize();
+            }
+            c.clutch_our_keypairs = None;
+            c.clutch_slots.clear();
+            c.ceremony_id = None;
+            c.clutch_state = if we_initiate {
+                crate::types::ClutchState::Pending
+            } else {
+                // Responder posture: Complete keeps it out of the keygen queue; the initiator's offer lands thru the established Complete-without-keypairs re-key path.
+                crate::types::ClutchState::Complete
+            };
             c.chain_woven = false;
             c.probe_sent = false;
             c.their_probe_seen = false;
