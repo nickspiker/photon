@@ -16401,6 +16401,7 @@ impl PhotonApp {
         };
 
         let mut undelivered_fids: Vec<crate::types::FriendshipId> = Vec::new();
+        let mut gave_up_fids: Vec<crate::types::FriendshipId> = Vec::new();
         for (fid, peer_addr, alt_addr, recipient_pubkey, relay_to) in routes {
             let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid)
             else {
@@ -16424,6 +16425,7 @@ impl PhotonApp {
                 });
                 if exhausted {
                     crate::logf!("CHAT: retransmit GAVE UP on msg eagle_time {} after {} attempts (undelivered)", eagle_time, attempts);
+                    gave_up_fids.push(fid);
                 } else {
                     crate::logf!(
                         "CHAT: retransmit msg eagle_time {} (attempt {})",
@@ -16434,6 +16436,17 @@ impl PhotonApp {
             }
             if any_due {
                 undelivered_fids.push(fid);
+            }
+        }
+        // A give-up's only revival is the peer's tip in a pong's sync records — and an hour-deep presence backoff sits on exactly that exchange. Giving up IS the "this contact matters right now" edge: collapse the backoff so the tip flows on the next sweep instead of next hour.
+        for fid in gave_up_fids {
+            if let Some(c) = self
+                .contacts
+                .iter_mut()
+                .find(|c| c.friendship_id == Some(fid))
+            {
+                c.ping_backoff = 0;
+                c.last_pinged = None;
             }
         }
 
@@ -18013,6 +18026,9 @@ impl PhotonApp {
                                 } else {
                                     c.gap_streak = (key, 1);
                                 }
+                                // A gap means the SENDER is missing our tip — and the tip travels in our ping's sync records, which an hour-deep presence backoff would sit on. A buffered frame is the loudest possible "this contact matters right now": collapse the backoff so the next sweep pings, the pong's tip re-arms their given-up retransmit, and the gap fills in seconds instead of an hour (the "some messages lag a very long time" of 2026-08-02).
+                                c.ping_backoff = 0;
+                                c.last_pinged = None;
                                 if c.gap_streak.1 == 6 {
                                     c.gap_streak.1 = 0;
                                     if c.is_sibling {
