@@ -857,9 +857,68 @@ pub fn delete_clutch_slots(
 use crate::types::ChatMessage;
 use rarangi::{Db, Pk, Record, Value};
 
-/// The conversation id (rārangi table) for the 1:1 between us and `their_identity_seed`. Derived early from the two participant seeds — `FriendshipId::derive` is deterministic and needs no completed CLUTCH ceremony, so messages are always conversation-keyed. Group/fleet conversations derive the same way from their full sorted participant set.
-fn conversation_id(my_seed: &[u8; 32], their_identity_seed: &[u8; 32]) -> [u8; 32] {
+/// The rārangi table for a conversation, derived from its PARTICIPANT SET — the one derivation the wire, the UI and local storage all share, so the three can never disagree about which conversation this is.
+///
+/// It did not use to be one derivation. The local table mixed our RAW IDENTITY SEED with the peer's PARTY ID (their identity pubkey), while every wire value used party ids on both sides — two different representations of "us" in one key. Notes-to-self was the case where that showed: its table was `[identity_seed, identity_pubkey]`, an asymmetric pair naming one person twice, which no participant-set derivation could ever reproduce.
+///
+/// Sorts and deduplicates via [`Conversation`], so one participant, two, or any number all resolve the same way and a self set stays a set.
+fn conversation_table(participants: &[[u8; 32]]) -> [u8; 32] {
+    *crate::types::Conversation::new(participants.iter().copied())
+        .id()
+        .as_bytes()
+}
+
+/// Our own party id — the identity pubkey every participant set is expressed in.
+fn our_party_id(storage: &FlatStorage) -> [u8; 32] {
+    crate::crypto::clutch::identity_party_id(storage.vault_seed())
+}
+
+/// The pre-participant-set table key, kept ONLY so [`migrate_conversation_tables`] can find rows written under it.
+fn legacy_conversation_id(my_seed: &[u8; 32], their_identity_seed: &[u8; 32]) -> [u8; 32] {
     *FriendshipId::derive(&[*my_seed, *their_identity_seed]).as_bytes()
+}
+
+/// Re-home conversation rows from the legacy seed-mixed table key onto the participant-set key.
+///
+/// Self-terminating by construction: it copies only when the legacy table has rows AND the new one does not, so a second run is a no-op, and once every device has migrated the `MIGRATION:` line stops appearing and this function can be deleted (same shape as `migrate_pre_document_chains`). History is preserved — nothing is re-downloaded and nothing is lost.
+pub fn migrate_conversation_tables(
+    contacts: &[Contact],
+    storage: &FlatStorage,
+) -> Result<usize, StorageError> {
+    let our_pid = our_party_id(storage);
+    let mut moved = 0usize;
+    for contact in contacts {
+        let legacy = legacy_conversation_id(storage.vault_seed(), &contact.handle_hash);
+        let fresh = conversation_table(&[our_pid, contact.handle_hash]);
+        if legacy == fresh {
+            continue;
+        }
+        let mut db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
+        let legacy_keys = db.list_in(&legacy).unwrap_or_default();
+        if legacy_keys.is_empty() {
+            continue;
+        }
+        // Never overwrite: rows already under the participant-set key mean the migration has run, and the legacy copy is the stale one.
+        if !db.list_in(&fresh).unwrap_or_default().is_empty() {
+            continue;
+        }
+        // Copy rows VERBATIM rather than decoding to ChatMessage and re-encoding — a migration that re-serialises is a migration that can quietly change what it moves, and every field here (ack_hash, content_hash, deleted, recovered) has to survive untouched.
+        let mut copied = 0usize;
+        for pk in legacy_keys {
+            if let Ok(Some(rec)) = db.get_row_in(&legacy, pk.clone()) {
+                db.put_row_in(&fresh, pk, &rec)
+                    .map_err(|e| StorageError::Vault(e.to_string()))?;
+                copied += 1;
+            }
+        }
+        crate::logf!(
+            "MIGRATION: re-homed {} conversation row(s) onto the participant-set key ({})",
+            copied,
+            crate::fp(&contact.handle_hash)
+        );
+        moved += 1;
+    }
+    Ok(moved)
 }
 
 /// Save a contact's messages as rows in the conversation table. Idempotent: each message is written at its sequence index, so re-saving the same history overwrites row-for-row identically.
@@ -869,7 +928,7 @@ pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), Sto
     }
 
     // Contact already carries the identity seed (handle_hash = BLAKE3(handle)); use it directly rather than re-deriving from the plaintext handle string. Identity flows as the seed, never the handle, past the contact boundary.
-    let table = conversation_id(storage.vault_seed(), &contact.handle_hash);
+    let table = conversation_table(&[our_party_id(storage), contact.handle_hash]);
 
     let mut db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
     for msg in contact.messages.iter() {
@@ -910,7 +969,7 @@ pub fn save_messages(contact: &Contact, storage: &FlatStorage) -> Result<(), Sto
 /// Load a contact's messages from the conversation table, in counter order (which is chronological).
 pub fn load_messages(contact: &mut Contact, storage: &FlatStorage) -> Result<(), StorageError> {
     // Use the contact's cached identity seed (handle_hash), not a re-derivation from the handle.
-    let table = conversation_id(storage.vault_seed(), &contact.handle_hash);
+    let table = conversation_table(&[our_party_id(storage), contact.handle_hash]);
 
     let db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
     let pks = db
@@ -972,7 +1031,7 @@ pub fn save_messages_page(
     if msgs.is_empty() {
         return Ok(());
     }
-    let table = conversation_id(storage.vault_seed(), their_identity_seed);
+    let table = conversation_table(&[our_party_id(storage), *their_identity_seed]);
     let mut db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
     for msg in msgs {
         let content_hash = blake3::hash(msg.content.as_bytes());
@@ -1006,7 +1065,7 @@ pub fn load_message_page_before(
     max_bytes: usize,
     storage: &FlatStorage,
 ) -> Result<(Vec<ChatMessage>, bool), StorageError> {
-    let table = conversation_id(storage.vault_seed(), their_identity_seed);
+    let table = conversation_table(&[our_party_id(storage), *their_identity_seed]);
     let db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
     let pks = db
         .list_in(&table)

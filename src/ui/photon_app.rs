@@ -2479,6 +2479,16 @@ impl FluorApp for PhotonApp {
                             })
                             .collect();
                         self.contacts = crate::storage::contacts::load_all_contacts(&s);
+                        // One-time re-home onto the participant-set table key (the local key used to mix our raw seed with their party id). Self-terminating: it copies only when the legacy table has rows and the new one does not, so every launch after the first is a no-op and the MIGRATION line stops appearing. Runs BEFORE messages load, or the first read would find an empty table and the conversation would look wiped.
+                        match crate::storage::contacts::migrate_conversation_tables(&self.contacts, &s)
+                        {
+                            Ok(n) if n > 0 => crate::logf!(
+                                "MIGRATION: {} conversation(s) re-homed onto participant-set keys",
+                                n
+                            ),
+                            Err(e) => crate::logf!("MIGRATION: conversation re-key failed: {}", e),
+                            _ => {}
+                        }
                         for c in self.contacts.iter_mut() {
                             if let Some((
                                 kp,
