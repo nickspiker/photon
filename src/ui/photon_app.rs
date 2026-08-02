@@ -997,8 +997,8 @@ pub struct PhotonApp {
     pending_broadcast_signal: i8,
     /// Android sticky-session-broadcast freshness timer. `None` = ensure on the next tick (fresh resume/attest); else the next eagle-time-jittered deadline to re-check. On each firing the poll signal goes to `2` ("ensure": Kotlin READS the sticky and re-posts ONLY if the OS evicted it — Samsung drops stickies aggressively, so this keeps the reinstall-survival capsule alive without churning a re-post every interval). Jittered 30–60 min so a fleet doesn't re-post in lockstep.
     next_session_broadcast: Option<Instant>,
-    /// Index of the contact currently open in Conversation view, or `None` when on the Ready (contacts list) screen.
-    active_contact: Option<usize>,
+    /// The OPEN conversation, by its participant-set id — never an index. An id stays valid across every roster mutation; the index it replaces needed a shift-fixup on tombstone removal and defensive `ci < len` filters at every read, and one missed fixup silently rendered someone else's conversation.
+    active_conversation: Option<crate::types::ConversationId>,
     /// Base hit ID for contact rows. Row `i` gets `contact_hit_base + i`. Allocated in `init` after the other widget IDs.
     contact_hit_base: HitId,
     /// Hit ID for the "← Contacts" back button on the Conversation screen.
@@ -1380,7 +1380,7 @@ impl PhotonApp {
             pending_zoom_restore: None,
             zoom_restored: false,
             avatar_set_rx: None,
-            active_contact: None,
+            active_conversation: None,
             contact_hit_base: HIT_NONE,
             back_btn_hit_id: HIT_NONE,
             join_startfresh_hit_id: HIT_NONE,
@@ -1495,7 +1495,7 @@ impl PhotonApp {
     /// Android picker result: a file's name + bytes for the ACTIVE conversation (no-op outside one).
     pub fn attach_picked(&mut self, name: String, bytes: Vec<u8>) {
         if matches!(self.state, AppState::Conversation) {
-            if let Some(ci) = self.active_contact {
+            if let Some(ci) = self.active_contact() {
                 self.send_attachment_from_bytes(ci, name, bytes);
             }
         }
@@ -1886,19 +1886,13 @@ impl PhotonApp {
         if matches!(self.state, AppState::Conversation) {
             // The compose box is the only focusable widget in a conversation; yielding it here wires click-to-focus, Tab, and key dispatch. MUST MIRROR THE RENDER GATE EXACTLY (the render's compose block): woven chain, zero remote participants, or COMPOSE-ANYWHERE (friend convo with history + a fleet to forward thru). The first unification build extended only the render gate — the box painted but wasn't in this walk, so clicks never focused it and no blinkey appeared ("textbox appears but can't type", desktop 2026-07-26).
             let has_fleet = self.contacts.iter().any(|c| c.is_sibling);
-            let compose_ready = self
-                .active_contact
-                .and_then(|ci| self.contacts.get(ci))
-                .map(|c| {
-                    let has_history = self
-                        .active_contact
-                        .and_then(|ci| self.conv_of(ci))
-                        .is_some_and(|v| !v.messages.is_empty());
-                    let can_fleet_forward = !c.is_sibling && has_history && has_fleet;
-                    // Literally the render gate's expression: zero-remote || chain_woven || can_fleet_forward.
-                    self.is_zero_remote(c) || c.chain_woven || can_fleet_forward
-                })
-                .unwrap_or(false);
+            let compose_ready = self.active_contact().is_some_and(|ci| {
+                let c = &self.contacts[ci];
+                let has_history = self.conv_of(ci).is_some_and(|v| !v.messages.is_empty());
+                let can_fleet_forward = !c.is_sibling && has_history && has_fleet;
+                // Literally the render gate's expression: zero-remote || chain_woven || can_fleet_forward.
+                self.is_zero_remote(c) || c.chain_woven || can_fleet_forward
+            });
             // Attachment resample overlay controls ride the conversation walk while pending (independent of the compose gate).
             if self.pending_attach.is_some() {
                 if let Some(sl) = self.attach_slider.as_mut() {
@@ -2749,7 +2743,7 @@ impl FluorApp for PhotonApp {
                 self.state = AppState::Conversation;
                 self.reset_contact_ping_backoff();
                 // The conversation is the active view again — clear any unread that slipped in (no-op when already 0).
-                if let Some(ci) = self.active_contact {
+                if let Some(ci) = self.active_contact() {
                     self.clear_unread(ci);
                 }
                 ctx.window.request_redraw();
@@ -2757,7 +2751,7 @@ impl FluorApp for PhotonApp {
             }
             if matches!(self.state, AppState::Conversation) {
                 self.state = AppState::Ready;
-                self.active_contact = None;
+                self.active_conversation = None;
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
@@ -3111,7 +3105,7 @@ impl FluorApp for PhotonApp {
                     "contact-tap: opening conversation with '{}'",
                     self.contacts[ci].display_name()
                 );
-                self.active_contact = Some(ci);
+                self.open_conversation_with(ci);
                 self.state = AppState::Conversation;
                 self.reset_contact_ping_backoff();
                 self.conv_topbar_off = 0.0;
@@ -3303,7 +3297,7 @@ impl FluorApp for PhotonApp {
             if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(64) {
                 let vis = (hit_id - self.msg_hit_base) as usize;
                 if let (Some(ci), Some(&(ts, out))) =
-                    (self.active_contact, self.msg_hit_rows.get(vis))
+                    (self.active_contact(), self.msg_hit_rows.get(vis))
                 {
                     let key = (ci, ts, out);
                     // Toggle: same message deselects; another message moves the strip. Event-shown, interaction-cleared — no timers.
@@ -3541,9 +3535,9 @@ impl FluorApp for PhotonApp {
                         }
                     } else if matches!(self.state, AppState::Conversation) {
                         // In a conversation the wheel scrolls the message history. The list lays out bottom-up with newest at the bottom; a positive offset pushes messages down (reveals older ones above). Scroll-up (positive dy) shows older → add. Only the 0 end rubber-bands (hi = ∞); the old-history end is backfill-paged, not clamped.
-                        if let Some(ci) = self.active_contact {
+                        if self.active_conversation.is_some() {
                             let can_scroll = self.msg_max_scroll > 0.0;
-                            if let Some(conv) = self.conv_mut_of(ci) {
+                            if let Some(conv) = self.active_conv_mut() {
                                 conv.scroll_offset = rubber_step(
                                     conv.scroll_offset,
                                     // Notches get the wheel step-up; pixel sources are already distances.
@@ -3859,7 +3853,7 @@ impl FluorApp for PhotonApp {
                             self.state = AppState::Conversation;
                 self.reset_contact_ping_backoff();
                             // Same re-entry clear as the Back button — the conversation is front-of-eyes again.
-                            if let Some(ci) = self.active_contact {
+                            if let Some(ci) = self.active_contact() {
                                 self.clear_unread(ci);
                             }
                             ctx.window.request_redraw();
@@ -3867,7 +3861,7 @@ impl FluorApp for PhotonApp {
                         }
                         if matches!(self.state, AppState::Conversation) {
                             self.state = AppState::Ready;
-                            self.active_contact = None;
+                            self.active_conversation = None;
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
@@ -4075,7 +4069,7 @@ impl FluorApp for PhotonApp {
             Event::DroppedFile(path) => {
                 // A file dropped on an OPEN CONVERSATION = send it as an attachment. (Ready-screen drops stay the avatar pipeline below.)
                 if matches!(self.state, AppState::Conversation) {
-                    if let Some(ci) = self.active_contact {
+                    if let Some(ci) = self.active_contact() {
                         self.send_attachment_from_path(ci, path);
                         ctx.window.request_redraw();
                         return EventResponse::Handled;
@@ -4476,7 +4470,7 @@ impl FluorApp for PhotonApp {
             }
             if matches!(self.state, AppState::Conversation) {
                 let ceiling = self.msg_max_scroll;
-                if let Some(conv) = self.active_contact.and_then(|ci| self.conv_mut_of(ci)) {
+                if let Some(conv) = self.active_conv_mut() {
                     spring |= relax(&mut conv.scroll_offset, f32::INFINITY);
                     // Clamp the STORED offset to the last-rendered ceiling: the 0-end rubber-bands (relax above, hi=∞), but drifting PAST the top (offset > max_scroll after the viewport shrank/grew) must snap back, else the list sticks above the oldest message until you scroll down through the excess. Only pull DOWN — never fight an active drag toward 0.
                     if conv.scroll_offset > ceiling {
@@ -4629,12 +4623,14 @@ impl FluorApp for PhotonApp {
             && (self.zoom_hint
                 || (cfg!(target_os = "android") && (ctx.viewport.ru - 1.0).abs() > 0.001));
 
+        // The open conversation's contact row, resolved ONCE before the chrome borrow — the borrow lives thru the whole render, so no `&self` method can run past this point.
+        let active_ci = self.active_contact();
         // Title-bar text by screen, computed BEFORE the chrome borrow (peer count reads `self.handle_query` / `self.session`). Launch/attest shows the "← Network" affordance; once attested (Ready) it shows the peer count — distinct identities in the store EXCLUDING our own: peers are PEOPLE, so the FGTW seed is not a peer (the old `+1` when online) and neither are our own fleet siblings (their records ride the same store for direct routing). `set_title` only re-rasterizes chrome when the string actually changes, so this is cheap to recompute each frame.
         let title_text: String = if matches!(
             self.state,
             AppState::Conversation | AppState::ContactPanel(_)
         ) {
-            self.active_contact
+            active_ci
                 .and_then(|ci| self.contacts.get(ci))
                 .map(|c| c.display_name())
                 .unwrap_or_else(|| "Conversation".to_string())
@@ -5802,7 +5798,7 @@ impl FluorApp for PhotonApp {
         if let AppState::ContactPanel(cpage) = self.state {
             let layout = SettingsLayout::compute(&ctx.viewport);
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
-            if let Some(ci) = self.active_contact.filter(|&ci| ci < self.contacts.len()) {
+            if let Some(ci) = active_ci {
                 // Clear the panel region's hit stamps before re-stamping this frame (immediate-mode stamps must not linger across page switches).
                 restamp_hit_rect(
                     &mut chrome.hit_test_map,
@@ -6336,8 +6332,8 @@ impl FluorApp for PhotonApp {
 
         if matches!(self.state, AppState::Conversation) {
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
-            if let Some(ci) = self.active_contact {
-                if ci < self.contacts.len() {
+            if let Some(ci) = active_ci {
+                {
                     let ru = ctx.viewport.ru;
                     // Build/refresh the contact's scaled-avatar cache at the CONVERSATION-HEADER diameter BEFORE the immutable borrow below. The header renders the avatar bigger than the contact-list rows, but it has no rebuild of its own — it used to draw whatever `avatar_scaled` happened to hold (built at the small row diameter) while telling draw_avatar the buffer was header-sized → it sampled past the smaller buffer → "index out of bounds: len 2028 (26²·3) but index 2307" panic on conversation-open. Rebuilding here at the header diameter keeps the cache and the claimed scaled_diameter in lockstep.
                     {
@@ -10896,20 +10892,19 @@ impl PhotonApp {
                         "FLEET: roster tombstone — removed contact {}",
                         crate::fp(&gone.handle_proof).as_str()
                     );
-                    // Index fixup: the remove shifts every later contact down one. If the REMOVED contact's conversation (or panel) is open on THIS device, pop to the contact list — rendering a shifted index would silently show someone else's conversation.
-                    match self.active_contact {
-                        Some(ci) if ci == pos => {
-                            self.active_contact = None;
-                            self.contact_boot_armed = false;
-                            if matches!(
-                                self.state,
-                                AppState::Conversation | AppState::ContactPanel(_)
-                            ) {
-                                self.state = AppState::Ready;
-                            }
+                    // If the REMOVED contact's conversation (or panel) is open on THIS device, pop to the contact list. No index fixup exists any more: every OTHER open conversation is named by an id the remove cannot shift — the shift-by-one this replaces was the bug class where a missed fixup silently showed someone else's conversation.
+                    let gone_id = self
+                        .our_party_id(&gone)
+                        .map(|us| gone.conversation(&us).id());
+                    if gone_id.is_some() && self.active_conversation == gone_id {
+                        self.active_conversation = None;
+                        self.contact_boot_armed = false;
+                        if matches!(
+                            self.state,
+                            AppState::Conversation | AppState::ContactPanel(_)
+                        ) {
+                            self.state = AppState::Ready;
                         }
-                        Some(ci) if ci > pos => self.active_contact = Some(ci - 1),
-                        _ => {}
                     }
                     if let Some(storage) = self.storage.as_ref() {
                         if let Err(err) =
@@ -12318,7 +12313,8 @@ impl PhotonApp {
         };
         let our_party = crate::crypto::clutch::identity_party_id(&seed);
         for c in &self.contacts {
-            if c.is_sibling || c.handle_hash == our_party {
+            // A sibling row or a zero-remote conversation answers with OUR OWN devices, so those pongs seal under the sibling key; everyone else gets the friendship secret.
+            if c.is_sibling || c.remote_count(&our_party) == 0 {
                 for pk in c.answerable_pubkeys() {
                     keys.insert(
                         pk,
@@ -12580,7 +12576,7 @@ impl PhotonApp {
 
     /// Textbox front-end for the open conversation: pull + trim the compose text, hand it to [`Self::send_chain_message`] for the active contact (bubble shown), then clear the box.
     fn submit_message(&mut self) {
-        let Some(ci) = self.active_contact else {
+        let Some(ci) = self.active_contact() else {
             return;
         };
         // Pull the compose text and send it VERBATIM. Any non-empty content sends, whitespace included (a lone space, all spaces, a newline are all valid messages). No trim, no whitespace judgment.
@@ -13741,8 +13737,8 @@ impl PhotonApp {
     fn update_orb(&mut self) {
         let target: Option<usize> = match self.state {
             AppState::Conversation | AppState::ContactPanel(_) => self
-                .active_contact
-                .filter(|&ci| ci < self.contacts.len() && !self.contacts[ci].is_sibling),
+                .active_contact()
+                .filter(|&ci| !self.contacts[ci].is_sibling),
             _ => None,
         };
         // Fold "does this contact have an avatar yet" into the diff key so the orb upgrades from the gradient placeholder to the real avatar the moment it finishes downloading mid-conversation.
@@ -13910,6 +13906,30 @@ impl PhotonApp {
         let c = self.contacts.get(ci)?;
         let id = c.conversation(&self.our_party_id(c)?).id();
         self.conversations.iter().find(|v| v.id() == id)
+    }
+
+    /// The contact row the active conversation is with — RESOLVED from the id, never stored. `None` when nothing is open or the participant left the roster, which is an honest answer where a stale index was a lie.
+    fn active_contact(&self) -> Option<usize> {
+        let id = self.active_conversation?;
+        (0..self.contacts.len()).find(|&ci| {
+            let c = &self.contacts[ci];
+            self.our_party_id(c)
+                .is_some_and(|us| c.conversation(&us).id() == id)
+        })
+    }
+
+    /// Open the conversation this contact row stands for.
+    fn open_conversation_with(&mut self, ci: usize) {
+        self.active_conversation = self
+            .contacts
+            .get(ci)
+            .and_then(|c| self.our_party_id(c).map(|us| c.conversation(&us).id()));
+    }
+
+    /// The open conversation itself, if it has materialized.
+    fn active_conv_mut(&mut self) -> Option<&mut crate::types::Conversation> {
+        let id = self.active_conversation?;
+        self.conversations.iter_mut().find(|v| v.id() == id)
     }
 
     /// The conversation for `self.contacts[ci]`, materialized empty on first touch — so no caller ever branches on "does it exist yet". `None` only before the session is up.
@@ -15559,16 +15579,11 @@ impl PhotonApp {
     }
 
 
-    /// True if `handle_hash` (a party id) is our own identity — i.e. this contact is the user's self-contact (notes to self / future multi-device sync). A self-contact shares our single identity, so there is no peer to exchange keys with: CLUTCH must be forced Complete and keygen/offer/ceremony skipped entirely. Without this a self-contact runs a pointless CLUTCH loop against its own device and never settles. Party ids are identity PUBKEYS now, so the comparison derives ours.
-    /// Force every self-contact in the list to CLUTCH-Complete and clear any in-flight CLUTCH work. Applied after contacts load on resume and after cloud/FGTW merges, since those paths build contacts as Pending by default. Returns true if any contact changed.
     /// Boot the open contact — THE first roster-tombstone writer (the receive side has honoured tombstones since the roster CRDT shipped; nothing ever minted one until now). Ostracism, not erasure: WE drop the contact + chains locally and push a sticky tombstone so every device of OUR fleet drops it too — the other side is never signalled and keeps its own records (device-sovereignty doctrine). A tombstone outranks any concurrent re-add by LWW stamp, and re-adding later mints a fresh entry with a newer stamp, so boot→re-add works.
     fn boot_active_contact(&mut self) {
-        let Some(ci) = self.active_contact else {
+        let Some(ci) = self.active_contact() else {
             return;
         };
-        if ci >= self.contacts.len() {
-            return;
-        }
         if self.contacts[ci].is_sibling {
             return; // device removal is chain consent (self-departure), never a contact boot
         }
@@ -15636,7 +15651,7 @@ impl PhotonApp {
                 crate::logf!("BOOT: index rewrite failed: {}", e);
             }
         }
-        self.active_contact = None;
+        self.active_conversation = None;
         self.reseed_contact_pubkeys();
         self.update_sync_records();
         self.state = AppState::Ready;
@@ -15662,7 +15677,7 @@ impl PhotonApp {
         for c in self
             .contacts
             .iter_mut()
-            .filter(|c| !c.is_sibling && c.handle_hash == our_pid)
+            .filter(|c| !c.is_sibling && c.remote_count(&our_pid) == 0)
         {
             if c.published_name != name {
                 c.published_name = name.clone();
@@ -15702,12 +15717,11 @@ impl PhotonApp {
 
     /// Collapse the ACTIVE contact's presence backoff — called when its conversation opens. Looking at someone is the clearest possible signal that their presence matters now, and it is the escape hatch that makes an hour-long backoff safe to have at all.
     fn reset_contact_ping_backoff(&mut self) {
-        if let Some(c) = self
-            .active_contact
-            .and_then(|ci| self.contacts.get_mut(ci))
-        {
-            c.ping_backoff = 0;
-            c.last_pinged = None; // due immediately, so the ring is fresh by the time it renders
+        if let Some(ci) = self.active_contact() {
+            if let Some(c) = self.contacts.get_mut(ci) {
+                c.ping_backoff = 0;
+                c.last_pinged = None; // due immediately, so the ring is fresh by the time it renders
+            }
         }
     }
 
@@ -18185,7 +18199,7 @@ impl PhotonApp {
                             let conversation_open = matches!(
                                 self.state,
                                 AppState::Conversation | AppState::ContactPanel(_)
-                            ) && self.active_contact == Some(contact_idx);
+                            ) && self.active_conversation == Some(conv.id());
                             #[cfg(not(target_os = "android"))]
                             let looking = conversation_open
                                 && crate::platform::desktop_notify::window_attended();
@@ -19692,7 +19706,7 @@ impl PhotonApp {
                     // Find contact by handle_proof and store their LAN IP + port. Siblings AND the self-contact are skipped — an own-hp broadcast carries only (hp, port) with no device disambiguation, so it can't say WHICH of our devices it came from; sibling addresses flow via FGTW peer rows + pong source addresses instead.
                     for (idx, contact) in self.contacts.iter_mut().enumerate() {
                         if !contact.is_sibling
-                            && contact.handle_hash != our_handle_hash
+                            && contact.remote_count(&our_handle_hash) > 0
                             && contact.handle_proof == handle_proof
                         {
                             let old_local = contact.local_ip;
@@ -21732,7 +21746,7 @@ impl PhotonApp {
         self.pending_fleet_key = None;
         self.probed_session = None;
         self.probed_handle = None;
-        self.active_contact = None;
+        self.active_conversation = None;
         self.ready_toast = None;
         self.diag_log_close();
         crate::network::status::set_profile_name(""); // pong slots: empty/zero = omitted
