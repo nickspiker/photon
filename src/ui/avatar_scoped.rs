@@ -19,8 +19,18 @@ fn addr(id: &[u8; 32]) -> String {
     URL_SAFE_NO_PAD.encode(id)
 }
 
-/// The purpose tag separating this blob from any other sharing the same reader secret. Attachments will pass their own id here; the avatar is a singleton per identity.
-pub const AVATAR_PURPOSE: &[u8] = b"avatar";
+/// The base purpose tag; the wire purpose is [`avatar_purpose`] — base ‖ publisher pid, never this alone.
+const AVATAR_PURPOSE_BASE: &[u8] = b"avatar";
+
+/// The purpose naming ONE identity's avatar: the base tag with the PUBLISHER's party id appended (binary).
+///
+/// The publisher must be in the address because a CLUTCH pair secret is ONE secret shared by both directions: with a bare "avatar" purpose, peer_a's publish and peer_b's publish derived the SAME slot address from their shared pair, the last writer won, and peer_a's device opened "peer_b's" slot to find peer_a's own face (2026-08-02). Every purpose under a symmetric reader secret must carry its publisher — attachments included when they arrive.
+pub fn avatar_purpose(publisher: &[u8; 32]) -> Vec<u8> {
+    let mut p = Vec::with_capacity(AVATAR_PURPOSE_BASE.len() + publisher.len());
+    p.extend_from_slice(AVATAR_PURPOSE_BASE);
+    p.extend_from_slice(publisher);
+    p
+}
 
 /// Publish `plaintext` so exactly `readers` can fetch it — one content upload plus one tiny slot write each.
 ///
@@ -137,19 +147,32 @@ mod tests {
     #[test]
     fn reader_and_publisher_agree_on_the_slot_address() {
         let secret = [7u8; 32];
+        let purpose = avatar_purpose(&[5u8; 32]);
         let contents = SlotContents {
             blob_id: [1u8; 32],
             dek: [2u8; 32],
         };
-        let writes = slot_writes(&[secret], AVATAR_PURPOSE, &contents).unwrap();
+        let writes = slot_writes(&[secret], &purpose, &contents).unwrap();
         assert_eq!(
             writes[0].address,
-            fgtw::scoped_blob::slot_address(&secret, AVATAR_PURPOSE)
+            fgtw::scoped_blob::slot_address(&secret, &purpose)
         );
         // And the address is stable across calls, so an update overwrites in place rather than stranding the reader.
         assert_eq!(
-            fgtw::scoped_blob::slot_address(&secret, AVATAR_PURPOSE),
-            fgtw::scoped_blob::slot_address(&secret, AVATAR_PURPOSE)
+            fgtw::scoped_blob::slot_address(&secret, &purpose),
+            fgtw::scoped_blob::slot_address(&secret, &purpose)
+        );
+    }
+
+    /// The bug this module shipped with: two publishers sharing ONE pair secret must not share a slot. The publisher pid in the purpose is what separates them — under a bare tag both sides derived one address and the last publish overwrote the other's avatar.
+    #[test]
+    fn two_publishers_on_one_pair_secret_get_distinct_slots() {
+        let pair_secret = [7u8; 32];
+        let peer_a = avatar_purpose(&[1u8; 32]);
+        let peer_b = avatar_purpose(&[2u8; 32]);
+        assert_ne!(
+            fgtw::scoped_blob::slot_address(&pair_secret, &peer_a),
+            fgtw::scoped_blob::slot_address(&pair_secret, &peer_b)
         );
     }
 }

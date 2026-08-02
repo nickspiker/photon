@@ -1633,17 +1633,21 @@ impl PhotonApp {
                             if scoped_readers.is_empty() {
                                 crate::log("SCOPED: no readers yet (no fleet key, no egged friends) — slots follow the next publish");
                             } else {
+                                // WE are the publisher, so the purpose carries OUR pid — the direction bind that keeps our slot and a friend's slot apart on the one pair secret they share.
+                                let purpose = crate::ui::avatar_scoped::avatar_purpose(
+                                    &crate::crypto::clutch::identity_party_id(&identity_seed),
+                                );
                                 match crate::ui::avatar_scoped::publish_blocking(
                                     &av1_data,
                                     &scoped_readers,
-                                    crate::ui::avatar_scoped::AVATAR_PURPOSE,
+                                    &purpose,
                                     &kp,
                                     &hp,
                                 ) {
                                     // Remember the blob id and its key: a friend whose pair secret is re-minted later needs a slot at their NEW address, and re-uploading the image to give it to them would be absurd.
                                     Ok((_, contents)) => {
                                         crate::ui::avatar_scoped::remember_published(
-                                            crate::ui::avatar_scoped::AVATAR_PURPOSE,
+                                            &purpose,
                                             &contents,
                                             &storage,
                                         )
@@ -9159,22 +9163,21 @@ impl PhotonApp {
         // Freshly re-minted reader secrets need a slot at their new address (see the mint edge). Off-thread: each grant is a blocking upload.
         if !self.scoped_regrant_pending.is_empty() {
             let secrets = std::mem::take(&mut self.scoped_regrant_pending);
-            if let (Some(kp), Some(hp), Some(storage)) = (
+            if let (Some(kp), Some(hp), Some(our_pid), Some(storage)) = (
                 self.device_keypair.clone(),
                 self.handle_query
                     .as_ref()
                     .and_then(|hq| hq.get_handle_proof()),
+                self.session
+                    .as_ref()
+                    .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)),
                 self.storage.as_ref().map(Arc::clone),
             ) {
                 std::thread::spawn(move || {
+                    // A grant serves OUR published blob, so the purpose carries OUR pid (the publisher).
+                    let purpose = crate::ui::avatar_scoped::avatar_purpose(&our_pid);
                     for kek in secrets {
-                        crate::ui::avatar_scoped::grant_reader(
-                            &kek,
-                            crate::ui::avatar_scoped::AVATAR_PURPOSE,
-                            &kp,
-                            &hp,
-                            &storage,
-                        );
+                        crate::ui::avatar_scoped::grant_reader(&kek, &purpose, &kp, &hp, &storage);
                     }
                 });
             }
@@ -10090,6 +10093,8 @@ impl PhotonApp {
                 if let Some(tb) = self.contacts_textbox.as_mut() {
                     tb.clear();
                 }
+                // Propagate to the rest of the fleet on the ADD edge — the same push the friend-add path fires. This was the one add that never pushed, so notes-to-self appeared only on the device that typed it until some unrelated pull's reconcile noticed (peer_a, 2026-08-02).
+                self.spawn_roster_push();
             }
             return;
         }
@@ -14213,9 +14218,10 @@ impl PhotonApp {
             // Scoped blob first (docs/scoped-blobs.md): our private slot names the ciphertext and carries its key. Falls back to the legacy pin only while avatars published under the old scheme are still out there — a friend who has re-set their avatar since is served entirely by the slot.
             let pixels = scoped_kek
                 .and_then(|kek| {
+                    // THEIR avatar, so the purpose carries THEIR pid — the friend is the publisher of the blob we are reading.
                     let raw = crate::ui::avatar_scoped::fetch_blocking(
                         &kek,
-                        crate::ui::avatar_scoped::AVATAR_PURPOSE,
+                        &crate::ui::avatar_scoped::avatar_purpose(&party_id),
                     )?;
                     let (_, px) = crate::ui::avatar::decode_avatar_av1_to_display(&raw)?;
                     crate::log("AVATAR: fetched from our scoped slot");
