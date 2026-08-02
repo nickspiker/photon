@@ -505,6 +505,18 @@ impl Contact {
         c
     }
 
+    /// The conversation this contact stands for, as a participant SET.
+    ///
+    /// This is the seam the self special-casing lived in. A contact row for our own identity describes a conversation whose only participant is us, and one for a friend describes a conversation with two — the difference is the size of a set, not a mode to branch on. Callers ask `remote_participants()` and get the right answer for zero, one, or any number without knowing which case they are in.
+    pub fn conversation(&self, our_party_id: &crate::types::PartyId) -> crate::types::Conversation {
+        crate::types::Conversation::new([*our_party_id, self.handle_hash])
+    }
+
+    /// How many OTHER people a message here has to reach. `0` for our own notes — not because we checked for self, but because a set containing only us has nobody else in it.
+    pub fn remote_count(&self, our_party_id: &crate::types::PartyId) -> usize {
+        self.conversation(our_party_id).remote_count(our_party_id)
+    }
+
     /// The name this contact renders as everywhere: their published profile name → the keyed two-word voca pseudonym from the party id. No handle: the string that derives an identity exists at rest nowhere (docs/identity-profile.md). Names carry ZERO trust — the pinned key does.
     pub fn display_name(&self) -> String {
         if !self.published_name.is_empty() {
