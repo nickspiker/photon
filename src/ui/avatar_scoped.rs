@@ -31,7 +31,7 @@ pub fn publish_blocking(
     purpose: &[u8],
     device_keypair: &Keypair,
     handle_proof: &[u8; 32],
-) -> Result<[u8; 32], String> {
+) -> Result<([u8; 32], SlotContents), String> {
     let dek = new_dek();
     let blob_id = new_blob_id();
     let sealed = seal_content(&dek, &blob_id, plaintext)?;
@@ -57,7 +57,63 @@ pub fn publish_blocking(
         written,
         total
     );
-    Ok(blob_id)
+    Ok((blob_id, contents))
+}
+
+/// Where our own published blob's identity lives, so readers can be ADDED later without re-uploading the content. Without this a new reader can only be served by a full republish, which is both wasteful and — worse — impossible to do correctly, since the DEK is gone the moment `publish_blocking` returns.
+fn published_key(purpose: &[u8]) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(b"PHOTON_SCOPED_PUBLISHED_v");
+    h.update(&[fgtw::scoped_blob::SCOPED_VERSION]);
+    h.update(purpose);
+    crate::storage::vault_key("scoped_published", h.finalize().as_bytes())
+}
+
+/// Remember what we published, so a reader who arrives later gets a slot rather than a republish.
+pub fn remember_published(
+    purpose: &[u8],
+    contents: &SlotContents,
+    storage: &crate::storage::FlatStorage,
+) {
+    let mut buf = [0u8; 64];
+    buf[..32].copy_from_slice(&contents.blob_id);
+    buf[32..].copy_from_slice(&contents.dek);
+    if let Err(e) = storage.write_addr(&published_key(purpose), &buf) {
+        crate::logf!("SCOPED: could not record what we published: {}", e);
+    }
+}
+
+/// Grant ONE new reader access to what we already published — a single ~80 byte slot write against the existing ciphertext.
+///
+/// This is what makes a rotating reader secret survivable. A slot address is derived from the CLUTCH pair secret, and that secret is re-minted by every re-clutch — so a friend who re-clutches after we published starts looking at a new address where nothing was ever written, and their avatar silently stops resolving. Re-granting on the mint edge puts a slot at the new address without touching the content.
+pub fn grant_reader(
+    kek_secret: &[u8; 32],
+    purpose: &[u8],
+    device_keypair: &Keypair,
+    handle_proof: &[u8; 32],
+    storage: &crate::storage::FlatStorage,
+) {
+    let Ok(Some(buf)) = storage.read_addr(&published_key(purpose)) else {
+        return; // nothing published yet — the next publish will include them
+    };
+    if buf.len() != 64 {
+        return;
+    }
+    let mut contents = SlotContents {
+        blob_id: [0u8; 32],
+        dek: [0u8; 32],
+    };
+    contents.blob_id.copy_from_slice(&buf[..32]);
+    contents.dek.copy_from_slice(&buf[32..]);
+    let Ok(writes) = slot_writes(std::slice::from_ref(kek_secret), purpose, &contents) else {
+        return;
+    };
+    for w in &writes {
+        match blob::put_blob_blocking(&addr(&w.address), &w.sealed, device_keypair, handle_proof) {
+            Ok(()) => crate::log("SCOPED: granted a reader access to the existing blob"),
+            Err(e) => crate::logf!("SCOPED: grant failed: {}", e),
+        }
+    }
 }
 
 /// Fetch content shared with us: find our slot from the secret we share with the publisher, unwrap the key, pull the one ciphertext.

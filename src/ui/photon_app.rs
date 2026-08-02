@@ -908,6 +908,8 @@ pub struct PhotonApp {
     fleet_heal_busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// A sibling pair just became egged (Phase A) — mint the next fan-out epoch so that sibling finally gets a wrap. Set by the ceremony drain, consumed by the tick (the rotation needs `&self` off the drain's borrows).
     fanout_rotate_pending: bool,
+    /// Reader secrets that just changed and need a fresh scoped slot written for them (the ceremony drain cannot do the blocking upload itself). Drained by the tick.
+    scoped_regrant_pending: Vec<[u8; 32]>,
     /// Own-avatar recovery deferred until the fleet settings carry the avatar pin (the pin is what addresses and decrypts the published copy). Cleared once the recovery actually spawns.
     self_avatar_recover_pending: Option<[u8; 32]>,
     /// Heal thread → tick: a removal rotation WE won landed; the drain runs the winner-only UI-thread follow-up (avatar bearer-pin rotate). Losers adopt the winner's key off-thread and send nothing.
@@ -1276,6 +1278,7 @@ impl PhotonApp {
             fleet_heal_busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             fanout_rotate_pending: false,
             self_avatar_recover_pending: None,
+            scoped_regrant_pending: Vec::new(),
             fleet_rotated_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
                 tx
@@ -1634,7 +1637,14 @@ impl PhotonApp {
                                     &kp,
                                     &hp,
                                 ) {
-                                    Ok(_) => {}
+                                    // Remember the blob id and its key: a friend whose pair secret is re-minted later needs a slot at their NEW address, and re-uploading the image to give it to them would be absurd.
+                                    Ok((_, contents)) => {
+                                        crate::ui::avatar_scoped::remember_published(
+                                            crate::ui::avatar_scoped::AVATAR_PURPOSE,
+                                            &contents,
+                                            &storage,
+                                        )
+                                    }
                                     Err(e) => crate::logf!("SCOPED: avatar publish failed: {}", e),
                                 }
                             }
@@ -9130,6 +9140,30 @@ impl PhotonApp {
             }
         }
 
+        // Freshly re-minted reader secrets need a slot at their new address (see the mint edge). Off-thread: each grant is a blocking upload.
+        if !self.scoped_regrant_pending.is_empty() {
+            let secrets = std::mem::take(&mut self.scoped_regrant_pending);
+            if let (Some(kp), Some(hp), Some(storage)) = (
+                self.device_keypair.clone(),
+                self.handle_query
+                    .as_ref()
+                    .and_then(|hq| hq.get_handle_proof()),
+                self.storage.as_ref().map(Arc::clone),
+            ) {
+                std::thread::spawn(move || {
+                    for kek in secrets {
+                        crate::ui::avatar_scoped::grant_reader(
+                            &kek,
+                            crate::ui::avatar_scoped::AVATAR_PURPOSE,
+                            &kp,
+                            &hp,
+                            &storage,
+                        );
+                    }
+                });
+            }
+        }
+
         // Keep any notes-to-self row showing OUR name and avatar — a profile edit or a fresh avatar must reach it, and nothing else ever will (no peer pongs us).
         self.settle_self_display();
 
@@ -15075,6 +15109,8 @@ impl PhotonApp {
                             if is_sibling { "sibling" } else { "friend" },
                             crate::fp(&their_device)
                         );
+                        // A scoped slot's ADDRESS is derived from this secret, so re-minting it moves the reader to an address nothing was ever written to — their avatar silently stops resolving. Re-grant on the mint edge: one ~80 byte slot write against the blob we already published, no re-upload.
+                        self.scoped_regrant_pending.push(result.fanout_pair_secret);
                         // A newly egged SIBLING can now be wrapped, so mint the next fan-out epoch that includes it. Idempotent by the worker's monotonic epoch guard; a loser just adopts the winner's key. A friend's secret changes no fleet state, so no rotation.
                         if is_sibling {
                             self.fanout_rotate_pending = true;
