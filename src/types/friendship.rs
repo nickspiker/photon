@@ -228,6 +228,9 @@ pub struct FriendshipChains {
     /// Friend-history bulk key: seals history-recovery pages between the participants, OUTSIDE the ratchet. Derived once at ceremony birth (`from_clutch`) via spaghettify over the pristine active chains — identical on both sides exactly then, divergent after any advance. `None` for chains loaded from pre-feature vaults (recovery unavailable until their next re-key, which is the recovery scenario anyway). Persisted with the chains; zeroized on supersede.
     history_key: Option<[u8; 32]>,
 
+    /// The LANE ROOT (docs/lanes.md): the 32-byte secret every per-device lane derives from — lane = expand(root ‖ wire label), device identity nowhere in the derivation. Born beside `history_key` from the same pristine-chains moment; the lanes themselves materialize on demand once the lane wire lands. Persisted (schema v8); zeroized on supersede, same custody as the chain links beside it.
+    lane_root: Option<[u8; 32]>,
+
     /// Eagle-time of the last LOCAL mutation of this chain state (send prepare, ACK advance, receive advance, plaintext update). The fleet chain-replication ordering key: a sibling's pushed copy is adopted iff its stamp is NEWER than ours — "if another device is ahead, I just catch up". Persisted (schema v7); 0 for pre-feature vaults (any replicated copy beats an unstamped one).
     pub mutated_osc: i64,
 }
@@ -386,9 +389,13 @@ impl FriendshipChains {
         }
 
         // Friend-history bulk key — derived HERE, at ceremony birth, from the pristine active chains (the one moment both sides are byte-identical). Every completion path flows thru from_clutch, so this is the single derivation site. See crypto::clutch::derive_history_key.
-        let history_key = {
+        let (history_key, lane_root) = {
             let refs: Vec<&[u8]> = active_snapshots.iter().map(|v| v.as_slice()).collect();
-            crate::crypto::clutch::derive_history_key(friendship_id.as_bytes(), &refs)
+            (
+                crate::crypto::clutch::derive_history_key(friendship_id.as_bytes(), &refs),
+                // The lane root shares the birth moment and the input discipline — distinct domain, so the two keys are unrelated (docs/lanes.md).
+                crate::crypto::clutch::derive_lane_root(friendship_id.as_bytes(), &refs),
+            )
         };
         // The snapshots duplicate live chain secret material — scrub them.
         for snap in active_snapshots.iter_mut() {
@@ -429,6 +436,7 @@ impl FriendshipChains {
             last_incorporated_hp: None,
             gap_buffer: Vec::new(),
             history_key: Some(history_key),
+            lane_root: Some(lane_root),
             mutated_osc: 0,
         }
     }
@@ -498,6 +506,7 @@ impl FriendshipChains {
             last_incorporated_hp,
             gap_buffer: Vec::new(), // Gap buffer is transient, not persisted
             history_key: None,      // pre-v6 file: no history key (set by the loader when present)
+            lane_root: None,        // loader installs it from a v8 file
             mutated_osc: 0,
         })
     }
@@ -601,6 +610,7 @@ impl FriendshipChains {
             last_incorporated_hp,
             gap_buffer: Vec::new(), // Gap buffer is transient, not persisted
             history_key: None,      // pre-v6 file default: loader sets it when the field is present
+            lane_root: None,        // loader installs it from a v8 file
             mutated_osc: 0,
         })
     }
@@ -622,6 +632,25 @@ impl FriendshipChains {
             k.zeroize();
         }
         self.history_key = None;
+    }
+
+    /// The lane root (docs/lanes.md) — the secret every per-device lane derives from.
+    pub fn lane_root(&self) -> Option<&[u8; 32]> {
+        self.lane_root.as_ref()
+    }
+
+    /// Install the lane root (storage loader, from a v8 file).
+    pub fn set_lane_root(&mut self, root: Option<[u8; 32]>) {
+        self.lane_root = root;
+    }
+
+    /// Scrub the lane root (supersede on re-key / delete) — every lane grown from it dies with it.
+    pub fn zeroize_lane_root(&mut self) {
+        use zeroize::Zeroize;
+        if let Some(k) = self.lane_root.as_mut() {
+            k.zeroize();
+        }
+        self.lane_root = None;
     }
 
     /// Serialize all chains to bytes (for storage).

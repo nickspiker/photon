@@ -2564,6 +2564,8 @@ impl FluorApp for PhotonApp {
                                 self.friendship_chains.push((fid, chains));
                             }
                         }
+                        // Anything the loader REJECTED (pre-v8 blobs, the lanes flag-day) leaves its contact keyed-but-chainless — reset those ceremonies now, while every chain that CAN load already has.
+                        self.reclutch_chainless_contacts("resume load");
                         self.update_sync_records();
                         // Seed the checker's answerable-pubkey set with every loaded contact's FULL fleet so pongs/offers from any of their devices are honoured.
                         self.reseed_contact_pubkeys();
@@ -13502,6 +13504,8 @@ impl PhotonApp {
                     );
                     self.update_sync_records();
                 }
+                // Same flag-day edge as the resume path: contacts whose pre-v8 chains the worker's loader rejected re-clutch here.
+                self.reclutch_chainless_contacts("attest load");
                 // Conversations the load worker read from disk: adopt any we don't hold. Never clobber — an in-session conversation (rows landed while the worker ran) is fresher than its disk copy.
                 let mut merged_convs = 0usize;
                 for conv in data.conversations {
@@ -14013,6 +14017,40 @@ impl PhotonApp {
         // Update the shared provider
         let mut provider = self.sync_records.lock().unwrap();
         *provider = records;
+    }
+
+    /// Flag-day edge (docs/lanes.md): a keyed contact whose chains are GONE — a pre-v8 blob the loader rejected — can never speak again on its own, because Complete contacts are invisible to the keygen queue and nothing else re-keys unprompted. Reset the ceremony so the ordinary machinery mints fresh v8 chains; §4.2 parking keeps a fleet from racing itself, and the peer accepts the offer as a routine re-key whatever build it runs. Zero-remote conversations have no ceremony and are untouched.
+    fn reclutch_chainless_contacts(&mut self, why: &str) {
+        for ci in 0..self.contacts.len() {
+            let c = &self.contacts[ci];
+            if c.clutch_state != crate::types::ClutchState::Complete || !self.has_remote(c) {
+                continue;
+            }
+            let missing = match c.friendship_id {
+                Some(fid) => !self.friendship_chains.iter().any(|(id, _)| *id == fid),
+                None => true,
+            };
+            if !missing {
+                continue;
+            }
+            let c = &mut self.contacts[ci];
+            crate::logf!(
+                "LANE: {} is keyed but holds no chains ({}) — re-clutch",
+                crate::fp(&c.handle_proof).as_str(),
+                why
+            );
+            c.clutch_state = crate::types::ClutchState::Pending;
+            c.chain_woven = false;
+            c.probe_sent = false;
+            c.their_probe_seen = false;
+            c.chain_advanced_by_ack = false;
+            c.clutch_offer_sent = false;
+            c.friendship_id = None;
+            c.clutch_round_started = None;
+            if let Some(storage) = self.storage.as_ref() {
+                let _ = crate::storage::contacts::save_contact(&self.contacts[ci], storage);
+            }
+        }
     }
 
     /// Spawn at most ONE CLUTCH keygen, for the first Pending contact that needs keypairs, but only if no keygen is already running. McEliece keygen is heavy; running several in parallel (e.g. after a multi-contact cloud merge on launch) starves the UI thread. Serializing to one-at-a-time keeps the app responsive — each completion frees the slot and `tick()` calls this again to start the next. Returns true if a keygen was spawned.
@@ -15243,8 +15281,9 @@ impl PhotonApp {
                 .iter_mut()
                 .find(|(id, _)| *id == friendship_id)
             {
-                // Supersede: scrub the OLD chains' history key before the re-keyed chains replace them (the fresh chains carry their own newly derived key).
+                // Supersede: scrub the OLD chains' history key + lane root before the re-keyed chains replace them (the fresh chains carry their own newly derived pair).
                 entry.1.zeroize_history_key();
+                entry.1.zeroize_lane_root();
                 entry.1 = result.friendship_chains;
             } else {
                 self.friendship_chains
@@ -16708,6 +16747,7 @@ impl PhotonApp {
             for (id, chains) in self.friendship_chains.iter_mut() {
                 if *id == fid {
                     chains.zeroize_history_key();
+                    chains.zeroize_lane_root();
                 }
             }
             self.friendship_chains.retain(|(id, _)| *id != fid);
@@ -19230,6 +19270,7 @@ impl PhotonApp {
                         for (id, chains) in self.friendship_chains.iter_mut() {
                             if *id == old_id {
                                 chains.zeroize_history_key();
+                                chains.zeroize_lane_root();
                             }
                         }
                         self.friendship_chains.retain(|(id, _)| *id != old_id);
