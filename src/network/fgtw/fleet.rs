@@ -326,6 +326,19 @@ pub fn push_fstate(
     fleet_key: &[u8; 32],
     state: &fgtw::fstate::FleetState,
 ) -> Result<(), String> {
+    // Fingerprint every write: the vanishing-avatar-pin hunt (2026-08-02) burned three sessions inferring what a push carried. Key NAMES are internal labels, not secrets; values never log.
+    crate::logf!(
+        "FSTATE→ push: {} roster, globals [{}], {} device map(s), key {}",
+        state.roster.len(),
+        state
+            .global_settings
+            .iter()
+            .map(|e| e.key.as_str())
+            .collect::<Vec<_>>()
+            .join(" "),
+        state.device_settings.len(),
+        crate::fp(fleet_key).as_str()
+    );
     fgtw::client::push_fstate(
         &PhotonTransport,
         &PhotonSealer,
@@ -341,7 +354,22 @@ pub fn pull_fstate(
     handle_proof: &[u8; 32],
     fleet_key: &[u8; 32],
 ) -> Result<Option<fgtw::fstate::FleetState>, String> {
-    fgtw::client::pull_fstate(&PhotonTransport, &PhotonSealer, handle_proof, fleet_key)
+    let r = fgtw::client::pull_fstate(&PhotonTransport, &PhotonSealer, handle_proof, fleet_key);
+    // The pull side of the write fingerprint above — reading both lines in one log answers "did the slot keep what we sent" without inference.
+    if let Ok(Some(s)) = &r {
+        crate::logf!(
+            "FSTATE← pull: {} roster, globals [{}], {} device map(s), key {}",
+            s.roster.len(),
+            s.global_settings
+                .iter()
+                .map(|e| e.key.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+            s.device_settings.len(),
+            crate::fp(fleet_key).as_str()
+        );
+    }
+    r
 }
 
 /// Publish the fleet roster. Roster-shaped wrapper over [`push_fstate`]: pulls the current slot first so the settings layers ride along untouched AND the roster converges by CRDT — union by handle_proof, per-entry LWW on `updated`, sticky tombstones — instead of last-pusher-wins clobbering a sibling's concurrent add (or resurrecting a removal we never held locally). A pull failure falls back to our-entries-only (nothing preservable: not_found = empty slot, AEAD failure = stale-epoch blob that this push is re-sealing anyway).
@@ -778,5 +806,54 @@ mod tests {
                 .unwrap_or(true),
             "a non-member must not read A's inbox"
         );
+    }
+}
+
+#[cfg(test)]
+mod pin_live_tests {
+    use super::*;
+
+    /// End-to-end against LIVE fgtw.org: a 4-global state whose fourth entry is a 64-byte avatar pin must survive push → worker → pull byte-for-byte. Every local link (codec, merge, race carriage) is unit-proven; this is the only test that can catch the slot itself lying (peer_a's pin, 2026-08-02).
+    #[test]
+    #[ignore = "hits live fgtw.org"]
+    fn live_pin_survives_the_slot() {
+        use fgtw::fstate::{FleetState, SettingEntry};
+        let handle_proof: [u8; 32] = rand::random();
+        let identity_seed: [u8; 32] = rand::random();
+        let a = Keypair::from_seed(&rand::random::<[u8; 32]>());
+        ensure_member(&a, &handle_proof, &identity_seed).expect("genesis");
+        let fleet_key: [u8; 32] = rand::random();
+        let mk = |key: &str, val: Vec<u8>, at: i64| SettingEntry {
+            key: key.into(),
+            value: val,
+            updated: at,
+            tombstone: false,
+        };
+        let state = FleetState {
+            roster: Vec::new(),
+            global_settings: vec![
+                mk("logs.hard", vec![1], 5),
+                mk("profile.avatar_pin", vec![0xEE; 64], 8),
+                mk("profile.avatar_ts", 42i64.to_le_bytes().to_vec(), 6),
+                mk("profile.name", b"PinProbe".to_vec(), 7),
+            ],
+            device_settings: Vec::new(),
+        };
+        push_fstate(&handle_proof, &a, &fleet_key, &state).expect("push");
+        let back = pull_fstate(&handle_proof, &fleet_key)
+            .expect("pull")
+            .expect("stored");
+        assert_eq!(
+            back.global_settings.len(),
+            4,
+            "slot dropped entries: {:?}",
+            back.global_settings.iter().map(|e| &e.key).collect::<Vec<_>>()
+        );
+        let pin = back
+            .global_settings
+            .iter()
+            .find(|e| e.key == "profile.avatar_pin")
+            .expect("pin entry");
+        assert_eq!(pin.value, vec![0xEE; 64]);
     }
 }
