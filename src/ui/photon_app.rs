@@ -14576,8 +14576,13 @@ impl PhotonApp {
             #[cfg(feature = "development")]
             #[cfg(feature = "development")]
             crate::log("CLUTCH: Background KEM encapsulation started (low priority)...");
-            let (kem_response, local_secrets) =
-                ClutchKemResponsePayload::encapsulate_to_peer(&their_offer);
+            let Some((kem_response, local_secrets)) =
+                ClutchKemResponsePayload::encapsulate_to_peer(&their_offer)
+            else {
+                // Malformed key material (old-build or hostile offer) — DROP, never panic: this exact shape was crashing peer_c's app on every received offer (2026-08-02).
+                crate::log("CLUTCH: offer carries malformed key material (version skew?) — dropped");
+                return;
+            };
             #[cfg(feature = "development")]
             #[cfg(feature = "development")]
             crate::log("CLUTCH: KEM encapsulation complete");
@@ -15013,9 +15018,14 @@ impl PhotonApp {
                                 &pending_kem,
                                 local_keys,
                             );
+                            if remote_secrets.is_none() {
+                                crate::log("CLUTCH: queued KEM carries malformed material — dropped (version skew?)");
+                            }
                             // Store remote secrets (from decapsulating FROM remote) in remote slot
                             let remote_hash = contact.handle_hash;
-                            if let Some(remote_slot) = contact.get_slot_mut(&remote_hash) {
+                            if let (Some(remote_secrets), Some(remote_slot)) =
+                                (remote_secrets, contact.get_slot_mut(&remote_hash))
+                            {
                                 remote_slot.kem_secrets_from_them = Some(remote_secrets);
                                 crate::logf!(
                                     "CLUTCH: Decapsulated queued KEM from {} - stored in slot",
@@ -18989,10 +18999,14 @@ impl PhotonApp {
                                                 &pending_kem,
                                                 local_keys,
                                             );
+                                        if remote_secrets.is_none() {
+                                            crate::log("CLUTCH: queued KEM carries malformed material — dropped (version skew?)");
+                                        }
                                         // Store remote secrets in remote slot
-                                        if let Some(remote_slot) =
-                                            contact.get_slot_mut(&their_handle_hash)
-                                        {
+                                        if let (Some(remote_secrets), Some(remote_slot)) = (
+                                            remote_secrets,
+                                            contact.get_slot_mut(&their_handle_hash),
+                                        ) {
                                             remote_slot.kem_secrets_from_them =
                                                 Some(remote_secrets);
                                             crate::logf!("CLUTCH: Decapsulated queued KEM from {} - stored in slot", crate::fp(&contact.handle_proof));
@@ -19519,9 +19533,12 @@ impl PhotonApp {
 
                             // Decapsulate remote KEM response using local secret keys
                             if let Some(ref local_keys) = contact.clutch_our_keypairs {
-                                let remote_secrets = ClutchKemSharedSecrets::decapsulate_from_peer(
+                                let Some(remote_secrets) = ClutchKemSharedSecrets::decapsulate_from_peer(
                                     &their_kem, local_keys,
-                                );
+                                ) else {
+                                    crate::log("CLUTCH: KEM response carries malformed material — dropped (version skew?)");
+                                    break;
+                                };
 
                                 // Store in remote slot (secrets from remote to local)
                                 if let Some(slot) = contact.get_slot_mut(&their_handle_hash) {
