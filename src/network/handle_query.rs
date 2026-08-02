@@ -25,6 +25,8 @@ pub struct AttestationData {
     pub handle_proof: [u8; 32],
     pub identity_seed: [u8; 32],
     pub contacts: Vec<crate::types::Contact>,
+    /// One conversation per loaded contact row, keyed by participant set — messages, unread and the history cursor live here, never on the contact.
+    pub conversations: Vec<crate::types::Conversation>,
     pub friendships: Vec<(
         crate::types::friendship::FriendshipId,
         crate::types::friendship::FriendshipChains,
@@ -662,18 +664,8 @@ impl HandleQuery {
                         crate::log("Network: Loading contacts from disk...");
                         let mut contacts = crate::storage::contacts::load_all_contacts(&storage);
 
-                        // Load messages for each contact
+                        // Load per-contact ceremony state (conversations load after the cloud merge, so cloud-only contacts get theirs too)
                         for contact in &mut contacts {
-                            if let Err(e) =
-                                crate::storage::contacts::load_messages(contact, &storage)
-                            {
-                                crate::logf!(
-                                    "Network: Failed to load messages for {}: {}",
-                                    crate::fp(&contact.handle_proof).as_str(),
-                                    e
-                                );
-                            }
-
                             // Load CLUTCH state if ceremony incomplete
                             if contact.clutch_state != crate::types::ClutchState::Complete {
                                 if let Ok(Some(state)) = crate::storage::contacts::load_clutch_slots(
@@ -800,12 +792,37 @@ impl HandleQuery {
                                 );
                             }
                         }
+                        // Conversations, one per contact row: messages plus the durable bits (unread, history cursor), keyed by the participant set so every device derives the same table.
+                        let our_pid = crate::crypto::clutch::identity_party_id(&identity_seed);
+                        let mut conversations: Vec<crate::types::Conversation> = Vec::new();
+                        for contact in &contacts {
+                            let mut conv = contact.conversation(&our_pid);
+                            if conversations.iter().any(|v| v.id() == conv.id()) {
+                                continue;
+                            }
+                            crate::storage::contacts::load_conversation_state(
+                                &mut conv,
+                                &contact.handle_hash,
+                                &storage,
+                            );
+                            if let Err(e) =
+                                crate::storage::contacts::load_messages(&mut conv, &storage)
+                            {
+                                crate::logf!(
+                                    "Network: Failed to load messages for {}: {}",
+                                    crate::fp(&contact.handle_proof).as_str(),
+                                    e
+                                );
+                            }
+                            conversations.push(conv);
+                        }
                         crate::log("Network: Background loading complete");
 
                         QueryResult::Success(Box::new(AttestationData {
                             handle_proof,
                             identity_seed,
                             contacts,
+                            conversations,
                             friendships,
                             avatar_pixels,
                             peers: result.peers,

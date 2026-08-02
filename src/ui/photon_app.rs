@@ -853,6 +853,8 @@ pub struct PhotonApp {
     storage: Option<std::sync::Arc<crate::storage::FlatStorage>>,
     /// Contact list. Populated from `AttestationData.contacts` on attestation success and grown by `submit_add_friend` → `HandleQuery::search` results. Persisted to FlatStorage on add.
     contacts: Vec<crate::types::Contact>,
+    /// Conversations, keyed by their participant-set id. A contact row and its DM conversation are 1:1 today, so entries materialize lazily the first time something touches a conversation; nothing assumes the count matches `contacts`, which is what leaves room for zero-contact (notes-to-self) and many-contact (group) sets without changing shape.
+    conversations: Vec<crate::types::Conversation>,
     /// `true` while an add-friend FGTW search is in flight (between `submit_add_friend` firing `hq.search` and `on_search_result` landing). Drives the rotating-hourglass-over-the-plus-button cue.
     add_in_flight: bool,
     /// Hourglass rotation in degrees, advanced with a stochastic wobble each tick while `add_in_flight`.
@@ -943,10 +945,10 @@ pub struct PhotonApp {
     roster_pull_rx: Option<std::sync::mpsc::Receiver<Result<fgtw::fstate::FleetState, String>>>,
     /// A fleet-state pull has SUCCEEDED at least once this session (an empty slot counts — that is a real answer). Until it has, local settings are not authoritative: they may simply be a wiped device's blank slate, and anything derived from their ABSENCE would be derived from ignorance. Gates avatar-pin minting, which otherwise orphans the avatar already published under the fleet's real pin.
     fstate_authoritative: bool,
-    /// Message-table persist worker: conversation snapshots go over this channel to ONE background thread that coalesces (latest snapshot per handle_hash wins) and writes. `save_messages` is a full encrypted table rewrite — on the UI thread it was the named 600ms–5.7s stall behind every ChatMessage/MessageAck arm; off it, an ack is a field flip.
+    /// Message-table persist worker: conversation snapshots go over this channel to ONE background thread that coalesces (latest snapshot per conversation id wins) and writes. `save_messages` is a full encrypted table rewrite — on the UI thread it was the named 600ms–5.7s stall behind every ChatMessage/MessageAck arm; off it, an ack is a field flip.
     persist_tx: Option<
         std::sync::mpsc::Sender<(
-            crate::types::Contact,
+            crate::types::Conversation,
             std::sync::Arc<crate::storage::FlatStorage>,
         )>,
     >,
@@ -1325,6 +1327,7 @@ impl PhotonApp {
             message_send_btn: None,
             storage: None,
             contacts: Vec::new(),
+            conversations: Vec::new(),
             add_in_flight: false,
             hourglass_angle: 0.0,
             hourglass_rng: 0x9E37_79B9_7F4A_7C15,
@@ -1887,7 +1890,11 @@ impl PhotonApp {
                 .active_contact
                 .and_then(|ci| self.contacts.get(ci))
                 .map(|c| {
-                    let can_fleet_forward = !c.is_sibling && !c.messages.is_empty() && has_fleet;
+                    let has_history = self
+                        .active_contact
+                        .and_then(|ci| self.conv_of(ci))
+                        .is_some_and(|v| !v.messages.is_empty());
+                    let can_fleet_forward = !c.is_sibling && has_history && has_fleet;
                     // Literally the render gate's expression: zero-remote || chain_woven || can_fleet_forward.
                     self.is_zero_remote(c) || c.chain_woven || can_fleet_forward
                 })
@@ -2523,12 +2530,18 @@ impl FluorApp for PhotonApp {
                             }
                             self.contacts.extend(siblings);
                         }
-                        // Load each contact's conversation history too — load_all_contacts only loads per-peer contact STATE from the vault, not the messages (those live in the rārangi DB, loaded separately). Without this the resume frame paints contacts with empty message lists, and the later query_resume result can't fix it: on_query_result merges by handle_proof and SKIPS already-loaded contacts as duplicates, so the message-bearing copy is discarded → history looks wiped until the next app launch. Loading here makes resume show full history at once.
-                        for contact in &mut self.contacts {
-                            if let Err(e) = crate::storage::contacts::load_messages(contact, &s) {
+                        // Load each contact's conversation too — load_all_contacts only loads per-peer contact STATE from the vault, not the messages (those live in the rārangi DB, loaded separately). Without this the resume frame paints contacts with empty message lists, and the later query_resume result can't fix it: on_query_result merges by handle_proof and SKIPS already-loaded contacts as duplicates, so the message-bearing copy is discarded → history looks wiped until the next app launch. Loading here makes resume show full history at once.
+                        for ci in 0..self.contacts.len() {
+                            let (proof, key) =
+                                (self.contacts[ci].handle_proof, self.contacts[ci].handle_hash);
+                            let Some(conv) = self.conv_mut_of(ci) else {
+                                continue;
+                            };
+                            crate::storage::contacts::load_conversation_state(conv, &key, &s);
+                            if let Err(e) = crate::storage::contacts::load_messages(conv, &s) {
                                 crate::logf!(
                                     "UI: resume failed to load messages for {}: {}",
-                                    crate::fp(&contact.handle_proof).as_str(),
+                                    crate::fp(&proof).as_str(),
                                     e
                                 );
                             }
@@ -3153,8 +3166,8 @@ impl FluorApp for PhotonApp {
             }
             if hit_id == self.msg_copy_id && hit_id != HIT_NONE {
                 if let Some((sci, ts, out)) = self.selected_msg {
-                    let text_opt = self.contacts.get(sci).and_then(|c| {
-                        c.messages
+                    let text_opt = self.conv_of(sci).and_then(|v| {
+                        v.messages
                             .iter()
                             .find(|m| m.timestamp == ts && m.is_outgoing == out)
                             .map(|m| m.content.clone())
@@ -3181,8 +3194,8 @@ impl FluorApp for PhotonApp {
                     match slot {
                         // REPLY: quote-prefill the compose box and focus it — works today with no wire change; true reply threading (a reply_to field) rides the message-format rework.
                         0 => {
-                            let excerpt: Option<String> = self.contacts.get(sci).and_then(|c| {
-                                c.messages
+                            let excerpt: Option<String> = self.conv_of(sci).and_then(|v| {
+                                v.messages
                                     .iter()
                                     .find(|m| m.timestamp == ts && m.is_outgoing == out)
                                     .map(|m| {
@@ -3211,8 +3224,8 @@ impl FluorApp for PhotonApp {
                         }
                         // RESEND: manually re-fire an undelivered outgoing on the chain with its ORIGINAL timestamp (identity preserved — the friend dedups + re-ACKs, so this is always safe); chainless devices re-push thru the fleet instead.
                         2 => {
-                            let text_opt = self.contacts.get(sci).and_then(|c| {
-                                c.messages
+                            let text_opt = self.conv_of(sci).and_then(|v| {
+                                v.messages
                                     .iter()
                                     .find(|m| {
                                         m.timestamp == ts && m.is_outgoing == out && !m.delivered
@@ -3223,8 +3236,8 @@ impl FluorApp for PhotonApp {
                                 if self.chain_transmit(sci, &text, ts) {
                                     self.ready_toast = Some("re-sent on the chain".to_string());
                                 } else {
-                                    let row = self.contacts.get(sci).and_then(|c| {
-                                        c.messages
+                                    let row = self.conv_of(sci).and_then(|v| {
+                                        v.messages
                                             .iter()
                                             .find(|m| m.timestamp == ts && m.is_outgoing == out)
                                             .cloned()
@@ -3247,10 +3260,9 @@ impl FluorApp for PhotonApp {
                         // SAVE / FETCH (attachments): blob held → write to Downloads; missing → ask friend + siblings over PT.
                         4 => {
                             let att = self
-                                .contacts
-                                .get(sci)
-                                .and_then(|c| {
-                                    c.messages
+                                .conv_of(sci)
+                                .and_then(|v| {
+                                    v.messages
                                         .iter()
                                         .find(|m| m.timestamp == ts && m.is_outgoing == out)
                                 })
@@ -3530,40 +3542,40 @@ impl FluorApp for PhotonApp {
                     } else if matches!(self.state, AppState::Conversation) {
                         // In a conversation the wheel scrolls the message history. The list lays out bottom-up with newest at the bottom; a positive offset pushes messages down (reveals older ones above). Scroll-up (positive dy) shows older → add. Only the 0 end rubber-bands (hi = ∞); the old-history end is backfill-paged, not clamped.
                         if let Some(ci) = self.active_contact {
-                            if let Some(contact) = self.contacts.get_mut(ci) {
-                                contact.message_scroll_offset = rubber_step(
-                                    contact.message_scroll_offset,
+                            let can_scroll = self.msg_max_scroll > 0.0;
+                            if let Some(conv) = self.conv_mut_of(ci) {
+                                conv.scroll_offset = rubber_step(
+                                    conv.scroll_offset,
                                     // Notches get the wheel step-up; pixel sources are already distances.
                                     dy as f32 * if is_pixel_delta { 1.0 } else { (1 << 3) as f32 },
                                     f32::INFINITY,
                                     reach,
                                 );
-                                // Top-bar slide: the strip rides the SAME deltas as the content, sliding off as you scroll one way and back on with the other — position-tied like a browser toolbar, no snap, no timers. Only when the conversation can actually scroll.
-                                if self.msg_max_scroll > 0.0 {
-                                    let unit_b = ReadyLayout::compute(
-                                        ctx.viewport.width_px as usize,
-                                        ctx.viewport.height_px as usize,
-                                        ctx.viewport.ru,
-                                    )
-                                    .unit_height;
-                                    let bar_h =
-                                        ctx.viewport.height_px as f32 * 0.06 + unit_b * 2.15;
-                                    // Sign: scrolling toward the NEWEST slides the bar off; heading back into history brings it with you (the first mapping shipped inverted — user: "the contacts thing is backwards").
-                                    let step = -(dy as f32)
-                                        * if is_pixel_delta { 1.0 } else { (1 << 3) as f32 };
-                                    let off = (self.conv_topbar_off + step).clamp(0.0, bar_h);
-                                    if (off - self.conv_topbar_off).abs() > 0.01 {
-                                        self.conv_topbar_off = off;
-                                        self.scene_dirty = true;
-                                    }
-                                }
                                 // Scrollback jumps the history-backfill queue: the user is heading toward the old edge, so the next page request fires on the next tick instead of waiting out the trickle interval.
                                 if dy > 0 {
-                                    if let Some(rec) = contact.history_recovery.as_mut() {
+                                    if let Some(rec) = conv.history_recovery.as_mut() {
                                         if !rec.complete {
                                             rec.urgent = true;
                                         }
                                     }
+                                }
+                            }
+                            // Top-bar slide: the strip rides the SAME deltas as the content, sliding off as you scroll one way and back on with the other — position-tied like a browser toolbar, no snap, no timers. Only when the conversation can actually scroll.
+                            if can_scroll {
+                                let unit_b = ReadyLayout::compute(
+                                    ctx.viewport.width_px as usize,
+                                    ctx.viewport.height_px as usize,
+                                    ctx.viewport.ru,
+                                )
+                                .unit_height;
+                                let bar_h = ctx.viewport.height_px as f32 * 0.06 + unit_b * 2.15;
+                                // Sign: scrolling toward the NEWEST slides the bar off; heading back into history brings it with you (the first mapping shipped inverted — user: "the contacts thing is backwards").
+                                let step = -(dy as f32)
+                                    * if is_pixel_delta { 1.0 } else { (1 << 3) as f32 };
+                                let off = (self.conv_topbar_off + step).clamp(0.0, bar_h);
+                                if (off - self.conv_topbar_off).abs() > 0.01 {
+                                    self.conv_topbar_off = off;
+                                    self.scene_dirty = true;
                                 }
                             }
                         }
@@ -4186,8 +4198,9 @@ impl FluorApp for PhotonApp {
         if let Some(((sci, ts, out), true)) = self.pending_delete {
             self.pending_delete = None;
             let mut tombstoned: Option<ChatMessage> = None;
-            if let Some(c) = self.contacts.get_mut(sci) {
-                if let Some(m) = c
+            let storage = self.storage.clone();
+            if let Some(conv) = self.conv_mut_of(sci) {
+                if let Some(m) = conv
                     .messages
                     .iter_mut()
                     .find(|m| m.timestamp == ts && m.is_outgoing == out)
@@ -4198,8 +4211,8 @@ impl FluorApp for PhotonApp {
                     }
                 }
                 if tombstoned.is_some() {
-                    if let Some(storage) = self.storage.as_ref() {
-                        let _ = crate::storage::contacts::save_messages(c, storage);
+                    if let Some(storage) = storage.as_ref() {
+                        let _ = crate::storage::contacts::save_messages(conv, storage);
                     }
                 }
             }
@@ -4463,12 +4476,11 @@ impl FluorApp for PhotonApp {
             }
             if matches!(self.state, AppState::Conversation) {
                 let ceiling = self.msg_max_scroll;
-                if let Some(contact) = self.active_contact.and_then(|ci| self.contacts.get_mut(ci))
-                {
-                    spring |= relax(&mut contact.message_scroll_offset, f32::INFINITY);
+                if let Some(conv) = self.active_contact.and_then(|ci| self.conv_mut_of(ci)) {
+                    spring |= relax(&mut conv.scroll_offset, f32::INFINITY);
                     // Clamp the STORED offset to the last-rendered ceiling: the 0-end rubber-bands (relax above, hi=∞), but drifting PAST the top (offset > max_scroll after the viewport shrank/grew) must snap back, else the list sticks above the oldest message until you scroll down through the excess. Only pull DOWN — never fight an active drag toward 0.
-                    if contact.message_scroll_offset > ceiling {
-                        contact.message_scroll_offset = ceiling;
+                    if conv.scroll_offset > ceiling {
+                        conv.scroll_offset = ceiling;
                         spring = true;
                     }
                 }
@@ -5532,17 +5544,23 @@ impl FluorApp for PhotonApp {
                 .map(|(i, _)| i)
                 .collect();
             // ORDER: unread conversations float to the top, then everyone sorts by MOST-RECENT activity (last message either way — a fresh reply or a fresh receipt lifts the contact). `matching` is the ONE place display order exists — the row loop draws from it AND stamps each row's hit id with the TRUE contact index it holds, so the tap handler resolves taps with no knowledge of the permutation. The key is (unread-first, newest-activity-first); i64::MIN for a contact with no messages sinks it below any conversation.
+            let our_handle_hash = self
+                .session
+                .as_ref()
+                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                .unwrap_or([0u8; 32]);
             matching.sort_by_key(|&ci| {
-                let c = &self.contacts[ci];
-                let last_activity = c
-                    .messages
+                let conv = dm_conversation(&self.conversations, &our_handle_hash, &self.contacts[ci]);
+                let last_activity = conv
+                    .map(|v| v.messages.as_slice())
+                    .unwrap_or(&[])
                     .iter()
                     .filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted)
                     .map(|m| m.timestamp)
                     .max()
                     .unwrap_or(i64::MIN);
                 (
-                    u8::from(c.unread_count == 0),
+                    u8::from(conv.is_none_or(|v| v.unread_count == 0)),
                     std::cmp::Reverse(last_activity),
                 )
             });
@@ -5560,12 +5578,7 @@ impl FluorApp for PhotonApp {
             let text_x = avatar_cx + avatar_r * 1.5;
             let text_size = row_h as f32 * 0.5;
             let ring_thickness = (avatar_r * 0.0375).max(1.0);
-            // Handle names render in each contact's relationship colour (spaghettify per visible row is microseconds; revisit with a cache if contact lists ever get huge).
-            let our_handle_hash = self
-                .session
-                .as_ref()
-                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
-                .unwrap_or([0u8; 32]);
+            // Handle names render in each contact's relationship colour (spaghettify per visible row is microseconds; revisit with a cache if contact lists ever get huge). `our_handle_hash` is bound above the sort — one derivation for the ordering and the rows.
             for (vis, &ci) in matching.iter().enumerate() {
                 // Use the SAME `scroll` snapshot the avatar / hint / search box / separator read (captured up top, before the down-scroll clamp below mutated `self.contacts_scroll`). Reading the live field here made the rows lag the rest of the block by the clamp delta: on an up-scroll past rest the avatar + textbox dragged with the rubber-band overshoot (they read the snapshot) but the names sat still (they read the post-clamp value). One block, one offset.
                 let row_top = rows.y0 as isize + vis as isize * row_h - scroll as isize;
@@ -5632,7 +5645,9 @@ impl FluorApp for PhotonApp {
                 };
                 let _ = row_colour;
                 // Presence ring at the rim (connectivity tier), then — if unread — a MAGENTA ring OUTSIDE it (the new-message cue never overlaps or recolours the connectivity ring). Under-composite paints topmost-first, so the presence disc is drawn before the larger magenta disc and the magenta only shows in its outer annulus. Event-shown, cleared on conversation-open.
-                let unread = self.contacts[ci].unread_count > 0;
+                let unread =
+                    dm_conversation(&self.conversations, &our_handle_hash, &self.contacts[ci])
+                        .is_some_and(|v| v.unread_count > 0);
                 let unread_band = ring_thickness * 2.0;
                 let ring = ring_tier_colour(
                     &self.contacts[ci],
@@ -6121,8 +6136,10 @@ impl FluorApp for PhotonApp {
                             .content_scrolled(n, settings_content_scroll)
                             .split_v([1.0; 9]);
                         // Hidden probe rows are bookkeeping, not conversation — keep them out of every human-facing count.
-                        let human: Vec<&crate::types::ChatMessage> = contact
-                            .messages
+                        let conv = dm_conversation(&self.conversations, &our_hh, contact);
+                        let human: Vec<&crate::types::ChatMessage> = conv
+                            .map(|v| v.messages.as_slice())
+                            .unwrap_or(&[])
                             .iter()
                             .filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted)
                             .collect();
@@ -6144,7 +6161,7 @@ impl FluorApp for PhotonApp {
                             }
                         };
                         let history_line =
-                            match contact.history_recovery.as_ref().map(|r| r.complete) {
+                            match conv.and_then(|v| v.history_recovery.as_ref()).map(|r| r.complete) {
                                 Some(true) => "history: complete on this device".to_string(),
                                 Some(false) => "history: still syncing".to_string(),
                                 None => "history: idle (no sweep this session)".to_string(),
@@ -6437,6 +6454,11 @@ impl FluorApp for PhotonApp {
                         .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
                         .unwrap_or([0u8; 32]);
                     let is_self_contact = contact.remote_count(&our_handle_hash) == 0;
+                    // The conversation this screen paints — messages, scroll, unread all read from here, never from the contact. Field-precise lookup (no &self method): the scope below writes disjoint `self` fields while this borrow is live.
+                    let conv: Option<&crate::types::Conversation> = {
+                        let id = contact.conversation(&our_handle_hash).id();
+                        self.conversations.iter().find(|v| v.id() == id)
+                    };
                     // Stamp the avatar disc + tier ring at a given centre-y — stream entry #0's avatar. Clip rides in as a parameter and the caller passes the LIST clip: the avatar obeys exactly the same boundary as every message (a hardcoded None once let it paint through the top edge onto its own visual layer).
                     let draw_conv_avatar =
                         |canvas: &mut Canvas, cy: f32, clip: Option<fluor::paint::Clip>| {
@@ -6498,7 +6520,7 @@ impl FluorApp for PhotonApp {
                     // CLUTCH/lifecycle status — computed here, DRAWN inside stream entry #0 (under the name, at genesis). End-of-identity states outrank the ceremony line; a woven chain shows no line at all (the working conversation is its own proof); self shows one only while empty.
                     let show_status = contact.identity_superseded
                         || contact.identity_ended
-                        || (is_self_contact && contact.messages.is_empty())
+                        || (is_self_contact && conv.is_none_or(|v| v.messages.is_empty()))
                         || (!is_self_contact && !contact.chain_woven);
                     let status_in_stream: Option<(String, u32)> = if show_status {
                         Some(if contact.identity_superseded {
@@ -6570,8 +6592,9 @@ impl FluorApp for PhotonApp {
 
                         // Lay messages out bottom-up so the newest sits at list_bottom. Clamp scroll offset to the actual overscroll range so a stale offset from a previous (larger) window size can't push every message above list_top on resize.
                         // Probe rows (hidden chain-weave records, persisted for re-ACK durability) never render — filter before layout so the scroll height matches what's drawn.
-                        let visible: Vec<&crate::types::ChatMessage> = contact
-                            .messages
+                        let visible: Vec<&crate::types::ChatMessage> = conv
+                            .map(|v| v.messages.as_slice())
+                            .unwrap_or(&[])
                             .iter()
                             .filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted)
                             .collect();
@@ -6624,7 +6647,10 @@ impl FluorApp for PhotonApp {
                         let max_scroll = (content_h - view_h).max(0.0);
                         // Publish the ceiling so the tick can clamp the STORED offset (this field write is disjoint from the `contact` borrow above); the local `scroll` only fixes THIS frame's draw.
                         self.msg_max_scroll = max_scroll;
-                        let scroll = contact.message_scroll_offset.clamp(0.0, max_scroll);
+                        let scroll = conv
+                            .map(|v| v.scroll_offset)
+                            .unwrap_or(0.0)
+                            .clamp(0.0, max_scroll);
                         self.msg_hit_rows.clear();
                         // TOP-ANCHOR while the conversation fits the view: the stream reads avatar/name → msg 1 → msg 2 from the top, ONE strip — bottom-anchoring a short history floated the header block mid-screen above a clump of bottom messages ("rendered in a different layer"). Once content outgrows the view the min() saturates and the classic newest-at-bottom anchor takes over seamlessly.
                         let mut y = (list_top + content_h).min(list_bottom) - msg_size + scroll;
@@ -6937,7 +6963,7 @@ impl FluorApp for PhotonApp {
 
                         // ── Compose box (pinned bottom) ──────────────────────────── Shown when THIS device can dispatch: a locally-woven chain (direct send), self (loopback), or COMPOSE-ANYWHERE — a friend conversation with history while a fleet exists (the send fleet-forwards to the chain-owning sibling; delivered tick follows its ACK back thru the sync). A truly fresh un-clutched contact still hides it (nothing anywhere can transmit yet).
                         let can_fleet_forward = !contact.is_sibling
-                            && !contact.messages.is_empty()
+                            && conv.is_some_and(|v| !v.messages.is_empty())
                             && self.contacts.iter().any(|c| c.is_sibling);
                         if is_self_contact || contact.chain_woven || can_fleet_forward {
                             let compose_empty = self
@@ -12596,14 +12622,14 @@ impl PhotonApp {
             None => return false,
         };
         if remotes == 0 {
-            let Some(contact) = self.contacts.get_mut(ci) else {
-                return false;
-            };
             let mut msg =
                 ChatMessage::new_with_timestamp(text, true, vsf::eagle_time_oscillations());
             msg.delivered = true;
-            contact.insert_message_sorted(msg.clone());
-            contact.message_scroll_offset = 0.0;
+            let Some(conv) = self.conv_mut_of(ci) else {
+                return false;
+            };
+            conv.insert_message_sorted(msg.clone());
+            conv.scroll_offset = 0.0;
             self.persist_messages_async(ci);
             // Live fleet propagation: a note typed here appears on our other devices now, not at the next sweep.
             self.push_rows_to_siblings(ci, std::slice::from_ref(&msg), None);
@@ -12618,9 +12644,9 @@ impl PhotonApp {
 
         // BUBBLE FIRST, WIRE SECOND. The pending-grey bubble appears the instant the user hits send — chain_transmit does weave selection, braid advance, chains persist and PT dispatch, and running it first meant the message rendered as NOTHING for that whole stretch, then grey, then white. The user's mental model (grey immediately, everything else follows) is also the honest one: the row exists the moment they authored it; the wire is delivery, not existence.
         let msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
-        if let Some(contact) = self.contacts.get_mut(ci) {
-            contact.insert_message_sorted(msg.clone());
-            contact.message_scroll_offset = 0.0;
+        if let Some(conv) = self.conv_mut_of(ci) {
+            conv.insert_message_sorted(msg.clone());
+            conv.scroll_offset = 0.0;
         }
         self.persist_messages_async(ci);
 
@@ -12630,9 +12656,9 @@ impl PhotonApp {
         return true;
     }
 
-    /// Persist a contact's message table WITHOUT blocking the UI thread. Snapshots the contact and hands it to one background writer that coalesces bursts (latest snapshot per handle_hash wins — an older snapshot can never clobber a newer one because the drain keeps only the last). The write itself is the same `save_messages` full-table rewrite; only the thread changed.
+    /// Persist a conversation's message table WITHOUT blocking the UI thread. Snapshots the conversation and hands it to one background writer that coalesces bursts (latest snapshot per conversation id wins — an older snapshot can never clobber a newer one because the drain keeps only the last). The write itself is the same `save_messages` full-table rewrite; only the thread changed.
     fn persist_messages_async(&mut self, ci: usize) {
-        let Some(contact) = self.contacts.get(ci).cloned() else {
+        let Some(conv) = self.conv_of(ci).cloned() else {
             return;
         };
         let Some(storage) = self.storage.as_ref().cloned() else {
@@ -12640,7 +12666,7 @@ impl PhotonApp {
         };
         // Storage rides WITH each snapshot (not captured once): logout/login swaps the vault, and a worker holding the first session's Arc would write a dead vault forever.
         type PersistItem = (
-            crate::types::Contact,
+            crate::types::Conversation,
             std::sync::Arc<crate::storage::FlatStorage>,
         );
         let tx = self.persist_tx.get_or_insert_with(|| {
@@ -12650,11 +12676,11 @@ impl PhotonApp {
                     // Coalesce the burst: keep the newest snapshot per conversation.
                     let mut latest: Vec<PersistItem> = vec![first];
                     while let Ok(next) = rx.try_recv() {
-                        latest.retain(|(c, _)| c.handle_hash != next.0.handle_hash);
+                        latest.retain(|(v, _)| v.id() != next.0.id());
                         latest.push(next);
                     }
-                    for (c, st) in latest {
-                        if let Err(e) = crate::storage::contacts::save_messages(&c, &st) {
+                    for (v, st) in latest {
+                        if let Err(e) = crate::storage::contacts::save_messages(&v, &st) {
                             crate::logf!("STORAGE: async message persist failed: {}", e);
                         }
                     }
@@ -12662,7 +12688,7 @@ impl PhotonApp {
             });
             tx
         });
-        let _ = tx.send((contact, storage));
+        let _ = tx.send((conv, storage));
     }
 
     /// Run the deferred WIRE half of queued sends — one tick after their bubbles rendered. Failure handling matches the old inline path: no local chain but a sibling exists → fleet-forward (the sibling's merge drain transmits on the braid); no chain and no sibling → the send has nowhere to go, take the bubble back out.
@@ -12689,9 +12715,8 @@ impl PhotonApp {
                     self.persist_messages_async(ci);
                     crate::logf!(
                         "CHAT: no chain yet for this contact — message held undelivered, will send when the ceremony completes ({} queued)",
-                        self.contacts
-                            .get(ci)
-                            .map(|c| c.messages.iter().filter(|m| m.is_outgoing && !m.delivered).count())
+                        self.conv_of(ci)
+                            .map(|v| v.messages.iter().filter(|m| m.is_outgoing && !m.delivered).count())
                             .unwrap_or(0)
                     );
                     continue;
@@ -12706,8 +12731,8 @@ impl PhotonApp {
 
     /// Send every outgoing row this contact still holds as undelivered — the rows `drain_pending_chain_sends` HELD because no chain existed yet (typically a re-key in flight). Original timestamps are preserved, so the row identity is unchanged and the friend dedups anything it already has; a row that still can't go out simply stays held for the next attempt.
     fn resend_held_messages(&mut self, ci: usize) {
-        let held: Vec<(String, i64)> = match self.contacts.get(ci) {
-            Some(c) => c
+        let held: Vec<(String, i64)> = match self.conv_of(ci) {
+            Some(v) => v
                 .messages
                 .iter()
                 .filter(|m| m.is_outgoing && !m.delivered && !m.content.is_empty())
@@ -12773,8 +12798,8 @@ impl PhotonApp {
         // The braid: choose up to TWO distinct prior PEER messages to weave into this chain step. Eligible = incoming messages (is_outgoing == false) in the last ≤256 of this conversation — any stored incoming row is one the receive path already ACKed, so the sender knows the peer holds it (both-held → identical strands → lockstep). The weave ingredient is the message's x-text (`content`), recoverable identically on both sides from the message DB. Each chosen message's eagle_time goes on the wire so the receiver resolves the SAME content. 0 eligible → weave nothing (anchor). 1 → single strand. ≥2 → two distinct (a true braid). Pick with gen_range (bounded, bias-free) — NEVER modulo. Strands are sorted by eagle_time so both peers frame derive_fresh_link identically regardless of pick order.
         let (woven_strands, woven_times): (Vec<Vec<u8>>, Vec<i64>) = {
             let mut chosen: Vec<(i64, Vec<u8>)> = Vec::new();
-            if let Some(contact) = self.contacts.get(ci) {
-                let window: Vec<&crate::types::ChatMessage> = contact
+            if let Some(conv) = self.conv_of(ci) {
+                let window: Vec<&crate::types::ChatMessage> = conv
                     .messages
                     .iter()
                     .rev()
@@ -13208,25 +13233,29 @@ impl PhotonApp {
         c.blind_probe_missed = false;
         c.blind_in_flight = None;
         // Kick off friend-history recovery on the woven-chain EDGE (this fn fires exactly once per seal; vault loads latch chain_woven without passing here, so restarts resume via the persisted cursor instead of re-kicking). Always request the head page — if we already hold the history, merging dedups and the early-stop rule completes after one page. Siblings are excluded: friend-history recovery resolves "the other participant ≠ our seed", which is ambiguous on a sibling chain — fleet history sync is its own later phase.
-        if !c.is_sibling {
-            let was_complete_before = c
-                .history_recovery
-                .as_ref()
-                .map(|r| r.complete)
-                .unwrap_or(false);
-            c.history_recovery = Some(crate::types::HistoryRecovery {
-                oldest_recovered_osc: i64::MAX,
-                complete: false,
-                in_flight: None,
-                next_request_osc: 0,
-                urgent: true, // head page jumps the trickle interval — conversation usable ASAP
-                was_complete_before,
-            });
-            crate::log("HISTORY: recovery kicked off (head page next tick)");
-        }
         let is_sibling = c.is_sibling;
+        if !is_sibling {
+            if let Some(conv) = self.conv_mut_of(contact_idx) {
+                let was_complete_before = conv
+                    .history_recovery
+                    .as_ref()
+                    .map(|r| r.complete)
+                    .unwrap_or(false);
+                conv.history_recovery = Some(crate::types::HistoryRecovery {
+                    oldest_recovered_osc: i64::MAX,
+                    complete: false,
+                    in_flight: None,
+                    next_request_osc: 0,
+                    urgent: true, // head page jumps the trickle interval — conversation usable ASAP
+                    was_complete_before,
+                });
+                crate::log("HISTORY: recovery kicked off (head page next tick)");
+            }
+        }
         if let Some(storage) = self.storage.as_ref() {
-            if let Err(e) = crate::storage::contacts::save_contact(c, storage) {
+            if let Err(e) =
+                crate::storage::contacts::save_contact(&self.contacts[contact_idx], storage)
+            {
                 crate::logf!("CHAIN-PROBE: failed to persist woven contact: {}", e);
             }
         }
@@ -13470,6 +13499,21 @@ impl PhotonApp {
                         self.friendship_chains.len()
                     );
                     self.update_sync_records();
+                }
+                // Conversations the load worker read from disk: adopt any we don't hold. Never clobber — an in-session conversation (rows landed while the worker ran) is fresher than its disk copy.
+                let mut merged_convs = 0usize;
+                for conv in data.conversations {
+                    if !self.conversations.iter().any(|v| v.id() == conv.id()) {
+                        self.conversations.push(conv);
+                        merged_convs += 1;
+                    }
+                }
+                if merged_convs > 0 {
+                    crate::logf!(
+                        "UI: merged {} conversation(s) from disk (total: {})",
+                        merged_convs,
+                        self.conversations.len()
+                    );
                 }
                 // Seed `our_reflexive` from FGTW's signed observation if we have nothing better yet. This is what lets `publish_self_peer_record` sign a record on a FIRST launch: until now it needed a peer-echoed pong, but a pong needs a reachable path, which needs an address a peer could learn, which needs a published record -- a cycle nothing could enter, which is why `PHONEBOOK:` never appeared in a log and gossip carried zero records.
                 //
@@ -13861,6 +13905,25 @@ impl PhotonApp {
         self.our_party_id(c).is_some_and(|us| c.remote_count(&us) == 0)
     }
 
+    /// The conversation `self.contacts[ci]` stands for, if it has materialized. `None` before the session is up or before anything touched it.
+    fn conv_of(&self, ci: usize) -> Option<&crate::types::Conversation> {
+        let c = self.contacts.get(ci)?;
+        let id = c.conversation(&self.our_party_id(c)?).id();
+        self.conversations.iter().find(|v| v.id() == id)
+    }
+
+    /// The conversation for `self.contacts[ci]`, materialized empty on first touch — so no caller ever branches on "does it exist yet". `None` only before the session is up.
+    fn conv_mut_of(&mut self, ci: usize) -> Option<&mut crate::types::Conversation> {
+        let c = self.contacts.get(ci)?;
+        let fresh = c.conversation(&self.our_party_id(c)?);
+        let id = fresh.id();
+        if let Some(pos) = self.conversations.iter().position(|v| v.id() == id) {
+            return self.conversations.get_mut(pos);
+        }
+        self.conversations.push(fresh);
+        self.conversations.last_mut()
+    }
+
     /// Recompute the shared sync-records (last-received-time per conversation) from `friendship_chains` and publish them to the checker, for message retransmit.
     pub fn update_sync_records(&mut self) {
         use crate::network::fgtw::protocol::SyncRecord;
@@ -13881,11 +13944,12 @@ impl PhotonApp {
                 let (row_count, row_digest) =
                     self.contacts
                         .iter()
-                        .find(|c| c.friendship_id == Some(*fid))
-                        .map(|c| {
+                        .position(|c| c.friendship_id == Some(*fid))
+                        .and_then(|ci| self.conv_of(ci))
+                        .map(|v| {
                             let mut fold = [0u8; 32];
                             let mut n: u32 = 0;
-                            for m in c.messages.iter().filter(|m| {
+                            for m in v.messages.iter().filter(|m| {
                                 !crate::types::is_control_content(&m.content) && !m.deleted
                             }) {
                                 let mut h = blake3::Hasher::new();
@@ -14080,11 +14144,13 @@ impl PhotonApp {
 
     /// Zero this contact's unread counter — called at every site where their conversation becomes the active view (contact tap, panel back/Esc re-entry). Persists only on an actual change, so the common already-read path costs nothing. Interaction-cleared by doctrine: this is the ONLY way the counter ever goes down.
     fn clear_unread(&mut self, ci: usize) {
-        if let Some(contact) = self.contacts.get_mut(ci) {
-            if contact.unread_count > 0 {
-                contact.unread_count = 0;
-                if let Some(storage) = self.storage.as_ref() {
-                    if let Err(e) = crate::storage::contacts::save_contact_state(contact, storage) {
+        let storage = self.storage.clone();
+        if let Some(conv) = self.conv_mut_of(ci) {
+            if conv.unread_count > 0 {
+                conv.unread_count = 0;
+                if let Some(storage) = storage.as_ref() {
+                    if let Err(e) = crate::storage::contacts::save_conversation_state(conv, storage)
+                    {
                         crate::logf!("STORAGE: Failed to save unread clear: {}", e);
                     }
                 }
@@ -15628,7 +15694,7 @@ impl PhotonApp {
                 contact.handle_hash = our_pid;
                 if let Some(storage) = self.storage.as_ref() {
                     let _ = crate::storage::contacts::save_contact(contact, storage);
-                    let _ = crate::storage::contacts::save_messages(contact, storage);
+                    // Conversation rows re-home at the storage layer (`migrate_conversation_tables`) once the pid is right — nothing message-shaped lives on the contact any more.
                 }
             }
         }
@@ -16632,19 +16698,22 @@ impl PhotonApp {
     /// Fleet history sweep: (re-)arm history recovery for every friend/self conversation so the driver walks each one from the head — served by a sibling when the friend can't. Early-stop makes a re-sweep of an already-complete conversation cost ONE page (zero new rows → complete again), so this fires freely on sibling-online edges and roster merges; conversations mid-walk are left alone.
     fn kick_fleet_history_sweep(&mut self, reason: &str) {
         let mut kicked = 0usize;
-        for c in self.contacts.iter_mut() {
-            if c.is_sibling {
+        for ci in 0..self.contacts.len() {
+            if self.contacts[ci].is_sibling {
                 continue;
             }
-            if c.history_recovery.as_ref().is_some_and(|r| !r.complete) {
+            let Some(conv) = self.conv_mut_of(ci) else {
+                continue;
+            };
+            if conv.history_recovery.as_ref().is_some_and(|r| !r.complete) {
                 continue; // mid-walk — the driver is already on it
             }
-            let was_complete_before = c
+            let was_complete_before = conv
                 .history_recovery
                 .as_ref()
                 .map(|r| r.complete)
                 .unwrap_or(false);
-            c.history_recovery = Some(crate::types::HistoryRecovery {
+            conv.history_recovery = Some(crate::types::HistoryRecovery {
                 oldest_recovered_osc: i64::MAX,
                 complete: false,
                 in_flight: None,
@@ -16740,8 +16809,13 @@ impl PhotonApp {
             .iter()
             .enumerate()
             .filter_map(|(idx, c)| {
-                let rec = c.history_recovery.as_ref()?;
-                if rec.complete || c.is_sibling {
+                if c.is_sibling {
+                    return None;
+                }
+                let rec = dm_conversation(&self.conversations, &our_pid?, c)?
+                    .history_recovery
+                    .as_ref()?;
+                if rec.complete {
                     return None;
                 }
                 // Friend route: token from the chain (identical to the derived one — same participant set).
@@ -16792,7 +16866,17 @@ impl PhotonApp {
         };
 
         for (idx, token, primary, alt, recipient_pubkey, relay_to) in candidates {
-            let Some(rec) = self.contacts[idx].history_recovery.as_mut() else {
+            // Field-precise lookup (`checker` holds a field borrow of self across this loop, so no &mut self method fits here).
+            let Some(pid) = our_pid else {
+                continue;
+            };
+            let cid = self.contacts[idx].conversation(&pid).id();
+            let Some(rec) = self
+                .conversations
+                .iter_mut()
+                .find(|v| v.id() == cid)
+                .and_then(|v| v.history_recovery.as_mut())
+            else {
                 continue;
             };
             // Expire a lost in-flight request so the walk resumes.
@@ -17265,15 +17349,24 @@ impl PhotonApp {
                             // ANTI-ENTROPY: the pong carries the peer's (row_count, XOR-fold) for this conversation. A digest mismatch means the two sides provably hold DIFFERENT message sets — the heuristic cursor walk left a hole (the greyed sends peer_m never got, 2026-07-25) — so force a FULL recovery walk (early-stop disabled). Zero count+digest = legacy peer, no comparison. Cooldown per contact so a persistent mismatch (peer can't serve) re-fires at a polite cadence instead of every pong.
                             if record.row_count != 0 || record.row_digest != [0u8; 32] {
                                 let fid = *fid;
-                                if let Some(c) = self
+                                let ci = self
                                     .contacts
-                                    .iter_mut()
-                                    .find(|c| c.friendship_id == Some(fid))
-                                {
-                                    if !c.is_sibling && c.chain_woven {
+                                    .iter()
+                                    .position(|c| c.friendship_id == Some(fid))
+                                    .filter(|&ci| {
+                                        !self.contacts[ci].is_sibling
+                                            && self.contacts[ci].chain_woven
+                                    });
+                                // Field-precise conversation lookup — `chains` above holds a borrow of `friendship_chains`, so no &mut self method fits here.
+                                if let Some(ci) = ci {
+                                    let cid =
+                                        self.contacts[ci].conversation(&our_handle_hash).id();
+                                    if let Some(conv) =
+                                        self.conversations.iter_mut().find(|v| v.id() == cid)
+                                    {
                                         let mut fold = [0u8; 32];
                                         let mut n_rows: u32 = 0;
-                                        for m in c.messages.iter().filter(|m| {
+                                        for m in conv.messages.iter().filter(|m| {
                                             !crate::types::is_control_content(&m.content)
                                                 && !m.deleted
                                         }) {
@@ -17291,18 +17384,18 @@ impl PhotonApp {
                                             n_rows != record.row_count || fold != record.row_digest;
                                         const DIGEST_KICK_COOLDOWN_OSC: i64 =
                                             120 * vsf::OSCILLATIONS_PER_SECOND as i64;
-                                        let idle = c
+                                        let idle = conv
                                             .history_recovery
                                             .as_ref()
                                             .map_or(true, |r| r.complete);
                                         if mismatch
                                             && idle
-                                            && now_osc.saturating_sub(c.digest_kick_osc)
+                                            && now_osc.saturating_sub(self.contacts[ci].digest_kick_osc)
                                                 > DIGEST_KICK_COOLDOWN_OSC
                                         {
-                                            c.digest_kick_osc = now_osc;
-                                            crate::logf!("HISTORY: digest mismatch with {} (ours {} rows, theirs {}) — full resync walk", crate::fp(&c.handle_proof), n_rows, record.row_count);
-                                            c.history_recovery =
+                                            self.contacts[ci].digest_kick_osc = now_osc;
+                                            crate::logf!("HISTORY: digest mismatch with {} (ours {} rows, theirs {}) — full resync walk", crate::fp(&self.contacts[ci].handle_proof), n_rows, record.row_count);
+                                            conv.history_recovery =
                                                 Some(crate::types::HistoryRecovery {
                                                     oldest_recovered_osc: i64::MAX,
                                                     complete: false,
@@ -17690,24 +17783,39 @@ impl PhotonApp {
                             }
                         };
 
+                        // The conversation this frame lands in — the SAME participant set the chain holds, materialized on first touch. Field-precise (`chains` pins `friendship_chains` for this whole block, so no &mut self method fits here).
+                        let conv_pos = {
+                            let fresh = crate::types::Conversation::new(
+                                chains.participants().iter().copied(),
+                            );
+                            match self.conversations.iter().position(|v| v.id() == fresh.id()) {
+                                Some(p) => p,
+                                None => {
+                                    self.conversations.push(fresh);
+                                    self.conversations.len() - 1
+                                }
+                            }
+                        };
+
                         // Deduplication: we've already processed this exact message (UDP duplicate, or — the important case — the sender RETRANSMITTED because our ACK was lost). Don't re-process (that would double-advance), but DO re-send the ACK if this is the most recently acked message, so the lost-ACK case heals instead of the sender retrying until it gives up and its chain stays frozen.
                         // DURABLE second gate: is_duplicate lives inside the chain object, and a ceremony reset / braid-in mints a FRESH chain with last_received_times = None — so a frame arriving again post-reset (direct + relay dual-path, or an inbox-drain replay) sailed past it and was processed against the wrong chain state, forking the pair (the 2026-07-23 sibling desync). The rarangi row store keys on the same eagle_time, persists, and survives every chain reset — a stored inbound row at this timestamp means this exact frame was already processed, whatever the in-memory chain thinks.
                         // RECOVERED rows are excluded from the gate: a friend-attested backfill row was never chain-processed and carries no ack_hash, so treating it as "already processed" deadlocked the sender — recovery raced live delivery and peer_m's retransmits were skipped un-ACKably forever while her chain waited (2026-07-24). The wire frame must process normally; insert_message_sorted upgrades the recovered row in place.
-                        let row_dup = self.contacts.get(contact_idx).map_or(false, |c| {
-                            c.messages
-                                .iter()
-                                .any(|m| !m.is_outgoing && !m.recovered && m.timestamp == timestamp)
-                        });
+                        let row_dup = self.conversations[conv_pos]
+                            .messages
+                            .iter()
+                            .any(|m| !m.is_outgoing && !m.recovered && m.timestamp == timestamp);
                         if chains.is_duplicate(&from_handle_hash, timestamp) || row_dup {
                             // Re-ACK from the stored message, looked up by its eagle_time. Unlike the old single-slot last_acked (which only remembered the MOST RECENT ack and so dropped any earlier duplicate → permanent sender stall), every received message persists its own ack_hash, so ANY duplicate self-heals a lost ACK.
-                            let stored = self.contacts.get(contact_idx).and_then(|c| {
-                                let ack = c
-                                    .messages
-                                    .iter()
-                                    .find(|m| !m.is_outgoing && m.timestamp == timestamp)
-                                    .and_then(|m| m.ack_hash)?;
-                                Some((ack, *c.public_identity.as_bytes()))
-                            });
+                            let stored = self.conversations[conv_pos]
+                                .messages
+                                .iter()
+                                .find(|m| !m.is_outgoing && m.timestamp == timestamp)
+                                .and_then(|m| m.ack_hash)
+                                .and_then(|ack| {
+                                    self.contacts
+                                        .get(contact_idx)
+                                        .map(|c| (ack, *c.public_identity.as_bytes()))
+                                });
                             if let Some((ph, recipient_pubkey)) = stored {
                                 if let Some(ref checker) = self.status_checker {
                                     // The ACK ALWAYS rides the relay alongside any direct leg. Gating on the sentinel missed the case that actually lagged in the field: a message received DIRECT whose reverse direction is dead — the direct ACK vanished, the sender retransmitted, and only the duplicate's re-ACK (relayed) landed. Acks are tiny and idempotent, so the duplicate delivery is free.
@@ -17923,7 +18031,7 @@ impl PhotonApp {
                             times.sort_unstable();
                             let mut strands = Vec::with_capacity(times.len());
                             for t in times {
-                                if let Some(m) = self.contacts[contact_idx]
+                                if let Some(m) = self.conversations[conv_pos]
                                     .messages
                                     .iter()
                                     .find(|m| m.is_outgoing && m.timestamp == t)
@@ -17993,9 +18101,10 @@ impl PhotonApp {
                             message_text.strip_prefix(crate::types::DELETE_MARKER_PREFIX)
                         {
                             let target_ts: i64 = ts_str.trim().parse().unwrap_or(0);
-                            if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                            {
+                                let conv = &mut self.conversations[conv_pos];
                                 let mut tombstoned: Option<ChatMessage> = None;
-                                if let Some(m) = contact.messages.iter_mut().find(|m| {
+                                if let Some(m) = conv.messages.iter_mut().find(|m| {
                                     m.timestamp == target_ts
                                         && !crate::types::is_control_content(&m.content)
                                 }) {
@@ -18011,8 +18120,8 @@ impl PhotonApp {
                                     timestamp,
                                 )
                                 .with_ack_hash(plaintext_hash);
-                                contact.insert_message_sorted(marker_row);
-                                persist_hashes.push(contact.handle_hash);
+                                conv.insert_message_sorted(marker_row);
+                                persist_hashes.push(from_handle_hash);
                                 if let Some(row) = tombstoned {
                                     if let Some((hash, _, _)) =
                                         crate::types::parse_attachment_content(&row.content)
@@ -18032,16 +18141,16 @@ impl PhotonApp {
                                 contact.their_probe_seen = true;
                                 // Attribute the probe to the ceremony whose chain just decrypted it, so a completion landing microseconds later can tell "the peer's probe for THIS ceremony" from "a stale seal for the chain we just replaced".
                                 contact.their_probe_ceremony = contact.ceremony_id;
-                                // Persist the probe as a HIDDEN rarangi row carrying its ack_hash: without a row the duplicate handler has nothing to re-ACK from, so a probe whose ACK was lost froze the sender's chain at the pre-probe position forever — the sibling weave fork of 2026-07-23. Every UI/history/preview path already filters CHAIN_PROBE_MARKER, so the row never surfaces; it exists purely as the durable dedup + re-ACK record. No chime, no sibling push (probes stay device-pair-local).
-                                let probe_row = ChatMessage::new_with_timestamp(
-                                    crate::types::CHAIN_PROBE_MARKER.to_string(),
-                                    false,
-                                    timestamp,
-                                )
-                                .with_ack_hash(plaintext_hash);
-                                contact.insert_message_sorted(probe_row);
-                                persist_hashes.push(contact.handle_hash);
                             }
+                            // Persist the probe as a HIDDEN rarangi row carrying its ack_hash: without a row the duplicate handler has nothing to re-ACK from, so a probe whose ACK was lost froze the sender's chain at the pre-probe position forever — the sibling weave fork of 2026-07-23. Every UI/history/preview path already filters CHAIN_PROBE_MARKER, so the row never surfaces; it exists purely as the durable dedup + re-ACK record. No chime, no sibling push (probes stay device-pair-local).
+                            let probe_row = ChatMessage::new_with_timestamp(
+                                crate::types::CHAIN_PROBE_MARKER.to_string(),
+                                false,
+                                timestamp,
+                            )
+                            .with_ack_hash(plaintext_hash);
+                            self.conversations[conv_pos].insert_message_sorted(probe_row);
+                            persist_hashes.push(from_handle_hash);
                             crate::log(
                                 "CHAIN-PROBE: received peer's chain-weave probe — RX chain proven",
                             );
@@ -18064,12 +18173,13 @@ impl PhotonApp {
                             )
                             // Persist the ACK hash so a later duplicate (our ACK was lost) can be re-ACKed from storage — keeps the sender's chain from stalling.
                             .with_ack_hash(plaintext_hash);
-                            contact.insert_message_sorted(msg.clone());
-                            contact.message_scroll_offset = 0.0; // Scroll to show new message
+                            let conv = &mut self.conversations[conv_pos];
+                            conv.insert_message_sorted(msg.clone());
+                            conv.scroll_offset = 0.0; // Scroll to show new message
                             changed = true;
 
                             // Persist (async — see persist_hashes)
-                            persist_hashes.push(contact.handle_hash);
+                            persist_hashes.push(from_handle_hash);
 
                             // Unread gate: is the user plausibly looking at THIS conversation right now? "Looking" = this contact's conversation (or its contact-scoped panel) is the active view AND, on desktop, the window is visible + focused. Event-shown, interaction-cleared doctrine: the counter only ever moves on a message landing or the user opening the conversation — no timers anywhere.
                             let conversation_open = matches!(
@@ -18085,10 +18195,10 @@ impl PhotonApp {
                                 && crate::platform::jni_android::app_in_foreground();
                             if !contact.is_sibling && !looking {
                                 // A real friend message landed while nobody was looking — bump the persistent unread counter (contacts-list inner ring + float-to-top; cleared at conversation-open).
-                                contact.unread_count += 1;
+                                conv.unread_count += 1;
                                 if let Some(storage) = self.storage.as_ref() {
-                                    if let Err(e) = crate::storage::contacts::save_contact_state(
-                                        contact, storage,
+                                    if let Err(e) = crate::storage::contacts::save_conversation_state(
+                                        conv, storage,
                                     ) {
                                         crate::logf!("STORAGE: Failed to save unread state: {}", e);
                                     }
@@ -18267,6 +18377,20 @@ impl PhotonApp {
                             hex::encode(&plaintext_hash[..8])
                         );
 
+                        // The conversation this ACK lands in — field-precise, same shape as the ChatMessage arm (`chains` pins `friendship_chains` here too).
+                        let conv_pos = {
+                            let fresh = crate::types::Conversation::new(
+                                chains.participants().iter().copied(),
+                            );
+                            match self.conversations.iter().position(|v| v.id() == fresh.id()) {
+                                Some(p) => p,
+                                None => {
+                                    self.conversations.push(fresh);
+                                    self.conversations.len() - 1
+                                }
+                            }
+                        };
+
                         // Process ACK: advance our chain and remove pending message
                         if chains.process_ack(&our_handle_hash, acked_eagle_time, &plaintext_hash) {
                             crate::logf!("CHAT: Chain advanced for {} (ACK verified)", handle);
@@ -18331,10 +18455,8 @@ impl PhotonApp {
                             }
                         } else {
                             // No pending message matched. Two cases: (a) a DUPLICATE ACK — dual-path racing (P3) delivers the same ACK on both the LAN and public path, so the second copy arrives after the first already advanced + cleared the pending entry; (b) a genuinely UNKNOWN ACK. Tell them apart via the outgoing message: if it exists and is already `delivered`, this is the benign duplicate — log at DEBUG so it stops reading as a failure.
-                            let is_dup = self.contacts.get(contact_idx).is_some_and(|c| {
-                                c.messages.iter().any(|m| {
-                                    m.is_outgoing && m.delivered && m.timestamp == acked_eagle_time
-                                })
+                            let is_dup = self.conversations[conv_pos].messages.iter().any(|m| {
+                                m.is_outgoing && m.delivered && m.timestamp == acked_eagle_time
                             });
                             if is_dup {
                                 crate::log_at(
@@ -18351,10 +18473,11 @@ impl PhotonApp {
 
                         // Mark message as delivered in UI
                         let mut delivered_row: Option<ChatMessage> = None;
-                        if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                        {
+                            let conv = &mut self.conversations[conv_pos];
                             // Find message by matching eagle_time (exact i64 oscillations)
                             let mut found_msg = false;
-                            for msg in contact.messages.iter_mut().rev() {
+                            for msg in conv.messages.iter_mut().rev() {
                                 if msg.is_outgoing && !msg.delivered {
                                     // Match by eagle_time (exact i64 match)
                                     if msg.timestamp == acked_eagle_time {
@@ -18369,9 +18492,7 @@ impl PhotonApp {
 
                             // Persist delivered status (async writer — the inline save was the 5.7s MessageAck stall)
                             if found_msg {
-                                {
-                                    persist_hashes.push(contact.handle_hash);
-                                }
+                                persist_hashes.push(from_handle_hash);
                             }
                         }
                         // Live fleet propagation of the delivered tick (the sibling merge upgrades its copy monotonically).
@@ -20210,10 +20331,16 @@ impl PhotonApp {
                         );
                     }
                     if let (Some(key), Some(idx)) = (key, contact_idx) {
-                        // rid must match our in-flight request — a page we didn't ask for (or asked for long ago) is dropped; merging is idempotent so a raced duplicate that DOES match is harmless.
-                        let rid_matches = self.contacts[idx]
-                            .history_recovery
+                        // rid must match our in-flight request — a page we didn't ask for (or asked for long ago) is dropped; merging is idempotent so a raced duplicate that DOES match is harmless. Field-precise conversation lookup (the drain pins the status checker).
+                        let rid_matches = self
+                            .session
                             .as_ref()
+                            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                            .and_then(|us| {
+                                let cid = self.contacts[idx].conversation(&us).id();
+                                self.conversations.iter().find(|v| v.id() == cid)
+                            })
+                            .and_then(|v| v.history_recovery.as_ref())
                             .and_then(|r| r.in_flight.as_ref())
                             .is_some_and(|(rid, _, _)| *rid == request_id);
                         // A friend page must match our in-flight request (unsolicited friend pages are dropped). A sibling page without a matching rid is the live push — merge it, but leave the cursor alone.
@@ -20223,7 +20350,33 @@ impl PhotonApp {
                         if rid_matches || from_sibling {
                             match crate::network::history_pages::open_history_page(&sealed, &key) {
                                 Ok(page) => {
-                                    let contact = &mut self.contacts[idx];
+                                    // The conversation these rows land in — field-precise (the drain pins the status checker, so no &mut self method fits here).
+                                    let Some(our_pid) = self
+                                        .session
+                                        .as_ref()
+                                        .map(|s| {
+                                            crate::crypto::clutch::identity_party_id(
+                                                &s.identity_seed,
+                                            )
+                                        })
+                                    else {
+                                        continue;
+                                    };
+                                    let conv_pos = {
+                                        let derived = self.contacts[idx].conversation(&our_pid);
+                                        match self
+                                            .conversations
+                                            .iter()
+                                            .position(|v| v.id() == derived.id())
+                                        {
+                                            Some(p) => p,
+                                            None => {
+                                                self.conversations.push(derived);
+                                                self.conversations.len() - 1
+                                            }
+                                        }
+                                    };
+                                    let conv = &mut self.conversations[conv_pos];
                                     // Merge to OUR perspective: friend pages flip direction (their outgoing = our incoming); sibling pages ride verbatim (same identity, their flags ARE ours). Friend-recovered outgoing is delivered by definition (the friend has it); dedup on (timestamp, content) against what we already hold.
                                     let mut fresh: Vec<crate::types::ChatMessage> = Vec::new();
                                     for row in &page.rows {
@@ -20236,7 +20389,7 @@ impl PhotonApp {
                                             (!row.sender_outgoing, !row.sender_outgoing, true)
                                         };
                                         if let Some(existing) =
-                                            contact.messages.iter_mut().find(|m| {
+                                            conv.messages.iter_mut().find(|m| {
                                                 m.timestamp == row.timestamp
                                                     && m.content == row.content
                                             })
@@ -20275,14 +20428,13 @@ impl PhotonApp {
                                             recovered,
                                             deleted: row.deleted,
                                         };
-                                        contact.insert_message_sorted(msg.clone());
+                                        conv.insert_message_sorted(msg.clone());
                                         fresh.push(msg);
                                     }
 
                                     // Cursor + completion — only for a page we ASKED for; a live push must not fast-forward a walk that never ran. Early-stop: if history was already complete before this (re-)kickoff and the page brought nothing new, we're still complete — a routine re-key on an intact pair stops after one page instead of re-walking years.
-                                    let their_seed = contact.handle_hash;
                                     if rid_matches {
-                                        if let Some(rec) = contact.history_recovery.as_mut() {
+                                        if let Some(rec) = conv.history_recovery.as_mut() {
                                             rec.in_flight = None;
                                             if page.oldest_osc < rec.oldest_recovered_osc {
                                                 rec.oldest_recovered_osc = page.oldest_osc;
@@ -20294,25 +20446,25 @@ impl PhotonApp {
                                             }
                                         }
                                     }
-                                    crate::logf!("HISTORY: merged page ({} new of {} rows, more={}, complete={})", fresh.len(), page.rows.len(), page.more, contact
+                                    crate::logf!("HISTORY: merged page ({} new of {} rows, more={}, complete={})", fresh.len(), page.rows.len(), page.more, conv
                                             .history_recovery
                                             .as_ref()
                                             .is_some_and(|r| r.complete));
 
                                     // Persist the new rows + the cursor (AGENT.md: every change hits disk) — but OFF the UI thread. Both writes used to run inline, once per page: an encrypted row append plus a full contact-state rewrite. With 123 pages merged in a single session that is 246 blocking writes on the render thread, and the arm timer caught them at 159-349ms each — the biggest single source of the "everything feels laggy" the user reported.
                                     // The coalescing writer already exists for exactly this shape (it killed the 5.7s MessageAck stalls) and keeps only the newest snapshot per contact, so a burst of pages costs ONE write instead of one per page. The cursor rides the same snapshot because it lives in the contact.
+                                    if let Some(storage) = self.storage.as_ref() {
+                                        if let Err(e) =
+                                            crate::storage::contacts::save_conversation_state(
+                                                conv, storage,
+                                            )
+                                        {
+                                            crate::logf!("HISTORY: cursor persist failed: {}", e);
+                                        }
+                                    }
                                     if !fresh.is_empty() {
                                         // Deferred: the drain holds an immutable borrow of the status checker, so the queue is drained into the coalescing writer after the loop (same `persist_hashes` path every other arm uses).
                                         persist_hashes.push(self.contacts[idx].handle_hash);
-                                    }
-                                    if let Some(storage) = self.storage.as_ref() {
-                                        let contact_ref = &self.contacts[idx];
-                                        if let Err(e) = crate::storage::contacts::save_contact(
-                                            contact_ref,
-                                            storage,
-                                        ) {
-                                            crate::logf!("HISTORY: cursor persist failed: {}", e);
-                                        }
                                     }
                                     // Gossip hop: anything genuinely fresh re-pushes to the OTHER online siblings (never back at the sender), so a message crosses the whole fleet even when only one device can reach its origin. Zero-fresh pages stop the echo.
                                     if !fresh.is_empty() {
@@ -21888,6 +22040,16 @@ fn sibling_presence_snapshot(contacts: &[crate::types::Contact]) -> Vec<SiblingP
         .filter(|c| c.is_sibling)
         .map(|c| (c.public_identity.key, c.is_online, c.presence_probed))
         .collect()
+}
+
+/// The conversation a contact row stands for, found by participant-set id. A FREE function on the conversations slice, not a `&self` method, so render scopes holding a `&mut chrome` field borrow can still resolve it thru disjoint field paths.
+fn dm_conversation<'a>(
+    conversations: &'a [crate::types::Conversation],
+    us: &[u8; 32],
+    c: &crate::types::Contact,
+) -> Option<&'a crate::types::Conversation> {
+    let id = c.conversation(us).id();
+    conversations.iter().find(|v| v.id() == id)
 }
 
 /// §4.2: true when this FRIEND contact's ceremony belongs to another fleet device and this device must not run — or keep alive — a round toward it. Encodes the takeover-hardening rules:
