@@ -1884,15 +1884,8 @@ impl PhotonApp {
             }
         }
         if matches!(self.state, AppState::Conversation) {
-            // The compose box is the only focusable widget in a conversation; yielding it here wires click-to-focus, Tab, and key dispatch. MUST MIRROR THE RENDER GATE EXACTLY (the render's compose block): woven chain, zero remote participants, or COMPOSE-ANYWHERE (friend convo with history + a fleet to forward thru). The first unification build extended only the render gate — the box painted but wasn't in this walk, so clicks never focused it and no blinkey appeared ("textbox appears but can't type", desktop 2026-07-26).
-            let has_fleet = self.contacts.iter().any(|c| c.is_sibling);
-            let compose_ready = self.active_contact().is_some_and(|ci| {
-                let c = &self.contacts[ci];
-                let has_history = self.conv_of(ci).is_some_and(|v| !v.messages.is_empty());
-                let can_fleet_forward = !c.is_sibling && has_history && has_fleet;
-                // Literally the render gate's expression: zero-remote || chain_woven || can_fleet_forward.
-                self.is_zero_remote(c) || c.chain_woven || can_fleet_forward
-            });
+            // The compose box is the only focusable widget in a conversation; yielding it here wires click-to-focus, Tab, and key dispatch. Same `compose_ready` the render reads — one definition, so the walk and the paint can never disagree again.
+            let compose_ready = self.compose_ready();
             // Attachment resample overlay controls ride the conversation walk while pending (independent of the compose gate).
             if self.pending_attach.is_some() {
                 if let Some(sl) = self.attach_slider.as_mut() {
@@ -4623,8 +4616,9 @@ impl FluorApp for PhotonApp {
             && (self.zoom_hint
                 || (cfg!(target_os = "android") && (ctx.viewport.ru - 1.0).abs() > 0.001));
 
-        // The open conversation's contact row, resolved ONCE before the chrome borrow — the borrow lives thru the whole render, so no `&self` method can run past this point.
+        // The open conversation's contact row + compose gate, resolved ONCE before the chrome borrow — the borrow lives thru the whole render, so no `&self` method can run past this point.
         let active_ci = self.active_contact();
+        let compose_ready = self.compose_ready();
         // Title-bar text by screen, computed BEFORE the chrome borrow (peer count reads `self.handle_query` / `self.session`). Launch/attest shows the "← Network" affordance; once attested (Ready) it shows the peer count — distinct identities in the store EXCLUDING our own: peers are PEOPLE, so the FGTW seed is not a peer (the old `+1` when online) and neither are our own fleet siblings (their records ride the same store for direct routing). `set_title` only re-rasterizes chrome when the string actually changes, so this is cheap to recompute each frame.
         let title_text: String = if matches!(
             self.state,
@@ -6957,11 +6951,8 @@ impl FluorApp for PhotonApp {
                         }
                         let _ = n;
 
-                        // ── Compose box (pinned bottom) ──────────────────────────── Shown when THIS device can dispatch: a locally-woven chain (direct send), self (loopback), or COMPOSE-ANYWHERE — a friend conversation with history while a fleet exists (the send fleet-forwards to the chain-owning sibling; delivered tick follows its ACK back thru the sync). A truly fresh un-clutched contact still hides it (nothing anywhere can transmit yet).
-                        let can_fleet_forward = !contact.is_sibling
-                            && conv.is_some_and(|v| !v.messages.is_empty())
-                            && self.contacts.iter().any(|c| c.is_sibling);
-                        if is_self_contact || contact.chain_woven || can_fleet_forward {
+                        // ── Compose box (pinned bottom) ──────────────────────────── Shown when THIS device can dispatch — the pre-chrome `compose_ready` snapshot, the same one definition the focus walk reads.
+                        if compose_ready {
                             let compose_empty = self
                                 .message_textbox
                                 .as_ref()
@@ -13930,6 +13921,18 @@ impl PhotonApp {
     fn active_conv_mut(&mut self) -> Option<&mut crate::types::Conversation> {
         let id = self.active_conversation?;
         self.conversations.iter_mut().find(|v| v.id() == id)
+    }
+
+    /// Can the open conversation dispatch from THIS device — a locally-woven chain, zero remote participants (loopback), or COMPOSE-ANYWHERE (history + a fleet to forward thru)? THE one definition: the focus walk and the render both call it, where two hand-mirrored copies used to drift ("textbox appears but can't type", desktop 2026-07-26). A truly fresh un-clutched contact still answers false (nothing anywhere can transmit yet).
+    fn compose_ready(&self) -> bool {
+        let Some(ci) = self.active_contact() else {
+            return false;
+        };
+        let c = &self.contacts[ci];
+        let has_history = self.conv_of(ci).is_some_and(|v| !v.messages.is_empty());
+        let can_fleet_forward =
+            !c.is_sibling && has_history && self.contacts.iter().any(|s| s.is_sibling);
+        self.is_zero_remote(c) || c.chain_woven || can_fleet_forward
     }
 
     /// The conversation for `self.contacts[ci]`, materialized empty on first touch — so no caller ever branches on "does it exist yet". `None` only before the session is up.
