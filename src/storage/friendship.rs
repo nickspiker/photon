@@ -49,6 +49,8 @@ fn chains_schema() -> SectionSchema {
         .field("history_key", TypeConstraint::AnyHash)
         // Mutation stamp (v7) — fleet chain-replication ordering key (adopt iff newer). Optional: absent = pre-feature file, treated as 0.
         .field("mutated_osc", TypeConstraint::Any)
+        // Lane root (v8, docs/lanes.md) — the secret every per-device lane derives from. The lanes themselves will ride ADDITIVE fields under this same version (absent = no lanes materialized yet), so v8 is the LAST flag-day this schema takes for the lane work.
+        .field("lane_root", TypeConstraint::AnyHash)
 }
 
 /// Vault address for a friendship's chain state — `vault_key("chains", friendship_id)`. The conversation id is the scope (already `blake3` of the sorted participant seeds, so 1/2/N participants all resolve here); "chains" names the entry.
@@ -74,7 +76,7 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
     let schema = chains_schema();
     let mut builder = schema
         .build()
-        .set("version", 7u8) // v7: adds mutated_osc (v6 = history_key)
+        .set("version", 8u8) // v8: lanes flag-day — lane_root joins; v≤7 blobs are REJECTED at read (re-clutch re-mints everything)
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set(
             "friendship_id",
@@ -198,6 +200,13 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
     if let Some(key) = chains.history_key() {
         builder = builder
             .set("history_key", VsfType::hb(key.to_vec()))
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+
+    // === Lane root (v8, docs/lanes.md) ===
+    if let Some(root) = chains.lane_root() {
+        builder = builder
+            .set("lane_root", VsfType::hb(root.to_vec()))
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
@@ -485,6 +494,14 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
         })
         .collect();
 
+    // === Lanes flag-day gate (v8, docs/lanes.md): a pre-lanes blob is REJECTED, not adapted. Everything in it re-mints at the re-clutch the caller's chainless sweep triggers, and the same gate drops a stale sibling's replicated v7 bytes on the adopt path.
+    let version: u8 = section.get_value::<u8>("version").unwrap_or(0);
+    if version < 8 {
+        return Err(StorageError::Parse(format!(
+            "pre-lanes chains (v{version}) — flag-day: re-clutch re-mints"
+        )));
+    }
+
     // === History key (v6) — optional; absent (pre-v6 file) leaves None ===
     let history_key: Option<[u8; 32]> = section.get_value::<[u8; 32]>("history_key").ok();
 
@@ -513,6 +530,7 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
     )
     .ok_or_else(|| StorageError::Parse("Failed to reconstruct chains".to_string()))?;
     chains.set_history_key(history_key);
+    chains.set_lane_root(section.get_value::<[u8; 32]>("lane_root").ok());
     chains.mutated_osc = mutated_osc;
     Ok(chains)
 }
@@ -668,6 +686,26 @@ mod tests {
         // v6: the history key derived at ceremony birth must survive the round-trip.
         assert!(chains.history_key().is_some());
         assert_eq!(loaded.history_key(), chains.history_key());
+        // v8: the lane root rides the same round-trip — the lanes a device mints later all grow from it.
+        assert!(chains.lane_root().is_some());
+        assert_eq!(loaded.lane_root(), chains.lane_root());
+    }
+
+    /// The lane root has the same both-sides birth property as the history key, and the two must be UNRELATED values (distinct domains over the same input).
+    #[test]
+    fn lane_root_deterministic_and_domain_separated() {
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let a_side = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        let b_side = FriendshipChains::from_clutch(&[bob, alice], &eggs);
+        assert_eq!(a_side.lane_root(), b_side.lane_root());
+        assert!(a_side.lane_root().is_some());
+        assert_ne!(a_side.lane_root(), a_side.history_key());
+
+        let other_eggs: Vec<[u8; 32]> = (0..8).map(|i| [(i + 100) as u8; 32]).collect();
+        let rekeyed = FriendshipChains::from_clutch(&[alice, bob], &other_eggs);
+        assert_ne!(a_side.lane_root(), rekeyed.lane_root());
     }
 
     #[test]

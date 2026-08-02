@@ -82,6 +82,24 @@ pub fn derive_history_key(friendship_id: &[u8; 32], active_chains_sorted: &[&[u8
     key
 }
 
+/// Domain for the lane root (docs/lanes.md). Version is a binary numeral, per convention.
+const LANE_ROOT_DOMAIN: &[u8] = b"PHOTON_LANE_ROOT_v\x01";
+
+/// Derive the LANE ROOT: the 32-byte secret every per-device lane grows from (docs/lanes.md). Same birth moment and same construction discipline as [`derive_history_key`] — the pristine active chains are byte-identical on both sides exactly once, at ceremony completion, and spaghettify is provably lossy so the root cannot be inverted back to chain material. Device identity is deliberately NOT an input: lanes derive from root ‖ wire label alone, which is what makes receive-anywhere and label pseudonymity work. Superseded (and zeroized) on re-key.
+pub fn derive_lane_root(friendship_id: &[u8; 32], active_chains_sorted: &[&[u8]]) -> [u8; 32] {
+    let total: usize = active_chains_sorted.iter().map(|c| c.len()).sum();
+    let mut input = Vec::with_capacity(LANE_ROOT_DOMAIN.len() + 32 + total);
+    input.extend_from_slice(LANE_ROOT_DOMAIN);
+    input.extend_from_slice(friendship_id);
+    for chain in active_chains_sorted {
+        input.extend_from_slice(chain);
+    }
+    let key = spaghettify(&input);
+    // The input buffer holds live chain secret material — scrub it.
+    input.zeroize();
+    key
+}
+
 /// OUR OWN party id as a FRIEND sees it: the Ed25519 identity pubkey derived from the identity seed — the same value a contact pins at first-met, so both sides sort/slot/derive on identical ids. Public by design (it rides CLUTCH offers for contact matching); the SECRET identity binding moved to [`identity_friendship_secret`]. Supersedes using the raw identity seed as the party id, which parked the friend's SIGNING SEED in every contact row (docs/identity-profile.md).
 pub fn identity_party_id(identity_seed: &[u8; 32]) -> [u8; 32] {
     ed25519_dalek::SigningKey::from_bytes(identity_seed)
