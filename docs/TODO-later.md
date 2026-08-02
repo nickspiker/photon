@@ -44,3 +44,7 @@ Each item names its home doc so nothing needs re-deriving.
 - Party colours → perceptual L≈50%.
 - Android boot-locked session capsule (de-attest-on-restart).
 - Live/self-update flow (docs/updates.md), fleet inbox beyond bind-attempt (docs/fleet-inbox.md).
+
+## URGENT — wipe recovery must not need a live sibling (regression from Phase A)
+A wiped device could once recover the fleet key alone: the wrap was x25519 against the durable device key. Phase A binds the CLUTCH pair secret into every wrap, and the pair secret dies with the vault — so a wiped device with its siblings off recovers NOTHING (no fleet key → no roster/contacts → no settings → no avatar pin → no avatar). Observed live: peer_b desktop wipe with the phone off, peer_a single-device avatar. Nick directive 2026-08-02: "We cannot rely on other devices for the contact list and avatars."
+Fix (braid.md §14's own prescription): a per-device RECOVERY SLOT — the current fleet key sealed under `fanout_pairs::self_secret` (device-secret-derived, survives wipe, pure hash so quantum-conservative) at a scoped-blob address only that device computes. Written on every key adopt/rotate EDGE; read at attest when no fleet key loads. A removed device's slot holds only the pre-rotation key it already had.
