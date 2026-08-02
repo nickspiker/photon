@@ -31,7 +31,7 @@ impl CeremonyId {
         sorted.sort();
 
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"PHOTON_CEREMONY_v1");
+        hasher.update(b"PHOTON_CEREMONY_v\x02");
         for hash in &sorted {
             hasher.update(hash);
         }
@@ -101,7 +101,7 @@ impl FriendshipId {
         sorted.sort();
 
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"PHOTON_FRIENDSHIP_v1");
+        hasher.update(b"PHOTON_FRIENDSHIP_v\x02");
         for hash in &sorted {
             hasher.update(hash);
         }
@@ -150,8 +150,8 @@ impl std::fmt::Display for FriendshipId {
 }
 
 // Domain separation for hash chain pointers
-const DOMAIN_MSG_HP: &[u8] = b"PHOTON_MSG_HP_v1";
-const DOMAIN_ANCHOR: &[u8] = b"PHOTON_ANCHOR_v1";
+const DOMAIN_MSG_HP: &[u8] = b"PHOTON_MSG_HP_v\x02";
+const DOMAIN_ANCHOR: &[u8] = b"PHOTON_ANCHOR_v\x02";
 
 /// Reliability backoff for unacked outgoing messages. A message is (re)sent until an ACK arrives or we hit `MAX_SEND_ATTEMPTS`; between sends we wait `retry_delay_osc(attempts)` — exponential from ~1s, doubling, capped at ~30s. Covers both a dropped message AND a dropped ACK (the sender just keeps resending; the receiver dedupes by eagle_time and its ACK is deterministic, so a re-ACK is free). These live on `PendingMessage` and are runtime-only (not persisted).
 const RETRY_BASE_SECS: u64 = 1;
@@ -326,7 +326,7 @@ pub fn derive_msg_hp(
 /// Domain: PHOTON_WEAVE_v0
 pub fn derive_weave_hash(eagle_time: i64, msg_hp: &[u8; 32], plaintext: &[u8]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"PHOTON_WEAVE_v0");
+    hasher.update(b"PHOTON_WEAVE_v\x01");
     hasher.update(&eagle_time.to_le_bytes());
     hasher.update(msg_hp);
     hasher.update(plaintext);

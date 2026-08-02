@@ -2481,6 +2481,16 @@ impl FluorApp for PhotonApp {
                             Err(e) => crate::logf!("MIGRATION: conversation re-key failed: {}", e),
                             _ => {}
                         }
+                        // Second hop, same shape: the friendship domain flipped to a binary version numeral on the lanes flag-day, which moved every table id — rows written under the ASCII domain re-home here. Chained AFTER the seed-mixed migration so a device that never ran it still lands in one pass.
+                        match crate::storage::contacts::migrate_conversation_domains(&self.contacts, &s)
+                        {
+                            Ok(n) if n > 0 => crate::logf!(
+                                "MIGRATION: {} conversation(s) re-homed onto the binary-numeral domain",
+                                n
+                            ),
+                            Err(e) => crate::logf!("MIGRATION: domain re-key failed: {}", e),
+                            _ => {}
+                        }
                         for c in self.contacts.iter_mut() {
                             if let Some((
                                 kp,

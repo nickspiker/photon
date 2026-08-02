@@ -71,11 +71,11 @@ pub const L1_SIZE: usize = 30_720;
 /// L1 mixing rounds
 pub const L1_ROUNDS: usize = 3;
 
-// Domain separation strings
-const DOMAIN_ADVANCE: &[u8] = b"PHOTON_ADVANCE_v0";
-const DOMAIN_ACK: &[u8] = b"PHOTON_ACK_v0";
-const DOMAIN_CONFIRM: &[u8] = b"PHOTON_CONFIRM_v0";
-const DOMAIN_SALT: &[u8] = b"PHOTON_SALT_v0";
+// Domain separation strings. Versions are BINARY numerals appended after the text (`…_v` ‖ [N u8]) — never ASCII digits, which get read, normalized, and reproduced elsewhere. Flipped from the ASCII forms on the lanes flag-day: a re-clutch re-derives every chain, so the change costs nothing.
+const DOMAIN_ADVANCE: &[u8] = b"PHOTON_ADVANCE_v\x01";
+const DOMAIN_ACK: &[u8] = b"PHOTON_ACK_v\x01";
+const DOMAIN_CONFIRM: &[u8] = b"PHOTON_CONFIRM_v\x01";
+const DOMAIN_SALT: &[u8] = b"PHOTON_SALT_v\x01";
 
 // Link ranges for different operations
 const ACK_LINK_RANGE: std::ops::Range<usize> = 507..512; // 5 links (160B)
