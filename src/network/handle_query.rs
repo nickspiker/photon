@@ -741,6 +741,21 @@ impl HandleQuery {
                             }
                         }
 
+                        // Backstop for the slot's write side: a stable fleet may not hit a rotation edge for weeks, and a device that never published its slot is a device whose NEXT wipe still strands. Attest is the one moment every device passes; if the slot doesn't open to the key we hold, publish it now. One GET on the attest path, self-quieting once the slot matches.
+                        if let Some(fk) = fleet_key {
+                            let slot = crate::network::fgtw::fleet::recover_fleet_key_from_oracle(
+                                &identity_seed,
+                            );
+                            if slot != Some(fk) {
+                                crate::network::fgtw::fleet::publish_recovery_slot(
+                                    &fk,
+                                    &identity_seed,
+                                    &keypair,
+                                    &handle_proof,
+                                );
+                            }
+                        }
+
                         // What the cloud already holds, kept so the upload below can tell a real change from a no-op. The blob's BYTES can't answer that — encrypt_bytes draws a fresh random nonce per call, so re-encrypting identical contacts yields different ciphertext every time. Compare the decoded CONTENT instead.
                         let mut cloud_had: Option<Vec<crate::storage::cloud::CloudContact>> = None;
                         if fleet_key.is_none() {
