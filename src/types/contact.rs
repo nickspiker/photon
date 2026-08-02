@@ -512,6 +512,19 @@ impl Contact {
         crate::types::Conversation::new([*our_party_id, self.handle_hash])
     }
 
+    /// Is this conversation reachable — i.e. can a message sent here actually land?
+    ///
+    /// Derived, not stored. With no remote participants the answer is unconditionally yes: there is no network hop between writing a note and having it, so there is nothing that could be offline. With remotes it is ordinary presence. This replaces forcing `is_online = true` on our own row at four settle sites, which had to be re-applied on every load, merge and attest — and still showed OFFLINE whenever one of them was missed.
+    pub fn is_reachable(&self, our_party_id: &crate::types::PartyId) -> bool {
+        self.remote_count(our_party_id) == 0 || self.is_online
+    }
+
+    /// Has the key exchange for this conversation finished? A ceremony over a set with no remote participants has nothing to exchange, so it is complete on arrival — the same answer the old code wrote by hand as `clutch_state = Complete`.
+    pub fn is_keyed(&self, our_party_id: &crate::types::PartyId) -> bool {
+        self.remote_count(our_party_id) == 0
+            || self.clutch_state == crate::types::ClutchState::Complete
+    }
+
     /// How many OTHER people a message here has to reach. `0` for our own notes — not because we checked for self, but because a set containing only us has nobody else in it.
     pub fn remote_count(&self, our_party_id: &crate::types::PartyId) -> usize {
         self.conversation(our_party_id).remote_count(our_party_id)
