@@ -232,6 +232,65 @@ pub fn rotate_fleet_key(
     fgtw::client::rotate_fleet_key(&PhotonTransport, handle_proof, device_key, &compliant)
 }
 
+/// The oracle-rooted kek for OUR fleet-key recovery slot (braid.md §14 statelessness, restored). Derived from the device ORACLE + the identity seed: the oracle is the one secret a wipe cannot destroy, and the identity binding keeps two identities on one machine from sharing a slot. Pure hashing, no curve — nothing here for a quantum harvester. `None` when the platform oracle is unreadable.
+fn recovery_kek(identity_seed: &[u8; 32]) -> Option<[u8; 32]> {
+    let dev = tohu::device::device_secret().ok()?;
+    let mut h = blake3::Hasher::new();
+    h.update(b"PHOTON_FLEET_RECOVERY_v\x01");
+    h.update(&dev);
+    h.update(identity_seed);
+    Some(*h.finalize().as_bytes())
+}
+
+/// The slot purpose: base tag ‖ publisher pid (the scoped-blob publisher-in-purpose rule — one derivation shape everywhere, even where the publisher is always us).
+fn recovery_purpose(identity_seed: &[u8; 32]) -> Vec<u8> {
+    let pid = crate::crypto::clutch::identity_party_id(identity_seed);
+    let mut p = Vec::with_capacity(9 + 32);
+    p.extend_from_slice(b"fleet-key");
+    p.extend_from_slice(&pid);
+    p
+}
+
+fn recovery_addr(kek: &[u8; 32], purpose: &[u8]) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    URL_SAFE_NO_PAD.encode(fgtw::scoped_blob::slot_address(kek, purpose))
+}
+
+/// Publish OUR fleet-key recovery slot (blocking — call off-thread, on every edge where this device gains the current key: genesis, rotation, fan-out sync, pairing hand-off). This is what lets a WIPED device, alone, its siblings off, get its contacts and avatar back: the wrap Phase A gated on a vault-held pair secret is bypassed by a slot only this machine can find or open.
+pub fn publish_recovery_slot(
+    fleet_key: &[u8; 32],
+    identity_seed: &[u8; 32],
+    device_keypair: &Keypair,
+    handle_proof: &[u8; 32],
+) {
+    let Some(kek) = recovery_kek(identity_seed) else {
+        return;
+    };
+    let purpose = recovery_purpose(identity_seed);
+    let Ok(sealed) = fgtw::scoped_blob::seal_value(&kek, &purpose, fleet_key) else {
+        return;
+    };
+    match crate::network::fgtw::blob::put_blob_blocking(
+        &recovery_addr(&kek, &purpose),
+        &sealed,
+        device_keypair,
+        handle_proof,
+    ) {
+        Ok(()) => crate::log("RECOVERY: fleet-key slot refreshed (oracle-derived, wipe-proof)"),
+        Err(e) => crate::logf!("RECOVERY: fleet-key slot publish failed: {}", e),
+    }
+}
+
+/// Recover the fleet key from OUR oracle slot (blocking) — the wiped-device path: no vault, no siblings, just this machine and the wall. `None` = no slot (never published, or a different machine).
+pub fn recover_fleet_key_from_oracle(identity_seed: &[u8; 32]) -> Option<[u8; 32]> {
+    let kek = recovery_kek(identity_seed)?;
+    let purpose = recovery_purpose(identity_seed);
+    let sealed = crate::network::fgtw::blob::get_blob_blocking(&recovery_addr(&kek, &purpose))
+        .ok()
+        .flatten()?;
+    fgtw::scoped_blob::open_value(&kek, &purpose, &sealed)
+}
+
 /// Recover the current fleet key from the fan-out with this device's key + its pair secret toward the rotator (None if not a current member, or not yet egged with whoever rotated).
 pub fn recover_fleet_key(
     handle_proof: &[u8; 32],

@@ -10696,6 +10696,8 @@ impl PhotonApp {
                     if let Err(e) = storage.write_addr(&addr, &k) {
                         crate::logf!("FANOUT: fleet key cache failed: {}", e);
                     }
+                    // Every key edge refreshes OUR wipe-proof recovery slot — the path a wiped, sibling-less device gets its contacts back thru.
+                    fleet::publish_recovery_slot(&k, &identity_seed, &device_key, &hp);
                     crate::logf!("FANOUT: rotated to epoch {} — egged siblings wrapped", epoch);
                 }
                 Err(e) => crate::logf!("FANOUT: compliance rotation failed: {}", e),
@@ -10768,6 +10770,7 @@ impl PhotonApp {
                         if let Err(e) = storage.write_addr(&addr, &new_key) {
                             crate::logf!("FLEET: rotated key cache failed: {}", e);
                         }
+                        fleet::publish_recovery_slot(&new_key, &identity_seed, &device_key, &hp);
                         let merged = fgtw::fstate::merge_fstate(preserved, ours);
                         match fleet::push_fstate(&hp, &device_key, &new_key, &merged) {
                             Ok(()) => crate::logf!("FLEET: removal heal — rotated to epoch {} ({} member(s)), fstate re-sealed", epoch, members.len()),
@@ -10785,6 +10788,7 @@ impl PhotonApp {
                             fleet::recover_fleet_key(&hp, &device_key, Some(&storage))
                         {
                             let _ = storage.write_addr(&addr, &k);
+                            fleet::publish_recovery_slot(&k, &identity_seed, &device_key, &hp);
                         }
                     }
                 }
@@ -10798,6 +10802,7 @@ impl PhotonApp {
                     } else {
                         crate::log("FLEET: fleet key synced from fan-out");
                     }
+                    fleet::publish_recovery_slot(&k, &identity_seed, &device_key, &hp);
                 }
                 Ok(None) => {}
                 Err(e) => crate::logf!("FLEET: fleet key sync failed: {}", e),
@@ -10819,6 +10824,7 @@ impl PhotonApp {
         ) else {
             return;
         };
+        let identity_seed = session.identity_seed;
         let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
         std::thread::spawn(
             move || match fleet::recover_or_establish_fleet_key(&hp, &kp, Some(&storage)) {
@@ -10826,6 +10832,8 @@ impl PhotonApp {
                     if let Err(e) = storage.write_addr(&addr, &k) {
                         crate::logf!("FLEET: fleet key cache failed: {}", e);
                     }
+                    // Key edge → refresh the wipe-proof recovery slot.
+                    fleet::publish_recovery_slot(&k, &identity_seed, &kp, &hp);
                     crate::log("FLEET: fleet key synced from fan-out (post-bind)");
                     if entries.is_empty() {
                         return; // no contacts to share, but the key is now current for the roster PULL
@@ -10850,6 +10858,16 @@ impl PhotonApp {
             let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
             if let Err(e) = storage.write_addr(&addr, key) {
                 crate::logf!("FLEET: fleet key store failed: {}", e);
+            }
+            // Key edge → refresh the wipe-proof recovery slot (off-thread: it is a blocking upload).
+            if let (Some(kp), Some(hp)) = (
+                self.device_keypair.clone(),
+                self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+            ) {
+                let (k, seed) = (*key, session.identity_seed);
+                std::thread::spawn(move || {
+                    crate::network::fgtw::fleet::publish_recovery_slot(&k, &seed, &kp, &hp);
+                });
             }
         }
     }
