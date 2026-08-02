@@ -4217,13 +4217,14 @@ impl FluorApp for PhotonApp {
                 // Fleet-wide: the tombstoned row rides the ordinary sibling push (merge upgrades true-wins).
                 self.push_rows_to_siblings(sci, std::slice::from_ref(&row), None);
                 // Cross-party: the hidden delete marker on the chain (friend conversations with a local chain; a chainless device's fleet tombstone still reaches the chain owner, which is where a follow-up marker could ride — v1 logs the gap).
-                let is_self = self
-                    .session
-                    .as_ref()
-                    .map(|se| crate::crypto::clutch::identity_party_id(&se.identity_seed))
-                    == self.contacts.get(sci).map(|c| c.handle_hash);
+                // Send the marker only where there is someone to send it TO. Zero remote participants (our own notes) means the row is already gone everywhere it exists; a sibling is our own fleet, which the push above already covered.
+                let has_remote = self
+                    .contacts
+                    .get(sci)
+                    .and_then(|c| self.our_party_id(c).map(|us| (c, us)))
+                    .is_some_and(|(c, us)| c.remote_count(&us) > 0);
                 let is_sib = self.contacts.get(sci).map(|c| c.is_sibling).unwrap_or(true);
-                if !is_self && !is_sib {
+                if has_remote && !is_sib {
                     let marker = format!("{}{}", crate::types::DELETE_MARKER_PREFIX, ts);
                     if self.send_chain_message(sci, &marker, true) {
                         crate::log(
@@ -12596,13 +12597,16 @@ impl PhotonApp {
         let ci = contact_idx;
         let text = text.to_string();
 
-        // Notes-to-self: no peer, no chains, no network — the message is delivered by definition (we already hold it). Insert the bubble + persist to the self conversation table (keyed off handle_hash like every conversation, so fleet history sync later carries it across our devices). Without this branch the send dead-ended at the missing friendship chain while submit_message cleared the box anyway — typed notes vanished. Probes never target self (maybe_send_chain_probe guard), so suppress_bubble can't arrive true here.
-        let is_self = self
-            .session
-            .as_ref()
-            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
-            == self.contacts.get(ci).map(|c| c.handle_hash);
-        if is_self {
+        // How many people does this message have to reach? For our own notes the answer is zero, so there is nothing to encrypt, nothing to dispatch, and nothing left to wait for — the row is delivered because delivery to an empty set is already complete. That is not a special case for self; it is what the general rule evaluates to when the participant set has one member (docs: the conversation model). A conversation with one remote takes the chain path below, and so does one with fifty.
+        let remotes = match self.contacts.get(ci) {
+            // `our_party_id` already knows which id space this conversation lives in — the identity pubkey for friends and our own notes, the device-derived pid for a fleet sibling — so the participant set is built from the right values without asking what kind of row this is.
+            Some(c) => match self.our_party_id(c) {
+                Some(us) => c.remote_count(&us),
+                None => return false,
+            },
+            None => return false,
+        };
+        if remotes == 0 {
             let Some(contact) = self.contacts.get_mut(ci) else {
                 return false;
             };
@@ -13006,12 +13010,8 @@ impl PhotonApp {
             let Some(c) = self.contacts.get(ci) else {
                 return;
             };
-            let is_self = self
-                .session
-                .as_ref()
-                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
-                == Some(c.handle_hash);
-            if is_self || c.is_sibling {
+            // Nobody to push a blob to: our own notes have zero remote participants, and a sibling is our own fleet (it reads the blob from the fleet store, not from us).
+            if self.our_party_id(c).is_none_or(|us| c.remote_count(&us) == 0) || c.is_sibling {
                 return;
             }
             let Some(token) = self
@@ -13159,8 +13159,8 @@ impl PhotonApp {
                 c.clutch_state == crate::types::ClutchState::Complete
                     && c.friendship_id.is_some()
                     && !c.probe_sent
-                    // Self-contact has no peer device to answer the probe.
-                    && self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) != Some(c.handle_hash)
+                    // A weave probe proves a chain reaches someone; with no remote participants there is no chain and nobody to answer it.
+                    && self.our_party_id(c).is_some_and(|us| c.remote_count(&us) > 0)
             }
             None => false,
         };
@@ -15797,14 +15797,14 @@ impl PhotonApp {
             return;
         };
         let mut pinged = 0;
-        let our_pid = self
-            .session
-            .as_ref()
-            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
         let now = std::time::Instant::now();
         let mut due: Vec<usize> = Vec::new();
         for (i, contact) in self.contacts.iter().enumerate() {
-            if our_pid != Some(contact.handle_hash) && contact_ping_due(contact, now) {
+            // Presence is a question about OTHER people. A conversation with no remote participants has nobody to ask, so it is not skipped by a self-check — there is simply no one in the loop. (Pinging it used to storm our own addresses: probe spam at ourselves, wrong-responder pongs, mobile radio burnt for nothing.)
+            let has_remote = self
+                .our_party_id(contact)
+                .is_some_and(|us| contact.remote_count(&us) > 0);
+            if has_remote && contact_ping_due(contact, now) {
                 due.push(i);
             }
         }
@@ -15816,10 +15816,6 @@ impl PhotonApp {
             }
         }
         for contact in due.iter().filter_map(|&i| self.contacts.get(i)) {
-            // The SELF contact is this fleet, not a peer — pinging/punching it storms our own addresses (7ff3835f probe spam, wrong-responder pongs) and burns mobile radio for nothing. Sibling contacts carry our devices' presence.
-            if our_pid == Some(contact.handle_hash) {
-                continue;
-            }
             // Ping the LAN address AND the public address (when both are known) rather than preferring LAN and never falling back. Two devices that once shared a LAN have a stored `local_ip`; the moment one moves to a different network (e.g. phone → cellular) that LAN address is stale and unreachable, but the public address in the registry is correct — pinging only LAN strands them offline forever. Each ping is tracked by a unique provenance hash and a single pong clears the whole per-contact failure counter (see status.rs StatusPong handler), so the unreachable address simply times out harmlessly while the reachable one keeps the contact online. On-LAN the LAN ping wins (no router hairpin / AP isolation); off-LAN the public ping wins.
             let lan_addr = match (contact.local_ip, contact.local_port) {
                 (Some(ip), Some(port)) => {
