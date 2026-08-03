@@ -408,7 +408,9 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
         .first()
         .and_then(|f| f.values.first())
     {
-        contact.ip = crate::network::fgtw::protocol::bytes_to_socketaddr(&v.data);
+        // Cleanse at the well: a bogus address adopted before the ingest guards existed persists in the vault, and restoring it re-points every send at 0.0.0.0 on each launch. None here re-enters the normal resolve path instead.
+        contact.ip = crate::network::fgtw::protocol::bytes_to_socketaddr(&v.data)
+            .filter(|a| !crate::network::traverse::gather::is_bogus_addr(a));
     }
     if let Ok(name) = section.get_value::<String>("published_name") {
         contact.published_name = name;

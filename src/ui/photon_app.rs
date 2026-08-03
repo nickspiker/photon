@@ -961,10 +961,15 @@ pub struct PhotonApp {
     pending_chain_sends: Vec<(usize, String, i64, u64)>,
     /// Unique identities the seed knows (including us), off the latest signed announce ack. The Ready-screen count reads this as a floor: the peer STORE only fills by gossip now, so on a fresh session it holds nothing but our own record and would show "0 peers" to a user who can see nine friends in the contact list.
     seed_identity_count: u32,
-    /// In-flight phonebook resolution: `(device_pubkey, public, lan)` for devices we could not otherwise address. Drained in `tick` into `device_endpoints`, which is what candidate gathering reads. `Some` = a resolve is running, which debounces re-spawns so a stalled seed can't stack requests.
+    /// In-flight phonebook resolution: `(handle_proof, device_pubkey, public, lan)` for devices we could not otherwise address. The handle_proof binds each record to the identity it was resolved FOR, so a friend can adopt a registry-vouched device it has never met. Drained in `tick` into `device_endpoints`, which is what candidate gathering reads. `Some` = a resolve is running, which debounces re-spawns so a stalled seed can't stack requests.
     pb_resolve_rx: Option<
         std::sync::mpsc::Receiver<
-            Vec<([u8; 32], std::net::SocketAddr, Option<std::net::SocketAddr>)>,
+            Vec<(
+                [u8; 32],
+                [u8; 32],
+                std::net::SocketAddr,
+                Option<std::net::SocketAddr>,
+            )>,
         >,
     >,
     /// The linked-settings cache (per-device maps + link-to-global; docs/global-vault.md). Lazily loaded from the vault once storage + device key exist; merged from every fstate pull; every local set persists + pushes.
@@ -9091,6 +9096,10 @@ impl PhotonApp {
                             r.handle_proof == contact.handle_proof
                                 && r.device_pubkey.as_bytes() == contact.public_identity.as_bytes()
                         }) {
+                            // Same refusal as the phonebook drain: a record signed before the bogus-address guard existed (or by a since-retired device that will never republish) can carry the unspecified address forever — adopting it points every send at 0.0.0.0 and the contact reads permanently offline.
+                            if crate::network::traverse::gather::is_bogus_addr(&rec.ip) {
+                                continue;
+                            }
                             contact.ip = Some(rec.ip);
                             contact.punch_unvalidated_cycles = 0;
                             learned = true;
@@ -21699,7 +21708,7 @@ impl PhotonApp {
                         {
                             let lan =
                                 crate::network::fgtw::phonebook_client::record_local_addr(&rec);
-                            found.push((dev, pubaddr, lan));
+                            found.push((hp, dev, pubaddr, lan));
                         }
                         // A pointed device with no usable address is still ANSWERED — the registry spoke for it; asking again per-device would just repeat the same record.
                         covered.push(dev);
@@ -21714,7 +21723,7 @@ impl PhotonApp {
                             {
                                 let lan =
                                     crate::network::fgtw::phonebook_client::record_local_addr(&rec);
-                                found.push((dev, pubaddr, lan));
+                                found.push((hp, dev, pubaddr, lan));
                             }
                         }
                         // Absence is the normal case for a device that has not published yet; only a genuine rejection is worth a line.
@@ -21745,13 +21754,19 @@ impl PhotonApp {
             return false;
         }
         let mut learned = 0usize;
-        for (dev, pubaddr, lan) in found {
+        for (hp, dev, pubaddr, lan) in found {
             // Never adopt the relay sentinel or an unspecified address as an endpoint — it validates locally and then poisons every send that keys off `validated_path`.
             if crate::network::traverse::gather::is_bogus_addr(&pubaddr) {
                 continue;
             }
             for contact in self.contacts.iter_mut() {
-                if !contact.relay_device_list().contains(&dev) {
+                // A FRIEND adopts every device the registry vouches for its identity — the registry is fresher than the contact, and gating on the devices we already knew rejected exactly the record that heals a dead pin (the contact pinned a retired pre-wipe device, its relay sends went to a key nobody polls, and the live fleet's endpoints were resolved and then thrown away — live pair, 2026-08-03). The endpoint upsert extends the relay fan-out to the vouched device; message trust is unchanged, every parser still signature-gates. SIBLING rows stay device-scoped: each row is one device, and identity-wide adoption would smear every sibling's endpoint onto every row.
+                let ours = if contact.is_sibling {
+                    contact.relay_device_list().contains(&dev)
+                } else {
+                    contact.handle_proof == hp
+                };
+                if !ours {
                     continue;
                 }
                 let ep = contact.endpoint_mut(&dev);
