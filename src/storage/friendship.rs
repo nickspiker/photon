@@ -51,6 +51,10 @@ fn chains_schema() -> SectionSchema {
         .field("mutated_osc", TypeConstraint::Any)
         // Lane root (v8, docs/lanes.md) — the secret every per-device lane derives from. The lanes themselves will ride ADDITIVE fields under this same version (absent = no lanes materialized yet), so v8 is the LAST flag-day this schema takes for the lane work.
         .field("lane_root", TypeConstraint::AnyHash)
+        // Lanes (v8, additive): one label+position per lane; the chain / last_plaintext / last_received_hash / last_received_time multis are INDEX-ALIGNED with lane_label (they carried per-participant state before the flag-day retired it — same tags, new meaning, and a legacy blob's copies are simply ignored because it has no lane_label rows).
+        .field("lane_label", TypeConstraint::AnyHash)
+        .field("lane_position", TypeConstraint::Any)
+        .field("our_label", TypeConstraint::AnyHash)
 }
 
 /// Vault address for a friendship's chain state — `vault_key("chains", friendship_id)`. The conversation id is the scope (already `blake3` of the sorted participant seeds, so 1/2/N participants all resolve here); "chains" names the entry.
@@ -84,21 +88,32 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
         )
         .map_err(|e| StorageError::Parse(e.to_string()))?;
 
-    // Add each participant's handle_hash and their chain (vC with 512×32 tensor data)
+    // Identity participants — conversation membership, no chain zipped to them since the lanes flag-day.
     for participant in chains.participants() {
         builder = builder
             .append_multi("participant", vec![VsfType::hb(participant.to_vec())])
             .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
 
-        // Get this participant's chain as 512×32 tensor bytes
+    // Lanes: label + position + chain per lane; the per-lane vec fields further down (last_received_hash / last_plaintext / last_received_time) are index-aligned with these rows.
+    for (label, position) in chains.lane_summary() {
         let chain = chains
-            .chain(participant)
-            .ok_or_else(|| StorageError::Parse("Missing chain".to_string()))?;
-        let chain_bytes = chain.to_bytes();
-
-        // Store as vC (CLUTCH chain) - internally it's a 512×32 u8 tensor
+            .chain(&label)
+            .ok_or_else(|| StorageError::Parse("Missing lane chain".to_string()))?;
         builder = builder
-            .append_multi("chain", vec![VsfType::v(b'C', chain_bytes)])
+            .append_multi("lane_label", vec![VsfType::hb(label.to_vec())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi(
+                "lane_position",
+                vec![VsfType::e(vsf::types::EtType::e6(position as i64))],
+            )
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi("chain", vec![VsfType::v(b'C', chain.to_bytes())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    if let Some(l) = chains.our_label() {
+        builder = builder
+            .set("our_label", VsfType::hb(l.to_vec()))
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
 
@@ -327,15 +342,32 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
         return Err(StorageError::Parse("No participants found".to_string()));
     }
 
-    // Extract chain bytes (vC per participant, 512×32 = 16KB each)
+    // Lane labels (v8 additive) — their PRESENCE decides everything below: with labels, the chain / last_* multis are per-lane; without, this is a pre-lane blob whose per-participant copies are dead (the flag-day) and only its scalars survive.
+    let mut lane_labels: Vec<[u8; 32]> = Vec::new();
+    for field in section.get_fields("lane_label") {
+        if let Some(VsfType::hb(b)) = field.values.first() {
+            if let Ok(arr) = <[u8; 32]>::try_from(b.as_slice()) {
+                lane_labels.push(arr);
+            }
+        }
+    }
+    let lane_positions: Vec<u64> = section
+        .get_fields("lane_position")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .map(|v| match v {
+            VsfType::e(vsf::types::EtType::e6(osc)) => (*osc).max(0) as u64,
+            _ => 0,
+        })
+        .collect();
+    let our_label: Option<[u8; 32]> = section.get_value::<[u8; 32]>("our_label").ok();
+
+    // Chain bytes — per LANE when labels exist, ignored otherwise.
     let mut chain_bytes = Vec::new();
     for field in section.get_fields("chain") {
         if let Some(VsfType::v(b'C', data)) = field.values.first() {
             chain_bytes.extend(data);
         }
-    }
-    if chain_bytes.is_empty() {
-        return Err(StorageError::Parse("Missing chain data".to_string()));
     }
 
     // === Hash chain state (v2) ===
@@ -515,22 +547,54 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
     let friendship_id = crate::types::friendship::FriendshipId::from_bytes(fid_bytes);
 
     // Reconstruct chains with full v5 state, then install the optional v6 key
+    // A pre-lane blob's pendings were built for the retired per-participant wire — carrying them forward would retransmit frames nobody can decrypt. Undelivered rows re-send thru the held-messages path instead.
+    let has_lanes = !lane_labels.is_empty();
+    let pending_messages = if has_lanes { pending_messages } else { Vec::new() };
+
     let mut chains = FriendshipChains::from_storage_v5(
         friendship_id,
         participants,
-        &chain_bytes,
+        &[],
         last_sent_hash,
-        last_received_hashes,
+        Vec::new(),
         pending_messages,
         last_received_weave,
         last_sent_weave,
         last_incorporated_hp,
-        last_plaintexts,
-        last_received_times,
+        Vec::new(),
+        Vec::new(),
     )
     .ok_or_else(|| StorageError::Parse("Failed to reconstruct chains".to_string()))?;
     chains.set_history_key(history_key);
     chains.set_lane_root(section.get_value::<[u8; 32]>("lane_root").ok());
+    if has_lanes {
+        use crate::crypto::chain::{Chain, CHAIN_SIZE};
+        if chain_bytes.len() != lane_labels.len() * CHAIN_SIZE {
+            return Err(StorageError::Parse(format!(
+                "lane chain bytes mismatch: {} lanes, {} bytes",
+                lane_labels.len(),
+                chain_bytes.len()
+            )));
+        }
+        let mut lane_chains = Vec::with_capacity(lane_labels.len());
+        for i in 0..lane_labels.len() {
+            let start = i * CHAIN_SIZE;
+            let chain = Chain::from_full_bytes(&chain_bytes[start..start + CHAIN_SIZE])
+                .ok_or_else(|| StorageError::Parse("lane chain malformed".to_string()))?;
+            lane_chains.push(chain);
+        }
+        // Positions default to 0 when the field is short (never expected; harmless — a checkpoint merge treats it as furthest-behind).
+        let mut positions = lane_positions;
+        positions.resize(lane_labels.len(), 0);
+        let n = lane_labels.len();
+        let mut lrh = last_received_hashes;
+        lrh.resize(n, None);
+        let mut lpt = last_plaintexts;
+        lpt.resize(n, Vec::new());
+        let mut lrt = last_received_times;
+        lrt.resize(n, None);
+        chains.install_lanes(lane_labels, positions, lane_chains, lpt, lrh, lrt, our_label);
+    }
     chains.mutated_osc = mutated_osc;
     Ok(chains)
 }
@@ -659,7 +723,13 @@ mod tests {
         let alice = [1u8; 32];
         let bob = [2u8; 32];
         let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
-        let chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        let mut chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        // Populate real lane state: our minted lane (advanced once) plus a received lane.
+        let ours = chains.mint_our_lane().unwrap();
+        let theirs = [0x77u8; 32];
+        chains.ensure_lane(&theirs).unwrap();
+        let et = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
+        chains.advance(&ours, &et, &[9u8; 16], &[]);
 
         let test_seed = [0xAA; 32];
         let device_secret = [0xBB; 32];
@@ -672,17 +742,20 @@ mod tests {
         // Load
         let loaded = load_friendship_chains(chains.id(), &storage).unwrap();
 
-        // Verify
+        // Verify: identity layer, both lanes byte-for-byte, positions, and OUR label all survive.
         assert_eq!(loaded.id().as_bytes(), chains.id().as_bytes());
         assert_eq!(loaded.participants(), chains.participants());
         assert_eq!(
-            loaded.current_key(&alice).unwrap(),
-            chains.current_key(&alice).unwrap()
+            loaded.current_key(&ours).unwrap(),
+            chains.current_key(&ours).unwrap()
         );
         assert_eq!(
-            loaded.current_key(&bob).unwrap(),
-            chains.current_key(&bob).unwrap()
+            loaded.current_key(&theirs).unwrap(),
+            chains.current_key(&theirs).unwrap()
         );
+        assert_eq!(loaded.lane_position(&ours), Some(1));
+        assert_eq!(loaded.lane_position(&theirs), Some(0));
+        assert_eq!(loaded.our_label(), chains.our_label());
         // v6: the history key derived at ceremony birth must survive the round-trip.
         assert!(chains.history_key().is_some());
         assert_eq!(loaded.history_key(), chains.history_key());

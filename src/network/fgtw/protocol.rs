@@ -86,6 +86,8 @@ pub enum FgtwMessage {
         timestamp: i64,
         /// Privacy-preserving conversation token (smear_hash of sorted participant seeds)
         conversation_token: [u8; 32],
+        /// The sender's LANE label (docs/lanes.md): random-at-mint, never pubkey-derived — any holder of the conversation's lane root derives the decrypting lane from this alone. REQUIRED: a frame without it is a pre-lane build's, undecryptable here by construction.
+        lane: [u8; 32],
         prev_msg_hp: [u8; 32],
         ciphertext: Vec<u8>,
         sender_pubkey: DevicePubkey,
@@ -391,6 +393,7 @@ impl FgtwMessage {
             FgtwMessage::ChatMessage {
                 timestamp,
                 conversation_token,
+                lane,
                 prev_msg_hp,
                 ciphertext,
                 sender_pubkey,
@@ -406,6 +409,7 @@ impl FgtwMessage {
                         "msg",
                         vec![
                             ("tok".to_string(), VsfType::hg(conversation_token.to_vec())),
+                            ("lane".to_string(), VsfType::hb(lane.to_vec())),
                             ("prev".to_string(), VsfType::hp(prev_msg_hp.to_vec())),
                             (
                                 "data".to_string(),
@@ -719,12 +723,14 @@ impl FgtwMessage {
             let conversation_token = extract_spaghetti_hash(&fields, "tok")?;
 
             if section_name == "msg" {
-                // ChatMessage: tok (conversation_token), prev (prev_msg_hp), data (ciphertext)
+                // ChatMessage: tok (conversation_token), lane (sender lane label), prev (prev_msg_hp), data (ciphertext)
+                let lane = extract_hash_hb(&fields, "lane")?;
                 let prev_msg_hp = extract_hash_hp(&fields, "prev")?;
                 let ciphertext = extract_data(&fields, "data")?;
                 return Ok(FgtwMessage::ChatMessage {
                     timestamp,
                     conversation_token,
+                    lane,
                     prev_msg_hp,
                     ciphertext,
                     sender_pubkey,
@@ -1010,6 +1016,15 @@ fn extract_pubkey(fields: &[(String, VsfType)], key: &str) -> Result<DevicePubke
 }
 
 // NOTE: extract_clutch_ephemeral removed - was only used by legacy ClutchOffer/Init/Response
+
+/// Extract a bare 32-byte hash (hb type) — the lane label's wire form: random bytes, no provenance semantics.
+fn extract_hash_hb(fields: &[(String, VsfType)], key: &str) -> Result<[u8; 32], String> {
+    let bytes = match get_field(fields, key) {
+        Some(VsfType::hb(b)) => b,
+        _ => return Err(format!("Missing or invalid hash: {}", key)),
+    };
+    <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| format!("{} must be 32 bytes", key))
+}
 
 /// Extract a provenance hash (hp type) as [u8; 32]
 fn extract_hash_hp(fields: &[(String, VsfType)], key: &str) -> Result<[u8; 32], String> {

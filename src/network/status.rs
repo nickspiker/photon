@@ -135,6 +135,8 @@ pub struct MessageRequest {
     pub recipient_pubkey: [u8; 32],
     /// Privacy-preserving conversation token (smear_hash of sorted participant seeds). Replaces cleartext handle_hash and friendship_id - only participants can compute.
     pub conversation_token: [u8; 32],
+    /// The sending lane's label (docs/lanes.md) — rides every frame; the receiver derives the decrypting lane from it.
+    pub lane: [u8; 32],
     /// Hash chain link to previous message (or first_message_anchor)
     pub prev_msg_hp: [u8; 32],
     /// Encrypted message content
@@ -277,6 +279,8 @@ pub enum StatusUpdate {
     ChatMessage {
         /// Privacy-preserving conversation token (smear_hash of sorted participant seeds)
         conversation_token: [u8; 32],
+        /// The sender's lane label — names the decrypting lane (docs/lanes.md).
+        lane: [u8; 32],
         /// Hash chain link to previous message
         prev_msg_hp: [u8; 32],
         /// Encrypted message content
@@ -2371,6 +2375,7 @@ async fn run_checker(
                                 FgtwMessage::ChatMessage {
                                     timestamp,
                                     conversation_token,
+                                    lane,
                                     prev_msg_hp,
                                     ciphertext,
                                     sender_pubkey,
@@ -2432,6 +2437,7 @@ async fn run_checker(
                                         &status_tx_recv,
                                         StatusUpdate::ChatMessage {
                                             conversation_token,
+                                            lane,
                                             prev_msg_hp,
                                             ciphertext,
                                             timestamp,
@@ -3003,6 +3009,7 @@ async fn run_checker(
             let msg = FgtwMessage::ChatMessage {
                 timestamp,
                 conversation_token: request.conversation_token,
+                lane: request.lane,
                 prev_msg_hp: request.prev_msg_hp,
                 ciphertext: request.ciphertext,
                 sender_pubkey: our_pubkey.clone(),

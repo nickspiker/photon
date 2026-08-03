@@ -187,13 +187,22 @@ pub struct FriendshipChains {
     /// Privacy-preserving conversation token for wire format. Derived via smear_hash(sorted_participant_seeds) - only participants can compute. Replaces cleartext handle_hashes in messages.
     pub conversation_token: [u8; 32],
 
-    /// One chain per participant (sorted by handle_hash)
+    /// One chain per LANE (docs/lanes.md) — a lane is one device's ratchet, derived from `lane_root` ‖ its wire label, device identity nowhere in the derivation. Index matches `lane_labels`.
     chains: Vec<Chain>,
 
-    /// Participant handle_hashes (sorted) - index matches chain index
+    /// Participant IDENTITY pids (sorted) — conversation membership only: the token, the friendship id, and contact resolution key on these. Chain state does NOT: that moved to lanes, because an identity is many devices and a ratchet with many writers forks.
     participants: Vec<[u8; 32]>,
 
-    /// Last plaintext per chain (for salt derivation). Index matches chain index. Empty Vec = first message on that chain. Used to derive salt: `derive_salt(prev_plaintext, chain)`
+    /// Lane labels, parallel to every per-lane vec below. 32 random bytes minted by the SENDING device at its first send and carried on every frame — anyone holding `lane_root` derives the lane from the label alone (receive-anywhere), and nothing pubkey-derived ever rides the wire (pseudonymity). Arrival-ordered, never sorted: labels have no canonical order and need none.
+    lane_labels: Vec<[u8; 32]>,
+
+    /// Advance count per lane — the checkpoint ordering key: a replicated copy of a lane is adopted iff its position is strictly greater (a fast-forward of a deterministic replay, always safe). Index matches `lane_labels`.
+    lane_positions: Vec<u64>,
+
+    /// The label OUR device minted — the ONE lane this device may advance (writer discipline: every other lane is receive-only here, which is what makes forks impossible instead of healed). `None` until our first send mints it.
+    our_label: Option<[u8; 32]>,
+
+    /// Last plaintext per lane (for salt derivation). Index matches `lane_labels`. Empty Vec = first message on that lane. Used to derive salt: `derive_salt(prev_plaintext, chain)`
     last_plaintexts: Vec<Vec<u8>>,
 
     /// Pending sent messages awaiting ACK (for our chain only). When we send, we store plaintext here. On ACK, we advance and clear. Vec because we can send multiple messages before receiving ACKs.
@@ -373,19 +382,10 @@ impl FriendshipChains {
         };
         let avalanche = avalanche_expand_eggs(&eggs_struct);
 
-        // Step 2: Derive each participant's chain via truncate-and-append derive_chain_from_avalanche returns 8KB (256 active links) We need 16KB (256 history zeros + 256 active links)
-        let mut chains = Vec::with_capacity(sorted_participants.len());
+        // Step 2: derive the per-participant ACTIVE material — NOT to keep (lanes replaced participant chains), but because the history key and lane root were always derived from these pristine bytes and every v8 blob in the field carries roots born this way. The material lives exactly long enough to seed the two keys, then scrubs.
         let mut active_snapshots: Vec<Vec<u8>> = Vec::with_capacity(sorted_participants.len());
         for participant in &sorted_participants {
-            let active_bytes = derive_chain_from_avalanche(&avalanche, participant);
-
-            // Build full 16KB chain: [0..8KB] = history zeros, [8KB..16KB] = active links
-            let mut full_chain = vec![0u8; CHAIN_SIZE];
-            full_chain[CHAIN_SIZE / 2..].copy_from_slice(&active_bytes);
-
-            let chain = Chain::from_full_bytes(&full_chain).expect("chain is 16KB");
-            chains.push(chain);
-            active_snapshots.push(active_bytes);
+            active_snapshots.push(derive_chain_from_avalanche(&avalanche, participant));
         }
 
         // Friend-history bulk key — derived HERE, at ceremony birth, from the pristine active chains (the one moment both sides are byte-identical). Every completion path flows thru from_clutch, so this is the single derivation site. See crypto::clutch::derive_history_key.
@@ -403,32 +403,20 @@ impl FriendshipChains {
             snap.zeroize();
         }
 
-        // Initialize last_plaintexts with empty vecs (first message on each chain)
-        let last_plaintexts = vec![Vec::new(); sorted_participants.len()];
-
-        // Initialize last_received_times with None (no messages received yet)
-        let last_received_times = vec![None; sorted_participants.len()];
-
-        // Derive first_message_anchors for each participant's hash chain Anchor = BLAKE3(DOMAIN_ANCHOR || handle_hash || chain_fingerprint) where chain_fingerprint = BLAKE3(active_chain_portion)
-        let first_message_anchors: Vec<[u8; 32]> = sorted_participants
-            .iter()
-            .zip(chains.iter())
-            .map(|(handle_hash, chain)| derive_anchor(handle_hash, chain))
-            .collect();
-
-        // Initialize hash chain tracking (all None - no messages yet)
-        let last_received_hashes = vec![None; sorted_participants.len()];
-
+        // Lanes are born EMPTY: each device mints its own at first send, and every receive materializes the sender's from root ‖ label. A ceremony creates the shared root, never the ratchets (docs/lanes.md).
         Self {
             friendship_id,
             conversation_token,
-            chains,
+            chains: Vec::new(),
             participants: sorted_participants,
-            last_plaintexts,
+            lane_labels: Vec::new(),
+            lane_positions: Vec::new(),
+            our_label: None,
+            last_plaintexts: Vec::new(),
             pending_messages: Vec::new(),
-            last_received_times,
-            first_message_anchors,
-            last_received_hashes,
+            last_received_times: Vec::new(),
+            first_message_anchors: Vec::new(),
+            last_received_hashes: Vec::new(),
             last_sent_hash: None,
             // Bidirectional entropy state (initialized empty)
             last_received_weave: None,
@@ -504,6 +492,9 @@ impl FriendshipChains {
             last_received_weave,
             last_sent_weave,
             last_incorporated_hp,
+            lane_labels: Vec::new(),  // pre-lane blob: lanes are absent by definition (the loader installs v8 lanes separately)
+            lane_positions: Vec::new(),
+            our_label: None,
             gap_buffer: Vec::new(), // Gap buffer is transient, not persisted
             history_key: None,      // pre-v6 file: no history key (set by the loader when present)
             lane_root: None,        // loader installs it from a v8 file
@@ -543,71 +534,39 @@ impl FriendshipChains {
     pub fn from_storage_v5(
         friendship_id: FriendshipId,
         participants: Vec<[u8; 32]>,
-        chain_bytes: &[u8],
+        _legacy_chain_bytes: &[u8],
         last_sent_hash: Option<[u8; 32]>,
-        mut last_received_hashes: Vec<Option<[u8; 32]>>,
+        _legacy_last_received_hashes: Vec<Option<[u8; 32]>>,
         pending_messages: Vec<PendingMessage>,
         last_received_weave: Option<[u8; 32]>,
         last_sent_weave: Option<[u8; 32]>,
         last_incorporated_hp: Option<[u8; 32]>,
-        mut last_plaintexts: Vec<Vec<u8>>,
-        mut last_received_times: Vec<Option<i64>>,
+        _legacy_last_plaintexts: Vec<Vec<u8>>,
+        _legacy_last_received_times: Vec<Option<i64>>,
     ) -> Option<Self> {
         use crate::crypto::clutch::derive_conversation_token;
 
-        let chain_count = participants.len();
-        if chain_bytes.len() != CHAIN_SIZE * chain_count {
-            return None;
-        }
-
-        let mut chains = Vec::with_capacity(chain_count);
-        for i in 0..chain_count {
-            let start = i * CHAIN_SIZE;
-            let end = start + CHAIN_SIZE;
-            let chain = Chain::from_full_bytes(&chain_bytes[start..end])?;
-            chains.push(chain);
-        }
-
-        // Derive conversation token from participants
+        // The lanes flag-day retired per-participant chain state: the `_legacy_*` args are accepted (old blobs still carry them) and DISCARDED — a lane is derived from root ‖ label, never resurrected from participant bytes. Lanes install separately (`install_lanes`) when the blob carries them; a legacy blob yields laneless chains and the loader drops its pendings (they were built for the retired wire).
         let conversation_token = derive_conversation_token(&participants);
-
-        // If no last_plaintexts in file (v3 or earlier), initialize to empty vecs
-        if last_plaintexts.is_empty() || last_plaintexts.len() != participants.len() {
-            last_plaintexts = vec![Vec::new(); participants.len()];
-        }
-
-        // If no last_received_times in file (v4 or earlier), initialize to None
-        if last_received_times.is_empty() || last_received_times.len() != participants.len() {
-            last_received_times = vec![None; participants.len()];
-        }
-
-        // Derive first_message_anchors for each participant's hash chain These are deterministic from chain state, so we recompute them
-        let first_message_anchors: Vec<[u8; 32]> = participants
-            .iter()
-            .zip(chains.iter())
-            .map(|(handle_hash, chain)| derive_anchor(handle_hash, chain))
-            .collect();
-
-        // Use provided last_received_hashes, or initialize to None if empty
-        if last_received_hashes.is_empty() {
-            last_received_hashes = vec![None; participants.len()];
-        }
 
         Some(Self {
             friendship_id,
             conversation_token,
-            chains,
+            chains: Vec::new(),
             participants,
-            last_plaintexts,
+            last_plaintexts: Vec::new(),
             pending_messages,
-            last_received_times,
-            first_message_anchors,
-            last_received_hashes,
+            last_received_times: Vec::new(),
+            first_message_anchors: Vec::new(),
+            last_received_hashes: Vec::new(),
             last_sent_hash,
             // Bidirectional entropy state from storage
             last_received_weave,
             last_sent_weave,
             last_incorporated_hp,
+            lane_labels: Vec::new(),
+            lane_positions: Vec::new(),
+            our_label: None,
             gap_buffer: Vec::new(), // Gap buffer is transient, not persisted
             history_key: None,      // pre-v6 file default: loader sets it when the field is present
             lane_root: None,        // loader installs it from a v8 file
@@ -677,9 +636,9 @@ impl FriendshipChains {
         self.participants.binary_search(handle_hash).ok()
     }
 
-    /// Get current encryption key for a participant (for sending).
-    pub fn current_key(&self, sender_handle_hash: &[u8; 32]) -> Option<&[u8; 32]> {
-        let idx = self.participant_index(sender_handle_hash)?;
+    /// Get current encryption key for a LANE (by its wire label).
+    pub fn current_key(&self, lane_label: &[u8; 32]) -> Option<&[u8; 32]> {
+        let idx = self.lane_index(lane_label)?;
         Some(self.chains[idx].current_key())
     }
 
@@ -690,24 +649,26 @@ impl FriendshipChains {
     /// Advance a participant's chain, braiding in `their_plaintexts` (the woven peer strands — two for a full braid, or fewer early in the conversation; the caller passes them sorted by eagle_time so both peers frame identically).
     pub fn advance(
         &mut self,
-        sender_handle_hash: &[u8; 32],
+        lane_label: &[u8; 32],
         eagle_time: &vsf::EagleTime,
         our_plaintext: &[u8],
         their_plaintexts: &[&[u8]],
     ) -> bool {
         // Fleet chain-replication ordering key: every local mutation stamps NOW (see mutated_osc).
         self.mutated_osc = vsf::eagle_time_oscillations();
-        if let Some(idx) = self.participant_index(sender_handle_hash) {
+        if let Some(idx) = self.lane_index(lane_label) {
             self.chains[idx].advance(eagle_time, our_plaintext, their_plaintexts);
+            // The checkpoint ordering key: strictly-greater position = a fast-forward of this same deterministic replay.
+            self.lane_positions[idx] += 1;
             true
         } else {
             false
         }
     }
 
-    /// Get chain for a participant (for debugging/inspection).
-    pub fn chain(&self, handle_hash: &[u8; 32]) -> Option<&Chain> {
-        let idx = self.participant_index(handle_hash)?;
+    /// Get a lane's chain by label (debugging/inspection/serialization).
+    pub fn chain(&self, lane_label: &[u8; 32]) -> Option<&Chain> {
+        let idx = self.lane_index(lane_label)?;
         Some(&self.chains[idx])
     }
 
@@ -721,9 +682,9 @@ impl FriendshipChains {
         CHAIN_SIZE * self.chains.len()
     }
 
-    /// Get last plaintext for a participant's chain (for salt derivation). Returns empty slice for first message on that chain.
-    pub fn last_plaintext(&self, handle_hash: &[u8; 32]) -> &[u8] {
-        if let Some(idx) = self.participant_index(handle_hash) {
+    /// Get last plaintext for a lane (for salt derivation). Returns empty slice for the first message on that lane.
+    pub fn last_plaintext(&self, lane_label: &[u8; 32]) -> &[u8] {
+        if let Some(idx) = self.lane_index(lane_label) {
             &self.last_plaintexts[idx]
         } else {
             &[]
@@ -745,17 +706,17 @@ impl FriendshipChains {
     }
 
     /// Update last plaintext for a participant's chain after successful decrypt/send.
-    pub fn set_last_plaintext(&mut self, handle_hash: &[u8; 32], plaintext: Vec<u8>) {
+    pub fn set_last_plaintext(&mut self, lane_label: &[u8; 32], plaintext: Vec<u8>) {
         // Fleet chain-replication ordering key: every local mutation stamps NOW (see mutated_osc).
         self.mutated_osc = vsf::eagle_time_oscillations();
-        if let Some(idx) = self.participant_index(handle_hash) {
+        if let Some(idx) = self.lane_index(lane_label) {
             self.last_plaintexts[idx] = plaintext;
         }
     }
 
     /// Check if a message is a duplicate (already received from this sender). Returns true if this is a duplicate and should be skipped.
-    pub fn is_duplicate(&self, sender_handle_hash: &[u8; 32], eagle_time: i64) -> bool {
-        if let Some(idx) = self.participant_index(sender_handle_hash) {
+    pub fn is_duplicate(&self, lane_label: &[u8; 32], eagle_time: i64) -> bool {
+        if let Some(idx) = self.lane_index(lane_label) {
             if let Some(last_time) = self.last_received_times[idx] {
                 // Duplicate if eagle_time <= last received (exact match or older)
                 return eagle_time <= last_time;
@@ -765,8 +726,8 @@ impl FriendshipChains {
     }
 
     /// Mark a message as received (update last received time for deduplication).
-    pub fn mark_received(&mut self, sender_handle_hash: &[u8; 32], eagle_time: i64) {
-        if let Some(idx) = self.participant_index(sender_handle_hash) {
+    pub fn mark_received(&mut self, lane_label: &[u8; 32], eagle_time: i64) {
+        if let Some(idx) = self.lane_index(lane_label) {
             // Tip-consistency guard: this is the conversation's high-water mark (the contiguous tip that becomes `last_received_osc`). It must only ever move FORWARD — a buffered / out-of-order ("ahead") message must never reach here (it's gated behind verify_chain_link and only processed in order, so its eagle_time is always strictly newer than the prior tip). If this ever fires, a non-contiguous message inflated the high-water mark, which would falsely tell the peer "I have everything up to here" and suppress a needed resend.
             #[cfg(feature = "development")]
             if let Some(prev) = self.last_received_times[idx] {
@@ -781,27 +742,163 @@ impl FriendshipChains {
         }
     }
 
+    /// Index of a lane by its wire label (arrival order, linear scan — fleets are single-digit).
+    fn lane_index(&self, label: &[u8; 32]) -> Option<usize> {
+        self.lane_labels.iter().position(|l| l == label)
+    }
+
+    /// Materialize the lane a label names, deriving it from `lane_root` if it doesn't exist yet — the receive-anywhere primitive: any device holding the root can build any lane from its label alone. `None` only when the blob predates lanes (no root) — the flag-day re-clutch case.
+    pub fn ensure_lane(&mut self, label: &[u8; 32]) -> Option<usize> {
+        if let Some(i) = self.lane_index(label) {
+            return Some(i);
+        }
+        let root = self.lane_root?;
+        let active = crate::crypto::clutch::derive_lane_active(&root, label);
+        let mut full_chain = vec![0u8; CHAIN_SIZE];
+        full_chain[CHAIN_SIZE / 2..].copy_from_slice(&active);
+        let chain = Chain::from_full_bytes(&full_chain).expect("lane chain is 16KB");
+        // The anchor binds the LABEL (not a device id) to the chain fingerprint — same construction as ever, identity-free like everything lane-shaped.
+        let anchor = derive_anchor(label, &chain);
+        self.lane_labels.push(*label);
+        self.lane_positions.push(0);
+        self.chains.push(chain);
+        self.last_plaintexts.push(Vec::new());
+        self.first_message_anchors.push(anchor);
+        self.last_received_hashes.push(None);
+        self.last_received_times.push(None);
+        Some(self.lane_labels.len() - 1)
+    }
+
+    /// OUR lane's label, minting it on first use — the one lane this device may ever advance. `None` only pre-lanes (no root).
+    pub fn mint_our_lane(&mut self) -> Option<[u8; 32]> {
+        if let Some(l) = self.our_label {
+            return Some(l);
+        }
+        let label: [u8; 32] = rand::random();
+        self.ensure_lane(&label)?;
+        self.our_label = Some(label);
+        self.mutated_osc = vsf::eagle_time_oscillations();
+        Some(label)
+    }
+
+    /// The label our device minted, if any.
+    pub fn our_label(&self) -> Option<&[u8; 32]> {
+        self.our_label.as_ref()
+    }
+
+    /// Install lane state loaded from storage (loader only) — parallel vecs, index-aligned.
+    #[allow(clippy::too_many_arguments)]
+    pub fn install_lanes(
+        &mut self,
+        labels: Vec<[u8; 32]>,
+        positions: Vec<u64>,
+        chains: Vec<Chain>,
+        last_plaintexts: Vec<Vec<u8>>,
+        last_received_hashes: Vec<Option<[u8; 32]>>,
+        last_received_times: Vec<Option<i64>>,
+        our_label: Option<[u8; 32]>,
+    ) {
+        self.first_message_anchors = labels
+            .iter()
+            .zip(chains.iter())
+            .map(|(label, chain)| derive_anchor(label, chain))
+            .collect();
+        self.lane_labels = labels;
+        self.lane_positions = positions;
+        self.chains = chains;
+        self.last_plaintexts = last_plaintexts;
+        self.last_received_hashes = last_received_hashes;
+        self.last_received_times = last_received_times;
+        self.our_label = our_label;
+    }
+
+    /// Strip everything DEVICE-LOCAL from a replicated copy before adopting it wholesale: the sender's minted label, its pendings, its send tip. Adopting those would make this device WRITE on the sender's lane — the exact two-writer fork lanes exist to end.
+    pub fn sanitize_replicated(&mut self) {
+        self.our_label = None;
+        self.pending_messages.clear();
+        self.last_sent_hash = None;
+    }
+
+    /// Merge a sibling's replicated copy, LANE-WISE (docs/lanes.md checkpoints): a lane we lack is taken whole; a lane we hold is replaced iff the incoming position is STRICTLY greater — a fast-forward of the same deterministic replay, always safe. Device-local state (our label, pendings, send tip, weave view) stays OURS untouched; the root and history key adopt only where we lack them. Replaces whole-blob newest-wins, whose fork window was both devices overwriting each other's live lanes. Returns whether anything changed.
+    pub fn merge_lanes_from(&mut self, other: &FriendshipChains) -> bool {
+        let mut changed = false;
+        if self.lane_root.is_none() && other.lane_root.is_some() {
+            self.lane_root = other.lane_root;
+            changed = true;
+        }
+        if self.history_key.is_none() && other.history_key.is_some() {
+            self.history_key = other.history_key;
+            changed = true;
+        }
+        for (i, label) in other.lane_labels.iter().enumerate() {
+            match self.lane_index(label) {
+                None => {
+                    self.lane_labels.push(*label);
+                    self.lane_positions.push(other.lane_positions[i]);
+                    self.chains.push(other.chains[i].clone());
+                    self.last_plaintexts.push(other.last_plaintexts[i].clone());
+                    self.first_message_anchors.push(other.first_message_anchors[i]);
+                    self.last_received_hashes.push(other.last_received_hashes[i]);
+                    self.last_received_times.push(other.last_received_times[i]);
+                    changed = true;
+                }
+                Some(mine) => {
+                    // Never fast-forward the lane WE write: our pendings reference our chain position, and a sibling's copy of our lane is at best a mirror of our past.
+                    if Some(*label) == self.our_label {
+                        continue;
+                    }
+                    if other.lane_positions[i] > self.lane_positions[mine] {
+                        self.lane_positions[mine] = other.lane_positions[i];
+                        self.chains[mine] = other.chains[i].clone();
+                        self.last_plaintexts[mine] = other.last_plaintexts[i].clone();
+                        self.last_received_hashes[mine] = other.last_received_hashes[i];
+                        self.last_received_times[mine] = other.last_received_times[i];
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            self.mutated_osc = vsf::eagle_time_oscillations();
+        }
+        changed
+    }
+
+    /// A lane's advance position (the checkpoint ordering key).
+    pub fn lane_position(&self, label: &[u8; 32]) -> Option<u64> {
+        self.lane_index(label).map(|i| self.lane_positions[i])
+    }
+
+    /// Every lane as (label, position) — the checkpoint summary a merge compares.
+    pub fn lane_summary(&self) -> Vec<([u8; 32], u64)> {
+        self.lane_labels
+            .iter()
+            .copied()
+            .zip(self.lane_positions.iter().copied())
+            .collect()
+    }
+
     // ==================== HASH CHAIN METHODS ====================
 
-    /// Get the first message anchor for a participant. Used as prev_msg_hp for the first message on their chain.
-    pub fn get_anchor(&self, handle_hash: &[u8; 32]) -> Option<&[u8; 32]> {
-        let idx = self.participant_index(handle_hash)?;
+    /// Get the first message anchor for a lane. Used as prev_msg_hp for the first message on it.
+    pub fn get_anchor(&self, lane_label: &[u8; 32]) -> Option<&[u8; 32]> {
+        let idx = self.lane_index(lane_label)?;
         Some(&self.first_message_anchors[idx])
     }
 
-    /// Get prev_msg_hp for the next outgoing message. Returns last_sent_hash if we've sent messages, otherwise our anchor.
-    pub fn get_prev_msg_hp(&self, our_handle_hash: &[u8; 32]) -> Option<[u8; 32]> {
+    /// Get prev_msg_hp for the next outgoing message. Returns last_sent_hash if we've sent messages, otherwise OUR lane's anchor.
+    pub fn get_prev_msg_hp(&self) -> Option<[u8; 32]> {
         if let Some(hash) = self.last_sent_hash {
             Some(hash)
         } else {
-            // First message - use our anchor
-            self.get_anchor(our_handle_hash).copied()
+            // First message - use our lane's anchor
+            self.get_anchor(&self.our_label?).copied()
         }
     }
 
     /// Get the expected prev_msg_hp for incoming message from a sender. Returns their last_received_hash, or their anchor if first message.
-    pub fn get_expected_prev_hp(&self, sender_handle_hash: &[u8; 32]) -> Option<[u8; 32]> {
-        let idx = self.participant_index(sender_handle_hash)?;
+    pub fn get_expected_prev_hp(&self, lane_label: &[u8; 32]) -> Option<[u8; 32]> {
+        let idx = self.lane_index(lane_label)?;
         if let Some(hash) = self.last_received_hashes[idx] {
             Some(hash)
         } else {
@@ -815,11 +912,11 @@ impl FriendshipChains {
     /// Returns Ok(()) if chain is valid, Err with expected hash if mismatch. Caller can use the expected hash to request resync.
     pub fn verify_chain_link(
         &self,
-        sender_handle_hash: &[u8; 32],
+        lane_label: &[u8; 32],
         received_prev_msg_hp: &[u8; 32],
     ) -> Result<(), [u8; 32]> {
         let expected = self
-            .get_expected_prev_hp(sender_handle_hash)
+            .get_expected_prev_hp(lane_label)
             .ok_or([0u8; 32])?;
 
         if received_prev_msg_hp == &expected {
@@ -830,10 +927,10 @@ impl FriendshipChains {
     }
 
     /// Update hash chain state after successfully receiving and decrypting a message. Call this AFTER verify_chain_link succeeds and decrypt succeeds.
-    pub fn update_received_hash(&mut self, sender_handle_hash: &[u8; 32], msg_hp: [u8; 32]) {
+    pub fn update_received_hash(&mut self, lane_label: &[u8; 32], msg_hp: [u8; 32]) {
         // Fleet chain-replication ordering key: every local mutation stamps NOW (see mutated_osc).
         self.mutated_osc = vsf::eagle_time_oscillations();
-        if let Some(idx) = self.participant_index(sender_handle_hash) {
+        if let Some(idx) = self.lane_index(lane_label) {
             self.last_received_hashes[idx] = Some(msg_hp);
         }
     }
@@ -996,19 +1093,20 @@ impl FriendshipChains {
     /// Does NOT advance the chain — advancement is deferred to [`process_ack`](Self::process_ack), the same invariant the receive side relies on (advancing on send would desync if the peer never decrypts).
     ///
     /// Returns `(ciphertext, prev_msg_hp, msg_hp, plaintext_hash)` for the wire send, or `None` if `our_handle_hash` isn't a participant. `plaintext` is the FULL flattened VSF payload (`(message: x{}, hp{}, hR{pad})`) — this is what goes on the wire (encrypted) and what both sides hash for `msg_hp`/ACK. `salt_text` is the bare message x-text only: the salt source + the `our_plaintext` fed to the braid's `derive_fresh_link` on ACK-advance. The two are SEPARATE on purpose — the random `hR` pad and the public `hp` are traffic-analysis/wire concerns, never chain-key material, and keeping them out of the chain ingredient keeps it valid UTF-8 (so it stores losslessly) and matches the receiver, which advances + salts from the decrypted x-text only.
+    /// Returns `(ciphertext, prev_msg_hp, msg_hp, plaintext_hash, lane_label)` — the label rides every frame so any holder of the lane root can derive the decrypting lane (docs/lanes.md). Mints OUR lane on first send; writer discipline is structural: this is the only method that ever advances it.
     pub fn prepare_send(
         &mut self,
-        our_handle_hash: &[u8; 32],
         plaintext: Vec<u8>,
         salt_text: Vec<u8>,
         eagle_time: i64,
         woven_strands: Vec<Vec<u8>>,
-    ) -> Option<(Vec<u8>, [u8; 32], [u8; 32], [u8; 32])> {
+    ) -> Option<(Vec<u8>, [u8; 32], [u8; 32], [u8; 32], [u8; 32])> {
         // Fleet chain-replication ordering key: every local mutation stamps NOW (see mutated_osc).
         self.mutated_osc = vsf::eagle_time_oscillations();
         use crate::crypto::chain::{derive_salt, encrypt_layers, generate_scratch};
 
-        let our_idx = self.participant_index(our_handle_hash)?;
+        let our_label = self.mint_our_lane()?;
+        let our_idx = self.lane_index(&our_label)?;
         let our_chain = self.chains[our_idx].clone();
 
         // Salt from our previous plaintext (empty on the first message) — both sides derive the same salt for the same chain position.
@@ -1018,7 +1116,7 @@ impl FriendshipChains {
         let ciphertext = encrypt_layers(&plaintext, &our_chain, &scratch, &et);
 
         // Mirror the receiver's "CHAIN DECRYPT" line so both sides can be diffed: for a given eagle_time the encrypt key+salt here MUST equal the decrypt key+salt on the peer, or the chains have diverged. last_plaintext_len flags the lossy-storage class of bug (a non-empty prev that round-tripped thru storage must be byte-identical on both ends).
-        crate::logf!("CHAIN ENCRYPT: our_handle_hash = {}..., key = {}..., salt = {}..., eagle_time = {}, last_plaintext_len = {}, ciphertext_len = {}", hex::encode(&our_handle_hash[..4]), hex::encode(&our_chain.current_key()[..4]), hex::encode(&salt[..4]), eagle_time, self.last_plaintexts[our_idx].len(), ciphertext.len());
+        crate::logf!("CHAIN ENCRYPT: lane = {}..., key = {}..., salt = {}..., eagle_time = {}, last_plaintext_len = {}, ciphertext_len = {}", hex::encode(&our_label[..4]), hex::encode(&our_chain.current_key()[..4]), hex::encode(&salt[..4]), eagle_time, self.last_plaintexts[our_idx].len(), ciphertext.len());
 
         // First message uses our anchor as prev_msg_hp (matches get_expected_prev_hp on the receiver).
         let prev_msg_hp = self
@@ -1039,13 +1137,12 @@ impl FriendshipChains {
             woven_strands,
         );
 
-        Some((ciphertext, prev_msg_hp, msg_hp, plaintext_hash))
+        Some((ciphertext, prev_msg_hp, msg_hp, plaintext_hash, our_label))
     }
 
     /// Process ACK: find pending message, advance our chain, update last_plaintext, clear pending. Chain advancement is deferred to ACK to prevent desync — if we advanced on send and the receiver never processed the message, both sides' copies of our chain would diverge. Returns true if ACK was valid and chain was advanced.
     pub fn process_ack(
         &mut self,
-        our_handle_hash: &[u8; 32],
         acked_eagle_time: i64,
         acked_plaintext_hash: &[u8; 32],
     ) -> bool {
@@ -1063,15 +1160,13 @@ impl FriendshipChains {
             let eagle_time = vsf::EagleTime::from_oscillations(pending.eagle_time);
             let strand_refs: Vec<&[u8]> =
                 pending.woven_strands.iter().map(|s| s.as_slice()).collect();
-            self.advance(
-                our_handle_hash,
-                &eagle_time,
-                &pending.plaintext,
-                &strand_refs,
-            );
+            let Some(our_label) = self.our_label else {
+                return false;
+            };
+            self.advance(&our_label, &eagle_time, &pending.plaintext, &strand_refs);
 
             // Update last_plaintext for salt derivation on next message
-            if let Some(chain_idx) = self.participant_index(our_handle_hash) {
+            if let Some(chain_idx) = self.lane_index(&our_label) {
                 self.last_plaintexts[chain_idx] = pending.plaintext;
                 return true;
             }
@@ -1080,11 +1175,7 @@ impl FriendshipChains {
     }
 
     /// Clear all pending messages up to and including the given msg_hp. Used for hp-based sync: peer tells us their last_received_hp, we clear everything they have. Returns count of messages cleared.
-    pub fn clear_pending_up_to(
-        &mut self,
-        our_handle_hash: &[u8; 32],
-        up_to_hp: &[u8; 32],
-    ) -> usize {
+    pub fn clear_pending_up_to(&mut self, up_to_hp: &[u8; 32]) -> usize {
         let mut cleared = 0;
         let mut last_plaintext_to_set: Option<Vec<u8>> = None;
 
@@ -1103,7 +1194,7 @@ impl FriendshipChains {
         // Update last_plaintext for salt derivation
         if let (Some(plaintext), Some(chain_idx)) = (
             last_plaintext_to_set,
-            self.participant_index(our_handle_hash),
+            self.our_label.and_then(|l| self.lane_index(&l)),
         ) {
             self.last_plaintexts[chain_idx] = plaintext;
         }
@@ -1112,13 +1203,15 @@ impl FriendshipChains {
     }
 
     /// Get the most recent pending plaintext (for salt derivation of next send). If no pending messages, returns last_plaintext for our chain.
-    pub fn current_send_plaintext(&self, our_handle_hash: &[u8; 32]) -> &[u8] {
+    pub fn current_send_plaintext(&self) -> &[u8] {
         // If we have pending messages, use the last one's plaintext
         if let Some(last_pending) = self.pending_messages.last() {
             &last_pending.plaintext
+        } else if let Some(l) = self.our_label {
+            // Otherwise use the last acked plaintext from our lane
+            self.last_plaintext(&l)
         } else {
-            // Otherwise use the last acked plaintext from our chain
-            self.last_plaintext(our_handle_hash)
+            &[]
         }
     }
 
@@ -1304,22 +1397,28 @@ mod tests {
         let bob = [2u8; 32];
         let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
 
-        let chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        let mut chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
 
-        // Should have 2 chains (one per participant)
+        // Lanes are born EMPTY — a ceremony creates the shared root, never the ratchets.
         assert_eq!(chains.participant_count(), 2);
-        assert_eq!(chains.total_size(), 2 * CHAIN_SIZE);
+        assert_eq!(chains.total_size(), 0);
+        assert!(chains.lane_root().is_some());
 
         // Participants should be sorted
         let participants = chains.participants();
         assert!(participants[0] < participants[1]);
 
-        // Should be able to get keys for both
-        assert!(chains.current_key(&alice).is_some());
-        assert!(chains.current_key(&bob).is_some());
+        // A label materializes a lane from the root; an unknown label has no key until ensured.
+        let label = [7u8; 32];
+        assert!(chains.current_key(&label).is_none());
+        assert!(chains.ensure_lane(&label).is_some());
+        assert!(chains.current_key(&label).is_some());
+        assert_eq!(chains.lane_position(&label), Some(0));
 
-        // Unknown participant should return None
-        assert!(chains.current_key(&[99u8; 32]).is_none());
+        // Our own lane mints once and is stable.
+        let ours = chains.mint_our_lane().unwrap();
+        assert_eq!(chains.mint_our_lane().unwrap(), ours);
+        assert!(chains.current_key(&ours).is_some());
     }
 
     #[test]
@@ -1347,16 +1446,17 @@ mod tests {
             "each sibling pair must get a distinct friendship id"
         );
 
-        // pid-keyed chains: both participants resolve, other_participant round-trips, and an advance moves only the sender's strand.
+        // pid-keyed IDENTITY layer: other_participant round-trips; the ratchets are lane-keyed and identity-free.
         let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
         let mut chains = FriendshipChains::from_clutch(&[pids[0], pids[1]], &eggs);
-        assert!(chains.current_key(&pids[0]).is_some());
-        assert!(chains.current_key(&pids[1]).is_some());
         assert_eq!(chains.other_participant(&pids[0]), Some(&pids[1]));
-        let key_b_before = *chains.current_key(&pids[1]).unwrap();
+        let (a, b) = ([0xA0u8; 32], [0xB0u8; 32]);
+        chains.ensure_lane(&a).unwrap();
+        chains.ensure_lane(&b).unwrap();
+        let key_b_before = *chains.current_key(&b).unwrap();
         let eagle_time = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
-        assert!(chains.advance(&pids[0], &eagle_time, &[0xAA; 32], &[]));
-        assert_eq!(*chains.current_key(&pids[1]).unwrap(), key_b_before);
+        assert!(chains.advance(&a, &eagle_time, &[0xAA; 32], &[]));
+        assert_eq!(*chains.current_key(&b).unwrap(), key_b_before);
     }
 
     #[test]
@@ -1368,23 +1468,26 @@ mod tests {
         let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
 
         let mut chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        let (lane_a, lane_b) = ([0x11u8; 32], [0x22u8; 32]);
+        chains.ensure_lane(&lane_a).unwrap();
+        chains.ensure_lane(&lane_b).unwrap();
 
         // Save original keys
-        let alice_key_before = *chains.current_key(&alice).unwrap();
-        let bob_key_before = *chains.current_key(&bob).unwrap();
+        let a_key_before = *chains.current_key(&lane_a).unwrap();
+        let b_key_before = *chains.current_key(&lane_b).unwrap();
 
-        // Advance Alice's chain (no bidirectional entropy for this test)
+        // Advance one lane (no bidirectional entropy for this test)
         let eagle_time = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
         let plaintext_hash = [0xAA; 32];
-        assert!(chains.advance(&alice, &eagle_time, &plaintext_hash, &[]));
+        assert!(chains.advance(&lane_a, &eagle_time, &plaintext_hash, &[]));
 
-        // Alice's key should change
-        let alice_key_after = *chains.current_key(&alice).unwrap();
-        assert_ne!(alice_key_before, alice_key_after);
+        // Its key changes AND its position moves — the checkpoint ordering key.
+        assert_ne!(a_key_before, *chains.current_key(&lane_a).unwrap());
+        assert_eq!(chains.lane_position(&lane_a), Some(1));
 
-        // Bob's key should NOT change
-        let bob_key_after = *chains.current_key(&bob).unwrap();
-        assert_eq!(bob_key_before, bob_key_after);
+        // The other lane is untouched: one writer per lane, no cross-talk.
+        assert_eq!(b_key_before, *chains.current_key(&lane_b).unwrap());
+        assert_eq!(chains.lane_position(&lane_b), Some(0));
     }
 
     #[test]
@@ -1393,36 +1496,27 @@ mod tests {
         let bob = [2u8; 32];
         let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
 
-        let original = FriendshipChains::from_clutch(&[alice, bob], &eggs);
-
-        // Serialize
-        let chain_bytes = original.chains_to_bytes();
-        let participants = original.participants().to_vec();
-        let friendship_id = *original.id();
-
-        // Deserialize (v3 with defaults for optional state)
-        let restored = FriendshipChains::from_storage_v3(
-            friendship_id,
-            participants,
-            &chain_bytes,
-            None,
-            Vec::new(),
-            Vec::new(),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-
-        // Should have same keys
-        assert_eq!(
-            original.current_key(&alice).unwrap(),
-            restored.current_key(&alice).unwrap()
-        );
-        assert_eq!(
-            original.current_key(&bob).unwrap(),
-            restored.current_key(&bob).unwrap()
-        );
+        // Lane-wise sibling merge (the checkpoint rule): greater position fast-forwards, our own lane never adopts, device-local state never crosses.
+        let mut ours = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        let mut theirs = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        let our_lane = ours.mint_our_lane().unwrap();
+        let their_lane = theirs.mint_our_lane().unwrap();
+        let et = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
+        // The sibling advanced its own lane twice; we have never seen that lane.
+        theirs.advance(&their_lane, &et, &[1u8; 8], &[]);
+        theirs.advance(&their_lane, &et, &[2u8; 8], &[]);
+        assert!(ours.merge_lanes_from(&theirs));
+        assert_eq!(ours.lane_position(&their_lane), Some(2));
+        // Their copy must NOT have become our writable lane.
+        assert_eq!(ours.our_label(), Some(&our_lane));
+        // A re-merge of the same state is a no-op — echoes die on the position gate.
+        assert!(!ours.merge_lanes_from(&theirs));
+        // A merge never rewinds: our record of their lane outrunning their copy stays put.
+        let stale = theirs.clone();
+        theirs.advance(&their_lane, &et, &[3u8; 8], &[]);
+        assert!(ours.merge_lanes_from(&theirs));
+        assert!(!ours.merge_lanes_from(&stale));
+        assert_eq!(ours.lane_position(&their_lane), Some(3));
     }
 
     #[test]
@@ -1431,22 +1525,21 @@ mod tests {
         let bob = [2u8; 32];
         let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
 
-        // Two chains from same inputs should be identical
-        let chains1 = FriendshipChains::from_clutch(&[alice, bob], &eggs);
-        let chains2 = FriendshipChains::from_clutch(&[bob, alice], &eggs); // Different order
+        // Two ceremonies from the same inputs agree on id + root — and therefore on EVERY lane either side ever derives from a label. This is the both-sides property the whole receive-anywhere design stands on.
+        let mut chains1 = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        let mut chains2 = FriendshipChains::from_clutch(&[bob, alice], &eggs); // Different order
 
         // Same friendship ID
         assert_eq!(chains1.id().0, chains2.id().0);
 
-        // Same keys
+        let label = [0x5Au8; 32];
+        chains1.ensure_lane(&label).unwrap();
+        chains2.ensure_lane(&label).unwrap();
         assert_eq!(
-            chains1.current_key(&alice).unwrap(),
-            chains2.current_key(&alice).unwrap()
+            chains1.current_key(&label).unwrap(),
+            chains2.current_key(&label).unwrap()
         );
-        assert_eq!(
-            chains1.current_key(&bob).unwrap(),
-            chains2.current_key(&bob).unwrap()
-        );
+        assert_eq!(chains1.get_anchor(&label), chains2.get_anchor(&label));
     }
 
     #[test]
