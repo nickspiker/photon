@@ -100,6 +100,17 @@ pub fn derive_lane_root(friendship_id: &[u8; 32], active_chains_sorted: &[&[u8]]
     key
 }
 
+/// Derive a LANE's 8KB active portion (docs/lanes.md): blake3 XOF over lane_root ‖ label, domain-separated with a binary version numeral. Device identity is deliberately NOT an input — the label alone names the lane, which is what buys receive-anywhere and wire pseudonymity. blake3 is bit-portable, the cross-device requirement every chain derivation carries.
+pub fn derive_lane_active(lane_root: &[u8; 32], label: &[u8; 32]) -> Vec<u8> {
+    let mut h = Hasher::new();
+    h.update(b"PHOTON_LANE_v\x01");
+    h.update(lane_root);
+    h.update(label);
+    let mut out = vec![0u8; 8192];
+    h.finalize_xof().fill(&mut out);
+    out
+}
+
 /// OUR OWN party id as a FRIEND sees it: the Ed25519 identity pubkey derived from the identity seed — the same value a contact pins at first-met, so both sides sort/slot/derive on identical ids. Public by design (it rides CLUTCH offers for contact matching); the SECRET identity binding moved to [`identity_friendship_secret`]. Supersedes using the raw identity seed as the party id, which parked the friend's SIGNING SEED in every contact row (docs/identity-profile.md).
 pub fn identity_party_id(identity_seed: &[u8; 32]) -> [u8; 32] {
     ed25519_dalek::SigningKey::from_bytes(identity_seed)

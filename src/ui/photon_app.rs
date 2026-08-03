@@ -12762,7 +12762,7 @@ impl PhotonApp {
     fn chain_transmit(&mut self, ci: usize, text: &str, eagle_time: i64) -> bool {
         use vsf::schema::section::FieldValue;
         // Contact must be CLUTCH-Complete with a friendship chain.
-        let (friendship_id, recipient_pubkey, addr_pair, our_handle_hash, msg_relay_to) = {
+        let (friendship_id, recipient_pubkey, addr_pair, _our_handle_hash, msg_relay_to) = {
             let Some(contact) = self.contacts.get(ci) else {
                 return false;
             };
@@ -12833,7 +12833,7 @@ impl PhotonApp {
         };
 
         // Build the message VSF the receiver parses: (message: x{text}, hp{incorporated_hp}, e6{woven_time}…, hR{pad}), field order shuffled to enforce type-marker (not positional) parsing. The e6 values name the woven peer messages (0, 1, or 2). The receive path reads them back via VsfField::parse.
-        let (ciphertext, prev_msg_hp, conversation_token) = {
+        let (ciphertext, prev_msg_hp, conversation_token, lane) = {
             let Some((_, chains)) = self
                 .friendship_chains
                 .iter_mut()
@@ -12871,23 +12871,17 @@ impl PhotonApp {
 
             let conv_token = chains.conversation_token;
             let __prep_t = std::time::Instant::now();
-            match chains.prepare_send(
-                &our_handle_hash,
-                payload,
-                salt_text,
-                eagle_time,
-                woven_strands,
-            ) {
-                Some((ct, prev, _msg_hp, _ph)) => {
+            match chains.prepare_send(payload, salt_text, eagle_time, woven_strands) {
+                Some((ct, prev, _msg_hp, _ph, lane)) => {
                     // Name the send-path work: the UI no longer lags (the bubble renders first), but the wire half still runs on this thread and "the mac works hard on send" — this says whether it's the braid crypto or the chains persist below.
                     let ms = __prep_t.elapsed().as_millis();
                     if ms > 50 {
                         crate::logf!("PERF: chain prepare_send took {}ms (UI thread)", ms as u64);
                     }
-                    (ct, prev, conv_token)
+                    (ct, prev, conv_token, lane)
                 }
                 None => {
-                    crate::log("CHAT: prepare_send failed (not a participant)");
+                    crate::log("CHAT: prepare_send failed (no lane root — pre-lanes chains)");
                     return false;
                 }
             }
@@ -12919,6 +12913,7 @@ impl PhotonApp {
                 alt_addr,
                 recipient_pubkey,
                 conversation_token,
+                lane,
                 prev_msg_hp,
                 ciphertext,
                 eagle_time,
@@ -16398,6 +16393,10 @@ impl PhotonApp {
                 continue;
             };
             let conversation_token = chains.conversation_token;
+            // Pendings exist only on the lane WE minted, so a retransmit always rides our label.
+            let Some(lane) = chains.our_label().copied() else {
+                continue;
+            };
             let mut any_due = false;
             for (eagle_time, prev_msg_hp, ciphertext, attempts, exhausted) in
                 chains.collect_due_retransmits(now_osc)
@@ -16408,6 +16407,7 @@ impl PhotonApp {
                     alt_addr,
                     recipient_pubkey,
                     conversation_token,
+                    lane,
                     prev_msg_hp,
                     ciphertext,
                     eagle_time,
@@ -17871,6 +17871,7 @@ impl PhotonApp {
                 // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete handlers REMOVED Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived which are handled above (via TCP/PT transport).
                 StatusUpdate::ChatMessage {
                     conversation_token,
+                    lane,
                     prev_msg_hp,
                     ciphertext,
                     timestamp,
@@ -17924,6 +17925,12 @@ impl PhotonApp {
                             }
                         };
 
+                        // Materialize the SENDER'S LANE from root ‖ label (docs/lanes.md): any device holding the root decrypts any lane — receive-anywhere, no fold lookup, no trial decryption. A blob without a root predates lanes: the flag-day re-clutch is already sweeping it.
+                        if chains.ensure_lane(&lane).is_none() {
+                            crate::log("CHAT: frame for pre-lane chains (no root) — dropped; re-clutch re-mints");
+                            continue;
+                        }
+
                         // Find contact by their handle_hash
                         let contact_info = self.contacts.iter().enumerate().find_map(|(idx, c)| {
                             if c.handle_hash == from_handle_hash {
@@ -17965,7 +17972,7 @@ impl PhotonApp {
                             .messages
                             .iter()
                             .any(|m| !m.is_outgoing && !m.recovered && m.timestamp == timestamp);
-                        if chains.is_duplicate(&from_handle_hash, timestamp) || row_dup {
+                        if chains.is_duplicate(&lane, timestamp) || row_dup {
                             // Re-ACK from the stored message, looked up by its eagle_time. Unlike the old single-slot last_acked (which only remembered the MOST RECENT ack and so dropped any earlier duplicate → permanent sender stall), every received message persists its own ack_hash, so ANY duplicate self-heals a lost ACK.
                             let stored = self.conversations[conv_pos]
                                 .messages
@@ -18003,7 +18010,7 @@ impl PhotonApp {
 
                         // Strict in-order processing (Layer 1). The receiver decrypts at CURRENT_KEY_INDEX, which is only correct when this message is the immediate successor of the last one we processed. So verify_chain_link is now HARD: on a mismatch the message is "ahead" (its predecessor hasn't arrived yet) — buffer it on the `prev_msg_hp` it awaits and SKIP decrypt. It gets replayed when that predecessor lands (see the gap-buffer drain after a successful advance below). "Behind"/duplicate is already handled by is_duplicate above; an unrelated stale prev_msg_hp simply waits in the buffer (and the retransmit path re-sends).
                         if let Err(expected) =
-                            chains.verify_chain_link(&from_handle_hash, &prev_msg_hp)
+                            chains.verify_chain_link(&lane, &prev_msg_hp)
                         {
                             crate::logf!("CHAT: Hash chain gap from {} - expected prev {}..., got {}... — buffering (ahead of us)", handle, hex::encode(&expected[..8]), hex::encode(&prev_msg_hp[..8]));
                             // PERSISTENT-GAP FORK DETECTOR: the same expected/got pair repeating means the predecessor is never coming (both heads committed — the 07-23 sibling wedge, live again desktop↔phone 2026-07-26). The decrypt-fail streak can't see it (buffering isn't a failure), so repair fires from HERE: sibling → deterministic chain reset; friend → re-key streak path. Deferred past the checker borrow via the existing vecs.
@@ -18030,9 +18037,10 @@ impl PhotonApp {
                                     }
                                 }
                             }
+                            // The buffered entry carries the LANE label (the field predates lanes and keeps its name) — the replay re-enters the arm with it, resolving the same lane.
                             chains.buffer_for_gap(
                                 prev_msg_hp,
-                                from_handle_hash,
+                                lane,
                                 timestamp,
                                 ciphertext.clone(),
                                 sender_addr,
@@ -18052,7 +18060,7 @@ impl PhotonApp {
                         };
 
                         // Get sender's chain for decryption
-                        let sender_chain = match chains.chain(&from_handle_hash) {
+                        let sender_chain = match chains.chain(&lane) {
                             Some(c) => c.clone(), // Clone to avoid borrow issues
                             None => {
                                 crate::log("CHAT: Sender chain not found");
@@ -18062,7 +18070,7 @@ impl PhotonApp {
 
                         // Get sender's last plaintext for salt derivation
                         let their_last_plaintext =
-                            chains.last_plaintext(&from_handle_hash).to_vec();
+                            chains.last_plaintext(&lane).to_vec();
 
                         // Derive salt from their previous plaintext
                         let salt = derive_salt(&their_last_plaintext, &sender_chain);
@@ -18074,7 +18082,7 @@ impl PhotonApp {
                         let eagle_time = vsf::EagleTime::from_oscillations(timestamp);
 
                         // DEBUG: Log decryption parameters
-                        crate::logf!("CHAIN DECRYPT: sender_handle_hash={}..., key={}..., salt={}..., eagle_time={}, ciphertext_len={}", hex::encode(&from_handle_hash[..4]), hex::encode(&sender_chain.current_key()[..4]), hex::encode(&salt[..4]), timestamp, ciphertext.len());
+                        crate::logf!("CHAIN DECRYPT: lane={}..., key={}..., salt={}..., eagle_time={}, ciphertext_len={}", hex::encode(&lane[..4]), hex::encode(&sender_chain.current_key()[..4]), hex::encode(&salt[..4]), timestamp, ciphertext.len());
 
                         // Decrypt using sender's chain
                         let plaintext = decrypt_layers(
@@ -18213,18 +18221,13 @@ impl PhotonApp {
                         // Advance their chain with the braid strands. our_plaintext = the decrypted x-text ONLY (must match the sender's process_ack, which advances with the stored salt-text — never the full payload/pad).
                         let message_text_bytes = message_text.clone().into_bytes();
                         let eagle_time_for_advance = vsf::EagleTime::from_oscillations(timestamp);
-                        chains.advance(
-                            &from_handle_hash,
-                            &eagle_time_for_advance,
-                            &message_text_bytes,
-                            &strand_refs,
-                        );
+                        chains.advance(&lane, &eagle_time_for_advance, &message_text_bytes, &strand_refs);
 
                         // Mark as received for deduplication (protects against UDP duplicates)
-                        chains.mark_received(&from_handle_hash, timestamp);
+                        chains.mark_received(&lane, timestamp);
 
                         // Update hash chain state for next message verification
-                        chains.update_received_hash(&from_handle_hash, msg_hp);
+                        chains.update_received_hash(&lane, msg_hp);
                         crate::logf!(
                             "CHAT: Updated hash chain for {} - msg_hp={}...",
                             handle,
@@ -18238,6 +18241,7 @@ impl PhotonApp {
                             for buf in ready {
                                 replay_queue.push_back(StatusUpdate::ChatMessage {
                                     conversation_token,
+                                    lane: buf.sender_handle_hash,
                                     prev_msg_hp: buf.prev_msg_hp,
                                     ciphertext: buf.ciphertext,
                                     timestamp: buf.eagle_time,
@@ -18556,7 +18560,7 @@ impl PhotonApp {
                         };
 
                         // Process ACK: advance our chain and remove pending message
-                        if chains.process_ack(&our_handle_hash, acked_eagle_time, &plaintext_hash) {
+                        if chains.process_ack(acked_eagle_time, &plaintext_hash) {
                             crate::logf!("CHAT: Chain advanced for {} (ACK verified)", handle);
 
                             // Our TX chain just advanced on a matching ACK — their RX is proven. Record it so the chain-weave can seal (sealing itself happens after the `chains` borrow ends, below). This is the "our TX / their RX" half of woven.
@@ -20343,19 +20347,23 @@ impl PhotonApp {
                         continue;
                     }
                     let fid = incoming.friendship_id;
-                    let fid_bytes = *fid.as_bytes();
-                    let local_osc = self
+                    // LANE-WISE adopt (docs/lanes.md): a lane merges iff its position is strictly greater — replacing whole-blob newest-wins, whose fork window was two devices clobbering each other's live lanes and pendings. A fresh device takes the whole copy SANITIZED (the sender's minted label, pendings and send tip stripped — adopting those would make this device write on the sender's lane). Echo dies naturally: a sibling merging our pushed union finds no greater positions and stays silent.
+                    let mut incoming = incoming;
+                    let adopted = match self
                         .friendship_chains
-                        .iter()
+                        .iter_mut()
                         .find(|(id, _)| *id == fid)
-                        .map(|(_, c)| c.mutated_osc);
-                    // Adopt iff STRICTLY newer — "another device is ahead, I just catch up". Equal or older = ours wins (no regression, no echo churn).
-                    if local_osc.is_some_and(|l| l >= incoming.mutated_osc) {
+                    {
+                        Some((_, local)) => local.merge_lanes_from(&incoming),
+                        None => {
+                            incoming.sanitize_replicated();
+                            self.friendship_chains.push((fid, incoming));
+                            true
+                        }
+                    };
+                    if !adopted {
                         continue;
                     }
-                    let adopted_osc = incoming.mutated_osc;
-                    self.friendship_chains.retain(|(id, _)| *id != fid);
-                    self.friendship_chains.push((fid, incoming));
                     if let Some(storage) = self.storage.as_ref() {
                         if let Some((_, c)) =
                             self.friendship_chains.iter().find(|(id, _)| *id == fid)
@@ -20367,8 +20375,6 @@ impl PhotonApp {
                             }
                         }
                     }
-                    // Recording the ADOPTED stamp as "pushed" stops the echo (we didn't mutate; nothing to announce).
-                    self.chain_pushed_osc.insert(fid_bytes, adopted_osc);
                     // Wire the contact: a device that never ran this ceremony gains the chain here — flip it sendable (Complete + woven; the owner proved the ratchet end-to-end before the state ever replicated).
                     if let Some(ci) = self.contact_idx_for_conversation_token(&conversation_token) {
                         let contact = &mut self.contacts[ci];
@@ -21229,6 +21235,7 @@ impl PhotonApp {
                     if !to_retransmit.is_empty() {
                         crate::logf!("CHAT: Retransmitting {} of {} pending message(s) to {} (came online, last_received={})", to_retransmit.len(), pending.len(), handle, format!("{:?}", last_received_ef6));
                         let conversation_token = chains.conversation_token;
+                        let our_lane = chains.our_label().copied().unwrap_or([0u8; 32]);
                         // Came online via relay (no direct path) → retransmit over the pipe too.
                         let relay_to = self
                             .contacts
@@ -21244,6 +21251,7 @@ impl PhotonApp {
                                     alt_addr,
                                     recipient_pubkey,
                                     conversation_token,
+                                    lane: our_lane,
                                     prev_msg_hp: msg.prev_msg_hp,
                                     ciphertext: msg.ciphertext.clone(),
                                     eagle_time: msg.eagle_time,
