@@ -998,7 +998,7 @@ impl ClutchKemResponsePayload {
     /// Perform encapsulations to peer's public keys (4 PQC KEMs + 4 EC ECIES-style). Returns (payload, shared_secrets) where shared_secrets are our encapsulated secrets.
     ///
     /// For EC algorithms, we generate fresh ephemeral keypairs and compute ECDH with the peer's offer pubkeys. This gives truly distinct secrets per direction.
-    /// `None` = malformed key material in the peer's offer — the caller DROPS the offer, it must never panic: an old-build or hostile offer with wrong-length keys was crashing the whole app (peer_c on v0.51.87, 2026-08-02).
+    /// `None` = malformed key material in the peer's offer — the caller DROPS the offer, it must never panic: an old-build or hostile offer with wrong-length keys was crashing the whole app (a field device on v0.51.87, 2026-08-02).
     pub fn encapsulate_to_peer(their_offer: &ClutchOfferPayload) -> Option<(Self, ClutchKemSharedSecrets)> {
         #[cfg(feature = "development")]
         #[cfg(feature = "development")]

@@ -45,7 +45,7 @@ slot_addr = BLAKE3( SLOT_DOMAIN ‖ [version u8] ‖ kek_secret ‖ purpose )
 
 where `kek_secret` is the CLUTCH pair secret for that friend, or the fleet key for our own devices. The slot is tiny and holds only a pointer and a key:
 
-**The purpose must name its publisher whenever the reader secret is symmetric.** A CLUTCH pair secret is one secret shared by both directions, so a purpose like a bare `avatar` derives the *same* slot address for peer_a-publishing-to-peer_b and peer_b-publishing-to-peer_a — the two sides overwrite each other and the last publish wins (this shipped, and peer_a's own face rendered on peer_b's contact row, 2026-08-02). The rule: `purpose = tag ‖ publisher_party_id` (binary append). Reader classes with a single publisher (the fleet key, the self key) get the bind for free but carry it anyway — one derivation, no cases.
+**The purpose must name its publisher whenever the reader secret is symmetric.** A CLUTCH pair secret is one secret shared by both directions, so a purpose like a bare `avatar` derives the *same* slot address for A-publishing-to-B and B-publishing-to-A — the two sides overwrite each other and the last publish wins (this shipped, and a user's own face rendered on their friend's contact row, 2026-08-02). The rule: `purpose = tag ‖ publisher_party_id` (binary append). Reader classes with a single publisher (the fleet key, the self key) get the bind for free but carry it anyway — one derivation, no cases.
 
 ```
 blob/<base64url(slot_addr)>  →  VSF document, device-signed

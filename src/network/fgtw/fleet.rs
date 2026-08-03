@@ -382,7 +382,7 @@ pub fn push_roster(
     push_roster_with_settings(handle_proof, device_key, fleet_key, entries, None)
 }
 
-/// [`push_roster`] carrying this device's LIVE settings layers alongside. Two concurrent pull-merge-push writers race: the loser's pulled base predates the winner's write, so a roster push that carried only stale pulled settings REVERTED them — peer_a's freshly-minted avatar pin lost the race to the boot reconcile push on every single launch, and the slot sat pinless forever ("avatar still sticks", 2026-08-02). A pusher that includes every layer it holds can never revert a value it already knows.
+/// [`push_roster`] carrying this device's LIVE settings layers alongside. Two concurrent pull-merge-push writers race: the loser's pulled base predates the winner's write, so a roster push that carried only stale pulled settings REVERTED them — a freshly-minted avatar pin lost the race to the boot reconcile push on every single launch, and the slot sat pinless forever ("avatar still sticks", 2026-08-02). A pusher that includes every layer it holds can never revert a value it already knows.
 pub fn push_roster_with_settings(
     handle_proof: &[u8; 32],
     device_key: &Keypair,
@@ -813,7 +813,7 @@ mod tests {
 mod pin_live_tests {
     use super::*;
 
-    /// End-to-end against LIVE fgtw.org: a 4-global state whose fourth entry is a 64-byte avatar pin must survive push → worker → pull byte-for-byte. Every local link (codec, merge, race carriage) is unit-proven; this is the only test that can catch the slot itself lying (peer_a's pin, 2026-08-02).
+    /// End-to-end against LIVE fgtw.org: a 4-global state whose fourth entry is a 64-byte avatar pin must survive push → worker → pull byte-for-byte. Every local link (codec, merge, race carriage) is unit-proven; this is the only test that can catch the slot itself lying (the field pin regression, 2026-08-02).
     #[test]
     #[ignore = "hits live fgtw.org"]
     fn live_pin_survives_the_slot() {

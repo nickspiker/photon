@@ -65,7 +65,7 @@ pub fn notify_new_message(msg_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str
         return;
     };
 
-    // The chirp seed IS the relationship digest, passed in verbatim — identical to the desktop in-app chirp's seed, so one sender = one song across every device and platform (seeding from the per-device pinned pubkey made peer_m sound different everywhere). 60 Hz bins the envelope into ~16.7ms steps.
+    // The chirp seed IS the relationship digest, passed in verbatim — identical to the desktop in-app chirp's seed, so one sender = one song across every device and platform (seeding from the per-device pinned pubkey made one sender sound different everywhere). 60 Hz bins the envelope into ~16.7ms steps.
     let chirp = chirp::Chirp::from_hash(*chirp_seed);
     let wav = chirp.to_wav();
     let (timings, amplitudes) = chirp.haptic_waveform(60);
