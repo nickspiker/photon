@@ -821,7 +821,17 @@ impl FriendshipChains {
         self.last_sent_hash = None;
     }
 
-    /// Merge a sibling's replicated copy, LANE-WISE (docs/lanes.md checkpoints): a lane we lack is taken whole; a lane we hold is replaced iff the incoming position is STRICTLY greater — a fast-forward of the same deterministic replay, always safe. Device-local state (our label, pendings, send tip, weave view) stays OURS untouched; the root and history key adopt only where we lack them. Replaces whole-blob newest-wins, whose fork window was both devices overwriting each other's live lanes. Returns whether anything changed.
+    /// True when the two blobs grew from DIFFERENT lane roots — a re-key minted a new era. Era-divergent blobs must never lane-merge: the merge adopts a root only where one is absent, so it would strand the old-era holder on dead chains while stacking new-era labels it derives garbage for.
+    pub fn differs_in_era_from(&self, other: &FriendshipChains) -> bool {
+        self.lane_root.is_some() && other.lane_root.is_some() && self.lane_root != other.lane_root
+    }
+
+    /// True when `other` is a DIFFERENT era that provably superseded ours — the caller replaces this blob wholesale (sanitized). Newer `mutated_osc` decides: the dead era's clock goes quiet the moment the friend stops sending on it, so the live era pulls ahead and stays there.
+    pub fn era_superseded_by(&self, other: &FriendshipChains) -> bool {
+        self.differs_in_era_from(other) && other.mutated_osc > self.mutated_osc
+    }
+
+    /// Merge a sibling's replicated copy, LANE-WISE (docs/lanes.md checkpoints): a lane we lack is taken whole; a lane we hold is replaced iff the incoming position is STRICTLY greater — a fast-forward of the same deterministic replay, always safe. Device-local state (our label, pendings, send tip, weave view) stays OURS untouched; the root and history key adopt only where we lack them. Replaces whole-blob newest-wins, whose fork window was both devices overwriting each other's live lanes. Returns whether anything changed. SAME-ERA ONLY: the caller must judge `differs_in_era_from` first — a re-keyed root never merges, it supersedes wholesale.
     pub fn merge_lanes_from(&mut self, other: &FriendshipChains) -> bool {
         let mut changed = false;
         if self.lane_root.is_none() && other.lane_root.is_some() {
@@ -1519,6 +1529,31 @@ mod tests {
         assert!(ours.merge_lanes_from(&theirs));
         assert!(!ours.merge_lanes_from(&stale));
         assert_eq!(ours.lane_position(&their_lane), Some(3));
+    }
+
+    #[test]
+    fn era_divergent_blobs_never_lane_merge_and_newer_era_supersedes() {
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let old_eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let new_eggs: Vec<[u8; 32]> = (0..8).map(|i| [0x40 + i as u8; 32]).collect();
+
+        // Same friendship, two ceremonies: different eggs mint a different lane root — a re-key era.
+        let mut old_era = FriendshipChains::from_clutch(&[alice, bob], &old_eggs);
+        let mut new_era = FriendshipChains::from_clutch(&[alice, bob], &new_eggs);
+        old_era.mint_our_lane().unwrap();
+        assert!(old_era.differs_in_era_from(&new_era));
+
+        // The era judgment is the mutated clock, both directions.
+        let new_lane = new_era.mint_our_lane().unwrap();
+        let et = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
+        new_era.advance(&new_lane, &et, &[1u8; 8], &[]);
+        assert!(old_era.era_superseded_by(&new_era));
+        assert!(!new_era.era_superseded_by(&old_era));
+
+        // Same era never reads as divergent — the lane merge path stays theirs.
+        let same = new_era.clone();
+        assert!(!new_era.differs_in_era_from(&same));
     }
 
     #[test]

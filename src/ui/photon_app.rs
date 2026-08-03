@@ -284,6 +284,9 @@ const PRESENCE_PING_ACTIVE: std::time::Duration = std::time::Duration::from_secs
 const PRESENCE_PING_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
 /// Deep-idle tier: sweep every 15min once idle past `PRESENCE_IDLE_FAR`.
 const PRESENCE_PING_DEEP: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// One CLUTCH round's lifetime, eagle-time. 5 min: a relay ceremony (offer+KEM+proof, each a 5-30s store-and-forward hop) can run 1-2 min, and the round's keys must stay valid the whole time. Everything that judges a round or its owner "stale" shares this clock: the re-key sweep, the resume round-restore, and the §4.2 responder-exception ownership gate.
+const CLUTCH_ROUND_TTL_OSC: i64 = 300 * vsf::OSCILLATIONS_PER_SECOND as i64;
 /// Idle past this → drop from active (5s) to idle (1min).
 const PRESENCE_IDLE_NEAR: std::time::Duration = std::time::Duration::from_secs(30);
 /// Idle past this → drop from idle (1min) to deep-idle (15min).
@@ -2442,14 +2445,13 @@ impl FluorApp for PhotonApp {
                     Ok(s) => {
                         // Preserve any IN-FLIGHT ceremony round across this reload. CLUTCH keypairs/slots are ephemeral scratch, so a wholesale reload from disk wipes a live round — and a warm resume (Android foregrounds constantly) then trips the keygen sweep into minting a DIVERGENT round the peer never agreed to. That is exactly what stranded the relay ceremony: the slow relay round-trip outlived the keys, the peer's KEM came back addressed to keys we'd already discarded, and it was dropped as "old keys". Re-key must be deliberate on real failure — never a side effect of a lifecycle event. Snapshot rounds that are still FRESH by eagle time (a genuinely stale one is let go, to be re-keyed cleanly) and restore them after the reload.
                         let now = vsf::eagle_time_oscillations();
-                        const ROUND_TTL_OSC: i64 = 300 * vsf::OSCILLATIONS_PER_SECOND as i64; // 5 min: a relay ceremony (offer+KEM+proof, each a 5-30s store-and-forward hop) can run 1-2 min, and the round's keys must stay valid the whole time
                         let inflight: std::collections::HashMap<[u8; 32], _> = self
                             .contacts
                             .iter()
                             .filter(|c| {
                                 c.clutch_our_keypairs.is_some()
                                     && c.clutch_round_started
-                                        .map_or(false, |t| now - t < ROUND_TTL_OSC)
+                                        .map_or(false, |t| now - t < CLUTCH_ROUND_TTL_OSC)
                             })
                             .map(|c| {
                                 (
@@ -14079,7 +14081,6 @@ impl PhotonApp {
         }
         // Eagle-time gate on re-key: a round whose keys read `None` but that STARTED recently is not a failure to re-key — it's a transient loss (a resume that hadn't restored yet, an in-flight round). Re-keying it mints a divergent round the peer never agreed to; instead wait, and only re-key once the round is genuinely stale. A contact that never started a round (`clutch_round_started == None`) is the legitimate initial-keygen case and fires immediately.
         let now = vsf::eagle_time_oscillations();
-        const ROUND_TTL_OSC: i64 = 300 * vsf::OSCILLATIONS_PER_SECOND as i64; // 5 min: a relay ceremony (offer+KEM+proof, each a 5-30s store-and-forward hop) can run 1-2 min, and the round's keys must stay valid the whole time
         let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
         // §4.2 one-CLUTCH-per-friendship: a friend claimed by ANOTHER of our devices PARKS here — its ceremony is the fleet's ceremony (see ceremony_parked_by for the full rules incl. the woven guard and the probed-before-takeover boot-race fix). An owner that is PROBED-offline is presence-driven takeover: the contact re-enters the queue and the pickup below re-claims it. Sibling weaves are per-device-pair by design — never parked.
         let siblings = sibling_presence_snapshot(&self.contacts);
@@ -14090,7 +14091,7 @@ impl PhotonApp {
                 && c.clutch_our_keypairs.is_none()
                 && !c.clutch_keygen_in_progress
                 && c.clutch_round_started
-                    .map_or(true, |t| now - t >= ROUND_TTL_OSC)
+                    .map_or(true, |t| now - t >= CLUTCH_ROUND_TTL_OSC)
                 && !ceremony_parked_by(c, our_device, &siblings)
         });
         if let Some(i) = next_idx {
@@ -14743,16 +14744,22 @@ impl PhotonApp {
 
                     // §4.2: a claim landed while keygen was running (roster merge parked this contact mid-flight) — installing the result would resurrect the parked round and re-send a competing offer. Drop it on the floor.
                     if ceremony_parked_by(contact, Some(device_pubkey), &siblings) {
-                        // RESPONDER EXCEPTION: the FRIEND initiated this round at THIS device (their offer sits in their slot) — parking here deadlocks when their build offers to one device only (observed live against a v0.40 peer: the drain dropped the responding keygen, their KEM/proofs then fell on a keyless Pending contact forever, both sides stalled). The friend's choice of device is the strongest signal of where the ceremony can actually complete, so ownership FOLLOWS it: claim, bump the LWW clock so siblings adopt + discard-on-park, and install the keys. A racing broadcast-offer claim converges the same way every §4.2 race does — newest claim wins, losers discard.
+                        // RESPONDER EXCEPTION, gated on a STALE owner: the friend's offer sitting in their slot deadlocks a parked device when their build offers to one device only (observed live against a v0.40 peer: the drain dropped the responding keygen, their KEM/proofs then fell on a keyless Pending contact forever, both sides stalled) — so ownership may FOLLOW the friend's offer. But a friend's offer is NOT a choice of device: a responder's offer fans out over the relay to the whole fleet, so every sibling receives it — and ungated, each one "followed the choice", stole the ceremony from a sibling actively running it, and minted its own round (three concurrent rounds, cross-round proof drops on every side, the ceremony stuck "testing the secure channel" — live pair, 2026-08-03). The roster clock separates the two shapes: a live owner claimed within the round TTL, a deadlocked one has been silent past it. Recent claim → park and drop the keygen below, the owner's round completes and fleet sync carries the chains; stale claim → the original rescue: claim, bump the LWW clock so siblings adopt + discard-on-park, and install the keys.
                         let their_offer_waiting = contact
                             .get_slot(&contact.handle_hash)
                             .map_or(false, |s| s.offer.is_some());
-                        if their_offer_waiting {
-                            crate::logf!("CLUTCH §4.2: {} offered at THIS device while the roster names another owner — claiming the ceremony (ownership follows the friend's choice)", crate::fp(&contact.handle_proof));
+                        let owner_stale = vsf::eagle_time_oscillations()
+                            .saturating_sub(contact.roster_updated)
+                            > CLUTCH_ROUND_TTL_OSC;
+                        if their_offer_waiting && owner_stale {
+                            crate::logf!("CLUTCH §4.2: {} offered at THIS device and the named owner has been silent past the round TTL — claiming the ceremony", crate::fp(&contact.handle_proof));
                             contact.ceremony_owner = Some(device_pubkey);
                             contact.owner_woven = false;
                             contact.roster_updated = vsf::eagle_time_oscillations();
                         } else {
+                            if their_offer_waiting {
+                                crate::logf!("CLUTCH §4.2: {} offered here but the named owner claimed recently — parking, the owner's round carries the ceremony", crate::fp(&contact.handle_proof));
+                            }
                             crate::logf!("CLUTCH §4.2: dropping keygen result for {} — round was parked while keygen ran", crate::fp(&contact.handle_proof));
                             contact.discard_clutch_round();
                             changed = true;
@@ -20285,6 +20292,17 @@ impl PhotonApp {
                         .iter_mut()
                         .find(|(id, _)| *id == fid)
                     {
+                        // ERA SUPERSEDE before any lane math: a re-key mints a NEW lane_root, and the lane-wise merge below adopts a root only where one is absent — so a sibling holding the old era would keep dead chains forever, deriving garbage lanes for every new-era label it meets. Two blobs under one friendship with DIFFERENT roots are different eras, and eras replace wholesale: the newer mutated_osc wins (the dead era's clock goes quiet the moment the friend stops sending on it), sanitized like any replicated copy. Losing the race one round just means our next push carries the newer era back.
+                        Some((_, local)) if local.differs_in_era_from(&incoming) => {
+                            if local.era_superseded_by(&incoming) {
+                                incoming.sanitize_replicated();
+                                *local = incoming;
+                                crate::logf!("CHAIN-SYNC: superseded chain era for fid {} — re-keyed root adopted wholesale", crate::fp(&fid.0));
+                                true
+                            } else {
+                                false
+                            }
+                        }
                         Some((_, local)) => local.merge_lanes_from(&incoming),
                         None => {
                             incoming.sanitize_replicated();
