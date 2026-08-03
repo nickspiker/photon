@@ -24,7 +24,7 @@ const AVATAR_PURPOSE_BASE: &[u8] = b"avatar";
 
 /// The purpose naming ONE identity's avatar: the base tag with the PUBLISHER's party id appended (binary).
 ///
-/// The publisher must be in the address because a CLUTCH pair secret is ONE secret shared by both directions: with a bare "avatar" purpose, peer_a's publish and peer_b's publish derived the SAME slot address from their shared pair, the last writer won, and peer_a's device opened "peer_b's" slot to find peer_a's own face (2026-08-02). Every purpose under a symmetric reader secret must carry its publisher — attachments included when they arrive.
+/// The publisher must be in the address because a CLUTCH pair secret is ONE secret shared by both directions: with a bare "avatar" purpose, both sides' publishes derived the SAME slot address from their shared pair, the last writer won, and a device opened its friend's slot to find its OWN face (2026-08-02). Every purpose under a symmetric reader secret must carry its publisher — attachments included when they arrive.
 pub fn avatar_purpose(publisher: &[u8; 32]) -> Vec<u8> {
     let mut p = Vec::with_capacity(AVATAR_PURPOSE_BASE.len() + publisher.len());
     p.extend_from_slice(AVATAR_PURPOSE_BASE);
@@ -168,11 +168,11 @@ mod tests {
     #[test]
     fn two_publishers_on_one_pair_secret_get_distinct_slots() {
         let pair_secret = [7u8; 32];
-        let peer_a = avatar_purpose(&[1u8; 32]);
-        let peer_b = avatar_purpose(&[2u8; 32]);
+        let pub_a = avatar_purpose(&[1u8; 32]);
+        let pub_b = avatar_purpose(&[2u8; 32]);
         assert_ne!(
-            fgtw::scoped_blob::slot_address(&pair_secret, &peer_a),
-            fgtw::scoped_blob::slot_address(&pair_secret, &peer_b)
+            fgtw::scoped_blob::slot_address(&pair_secret, &pub_a),
+            fgtw::scoped_blob::slot_address(&pair_secret, &pub_b)
         );
     }
 }

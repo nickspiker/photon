@@ -193,7 +193,7 @@ pub struct SyncRecord {
     pub last_received_osc: i64,
     /// Anti-entropy digest half 1: how many rows this side holds for the conversation (probe rows excluded — they never sync). 0 with a zero digest = legacy peer, no comparison.
     pub row_count: u32,
-    /// Anti-entropy digest half 2: order-free XOR fold of blake3(timestamp ‖ content_hash) over the same rows. Digests equal ⇒ both sides provably hold the same message set; a mismatch triggers a FULL history walk (early-stop disabled) — heuristic cursor recovery left holes (the two greyed sends peer_m never got, 2026-07-25).
+    /// Anti-entropy digest half 2: order-free XOR fold of blake3(timestamp ‖ content_hash) over the same rows. Digests equal ⇒ both sides provably hold the same message set; a mismatch triggers a FULL history walk (early-stop disabled) — heuristic cursor recovery left holes (the two greyed sends a peer never got, 2026-07-25).
     pub row_digest: [u8; 32],
 }
 

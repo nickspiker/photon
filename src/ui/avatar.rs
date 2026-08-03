@@ -976,7 +976,7 @@ pub fn decode_avatar_av1_to_display(av1_data: &[u8]) -> Option<(usize, Vec<u8>)>
 
 /// Recover OUR OWN avatar after a local clear, from the wall copy we published.
 ///
-/// The wall slot is addressed and keyed by the PIN (random since the pin stopped being seed-derived), while the vault copy is seed-keyed — so the old seed-addressed recovery looked in a slot nothing has written since that change and found nothing (peer_a, live 2026-08-01: picked an avatar, then "No local avatar to serve"). Only an identity whose avatar predates the random pin still has anything in the seed slot, which is why one device recovered and the other didn't.
+/// The wall slot is addressed and keyed by the PIN (random since the pin stopped being seed-derived), while the vault copy is seed-keyed — so the old seed-addressed recovery looked in a slot nothing has written since that change and found nothing (live 2026-08-01: a device picked an avatar, then "No local avatar to serve"). Only an identity whose avatar predates the random pin still has anything in the seed slot, which is why one device recovered and the other didn't.
 /// Recovery therefore fetches by pin lookup, decrypts with the pin key, and rewrites the vault in its CANONICAL seed-keyed form — so serving to a friend, re-uploading, and the local cache all behave exactly as if the avatar had just been picked on this device.
 pub fn recover_own_avatar_from_wall(
     identity_seed: &[u8; 32],
