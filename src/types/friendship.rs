@@ -1542,6 +1542,45 @@ mod tests {
         assert_eq!(chains1.get_anchor(&label), chains2.get_anchor(&label));
     }
 
+    /// THE lockstep property (docs/lanes.md): a receiver processing a lane's frames in order holds byte-identical lane state to the sender advancing on ACKs — across multiple messages, so the salt chain (last_plaintext) is proven too. This is the whole contract: one writer, any number of deterministic followers.
+    #[test]
+    fn send_and_receive_advance_stay_in_lockstep_on_a_lane() {
+        use crate::crypto::chain::{
+            decrypt_layers, derive_salt, generate_scratch, CURRENT_KEY_INDEX,
+        };
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut sender = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        let mut receiver = FriendshipChains::from_clutch(&[bob, alice], &eggs);
+
+        for (osc, text) in [(1_000i64, b"hello".as_slice()), (2_000, b"again")] {
+            let (ct, prev, msg_hp, ph, lane) = sender
+                .prepare_send(text.to_vec(), text.to_vec(), osc, vec![])
+                .unwrap();
+            // Receiver materializes the lane from the label alone and walks the hash chain.
+            receiver.ensure_lane(&lane).unwrap();
+            assert!(receiver.verify_chain_link(&lane, &prev).is_ok());
+            let chain = receiver.chain(&lane).unwrap().clone();
+            let salt = derive_salt(receiver.last_plaintext(&lane), &chain);
+            let scratch = generate_scratch(&chain, &salt);
+            let et = vsf::EagleTime::from_oscillations(osc);
+            let plain = decrypt_layers(&ct, &chain, CURRENT_KEY_INDEX, &scratch, &et);
+            assert_eq!(plain, text, "decrypt must invert encrypt at every step");
+            receiver.advance(&lane, &et, text, &[]);
+            receiver.set_last_plaintext(&lane, text.to_vec());
+            receiver.update_received_hash(&lane, msg_hp);
+            // Sender advances only on the ACK — and both sides land on the same key.
+            assert!(sender.process_ack(osc, &ph));
+            assert_eq!(
+                sender.current_key(&lane).unwrap(),
+                receiver.current_key(&lane).unwrap(),
+                "lane keys diverged after osc {osc}"
+            );
+            assert_eq!(sender.lane_position(&lane), receiver.lane_position(&lane));
+        }
+    }
+
     #[test]
     fn test_gap_buffer_keys_on_prev_and_drains_on_fill() {
         // Layer 1: an out-of-order message is buffered on the prev_msg_hp it awaits, and is released by take_buffered_for ONLY when that exact predecessor's msg_hp fills. This is the wiring the receive path relies on to replay buffered messages strictly in order.
