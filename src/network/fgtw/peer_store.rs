@@ -69,6 +69,10 @@ impl PeerStore {
 
     /// Add or update a peer record If device already exists for this handle, update it Otherwise insert at sorted position
     pub fn add_peer(&mut self, peer: PeerRecord) {
+        // Refuse a record whose address is unspecified, at EVERY ingest (gossip, fetch, load): the signing-point guard only protects records made by current builds, and a record signed before it existed — or by a retired device that will never republish — otherwise circulates its 0.0.0.0 claim forever.
+        if crate::network::traverse::gather::is_bogus_addr(&peer.ip) {
+            return;
+        }
         // Find where this handle_proof starts
         let pos = self.find_position(&peer.handle_proof);
 
