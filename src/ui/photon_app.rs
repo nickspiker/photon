@@ -18015,18 +18015,15 @@ impl PhotonApp {
                             crate::logf!("CHAT: Hash chain gap from {} - expected prev {}..., got {}... — buffering (ahead of us)", handle, hex::encode(&expected[..8]), hex::encode(&prev_msg_hp[..8]));
                             // PERSISTENT-GAP FORK DETECTOR: the same expected/got pair repeating means the predecessor is never coming (both heads committed — the 07-23 sibling wedge, live again desktop↔phone 2026-07-26). The decrypt-fail streak can't see it (buffering isn't a failure), so repair fires from HERE: sibling → deterministic chain reset; friend → re-key streak path. Deferred past the checker borrow via the existing vecs.
                             {
+                                // Count gaps WITHOUT a fill, not repeats of one key: a multi-device peer sends on several lanes, and two stuck lanes' alternating gap keys reset a keyed streak forever — 13 identical gaps and the repair never fired (peer_a, 2026-08-03). The counter now rises on every buffered frame and only a successful gap FILL (the replay drain) clears it.
                                 let key = u64::from_le_bytes(expected[..8].try_into().unwrap())
                                     ^ u64::from_le_bytes(prev_msg_hp[..8].try_into().unwrap());
                                 let c = &mut self.contacts[contact_idx];
-                                if c.gap_streak.0 == key {
-                                    c.gap_streak.1 = c.gap_streak.1.saturating_add(1);
-                                } else {
-                                    c.gap_streak = (key, 1);
-                                }
+                                c.gap_streak = (key, c.gap_streak.1.saturating_add(1));
                                 // A gap means the SENDER is missing our tip — and the tip travels in our ping's sync records, which an hour-deep presence backoff would sit on. A buffered frame is the loudest possible "this contact matters right now": collapse the backoff so the next sweep pings, the pong's tip re-arms their given-up retransmit, and the gap fills in seconds instead of an hour (the "some messages lag a very long time" of 2026-08-02).
                                 c.ping_backoff = 0;
                                 c.last_pinged = None;
-                                if c.gap_streak.1 == 6 {
+                                if c.gap_streak.1 >= 8 {
                                     c.gap_streak.1 = 0;
                                     if c.is_sibling {
                                         crate::logf!("CHAT: gap from {} repeated 6× identically — FORK, initiating sibling chain reset", handle);
@@ -18238,6 +18235,8 @@ impl PhotonApp {
                         let ready = chains.take_buffered_for(&msg_hp);
                         if !ready.is_empty() {
                             crate::logf!("CHAT: gap filled — replaying {} buffered message(s) after msg_hp={}...", ready.len(), hex::encode(&msg_hp[..8]));
+                            // A fill proves the pipeline is healthy — the no-fill counter starts over.
+                            self.contacts[contact_idx].gap_streak = (0, 0);
                             for buf in ready {
                                 replay_queue.push_back(StatusUpdate::ChatMessage {
                                     conversation_token,

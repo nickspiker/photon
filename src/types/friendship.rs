@@ -777,6 +777,8 @@ impl FriendshipChains {
         let label: [u8; 32] = rand::random();
         self.ensure_lane(&label)?;
         self.our_label = Some(label);
+        // A fresh lane's hash chain starts at ITS anchor — the send tip is blob-level state, and a value carried over from the pre-lane era (or a retired lane) poisons the first frame with a prev nobody can match: the receiver expects the anchor, forever (peer_a↔peer_b wedge, 2026-08-03).
+        self.last_sent_hash = None;
         self.mutated_osc = vsf::eagle_time_oscillations();
         Some(label)
     }
