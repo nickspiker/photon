@@ -1538,10 +1538,7 @@ impl PhotonApp {
         };
         // NOTHING runs on the UI thread (a 50MP photo's decode + Lanczos is hundreds of ms — no half of this pipeline is frame-safe): one LOW-PRIORITY worker decodes, sends the display pixels back thru `avatar_set_rx` (installed next tick, typically a frame or two later), then grinds thru the rav1e encode, vault save, and upload behind everything else.
         // Pin + upload material gathered here first (ensure_avatar_pin may mint + persist, needs &mut self); the pong slot updates now so friends' next ping already carries the pin.
-        let proof = self
-            .handle_query
-            .as_ref()
-            .and_then(|hq| hq.get_handle_proof());
+        let proof = self.our_handle_proof();
         // ROTATE the pin on every set: a fresh random key ‖ lookup per avatar change. Two birds — friends detect the change (the pin rides every pong, a new pin = refetch, closing the stale-avatar-until-next-session gap), and any cross-identity pin pollution heals on the next set (the old slot is deleted after the new upload lands).
         let old_pin = self
             .fleet_settings
@@ -2886,10 +2883,7 @@ impl FluorApp for PhotonApp {
                         if let Some((pk, _, _, true, name, _, _)) = devices.get(idx).cloned() {
                             if self.fleet_release_armed == Some(pk) {
                                 self.fleet_release_armed = None;
-                                let hp = self
-                                    .handle_query
-                                    .as_ref()
-                                    .and_then(|hq| hq.get_handle_proof());
+                                let hp = self.our_handle_proof();
                                 if let (Some(hp), Some(kp)) = (hp, self.device_keypair.clone()) {
                                     match crate::network::fgtw::fleet::release_device(&kp, &hp, &pk)
                                     {
@@ -2958,10 +2952,7 @@ impl FluorApp for PhotonApp {
                         // "Remove & shred" → UNSIGN (self-departure from the fleet chain — the only chain remove that exists, self-signed + idempotent), THEN crypto-wipe. Two-tap confirm. The wipe is GATED on the departure landing: if the signed remove can't publish (offline, races exhausted), nothing is wiped — otherwise the fleet would forever list a device whose keys are gone. Plain Shred (orange) remains the wipe-without-departing path.
                         if self.settings_removeshred_armed {
                             self.settings_removeshred_armed = false;
-                            let hp = self
-                                .handle_query
-                                .as_ref()
-                                .and_then(|hq| hq.get_handle_proof());
+                            let hp = self.our_handle_proof();
                             // LAST-MEMBER GATE (identity never dies — supersedes lifecycle D3's LastRites): the fleet's final member cannot sign out, full stop. There is no terminal op — an identity always lives somewhere (the worker refuses zero-member folds too, so this isn't just UI courtesy). Want out of this hardware? Add another device first, then retire this one. A fetch failure counts as last (fail toward refusal, never past it).
                             if let Some(ref hp_v) = hp {
                                 let last = match crate::network::fgtw::fleet::current_members(hp_v)
@@ -4266,10 +4257,7 @@ impl FluorApp for PhotonApp {
         if !self.settings_repushed
             && self.session.is_some()
             && self.fleet_key_cached().is_some()
-            && self
-                .handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_handle_proof())
+            && self.our_handle_proof()
                 .is_some()
             && self.device_keypair.is_some()
         {
@@ -9052,10 +9040,7 @@ impl PhotonApp {
                 .last_fleet_refold
                 .is_none_or(|last| now.duration_since(last) >= FLEET_REFOLD_INTERVAL);
             if due {
-                if let Some(our_hp) = self
-                    .handle_query
-                    .as_ref()
-                    .and_then(|hq| hq.get_handle_proof())
+                if let Some(our_hp) = self.our_handle_proof()
                 {
                     self.last_fleet_refold = Some(now);
                     self.spawn_contact_fleet_refresh(vec![our_hp]);
@@ -9185,9 +9170,7 @@ impl PhotonApp {
             let secrets = std::mem::take(&mut self.scoped_regrant_pending);
             if let (Some(kp), Some(hp), Some(our_pid), Some(storage)) = (
                 self.device_keypair.clone(),
-                self.handle_query
-                    .as_ref()
-                    .and_then(|hq| hq.get_handle_proof()),
+                self.our_handle_proof(),
                 self.session
                     .as_ref()
                     .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)),
@@ -9311,10 +9294,7 @@ impl PhotonApp {
                     // The confirm rotated the fleet key — recover the new epoch AND re-seal the roster under it in one ordered pass, so the just-joined device's roster pull decrypts instead of failing aead::Error until a relaunch. (Was a bare key-sync that left the roster stale-sealed forever, since the periodic re-push only fires on a non-in-app attest.)
                     self.spawn_roster_republish();
                     // And re-fold our own chain immediately so the freshly-bound device gets its sibling contact (fleet weave kickoff) without waiting for the next fleet event.
-                    if let Some(our_hp) = self
-                        .handle_query
-                        .as_ref()
-                        .and_then(|hq| hq.get_handle_proof())
+                    if let Some(our_hp) = self.our_handle_proof()
                     {
                         self.spawn_contact_fleet_refresh(vec![our_hp]);
                     }
@@ -9566,10 +9546,7 @@ impl PhotonApp {
             .map(|rx| rx.try_iter().collect())
             .unwrap_or_default();
         if !fleet_evts.is_empty() {
-            let our_hp = self
-                .handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_handle_proof());
+            let our_hp = self.our_handle_proof();
             let mut refresh_contacts: Vec<[u8; 32]> = Vec::new();
             for (kind, evt_hp) in &fleet_evts {
                 if *kind == "release" {
@@ -9614,10 +9591,7 @@ impl PhotonApp {
             .map(|rx| rx.try_iter().collect())
             .unwrap_or_default();
         if !member_updates.is_empty() {
-            let our_hp = self
-                .handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_handle_proof());
+            let our_hp = self.our_handle_proof();
             let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
             let siblings = sibling_presence_snapshot(&self.contacts);
             let mut changed = false;
@@ -10298,9 +10272,7 @@ impl PhotonApp {
         use crate::network::fgtw::fleet;
         use std::sync::atomic::{AtomicBool, Ordering};
         let (Some(hp), Some(kp), Some(seed), Some(tx)) = (
-            self.handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_handle_proof()),
+            self.our_handle_proof(),
             self.device_keypair.clone(),
             self.session.as_ref().map(|s| s.identity_seed),
             self.add_device_tx.clone(),
@@ -10483,10 +10455,7 @@ impl PhotonApp {
         if self.fleet_evt_rx.is_some() {
             return;
         }
-        let Some(hp) = self
-            .handle_query
-            .as_ref()
-            .and_then(|hq| hq.get_handle_proof())
+        let Some(hp) = self.our_handle_proof()
         else {
             return;
         };
@@ -10584,10 +10553,7 @@ impl PhotonApp {
         let Some(our_device) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else {
             return;
         };
-        let Some(our_hp) = self
-            .handle_query
-            .as_ref()
-            .and_then(|hq| hq.get_handle_proof())
+        let Some(our_hp) = self.our_handle_proof()
         else {
             return;
         };
@@ -10669,9 +10635,7 @@ impl PhotonApp {
     fn spawn_fleet_key_rotate_for_compliance(&self) {
         use crate::network::fgtw::fleet;
         let (Some(hp), Some(device_key), Some(storage), Some(session)) = (
-            self.handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_handle_proof()),
+            self.our_handle_proof(),
             self.device_keypair.clone(),
             self.storage.as_ref().cloned(),
             self.session.as_ref(),
@@ -10716,9 +10680,7 @@ impl PhotonApp {
     fn spawn_fleet_key_sync(&self) {
         use crate::network::fgtw::fleet;
         let (Some(hp), Some(device_key), Some(storage), Some(session)) = (
-            self.handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_handle_proof()),
+            self.our_handle_proof(),
             self.device_keypair.clone(),
             self.storage.as_ref().cloned(),
             self.session.as_ref(),
@@ -10821,9 +10783,7 @@ impl PhotonApp {
         use crate::network::fgtw::fleet;
         let entries = self.current_roster();
         let (Some(hp), Some(kp), Some(storage), Some(session)) = (
-            self.handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_handle_proof()),
+            self.our_handle_proof(),
             self.device_keypair.clone(),
             self.storage.as_ref().cloned(),
             self.session.as_ref(),
@@ -10873,7 +10833,7 @@ impl PhotonApp {
             // Key edge → refresh the wipe-proof recovery slot (off-thread: it is a blocking upload).
             if let (Some(kp), Some(hp)) = (
                 self.device_keypair.clone(),
-                self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()),
+                self.our_handle_proof(),
             ) {
                 let (k, seed) = (*key, session.identity_seed);
                 std::thread::spawn(move || {
@@ -11096,9 +11056,7 @@ impl PhotonApp {
             return;
         }
         let (Some(hp), Some(fleet_key)) = (
-            self.handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_handle_proof()),
+            self.our_handle_proof(),
             self.fleet_key_cached(),
         ) else {
             return;
@@ -11481,9 +11439,7 @@ impl PhotonApp {
         let (Some(storage), Some(kp), Some(hp)) = (
             self.storage.clone(),
             self.device_keypair.clone(),
-            self.handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_handle_proof()),
+            self.our_handle_proof(),
         ) else {
             return;
         };
@@ -11979,9 +11935,7 @@ impl PhotonApp {
             device_settings: fs.devices.clone(),
         };
         let (Some(hp), Some(kp), Some(fleet_key)) = (
-            self.handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_handle_proof()),
+            self.our_handle_proof(),
             self.device_keypair.clone(),
             self.fleet_key_cached(),
         ) else {
@@ -12016,9 +11970,7 @@ impl PhotonApp {
             return;
         }
         let (Some(hp), Some(kp), Some(fleet_key)) = (
-            self.handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_handle_proof()),
+            self.our_handle_proof(),
             self.device_keypair.clone(),
             self.fleet_key_cached(),
         ) else {
@@ -12043,9 +11995,7 @@ impl PhotonApp {
         self.add_device_status = "Words match \u{2014} adding\u{2026}".to_string();
         self.add_device_checking = true;
         if let (Some(hp), Some(kp), Some(tx)) = (
-            self.handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_handle_proof()),
+            self.our_handle_proof(),
             self.device_keypair.clone(),
             self.add_device_tx.clone(),
         ) {
@@ -12067,9 +12017,7 @@ impl PhotonApp {
         self.add_device_status = "Finishing\u{2026}".to_string();
         self.add_device_checking = true;
         if let (Some(hp), Some(kp), Some(tx)) = (
-            self.handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_handle_proof()),
+            self.our_handle_proof(),
             self.device_keypair.clone(),
             self.add_device_tx.clone(),
         ) {
@@ -12132,10 +12080,7 @@ impl PhotonApp {
     fn refresh_fleet_retired(&mut self) {
         self.fleet_release_armed = None;
         self.fleet_retired.clear();
-        let Some(hp) = self
-            .handle_query
-            .as_ref()
-            .and_then(|hq| hq.get_handle_proof())
+        let Some(hp) = self.our_handle_proof()
         else {
             return;
         };
@@ -12265,11 +12210,7 @@ impl PhotonApp {
         }
         // hp comes from the SESSION itself, not HandleQuery's worker-populated cache: a sticky-broadcast resume can reach Ready with `last_handle_proof` still unset, which made this gate claim "not signed in" to a user who plainly was (seen live, twice). Signed in ⇒ session ⇒ handle_proof; the cache is only a fallback.
         if let (Some(hp), Some(kp), Some(seed), Some(tx)) = (
-            self.session.as_ref().map(|s| s.handle_proof).or_else(|| {
-                self.handle_query
-                    .as_ref()
-                    .and_then(|hq| hq.get_handle_proof())
-            }),
+            self.our_handle_proof(),
             self.device_keypair.clone(),
             self.session.as_ref().map(|s| s.identity_seed),
             self.log_submit_tx.clone(),
@@ -14160,10 +14101,7 @@ impl PhotonApp {
         ) else {
             return;
         };
-        let Some(handle_proof) = self
-            .handle_query
-            .as_ref()
-            .and_then(|hq| hq.get_handle_proof())
+        let Some(handle_proof) = self.our_handle_proof()
         else {
             return;
         };
@@ -14394,9 +14332,7 @@ impl PhotonApp {
     /// Kick a one-shot fleet-inbox drain off-thread (blocking HTTPS). Pulls this identity's pending worker-observed events (bind-attempt alerts) and posts them over `inbox_check_tx`; `drain_fleet_inbox` surfaces them on a later tick. No-op without a handle_proof + device key (not yet attested).
     fn spawn_inbox_drain(&self) {
         if let (Some(hp), Some(kp), tx) = (
-            self.handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_handle_proof()),
+            self.our_handle_proof(),
             self.device_keypair.clone(),
             self.inbox_check_tx.clone(),
         ) {
@@ -15131,6 +15067,16 @@ impl PhotonApp {
                 result_id_hex
             );
 
+            // Same round scoping as the ceremony drain below: a KEM encapsulated under a discarded round must not send, and must not park its secrets in the slot the successor round is now using.
+            if let Some(idx) = self.contacts.iter().position(|c| c.id == result.contact_id) {
+                if self.contacts[idx].ceremony_id != Some(result.ceremony_id) {
+                    let cur = self.contacts[idx].ceremony_id.map(|c| hex::encode(&c[..4])).unwrap_or_else(|| "none".into());
+                    crate::logf!("CLUTCH: KEM encap result is for round {}… but the slot is on {} — stale round, dropped", hex::encode(&result.ceremony_id[..4]), cur);
+                    self.contacts[idx].clutch_kem_encap_in_progress = false;
+                    continue;
+                }
+            }
+
             // Find the contact and update state
             let mut found_idx = None;
             for (idx, contact) in self.contacts.iter_mut().enumerate() {
@@ -15252,6 +15198,20 @@ impl PhotonApp {
                 "CLUTCH: Processing ceremony result for contact_id {}...",
                 result_id_hex
             );
+
+            // ROUND SCOPING for the LOCAL pipeline — the mirror of the wire-side cross-round drop: this completion was spawned under the round it carries, and a discard-and-adopt can land while the job is still in flight. Installing the late result resurrects a round no other device holds, and the proof it just minted gets defended with retransmits for the rest of the session (the 35-minute cross-round wedge, live pair 2026-08-04). Compared against the slot's CURRENT round, not spawn order: the id is deterministic over both provenances, so a re-derived identical round still installs.
+            if let Some(idx) = self.contacts.iter().position(|c| c.id == result.contact_id) {
+                if self.contacts[idx].ceremony_id != Some(result.ceremony_id) {
+                    let cur = self.contacts[idx].ceremony_id.map(|c| hex::encode(&c[..4])).unwrap_or_else(|| "none".into());
+                    crate::logf!("CLUTCH: ceremony result is for round {}… but the slot is on {} — stale round, dropped", hex::encode(&result.ceremony_id[..4]), cur);
+                    self.contacts[idx].clutch_ceremony_in_progress = false;
+                    let mut stale = result;
+                    use zeroize::Zeroize;
+                    stale.fanout_pair_secret.zeroize();
+                    stale.friendship_chains.zeroize_history_key();
+                    continue;
+                }
+            }
 
             let friendship_id = *result.friendship_chains.id();
 
@@ -15677,9 +15637,7 @@ impl PhotonApp {
         }
         // Sticky tombstone into the fleet roster slot — off-thread, same shape as every roster push. push_roster pull-merges, so the tombstone joins the slot without clobbering concurrent sibling writes.
         if let (Some(hp), Some(kp), Some(fleet_key)) = (
-            self.handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_handle_proof()),
+            self.our_handle_proof(),
             self.device_keypair.clone(),
             self.fleet_key_cached(),
         ) {
@@ -21600,9 +21558,7 @@ impl PhotonApp {
             self.peer_store.as_ref(),
             self.device_keypair.as_ref(),
             self.our_reflexive,
-            self.handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_handle_proof()),
+            self.our_handle_proof(),
         ) else {
             return; // pre-attest, or no reflexive echo yet — nothing honest to publish
         };
@@ -21627,10 +21583,7 @@ impl PhotonApp {
         self.self_record_published_for = Some(addr);
         // Same edge, second registry: a fresh reflexive publish is also the moment to re-check the primary registry against the last-adopted fold (empty plan when in sync — one cheap GET).
         if !self.registry_converged_fold.is_empty() {
-            if let Some(our_hp) = self
-                .handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_handle_proof())
+            if let Some(our_hp) = self.our_handle_proof()
             {
                 self.spawn_registry_converge(our_hp, self.registry_converged_fold.clone());
             }
@@ -22188,6 +22141,16 @@ fn sibling_presence_snapshot(contacts: &[crate::types::Contact]) -> Vec<SiblingP
         .filter(|c| c.is_sibling)
         .map(|c| (c.public_identity.key, c.is_online, c.presence_probed))
         .collect()
+}
+
+impl PhotonApp {
+    /// OUR identity handle proof, session-first: a sticky-broadcast resume can reach Ready with HandleQuery's worker-populated `last_handle_proof` still unset, and every fleet-plane gate that read only the cache sat silently dead for the whole session — no fstate pull, no roster push, no fleet-key sync, so §4.2 ownership never converged between siblings (a resumed phone, 36 minutes, 2026-08-04). Signed in ⇒ session ⇒ handle_proof; the cache covers the pre-session attest window.
+    fn our_handle_proof(&self) -> Option<[u8; 32]> {
+        self.session
+            .as_ref()
+            .map(|s| s.handle_proof)
+            .or_else(|| self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()))
+    }
 }
 
 /// The relay list a send toward this contact should carry, judged by whether the DIRECT path can actually be trusted right now. The old idiom — relay only when `validated_path.is_none()` — treated any Some() as "direct works", but a validated path is HELD state: a phone that left the LAN it validated on still holds the house's address, and suppressing the relay on that stale Some() black-holed every frame (a phone on cellular still aiming at the peer's home LAN, the weave probe undelivered, the ceremony stuck "testing the secure channel", 2026-08-03). A validated path earns relay-suppression only when it is NOT a foreign-LAN leftover; anything less rides the pipe too — the relay is cheap and the receiver dedups.
