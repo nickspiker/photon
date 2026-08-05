@@ -1160,6 +1160,8 @@ pub struct PhotonApp {
     fleet_retired: Vec<[u8; 32]>,
     /// The retired pubkey whose Release pill is two-tap armed (`None` = disarmed). Cleared on page switch like every destructive arm.
     fleet_release_armed: Option<[u8; 32]>,
+    /// The sibling pubkey whose "Lock out" pill is two-tap armed (treat-as-stolen). Cleared on page switch like every destructive arm.
+    fleet_lock_armed: Option<[u8; 32]>,
     /// Self-update state (docs/updates.md): off-thread check/apply results drain here. tx kept so both channel checks + an apply share ONE receiver.
     update_rx: Option<std::sync::mpsc::Receiver<UpdateEvent>>,
     update_tx: Option<std::sync::mpsc::Sender<UpdateEvent>>,
@@ -1466,6 +1468,7 @@ impl PhotonApp {
             settings_fleet_selected: None,
             fleet_retired: Vec::new(),
             fleet_release_armed: None,
+            fleet_lock_armed: None,
             update_rx: None,
             update_tx: None,
             update_release: ChannelCheck::Idle,
@@ -2846,6 +2849,7 @@ impl FluorApp for PhotonApp {
                     if *p != SettingsPage::Fleet {
                         self.settings_fleet_selected = None;
                         self.fleet_release_armed = None;
+                        self.fleet_lock_armed = None;
                     }
                     if *p != SettingsPage::Security {
                         self.settings_removeshred_armed = false;
@@ -2882,6 +2886,20 @@ impl FluorApp for PhotonApp {
                     if slot == 0 {
                         // "Add device" pill → the pairing-words flow.
                         self.open_add_device_flow();
+                    } else if slot >= 32 {
+                        // Live sibling row's "Lock out" pill (two-tap): treat-as-stolen. The chain is untouched — the fleet-synced locked set + key rotation do all the work.
+                        let idx = (slot - 32) as usize;
+                        let devices = self.fleet_device_rows();
+                        if let Some((pk, false, _, false, name, _, _)) = devices.get(idx).cloned() {
+                            if self.fleet_lock_armed == Some(pk) {
+                                self.fleet_lock_armed = None;
+                                self.lock_out_device(pk);
+                                crate::logf!("FLEET: {} locked out by owner action — key rotating away", name);
+                                self.ready_toast = Some(format!("{name} locked out \u{2014} it can no longer act in this fleet."));
+                            } else {
+                                self.fleet_lock_armed = Some(pk);
+                            }
+                        }
                     } else if slot >= 24 {
                         // Retired row's "Release" pill (two-tap): the OWNER frees the departed device's hardware brand — the second signature of the two-signature retire (the first was that device signing itself out). On success the pubkey joins the fleet-synced `fleet.released` setting so the row drops off every device; the chain rows themselves are permanent testimony, untouched.
                         let idx = (slot - 24) as usize;
@@ -4761,6 +4779,8 @@ impl FluorApp for PhotonApp {
         let settings_pages = self.settings_pages();
         // Same hoist for the IME inset (Android keyboard height): read it before the chrome borrow so the conversation block can use it without re-borrowing self.
         let ime_lift = self.ime_lift();
+        // Same hoist for the Fleet page's locked set (treat-as-stolen rows): the row loop can't re-borrow self.
+        let fleet_locked_set = self.locked_devices();
 
         let Some(chrome) = self.chrome.as_mut() else {
             return;
@@ -7855,6 +7875,7 @@ impl FluorApp for PhotonApp {
                     }
                 }
                 SettingsPage::Fleet => {
+                    let locked_set = &fleet_locked_set;
                     // Live device inventory (gathered above the chrome borrow): this device + our siblings, then the retired rows (signed out, brand still ours — refreshed on page entry). Rows 1..=6 hold up to 6 devices (fleets are usually ≤5; a scroll follows if this grows past the row budget). Member rows are tap-to-copy (btn_base+16+index); retired rows carry a per-row Release pill instead (btn_base+24+index, two-tap).
                     let devices = &fleet_devices;
                     let rows = layout
@@ -7904,10 +7925,13 @@ impl FluorApp for PhotonApp {
                             );
                         }
                         // Status on the LEFT (this device / online / offline / retired), device NAME right-aligned so it lines up under "click to copy" — the name is what a tap copies.
+                        let row_locked = locked_set.contains(pk);
                         let (status, status_colour) = if *is_self {
                             ("(this device)", (*theme::LABEL_COLOUR))
                         } else if *retired {
                             ("retired \u{2014} still yours", (*theme::LABEL_COLOUR))
+                        } else if row_locked {
+                            ("locked out", theme::PILL_RED.1)
                         } else if *online {
                             ("online", (*theme::SEARCH_FOUND_COLOUR))
                         } else {
@@ -7985,6 +8009,30 @@ impl FluorApp for PhotonApp {
                                 (row.y + row.h) as isize,
                                 btn_base.wrapping_add(16 + i as HitId),
                             );
+                            // Live sibling rows carry the treat-as-stolen pill (two-tap): lock the device out WITHOUT touching the chain — removal is self-signed only, zero exceptions; this is the fleet refusing to listen. Drawn after the row stamp so the pill's own hit rect wins its rectangle.
+                            if !*is_self && !row_locked {
+                                let armed = self.fleet_lock_armed.as_ref() == Some(pk);
+                                let label = if armed {
+                                    "Lock out \u{2014} sure?"
+                                } else {
+                                    "Lock out"
+                                };
+                                let pill = row.split_h([1.0, 1.0, 1.0])[1].center_h(0.8);
+                                draw_stub_pill_filled(
+                                    &mut canvas,
+                                    ctx.text,
+                                    &mut chrome.hit_test_map,
+                                    buf_w,
+                                    buf_h,
+                                    pill,
+                                    label,
+                                    btn_base.wrapping_add(32 + i as HitId),
+                                    ctx.pressed_hit,
+                                    true,
+                                    if armed { Some(*theme::PILL_RED) } else { None },
+                                    "Oxanium",
+                                );
+                            }
                         }
                     }
                     // No Remove pill: expulsion is not a verb (sovereign records) — a device leaves by its own signed departure. And leaving never frees the hardware: the brand outlives the membership until the owner releases it above.
@@ -9740,6 +9788,8 @@ impl PhotonApp {
                         .as_mut()
                         .unwrap()
                         .merge_from(state.global_settings, state.device_settings);
+                    // A pulled `fleet.locked` lands here: sweep it onto the sibling rows so every trust gate refuses the locked device from this tick on.
+                    self.apply_locked_set();
                     if changed {
                         if let (Some(fs), Some(storage)) =
                             (self.fleet_settings.as_ref(), self.storage.as_ref())
@@ -10715,6 +10765,8 @@ impl PhotonApp {
         let busy = self.fleet_heal_busy.clone();
         let rotated_tx = self.fleet_rotated_tx.clone();
         let wake = self.event_proxy.clone();
+        // Locked devices (treat-as-stolen) are chain members that must NOT be wrapped: the heal rotates whenever the live fan-out covers more devices than the DESIRED set (fold minus locked), which fires on a member's self-departure AND on a lockout identically.
+        let locked = self.locked_devices();
         // This device's shareable state, snapshotted on the UI thread — the heal's re-seal push carries it even when the old-key pull comes up empty.
         let ours = fgtw::fstate::FleetState {
             roster: self.current_roster(),
@@ -10737,8 +10789,12 @@ impl PhotonApp {
             // Fail toward no-rotate: any fetch/verify miss here just falls thru to the plain recover path.
             let heal_members = (|| {
                 let members = fleet::current_members_verified(&hp, &identity_seed).ok()?;
+                let desired: Vec<[u8; 32]> = members
+                    .into_iter()
+                    .filter(|m| !locked.contains(m))
+                    .collect();
                 let (_, _, wraps) = fleet::fetch_fanout(&hp).ok().flatten()?;
-                fleet::fanout_needs_rotation(wraps.len(), members.len()).then_some(members)
+                fleet::fanout_needs_rotation(wraps.len(), desired.len()).then_some(desired)
             })();
             if let Some(members) = heal_members {
                 if busy
@@ -12102,6 +12158,7 @@ impl PhotonApp {
     /// Refresh the Fleet page's retired rows: chain history minus current members minus the `fleet.released` set (brands the owner already freed). Synchronous fetch, page-entry only — same style as the last-member gate. A fetch failure just hides the rows this visit (release is idempotent; nothing is lost).
     fn refresh_fleet_retired(&mut self) {
         self.fleet_release_armed = None;
+        self.fleet_lock_armed = None;
         self.fleet_retired.clear();
         let Some(hp) = self.our_handle_proof()
         else {
@@ -12123,6 +12180,67 @@ impl PhotonApp {
     }
 
     /// The `fleet.released` setting decoded: concatenated 32-byte device pubkeys the owner has already released (binary at rest, fleet-synced so a release on one device drops the row everywhere).
+    /// The `fleet.locked` setting decoded: concatenated 32-byte device pubkeys the fleet has LOCKED OUT (treat-as-stolen). Grow-only by convention — lock_out_device unions before writing, and apply_locked_set only ever sets `locked_out`, never clears it — so LWW on the setting still converges to the union.
+    fn locked_devices(&self) -> Vec<[u8; 32]> {
+        let Some(bytes) = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("fleet.locked"))
+        else {
+            return Vec::new();
+        };
+        bytes
+            .chunks_exact(32)
+            .map(|c| {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(c);
+                a
+            })
+            .collect()
+    }
+
+    fn is_locked_device(&self, pk: &[u8; 32]) -> bool {
+        self.locked_devices().iter().any(|d| d == pk)
+    }
+
+    /// Sweep the fleet-synced locked set onto sibling contact rows (persisted, so refusal survives a relaunch before settings sync). Monotonic: locks only, never unlocks — an unlock is a deliberate future flow, not a merge artifact.
+    fn apply_locked_set(&mut self) {
+        let locked = self.locked_devices();
+        if locked.is_empty() {
+            return;
+        }
+        let mut changed_rows: Vec<usize> = Vec::new();
+        for (i, c) in self.contacts.iter_mut().enumerate() {
+            if c.is_sibling && !c.locked_out && locked.contains(c.public_identity.as_bytes()) {
+                c.locked_out = true;
+                changed_rows.push(i);
+            }
+        }
+        if let Some(storage) = self.storage.as_ref() {
+            for i in changed_rows {
+                crate::logf!("FLEET: {} is LOCKED OUT — frames refused, key rotating away", crate::fp(&self.contacts[i].public_identity.key));
+                let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
+            }
+        }
+    }
+
+    /// Treat-as-stolen: lock a fleet device out WITHOUT touching the membership chain (removal is self-signed only, zero exceptions). The device stays a permanent member; the fleet stops trusting it — the locked set syncs fleet-wide, every trust gate refuses it, and the fleet key rotates so its cached key goes stale.
+    fn lock_out_device(&mut self, pk: [u8; 32]) {
+        let mut set: Vec<u8> = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("fleet.locked"))
+            .map(|b| b.to_vec())
+            .unwrap_or_default();
+        if !set.chunks_exact(32).any(|c| c == pk) {
+            set.extend_from_slice(&pk);
+            self.settings_set("fleet.locked", set);
+        }
+        self.apply_locked_set();
+        // Rotation NOW, not at the next sentinel pass: the locked device holds the current fleet key until an epoch it isn't wrapped into exists.
+        self.spawn_fleet_key_sync();
+    }
+
     fn released_brands(&self) -> Vec<[u8; 32]> {
         let Some(bytes) = self
             .fleet_settings
@@ -14075,6 +14193,7 @@ impl PhotonApp {
                 && c.clutch_state == crate::types::ClutchState::Pending
                 && c.clutch_our_keypairs.is_none()
                 && !c.clutch_keygen_in_progress
+                && !c.locked_out
                 && c.clutch_round_started
                     .map_or(true, |t| now - t >= CLUTCH_ROUND_TTL_OSC)
                 && !ceremony_parked_by(c, our_device, &siblings)
@@ -15896,6 +16015,10 @@ impl PhotonApp {
         let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
         let siblings = sibling_presence_snapshot(&self.contacts);
         for (i, c) in self.contacts.iter_mut().enumerate() {
+            // LOCKOUT: no pings, no punches, no stall re-fires, no doorbell rings toward a locked device — the fleet stopped talking to it, both directions.
+            if c.locked_out {
+                continue;
+            }
             if let Some((_, at)) = c.validated_path {
                 if at.elapsed() >= PATH_TTL {
                     c.validated_path = None;
@@ -16493,7 +16616,7 @@ impl PhotonApp {
         let sibling_fids: std::collections::HashSet<[u8; 32]> = self
             .contacts
             .iter()
-            .filter(|c| c.is_sibling)
+            .filter(|c| c.is_sibling && !c.locked_out)
             .filter_map(|c| c.friendship_id.map(|f| *f.as_bytes()))
             .collect();
         // Collect due frames first (read-only pass over the chains), send after.
@@ -16541,7 +16664,7 @@ impl PhotonApp {
         for (fid_bytes, osc, frame) in frames {
             let mut pushed_to = 0usize;
             let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
-            for sib in self.contacts.iter().filter(|c| c.is_sibling) {
+            for sib in self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out) {
                 let (primary, alt, relay_to) = match sib.race_addrs() {
                     Some((p, a)) => (
                         p,
@@ -16635,7 +16758,7 @@ impl PhotonApp {
         let mut pushed = 0usize;
         let mut skipped = 0usize;
         // EVERY sibling, not just is_online ones: sibling presence has proven unreliable (pong-provenance drops kept siblings "offline" for whole sessions), and gating delivery on it turned the entire fleet plane into a silent no-op — zero FLEET-HIST lines in a full day's desktop log while messages flowed. Direct legs race as before; a sibling with no validated path (or no address at all) rides the relay, which delivers whenever that device next drains its pipe.
-        for sib in self.contacts.iter().filter(|c| c.is_sibling) {
+        for sib in self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out) {
             if exclude_device.is_some_and(|d| *sib.public_identity.as_bytes() == d) {
                 continue;
             }
@@ -17546,6 +17669,11 @@ impl PhotonApp {
                                 }
                             }
                         }
+                    }
+                    // LOCKOUT gate: a locked device is still a fold member, so knows_device would happily honour its pong — presence, addresses, relay flags, all of it. Refuse the frame at the door instead; the lockout is precisely "stop listening".
+                    if self.is_locked_device(&peer_pubkey.key) {
+                        crate::logf!("Status: frame from LOCKED-OUT device {} — refused", crate::fp(&peer_pubkey.key));
+                        continue;
                     }
                     // §4.2 snapshot: taken per-update so verdicts drained earlier this pass are already reflected.
                     let our_device_pk = Some(our_device_pubkey);
@@ -18689,6 +18817,11 @@ impl PhotonApp {
                     };
                     use crate::network::status::ClutchOfferRequest;
                     use crate::types::ClutchState;
+                    // LOCKOUT gate: a locked-out device must never re-enter through a ceremony — accepting its offer would weave fresh chains with hardware the fleet declared stolen.
+                    if self.is_locked_device(&sender_pubkey) {
+                        crate::logf!("CLUTCH: offer from LOCKED-OUT device {} — refused", crate::fp(&sender_pubkey));
+                        continue;
+                    }
 
                     crate::logf!(
                         "CLUTCH: Processing ClutchOfferReceived from {} (contacts={})",
@@ -20027,7 +20160,7 @@ impl PhotonApp {
                             let sender_is_sibling = self
                                 .contacts
                                 .iter()
-                                .any(|c| c.is_sibling && c.knows_device(&sender_pubkey.key));
+                                .any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key));
                             if !sender_is_sibling {
                                 return None;
                             }
@@ -20290,7 +20423,7 @@ impl PhotonApp {
                     if !self
                         .contacts
                         .iter()
-                        .any(|c| c.is_sibling && c.knows_device(&sender_pubkey.key))
+                        .any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key))
                     {
                         crate::log(
                             "CHAIN-SYNC: frame from a non-sibling or unknown device — dropped",
@@ -20391,7 +20524,7 @@ impl PhotonApp {
                     let Some(idx) = self
                         .contacts
                         .iter()
-                        .position(|c| c.is_sibling && c.knows_device(&sender_pubkey.key))
+                        .position(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key))
                     else {
                         crate::log(
                             "CHAIN-RESET: frame from a non-sibling or unknown device — dropped",
@@ -20442,7 +20575,7 @@ impl PhotonApp {
                     let from_sibling = self
                         .contacts
                         .iter()
-                        .any(|c| c.is_sibling && c.knows_device(&sender_pubkey.key));
+                        .any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key));
                     let (key, contact_idx) = if from_sibling {
                         (
                             self.fleet_key_cached(),

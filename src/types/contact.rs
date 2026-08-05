@@ -231,6 +231,8 @@ pub struct Contact {
     pub pinned_genesis: [u8; 32],
     /// The contact's chain vanished after we had folded it — their owner ended the identity (last departure, worker purge). Local state FREEZES (verify-or-withhold); rendered as "identity ended". Cleared if the same-genesis chain reappears (a worker blip, not a death).
     pub identity_ended: bool,
+    /// LOCKED OUT (treat-as-stolen): this sibling device stays a permanent chain member — removal is self-signed only, zero exceptions — but the fleet has stopped trusting it: no pings, no pongs honoured, no chain-sync, no ceremony, no relay copies, and the fleet key rotates away from it. Set from the fleet-synced `fleet.locked` set (grow-only); persisted so the refusal survives a relaunch even before settings sync.
+    pub locked_out: bool,
     /// A chain with a DIFFERENT genesis appeared under this contact's name — a stranger re-claimed the freed handle. Folds are refused; rendered as NOT-them. Never auto-clears (the pin is permanent testimony).
     pub identity_superseded: bool,
     pub ip: Option<SocketAddr>, // The ACTIVE device's public IP:port (see `active_device`) — the primary TX target
@@ -416,6 +418,7 @@ impl Contact {
             fleet_members_ts: 0,       // No fold adopted yet (bootstrap)
             pinned_genesis: [0u8; 32], // Pinned at the first adopted fold
             identity_ended: false,
+            locked_out: false,
             identity_superseded: false,
             ip: None,
             local_ip: None,   // Discovered via LAN broadcast
