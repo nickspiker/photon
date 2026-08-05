@@ -14664,6 +14664,7 @@ impl PhotonApp {
             .secret
             .as_bytes();
 
+        let mut claimed_ownership = false;
         while let Ok(result) = self.clutch_keygen_rx.try_recv() {
             let result_id_hex = hex::encode(&result.contact_id.as_bytes()[..4]);
             crate::logf!(
@@ -14697,10 +14698,28 @@ impl PhotonApp {
                             .saturating_sub(contact.roster_updated)
                             > CLUTCH_ROUND_TTL_OSC;
                         if their_offer_waiting && owner_stale {
+                            // FAN-OUT TIE-BREAK, no sync channel required: the offer that "chose this device" also chose every sibling — it fanned out over the relay — and with the roster clock stale on BOTH siblings (mid-session, no fstate edge between them), each read "owner silent", claimed, and minted competing rounds that adoption-cooldowns then locked in place on all three parties (live pair, 2026-08-05). Same doctrine as the sibling initiator rule: the lowest ONLINE fleet device claims at the TTL; a higher device defers, time-boxed to one more TTL so a winner that dies mid-round still gets rescued.
+                            let lower_sibling_online = siblings
+                                .iter()
+                                .any(|(k, online, probed)| *online && *probed && k < &device_pubkey);
+                            let deference_expired = contact
+                                .clutch_claim_deferred
+                                .map_or(false, |t| t.elapsed().as_secs() as i64 > CLUTCH_ROUND_TTL_OSC / vsf::OSCILLATIONS_PER_SECOND as i64);
+                            if lower_sibling_online && !deference_expired {
+                                if contact.clutch_claim_deferred.is_none() {
+                                    contact.clutch_claim_deferred = Some(std::time::Instant::now());
+                                }
+                                crate::logf!("CLUTCH §4.2: {} offered here but a lower fleet device is online — deferring the claim one TTL, its round carries the ceremony", crate::fp(&contact.handle_proof));
+                                contact.discard_clutch_round();
+                                changed = true;
+                                break;
+                            }
+                            contact.clutch_claim_deferred = None;
                             crate::logf!("CLUTCH §4.2: {} offered at THIS device and the named owner has been silent past the round TTL — claiming the ceremony", crate::fp(&contact.handle_proof));
                             contact.ceremony_owner = Some(device_pubkey);
                             contact.owner_woven = false;
                             contact.roster_updated = vsf::eagle_time_oscillations();
+                            claimed_ownership = true;
                         } else {
                             if their_offer_waiting {
                                 crate::logf!("CLUTCH §4.2: {} offered here but the named owner claimed recently — parking, the owner's round carries the ceremony", crate::fp(&contact.handle_proof));
@@ -15029,7 +15048,10 @@ impl PhotonApp {
             changed = true;
         }
 
-        if changed {}
+        // A claim is a ROSTER EDGE: without an immediate push the claim sits local, every sibling's TTL gate keeps reading "owner silent", and competing rounds run until some unrelated sync fires — which can be never in a long-lived session. Push now so discard-on-park reaches the fleet while the round is young.
+        if claimed_ownership {
+            self.spawn_settings_push();
+        }
         changed
     }
 

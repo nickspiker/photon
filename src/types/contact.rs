@@ -271,6 +271,8 @@ pub struct Contact {
     pub clutch_proof_gave_up: bool,
     /// When we last DISCARDED our round to adopt a peer's fresh-keyed mid-ceremony offer (§4.2 wholesale adoption). Rate-limits adoption: a peer that can't hear our responses (one-way reachability — live pair 2026-07-25) re-offers with new keys every ~25s, and unthrottled adoption re-ran keygen+encap on the UI thread each time (a hitch storm). While the last adoption is fresh we hold our round and ignore further re-offers; the peer only needs ONE of our responses to land. Runtime-only, never persisted.
     pub clutch_last_adoption: Option<std::time::Instant>,
+    /// When this device DEFERRED a §4.2 responder claim to a lower online sibling (fan-out tie-break). The deference is time-boxed: past one round TTL with the friend's offer still waiting, the winner evidently failed and the rescue falls to us. Runtime-only, never persisted — a restart re-defers from scratch, which only costs the winner another TTL of grace.
+    pub clutch_claim_deferred: Option<std::time::Instant>,
     /// Flag to prevent multiple concurrent keygens (race condition guard)
     pub clutch_keygen_in_progress: bool,
     /// Flag to prevent multiple concurrent KEM encapsulations
@@ -437,6 +439,7 @@ impl Contact {
             clutch_proof_retry_lifetime: 0, // Lifetime re-arm counter (runtime only)
             clutch_proof_gave_up: false, // Latched when the lifetime cap is hit (runtime only)
             clutch_last_adoption: None,
+            clutch_claim_deferred: None,
             clutch_keygen_in_progress: false, // No keygen running yet
             clutch_kem_encap_in_progress: false, // No KEM encap running yet
             clutch_ceremony_in_progress: false, // No ceremony completion running yet
