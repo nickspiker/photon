@@ -2204,7 +2204,7 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(8); // rows 0..=8
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.settings_btn_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(31); // pills 0..=31
+        self.hit_counter = self.hit_counter.wrapping_add(39); // pills 0..=39 — the Fleet page's fourth band (32+ Lock-out) lives at the top of the block
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.contact_panel_btn_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(3); // contact-panel pills 0..=3 (0 = Boot)
@@ -2882,7 +2882,8 @@ impl FluorApp for PhotonApp {
             }
             if self.settings_btn_base != HIT_NONE
                 && hit_id >= self.settings_btn_base
-                && hit_id < self.settings_btn_base.wrapping_add(32)
+                // 40, not 32: the Fleet page's slot map grew a fourth band — 16+ row tap-copy, 24+ Release pills, 32+ Lock-out pills (six rows each). The old cap ate every Lock-out release: the pill painted its press (hit map stamped at draw) but the id fell outside this window, so the action never dispatched.
+                && hit_id < self.settings_btn_base.wrapping_add(40)
             {
                 let slot = hit_id - self.settings_btn_base;
                 if page == SettingsPage::Fleet {
