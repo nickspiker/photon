@@ -1162,6 +1162,8 @@ pub struct PhotonApp {
     fleet_release_armed: Option<[u8; 32]>,
     /// The sibling pubkey whose "Lock out" pill is two-tap armed (treat-as-stolen). Cleared on page switch like every destructive arm.
     fleet_lock_armed: Option<[u8; 32]>,
+    /// A lock-out confirmed on the pill but NOT yet executed: (target device pk, the arming identity's handle_proof, display name). The confirm de-attests THIS device and the lock fires only inside the next successful attest — so the lock is gated on KNOWING the handle: a thief holding an unlocked device just logs themselves out (Nick's design, 2026-08-05). Runtime-only, deliberately never persisted — a restart discards the armed lock, so a thief can't park one for the owner's next sign-in to trip.
+    pending_lock: Option<([u8; 32], [u8; 32], String)>,
     /// Self-update state (docs/updates.md): off-thread check/apply results drain here. tx kept so both channel checks + an apply share ONE receiver.
     update_rx: Option<std::sync::mpsc::Receiver<UpdateEvent>>,
     update_tx: Option<std::sync::mpsc::Sender<UpdateEvent>>,
@@ -1469,6 +1471,7 @@ impl PhotonApp {
             fleet_retired: Vec::new(),
             fleet_release_armed: None,
             fleet_lock_armed: None,
+            pending_lock: None,
             update_rx: None,
             update_tx: None,
             update_release: ChannelCheck::Idle,
@@ -2893,9 +2896,19 @@ impl FluorApp for PhotonApp {
                         if let Some((pk, false, _, false, name, _, _)) = devices.get(idx).cloned() {
                             if self.fleet_lock_armed == Some(pk) {
                                 self.fleet_lock_armed = None;
-                                self.lock_out_device(pk);
-                                crate::logf!("FLEET: {} locked out by owner action — key rotating away", name);
-                                self.ready_toast = Some(format!("{name} locked out \u{2014} it can no longer act in this fleet."));
+                                // The confirm DE-ATTESTS this device; the lock executes only inside the next successful attest (see pending_lock). Owner knows the handle and sails through; a thief just signed themselves out of the one device they held. Same session teardown as Security's "Lock".
+                                if let Some(hp) = self.session.as_ref().map(|s| s.handle_proof) {
+                                    self.pending_lock = Some((pk, hp, name.clone()));
+                                    tohu::clear_session();
+                                    self.session = None;
+                                    self.private_s = crate::crypto::blind::PrivateS::None;
+                                    self.pending_broadcast_signal = -1;
+                                    self.state = AppState::Launch(LaunchState::Error(
+                                        format!("Enter your handle to confirm locking out {name}."),
+                                    ));
+                                    self.refocus_handle_select_all();
+                                    crate::logf!("FLEET: lock-out of {} armed — de-attested, awaiting handle confirmation", name);
+                                }
                             } else {
                                 self.fleet_lock_armed = Some(pk);
                             }
@@ -13483,6 +13496,16 @@ impl PhotonApp {
                     vault_seed: data.identity_seed,
                     handle_proof: data.handle_proof,
                 }));
+                // An armed lock-out fires HERE and only here — the handle just proved itself. A different identity attesting (thief typing their own name) discards the arm instead: their lock was never this fleet's to execute.
+                if let Some((pk, armer_hp, name)) = self.pending_lock.take() {
+                    if data.handle_proof == armer_hp {
+                        self.lock_out_device(pk);
+                        crate::logf!("FLEET: {} locked out — handle confirmed, key rotating away", name);
+                        self.ready_toast = Some(format!("{name} locked out \u{2014} it can no longer act in this fleet."));
+                    } else {
+                        crate::logf!("FLEET: armed lock-out of {} DISCARDED — a different identity attested", name);
+                    }
+                }
                 // Bind the device to this identity (docs/lifecycle.md D2): the marker refuses a second identity at the NEXT submit, before its proof is spent. Idempotent on resume; cleared only by a wipe.
                 if let Some(kp) = self.device_keypair.as_ref() {
                     crate::storage::device_binding::bind(
