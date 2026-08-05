@@ -842,6 +842,8 @@ pub struct PhotonApp {
     photon_orb: Option<fluor::host::icon::Icon>,
     /// Which contact the top-left orb currently shows (its avatar + their presence-tier ring). `None` = the Photon orb + our own FGTW connectivity ring. Diffed each tick so the Icon rebuild happens only on a change, not every frame.
     orb_contact: Option<usize>,
+    /// The contact-list ring colours as last PAINTED, diffed each tick — the same doctrine as the orb's per-tick diff, because ring state is DERIVED (validated_path appearing, reached_via_relay flipping, TTL expiry) and half its inputs mutate without any repaint-marked event: the ring held its old colour until a page change forced a re-raster (field, 2026-08-05). Empty until the first tick.
+    painted_ring_tiers: Vec<u32>,
     /// Whether the orb's current contact had an avatar when the orb was last built — part of the diff key so a mid-conversation avatar download upgrades the orb from the gradient placeholder.
     orb_had_avatar: bool,
     /// Contacts-page handle search/add textbox (Ready state). Distinct from `textbox` so content doesn't bleed between Launch (handle being attested) and Ready (handle being added as a contact).
@@ -1326,6 +1328,7 @@ impl PhotonApp {
             online: false,
             photon_orb: None,
             orb_contact: None,
+            painted_ring_tiers: Vec::new(),
             orb_had_avatar: false,
             contacts_textbox: None,
             message_textbox: None,
@@ -9142,6 +9145,23 @@ impl PhotonApp {
         }
         if timed!("check_status_updates", self.check_status_updates()) {
             needs_redraw = true;
+        }
+        // Ring colours are DERIVED state — recompute and diff every tick, repaint on any change (see painted_ring_tiers).
+        {
+            let our_hh = self
+                .session
+                .as_ref()
+                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                .unwrap_or([0u8; 32]);
+            let tiers: Vec<u32> = self
+                .contacts
+                .iter()
+                .map(|c| ring_tier_colour(c, c.remote_count(&our_hh) > 0))
+                .collect();
+            if tiers != self.painted_ring_tiers {
+                self.painted_ring_tiers = tiers;
+                needs_redraw = true;
+            }
         }
         if timed!("check_clutch_keygens", self.check_clutch_keygens()) {
             needs_redraw = true;
