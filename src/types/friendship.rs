@@ -239,6 +239,8 @@ pub struct FriendshipChains {
 
     /// The LANE ROOT (docs/lanes.md): the 32-byte secret every per-device lane derives from — lane = expand(root ‖ wire label), device identity nowhere in the derivation. Born beside `history_key` from the same pristine-chains moment; the lanes themselves materialize on demand once the lane wire lands. Persisted (schema v8); zeroized on supersede, same custody as the chain links beside it.
     lane_root: Option<[u8; 32]>,
+    /// When this blob's ceremony COMPLETED (eagle time) — the ERA stamp. Two blobs over one friendship with different lane_roots are different ceremonies, and this decides which era supersedes in `merge_lanes_from` (newer wins wholesale). 0 on blobs persisted before the field existed, so any freshly-woven era beats a legacy one.
+    pub genesis_osc: i64,
 
     /// Eagle-time of the last LOCAL mutation of this chain state (send prepare, ACK advance, receive advance, plaintext update). The fleet chain-replication ordering key: a sibling's pushed copy is adopted iff its stamp is NEWER than ours — "if another device is ahead, I just catch up". Persisted (schema v7); 0 for pre-feature vaults (any replicated copy beats an unstamped one).
     pub mutated_osc: i64,
@@ -425,6 +427,7 @@ impl FriendshipChains {
             gap_buffer: Vec::new(),
             history_key: Some(history_key),
             lane_root: Some(lane_root),
+            genesis_osc: vsf::eagle_time_oscillations(),
             mutated_osc: 0,
         }
     }
@@ -498,6 +501,7 @@ impl FriendshipChains {
             gap_buffer: Vec::new(), // Gap buffer is transient, not persisted
             history_key: None,      // pre-v6 file: no history key (set by the loader when present)
             lane_root: None,        // loader installs it from a v8 file
+            genesis_osc: 0,
             mutated_osc: 0,
         })
     }
@@ -570,6 +574,7 @@ impl FriendshipChains {
             gap_buffer: Vec::new(), // Gap buffer is transient, not persisted
             history_key: None,      // pre-v6 file default: loader sets it when the field is present
             lane_root: None,        // loader installs it from a v8 file
+            genesis_osc: 0,
             mutated_osc: 0,
         })
     }
@@ -826,13 +831,43 @@ impl FriendshipChains {
         self.lane_root.is_some() && other.lane_root.is_some() && self.lane_root != other.lane_root
     }
 
-    /// True when `other` is a DIFFERENT era that provably superseded ours — the caller replaces this blob wholesale (sanitized). Newer `mutated_osc` decides: the dead era's clock goes quiet the moment the friend stops sending on it, so the live era pulls ahead and stays there.
+    /// True when `other` is a DIFFERENT era that provably superseded ours — the caller replaces this blob wholesale (sanitized). The ceremony's GENESIS stamp decides, not `mutated_osc`: the dead era's clock does not actually go quiet — retransmit and gap bookkeeping keep bumping it, so the stale sibling could out-tick a freshly-woven era indefinitely (live pair, 2026-08-05). Genesis is written once at completion and never moves. Legacy blobs (genesis 0 on both) fall back to the old clock so two pre-stamp eras still converge somewhere.
     pub fn era_superseded_by(&self, other: &FriendshipChains) -> bool {
-        self.differs_in_era_from(other) && other.mutated_osc > self.mutated_osc
+        if !self.differs_in_era_from(other) {
+            return false;
+        }
+        if self.genesis_osc != other.genesis_osc {
+            return other.genesis_osc > self.genesis_osc;
+        }
+        other.mutated_osc > self.mutated_osc
     }
 
     /// Merge a sibling's replicated copy, LANE-WISE (docs/lanes.md checkpoints): a lane we lack is taken whole; a lane we hold is replaced iff the incoming position is STRICTLY greater — a fast-forward of the same deterministic replay, always safe. Device-local state (our label, pendings, send tip, weave view) stays OURS untouched; the root and history key adopt only where we lack them. Replaces whole-blob newest-wins, whose fork window was both devices overwriting each other's live lanes. Returns whether anything changed. SAME-ERA ONLY: the caller must judge `differs_in_era_from` first — a re-keyed root never merges, it supersedes wholesale.
     pub fn merge_lanes_from(&mut self, other: &FriendshipChains) -> bool {
+        // ERA SUPERSEDE: different lane_roots are different CEREMONIES over one friendship — a re-key happened, and lane-merging across eras is meaningless (labels derive under different roots). Keeping an existing root forever left a parked sibling on yesterday's era pushing stale frames the friend's gap repair read as a fork — it discarded a freshly-woven chain 15 seconds after completion (live pair, 2026-08-05). The newer genesis adopts WHOLESALE and the superseded era's lanes, pendings, and send state die with it; the older side keeps ours and converges when our push reaches it.
+        if self.differs_in_era_from(other) {
+            if !self.era_superseded_by(other) {
+                return false;
+            }
+            self.zeroize_history_key();
+            self.zeroize_lane_root();
+            self.lane_root = other.lane_root;
+            self.history_key = other.history_key;
+            self.genesis_osc = other.genesis_osc;
+            self.lane_labels = other.lane_labels.clone();
+            self.lane_positions = other.lane_positions.clone();
+            self.chains = other.chains.clone();
+            self.last_plaintexts = other.last_plaintexts.clone();
+            self.first_message_anchors = other.first_message_anchors.clone();
+            self.last_received_hashes = other.last_received_hashes.clone();
+            self.last_received_times = other.last_received_times.clone();
+            self.our_label = None;
+            self.pending_messages.clear();
+            self.last_sent_hash = None;
+            self.gap_buffer.clear();
+            self.mutated_osc = vsf::eagle_time_oscillations();
+            return true;
+        }
         let mut changed = false;
         if self.lane_root.is_none() && other.lane_root.is_some() {
             self.lane_root = other.lane_root;
@@ -1654,6 +1689,37 @@ mod tests {
         assert_eq!(ready_b.len(), 1);
         assert_eq!(ready_b[0].eagle_time, 1001);
         assert_eq!(chains.gap_buffer_count(), 0);
+    }
+
+    #[test]
+    fn era_supersede_newer_genesis_wins_wholesale_and_older_never_merges() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let eggs_old: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let eggs_new: Vec<[u8; 32]> = (0..8).map(|i| [i as u8 + 100; 32]).collect();
+        let mut old_era = FriendshipChains::from_clutch(&[a, b], &eggs_old);
+        let mut new_era = FriendshipChains::from_clutch(&[a, b], &eggs_new);
+        assert!(old_era.differs_in_era_from(&new_era), "distinct eggs must derive distinct roots");
+        old_era.genesis_osc = 100;
+        new_era.genesis_osc = 200;
+        // The dead era's clock keeps ticking (retransmit bookkeeping) — mutated_osc must NOT outvote genesis.
+        old_era.mutated_osc = 9_999_999;
+        new_era.mutated_osc = 1;
+        let label = new_era.mint_our_lane().expect("new era mints a lane");
+        let mut adopter = old_era;
+        assert!(adopter.merge_lanes_from(&new_era), "older era must adopt the newer wholesale");
+        assert_eq!(adopter.lane_root(), new_era.lane_root(), "root replaced");
+        assert_eq!(adopter.genesis_osc, 200);
+        assert!(adopter.lane_index(&label).is_some(), "newer era's lanes came along");
+        assert!(adopter.pending_messages.is_empty(), "device-local state stripped on era adopt");
+        // The reverse direction: the newer era must refuse the older blob entirely.
+        let mut fresh = FriendshipChains::from_clutch(&[a, b], &eggs_new);
+        fresh.genesis_osc = 200;
+        let mut stale = FriendshipChains::from_clutch(&[a, b], &eggs_old);
+        stale.genesis_osc = 100;
+        stale.mutated_osc = 9_999_999;
+        assert!(!fresh.merge_lanes_from(&stale), "a superseded era must never merge back in");
+        assert_eq!(fresh.genesis_osc, 200);
     }
 
     #[test]

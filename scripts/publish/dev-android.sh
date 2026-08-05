@@ -22,8 +22,8 @@ publish_r2 "photon-messenger-android-development.apk" "$APK_PATH" application/vn
 echo "Publishing dev manifest row..."
 manifest_publish_dev_row "Android" "arm64" "photon-messenger-android-development.apk" "$APK_PATH"
 
-echo "Mirroring to GitHub Releases (dev)..."
-publish_github_dev "photon-messenger-android-development.apk" "$APK_PATH"
+#echo "Mirroring to GitHub Releases (dev)..."
+#publish_github_dev "photon-messenger-android-development.apk" "$APK_PATH"
 
 echo ""
 echo "Android dev published:"

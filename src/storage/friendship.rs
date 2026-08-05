@@ -51,6 +51,7 @@ fn chains_schema() -> SectionSchema {
         .field("mutated_osc", TypeConstraint::Any)
         // Lane root (v8, docs/lanes.md) — the secret every per-device lane derives from. The lanes themselves will ride ADDITIVE fields under this same version (absent = no lanes materialized yet), so v8 is the LAST flag-day this schema takes for the lane work.
         .field("lane_root", TypeConstraint::AnyHash)
+        .field("genesis_osc", TypeConstraint::Any)
         // Lanes (v8, additive): one label+position per lane; the chain / last_plaintext / last_received_hash / last_received_time multis are INDEX-ALIGNED with lane_label (they carried per-participant state before the flag-day retired it — same tags, new meaning, and a legacy blob's copies are simply ignored because it has no lane_label rows).
         .field("lane_label", TypeConstraint::AnyHash)
         .field("lane_position", TypeConstraint::Any)
@@ -230,6 +231,13 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
         .set(
             "mutated_osc",
             VsfType::e(vsf::types::EtType::e6(chains.mutated_osc)),
+        )
+        .map_err(|e| StorageError::Parse(e.to_string()))?;
+    // Era stamp — decides which lane_root supersedes across a re-key (merge_lanes_from).
+    builder = builder
+        .set(
+            "genesis_osc",
+            VsfType::e(vsf::types::EtType::e6(chains.genesis_osc)),
         )
         .map_err(|e| StorageError::Parse(e.to_string()))?;
 
@@ -539,6 +547,7 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
 
     // === Mutation stamp (v7) — optional; absent (pre-v7 file) = 0, so any stamped replica beats it ===
     let mutated_osc: i64 = section.get_value::<i64>("mutated_osc").unwrap_or(0);
+    let genesis_osc: i64 = section.get_value::<i64>("genesis_osc").unwrap_or(0);
 
     // The id rides IN the bytes (the encoder always writes it), so the decoder is self-contained — required by the replication path, where the bytes arrive off the wire with no vault address.
     let fid_bytes: [u8; 32] = section
@@ -567,6 +576,7 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
     .ok_or_else(|| StorageError::Parse("Failed to reconstruct chains".to_string()))?;
     chains.set_history_key(history_key);
     chains.set_lane_root(section.get_value::<[u8; 32]>("lane_root").ok());
+    chains.genesis_osc = genesis_osc;
     if has_lanes {
         use crate::crypto::chain::{Chain, CHAIN_SIZE};
         if chain_bytes.len() != lane_labels.len() * CHAIN_SIZE {
