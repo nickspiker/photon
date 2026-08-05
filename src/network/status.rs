@@ -1347,8 +1347,31 @@ async fn run_checker(
                 match tokio_tungstenite::connect_async(&url).await {
                     Ok((ws_stream, _)) => {
                         crate::log("PIPE: connected — relay is a live socket now");
-                        let (_, mut read) = ws_stream.split();
-                        while let Some(msg) = read.next().await {
+                        // KEEPALIVE, because a dead pipe is SILENT: dropping the write half meant no client ping ever went out, so a NAT idle-drop or a sleep/wake killed the TCP underneath and `read.next()` blocked forever — one desktop sat 52 minutes "relay: recipient offline" to every peer while believing it was connected (live fleet, 2026-08-05). A ping every 45s keeps carrier NAT mappings warm (cellular drops idle TCP in minutes); 120s of total silence (pongs count) declares the socket dead and reconnects.
+                        let (mut write, mut read) = ws_stream.split();
+                        let mut last_inbound = tokio::time::Instant::now();
+                        let mut ping_tick = tokio::time::interval(std::time::Duration::from_secs(45));
+                        ping_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                        loop {
+                            let msg = tokio::select! {
+                                m = read.next() => match m {
+                                    Some(m) => m,
+                                    None => break,
+                                },
+                                _ = ping_tick.tick() => {
+                                    use futures::SinkExt;
+                                    if last_inbound.elapsed() >= std::time::Duration::from_secs(120) {
+                                        crate::log("PIPE: silent past the liveness window — reconnecting");
+                                        break;
+                                    }
+                                    if write.send(Message::Ping(Default::default())).await.is_err() {
+                                        crate::log("PIPE: ping write failed — reconnecting");
+                                        break;
+                                    }
+                                    continue;
+                                }
+                            };
+                            last_inbound = tokio::time::Instant::now();
                             match msg {
                                 Ok(Message::Binary(data)) => {
                                     // Peel the authenticated relay envelope the worker now forwards intact. The envelope's presence + valid sender signature IS the domain separator: a frame off the pipe is KNOWN-relayed from device X, ground truth in the bytes, not the RELAY_ADDR sentinel. Inject only the inner payload — it's byte-identical to a direct message, so the dispatch below is untouched.
@@ -1380,6 +1403,7 @@ async fn run_checker(
                     Err(e) => {
                         crate::logf!("PIPE: connect failed: {} — retrying", e);
                     }
+
                 }
                 // Reconnect: hold the pipe open for the life of the session so a relay-only peer stays reachable.
                 tokio::time::sleep(Duration::from_secs(5)).await;
