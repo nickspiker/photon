@@ -842,6 +842,8 @@ pub struct PhotonApp {
     photon_orb: Option<fluor::host::icon::Icon>,
     /// Which contact the top-left orb currently shows (its avatar + their presence-tier ring). `None` = the Photon orb + our own FGTW connectivity ring. Diffed each tick so the Icon rebuild happens only on a change, not every frame.
     orb_contact: Option<usize>,
+    /// The FULL derived key the orb was last built from — see update_orb's diff comment. None = brand orb.
+    orb_key: Option<(usize, bool, [u8; 64], u32, bool)>,
     /// The contact-list ring colours as last PAINTED, diffed each tick — the same doctrine as the orb's per-tick diff, because ring state is DERIVED (validated_path appearing, reached_via_relay flipping, TTL expiry) and half its inputs mutate without any repaint-marked event: the ring held its old colour until a page change forced a re-raster (field, 2026-08-05). Empty until the first tick.
     painted_ring_tiers: Vec<u32>,
     /// Whether the orb's current contact had an avatar when the orb was last built — part of the diff key so a mid-conversation avatar download upgrades the orb from the gradient placeholder.
@@ -1328,6 +1330,7 @@ impl PhotonApp {
             online: false,
             photon_orb: None,
             orb_contact: None,
+            orb_key: None,
             painted_ring_tiers: Vec::new(),
             orb_had_avatar: false,
             contacts_textbox: None,
@@ -13704,15 +13707,26 @@ impl PhotonApp {
                 .filter(|&ci| !self.contacts[ci].is_sibling),
             _ => None,
         };
-        // Fold "does this contact have an avatar yet" into the diff key so the orb upgrades from the gradient placeholder to the real avatar the moment it finishes downloading mid-conversation.
+        // The diff key must cover EVERYTHING the orb renders from, because this early-return is the only thing between a state change and a stale orb: contact, avatar presence, the avatar PIN (a new picture always rotates it, so pixel churn needs no hashing), and the ring colour + brighten flag (connection tier — validated_path and the relay flag mutate with no event of their own). Keying on (contact, has-avatar) alone left the ring and a re-picked avatar frozen until a screen change rebuilt the orb (field, 2026-08-05).
         let has_avatar = target.map_or(false, |ci| self.contacts[ci].avatar_pixels.is_some());
-        if (target, has_avatar) == (self.orb_contact, self.orb_had_avatar) {
-            return;
-        }
-        self.orb_contact = target;
-        self.orb_had_avatar = has_avatar;
         // Computed before the chrome borrow pins `self`. A zero-remote conversation is on this machine: LAN ring, always bright.
         let orb_has_remote = target.is_some_and(|ci| self.has_remote(&self.contacts[ci]));
+        let orb_key = target.map(|ci| {
+            let c = &self.contacts[ci];
+            (
+                ci,
+                has_avatar,
+                c.avatar_pin,
+                ring_tier_colour(c, orb_has_remote),
+                c.is_online || !orb_has_remote,
+            )
+        });
+        if orb_key == self.orb_key && target.is_some() == self.orb_contact.is_some() {
+            return;
+        }
+        self.orb_key = orb_key;
+        self.orb_contact = target;
+        self.orb_had_avatar = has_avatar;
         let Some(chrome) = self.chrome.as_mut() else {
             return;
         };
