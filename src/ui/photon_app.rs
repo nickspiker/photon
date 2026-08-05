@@ -12754,7 +12754,8 @@ impl PhotonApp {
                 return false;
             };
             // No direct path → also relay this message over the pipe.
-            let relay_to = relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip());
+            // CHAT joins the ACKs' rule: ALWAYS carry the relay copy. The direct-trust heuristic starved every shape of one-way reachability the field produced (a validated path to the wrong device, an AP that began isolating clients, a peer that left the LAN mid-session — messages gave up after 8 attempts while the always-relayed ACKs sailed through, 2026-08-05). Receivers dedup by eagle_time, the well expires unclaimed copies, and a few hundred relayed bytes per message is nothing against a retransmit ladder burning minutes.
+            let relay_to = contact.relay_device_list();
             (
                 fid,
                 contact.public_identity.key,
@@ -16355,7 +16356,7 @@ impl PhotonApp {
                         Some(reachable) => primary = reachable,
                         None => {
                             // No reachable direct address at all. Keep the route only if the relay can carry it.
-                            let relay_to = relay_unless_direct_trusted(&c, our_lan_v4);
+                            let relay_to = c.relay_device_list();
                             if relay_to.is_empty() {
                                 crate::logf!("CHAT: {} retransmit has no reachable path (foreign LAN {}, no relay) — skipping", crate::fp(&c.handle_proof), primary);
                                 return None;
@@ -16368,7 +16369,7 @@ impl PhotonApp {
                     alt = None; // primary reachable, but drop a foreign alt so PT doesn't race a black hole
                 }
                 // No direct path → carry the peer's relay device list so the retransmit also rides the pipe.
-                let relay_to = relay_unless_direct_trusted(&c, our_lan_v4);
+                let relay_to = c.relay_device_list();
                 Some((fid, primary, alt, *c.public_identity.as_bytes(), relay_to))
             })
             .collect();
