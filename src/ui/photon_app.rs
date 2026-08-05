@@ -14861,7 +14861,8 @@ impl PhotonApp {
                                                 alt_addr: alt,
                                                 vsf_bytes,
                                                 recipient_pubkey: contact.public_identity.key,
-                                                relay_to: relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip()),
+                                                // CEREMONY frames always carry the FULL relay fan-out, never the direct-trust heuristic: a validated path proves ONE device of the identity is reachable, but the ceremony's owner can be a different device with no direct path at all — the reply rode direct to the reachable sibling, the relay stayed suppressed, and the owner starved awaiting it (live pair, 2026-08-05). Ceremony frames are rare; receivers dedup; the relay copy is cheap insurance that the one device that NEEDS the frame gets it.
+                                                relay_to: contact.relay_device_list(),
                                             });
                                             contact.clutch_offer_sent = true;
                                             crate::logf!(
@@ -15169,7 +15170,7 @@ impl PhotonApp {
                             device_pubkey,
                             device_secret,
                             recipient_pubkey: contact.public_identity.key,
-                            relay_to: relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip()),
+                            relay_to: contact.relay_device_list(),
                         });
                         crate::logf!(
                             "CLUTCH: Sent KEM response to {}",
@@ -15366,7 +15367,7 @@ impl PhotonApp {
                         device_pubkey,
                         device_secret,
                         recipient_pubkey: contact.public_identity.key,
-                        relay_to: relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip()),
+                        relay_to: contact.relay_device_list(),
                     });
 
                     crate::logf!(
@@ -16201,7 +16202,7 @@ impl PhotonApp {
                 device_pubkey,
                 device_secret,
                 recipient_pubkey: contact.public_identity.key,
-                relay_to: relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip()),
+                relay_to: contact.relay_device_list(),
             });
             contact.clutch_proof_resends_left -= 1;
             crate::logf!(
@@ -16294,7 +16295,7 @@ impl PhotonApp {
                     alt_addr: alt,
                     vsf_bytes,
                     recipient_pubkey: contact.public_identity.key,
-                    relay_to: relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip()),
+                    relay_to: contact.relay_device_list(),
                 });
                 contact.clutch_offer_sent = true;
                 if let Some(storage) = self.storage.as_ref() {
@@ -17775,7 +17776,7 @@ impl PhotonApp {
                                                     alt_addr: alt,
                                                     vsf_bytes,
                                                     recipient_pubkey: contact.public_identity.key,
-                                                    relay_to: relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip()),
+                                                    relay_to: contact.relay_device_list(),
                                                 });
                                                 contact.clutch_offer_sent = true;
                                                 changed = true;
@@ -19056,7 +19057,7 @@ impl PhotonApp {
                                                 alt_addr: alt,
                                                 vsf_bytes,
                                                 recipient_pubkey: contact.public_identity.key,
-                                                relay_to: relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip()),
+                                                relay_to: contact.relay_device_list(),
                                             });
                                             contact.clutch_offer_sent = true;
                                             // Store local offer in local slot too
@@ -19152,7 +19153,7 @@ impl PhotonApp {
                                                 .secret
                                                 .as_bytes(),
                                             recipient_pubkey: contact.public_identity.key,
-                                            relay_to: relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip()),
+                                            relay_to: contact.relay_device_list(),
                                         });
                                         crate::logf!(
                                             "CLUTCH: Re-sent KEM response to {}",
