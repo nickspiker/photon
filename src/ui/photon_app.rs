@@ -17949,6 +17949,9 @@ impl PhotonApp {
                             chains.verify_chain_link(&lane, &prev_msg_hp)
                         {
                             crate::logf!("CHAT: Hash chain gap from {} - expected prev {}..., got {}... — buffering (ahead of us)", handle, hex::encode(&expected[..8]), hex::encode(&prev_msg_hp[..8]));
+                            let era_grace_active = chains.genesis_osc > 0
+                                && vsf::eagle_time_oscillations().saturating_sub(chains.genesis_osc)
+                                    < 120 * vsf::OSCILLATIONS_PER_SECOND as i64;
                             // PERSISTENT-GAP FORK DETECTOR: the same expected/got pair repeating means the predecessor is never coming (both heads committed — the 07-23 sibling wedge, live again desktop↔phone 2026-07-26). The decrypt-fail streak can't see it (buffering isn't a failure), so repair fires from HERE: sibling → deterministic chain reset; friend → re-key streak path. Deferred past the checker borrow via the existing vecs.
                             {
                                 // Count gaps WITHOUT a fill, not repeats of one key: a multi-device peer sends on several lanes, and two stuck lanes' alternating gap keys reset a keyed streak forever — 13 identical gaps and the repair never fired (field, 2026-08-03). The counter now rises on every buffered frame and only a successful gap FILL (the replay drain) clears it.
@@ -17964,6 +17967,9 @@ impl PhotonApp {
                                     if c.is_sibling {
                                         crate::logf!("CHAT: gap from {} repeated 6× identically — FORK, initiating sibling chain reset", handle);
                                         chain_reset_initiate.push(contact_idx);
+                                    } else if era_grace_active {
+                                        // A JUST-woven chain cannot have forked — one writer per lane makes it structurally impossible this early. A gap burst here is a superseded sibling's stragglers (its blob adopts the new era within a chain-sync round trip, and the era-supersede merge kills its old lanes); discarding the fresh weave for them was the completed-then-back-to-6/12 regression of 2026-08-05. A real fork keeps failing past the grace and repairs then.
+                                        crate::logf!("CHAT: gap streak from {} on a freshly-woven chain — era stragglers, holding the re-key", handle);
                                     } else {
                                         crate::logf!("CHAT: gap from {} repeated 6× identically — FORK, initiating friend re-key", handle);
                                         friend_rekey_initiate.push(contact_idx);
