@@ -21534,6 +21534,25 @@ impl PhotonApp {
             self.spawn_roster_push();
         }
 
+        // RE-PROBE ON PRESENCE: the weave probe fired only on ceremony edges, so a completed-but-unwoven chain whose one-shot never dispatched — the pre-relay-fallback address bail, or a restart before the ACK landed — had NO edge left to fire it and both sides sat at "testing the secure channel" forever (live pair, 2026-08-06). Any drain pass with the contact online re-arms it; the maybe_ gate (Complete, !probe_sent, has remote) keeps it one frame per session until the seal re-arm cycles it, and the seal call right after catches the half-proven shapes the moment the missing half lands.
+        let reprobe: Vec<usize> = self
+            .contacts
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                !c.is_sibling
+                    && c.is_online
+                    && c.clutch_state == crate::types::ClutchState::Complete
+                    && !c.chain_woven
+                    && !c.probe_sent
+            })
+            .map(|(i, _)| i)
+            .collect();
+        for idx in reprobe {
+            self.maybe_send_chain_probe(idx);
+            self.seal_chain_if_ready(idx);
+        }
+
         changed
     }
 
