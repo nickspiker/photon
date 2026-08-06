@@ -12907,9 +12907,14 @@ impl PhotonApp {
                 relay_to,
             )
         };
-        let Some((peer_addr, alt_addr)) = addr_pair else {
-            crate::log("CHAT: cannot send — no known address for contact");
-            return false;
+        // NO direct address is not NO send: the weave probe fired the moment a ceremony completed over the relay, hit this bail (the peer's addresses hadn't validated yet), and died silently — the probe never retransmits, so "testing the secure channel" sat forever on a chain that provably worked one direction (live pair, 2026-08-06). Same shape as the retransmit sweep: hand the sentinel so the UDP leg sends nowhere harmlessly and the relay copy carries it.
+        let (peer_addr, alt_addr) = match addr_pair {
+            Some(pair) => pair,
+            None if !msg_relay_to.is_empty() => (crate::network::status::RELAY_ADDR, None),
+            None => {
+                crate::log("CHAT: cannot send — no known address for contact");
+                return false;
+            }
         };
 
         // The braid: choose up to TWO distinct prior PEER messages to weave into this chain step. Eligible = incoming messages (is_outgoing == false) in the last ≤256 of this conversation — any stored incoming row is one the receive path already ACKed, so the sender knows the peer holds it (both-held → identical strands → lockstep). The weave ingredient is the message's x-text (`content`), recoverable identically on both sides from the message DB. Each chosen message's eagle_time goes on the wire so the receiver resolves the SAME content. 0 eligible → weave nothing (anchor). 1 → single strand. ≥2 → two distinct (a true braid). Pick with gen_range (bounded, bias-free) — NEVER modulo. Strands are sorted by eagle_time so both peers frame derive_fresh_link identically regardless of pick order.
