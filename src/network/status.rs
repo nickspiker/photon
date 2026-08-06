@@ -105,6 +105,19 @@ pub fn set_avatar_pin(pin: &[u8; 64]) {
     }
 }
 
+/// Our fleet's locked-out devices (treat-as-stolen), carried in every sealed pong tail as the reported-stolen signal. Written by the UI thread on lock edges and locked-set adopts; read by the status thread per pong.
+static LOCKED_REPORT: std::sync::Mutex<Vec<[u8; 32]>> = std::sync::Mutex::new(Vec::new());
+
+pub fn set_locked_report(locked: Vec<[u8; 32]>) {
+    if let Ok(mut l) = LOCKED_REPORT.lock() {
+        *l = locked;
+    }
+}
+
+fn locked_report() -> Vec<[u8; 32]> {
+    LOCKED_REPORT.lock().map(|l| l.clone()).unwrap_or_default()
+}
+
 fn avatar_pin() -> Option<[u8; 64]> {
     AVATAR_PIN
         .lock()
@@ -273,6 +286,8 @@ pub enum StatusUpdate {
         display_name: Option<String>,
         /// The peer's avatar pin from the pong (friend-gated key ‖ lookup). None on pings/timeouts/legacy pongs.
         avatar_pin: Option<[u8; 64]>,
+        /// The peer fleet's REPORTED-STOLEN devices, from the sealed pong tail (empty on legacy/tail-less pongs). The UI thread applies the two-distinct-reporters threshold before refusing anything.
+        locked_reports: Vec<[u8; 32]>,
     },
     // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived See docs/clutch.md Section 4.2 for the slot-based ceremony protocol.
     /// Encrypted chat message received (CHAIN format)
@@ -2149,6 +2164,7 @@ async fn run_checker(
                                             sync_records: vec![],
                                             display_name: None,
                                             avatar_pin: None,
+                                            locked_reports: Vec::new(),
                                         },
                                         &event_proxy_recv,
                                     );
@@ -2172,6 +2188,7 @@ async fn run_checker(
                                             &records,
                                             profile_name().as_deref(),
                                             avatar_pin().as_ref(),
+                                            &locked_report(),
                                             &key,
                                         ) {
                                             Ok(blob) => Some(blob),
@@ -2260,7 +2277,8 @@ async fn run_checker(
                                                         sync_records: Vec::new(),
                                                         display_name: None,
                                                         avatar_pin: None,
-                                                    },
+                                            locked_reports: Vec::new(),
+                                        },
                                                     &event_proxy_recv,
                                                 );
                                             } else {
@@ -2295,7 +2313,8 @@ async fn run_checker(
                                                     sync_records: Vec::new(),
                                                     display_name: None,
                                                     avatar_pin: None,
-                                                },
+                                            locked_reports: Vec::new(),
+                                        },
                                                 &event_proxy_recv,
                                             );
                                         }
@@ -2338,7 +2357,7 @@ async fn run_checker(
                                     }
 
                                     // Sensitive tail: an updated peer sends it ONLY sealed — open with the RESPONDING device's pairwise key (the signer, verified just above). A failed open (key not seeded yet, or a stale key across their re-attest) degrades to a tail-less pong: presence still lands, name/pin/sync simply wait for keys — and it logs once per device, not per pong. A legacy peer still sends the plaintext fields; keep honouring them until it updates.
-                                    let (sync_records, display_name, avatar_pin) = match sealed {
+                                    let (sync_records, display_name, avatar_pin, locked_reports) = match sealed {
                                         Some(blob) => {
                                             let key = {
                                                 let keys = pong_seal_keys_recv.lock().unwrap();
@@ -2373,11 +2392,12 @@ async fn run_checker(
                                                             &event_proxy_recv,
                                                         );
                                                     }
-                                                    (Vec::new(), None, None)
+                                                    (Vec::new(), None, None, Vec::new())
                                                 }
                                             }
                                         }
-                                        None => (sync_records, display_name, avatar_pin),
+                                        // Legacy plaintext pong: no sealed tail, so no reported-stolen signal either — the report is trusted only under the pairwise seal.
+                                        None => (sync_records, display_name, avatar_pin, Vec::new()),
                                     };
 
                                     // Send status update with sync_records for retransmit handling
@@ -2390,6 +2410,7 @@ async fn run_checker(
                                             sync_records,
                                             display_name,
                                             avatar_pin,
+                                            locked_reports,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -2450,6 +2471,7 @@ async fn run_checker(
                                             sync_records: vec![],
                                             display_name: None,
                                             avatar_pin: None,
+                                            locked_reports: Vec::new(),
                                         },
                                         &event_proxy_recv,
                                     );
@@ -2992,7 +3014,8 @@ async fn run_checker(
                             sync_records: vec![], // No sync for offline
                             display_name: None,
                             avatar_pin: None,
-                        },
+                                            locked_reports: Vec::new(),
+                                        },
                         &event_proxy,
                     );
                     // Reset counter after marking offline (so we can detect coming back online)

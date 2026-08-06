@@ -12229,6 +12229,8 @@ impl PhotonApp {
         }
         // The relay-layer refusal list rides every application of the set — including the empty one at boot, so a stale static from a prior identity can't linger.
         crate::network::fgtw::relay::set_locked_relay_targets(locked.clone());
+        // And the pong tail's reported-stolen signal — the friend-side half rides the same edge.
+        crate::network::status::set_locked_report(locked.clone());
         if locked.is_empty() {
             return;
         }
@@ -17632,6 +17634,7 @@ impl PhotonApp {
                     sync_records,
                     display_name,
                     avatar_pin,
+                    locked_reports,
                 } => {
                     // Stall recovery (runs EVERY ping that carries sync records, not just the offline→online edge): each record is the peer's contiguous tip (last_received_osc = "I have everything in order up to here"). Re-arm any pending message of ours that's newer than that tip AND has exhausted its retransmit attempts — so a gap-filler the sender already gave up on gets resent, and a receiver stuck behind a permanently-lost message un-sticks. collect_due_retransmits (the tick path) then actually sends the revived messages.
                     let now_osc = vsf::eagle_time_oscillations();
@@ -17720,6 +17723,32 @@ impl PhotonApp {
                     // Find matching contact and update status
                     for contact in &mut self.contacts {
                         if contact.knows_device(&peer_pubkey.key) {
+                            // REPORTED-STOLEN intake (device-trust-and-recovery.md): the pong's sealed tail names the peer fleet's locked devices. Threshold before any refusal: TWO DISTINCT non-refused reporters (a reporter never counts toward refusing itself), so one compromised member can't strand its siblings — while a real ghost gets refused the moment the second live device echoes the report. Monotonic and persisted; the ledger is per-session.
+                            if !contact.is_sibling && !locked_reports.is_empty() {
+                                for reported in &locked_reports {
+                                    let pair = (peer_pubkey.key, *reported);
+                                    if !contact.locked_reports_seen.contains(&pair) {
+                                        contact.locked_reports_seen.push(pair);
+                                    }
+                                    if contact.refused_devices.contains(reported) {
+                                        continue;
+                                    }
+                                    let reporters = contact
+                                        .locked_reports_seen
+                                        .iter()
+                                        .filter(|(rep, dev)| dev == reported && rep != reported && !contact.refused_devices.contains(rep))
+                                        .map(|(rep, _)| *rep)
+                                        .collect::<std::collections::HashSet<_>>();
+                                    if reporters.len() >= 2 {
+                                        contact.refused_devices.push(*reported);
+                                        changed = true;
+                                        crate::logf!("FRIEND-REFUSE: {} device {} refused — reported stolen by {} distinct fleet devices", crate::fp(&contact.handle_proof), crate::fp(reported), reporters.len());
+                                        if let Some(storage) = self.storage.as_ref() {
+                                            let _ = crate::storage::contacts::save_contact(contact, storage);
+                                        }
+                                    }
+                                }
+                            }
                             // Party-id seam: sibling offers/tokens key on the device-derived pid, not the (shared) identity seed.
                             let our_handle_hash = if contact.is_sibling {
                                 crate::crypto::clutch::sibling_party_id(&our_device_pubkey)
