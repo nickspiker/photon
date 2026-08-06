@@ -2,7 +2,38 @@
 
 Working list. The fluor migration this file used to document is **finished** — all platforms share one UI (`src/ui/photon_app.rs` under fluor), the legacy stack is deleted, and every screen (Launch/attest, Ready/contacts, Conversation, Settings panel) is live. Conventions live in [AGENT.md](AGENT.md) (+ `../fluor/AGENT.md`); build via `./scripts/dev.sh`, never bare cargo.
 
-Item format: what's wrong / what's wanted, then any scoping notes worth keeping.
+Item format: what's wrong / what's wanted, then any scoping notes worth keeping. This is the ONLY working list — docs/TODO-later.md is dead and folded in below (2026-08-06).
+
+---
+
+## Current — stabilization week's parked items (2026-08-06)
+
+- **Relay policy convergence — escalation, not promiscuity** (Nick approved 2026-08-06): this week promoted chat + ceremony frames to ALWAYS-relay as triage; the end-state is one rule, because the relay is a metadata oracle (every relayed frame shows the well sender/recipient/time/size — direct and LAN traffic show it nothing) and parallel copies of big payloads double exactly the traffic whose cost is material. Unconfirmable-and-small (ACKs, ClutchComplete, the weave probe — no failure edge exists to escalate on): parallel always, all sub-KB. Confirmable (chat, anything ACKed): direct-first on a trusted path, the FIRST retransmit (seconds) carries the relay copy. Large (offers ~573KB, avatars, history pages): never parallel — size cap, fast-fail direct then relay-only. Land only AFTER the Mary/Nick field round proves out on f6d1522.
+- **Compose-anywhere adopt-edge unlock**: with lanes, a sibling that adopts a woven blob (lane_root present) can mint its own lane and send — seal `chain_woven` on the chain-sync adopt edge, retire "secured on <device> — send from there (for now)", then delete the fleet-forward fallback (lanes.md marks it dead code once proven). Queued behind ceremony convergence proving out.
+- **Lanes leftovers** (docs/lanes.md status line): per-lane label rotation at re-key epochs; fork-on-a-single-writer-lane becomes a loud error (today the gap-streak repair stands in).
+- **Lockout follow-ups**: an UNLOCK flow (deliberate act, not a merge artifact — nothing unlocks today); Fleet-page scroll (rows `take(6)` — devices past six are invisible); the verifiable single-report upgrade (a report carrying proof of current-epoch possession would let friends verify instead of trust).
+- **Hit-id bookkeeping**: short term, one source of truth for the settings pill bands (reservation / dispatch window / stamp sites are three hand-synced numbers — the Lock-out pill bug); long term, press-captures-meaning dispatch (ids per-frame, release fires only if the widget under the cursor resolves to the SAME action — no reservations, no windows; content-hashing is OUT, the id space is 16-bit and birthday collisions would hit every user).
+- **PT ladder vs offline recipients**: cancel the direct-retry ladder when the relay says "recipient offline" (573KB offer streams grinding at devices that cannot answer).
+- **History-request expiry vs relay latency**: the 45s in-flight timeout re-requests pages the relay eventually delivers (rid-unmatched drops observed in field logs).
+- **Ghost decommission**: 90e571bf (pre-wipe home desktop) is locked out fleet-side and will be friend-refused on first report; the hardware still needs a physical wipe/kill when reachable.
+- **Relay-pipe heartbeat efficacy**: watch field logs for `PIPE: silent past the liveness window` — proves the 45s ping / 120s reconnect is catching the silent-death case (one desktop sat 52 min dead-but-connected).
+- **Field devices**: Daniel still on a pre-flag-day build — needs an update plus an online overlap to complete her re-key.
+
+## Identity profile — stage C and beyond (folded from TODO-later, 2026-08-06; home doc: docs/identity-profile.md)
+
+- Stage C (the visible half): worker `profile_put`/`profile_get` at `profile/<hp>` (identity-signed envelope verified against chain genesis, opaque blob, ~4KB name-only v1, hub `profile` event); client blob v1 (name under a random profile key; grants sealed to each friend's pinned identity pubkey at `blake3(recipient_party_id ‖ hp ‖ "grant")`); publish on name-set + friend-add, fetch on contact-fleet-refresh, adopt into `published_name`; Settings Profile page with the load-bearing "you don't have to fill in ANY of this" note. Until C lands, contacts render as keyed voca pseudonyms.
+- Beyond C: extended profile card (per-field keys, per-contact share checkboxes — merges with the Per-field disclosure item under UI/UX); profile key epochs + ostracism UI; grant-carried friendship salt (per-relationship revocability of the CLUTCH secret); avatar epochs ride field keys once grants land; NFC invite card (rides pairing-v2 NFC). Petname editor is DEAD — Nick removed the concept entirely (PRST5).
+
+## Pairing / fleet (folded from TODO-later, 2026-08-06; home doc: docs/pairing-v2.md)
+
+- NFC tap transport for device-add (HCE; candidate machine built, tap delivers, touch selects); BLE transport (lock word + proof beacon; shadow beacon proven).
+- Self-departure UI: Security-page "Remove this device from fleet" stub — `depart_device` exists, unwired. (The other half of this pairing, LOST-device handling, SHIPPED 2026-08-05/06 as the treat-as-stolen lockout: fleet-synced locked set, handle-gated confirm, key rotation, friend-side refusal.)
+- Remove the two v0→v1 flag-day supersession branches (worker `handle_fleet_op`, client `ensure_member`) once no v0 chain plausibly remains; drop pairing-v2's retired word-list leftovers (`words_to_pair_pubkey`/`pair_entry_complete`, no production callers).
+
+## Blinding flag-day debris (2026-07-14, folded 2026-08-06)
+
+- `photonlog` CLI still derives a submitter seed from a typed handle — dev tooling; a party-id flag someday.
+- `search_status`/`SearchResult` carry the typed handle transiently for the "added {h}" toast — in-RAM only; could switch to the pseudonym.
 
 ---
 
