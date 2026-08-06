@@ -45,6 +45,13 @@ Each item names its home doc so nothing needs re-deriving.
 - Android boot-locked session capsule (de-attest-on-restart).
 - Live/self-update flow (docs/updates.md), fleet inbox beyond bind-attempt (docs/fleet-inbox.md).
 
+## Relay policy convergence — escalation, not promiscuity (Nick approved 2026-08-06)
+This week's stabilization promoted chat (and more) to ALWAYS-relay as triage; the end-state is one uniform rule, because the relay is a metadata oracle (every relayed frame shows the well sender device, recipient device, time, size — direct/LAN traffic shows it nothing) and parallel copies of big payloads double exactly the traffic where server egress and cellular data are material.
+- Unconfirmable-and-small frames (ACKs, ClutchComplete, the weave probe — nothing ever confirms them, so no failure edge exists to escalate on): parallel direct+relay ALWAYS. All sub-KB.
+- Confirmable frames (chat and anything ACKed): direct-first on a trusted path; the FIRST retransmit (one missed-ACK interval, seconds) carries the relay copy. Steady-state relay traffic ~zero on healthy paths; worst case adds one round trip.
+- Large payloads (offers ~573KB, avatars, history pages): NEVER parallel — a size cap (a few KB) above which delivery is strictly sequential, fast-fail direct then relay-only.
+Pull chat back from always-relay to escalate-on-first-missed-ACK only AFTER the Mary/Nick/ghost field round proves out on f6d1522 — do not change delivery semantics in the build that validates it.
+
 ## URGENT — wipe recovery must not need a live sibling (regression from Phase A)
 A wiped device could once recover the fleet key alone: the wrap was x25519 against the durable device key. Phase A binds the CLUTCH pair secret into every wrap, and the pair secret dies with the vault — so a wiped device with its siblings off recovers NOTHING (no fleet key → no roster/contacts → no settings → no avatar pin → no avatar). Observed live: a desktop wipe with the phone off, and a single-device identity's avatar. Nick directive 2026-08-02: "We cannot rely on other devices for the contact list and avatars."
 Fix (braid.md §14's own prescription): a per-device RECOVERY SLOT — the current fleet key sealed under `fanout_pairs::self_secret` (device-secret-derived, survives wipe, pure hash so quantum-conservative) at a scoped-blob address only that device computes. Written on every key adopt/rotate EDGE; read at attest when no fleet key loads. A removed device's slot holds only the pre-rotation key it already had.
