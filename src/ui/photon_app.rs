@@ -17723,7 +17723,7 @@ impl PhotonApp {
                     // Find matching contact and update status
                     for contact in &mut self.contacts {
                         if contact.knows_device(&peer_pubkey.key) {
-                            // REPORTED-STOLEN intake (device-trust-and-recovery.md): the pong's sealed tail names the peer fleet's locked devices. Threshold before any refusal: TWO DISTINCT non-refused reporters (a reporter never counts toward refusing itself), so one compromised member can't strand its siblings — while a real ghost gets refused the moment the second live device echoes the report. Monotonic and persisted; the ledger is per-session.
+                            // REPORTED-STOLEN intake (device-trust-and-recovery.md): the pong's sealed tail names the peer fleet's locked devices, and ONE report from a trusted fold member suffices. The authorization lives at lock CREATION, not here: writing fleet.locked demands the handle at a fresh attest, so a stock-client thief can't mint a false report — and a locked device's stale fleet key can't even read current fstate, so its reportable set is frozen at empty. The key-extraction tier defeats any threshold anyway (it can plant a fresh fold member as a second voucher — the trust doc's own observation), so requiring two only stranded the commonest fleet: two devices, one stolen, one survivor. A reporter still never counts toward refusing itself. Monotonic and persisted.
                             if !contact.is_sibling && !locked_reports.is_empty() {
                                 for reported in &locked_reports {
                                     let pair = (peer_pubkey.key, *reported);
@@ -17739,10 +17739,10 @@ impl PhotonApp {
                                         .filter(|(rep, dev)| dev == reported && rep != reported && !contact.refused_devices.contains(rep))
                                         .map(|(rep, _)| *rep)
                                         .collect::<std::collections::HashSet<_>>();
-                                    if reporters.len() >= 2 {
+                                    if !reporters.is_empty() {
                                         contact.refused_devices.push(*reported);
                                         changed = true;
-                                        crate::logf!("FRIEND-REFUSE: {} device {} refused — reported stolen by {} distinct fleet devices", crate::fp(&contact.handle_proof), crate::fp(reported), reporters.len());
+                                        crate::logf!("FRIEND-REFUSE: {} device {} refused — reported stolen by {} fleet device(s)", crate::fp(&contact.handle_proof), crate::fp(reported), reporters.len());
                                         if let Some(storage) = self.storage.as_ref() {
                                             let _ = crate::storage::contacts::save_contact(contact, storage);
                                         }
