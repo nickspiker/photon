@@ -70,11 +70,25 @@ fn build_signed_vsf(
 ///
 /// # Returns
 /// Ok(()) on success, Err with message on failure
+/// Process-wide relay refusal list (treat-as-stolen lockout): every relay send — chat, ping, ceremony, history, ack, present and future — passes through the two senders below, so this ONE gate guarantees a locked device never receives another relay frame no matter which path built the target list. Updated by the app on lock edges and on every locked-set adopt; read-only here.
+static LOCKED_RELAY_TARGETS: std::sync::Mutex<Vec<[u8; 32]>> = std::sync::Mutex::new(Vec::new());
+
+pub fn set_locked_relay_targets(locked: Vec<[u8; 32]>) {
+    *LOCKED_RELAY_TARGETS.lock().unwrap() = locked;
+}
+
+fn relay_target_locked(recipient: &[u8; 32]) -> bool {
+    LOCKED_RELAY_TARGETS.lock().unwrap().iter().any(|d| d == recipient)
+}
+
 pub async fn send_via_relay(
     keypair: &Keypair,
     recipient_pubkey: &[u8; 32],
     message_bytes: &[u8],
 ) -> Result<(), String> {
+    if relay_target_locked(recipient_pubkey) {
+        return Err("relay: recipient is locked out".to_string());
+    }
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
@@ -150,6 +164,9 @@ pub fn send_via_relay_sync(
     recipient_pubkey: &[u8; 32],
     message_bytes: &[u8],
 ) -> Result<(), String> {
+    if relay_target_locked(recipient_pubkey) {
+        return Err("relay: recipient is locked out".to_string());
+    }
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()

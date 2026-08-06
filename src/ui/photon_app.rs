@@ -2484,6 +2484,7 @@ impl FluorApp for PhotonApp {
                             })
                             .collect();
                         self.contacts = crate::storage::contacts::load_all_contacts(&s);
+                        self.apply_locked_set();
                         // One-time re-home onto the participant-set table key (the local key used to mix our raw seed with their party id). Self-terminating: it copies only when the legacy table has rows and the new one does not, so every launch after the first is a no-op and the MIGRATION line stops appearing. Runs BEFORE messages load, or the first read would find an empty table and the conversation would look wiped.
                         match crate::storage::contacts::migrate_conversation_tables(&self.contacts, &s)
                         {
@@ -12219,7 +12220,15 @@ impl PhotonApp {
 
     /// Sweep the fleet-synced locked set onto sibling contact rows (persisted, so refusal survives a relaunch before settings sync). Monotonic: locks only, never unlocks — an unlock is a deliberate future flow, not a merge artifact.
     fn apply_locked_set(&mut self) {
-        let locked = self.locked_devices();
+        let mut locked = self.locked_devices();
+        // Persisted rows count too: at boot the settings cache may not have loaded yet, but a row flagged in a previous session must keep its refusal from the first tick.
+        for c in self.contacts.iter().filter(|c| c.is_sibling && c.locked_out) {
+            if !locked.contains(c.public_identity.as_bytes()) {
+                locked.push(*c.public_identity.as_bytes());
+            }
+        }
+        // The relay-layer refusal list rides every application of the set — including the empty one at boot, so a stale static from a prior identity can't linger.
+        crate::network::fgtw::relay::set_locked_relay_targets(locked.clone());
         if locked.is_empty() {
             return;
         }
@@ -14877,9 +14886,10 @@ impl PhotonApp {
                             > CLUTCH_ROUND_TTL_OSC;
                         if their_offer_waiting && owner_stale {
                             // FAN-OUT TIE-BREAK, no sync channel required: the offer that "chose this device" also chose every sibling — it fanned out over the relay — and with the roster clock stale on BOTH siblings (mid-session, no fstate edge between them), each read "owner silent", claimed, and minted competing rounds that adoption-cooldowns then locked in place on all three parties (live pair, 2026-08-05). Same doctrine as the sibling initiator rule: the lowest ONLINE fleet device claims at the TTL; a higher device defers, time-boxed to one more TTL so a winner that dies mid-round still gets rescued.
+                            // Defer unless the lower device is PROBED-OFFLINE: requiring online-and-probed meant a boot or one flapped probe read as "no lower device" and both siblings claimed — the presence-luck dual-claim this tie-break exists to end (live pair, 2026-08-06). Unknown presence defers; only a confirmed-dead winner forfeits its turn (and the one-TTL deference cap still rescues a silently dead one).
                             let lower_sibling_online = siblings
                                 .iter()
-                                .any(|(k, online, probed)| *online && *probed && k < &device_pubkey);
+                                .any(|(k, online, probed)| (*online || !*probed) && k < &device_pubkey);
                             let deference_expired = contact
                                 .clutch_claim_deferred
                                 .map_or(false, |t| t.elapsed().as_secs() as i64 > CLUTCH_ROUND_TTL_OSC / vsf::OSCILLATIONS_PER_SECOND as i64);
@@ -14913,6 +14923,11 @@ impl PhotonApp {
                     contact.clutch_our_keypairs = Some(result.keypairs);
                     // Stamp the round start (eagle time): this is the moment a round's keys exist. A resume that reloads contacts from disk wipes these ephemeral keys — a fresh stamp lets the resume RESTORE the round instead of the sweep minting a divergent one, and gates re-key on real staleness (see Contact::clutch_round_started).
                     contact.clutch_round_started = Some(vsf::eagle_time_oscillations());
+                    // OWNER KEEPALIVE: takeover reads the roster entry's LWW clock, and nothing else bumps it while the owner grinds — after one quiet TTL every sibling read "owner silent", claimed, and the fleet re-entered dual-writer churn (live pair, 2026-08-06). A working owner re-stamps its claim at each round mint; the push after the drain carries it, and siblings' owner_stale stays honest.
+                    if !contact.is_sibling && contact.ceremony_owner == Some(device_pubkey) {
+                        contact.roster_updated = vsf::eagle_time_oscillations();
+                        claimed_ownership = true;
+                    }
                     changed = true;
 
                     // Persist keypairs to disk immediately (crash recovery)
