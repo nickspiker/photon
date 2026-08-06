@@ -2,7 +2,7 @@
 
 Status: STAGES A + B BUILT 2026-07-14 (commits f3ce7e3, 196e435) — THE BLINDING IS DONE: party ids are pinned identity pubkeys, the friendship-secret egg (static identity x25519, or the shared seed for siblings) replaced mutual-handle-knowledge in CLUTCH, blind pads context on the pin, per-contact state keys on the pin, and the handle STRING exists at rest nowhere (Contact/ContactIdentity/RosterEntry/CloudContact are pin-set codecs; the avatar wall rides a 64-byte pin synced fleet-wide; first-met = type → derive → pin → drop). All 134 tests green.
 Flag-day: old contact rows/rosters/indexes read as absent or fail ceremonies — re-add friends, re-CLUTCH world.
-Stage C (profile slot + published names + Profile page) is MAPPED below and NOT built — until it lands, contacts render as keyed voca pseudonyms unless locally petnamed (there is no petname editor yet either; see TODO-later.md).
+Stage C (profile slot + published names + Profile page) is MAPPED below and NOT built — until it lands, contacts render as keyed voca pseudonyms (petnames were removed entirely, PRST5; the working list is TICKETS.md).
 The RosterEntry change rides the roster rework; the NFC invite card rides the pairing-v2 NFC transport work (shared reader plumbing).
 Governing rule: sovereign records — the subject signs, others verify or withhold; pending expires, completed is permanent testimony; ostracism, never erasure (docs/pairing-v2.md carries the full statement).
 
