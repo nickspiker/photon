@@ -1145,6 +1145,7 @@ fn add_pong_sensitive_fields(
     sync_records: &[SyncRecord],
     display_name: Option<&str>,
     avatar_pin: Option<&[u8; 64]>,
+    locked_devices: &[[u8; 32]],
 ) {
     // One native multi-value `sync` row per conversation record — (hb token, e6 last_received). No counts, no numbered names.
     for record in sync_records {
@@ -1169,6 +1170,10 @@ fn add_pong_sensitive_fields(
     if let Some(pin) = avatar_pin {
         section.add_field_multi("apin", vec![VsfType::hR(pin.to_vec())]);
     }
+    // REPORTED-STOLEN signal (device-trust-and-recovery.md): our fleet's locked-out devices, so a friend can refuse them too. Sealed like the rest of the tail; the receiver applies its own threshold (two distinct reporters) before refusing anything — one compromised member must not be able to strand its siblings.
+    for dev in locked_devices {
+        section.add_field_multi("lockd", vec![VsfType::hb(dev.to_vec())]);
+    }
 }
 
 /// Build + AEAD-seal a pong's sensitive tail under the PAIRWISE pong key: the per-conversation sync rows (who-talks-to-whom metadata), the display name, and the 64-byte avatar pin (a bearer capability). Plaintext is an inner `pongsec` VSF section (encode_encrypted — the headerless form made for exactly this), sealed with kete ChaCha20-Poly1305 like history pages and the log seal. The key comes from the caller's PongSealKeys map, derived on the UI thread — this codec never sees an identity seed.
@@ -1176,10 +1181,11 @@ pub fn seal_pong_sensitive(
     sync_records: &[SyncRecord],
     display_name: Option<&str>,
     avatar_pin: Option<&[u8; 64]>,
+    locked_devices: &[[u8; 32]],
     key: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
     let mut inner = vsf::VsfSection::new("pongsec");
-    add_pong_sensitive_fields(&mut inner, sync_records, display_name, avatar_pin);
+    add_pong_sensitive_fields(&mut inner, sync_records, display_name, avatar_pin, locked_devices);
     kete::encrypt_bytes(&inner.encode_encrypted(), key)
 }
 
@@ -1187,7 +1193,7 @@ pub fn seal_pong_sensitive(
 pub fn open_pong_sensitive(
     sealed: &[u8],
     key: &[u8; 32],
-) -> Result<(Vec<SyncRecord>, Option<String>, Option<[u8; 64]>), String> {
+) -> Result<(Vec<SyncRecord>, Option<String>, Option<[u8; 64]>, Vec<[u8; 32]>), String> {
     let plain = kete::decrypt_bytes(sealed, key)?;
     let mut ptr = 0;
     let section =
@@ -1197,10 +1203,24 @@ pub fn open_pong_sensitive(
     }
     let sync_records = extract_sync_records(&section)?;
     let fields = section_fields_to_tuples(&section);
+    let locked: Vec<[u8; 32]> = section
+        .get_fields("lockd")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::hb(h) if h.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(h);
+                Some(a)
+            }
+            _ => None,
+        })
+        .collect();
     Ok((
         sync_records,
         extract_pong_name(&fields),
         extract_pong_apin(&fields),
+        locked,
     ))
 }
 
@@ -3096,7 +3116,7 @@ mod pong_seal_tests {
         let records = sample_records();
         let name = "Ada Lovelace";
         let pin = [0x77u8; 64];
-        let blob = seal_pong_sensitive(&records, Some(name), Some(&pin), &key).unwrap();
+        let blob = seal_pong_sensitive(&records, Some(name), Some(&pin), &[], &key).unwrap();
         let bytes = sealed_pong(Some(blob)).to_vsf_bytes();
         assert!(!bytes.is_empty());
 
@@ -3131,7 +3151,7 @@ mod pong_seal_tests {
                 assert!(avatar_pin.is_none());
                 assert_eq!(observed_addr, Some("203.0.113.9:4383".parse().unwrap()));
                 // The right pairwise key recovers everything.
-                let (rec, dn, ap) =
+                let (rec, dn, ap, _lockd) =
                     open_pong_sensitive(&sealed.expect("sealed tail present"), &key)
                         .expect("open with right key");
                 assert_eq!(rec, records);
@@ -3148,6 +3168,7 @@ mod pong_seal_tests {
             &sample_records(),
             Some("Ada"),
             Some(&[0x77u8; 64]),
+            &[],
             &[0x42u8; 32],
         )
         .unwrap();
@@ -3194,7 +3215,7 @@ mod pong_seal_tests {
         let records = sample_records();
         let pin = [0x66u8; 64];
         let mut section = vsf::VsfSection::new("pong");
-        add_pong_sensitive_fields(&mut section, &records, Some("Grace"), Some(&pin));
+        add_pong_sensitive_fields(&mut section, &records, Some("Grace"), Some(&pin), &[]);
         let bytes = vsf::VsfBuilder::new()
             .creation_time_oscillations(44_444)
             .provenance_hash([0xCCu8; 32])

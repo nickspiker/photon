@@ -173,6 +173,7 @@ fn contact_state_schema() -> SectionSchema {
         .field("pin_genesis", TypeConstraint::AnyHash) // The generation pin: genesis op hash of the friendship's chain (docs/lifecycle.md). Absent = not yet pinned.
         .field("identity_ended", TypeConstraint::AnyUnsigned) // bool: the chain vanished after a fold — owner ended the identity. Absent = false.
         .field("locked_out", TypeConstraint::AnyUnsigned) // bool: sibling device locked out (treat-as-stolen). Absent = false.
+        .field("refused_device", TypeConstraint::AnyHash) // multi: friend devices refused via the reported-stolen signal. Absent = none.
         .field("identity_superseded", TypeConstraint::AnyUnsigned) // bool: a different-genesis chain claimed this name — a stranger. Absent = false.
         .field("unread", TypeConstraint::AnyUnsigned) // u32: inbound messages not yet seen (conversation wasn't the active view when they landed). Absent = 0 (legacy contacts load as read).
 }
@@ -305,6 +306,11 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
     if contact.locked_out {
         builder = builder
             .set("locked_out", true)
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    for dev in &contact.refused_devices {
+        builder = builder
+            .set_multi("refused_device", vec![VsfType::hb(dev.to_vec())])
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
     if contact.identity_superseded {
@@ -532,6 +538,17 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     }
     if section.get_value::<bool>("locked_out").unwrap_or(false) {
         contact.locked_out = true;
+    }
+    for f in section.get_fields("refused_device") {
+        if let Some(VsfType::hb(h)) = f.values.first() {
+            if h.len() == 32 {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(h);
+                if !contact.refused_devices.contains(&a) {
+                    contact.refused_devices.push(a);
+                }
+            }
+        }
     }
     if section
         .get_value::<bool>("identity_superseded")

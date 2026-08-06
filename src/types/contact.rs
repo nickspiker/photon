@@ -233,6 +233,10 @@ pub struct Contact {
     pub identity_ended: bool,
     /// LOCKED OUT (treat-as-stolen): this sibling device stays a permanent chain member — removal is self-signed only, zero exceptions — but the fleet has stopped trusting it: no pings, no pongs honoured, no chain-sync, no ceremony, no relay copies, and the fleet key rotates away from it. Set from the fleet-synced `fleet.locked` set (grow-only); persisted so the refusal survives a relaunch even before settings sync.
     pub locked_out: bool,
+    /// FRIEND-side refusal (device-trust-and-recovery.md's one knob): this friend's devices we refuse regardless of fold membership — `effective_trust = member AND NOT refused`. Populated from the fleet's reported-stolen signal (sealed pong tail) once TWO DISTINCT live devices report the same pubkey; persisted, monotonic (unlock is a deliberate future flow).
+    pub refused_devices: Vec<[u8; 32]>,
+    /// The raw reported-stolen ledger: (reporter device, reported device) pairs seen this SESSION. Runtime-only — the threshold reads distinct reporters from here; refusal, once granted, persists in `refused_devices`.
+    pub locked_reports_seen: Vec<([u8; 32], [u8; 32])>,
     /// A chain with a DIFFERENT genesis appeared under this contact's name — a stranger re-claimed the freed handle. Folds are refused; rendered as NOT-them. Never auto-clears (the pin is permanent testimony).
     pub identity_superseded: bool,
     pub ip: Option<SocketAddr>, // The ACTIVE device's public IP:port (see `active_device`) — the primary TX target
@@ -419,6 +423,8 @@ impl Contact {
             pinned_genesis: [0u8; 32], // Pinned at the first adopted fold
             identity_ended: false,
             locked_out: false,
+            refused_devices: Vec::new(),
+            locked_reports_seen: Vec::new(),
             identity_superseded: false,
             ip: None,
             local_ip: None,   // Discovered via LAN broadcast
@@ -639,6 +645,10 @@ impl Contact {
         // A SIBLING contact knows exactly its ONE device — by contract its fleet_members stays EMPTY and the fold flags never apply. Enforce that here: a stray fold that marked a sibling folded_once turned the membership check into always-false and BLACK-HOLED every fleet frame from that device (the 2026-07-26 self-sync black hole: the desktop dropping its own phone's pages as "not a fold-trusted sibling").
         if self.is_sibling {
             return self.public_identity.key == *device_pubkey;
+        }
+        // The refusal outranks the fold: a refused device is still a chain member (removal is self-signed only), but its owner's fleet reported it stolen and two distinct devices vouched — so nothing it sends is honoured, which is what starves a ghost that the fold alone can never shed.
+        if self.refused_devices.contains(device_pubkey) {
+            return false;
         }
         if self.fleet_folded_once {
             self.fleet_members.contains(device_pubkey)
