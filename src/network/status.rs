@@ -3407,10 +3407,10 @@ async fn run_checker(
             for dev in &request.relay_to {
                 match crate::network::fgtw::relay::send_via_relay(&keypair, dev, &vsf_bytes).await {
                     Ok(()) => crate::logf!(
-                        "RELAY: stored ClutchKemResponse for {}",
+                        "RELAY: ClutchKemResponse relayed to {}",
                         hex::encode(&dev[..4])
                     ),
-                    Err(e) => crate::logf!("RELAY: ClutchKemResponse store failed: {}", e),
+                    Err(e) => crate::logf!("RELAY: ClutchKemResponse did not land: {}", e),
                 }
             }
         }
@@ -3461,10 +3461,10 @@ async fn run_checker(
             for dev in &request.relay_to {
                 match crate::network::fgtw::relay::send_via_relay(&keypair, dev, &vsf_bytes).await {
                     Ok(()) => crate::logf!(
-                        "RELAY: stored ClutchComplete for {}",
+                        "RELAY: ClutchComplete relayed to {}",
                         hex::encode(&dev[..4])
                     ),
-                    Err(e) => crate::logf!("RELAY: ClutchComplete store failed: {}", e),
+                    Err(e) => crate::logf!("RELAY: ClutchComplete did not land: {}", e),
                 }
             }
         }
