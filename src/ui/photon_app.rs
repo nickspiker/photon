@@ -18227,6 +18227,9 @@ impl PhotonApp {
                                     } else if era_grace_active {
                                         // A JUST-woven chain cannot have forked — one writer per lane makes it structurally impossible this early. A gap burst here is a superseded sibling's stragglers (its blob adopts the new era within a chain-sync round trip, and the era-supersede merge kills its old lanes); discarding the fresh weave for them was the completed-then-back-to-6/12 regression of 2026-08-05. A real fork keeps failing past the grace and repairs then.
                                         crate::logf!("CHAT: gap streak from {} on a freshly-woven chain — era stragglers, holding the re-key", handle);
+                                    } else if c.ceremony_owner.is_some() && c.ceremony_owner != Some(our_device_pubkey) {
+                                        // A NON-OWNER sibling never re-keys a friendship: its gap evidence means ITS OWN blob is the stale era — the friend re-wove with the owner, the new-era frames can't link to the old chains, and the repair here nuked the fleet's seven-second-old weave (2026-08-07). The cure is the owner's chain-sync push, already on its way; the era supersede adopts it and the buffered frames replay or expire.
+                                        crate::logf!("CHAT: gap streak from {} but this device does not own the ceremony — stale era suspected, awaiting sibling chain-sync", handle);
                                     } else {
                                         crate::logf!("CHAT: gap from {} repeated 6× identically — FORK, initiating friend re-key", handle);
                                         friend_rekey_initiate.push(contact_idx);
@@ -18322,6 +18325,14 @@ impl PhotonApp {
                                         && era_grace_active
                                     {
                                         crate::logf!("CHAIN FORK: garbage streak on a freshly-woven chain — era stragglers, holding the re-key");
+                                        contact.chain_fail_streak = 0;
+                                    } else if contact.chain_fail_streak >= 3
+                                        && !contact.is_sibling
+                                        && contact.ceremony_owner.is_some()
+                                        && contact.ceremony_owner != Some(our_device_pubkey)
+                                    {
+                                        // Mirror of the gap-streak rule: a non-owner's garbage streak is stale-era evidence about ITSELF, not the friendship — only the ceremony owner may re-key (§4.2), everyone else waits for the owner's chain-sync.
+                                        crate::logf!("CHAIN FORK: garbage streak but this device does not own the ceremony — stale era suspected, awaiting sibling chain-sync");
                                         contact.chain_fail_streak = 0;
                                     } else if contact.chain_fail_streak >= 3 && !contact.is_sibling
                                     {
