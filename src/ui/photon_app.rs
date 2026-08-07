@@ -18300,12 +18300,22 @@ impl PhotonApp {
                             Err(e) => {
                                 crate::logf!("CHAT: VsfField parse error: {}", e);
                                 // FORK DETECTOR: the frame passed signature + chain-link verification but decrypted to garbage — the two sides hold different key material at this position. One hit can be a stray; consecutive hits are a fork. Siblings repair via the fleet-key chain_reset at 2; FRIENDS repair via a full RE-KEY at 3 (no shared key to rebuild from, but a fresh ceremony is always legal: our new-keys offer hits their Complete-rekey path, history rows survive, recovery backfills after the re-weave). Observed live: a woven pair forked mid-conversation — one side decrypted one message as garbage and every later one buffered "ahead" forever, greying every send (2026-07-25).
+                                // Same fresh-weave grace as the gap-streak repair: LATE relay copies of a superseded era's frames straggle in for a minute after a re-key, and three of them re-keyed a 16-second-old weave (live pair, 2026-08-07). A just-woven chain cannot have forked — one writer per lane — so garbage inside the grace is stragglers, not evidence; a real fork keeps failing past it.
+                                let era_grace_active = chains.genesis_osc > 0
+                                    && vsf::eagle_time_oscillations().saturating_sub(chains.genesis_osc)
+                                        < 120 * vsf::OSCILLATIONS_PER_SECOND as i64;
                                 if let Some(contact) = self.contacts.get_mut(contact_idx) {
                                     contact.chain_fail_streak =
                                         contact.chain_fail_streak.saturating_add(1);
                                     if contact.chain_fail_streak >= 2 && contact.is_sibling {
                                         crate::logf!("CHAIN FORK SUSPECTED: {} — {} consecutive garbage decrypts past chain-link verify — initiating sibling chain reset", crate::fp(&contact.handle_proof), contact.chain_fail_streak);
                                         chain_reset_initiate.push(contact_idx);
+                                    } else if contact.chain_fail_streak >= 3
+                                        && !contact.is_sibling
+                                        && era_grace_active
+                                    {
+                                        crate::logf!("CHAIN FORK: garbage streak on a freshly-woven chain — era stragglers, holding the re-key");
+                                        contact.chain_fail_streak = 0;
                                     } else if contact.chain_fail_streak >= 3 && !contact.is_sibling
                                     {
                                         crate::logf!("CHAIN FORK SUSPECTED: {} — {} consecutive garbage decrypts past chain-link verify — initiating friend re-key", crate::fp(&contact.handle_proof), contact.chain_fail_streak);
