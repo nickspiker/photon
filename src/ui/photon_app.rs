@@ -13293,6 +13293,13 @@ impl PhotonApp {
                 c.clutch_state == crate::types::ClutchState::Complete
                     && c.friendship_id.is_some()
                     && !c.probe_sent
+                    // A BUSY LANE needs no probe: the un-ACKed message already in flight proves the same thing the probe would, and its ACK advances the chain. Without this the serial-send gate and the presence re-probe sweep spun against each other — probe attempted, held, never latched, re-attempted every frame (196 attempts in 3.4s on a phone, 2026-08-07). The probe fires later, from the same sweep, once the lane is free.
+                    && c.friendship_id.is_none_or(|fid| {
+                        self.friendship_chains
+                            .iter()
+                            .find(|(id, _)| *id == fid)
+                            .is_none_or(|(_, ch)| ch.pending_messages.is_empty())
+                    })
                     // A weave probe proves a chain reaches someone; with no remote participants there is no chain and nobody to answer it.
                     && self.our_party_id(c).is_some_and(|us| c.remote_count(&us) > 0)
             }
