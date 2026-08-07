@@ -12907,6 +12907,17 @@ impl PhotonApp {
                 relay_to,
             )
         };
+        // STRICT SERIAL PER LANE: the ratchet advances on ACK, not on send — that is the braid's whole desync defence — so a second prepare_send before the first ACK encrypts at the SAME position: identical key and salt, and the receiver can decrypt exactly one of the batch (all four flushed messages shared key 96e0f452 and three of them plus a probe stayed grey forever, 2026-08-07; this is also July's parked "chain-advance desync by msg 2"). One message in flight per lane: while a pending exists, the row stays held — the ACK-advance flush sends the next one at the fresh position.
+        if self
+            .friendship_chains
+            .iter()
+            .find(|(id, _)| *id == friendship_id)
+            .map_or(false, |(_, c)| !c.pending_messages.is_empty())
+        {
+            crate::logf!("CHAT: lane busy — un-ACKed send in flight; holding this message for the ACK-advance flush");
+            return false;
+        }
+
         // NO direct address is not NO send: the weave probe fired the moment a ceremony completed over the relay, hit this bail (the peer's addresses hadn't validated yet), and died silently — the probe never retransmits, so "testing the secure channel" sat forever on a chain that provably worked one direction (live pair, 2026-08-06). Same shape as the retransmit sweep: hand the sentinel so the UDP leg sends nowhere harmlessly and the relay copy carries it.
         let (peer_addr, alt_addr) = match addr_pair {
             Some(pair) => pair,
@@ -18145,7 +18156,9 @@ impl PhotonApp {
                             .messages
                             .iter()
                             .any(|m| !m.is_outgoing && !m.recovered && m.timestamp == timestamp);
-                        if chains.is_duplicate(&lane, timestamp) || row_dup {
+                        // TIMESTAMPS ARE NOT THE CHAIN: held messages carry composition-time stamps that can sit DAYS behind the lane's last-received time, and the timestamp verdict skipped them un-decrypted and un-ACKably — while every frame behind them gap-buffered forever (the stuck-grey four + the eternal gap, 2026-08-07). A frame whose prev links to our EXPECTED position is by definition the next message, never a duplicate; a true retransmit of a processed frame carries an older prev and still lands here.
+                        let is_expected_next = chains.verify_chain_link(&lane, &prev_msg_hp).is_ok();
+                        if (chains.is_duplicate(&lane, timestamp) || row_dup) && !is_expected_next {
                             // Re-ACK from the stored message, looked up by its eagle_time. Unlike the old single-slot last_acked (which only remembered the MOST RECENT ack and so dropped any earlier duplicate → permanent sender stall), every received message persists its own ack_hash, so ANY duplicate self-heals a lost ACK.
                             let stored = self.conversations[conv_pos]
                                 .messages
@@ -21373,6 +21386,8 @@ impl PhotonApp {
         }
         for idx in chain_seal_indices {
             self.seal_chain_if_ready(idx);
+            // ACK-ADVANCE FLUSH: the serial-send gate holds every message behind the one in flight, so the ACK that just advanced the lane is the edge that releases the next held row at the fresh chain position. No-op when nothing is held.
+            self.resend_held_messages(idx);
         }
         // Sibling fork repair (deferred past the checker borrow): apply inbound resets first (each echoes once so the initiator converges), then fire any detector-initiated resets (mint nonce + apply + send).
         for (idx, nonce, echo) in chain_reset_apply {
