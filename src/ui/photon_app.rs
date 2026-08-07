@@ -18405,9 +18405,10 @@ impl PhotonApp {
                         use crate::types::friendship::derive_msg_hp;
                         let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, timestamp);
 
-                        // Update their last_plaintext for next message's salt — the x-text ONLY (must match what the sender stored: salt source is text, never the full payload/pad).
+                        // Update the lane's last_plaintext for the next message's salt — the x-text ONLY (must match what the sender stored: salt source is text, never the full payload/pad).
+                        // Keyed by LANE LABEL: the pre-lane call here passed the party id, which no lane label ever equals, so the write no-opped and the salt stayed empty while the sender's moved — every second message on a lane garbage-decrypted (field, 2026-08-07).
                         chains.set_last_plaintext(
-                            &from_handle_hash,
+                            &lane,
                             message_text.clone().into_bytes(),
                         );
 
