@@ -26,6 +26,8 @@ fn main() {
             "unknown location".to_string()
         };
 
+        // SIDECAR FIRST, lock-free: a panic raised inside the log sink self-deadlocks the calls below (non-reentrant mutexes) and the evidence dies with the process.
+        photon_messenger::write_crash_sidecar(&format!("PANIC at {}: {}", location, msg));
         photon_messenger::logf!("PANIC at {}: {}", location, msg);
         // A panic is THE flush edge: the process is about to die and in-process RAM (the soft-mode batch) dies with it.
         photon_messenger::flush_log_buffer();
@@ -33,9 +35,13 @@ fn main() {
         // Also print backtrace if available
         let backtrace = std::backtrace::Backtrace::capture();
         if backtrace.status() == std::backtrace::BacktraceStatus::Captured {
+            photon_messenger::write_crash_sidecar(&format!("Backtrace:\n{}", backtrace));
             photon_messenger::logf!("Backtrace:\n{}", backtrace);
         }
     }));
+
+    // Last run's crash, if any, folded into this run's log so it rides the next submission.
+    photon_messenger::report_prior_crash();
 
     // Check for verify argument (used by install script to validate binary)
     let verify_only = std::env::args().any(|arg| arg == "verify");

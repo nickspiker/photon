@@ -423,6 +423,34 @@ fn trim_log_if_due(guard: &mut Option<std::fs::File>) {
 
 /// Drain the soft-mode RAM batch to disk — THE edge reaction (panic, app background, submission, threshold, hard-toggle). No-op when nothing is buffered.
 #[cfg(feature = "logging")]
+/// Write a panic verbatim to `photon.crash.txt`, touching NO shared lock. The panic hook cannot report through the normal sink when the panic came from INSIDE it: `log::error!` takes LOG_PENDING and `flush_log_buffer` takes LOG_FILE, both non-reentrant, so the same thread re-locking them deadlocks — the process then dies to the OS watchdog with an empty log, which is exactly the signature of the 2026-08-07 phone death (hook installed, zero PHOTON PANIC lines). A fresh handle on its own path always writes.
+pub fn write_crash_sidecar(text: &str) {
+    use std::io::Write;
+    let Some(dir) = log_dir() else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("photon.crash.txt"))
+    {
+        let _ = writeln!(f, "{}", text);
+        let _ = f.flush();
+    }
+}
+
+/// Fold last run's crash sidecar into THIS run's log, then delete it — a crash report is worthless if it never reaches a submission. Called once at startup, right after the hook is installed.
+pub fn report_prior_crash() {
+    let Some(dir) = log_dir() else { return };
+    let path = dir.join("photon.crash.txt");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let _ = std::fs::remove_file(&path);
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        logf!("PRIOR RUN DIED: {}", line);
+    }
+}
+
 pub fn flush_log_buffer() {
     use std::io::Write;
     let Ok(mut guard) = LOG_FILE.lock() else { return };
@@ -1118,6 +1146,8 @@ pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut std::os::raw::c_void)
 
     // Set panic hook for better crash diagnostics
     std::panic::set_hook(Box::new(|panic_info| {
+        // SIDECAR FIRST, always: a panic inside the log sink deadlocks the two lines below (same-thread re-lock), and the evidence dies with the process. See write_crash_sidecar.
+        write_crash_sidecar(&format!("PHOTON PANIC: {}", panic_info));
         log::error!("PHOTON PANIC: {}", panic_info);
         if let Some(location) = panic_info.location() {
             log::error!("PANIC location: {}:{}", location.file(), location.line());
@@ -1125,6 +1155,9 @@ pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut std::os::raw::c_void)
         // A panic is THE flush edge: in-process RAM (the soft-mode batch) dies with the process.
         flush_log_buffer();
     }));
+
+    // Last run's crash, if any, folded into this run's log so it rides the next submission.
+    report_prior_crash();
 
     // Hand tohu the JavaVM so its device oracle can read Settings.Secure.ANDROID_ID itself (via ActivityThread.currentApplication()). Done here because JNI_OnLoad is where the vm is handed to us; the actual fetch happens later, once the Application exists.
     tohu::device::android_init(vm);
