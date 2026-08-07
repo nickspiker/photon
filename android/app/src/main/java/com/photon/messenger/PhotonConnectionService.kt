@@ -119,6 +119,48 @@ class PhotonConnectionService : Service() {
             acquire()
         }
         PhotonLog.d(TAG, "Service created (multicast lock held)")
+        reportPriorExits()
+    }
+
+    /** The system's account of every death the process could not witness itself — ANR, low-memory kill, native crash, explicit stop — logged at the NEXT start so it rides the next submission. The in-process panic hook + crash sidecar cover Rust panics with file and line; this covers everything that bypasses a hook entirely (SIGKILL has no hook), and for ANRs/native crashes attaches the system's own trace. Watermarked in prefs so each exit reports exactly once. API 30+; older devices keep sidecar-only coverage. */
+    private fun reportPriorExits() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        try {
+            val am = getSystemService(android.app.ActivityManager::class.java) ?: return
+            val prefs = getSharedPreferences("photon_exit_watermark", MODE_PRIVATE)
+            val watermark = prefs.getLong("last_reported", 0L)
+            var newest = watermark
+            for (exit in am.getHistoricalProcessExitReasons(packageName, 0, 8)) {
+                if (exit.timestamp <= watermark) continue
+                if (exit.timestamp > newest) newest = exit.timestamp
+                val reason = when (exit.reason) {
+                    android.app.ApplicationExitInfo.REASON_ANR -> "ANR"
+                    android.app.ApplicationExitInfo.REASON_CRASH -> "CRASH"
+                    android.app.ApplicationExitInfo.REASON_CRASH_NATIVE -> "CRASH_NATIVE"
+                    android.app.ApplicationExitInfo.REASON_LOW_MEMORY -> "LOW_MEMORY"
+                    android.app.ApplicationExitInfo.REASON_SIGNALED -> "SIGNALED(${exit.status})"
+                    android.app.ApplicationExitInfo.REASON_EXIT_SELF -> "EXIT_SELF"
+                    android.app.ApplicationExitInfo.REASON_USER_REQUESTED -> "USER_REQUESTED"
+                    android.app.ApplicationExitInfo.REASON_USER_STOPPED -> "USER_STOPPED"
+                    android.app.ApplicationExitInfo.REASON_PACKAGE_UPDATED -> "PACKAGE_UPDATED"
+                    android.app.ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "PERMISSION_CHANGE"
+                    else -> "OTHER(${exit.reason})"
+                }
+                PhotonLog.i("ExitInfo", "PRIOR RUN DIED (system): reason=$reason importance=${exit.importance} pss=${exit.pss}KB rss=${exit.rss}KB at=${exit.timestamp} desc=${exit.description ?: ""}")
+                // ANR / native-crash traces are the payload that names the stall or the frame — first 4KB is plenty for the log.
+                if (exit.reason == android.app.ApplicationExitInfo.REASON_ANR || exit.reason == android.app.ApplicationExitInfo.REASON_CRASH_NATIVE) {
+                    try {
+                        exit.traceInputStream?.use { ts ->
+                            val head = String(ts.readBytes().take(4096).toByteArray())
+                            for (line in head.lineSequence().take(60)) PhotonLog.i("ExitInfo", "trace: $line")
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+            if (newest != watermark) prefs.edit().putLong("last_reported", newest).apply()
+        } catch (e: Exception) {
+            PhotonLog.w("ExitInfo", "exit-reason read failed", e)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

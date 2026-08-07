@@ -101,6 +101,15 @@
             android:name=".PhotonInstallReceiver"
             android:exported="false" />
 
+        <!-- Post-update restart: an updated app is STOPPED and runs nothing until targeted; MY_PACKAGE_REPLACED is the system's you-were-updated hook (protected broadcast — exported is safe, only the OS can send it; exempt from the background-FGS-start restriction). Without it photon stayed dead after every update until an FCM doorbell happened to arrive. -->
+        <receiver
+            android:name=".PhotonUpdateReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
