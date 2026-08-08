@@ -145,6 +145,36 @@ pub fn is_control_content(content: &str) -> bool {
     content == CHAIN_PROBE_MARKER || content.starts_with(DELETE_MARKER_PREFIX)
 }
 
+/// Reply row marker. NOT control content — a reply is a VISIBLE message that REFERENCES its target by eagle_time (`PREFIX + target_ts + \u{2} + body`), the braid's own referencing discipline. The renderer resolves the reference live against the row store (a half-alpha snippet above the body) — the target is never quoted into the reply, so an edit of the target ripples into every reply that points at it.
+pub const REPLY_MARKER_PREFIX: &str = "\u{1}\u{2}photon-reply\u{2}\u{1}";
+
+/// Build a reply row's content string.
+pub fn reply_content(target_ts: i64, body: &str) -> String {
+    format!("{}{}\u{2}{}", REPLY_MARKER_PREFIX, target_ts, body)
+}
+
+/// Parse a reply row → (target eagle_time, body). None for non-reply content.
+pub fn parse_reply_content(content: &str) -> Option<(i64, &str)> {
+    let rest = content.strip_prefix(REPLY_MARKER_PREFIX)?;
+    let (ts, body) = rest.split_once('\u{2}')?;
+    Some((ts.parse().ok()?, body))
+}
+
+/// Edit row marker. NOT control content — an edit is a real synced row (`PREFIX + target_ts + \u{2} + new_body`) that SUPERSEDES its target at render time only. The original row is NEVER mutated: its content is braid key material (strands resolve stored content by eagle_time), so rewriting it would fork the chain the next time that row is woven. The newest edit row targeting a ts wins; the edit row draws no bubble of its own while its target is present, and it rides pages/fleet-sync/digests like any row — convergence for free.
+pub const EDIT_MARKER_PREFIX: &str = "\u{1}\u{2}photon-edit\u{2}\u{1}";
+
+/// Build an edit row's content string.
+pub fn edit_content(target_ts: i64, body: &str) -> String {
+    format!("{}{}\u{2}{}", EDIT_MARKER_PREFIX, target_ts, body)
+}
+
+/// Parse an edit row → (target eagle_time, new body). None for non-edit content.
+pub fn parse_edit_content(content: &str) -> Option<(i64, &str)> {
+    let rest = content.strip_prefix(EDIT_MARKER_PREFIX)?;
+    let (ts, body) = rest.split_once('\u{2}')?;
+    Some((ts.parse().ok()?, body))
+}
+
 /// Attachment row marker. NOT control content — attachment rows are VISIBLE messages (bubble = pill), they ACK, sync fleet-wide, tombstone, and weave like any row; only their DISPLAY differs. The content string is the whole record: `PREFIX + blake3_hex(64) + \u{2} + filename + \u{2} + size_bytes` — riding the ordinary content field means zero codec changes anywhere (vault, history pages, fleet sync all carry it as text). The blob itself travels separately over PT (attach_blob frames) and lives as a sealed file beside the vault, NEVER in a row.
 pub const ATTACHMENT_PREFIX: &str = "\u{1}\u{2}photon-attach\u{2}\u{1}";
 

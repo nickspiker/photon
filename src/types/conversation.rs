@@ -94,6 +94,19 @@ impl Conversation {
         self.digest_cache = None;
     }
 
+    /// The newest live edit row targeting `target_ts` → (edit row's ts, new body). Render-time supersede: the original row is braid key material and never mutates, so "the current text" is a question about edit rows, answered newest-wins. A deleted edit row stops counting — deleting an edit reverts to the previous edit or the original.
+    pub fn latest_edit_for(&self, target_ts: i64) -> Option<(i64, String)> {
+        self.messages
+            .iter()
+            .rev()
+            .filter(|m| !m.deleted)
+            .find_map(|m| {
+                crate::types::parse_edit_content(&m.content)
+                    .filter(|(t, _)| *t == target_ts)
+                    .map(|(_, body)| (m.timestamp, body.to_string()))
+            })
+    }
+
     /// This conversation's stable id.
     pub fn id(&self) -> ConversationId {
         self.id
@@ -193,6 +206,59 @@ mod tests {
         assert_eq!(notes.id(), Conversation::new([me]).id());
         assert_eq!(notes.remote_count(&me), 0);
         assert_eq!(notes.remote_participants(&me).count(), 0);
+    }
+
+    /// Supersede-by-reference: the newest edit row targeting a ts wins, a deleted edit reverts to the previous one, and the ORIGINAL row's content never changes (it is braid key material — strands resolve stored content by eagle_time, so mutating it would fork the chain).
+    #[test]
+    fn latest_edit_wins_and_deleting_an_edit_reverts() {
+        let mut conv = Conversation::new([pid(1), pid(2)]);
+        conv.insert_message_sorted(crate::types::ChatMessage::new_with_timestamp(
+            "orignal".to_string(),
+            true,
+            100,
+        ));
+        assert_eq!(conv.latest_edit_for(100), None);
+
+        let e1 = crate::types::edit_content(100, "original");
+        conv.insert_message_sorted(crate::types::ChatMessage::new_with_timestamp(
+            e1, true, 200,
+        ));
+        let e2 = crate::types::edit_content(100, "original, truly");
+        conv.insert_message_sorted(crate::types::ChatMessage::new_with_timestamp(
+            e2, true, 300,
+        ));
+        assert_eq!(
+            conv.latest_edit_for(100),
+            Some((300, "original, truly".to_string()))
+        );
+        // Round-trip sanity on the marker itself.
+        assert_eq!(
+            crate::types::parse_edit_content(&crate::types::edit_content(100, "x")),
+            Some((100, "x"))
+        );
+        assert_eq!(
+            crate::types::parse_reply_content(&crate::types::reply_content(100, "y")),
+            Some((100, "y"))
+        );
+
+        // Deleting the newest edit reverts to the previous one; the original row is untouched throughout.
+        conv.messages
+            .iter_mut()
+            .find(|m| m.timestamp == 300)
+            .unwrap()
+            .deleted = true;
+        assert_eq!(
+            conv.latest_edit_for(100),
+            Some((200, "original".to_string()))
+        );
+        assert_eq!(
+            conv.messages
+                .iter()
+                .find(|m| m.timestamp == 100)
+                .unwrap()
+                .content,
+            "orignal"
+        );
     }
 
     /// The property the whole refactor rests on: "who must this reach" answers correctly for 0, 1 and N without being told which case it is.

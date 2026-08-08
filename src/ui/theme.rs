@@ -139,3 +139,9 @@ pub fn dim_colour(c: u32) -> u32 {
     let a = ((c >> 24) & 0xFF) >> 2;
     (c & 0x00FF_FFFF) | (a << 24)
 }
+
+/// Half the alpha — the REFERENCED-message treatment (a reply's target snippet, the armed compose strip). Quarter (`dim_colour`) stays the sent-not-yet-ACKed signal; half reads as "context, not content", and the two must stay visually distinct.
+pub fn half_colour(c: u32) -> u32 {
+    let a = ((c >> 24) & 0xFF) >> 1;
+    (c & 0x00FF_FFFF) | (a << 24)
+}
