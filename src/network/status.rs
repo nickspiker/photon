@@ -303,6 +303,8 @@ pub enum StatusUpdate {
         /// Eagle time oscillations from VSF header (for ACK matching)
         timestamp: i64,
         sender_addr: SocketAddr,
+        /// The signing device — carried so the UI thread can apply the full known∧not-refused gate (refused_devices/locked_out live there, not in the RX worker).
+        sender_pubkey: DevicePubkey,
     },
     /// Sibling chain-reset frame received (fork repair): the fleet-sealed nonce blob rides opaque to the UI thread, which holds the fleet key + chains.
     ChainResetReceived {
@@ -2426,6 +2428,15 @@ async fn run_checker(
                                     sender_pubkey,
                                     signature,
                                 } => {
+                                    // KNOWN DEVICE ONLY, and BEFORE the presence flip. The frame is self-authenticating (the signature proves possession of the signing key, nothing about WHO), so without this gate any key could flip a peer online, register an address, and inject an unknown-lane frame that drives the receiver's fork detectors — mirror the StatusPing allowlist gate. The full known∧not-refused decision runs on the UI thread (where refused_devices/locked_out live), keyed by sender_pubkey carried below.
+                                    let is_contact = {
+                                        let list = contacts_recv.lock().unwrap();
+                                        list.iter().any(|p| *p == sender_pubkey)
+                                    };
+                                    if !is_contact {
+                                        continue;
+                                    }
+
                                     // Verify signature (CHAIN format provenance)
                                     let provenance =
                                         compute_chat_provenance(&conversation_token, &prev_msg_hp);
@@ -2465,7 +2476,7 @@ async fn run_checker(
                                     send_status_update(
                                         &status_tx_recv,
                                         StatusUpdate::Online {
-                                            peer_pubkey: sender_pubkey,
+                                            peer_pubkey: sender_pubkey.clone(),
                                             is_online: true,
                                             peer_addr: Some(src_addr),
                                             sync_records: vec![],
@@ -2488,6 +2499,7 @@ async fn run_checker(
                                             ciphertext,
                                             timestamp,
                                             sender_addr: src_addr,
+                                            sender_pubkey,
                                         },
                                         &event_proxy_recv,
                                     );

@@ -259,6 +259,8 @@ pub struct BufferedMessage {
     pub ciphertext: Vec<u8>,
     /// Sender address, so the reprocess path can ACK exactly as the live path would.
     pub sender_addr: std::net::SocketAddr,
+    /// The signing device pubkey, so a replayed frame re-enters the receive arm carrying the same identity the known∧not-refused gate needs.
+    pub sender_pubkey: [u8; 32],
 }
 
 /// A sent message awaiting ACK confirmation.
@@ -1340,6 +1342,7 @@ impl FriendshipChains {
         eagle_time: i64,
         ciphertext: Vec<u8>,
         sender_addr: std::net::SocketAddr,
+        sender_pubkey: [u8; 32],
     ) {
         // Don't buffer duplicates (same sender + same 704ps tick = the same message).
         if self
@@ -1356,7 +1359,13 @@ impl FriendshipChains {
             eagle_time,
             ciphertext,
             sender_addr,
+            sender_pubkey,
         });
+        // Bounded: an unfillable gap (forged frames, a peer that re-keyed away) must not grow RAM forever — evict oldest, the retransmit path re-serves anything real that gets dropped.
+        const GAP_BUFFER_CAP: usize = 256;
+        if self.gap_buffer.len() > GAP_BUFFER_CAP {
+            self.gap_buffer.remove(0);
+        }
     }
 
     /// Check if we have buffered messages waiting for a specific prev_msg_hp. Returns the buffered messages that can now be processed.
@@ -1666,12 +1675,12 @@ mod tests {
         let prev_b = [0xB2u8; 32]; // a different predecessor
 
         // Buffer msg2 (awaiting prev_a) and an unrelated msg (awaiting prev_b).
-        chains.buffer_for_gap(prev_a, bob, 1000, vec![1, 2, 3], addr);
-        chains.buffer_for_gap(prev_b, bob, 1001, vec![4, 5, 6], addr);
+        chains.buffer_for_gap(prev_a, bob, 1000, vec![1, 2, 3], addr, bob);
+        chains.buffer_for_gap(prev_b, bob, 1001, vec![4, 5, 6], addr, bob);
         assert_eq!(chains.gap_buffer_count(), 2);
 
         // Duplicate (same sender + same eagle_time) is not re-buffered.
-        chains.buffer_for_gap(prev_a, bob, 1000, vec![1, 2, 3], addr);
+        chains.buffer_for_gap(prev_a, bob, 1000, vec![1, 2, 3], addr, bob);
         assert_eq!(chains.gap_buffer_count(), 2);
 
         // Filling an unrelated hash releases nothing.
