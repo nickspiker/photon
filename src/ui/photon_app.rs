@@ -405,6 +405,21 @@ fn party_colour(digest: &[u8; 32]) -> u32 {
     vsf_rgb_to_stored(rgb_vsf)
 }
 
+/// A history page opened OFF the UI thread, posted back for the drain to merge. The kete open of an up-to-MAX_PAGE_BYTES page ran inline on the render thread — 210-485ms per page in the field (2026-08-08), the single largest status-arm stall. Only the frame's identity travels; the drain re-derives contact/rid/sibling state fresh, because the indexes and in-flight cursor it would have captured at dispatch can shift while the worker runs.
+struct HistPageOpened {
+    conversation_token: [u8; 32],
+    request_id: [u8; 32],
+    sender_pubkey: crate::types::DevicePubkey,
+    page: crate::network::history_pages::HistoryPagePlain,
+}
+
+/// A sibling chain_sync blob opened + decoded OFF the UI thread. The kete open ran inline — 17KB+ per lane, and a fresh sibling join repushes every friendship at once, an adopt storm on the render thread. The drain re-gates the sender (lockout can land mid-flight) and runs the cheap position-compare adopt.
+struct ChainSyncOpened {
+    conversation_token: [u8; 32],
+    sender_pubkey: crate::types::DevicePubkey,
+    incoming: crate::types::friendship::FriendshipChains,
+}
+
 /// A verified+stored attachment blob, posted from the off-thread worker back to the UI drain. Carries only what the drain needs to confirm receipt (attach_have) and refresh the view; the plaintext is already on disk.
 struct AttachInstalled {
     conversation_token: [u8; 32],
@@ -799,6 +814,12 @@ pub struct PhotonApp {
     /// Attachment blobs verified + stored OFF the UI thread: the receive arm hands (sealed, key, hash, seed) to a worker that AEAD-opens the whole blob, checks its content hash, and writes it to blob storage — all heavy on the render thread inline (an arbitrary-size file). The worker posts back here on success; the drain sends the attach_have confirm (needs the keypair + checker) and clears the compose wrap.
     attach_installed_tx: std::sync::mpsc::Sender<AttachInstalled>,
     attach_installed_rx: std::sync::mpsc::Receiver<AttachInstalled>,
+    /// History pages opened off-thread (see HistPageOpened) — the drain merges; merging is the cheap half since the (timestamp, content-hash) index landed.
+    hist_opened_tx: std::sync::mpsc::Sender<HistPageOpened>,
+    hist_opened_rx: std::sync::mpsc::Receiver<HistPageOpened>,
+    /// Sibling chain_sync blobs opened off-thread (see ChainSyncOpened) — the drain adopts.
+    chain_sync_opened_tx: std::sync::mpsc::Sender<ChainSyncOpened>,
+    chain_sync_opened_rx: std::sync::mpsc::Receiver<ChainSyncOpened>,
     /// Handles we've already kicked an avatar download for this session, so we don't re-spawn a fetch every time a conversation is reopened or the contact list re-renders.
     avatar_dl_started: std::collections::HashSet<[u8; 32]>,
     /// Mutual peers we've sent a direct P2P AvatarRequest to, mapped to the eagle-time we sent it. The per-tick sweep asks each mutual peer once, then — if no AvatarResponse has installed an avatar within `AVATAR_P2P_FALLBACK_OSC` — falls back to FGTW. So a friend's avatar comes from the friend first, and FGTW only covers the case where the friend is offline or avatar-less.
@@ -973,6 +994,14 @@ pub struct PhotonApp {
     chains_persist_tx: Option<
         std::sync::mpsc::Sender<(
             crate::types::friendship::FriendshipChains,
+            std::sync::Arc<crate::storage::FlatStorage>,
+        )>,
+    >,
+    /// Conversation-state persist worker: the 13-byte unread + history-cursor record, coalesced newest-per-address. The payload is tiny but the vault write is still an encrypt + file IO stall — and a history walk fired one per merged page on the render thread.
+    conv_state_persist_tx: Option<
+        std::sync::mpsc::Sender<(
+            [u8; 32],
+            [u8; 13],
             std::sync::Arc<crate::storage::FlatStorage>,
         )>,
     >,
@@ -1266,6 +1295,7 @@ impl PhotonApp {
             zoom_saved_ru: 1.0,
             persist_tx: None,
             chains_persist_tx: None,
+            conv_state_persist_tx: None,
             tick_serial: 0,
             pending_chain_sends: Vec::new(),
             seed_identity_count: 0,
@@ -1318,6 +1348,16 @@ impl PhotonApp {
                 tx
             },
             attach_installed_rx: std::sync::mpsc::channel().1,
+            hist_opened_tx: {
+                let (tx, _) = std::sync::mpsc::channel();
+                tx
+            },
+            hist_opened_rx: std::sync::mpsc::channel().1,
+            chain_sync_opened_tx: {
+                let (tx, _) = std::sync::mpsc::channel();
+                tx
+            },
+            chain_sync_opened_rx: std::sync::mpsc::channel().1,
             fleet_heal_busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             fanout_rotate_pending: false,
             self_avatar_recover_pending: None,
@@ -2420,6 +2460,12 @@ impl FluorApp for PhotonApp {
             let (aitx, airx) = std::sync::mpsc::channel();
             self.attach_installed_tx = aitx;
             self.attach_installed_rx = airx;
+            let (hptx, hprx) = std::sync::mpsc::channel();
+            self.hist_opened_tx = hptx;
+            self.hist_opened_rx = hprx;
+            let (cstx, csrx) = std::sync::mpsc::channel();
+            self.chain_sync_opened_tx = cstx;
+            self.chain_sync_opened_rx = csrx;
             let (frtx, frrx) = std::sync::mpsc::channel();
             self.fleet_rotated_tx = frtx;
             self.fleet_rotated_rx = frrx;
@@ -12908,6 +12954,42 @@ impl PhotonApp {
         let _ = tx.send((chains, storage));
     }
 
+    /// Persist a conversation's durable bits (unread + history cursor) OFF the UI thread, coalesced to the newest record per conversation. Same worker discipline as the message/chains writers: storage rides with each item so a vault swap can't strand the thread on a dead session.
+    fn persist_conv_state_async(&mut self, conv_pos: usize) {
+        let Some(conv) = self.conversations.get(conv_pos) else {
+            return;
+        };
+        let (addr, buf) = crate::storage::contacts::conversation_state_record(conv);
+        let Some(storage) = self.storage.as_ref().cloned() else {
+            return;
+        };
+        type ConvStateItem = (
+            [u8; 32],
+            [u8; 13],
+            std::sync::Arc<crate::storage::FlatStorage>,
+        );
+        let tx = self.conv_state_persist_tx.get_or_insert_with(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<ConvStateItem>();
+            std::thread::spawn(move || {
+                while let Ok(first) = rx.recv() {
+                    // Coalesce the burst: keep the newest record per address.
+                    let mut latest: Vec<ConvStateItem> = vec![first];
+                    while let Ok(next) = rx.try_recv() {
+                        latest.retain(|(a, _, _)| *a != next.0);
+                        latest.push(next);
+                    }
+                    for (a, b, st) in latest {
+                        if let Err(e) = st.write_addr(&a, &b) {
+                            crate::logf!("STORAGE: async conv-state persist failed: {}", e);
+                        }
+                    }
+                }
+            });
+            tx
+        });
+        let _ = tx.send((addr, buf, storage));
+    }
+
     /// Run the deferred WIRE half of queued sends — one tick after their bubbles rendered. Failure handling matches the old inline path: no local chain but a sibling exists → fleet-forward (the sibling's merge drain transmits on the braid); no chain and no sibling → the send has nowhere to go, take the bubble back out.
     fn drain_pending_chain_sends(&mut self) -> bool {
         if self.pending_chain_sends.is_empty() {
@@ -14597,6 +14679,267 @@ impl PhotonApp {
                 }
             }
             self.msg_wrap = None;
+            self.scene_dirty = true;
+        }
+    }
+
+    /// Adopt sibling chain_sync blobs the open workers finished — the commit half of the ChainSyncReceived arm. The sender gate re-runs here: a lockout landing while the worker ran must still block the adopt.
+    fn drain_chain_syncs(&mut self) {
+        while let Ok(opened) = self.chain_sync_opened_rx.try_recv() {
+            let ChainSyncOpened {
+                conversation_token,
+                sender_pubkey,
+                incoming,
+            } = opened;
+            if !self
+                .contacts
+                .iter()
+                .any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key))
+            {
+                crate::log("CHAIN-SYNC: opened frame's sender lost fold trust mid-flight — dropped");
+                continue;
+            }
+            let fid = incoming.friendship_id;
+            // LANE-WISE adopt (docs/lanes.md): a lane merges iff its position is strictly greater — replacing whole-blob newest-wins, whose fork window was two devices clobbering each other's live lanes and pendings. A fresh device takes the whole copy SANITIZED (the sender's minted label, pendings and send tip stripped — adopting those would make this device write on the sender's lane). Echo dies naturally: a sibling merging our pushed union finds no greater positions and stays silent.
+            let mut incoming = incoming;
+            let adopted = match self
+                .friendship_chains
+                .iter_mut()
+                .find(|(id, _)| *id == fid)
+            {
+                // ERA SUPERSEDE before any lane math: a re-key mints a NEW lane_root, and the lane-wise merge below adopts a root only where one is absent — so a sibling holding the old era would keep dead chains forever, deriving garbage lanes for every new-era label it meets. Two blobs under one friendship with DIFFERENT roots are different eras, and eras replace wholesale: the newer mutated_osc wins (the dead era's clock goes quiet the moment the friend stops sending on it), sanitized like any replicated copy. Losing the race one round just means our next push carries the newer era back.
+                Some((_, local)) if local.differs_in_era_from(&incoming) => {
+                    if local.era_superseded_by(&incoming) {
+                        incoming.sanitize_replicated();
+                        *local = incoming;
+                        crate::logf!("CHAIN-SYNC: superseded chain era for fid {} — re-keyed root adopted wholesale", crate::fp(&fid.0));
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Some((_, local)) => local.merge_lanes_from(&incoming),
+                None => {
+                    incoming.sanitize_replicated();
+                    self.friendship_chains.push((fid, incoming));
+                    true
+                }
+            };
+            if !adopted {
+                continue;
+            }
+            // Persist the adopted lanes off-thread (coalesced): a chain-sync adopt is idempotent — a delayed/lost write just re-adopts from the sibling's next push, never a fork, so it is not a commit point.
+            self.persist_chains_async(&fid);
+            // Wire the contact: a device that never ran this ceremony gains the chain here — flip it sendable (Complete + woven; the owner proved the ratchet end-to-end before the state ever replicated).
+            if let Some(ci) = self.contact_idx_for_conversation_token(&conversation_token) {
+                let contact = &mut self.contacts[ci];
+                let newly_enabled = contact.friendship_id != Some(fid)
+                    || contact.clutch_state != crate::types::ClutchState::Complete;
+                contact.friendship_id = Some(fid);
+                if newly_enabled {
+                    contact.clutch_state = crate::types::ClutchState::Complete;
+                    contact.chain_woven = true;
+                    if let Some(storage) = self.storage.as_ref() {
+                        let _ = crate::storage::contacts::save_contact(
+                            &self.contacts[ci],
+                            storage,
+                        );
+                    }
+                    crate::logf!("CHAIN-SYNC: adopted chain for {} — this device can now transmit directly", crate::fp(&self.contacts[ci].handle_proof));
+                } else {
+                    crate::logf!(
+                        "CHAIN-SYNC: caught up chain for {} (sibling was ahead)",
+                        crate::fp(&self.contacts[ci].handle_proof)
+                    );
+                }
+            } else {
+                crate::log("CHAIN-SYNC: adopted chain state for a conversation with no matching contact yet (roster lag) — chain parked under its fid");
+            }
+            self.scene_dirty = true;
+        }
+    }
+
+    /// Merge history pages the decrypt workers finished — the commit half of the HistoryPageReceived arm. Runs with full &mut self (no checker borrow pinning it), so the deferral vecs the in-loop arm needed become direct calls. ALL trust/rid gating happens here against CURRENT state: contact indexes, sibling trust, and the in-flight cursor can shift between dispatch and the worker finishing, so nothing decided at dispatch time is trusted for the merge.
+    fn drain_history_pages(&mut self) {
+        while let Ok(opened) = self.hist_opened_rx.try_recv() {
+            let HistPageOpened {
+                conversation_token,
+                request_id,
+                sender_pubkey,
+                page,
+            } = opened;
+            let from_sibling = self
+                .contacts
+                .iter()
+                .any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key));
+            let Some(our_pid) = self
+                .session
+                .as_ref()
+                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+            else {
+                continue;
+            };
+            // Same sender routing the arm used for the key choice, re-run for the merge target: sibling pages land on the token's contact; friend pages land on the chains' other participant.
+            let contact_idx = if from_sibling {
+                self.contact_idx_for_conversation_token(&conversation_token)
+            } else {
+                self.friendship_chains
+                    .iter()
+                    .find(|(_, c)| c.conversation_token == conversation_token)
+                    .and_then(|(_, c)| c.participants().iter().find(|p| **p != our_pid).copied())
+                    .and_then(|other| self.contacts.iter().position(|c| c.handle_hash == other))
+            };
+            let Some(idx) = contact_idx else {
+                crate::logf!(
+                    "HISTORY: opened page from {} DROPPED — token resolves to no contact",
+                    crate::fp(&sender_pubkey.key)
+                );
+                continue;
+            };
+            // rid must match our in-flight request — a page we didn't ask for (or asked for long ago) is dropped; merging is idempotent so a raced duplicate that DOES match is harmless. A friend page must match; a sibling page without a matching rid is the live push — merge it, but leave the cursor alone.
+            let rid_matches = {
+                let cid = self.contacts[idx].conversation(&our_pid).id();
+                self.conversations
+                    .iter()
+                    .find(|v| v.id() == cid)
+                    .and_then(|v| v.history_recovery.as_ref())
+                    .and_then(|r| r.in_flight.as_ref())
+                    .is_some_and(|(rid, _, _)| *rid == request_id)
+            };
+            if !(rid_matches || from_sibling) {
+                crate::logf!("HISTORY: page from {} DROPPED — rid unmatched and sender is not a fold-trusted sibling (self-sync black-hole suspect)", crate::fp(&sender_pubkey.key));
+                continue;
+            }
+            let conv_pos = {
+                let derived = self.contacts[idx].conversation(&our_pid);
+                match self.conversations.iter().position(|v| v.id() == derived.id()) {
+                    Some(p) => p,
+                    None => {
+                        self.conversations.push(derived);
+                        self.conversations.len() - 1
+                    }
+                }
+            };
+            let mut fresh: Vec<crate::types::ChatMessage> = Vec::new();
+            {
+                let conv = &mut self.conversations[conv_pos];
+                // Merge to OUR perspective: friend pages flip direction (their outgoing = our incoming); sibling pages ride verbatim (same identity, their flags ARE ours). Friend-recovered outgoing is delivered by definition (the friend has it); dedup on (timestamp, content) against what we already hold.
+                // Index existing rows ONCE by (timestamp, content-hash) — each row is an O(1) lookup; inserts are deferred so the indices stay valid through the upgrade pass.
+                let row_hash = |c: &str| -> u64 {
+                    u64::from_le_bytes(
+                        blake3::hash(c.as_bytes()).as_bytes()[..8]
+                            .try_into()
+                            .unwrap(),
+                    )
+                };
+                let mut existing_idx: std::collections::HashMap<(i64, u64), usize> =
+                    std::collections::HashMap::with_capacity(conv.messages.len());
+                for (i, m) in conv.messages.iter().enumerate() {
+                    existing_idx
+                        .entry((m.timestamp, row_hash(&m.content)))
+                        .or_insert(i);
+                }
+                let mut to_insert: Vec<crate::types::ChatMessage> = Vec::new();
+                let mut tombstoned_in_merge = false;
+                for row in &page.rows {
+                    if crate::types::is_control_content(&row.content) {
+                        continue;
+                    }
+                    let (is_outgoing, delivered, recovered) = if from_sibling {
+                        (row.sender_outgoing, row.delivered, false)
+                    } else {
+                        (!row.sender_outgoing, !row.sender_outgoing, true)
+                    };
+                    // O(1) existence check; the exact content compare confirms the hit (guards the astronomically-rare 8-byte-hash + exact-timestamp collision).
+                    let hit = existing_idx
+                        .get(&(row.timestamp, row_hash(&row.content)))
+                        .copied()
+                        .filter(|&i| conv.messages[i].content == row.content);
+                    if let Some(i) = hit {
+                        // Delivered AND deleted are monotonic (true wins): a copy that saw the ACK — or the tombstone — upgrades ours. Upgraded rows ride `fresh` (persist + gossip) but are NOT re-inserted.
+                        let existing = &mut conv.messages[i];
+                        let mut upgraded = false;
+                        if delivered && !existing.delivered && existing.is_outgoing == is_outgoing
+                        {
+                            existing.delivered = true;
+                            upgraded = true;
+                        }
+                        if row.deleted && !existing.deleted {
+                            existing.deleted = true;
+                            tombstoned_in_merge = true; // drops a row from the syncable set (inserts self-invalidate; this upgrade path doesn't)
+                            if let Some((hash, _, _)) =
+                                crate::types::parse_attachment_content(&existing.content)
+                            {
+                                crate::storage::blob_delete(&hash);
+                            }
+                            upgraded = true;
+                        }
+                        if upgraded {
+                            fresh.push(existing.clone());
+                        }
+                        continue;
+                    }
+                    to_insert.push(crate::types::ChatMessage {
+                        content: row.content.clone(),
+                        timestamp: row.timestamp,
+                        is_outgoing,
+                        delivered,
+                        ack_hash: None,
+                        recovered,
+                        deleted: row.deleted,
+                    });
+                }
+                // Deferred inserts (they'd shift indices the map holds); insert_message_sorted dedups again defensively, so a page carrying two identical rows still lands one.
+                for msg in to_insert {
+                    conv.insert_message_sorted(msg.clone());
+                    fresh.push(msg);
+                }
+                // A tombstone flip on an existing row doesn't pass through insert_message_sorted, so invalidate the digest for that case (inserts already self-invalidated).
+                if tombstoned_in_merge {
+                    conv.invalidate_digest();
+                }
+
+                // Cursor + completion — only for a page we ASKED for; a live push must not fast-forward a walk that never ran. Early-stop: if history was already complete before this (re-)kickoff and the page brought nothing new, we're still complete — a routine re-key on an intact pair stops after one page instead of re-walking years.
+                if rid_matches {
+                    if let Some(rec) = conv.history_recovery.as_mut() {
+                        rec.in_flight = None;
+                        if page.oldest_osc < rec.oldest_recovered_osc {
+                            rec.oldest_recovered_osc = page.oldest_osc;
+                        }
+                        if !page.more || (rec.was_complete_before && fresh.is_empty()) {
+                            rec.complete = true;
+                        }
+                    }
+                }
+                crate::logf!(
+                    "HISTORY: merged page ({} new of {} rows, more={}, complete={})",
+                    fresh.len(),
+                    page.rows.len(),
+                    page.more,
+                    conv.history_recovery.as_ref().is_some_and(|r| r.complete)
+                );
+
+            }
+            // Persist the cursor off-thread (coalesced 13-byte record; the rows ride the coalescing message writer below).
+            self.persist_conv_state_async(conv_pos);
+            if !fresh.is_empty() {
+                self.persist_messages_async(idx);
+                // Gossip hop: anything genuinely fresh re-pushes to the OTHER online siblings (never back at the sender), so a message crosses the whole fleet even when only one device can reach its origin. Zero-fresh pages stop the echo.
+                self.push_rows_to_siblings(idx, &fresh, Some(sender_pubkey.key));
+            }
+            // FLEET-FORWARD DRAIN (compose anywhere): outgoing UNDELIVERED rows arriving from a SIBLING are messages a chain-less device composed and forwarded — if THIS device holds the woven chain, transmit them on the braid with their ORIGINAL timestamps (one row identity fleet-wide, so the friend's dedup + the delivered upgrade all cohere; a retransmit after a crash is re-ACKed harmlessly from the friend's stored ack_hash). Only FRESH rows drain — known rows were transmitted before or sit in the retransmit machinery. v1 assumption (pre-§14): exactly ONE device holds each friendship's woven chain.
+            if from_sibling && self.contacts[idx].chain_woven {
+                let fwd: Vec<(String, i64)> = fresh
+                    .iter()
+                    .filter(|m| m.is_outgoing && !m.delivered)
+                    .map(|m| (m.content.clone(), m.timestamp))
+                    .collect();
+                for (text, ts) in fwd {
+                    if self.chain_transmit(idx, &text, ts) {
+                        crate::log("CHAT: fleet-forwarded row transmitted on the local chain");
+                    }
+                }
+            }
             self.scene_dirty = true;
         }
     }
@@ -16810,8 +17153,13 @@ impl PhotonApp {
             .filter(|c| c.is_sibling && !c.locked_out)
             .filter_map(|c| c.friendship_id.map(|f| *f.as_bytes()))
             .collect();
-        // Collect due frames first (read-only pass over the chains), send after.
-        let mut frames: Vec<([u8; 32], i64, Vec<([u8; 32], u64)>, Vec<u8>)> = Vec::new();
+        // Collect due frames first (read-only pass over the chains); the encode + seal + frame build ride ONE worker — kete over 17KB+ per changed friendship ran inline on the render thread, and an adopt storm (fresh sibling join repushes everything) multiplied it.
+        let mut frames: Vec<(
+            [u8; 32],
+            i64,
+            Vec<([u8; 32], u64)>,
+            Option<crate::types::friendship::FriendshipChains>,
+        )> = Vec::new();
         for (fid, chains) in &self.friendship_chains {
             let fid_bytes = *fid.as_bytes();
             if sibling_fids.contains(&fid_bytes) {
@@ -16834,90 +17182,104 @@ impl PhotonApp {
                 .collect();
             if changed.is_empty() {
                 // mutated_osc moved but no lane position did (e.g. a last_plaintext-only touch); record the coarse stamp so we don't re-scan every tick.
-                frames.push((fid_bytes, chains.mutated_osc, Vec::new(), Vec::new()));
+                frames.push((fid_bytes, chains.mutated_osc, Vec::new(), None));
                 continue;
             }
             let changed_labels: Vec<[u8; 32]> = changed.iter().map(|(l, _)| *l).collect();
             let subset = chains.replication_subset(&changed_labels);
-            let bytes = match crate::storage::friendship::chains_to_vsf_bytes(&subset) {
-                Ok(b) => b,
-                Err(e) => {
-                    crate::logf!("CHAIN-SYNC: encode failed: {}", e);
-                    continue;
-                }
-            };
-            let sealed = match kete::encrypt_bytes(&bytes, &fleet_key) {
-                Ok(s) => s,
-                Err(e) => {
-                    crate::logf!("CHAIN-SYNC: seal failed: {}", e);
-                    continue;
-                }
-            };
-            let frame = match crate::network::fgtw::protocol::build_chain_sync_vsf(
-                &chains.conversation_token,
-                sealed,
-                kp.public.as_bytes(),
-                kp.secret.as_bytes(),
-            ) {
-                Ok(f) => f,
-                Err(e) => {
-                    crate::logf!("CHAIN-SYNC: frame build failed: {}", e);
-                    continue;
-                }
-            };
-            crate::logf!("CHAIN-SYNC: pushing {} changed lane(s) for {} (per-lane checkpoint, {} bytes)", changed.len(), crate::fp(&fid_bytes), frame.len());
-            frames.push((fid_bytes, chains.mutated_osc, changed, frame));
+            frames.push((fid_bytes, chains.mutated_osc, changed, Some(subset)));
         }
         if frames.is_empty() {
             return;
         }
-        for (fid_bytes, osc, changed, frame) in frames {
-            // A frame-less entry is the "stamp moved but no lane did" case: record the coarse stamp and move on, no transmit.
-            if frame.is_empty() {
+        // Sibling targets once — identical for every frame this tick. EVERY sibling, reachable or not: direct legs race, the relay covers the rest.
+        let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
+        let mut targets: Vec<(
+            std::net::SocketAddr,
+            Option<std::net::SocketAddr>,
+            [u8; 32],
+            Vec<[u8; 32]>,
+        )> = Vec::new();
+        for sib in self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out) {
+            let (primary, alt, relay_to) = match sib.race_addrs() {
+                Some((p, a)) => (
+                    p,
+                    a,
+                    relay_unless_direct_trusted(&sib, crate::network::udp::get_local_ip()),
+                ),
+                None => {
+                    let relays = sib.relay_device_list();
+                    if relays.is_empty() {
+                        continue;
+                    }
+                    (unspecified, None, relays)
+                }
+            };
+            targets.push((primary, alt, *sib.public_identity.as_bytes(), relay_to));
+        }
+        let kp_pub = *kp.public.as_bytes();
+        let kp_sec = *kp.secret.as_bytes();
+        let dispatch = checker.history_dispatch();
+        let mut work: Vec<([u8; 32], crate::types::friendship::FriendshipChains, usize)> = Vec::new();
+        for (fid_bytes, osc, changed, subset) in frames {
+            // A subset-less entry is the "stamp moved but no lane did" case: record the coarse stamp and move on, no transmit.
+            let Some(subset) = subset else {
                 self.chain_pushed_osc.insert(fid_bytes, osc);
                 continue;
-            }
-            let mut pushed_to = 0usize;
-            let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
-            for sib in self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out) {
-                let (primary, alt, relay_to) = match sib.race_addrs() {
-                    Some((p, a)) => (
-                        p,
-                        a,
-                        relay_unless_direct_trusted(&sib, crate::network::udp::get_local_ip()),
-                    ),
-                    None => {
-                        let relays = sib.relay_device_list();
-                        if relays.is_empty() {
-                            continue;
-                        }
-                        (unspecified, None, relays)
-                    }
-                };
-                checker.send_history(crate::network::status::HistorySendRequest {
-                    peer_addr: primary,
-                    alt_addr: alt,
-                    recipient_pubkey: *sib.public_identity.as_bytes(),
-                    relay_to,
-                    vsf_bytes: frame.clone(),
-                });
-                pushed_to += 1;
-            }
+            };
+            crate::logf!("CHAIN-SYNC: pushing {} changed lane(s) for {} to {} sibling(s) (per-lane checkpoint)", changed.len(), crate::fp(&fid_bytes), targets.len());
+            // Positions record at DISPATCH — the same optimism as before this moved off-thread (send_history only ever queued; delivery was never confirmed here). A worker failure is loud and impossible-class (deterministic encode + seal with a held key); the lane re-pushes the moment it advances again.
             self.chain_pushed_osc.insert(fid_bytes, osc);
-            // Record each pushed lane's position so we don't re-send it until it advances again.
             for (label, pos) in &changed {
                 let mut key = [0u8; 64];
                 key[..32].copy_from_slice(&fid_bytes);
                 key[32..].copy_from_slice(label);
                 self.lane_pushed_pos.insert(key, *pos);
             }
-            crate::logf!(
-                "CHAIN-SYNC: pushed {} lane(s) ({}) to {} sibling(s)",
-                changed.len(),
-                crate::fp(&fid_bytes),
-                pushed_to
-            );
+            work.push((fid_bytes, subset, changed.len()));
         }
+        if work.is_empty() || targets.is_empty() {
+            return;
+        }
+        std::thread::spawn(move || {
+            for (fid_bytes, subset, lane_count) in work {
+                let bytes = match crate::storage::friendship::chains_to_vsf_bytes(&subset) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        crate::logf!("CHAIN-SYNC CRITICAL: encode failed off-thread: {} — {} lane(s) for {} unpushed until the lane next advances", e, lane_count, crate::fp(&fid_bytes));
+                        continue;
+                    }
+                };
+                let sealed = match kete::encrypt_bytes(&bytes, &fleet_key) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        crate::logf!("CHAIN-SYNC CRITICAL: seal failed off-thread: {} — {} lane(s) for {} unpushed until the lane next advances", e, lane_count, crate::fp(&fid_bytes));
+                        continue;
+                    }
+                };
+                let frame = match crate::network::fgtw::protocol::build_chain_sync_vsf(
+                    &subset.conversation_token,
+                    sealed,
+                    &kp_pub,
+                    &kp_sec,
+                ) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        crate::logf!("CHAIN-SYNC CRITICAL: frame build failed off-thread: {} — {} lane(s) for {} unpushed until the lane next advances", e, lane_count, crate::fp(&fid_bytes));
+                        continue;
+                    }
+                };
+                for (primary, alt, pk, relay_to) in &targets {
+                    let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                        peer_addr: *primary,
+                        alt_addr: *alt,
+                        recipient_pubkey: *pk,
+                        relay_to: relay_to.clone(),
+                        vsf_bytes: frame.clone(),
+                    });
+                }
+            }
+        });
     }
 
     /// Live fleet propagation: push just-written conversation rows for the friend/self contact at `idx` to EVERY sibling (reachable-or-not — direct legs race, relay covers the rest) as an unsolicited hist_page under the FLEET key. The receiving sibling merges them verbatim (an unmatched rid from a sibling IS the push signature) and re-pushes anything genuinely fresh, so a message hops the whole fleet even when only one device can reach its origin. Probe rows are filtered; a lost push self-heals via the sibling-online history sweep. `exclude_device` keeps a gossip hop from echoing straight back at its sender.
@@ -16963,29 +17325,20 @@ impl PhotonApp {
             rows: hist_rows,
         };
         let rid: [u8; 32] = rand::random();
-        let vsf_bytes = match seal_history_page(&page, &fleet_key).and_then(|sealed| {
-            crate::network::fgtw::protocol::build_history_page_vsf(
-                &token,
-                &rid,
-                sealed,
-                kp.public.as_bytes(),
-                kp.secret.as_bytes(),
-            )
-        }) {
-            Ok(b) => b,
-            Err(e) => {
-                crate::logf!("FLEET-HIST: live push build failed: {}", e);
-                return;
-            }
-        };
-        let mut pushed = 0usize;
+        // Targets first (needs &self); the kete seal + frame build + send ride a worker — sealing a full page inline was another render-thread cost on every live push and every gossip hop.
+        let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
+        let mut targets: Vec<(
+            std::net::SocketAddr,
+            Option<std::net::SocketAddr>,
+            [u8; 32],
+            Vec<[u8; 32]>,
+        )> = Vec::new();
         let mut skipped = 0usize;
         // EVERY sibling, not just is_online ones: sibling presence has proven unreliable (pong-provenance drops kept siblings "offline" for whole sessions), and gating delivery on it turned the entire fleet plane into a silent no-op — zero FLEET-HIST lines in a full day's desktop log while messages flowed. Direct legs race as before; a sibling with no validated path (or no address at all) rides the relay, which delivers whenever that device next drains its pipe.
         for sib in self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out) {
             if exclude_device.is_some_and(|d| *sib.public_identity.as_bytes() == d) {
                 continue;
             }
-            let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
             let (primary, alt, relay_to) = match sib.race_addrs() {
                 Some((p, a)) => (
                     p,
@@ -17002,30 +17355,48 @@ impl PhotonApp {
                     (unspecified, None, relays)
                 }
             };
-            checker.send_history(crate::network::status::HistorySendRequest {
-                peer_addr: primary,
-                alt_addr: alt,
-                recipient_pubkey: *sib.public_identity.as_bytes(),
-                relay_to,
-                vsf_bytes: vsf_bytes.clone(),
-            });
-            pushed += 1;
+            targets.push((primary, alt, *sib.public_identity.as_bytes(), relay_to));
         }
         // ALWAYS log, zero included — a silently-no-op fleet push is exactly how this path shipped broken.
         crate::logf!(
             "FLEET-HIST: live push {} row(s) for {} → {} sibling(s) ({} unreachable)",
-            rows.len(),
+            page.rows.len(),
             crate::fp(&self.contacts[idx].handle_proof),
-            pushed,
+            targets.len(),
             skipped
         );
-        if pushed > 0 {
-            crate::logf!(
-                "FLEET-HIST: pushed {} row(s) to {} sibling device(s)",
-                page.rows.len(),
-                pushed
-            );
+        if targets.is_empty() {
+            return;
         }
+        let kp_pub = *kp.public.as_bytes();
+        let kp_sec = *kp.secret.as_bytes();
+        let dispatch = checker.history_dispatch();
+        std::thread::spawn(move || {
+            let vsf_bytes = match seal_history_page(&page, &fleet_key).and_then(|sealed| {
+                crate::network::fgtw::protocol::build_history_page_vsf(
+                    &token,
+                    &rid,
+                    sealed,
+                    &kp_pub,
+                    &kp_sec,
+                )
+            }) {
+                Ok(b) => b,
+                Err(e) => {
+                    crate::logf!("FLEET-HIST: live push build failed: {}", e);
+                    return;
+                }
+            };
+            for (primary, alt, pk, relay_to) in targets {
+                let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                    peer_addr: primary,
+                    alt_addr: alt,
+                    recipient_pubkey: pk,
+                    relay_to,
+                    vsf_bytes: vsf_bytes.clone(),
+                });
+            }
+        });
     }
 
     /// Sibling fork repair, the APPLY half: deterministically rebuild the sibling 1:1 chains from `nonce`, reset the weave, persist, optionally echo the frame (once — the nonce dedup in the drain stops the ping-pong), and re-probe. Both sides run exactly this from the same nonce and land on byte-identical chains: synthetic "eggs" = BLAKE3-XOF(domain ‖ fleet_key ‖ nonce ‖ sorted sibling pids), fed thru the SAME from_clutch path a real ceremony uses. Fleet-key-derived is sound here because a sibling 1:1 is between two devices of ONE owner — the chain provides transport integrity, not inter-device secrecy. Rarangi rows are untouched: history survives, only chain state re-anchors. The 2MB avalanche expand runs inline (~1s, rare repair event — same UI-thread cost as the known ceremony hitch).
@@ -17596,6 +17967,10 @@ impl PhotonApp {
         // Peer avatars: install any completed downloads, then kick a fetch (once/session/handle) for any contact still without one. Cache-first + dedup'd by avatar_dl_started, so this is cheap to run every tick — it spawns at most one thread per peer per session.
         self.drain_avatar_downloads();
         self.drain_attach_installed();
+        // History pages the decrypt workers finished since last tick — merge before the arm loop so a walk's next request goes out on this tick's sweep, not the next.
+        self.drain_history_pages();
+        // Chain-sync blobs the open workers finished — adopt before the arm loop so this tick's replication push already carries the adopted heads.
+        self.drain_chain_syncs();
 
         // Our OWN just-picked avatar, arriving from the off-thread set pipeline (decode ran there too): install + repaint, then drop the channel — one avatar per pick.
         if let Some(rx) = self.avatar_set_rx.as_ref() {
@@ -17721,8 +18096,6 @@ impl PhotonApp {
 
         let mut changed = false;
         let mut ceremony_completions: Vec<usize> = Vec::new(); // Contact indices to complete after loop
-                                                               // Fleet-forwarded rows to transmit on OUR chain (collected in the drain, executed after the checker borrow releases — chain_transmit needs &mut self).
-        let mut fleet_tx_rows: Vec<(usize, String, i64)> = Vec::new();
         let mut lan_ping_indices: Vec<usize> = Vec::new(); // Contact indices to ping immediately on new LAN discovery
                                                            // Collect pending message retransmit requests (friendship_id, ip, handle, device_pubkey, last_received_ef6) to process after loop last_received_ef6 from pong tells us what they already have - only retransmit newer
         let mut retransmit_requests: Vec<(
@@ -20643,46 +21016,48 @@ impl PhotonApp {
                     let seed = self.session.as_ref().map(|s| s.identity_seed);
                     if !known {
                         crate::log("ATTACH: request from unknown device — ignored");
-                    } else if let (Some(seed), Some(wire_key)) = (
+                    } else if let (Some(seed), Some(wire_key), Some(kp)) = (
                         seed,
                         self.attach_wire_key(&sender_pubkey.key, &conversation_token),
+                        self.device_keypair.as_ref(),
                     ) {
-                        if let Some(plain) = crate::storage::blob_load(&seed, &content_hash) {
-                            if let (Ok(sealed), Some(kp), Some(checker)) = (
-                                kete::encrypt_bytes(&plain, &wire_key),
-                                self.device_keypair.as_ref(),
-                                self.status_checker.as_ref(),
-                            ) {
-                                match crate::network::fgtw::protocol::build_attach_blob_vsf(
+                        // OFF-THREAD: serving a blob is a vault read + a kete seal over an ARBITRARY-size file — both ran inline on the render thread. Authorization stays here; the worker loads, seals, builds, and dispatches.
+                        let kp_pub = *kp.public.as_bytes();
+                        let kp_sec = *kp.secret.as_bytes();
+                        let dispatch = checker.history_dispatch();
+                        std::thread::spawn(move || {
+                            let Some(plain) = crate::storage::blob_load(&seed, &content_hash)
+                            else {
+                                crate::log("ATTACH: requested blob not held here");
+                                return;
+                            };
+                            match kete::encrypt_bytes(&plain, &wire_key).and_then(|sealed| {
+                                crate::network::fgtw::protocol::build_attach_blob_vsf(
                                     &conversation_token,
                                     &content_hash,
                                     sealed,
-                                    kp.public.as_bytes(),
-                                    kp.secret.as_bytes(),
-                                ) {
-                                    Ok(vsf_bytes) => {
-                                        // A relay-injected request has no routable src addr — answer back thru the pipe.
-                                        let via_relay =
-                                            sender_addr == crate::network::status::RELAY_ADDR;
-                                        checker.send_history(
-                                            crate::network::status::HistorySendRequest {
-                                                peer_addr: sender_addr,
-                                                alt_addr: None,
-                                                recipient_pubkey: sender_pubkey.key,
-                                                vsf_bytes,
-                                                relay_to: vec![sender_pubkey.key], // always the one-device relay copy — see the page-serve site: responses die on one-directional reverse paths
-                                            },
-                                        );
-                                        crate::log("ATTACH: served blob request");
-                                    }
-                                    Err(e) => {
-                                        crate::logf!("ATTACH: serve frame build failed: {}", e)
-                                    }
+                                    &kp_pub,
+                                    &kp_sec,
+                                )
+                            }) {
+                                Ok(vsf_bytes) => {
+                                    // A relay-injected request has no routable src addr — the always-carried relay copy answers back thru the pipe.
+                                    let _ = dispatch.send(
+                                        crate::network::status::HistorySendRequest {
+                                            peer_addr: sender_addr,
+                                            alt_addr: None,
+                                            recipient_pubkey: sender_pubkey.key,
+                                            vsf_bytes,
+                                            relay_to: vec![sender_pubkey.key], // always the one-device relay copy — see the page-serve site: responses die on one-directional reverse paths
+                                        },
+                                    );
+                                    crate::log("ATTACH: served blob request");
+                                }
+                                Err(e) => {
+                                    crate::logf!("ATTACH: serve frame build failed: {}", e)
                                 }
                             }
-                        } else {
-                            crate::log("ATTACH: requested blob not held here");
-                        }
+                        });
                     }
                 }
                 StatusUpdate::ChainSyncReceived {
@@ -20690,7 +21065,7 @@ impl PhotonApp {
                     sealed,
                     sender_pubkey,
                 } => {
-                    // Trust gate: only a fold-verified sibling device may replace chain state.
+                    // Trust gate: only a fold-verified sibling device may replace chain state. Re-checked at the drain — lockout can land between dispatch and the worker finishing.
                     if !self
                         .contacts
                         .iter()
@@ -20704,79 +21079,36 @@ impl PhotonApp {
                     let Some(fleet_key) = self.fleet_key_cached() else {
                         continue;
                     };
-                    let Ok(plain) = kete::decrypt_bytes(&sealed, &fleet_key) else {
-                        crate::log("CHAIN-SYNC: blob failed to open under the fleet key — dropped (stale key generation?)");
-                        continue;
-                    };
-                    let incoming = match crate::storage::friendship::chains_from_vsf_bytes(&plain) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            crate::logf!("CHAIN-SYNC: decode failed: {} — dropped", e);
-                            continue;
-                        }
-                    };
-                    if incoming.conversation_token != conversation_token {
-                        crate::log("CHAIN-SYNC: inner token mismatch — dropped");
-                        continue;
-                    }
-                    let fid = incoming.friendship_id;
-                    // LANE-WISE adopt (docs/lanes.md): a lane merges iff its position is strictly greater — replacing whole-blob newest-wins, whose fork window was two devices clobbering each other's live lanes and pendings. A fresh device takes the whole copy SANITIZED (the sender's minted label, pendings and send tip stripped — adopting those would make this device write on the sender's lane). Echo dies naturally: a sibling merging our pushed union finds no greater positions and stays silent.
-                    let mut incoming = incoming;
-                    let adopted = match self
-                        .friendship_chains
-                        .iter_mut()
-                        .find(|(id, _)| *id == fid)
-                    {
-                        // ERA SUPERSEDE before any lane math: a re-key mints a NEW lane_root, and the lane-wise merge below adopts a root only where one is absent — so a sibling holding the old era would keep dead chains forever, deriving garbage lanes for every new-era label it meets. Two blobs under one friendship with DIFFERENT roots are different eras, and eras replace wholesale: the newer mutated_osc wins (the dead era's clock goes quiet the moment the friend stops sending on it), sanitized like any replicated copy. Losing the race one round just means our next push carries the newer era back.
-                        Some((_, local)) if local.differs_in_era_from(&incoming) => {
-                            if local.era_superseded_by(&incoming) {
-                                incoming.sanitize_replicated();
-                                *local = incoming;
-                                crate::logf!("CHAIN-SYNC: superseded chain era for fid {} — re-keyed root adopted wholesale", crate::fp(&fid.0));
-                                true
-                            } else {
-                                false
+                    // OFF-THREAD: the kete open + VSF decode ran inline — 17KB+ per lane, and a fresh sibling join repushes EVERY friendship at once (an adopt storm on the render thread). The worker opens and decodes; the adopt (cheap position compares) runs in drain_chain_syncs.
+                    let tx = self.chain_sync_opened_tx.clone();
+                    let wake = self.event_proxy.clone();
+                    std::thread::spawn(move || {
+                        let Ok(plain) = kete::decrypt_bytes(&sealed, &fleet_key) else {
+                            crate::log("CHAIN-SYNC: blob failed to open under the fleet key — dropped (stale key generation?)");
+                            return;
+                        };
+                        let incoming = match crate::storage::friendship::chains_from_vsf_bytes(&plain) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                crate::logf!("CHAIN-SYNC: decode failed: {} — dropped", e);
+                                return;
                             }
+                        };
+                        if incoming.conversation_token != conversation_token {
+                            crate::log("CHAIN-SYNC: inner token mismatch — dropped");
+                            return;
                         }
-                        Some((_, local)) => local.merge_lanes_from(&incoming),
-                        None => {
-                            incoming.sanitize_replicated();
-                            self.friendship_chains.push((fid, incoming));
-                            true
+                        let _ = tx.send(ChainSyncOpened {
+                            conversation_token,
+                            sender_pubkey,
+                            incoming,
+                        });
+                        if let Some(w) = wake.as_ref() {
+                            let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
                         }
-                    };
-                    if !adopted {
-                        continue;
-                    }
-                    // Persist the adopted lanes OFF-thread (coalesced): a chain-sync adopt is idempotent — a delayed/lost write just re-adopts from the sibling's next push, never a fork, so it is not a commit point. Deferred past the `checker` borrow.
-                    chains_persist_fids.push(fid);
-                    // Wire the contact: a device that never ran this ceremony gains the chain here — flip it sendable (Complete + woven; the owner proved the ratchet end-to-end before the state ever replicated).
-                    if let Some(ci) = self.contact_idx_for_conversation_token(&conversation_token) {
-                        let contact = &mut self.contacts[ci];
-                        let newly_enabled = contact.friendship_id != Some(fid)
-                            || contact.clutch_state != crate::types::ClutchState::Complete;
-                        contact.friendship_id = Some(fid);
-                        if newly_enabled {
-                            contact.clutch_state = crate::types::ClutchState::Complete;
-                            contact.chain_woven = true;
-                            if let Some(storage) = self.storage.as_ref() {
-                                let _ = crate::storage::contacts::save_contact(
-                                    &self.contacts[ci],
-                                    storage,
-                                );
-                            }
-                            crate::logf!("CHAIN-SYNC: adopted chain for {} — this device can now transmit directly", crate::fp(&self.contacts[ci].handle_proof));
-                        } else {
-                            crate::logf!(
-                                "CHAIN-SYNC: caught up chain for {} (sibling was ahead)",
-                                crate::fp(&self.contacts[ci].handle_proof)
-                            );
-                        }
-                    } else {
-                        crate::log("CHAIN-SYNC: adopted chain state for a conversation with no matching contact yet (roster lag) — chain parked under its fid");
-                    }
-                    changed = true;
+                    });
                 }
+
                 StatusUpdate::ChainResetReceived {
                     conversation_token,
                     sealed,
@@ -20883,195 +21215,28 @@ impl PhotonApp {
                             from_sibling
                         );
                     }
-                    if let (Some(key), Some(idx)) = (key, contact_idx) {
-                        // rid must match our in-flight request — a page we didn't ask for (or asked for long ago) is dropped; merging is idempotent so a raced duplicate that DOES match is harmless. Field-precise conversation lookup (the drain pins the status checker).
-                        let rid_matches = self
-                            .session
-                            .as_ref()
-                            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
-                            .and_then(|us| {
-                                let cid = self.contacts[idx].conversation(&us).id();
-                                self.conversations.iter().find(|v| v.id() == cid)
-                            })
-                            .and_then(|v| v.history_recovery.as_ref())
-                            .and_then(|r| r.in_flight.as_ref())
-                            .is_some_and(|(rid, _, _)| *rid == request_id);
-                        // A friend page must match our in-flight request (unsolicited friend pages are dropped). A sibling page without a matching rid is the live push — merge it, but leave the cursor alone.
-                        if !(rid_matches || from_sibling) {
-                            crate::logf!("HISTORY: page from {} DROPPED — rid unmatched and sender is not a fold-trusted sibling (self-sync black-hole suspect)", crate::fp(&sender_pubkey.key));
-                        }
-                        if rid_matches || from_sibling {
+                    if let (Some(key), Some(_)) = (key, contact_idx) {
+                        // OFF-THREAD: opening the sealed page (kete over up to MAX_PAGE_BYTES) ran inline here — 210-485ms per page in the field (2026-08-08), the largest single status-arm stall. The worker only decrypts and posts back; EVERY gate that reads mutable state (in-flight rid match, sibling trust, contact indexes) lives in drain_history_pages, evaluated against current state instead of a dispatch-time snapshot.
+                        let tx = self.hist_opened_tx.clone();
+                        let wake = self.event_proxy.clone();
+                        std::thread::spawn(move || {
                             match crate::network::history_pages::open_history_page(&sealed, &key) {
                                 Ok(page) => {
-                                    // The conversation these rows land in — field-precise (the drain pins the status checker, so no &mut self method fits here).
-                                    let Some(our_pid) = self
-                                        .session
-                                        .as_ref()
-                                        .map(|s| {
-                                            crate::crypto::clutch::identity_party_id(
-                                                &s.identity_seed,
-                                            )
-                                        })
-                                    else {
-                                        continue;
-                                    };
-                                    let conv_pos = {
-                                        let derived = self.contacts[idx].conversation(&our_pid);
-                                        match self
-                                            .conversations
-                                            .iter()
-                                            .position(|v| v.id() == derived.id())
-                                        {
-                                            Some(p) => p,
-                                            None => {
-                                                self.conversations.push(derived);
-                                                self.conversations.len() - 1
-                                            }
-                                        }
-                                    };
-                                    let conv = &mut self.conversations[conv_pos];
-                                    // Merge to OUR perspective: friend pages flip direction (their outgoing = our incoming); sibling pages ride verbatim (same identity, their flags ARE ours). Friend-recovered outgoing is delivered by definition (the friend has it); dedup on (timestamp, content) against what we already hold.
-                                    // Index existing rows ONCE by (timestamp, content-hash) — the merge was O(rows × messages) with a full string compare per pair (50 rows × ~90 messages × up-to-123 pages ≈ half a million compares a session, a top render-thread cost in the field audit). Each row is now an O(1) lookup; inserts are deferred so the indices stay valid through the upgrade pass.
-                                    let row_hash = |c: &str| -> u64 {
-                                        u64::from_le_bytes(
-                                            blake3::hash(c.as_bytes()).as_bytes()[..8]
-                                                .try_into()
-                                                .unwrap(),
-                                        )
-                                    };
-                                    let mut existing_idx: std::collections::HashMap<(i64, u64), usize> =
-                                        std::collections::HashMap::with_capacity(conv.messages.len());
-                                    for (i, m) in conv.messages.iter().enumerate() {
-                                        existing_idx
-                                            .entry((m.timestamp, row_hash(&m.content)))
-                                            .or_insert(i);
+                                    let _ = tx.send(HistPageOpened {
+                                        conversation_token,
+                                        request_id,
+                                        sender_pubkey,
+                                        page,
+                                    });
+                                    if let Some(w) = wake.as_ref() {
+                                        let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
                                     }
-                                    let mut fresh: Vec<crate::types::ChatMessage> = Vec::new();
-                                    let mut to_insert: Vec<crate::types::ChatMessage> = Vec::new();
-                                    let mut tombstoned_in_merge = false;
-                                    for row in &page.rows {
-                                        if crate::types::is_control_content(&row.content) {
-                                            continue;
-                                        }
-                                        let (is_outgoing, delivered, recovered) = if from_sibling {
-                                            (row.sender_outgoing, row.delivered, false)
-                                        } else {
-                                            (!row.sender_outgoing, !row.sender_outgoing, true)
-                                        };
-                                        // O(1) existence check; the exact content compare confirms the hit (guards the astronomically-rare 8-byte-hash + exact-timestamp collision).
-                                        let hit = existing_idx
-                                            .get(&(row.timestamp, row_hash(&row.content)))
-                                            .copied()
-                                            .filter(|&i| conv.messages[i].content == row.content);
-                                        if let Some(idx) = hit {
-                                            // Delivered AND deleted are monotonic (true wins): a copy that saw the ACK — or the tombstone — upgrades ours. Upgraded rows ride `fresh` (persist + gossip) but are NOT re-inserted.
-                                            let existing = &mut conv.messages[idx];
-                                            let mut upgraded = false;
-                                            if delivered
-                                                && !existing.delivered
-                                                && existing.is_outgoing == is_outgoing
-                                            {
-                                                existing.delivered = true;
-                                                upgraded = true;
-                                            }
-                                            if row.deleted && !existing.deleted {
-                                                existing.deleted = true;
-                                                tombstoned_in_merge = true; // drops a row from the syncable set (inserts self-invalidate; this upgrade path doesn't)
-                                                if let Some((hash, _, _)) =
-                                                    crate::types::parse_attachment_content(
-                                                        &existing.content,
-                                                    )
-                                                {
-                                                    crate::storage::blob_delete(&hash);
-                                                }
-                                                upgraded = true;
-                                            }
-                                            if upgraded {
-                                                fresh.push(existing.clone());
-                                            }
-                                            continue;
-                                        }
-                                        to_insert.push(crate::types::ChatMessage {
-                                            content: row.content.clone(),
-                                            timestamp: row.timestamp,
-                                            is_outgoing,
-                                            delivered,
-                                            ack_hash: None,
-                                            recovered,
-                                            deleted: row.deleted,
-                                        });
-                                    }
-                                    // Deferred inserts (they'd shift indices the map holds); insert_message_sorted dedups again defensively, so a page carrying two identical rows still lands one.
-                                    for msg in to_insert {
-                                        conv.insert_message_sorted(msg.clone());
-                                        fresh.push(msg);
-                                    }
-                                    // A tombstone flip on an existing row doesn't pass through insert_message_sorted, so invalidate the digest for that case (inserts already self-invalidated).
-                                    if tombstoned_in_merge {
-                                        conv.invalidate_digest();
-                                    }
-
-                                    // Cursor + completion — only for a page we ASKED for; a live push must not fast-forward a walk that never ran. Early-stop: if history was already complete before this (re-)kickoff and the page brought nothing new, we're still complete — a routine re-key on an intact pair stops after one page instead of re-walking years.
-                                    if rid_matches {
-                                        if let Some(rec) = conv.history_recovery.as_mut() {
-                                            rec.in_flight = None;
-                                            if page.oldest_osc < rec.oldest_recovered_osc {
-                                                rec.oldest_recovered_osc = page.oldest_osc;
-                                            }
-                                            if !page.more
-                                                || (rec.was_complete_before && fresh.is_empty())
-                                            {
-                                                rec.complete = true;
-                                            }
-                                        }
-                                    }
-                                    crate::logf!("HISTORY: merged page ({} new of {} rows, more={}, complete={})", fresh.len(), page.rows.len(), page.more, conv
-                                            .history_recovery
-                                            .as_ref()
-                                            .is_some_and(|r| r.complete));
-
-                                    // Persist the new rows + the cursor (AGENT.md: every change hits disk) — but OFF the UI thread. Both writes used to run inline, once per page: an encrypted row append plus a full contact-state rewrite. With 123 pages merged in a single session that is 246 blocking writes on the render thread, and the arm timer caught them at 159-349ms each — the biggest single source of the "everything feels laggy" the user reported.
-                                    // The coalescing writer already exists for exactly this shape (it killed the 5.7s MessageAck stalls) and keeps only the newest snapshot per contact, so a burst of pages costs ONE write instead of one per page. The cursor rides the same snapshot because it lives in the contact.
-                                    if let Some(storage) = self.storage.as_ref() {
-                                        if let Err(e) =
-                                            crate::storage::contacts::save_conversation_state(
-                                                conv, storage,
-                                            )
-                                        {
-                                            crate::logf!("HISTORY: cursor persist failed: {}", e);
-                                        }
-                                    }
-                                    if !fresh.is_empty() {
-                                        // Deferred: the drain holds an immutable borrow of the status checker, so the queue is drained into the coalescing writer after the loop (same `persist_hashes` path every other arm uses).
-                                        persist_hashes.push(self.contacts[idx].handle_hash);
-                                    }
-                                    // Gossip hop: anything genuinely fresh re-pushes to the OTHER online siblings (never back at the sender), so a message crosses the whole fleet even when only one device can reach its origin. Zero-fresh pages stop the echo.
-                                    if !fresh.is_empty() {
-                                        self.push_rows_to_siblings(
-                                            idx,
-                                            &fresh,
-                                            Some(sender_pubkey.key),
-                                        );
-                                    }
-                                    // FLEET-FORWARD DRAIN (compose anywhere): outgoing UNDELIVERED rows arriving from a SIBLING are messages a chain-less device composed and forwarded — if THIS device holds the woven chain, transmit them on the braid with their ORIGINAL timestamps (one row identity fleet-wide, so the friend's dedup + the delivered upgrade all cohere; a retransmit after a crash is re-ACKed harmlessly from the friend's stored ack_hash). Only FRESH rows drain — known rows were transmitted before or sit in the retransmit machinery. Deferred past the checker borrow like every other &mut-self action in this drain. v1 assumption (pre-§14): exactly ONE device holds each friendship's woven chain.
-                                    if from_sibling && self.contacts[idx].chain_woven {
-                                        for m in
-                                            fresh.iter().filter(|m| m.is_outgoing && !m.delivered)
-                                        {
-                                            fleet_tx_rows.push((
-                                                idx,
-                                                m.content.clone(),
-                                                m.timestamp,
-                                            ));
-                                        }
-                                    }
-                                    changed = true;
                                 }
                                 Err(e) => {
                                     crate::logf!("HISTORY: page open failed ({}) — dropped", e)
                                 }
                             }
-                        }
+                        });
                     }
                 }
 
@@ -21611,14 +21776,6 @@ impl PhotonApp {
         if fleet_sweep_due {
             self.kick_fleet_history_sweep("sibling online");
         }
-        // Fleet-forward drain (deferred): transmit sibling-composed rows on our woven chain, original timestamps preserved.
-        for (idx, fwd_text, fwd_ts) in fleet_tx_rows {
-            if self.chain_transmit(idx, &fwd_text, fwd_ts) {
-                crate::log("CHAT: fleet-forwarded row transmitted on the local chain");
-                changed = true;
-            }
-        }
-
         // Retransmit pending messages to contacts that just came online Use last_received_ef6 from pong to only retransmit messages they don't have
         for (fid, peer_addr, alt_addr, handle, recipient_pubkey, last_received_ef6) in
             retransmit_requests

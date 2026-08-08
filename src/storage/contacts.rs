@@ -1088,21 +1088,27 @@ pub fn load_messages(
     Ok(())
 }
 
-/// Persist the conversation-scoped durable bits — unread count and the history-recovery cursor — under the conversation id. These historically rode the contact record; a conversation is not a contact, so they get their own tiny record. Fixed-width layout: unread u32 LE ‖ hist_oldest i64 LE ‖ flags u8 (bit 0 = hist_complete, bit 1 = history has run).
-pub fn save_conversation_state(
-    conv: &crate::types::Conversation,
-    storage: &FlatStorage,
-) -> Result<(), StorageError> {
+/// The (vault address, payload) pair `save_conversation_state` writes — split out so the off-thread writer can carry the 13-byte record instead of cloning a whole conversation. Fixed-width layout: unread u32 LE ‖ hist_oldest i64 LE ‖ flags u8 (bit 0 = hist_complete, bit 1 = history has run).
+pub fn conversation_state_record(conv: &crate::types::Conversation) -> ([u8; 32], [u8; 13]) {
     let mut buf = [0u8; 13];
     buf[..4].copy_from_slice(&conv.unread_count.to_le_bytes());
     if let Some(rec) = &conv.history_recovery {
         buf[4..12].copy_from_slice(&rec.oldest_recovered_osc.to_le_bytes());
         buf[12] = u8::from(rec.complete) | 0b10;
     }
-    storage.write_addr(
-        &crate::storage::vault_key("conv_state", conv.id().as_bytes()),
-        &buf,
+    (
+        crate::storage::vault_key("conv_state", conv.id().as_bytes()),
+        buf,
     )
+}
+
+/// Persist the conversation-scoped durable bits — unread count and the history-recovery cursor — under the conversation id. These historically rode the contact record; a conversation is not a contact, so they get their own tiny record.
+pub fn save_conversation_state(
+    conv: &crate::types::Conversation,
+    storage: &FlatStorage,
+) -> Result<(), StorageError> {
+    let (addr, buf) = conversation_state_record(conv);
+    storage.write_addr(&addr, &buf)
 }
 
 /// Hydrate a conversation's durable bits. Prefers the conversation-state record; when none exists yet, falls back to the fields old builds wrote into the CONTACT record at `legacy_contact_key` (the participant the row was filed under). The fallback is self-terminating — the first `save_conversation_state` supersedes it — and deletable once no vault in the field predates the split.
