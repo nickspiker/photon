@@ -3762,7 +3762,33 @@ impl FluorApp for PhotonApp {
         // Live shift mirror for `on_close_requested` (which has no Context): a shift-held close — the chrome ✕, Alt-F4, anything — means the REAL exit, not the resident hide. Refreshed on every event so the click that lands on the close button has already stamped it.
         self.shift_held = ctx.modifiers.shift_key();
         // Every event except cursor movement may move immediate-mode content, so it claims a full-viewport frame. CursorMoved's effects are all narrow-tracked: hover tints live in the host overlay pass, drag-select is the textbox's own damage, and the one content-flavoured hover (the Ready avatar hint) sets `scene_dirty` at its flip site.
-        if !matches!(event, Event::CursorMoved { .. }) {
+        // COMPOSE TYPING is the other narrow case: a plain keystroke (or Android IME commit) into the focused compose box only moves pixels the box's own damage tracking already claims — and the full-viewport re-raster it used to trigger cost the phone an average 21ms PER KEYSTROKE against a 16.6ms frame budget (the 2026-08-08 typing lag, measured by the render probe). Chorded keys stay full (zoom/clipboard reach beyond the box), as do Enter (submits), Esc (disarms/navigates), Tab (moves focus), and any edit while the box holds fewer than two chars — the emptiness transitions repaint the "message" placeholder, which lives on the scene, not in the box.
+        let compose_typing = matches!(self.state, AppState::Conversation)
+            && !ctx.modifiers.control_key()
+            && !ctx.modifiers.super_key()
+            && self
+                .message_textbox
+                .as_ref()
+                .is_some_and(|tb| Some(tb.hit_id()) == self.focused && tb.chars.len() >= 2)
+            && match event {
+                Event::Ime(Ime::Commit(_)) => true,
+                Event::KeyboardInput { event: kev, .. } => matches!(
+                    &kev.logical_key,
+                    Key::Character(_)
+                        | Key::Named(NamedKey::Backspace)
+                        | Key::Named(NamedKey::Delete)
+                        | Key::Named(NamedKey::ArrowLeft)
+                        | Key::Named(NamedKey::ArrowRight)
+                        | Key::Named(NamedKey::ArrowUp)
+                        | Key::Named(NamedKey::ArrowDown)
+                        | Key::Named(NamedKey::Home)
+                        | Key::Named(NamedKey::End)
+                        | Key::Named(NamedKey::Space)
+                        | Key::Named(NamedKey::Shift)
+                ),
+                _ => false,
+            };
+        if !matches!(event, Event::CursorMoved { .. }) && !compose_typing {
             self.scene_dirty = true;
         }
         match event {
