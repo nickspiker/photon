@@ -12400,7 +12400,43 @@ impl PhotonApp {
         true
     }
 
-    /// Fleet-wide reaction RECENCY: each device keeps `glyph → last_used_osc` in its own single-writer key (`react.recent.<device>` — per-device because the settings layer is LWW per key: one shared key would drop concurrent stamps across devices, the `fleet.locked` race shape). The fleet view is the max stamp per glyph across keys. Recency, not tally, ON PURPOSE: all-time counts ossify (an old habit needs to be out-used to dethrone), while most-recent-first keeps the strip current and reshuffles the moment a new codepoint is used — the contacts list's float-to-top, derived from stamps because two devices' bare orders can't merge. Value encoding: `glyph\u{2}last_osc` pairs joined by `\u{3}`, lenient parse so the blob can grow fields later without a flag-day.
+    /// Encode a device's reaction-recency list as a TYPED VSF field — alternating x{glyph} e6{last_used_osc} value pairs, the same tagged-value discipline as the wire reference field. Never a separator-joined string with decimal stamps (the settings-value cousin of the forbidden `s{idx}_` shape).
+    fn encode_react_recent(stamps: &[(String, i64)]) -> Vec<u8> {
+        use vsf::schema::section::FieldValue;
+        let mut values = Vec::with_capacity(stamps.len() * 2);
+        for (g, t) in stamps {
+            values.push(vsf::VsfType::x(g.clone()));
+            values.push(vsf::VsfType::e(vsf::EtType::e6(*t)));
+        }
+        FieldValue::new("recent", values).flatten()
+    }
+
+    /// Decode a reaction-recency blob — lenient: a malformed blob reads as empty (the strip falls back to defaults; the next stamp rewrites it whole).
+    fn decode_react_recent(bytes: &[u8]) -> Vec<(String, i64)> {
+        let mut ptr = 0usize;
+        let Ok(field) = vsf::file_format::VsfField::parse(bytes, &mut ptr) else {
+            return Vec::new();
+        };
+        if field.name != "recent" {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let mut pending: Option<String> = None;
+        for v in &field.values {
+            match v {
+                vsf::VsfType::x(g) => pending = Some(g.clone()),
+                vsf::VsfType::e(vsf::EtType::e6(t)) => {
+                    if let Some(g) = pending.take() {
+                        out.push((g, *t));
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Fleet-wide reaction RECENCY: each device keeps `glyph → last_used_osc` in its own single-writer key (`react.recent.<device>` — per-device because the settings layer is LWW per key: one shared key would drop concurrent stamps across devices, the `fleet.locked` race shape). The fleet view is the max stamp per glyph across keys. Recency, not tally, ON PURPOSE: all-time counts ossify (an old habit needs to be out-used to dethrone), while most-recent-first keeps the strip current and reshuffles the moment a new codepoint is used — the contacts list's float-to-top, derived from stamps because two devices' bare orders can't merge. Values are typed VSF (see encode_react_recent).
     fn react_recency(&self) -> std::collections::HashMap<String, i64> {
         let mut out: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
         let Some(fs) = self.fleet_settings.as_ref() else {
@@ -12411,16 +12447,9 @@ impl PhotonApp {
             .iter()
             .filter(|e| !e.tombstone && e.key.starts_with("react.recent."))
         {
-            let Ok(s) = std::str::from_utf8(&e.value) else {
-                continue;
-            };
-            for pair in s.split('\u{3}') {
-                if let Some((g, t)) = pair.split_once('\u{2}') {
-                    if let Ok(t) = t.parse::<i64>() {
-                        let e = out.entry(g.to_string()).or_insert(t);
-                        *e = (*e).max(t);
-                    }
-                }
+            for (g, t) in Self::decode_react_recent(&e.value) {
+                let e = out.entry(g).or_insert(t);
+                *e = (*e).max(t);
             }
         }
         out
@@ -12432,18 +12461,12 @@ impl PhotonApp {
             return;
         };
         let key = format!("react.recent.{}", hex::encode(&pk[..8]));
-        let mut stamps: Vec<(String, i64)> = Vec::new();
-        if let Some(v) = self.fleet_settings.as_ref().and_then(|fs| fs.effective(&key)) {
-            if let Ok(s) = std::str::from_utf8(v) {
-                for pair in s.split('\u{3}') {
-                    if let Some((g, t)) = pair.split_once('\u{2}') {
-                        if let Ok(t) = t.parse::<i64>() {
-                            stamps.push((g.to_string(), t));
-                        }
-                    }
-                }
-            }
-        }
+        let mut stamps: Vec<(String, i64)> = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective(&key))
+            .map(Self::decode_react_recent)
+            .unwrap_or_default();
         let now = vsf::eagle_time_oscillations();
         match stamps.iter_mut().find(|(g, _)| g == glyph) {
             Some((_, t)) => *t = now,
@@ -12451,12 +12474,8 @@ impl PhotonApp {
         }
         stamps.sort_by_key(|(_, t)| std::cmp::Reverse(*t));
         stamps.truncate(24);
-        let blob = stamps
-            .iter()
-            .map(|(g, t)| format!("{}\u{2}{}", g, t))
-            .collect::<Vec<_>>()
-            .join("\u{3}");
-        self.settings_set(&key, blob.into_bytes());
+        let blob = Self::encode_react_recent(&stamps);
+        self.settings_set(&key, blob);
     }
 
     /// The reaction strip, most-recent-first: defaults seeded at stamp zero (so unused ones hold the tail in default order — the sort is stable), every used glyph floats by its fleet-wide newest stamp, custom glyphs join the pool in sorted order for determinism.
@@ -24310,5 +24329,17 @@ mod wire_reference_tests {
         let f2 = vsf::file_format::VsfField::parse(&bare, &mut p2).unwrap();
         assert_eq!(f2.name, "message");
         assert!(vsf::file_format::VsfField::parse(&bare, &mut p2).is_err());
+    }
+
+    /// The reaction-recency settings blob: typed x/e6 pairs round-trip in order, and garbage decodes as empty rather than erroring (the strip falls back to defaults).
+    #[test]
+    fn react_recency_blob_round_trips_typed() {
+        let stamps = vec![
+            ("\u{1F44D}".to_string(), 9_000_000_000i64),
+            ("Z".to_string(), 42),
+        ];
+        let blob = super::PhotonApp::encode_react_recent(&stamps);
+        assert_eq!(super::PhotonApp::decode_react_recent(&blob), stamps);
+        assert!(super::PhotonApp::decode_react_recent(b"not a field").is_empty());
     }
 }
