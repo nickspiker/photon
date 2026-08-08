@@ -1158,19 +1158,41 @@ impl FriendshipChains {
         eagle_time: i64,
         woven_strands: Vec<Vec<u8>>,
     ) -> Option<(Vec<u8>, [u8; 32], [u8; 32], [u8; 32], [u8; 32])> {
-        // Fleet chain-replication ordering key: every local mutation stamps NOW (see mutated_osc).
-        self.mutated_osc = vsf::eagle_time_oscillations();
-        use crate::crypto::chain::{derive_salt, encrypt_layers, generate_scratch};
+        self.mint_our_lane()?;
+        let (ciphertext, prev_msg_hp, msg_hp, plaintext_hash, our_label, expected_key) =
+            self.prepare_send_encrypt(&plaintext, eagle_time)?;
+        if !self.prepare_send_commit(
+            &our_label,
+            &expected_key,
+            ciphertext.clone(),
+            prev_msg_hp,
+            msg_hp,
+            plaintext_hash,
+            salt_text,
+            eagle_time,
+            woven_strands,
+        ) {
+            return None;
+        }
+        Some((ciphertext, prev_msg_hp, msg_hp, plaintext_hash, our_label))
+    }
 
-        let our_label = self.mint_our_lane()?;
+    /// The PURE half of prepare_send: encrypt at our lane's CURRENT position against &self — no mutation, so a worker can run it on a clone while the UI thread stays free (the scratch is the memory-hard cost). The lane must already be minted (`mint_our_lane` at dispatch — once per era, cheap enough inline). Returns the wire tuple plus `expected_key`, the lane key the ciphertext was minted under: the commit half CAS-checks it, so anything that moved OUR lane in between (an era adopt is the only writer besides the send commit itself — one writer per lane) voids the ciphertext instead of forking the lane.
+    pub fn prepare_send_encrypt(
+        &self,
+        plaintext: &[u8],
+        eagle_time: i64,
+    ) -> Option<(Vec<u8>, [u8; 32], [u8; 32], [u8; 32], [u8; 32], [u8; 32])> {
+        use crate::crypto::chain::{derive_salt, encrypt_layers, generate_scratch};
+        let our_label = *self.our_label()?;
         let our_idx = self.lane_index(&our_label)?;
-        let our_chain = self.chains[our_idx].clone();
+        let our_chain = &self.chains[our_idx];
 
         // Salt from our previous plaintext (empty on the first message) — both sides derive the same salt for the same chain position.
-        let salt = derive_salt(&self.last_plaintexts[our_idx], &our_chain);
-        let scratch = generate_scratch(&our_chain, &salt);
+        let salt = derive_salt(&self.last_plaintexts[our_idx], our_chain);
+        let scratch = generate_scratch(our_chain, &salt);
         let et = vsf::EagleTime::from_oscillations(eagle_time);
-        let ciphertext = encrypt_layers(&plaintext, &our_chain, &scratch, &et);
+        let ciphertext = encrypt_layers(plaintext, our_chain, &scratch, &et);
 
         // Mirror the receiver's "CHAIN DECRYPT" line so both sides can be diffed: for a given eagle_time the encrypt key+salt here MUST equal the decrypt key+salt on the peer, or the chains have diverged. last_plaintext_len flags the lossy-storage class of bug (a non-empty prev that round-tripped thru storage must be byte-identical on both ends).
         crate::logf!("CHAIN ENCRYPT: lane = {}..., key = {}..., salt = {}..., eagle_time = {}, last_plaintext_len = {}, ciphertext_len = {}", hex::encode(&our_label[..4]), hex::encode(&our_chain.current_key()[..4]), hex::encode(&salt[..4]), eagle_time, self.last_plaintexts[our_idx].len(), ciphertext.len());
@@ -1180,15 +1202,48 @@ impl FriendshipChains {
             .last_sent_hash
             .unwrap_or(self.first_message_anchors[our_idx]);
         // Hash + msg_hp are over the FULL payload (the receiver hashes the full decrypted bytes too).
-        let plaintext_hash = *blake3::hash(&plaintext).as_bytes();
+        let plaintext_hash = *blake3::hash(plaintext).as_bytes();
         let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, eagle_time);
+
+        Some((
+            ciphertext,
+            prev_msg_hp,
+            msg_hp,
+            plaintext_hash,
+            our_label,
+            *our_chain.current_key(),
+        ))
+    }
+
+    /// The COMMIT half of prepare_send: CAS the lane against the key the encrypt snapshot was minted under — any mismatch (an advance or era swap landed while the worker ran) returns false and mutates NOTHING, so the caller drops the ciphertext and the held-row sweep re-encrypts at the fresh position. On a match: ratchet forward and record the pending, exactly the old inline tail. Writer discipline is unchanged — this is still the only path that advances OUR lane.
+    pub fn prepare_send_commit(
+        &mut self,
+        our_label: &[u8; 32],
+        expected_key: &[u8; 32],
+        ciphertext: Vec<u8>,
+        prev_msg_hp: [u8; 32],
+        msg_hp: [u8; 32],
+        plaintext_hash: [u8; 32],
+        salt_text: Vec<u8>,
+        eagle_time: i64,
+        woven_strands: Vec<Vec<u8>>,
+    ) -> bool {
+        let Some(our_idx) = self.lane_index(our_label) else {
+            return false;
+        };
+        if self.chains[our_idx].current_key() != expected_key {
+            return false;
+        }
+        // Fleet chain-replication ordering key: every local mutation stamps NOW (see mutated_osc).
+        self.mutated_osc = vsf::eagle_time_oscillations();
+        let et = vsf::EagleTime::from_oscillations(eagle_time);
 
         // ADVANCE ON SEND: ratchet our lane forward now, with the SAME arguments the old ACK-path used (this message's eagle_time, its salt-text as our_plaintext, the frozen strands) and set last_plaintext to the salt-text for the next message's salt. Done via borrows BEFORE add_pending moves salt_text/woven_strands.
         {
             let strand_refs: Vec<&[u8]> = woven_strands.iter().map(|s| s.as_slice()).collect();
-            self.advance(&our_label, &et, &salt_text, &strand_refs);
+            self.advance(our_label, &et, &salt_text, &strand_refs);
         }
-        if let Some(idx) = self.lane_index(&our_label) {
+        if let Some(idx) = self.lane_index(our_label) {
             self.last_plaintexts[idx] = salt_text.clone();
         }
 
@@ -1199,11 +1254,10 @@ impl FriendshipChains {
             plaintext_hash,
             prev_msg_hp,
             msg_hp,
-            ciphertext.clone(),
+            ciphertext,
             woven_strands,
         );
-
-        Some((ciphertext, prev_msg_hp, msg_hp, plaintext_hash, our_label))
+        true
     }
 
     /// Process ACK: match the pending by (eagle_time, plaintext_hash), remove it, report the match. Under advance-on-send the chain already ratcheted forward when this message was encrypted, so the ACK is a pure delivery RECEIPT — it MUST NOT advance again (that would double-ratchet past the receiver). The match edge is what the caller hangs delivery, CLUTCH-ephemeral zeroize, and chain-seal on. No mutated_osc stamp: removing a pending is device-local (siblings never adopt our pendings) and the send already pushed the advanced lane, so an ACK needs no fleet replication.
@@ -1675,6 +1729,63 @@ mod tests {
             "sender and receiver diverged after a pipelined burst"
         );
         assert_eq!(sender.lane_position(&lane), receiver.lane_position(&lane));
+    }
+
+    /// The off-thread send split: an encrypt snapshot whose lane MOVED before the commit (an era adopt racing the worker) must be VOIDED by the CAS — commit returns false and mutates nothing, so the held-row sweep re-encrypts at the fresh position instead of forking the lane. A same-position commit lands identically to the old inline prepare_send.
+    #[test]
+    fn send_commit_cas_voids_a_stale_encrypt_and_mutates_nothing() {
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut sender = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        sender.mint_our_lane().unwrap();
+
+        // Snapshot-encrypt at the current position (the worker's half).
+        let (_ct, _prev, _hp, _ph, lane, expected_key) = sender
+            .prepare_send_encrypt(b"stale", 1_000)
+            .unwrap();
+
+        // The lane moves while the worker runs (any advance — here a plain send landing first).
+        sender
+            .prepare_send(b"raced".to_vec(), b"raced".to_vec(), 1_001, vec![])
+            .unwrap();
+        let key_after_race = *sender.current_key(&lane).unwrap();
+        let pendings_after_race = sender.pending_messages.len();
+
+        // The stale commit must void: false, and NOTHING mutated.
+        let committed = sender.prepare_send_commit(
+            &lane,
+            &expected_key,
+            b"dead-ciphertext".to_vec(),
+            [0u8; 32],
+            [0u8; 32],
+            [0u8; 32],
+            b"stale".to_vec(),
+            1_000,
+            vec![],
+        );
+        assert!(!committed, "a stale encrypt committed past the CAS");
+        assert_eq!(
+            sender.current_key(&lane).unwrap(),
+            &key_after_race,
+            "a voided commit still advanced the lane"
+        );
+        assert_eq!(
+            sender.pending_messages.len(),
+            pendings_after_race,
+            "a voided commit still recorded a pending"
+        );
+
+        // A fresh snapshot at the NEW position commits cleanly — the recovery path the sweep takes.
+        let (ct2, prev2, hp2, ph2, lane2, key2) =
+            sender.prepare_send_encrypt(b"fresh", 1_002).unwrap();
+        assert!(sender.prepare_send_commit(
+            &lane2, &key2, ct2, prev2, hp2, ph2,
+            b"fresh".to_vec(),
+            1_002,
+            vec![],
+        ));
+        assert_eq!(sender.pending_messages.len(), pendings_after_race + 1);
     }
 
     /// REGRESSION (field, 2026-08-08): an ACK whose plaintext_hash differs from the frozen pending — because the random hR pad made the hash unstable, or a re-encrypt raced — must STILL clear the pending, matched on eagle_time alone. When it didn't, the pending leaked and the message retransmitted forever while the peer re-ACKed every copy.
