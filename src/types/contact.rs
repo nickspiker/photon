@@ -583,14 +583,21 @@ impl Contact {
     }
 
     /// Returns the (primary, alternate) address pair for racing a transfer across the reachable paths. A punch-validated direct path (from NAT traversal) wins as primary when present, with the public/LAN kept as the alternate so PT still races if the validated mapping went stale. Otherwise: primary is the LAN address (preferred — no router hairpin, no AP isolation), alternate is the public address; and when no LAN address is known, primary is the public address and alternate is `None`. PT sends the SPEC to both and locks onto whichever ACKs first (see [`crate::network::pt::PtManager::send_with_pubkey_and_alt`]).
-    /// Every device pubkey we know for this contact: the first-met identity device plus every discovered fleet endpoint. Used to address a RELAY store — we can't tell which of a multi-device peer's phones is the one currently polling its relay queue (they may run a different device than the one we first met), so we store the message for ALL of them; whichever is live fetches it, the rest expire harmlessly. Deduplicated.
+    /// Every device pubkey we know for this contact: the first-met identity device, EVERY folded fleet member, and every discovered endpoint. Used to address a RELAY forward — the relay routes by device pubkey and needs NO endpoint, so a member we've folded but never learned an address for is exactly the device that DEPENDS on the relay copy. Keying only on cached `device_endpoints` here silently dropped a folded-but-endpoint-less sibling from the fan-out, so a message landed on the peer's other devices and never on that one — it stayed stuck at the anchor forever, buffering every later frame (field, 2026-08-08: Mary's 1be949c1 never in Nick's relay list). Fold-first, per fleet-sync.md §7. Deduplicated.
     pub fn relay_device_list(&self) -> Vec<[u8; 32]> {
         let mut out = vec![self.public_identity.key];
+        for m in &self.fleet_members {
+            if !out.contains(m) {
+                out.push(*m);
+            }
+        }
         for ep in &self.device_endpoints {
             if !out.contains(&ep.pubkey) {
                 out.push(ep.pubkey);
             }
         }
+        // Never forward to a device the friend's fleet reported stolen: it may be in the fold still (refusal is not removal) but our frames must not reach a thief's hands.
+        out.retain(|d| !self.refused_devices.contains(d));
         out
     }
 
