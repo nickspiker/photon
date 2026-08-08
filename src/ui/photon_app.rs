@@ -644,16 +644,8 @@ fn display_content(content: &str) -> String {
             label,
             state
         )
-    } else if let Some((_, body)) = crate::types::parse_reply_content(content) {
-        // Reply rows read as their body everywhere generic (previews, notifications, excerpts) — the reference renders only in the bubble stream.
-        body.to_string()
-    } else if let Some((_, body)) = crate::types::parse_edit_content(content) {
-        // Edit rows read as the new body — a preview/notification of an edit shows what the message says NOW.
-        body.to_string()
-    } else if let Some((_, glyph)) = crate::types::parse_react_content(content) {
-        // Reaction rows preview as their glyph (a retract previews empty — the list preview just shows the prior row's text soon after).
-        glyph.to_string()
     } else {
+        // Reference rows (reply/edit/react) need no stripping: their content IS the bare body/glyph — the reference is a typed FIELD, never a string encoding.
         content.to_string()
     }
 }
@@ -1209,7 +1201,7 @@ pub struct PhotonApp {
     /// Monotonic tick counter — the frame-gap fence for `pending_chain_sends` (see `drain_pending_chain_sends`).
     tick_serial: u64,
     /// Outgoing sends whose WIRE half is deferred: (contact idx, text, eagle_time, tick_serial at enqueue). The pending-grey bubble is inserted synchronously in `send_chain_message`; chain_transmit (weave selection, braid advance, chains persist, PT dispatch) runs from this queue AFTER the frame presents — running it inline meant the bubble, though inserted first, couldn't render until the whole wire half finished (the "message goes into the void" report).
-    pending_chain_sends: Vec<(usize, String, i64, u64)>,
+    pending_chain_sends: Vec<(usize, String, i64, Option<(crate::types::RefKind, i64)>, u64)>,
     /// Unique identities the seed knows (including us), off the latest signed announce ack. The Ready-screen count reads this as a floor: the peer STORE only fills by gossip now, so on a fresh session it holds nothing but our own record and would show "0 peers" to a user who can see nine friends in the contact list.
     seed_identity_count: u32,
     /// In-flight phonebook resolution: `(handle_proof, device_pubkey, public, lan)` for devices we could not otherwise address. The handle_proof binds each record to the identity it was resolved FOR, so a friend can adopt a registry-vouched device it has never met. Drained in `tick` into `device_endpoints`, which is what candidate gathering reads. `Some` = a resolve is running, which debounces re-spawns so a stalled seed can't stack requests.
@@ -3559,8 +3551,12 @@ impl FluorApp for PhotonApp {
                             .and_then(|v| v.current_reaction(ts, true));
                         let toggled_off = ours.as_deref() == Some(glyph.as_str());
                         let body = if toggled_off { String::new() } else { glyph.clone() };
-                        if self.send_chain_message(sci, &crate::types::react_content(ts, &body), false)
-                            && !toggled_off
+                        if self.send_chain_message(
+                            sci,
+                            &body,
+                            false,
+                            Some((crate::types::RefKind::React, ts)),
+                        ) && !toggled_off
                         {
                             self.stamp_react_used(&glyph);
                         }
@@ -3624,7 +3620,13 @@ impl FluorApp for PhotonApp {
                                     .map(|m| m.content.clone())
                             });
                             if let Some(text) = text_opt {
-                                if self.chain_transmit(sci, &text, ts) {
+                                let re_ref = self.conv_of(sci).and_then(|v| {
+                                    v.messages
+                                        .iter()
+                                        .find(|m| m.timestamp == ts && m.is_outgoing == out)
+                                        .and_then(|m| m.reference)
+                                });
+                                if self.chain_transmit(sci, &text, ts, re_ref) {
                                     self.ready_toast = Some("re-sent on the chain".to_string());
                                 } else {
                                     let row = self.conv_of(sci).and_then(|v| {
@@ -4641,7 +4643,7 @@ impl FluorApp for PhotonApp {
                 let is_sib = self.contacts.get(sci).map(|c| c.is_sibling).unwrap_or(true);
                 if has_remote && !is_sib {
                     let marker = format!("{}{}", crate::types::DELETE_MARKER_PREFIX, ts);
-                    if self.send_chain_message(sci, &marker, true) {
+                    if self.send_chain_message(sci, &marker, true, None) {
                         crate::log(
                             "msg-details: delete marker sent to the friend (delete-for-everyone)",
                         );
@@ -7041,12 +7043,12 @@ impl FluorApp for PhotonApp {
                         let mut edit_over: std::collections::HashMap<i64, (i64, String)> =
                             std::collections::HashMap::new();
                         for m in raw_msgs.iter().filter(|m| !m.deleted) {
-                            if let Some((t, body)) = crate::types::parse_edit_content(&m.content) {
+                            if let Some((crate::types::RefKind::Edit, t)) = m.reference {
                                 let e = edit_over
                                     .entry(t)
-                                    .or_insert_with(|| (m.timestamp, body.to_string()));
+                                    .or_insert_with(|| (m.timestamp, m.content.clone()));
                                 if m.timestamp >= e.0 {
-                                    *e = (m.timestamp, body.to_string());
+                                    *e = (m.timestamp, m.content.clone());
                                 }
                             }
                         }
@@ -7054,10 +7056,10 @@ impl FluorApp for PhotonApp {
                         let mut react_over: std::collections::HashMap<i64, [Option<(i64, String)>; 2]> =
                             std::collections::HashMap::new();
                         for m in raw_msgs.iter().filter(|m| !m.deleted) {
-                            if let Some((t, g)) = crate::types::parse_react_content(&m.content) {
+                            if let Some((crate::types::RefKind::React, t)) = m.reference {
                                 let slot = &mut react_over.entry(t).or_default()[m.is_outgoing as usize];
                                 if slot.as_ref().map_or(true, |(ts, _)| m.timestamp >= *ts) {
-                                    *slot = Some((m.timestamp, g.to_string()));
+                                    *slot = Some((m.timestamp, m.content.clone()));
                                 }
                             }
                         }
@@ -7091,15 +7093,18 @@ impl FluorApp for PhotonApp {
                                     return false;
                                 }
                                 // A reaction row NEVER draws a bubble — resolved onto its target; an orphan (target not synced yet) stays invisible and attaches when the target lands (a lone glyph bubble reads as a bug, unlike an orphan edit whose body is real prose).
-                                if crate::types::parse_react_content(&m.content).is_some() {
+                                if matches!(m.reference, Some((crate::types::RefKind::React, _))) {
                                     return false;
                                 }
                                 // An edit row draws no bubble of its own while its target row exists in ANY state (the supersede belongs to the target's bubble); a target that never synced here renders the edit standalone so nothing silently vanishes.
-                                if let Some((t, _)) = crate::types::parse_edit_content(&m.content) {
+                                if let Some((crate::types::RefKind::Edit, t)) = m.reference {
                                     return !raw_msgs.iter().any(|x| {
                                         x.timestamp == t
                                             && !crate::types::is_control_content(&x.content)
-                                            && crate::types::parse_edit_content(&x.content).is_none()
+                                            && !matches!(
+                                                x.reference,
+                                                Some((crate::types::RefKind::Edit, _))
+                                            )
                                     });
                                 }
                                 true
@@ -7142,7 +7147,7 @@ impl FluorApp for PhotonApp {
                                 );
                                 total += lines.len();
                                 // A reply row reserves ONE extra line for its half-alpha reference snippet above the body.
-                                if crate::types::parse_reply_content(&m.content).is_some() {
+                                if matches!(m.reference, Some((crate::types::RefKind::Reply, _))) {
                                     total += 1;
                                 }
                                 // A reacted row reserves ONE extra line for its reaction glyphs below the body.
@@ -7183,7 +7188,9 @@ impl FluorApp for PhotonApp {
                             static EMPTY_LINES: Vec<String> = Vec::new();
                             let lines: &Vec<String> = wrap_cache.get(vi).unwrap_or(&EMPTY_LINES);
                             // A reply row's reference snippet occupies one extra line ABOVE the body; a reacted row grows one BELOW (both counted into the wrap total). The reaction line sits at the block's bottom baseline, so the body shifts up by react_off.
-                            let reply_target = crate::types::parse_reply_content(&msg.content).map(|(t, _)| t);
+                            let reply_target = msg
+                                .reference
+                                .and_then(|(k, t)| (k == crate::types::RefKind::Reply).then_some(t));
                             let reactions = react_line(msg.timestamp);
                             let react_off = if reactions.is_some() { intra } else { 0.0 };
                             let block_extra = (lines.len() as f32 - 1.0) * intra
@@ -7411,11 +7418,11 @@ impl FluorApp for PhotonApp {
                                     .iter()
                                     .rev()
                                     .filter(|m| !m.deleted && m.is_outgoing)
-                                    .find_map(|m| {
-                                        crate::types::parse_react_content(&m.content)
-                                            .filter(|(t, _)| *t == msg.timestamp)
-                                            .map(|(_, g)| g.to_string())
+                                    .find(|m| {
+                                        m.reference
+                                            == Some((crate::types::RefKind::React, msg.timestamp))
                                     })
+                                    .map(|m| m.content.clone())
                                     .filter(|g| !g.is_empty());
                                 let glyph_size = detail_size * 1.2;
                                 let plus_r = glyph_size * 0.62;
@@ -7516,7 +7523,10 @@ impl FluorApp for PhotonApp {
                                         x.timestamp == t
                                             && !x.deleted
                                             && !crate::types::is_control_content(&x.content)
-                                            && crate::types::parse_edit_content(&x.content).is_none()
+                                            && !matches!(
+                                                x.reference,
+                                                Some((crate::types::RefKind::Edit, _))
+                                            )
                                     })
                                     .map(|x| {
                                         let d = body_of(x);
@@ -7672,7 +7682,7 @@ impl FluorApp for PhotonApp {
                                 x.timestamp == t
                                     && !x.deleted
                                     && !crate::types::is_control_content(&x.content)
-                                    && crate::types::parse_edit_content(&x.content).is_none()
+                                    && !matches!(x.reference, Some((crate::types::RefKind::Edit, _)))
                             });
                             let snippet = target
                                 .map(|x| {
@@ -13521,7 +13531,12 @@ impl PhotonApp {
         // An armed custom reaction takes the typed text (capped short — it's a reaction, not a message) as the glyph.
         if let Some(target) = self.compose_react_to.take() {
             let glyph: String = text.chars().take(8).collect();
-            if self.send_chain_message(ci, &crate::types::react_content(target, &glyph), false) {
+            if self.send_chain_message(
+                ci,
+                &glyph,
+                false,
+                Some((crate::types::RefKind::React, target)),
+            ) {
                 self.stamp_react_used(&glyph);
             }
             if let Some(tb) = self.message_textbox.as_mut() {
@@ -13531,15 +13546,17 @@ impl PhotonApp {
             self.scene_dirty = true;
             return;
         }
-        // An armed edit/reply wraps the text in its referencing marker; the row then rides every path (chain, ACK, fleet sync, pages, digest) as an ordinary message — the reference resolves at render.
-        let wire_text = if let Some(target) = self.compose_edit_of.take() {
-            crate::types::edit_content(target, &text)
-        } else if let Some(target) = self.compose_reply_to.take() {
-            crate::types::reply_content(target, &text)
-        } else {
-            text.clone()
-        };
-        self.send_chain_message(ci, &wire_text, false);
+        // An armed edit/reply rides as the TYPED reference; the text goes as-is — the row then takes every path (chain, ACK, fleet sync, pages, digest) as an ordinary message and the reference resolves at render.
+        let reference = self
+            .compose_edit_of
+            .take()
+            .map(|t| (crate::types::RefKind::Edit, t))
+            .or_else(|| {
+                self.compose_reply_to
+                    .take()
+                    .map(|t| (crate::types::RefKind::Reply, t))
+            });
+        self.send_chain_message(ci, &text, false, reference);
         if let Some(tb) = self.message_textbox.as_mut() {
             tb.clear();
         }
@@ -13553,6 +13570,7 @@ impl PhotonApp {
         contact_idx: usize,
         text: &str,
         suppress_bubble: bool,
+        reference: Option<(crate::types::RefKind, i64)>,
     ) -> bool {
         let ci = contact_idx;
         let text = text.to_string();
@@ -13567,11 +13585,14 @@ impl PhotonApp {
             None => return false,
         };
         // A reaction/edit targets an EXISTING row — inserting its referencing row must not yank the view to the bottom (the target the user is looking at may be far up the stream).
-        let is_quiet_row = crate::types::parse_react_content(&text).is_some()
-            || crate::types::parse_edit_content(&text).is_some();
+        let is_quiet_row = matches!(
+            reference,
+            Some((crate::types::RefKind::Edit | crate::types::RefKind::React, _))
+        );
         if remotes == 0 {
             let mut msg =
                 ChatMessage::new_with_timestamp(text, true, vsf::eagle_time_oscillations());
+            msg.reference = reference;
             msg.delivered = true;
             let Some(conv) = self.conv_mut_of(ci) else {
                 return false;
@@ -13589,11 +13610,12 @@ impl PhotonApp {
         let eagle_time = vsf::eagle_time_oscillations();
         // A suppressed send (the hidden chain-weave probe) shows no UI — wire half only.
         if suppress_bubble {
-            return self.chain_transmit(ci, &text, eagle_time);
+            return self.chain_transmit(ci, &text, eagle_time, reference);
         }
 
         // BUBBLE FIRST, WIRE SECOND. The pending-grey bubble appears the instant the user hits send — chain_transmit does weave selection, braid advance, chains persist and PT dispatch, and running it first meant the message rendered as NOTHING for that whole stretch, then grey, then white. The user's mental model (grey immediately, everything else follows) is also the honest one: the row exists the moment they authored it; the wire is delivery, not existence.
-        let msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
+        let mut msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
+        msg.reference = reference;
         if let Some(conv) = self.conv_mut_of(ci) {
             conv.insert_message_sorted(msg.clone());
             if !is_quiet_row {
@@ -13604,7 +13626,7 @@ impl PhotonApp {
 
         // The wire half is DEFERRED to the next tick (drain_pending_chain_sends): the bubble above can only reach the screen when this handler returns, so running chain_transmit inline here — crypto, chains persist, dispatch — held the frame hostage for its whole duration. Queue it and let the grey bubble present first.
         self.pending_chain_sends
-            .push((ci, text, eagle_time, self.tick_serial));
+            .push((ci, text, eagle_time, reference, self.tick_serial));
         return true;
     }
 
@@ -13833,14 +13855,15 @@ impl PhotonApp {
         let serial = self.tick_serial;
         let (sends, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_chain_sends)
             .into_iter()
-            .partition(|(_, _, _, q)| q.wrapping_add(1) < serial);
+            .partition(|(_, _, _, _, q)| q.wrapping_add(1) < serial);
         self.pending_chain_sends = keep;
         if sends.is_empty() {
             return false;
         }
-        for (ci, text, eagle_time, _) in sends {
-            let msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
-            if !self.chain_transmit(ci, &text, eagle_time) {
+        for (ci, text, eagle_time, reference, _) in sends {
+            let mut msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
+            msg.reference = reference;
+            if !self.chain_transmit(ci, &text, eagle_time, reference) {
                 let has_fleet = self.contacts.iter().any(|c| c.is_sibling);
                 let is_friend = self.contacts.get(ci).map_or(false, |c| !c.is_sibling);
                 if !(has_fleet && is_friend) {
@@ -13864,21 +13887,27 @@ impl PhotonApp {
 
     /// Send every outgoing row this contact still holds as undelivered — the rows `drain_pending_chain_sends` HELD because no chain existed yet (typically a re-key in flight). Original timestamps are preserved, so the row identity is unchanged and the friend dedups anything it already has; a row that still can't go out simply stays held for the next attempt.
     fn resend_held_messages(&mut self, ci: usize) {
-        let held: Vec<(String, i64)> = match self.conv_of(ci) {
-            Some(v) => v
-                .messages
-                .iter()
-                .filter(|m| m.is_outgoing && !m.delivered && !m.content.is_empty())
-                .map(|m| (m.content.clone(), m.timestamp))
-                .collect(),
-            None => return,
-        };
+        let held: Vec<(String, i64, Option<(crate::types::RefKind, i64)>)> =
+            match self.conv_of(ci) {
+                Some(v) => v
+                    .messages
+                    .iter()
+                    // A reaction RETRACT is a legal empty-content row — its reference makes it sendable; a plain empty row stays filtered (the liveness-probe artifact class).
+                    .filter(|m| {
+                        m.is_outgoing
+                            && !m.delivered
+                            && (!m.content.is_empty() || m.reference.is_some())
+                    })
+                    .map(|m| (m.content.clone(), m.timestamp, m.reference))
+                    .collect(),
+                None => return,
+            };
         if held.is_empty() {
             return;
         }
         let mut sent = 0usize;
-        for (text, eagle_time) in &held {
-            if self.chain_transmit(ci, text, *eagle_time) {
+        for (text, eagle_time, reference) in &held {
+            if self.chain_transmit(ci, text, *eagle_time, *reference) {
                 sent += 1;
             }
         }
@@ -13890,7 +13919,13 @@ impl PhotonApp {
     }
 
     /// The WIRE half of a chain send — weave selection, braid advance (prepare_send), chains persist, PT dispatch — with NO row bookkeeping: callers own the bubble. `send_chain_message` inserts its fresh bubble after; the fleet-forward drain transmits rows a sibling already merged (with their ORIGINAL timestamps, so the row identity — and therefore delivered-upgrades and digests — stays one fleet-wide). Returns false quietly when this device holds no usable chain (not Complete, no friendship chain, no party id, no address).
-    fn chain_transmit(&mut self, ci: usize, text: &str, eagle_time: i64) -> bool {
+    fn chain_transmit(
+        &mut self,
+        ci: usize,
+        text: &str,
+        eagle_time: i64,
+        reference: Option<(crate::types::RefKind, i64)>,
+    ) -> bool {
         use vsf::schema::section::FieldValue;
         // Contact must be CLUTCH-Complete with a friendship chain.
         let (friendship_id, recipient_pubkey, addr_pair, _our_handle_hash, msg_relay_to) = {
@@ -14035,7 +14070,20 @@ impl PhotonApp {
             }
             use rand::seq::SliceRandom;
             values.shuffle(&mut rand::thread_rng());
-            let payload = FieldValue::new("message", values).flatten();
+            let mut payload = FieldValue::new("message", values).flatten();
+            // TYPED reference: a SECOND VSF field after the message body — kind + target as tagged values, never string-encoded into the x-text. A parser that predates it reads field one and ignores the trailing bytes (a reply degrades to its bare body); the payload hash / msg_hp cover BOTH fields, so the reference is tamper-bound to the message.
+            if let Some((kind, target)) = reference {
+                payload.extend(
+                    FieldValue::new(
+                        "ref",
+                        vec![
+                            vsf::VsfType::u3(kind as u8),
+                            vsf::VsfType::e(vsf::EtType::e6(target)),
+                        ],
+                    )
+                    .flatten(),
+                );
+            }
             // Chain ingredient = the bare x-text only (the hp/hR pad are siblings of x in the field, not part of it, and are never chain-key material). The full `payload` is what's encrypted onto the wire; `text` is what salts/advances the chain.
             let salt_text = text.to_string().into_bytes();
             let token = chains.conversation_token;
@@ -14135,7 +14183,7 @@ impl PhotonApp {
         }
         let content = crate::types::attachment_content(&hash, &name, bytes.len() as u64);
         // The row: ordinary chain send (or fleet-forward on a chainless device) — everything downstream treats it as a normal message.
-        if !self.send_chain_message(ci, &content, false) {
+        if !self.send_chain_message(ci, &content, false, None) {
             crate::log("attach: row send failed (no chain, no fleet) — attachment stays local");
         }
         // The blob: eager PT push to the friend. Siblings + offline races fetch on demand (attach_req).
@@ -14338,7 +14386,7 @@ impl PhotonApp {
         }
         crate::log("CHAIN-PROBE: sending hidden chain-weave probe");
         // Latch `probe_sent` only on an actual dispatch — if the contact had no address yet the send is a no-op and we retry on the next Complete transition / re-arm cycle rather than stalling.
-        if self.send_chain_message(contact_idx, crate::types::CHAIN_PROBE_MARKER, true) {
+        if self.send_chain_message(contact_idx, crate::types::CHAIN_PROBE_MARKER, true, None) {
             if let Some(c) = self.contacts.get_mut(contact_idx) {
                 c.probe_sent = true;
             }
@@ -15708,9 +15756,30 @@ impl PhotonApp {
 
             // Hidden chain-weave probe: a reserved-marker message that proves the ratchet works but must show NO chat bubble. Everything else on the receive path (chain advance, set_last_plaintext, mark_received, ACK send) still runs so the sender's chain advances and dedup works — only the UI is suppressed.
             let is_chain_probe = message_text == crate::types::CHAIN_PROBE_MARKER;
+            // The TYPED reference, if this frame carries one: a second VSF field after the message body. Absent, unparseable, or unknown-kind = a plain row (an older sender, or no reference) — the hash already covered whatever was there, so lenient reading can't be tampered into.
+            let wire_reference: Option<(crate::types::RefKind, i64)> =
+                vsf::file_format::VsfField::parse(&plaintext, &mut ptr)
+                    .ok()
+                    .filter(|f| f.name == "ref")
+                    .and_then(|f| {
+                        let mut kind = None;
+                        let mut target = None;
+                        for v in &f.values {
+                            match v {
+                                vsf::VsfType::u3(k) => {
+                                    kind = crate::types::RefKind::from_wire(*k)
+                                }
+                                vsf::VsfType::e(vsf::EtType::e6(t)) => target = Some(*t),
+                                _ => {}
+                            }
+                        }
+                        Some((kind?, target?))
+                    });
             // An EDIT or REACTION row lands as an ordinary message (row, ACK, sync) but must not ALERT — the target bubble repaints; a chime/unread/scroll-jump for it would read as a new message that isn't there. (Whether a reaction should ding is a one-gate flip if the field wants it.)
-            let is_edit_row = crate::types::parse_edit_content(&message_text).is_some()
-                || crate::types::parse_react_content(&message_text).is_some();
+            let is_edit_row = matches!(
+                wire_reference,
+                Some((crate::types::RefKind::Edit | crate::types::RefKind::React, _))
+            );
 
             crate::logf!(
                 "CHAT: Decrypted message from {}: \"{}\" (incorporated_hp={}...)",
@@ -16247,6 +16316,16 @@ impl PhotonApp {
                             }
                             upgraded = true;
                         }
+                        // Reference is origin-written row identity — a copy that arrived thru a pre-feature route regains it here (monotonic, never un-set).
+                        if existing.reference.is_none() {
+                            if let Some(r) = row
+                                .reference
+                                .and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t)))
+                            {
+                                existing.reference = Some(r);
+                                upgraded = true;
+                            }
+                        }
                         if upgraded {
                             fresh.push(existing.clone());
                         }
@@ -16260,6 +16339,9 @@ impl PhotonApp {
                         ack_hash: None,
                         recovered,
                         deleted: row.deleted,
+                        reference: row
+                            .reference
+                            .and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t))),
                     });
                 }
                 // Deferred inserts (they'd shift indices the map holds); insert_message_sorted dedups again defensively, so a page carrying two identical rows still lands one.
@@ -16302,13 +16384,13 @@ impl PhotonApp {
             }
             // FLEET-FORWARD DRAIN (compose anywhere): outgoing UNDELIVERED rows arriving from a SIBLING are messages a chain-less device composed and forwarded — if THIS device holds the woven chain, transmit them on the braid with their ORIGINAL timestamps (one row identity fleet-wide, so the friend's dedup + the delivered upgrade all cohere; a retransmit after a crash is re-ACKed harmlessly from the friend's stored ack_hash). Only FRESH rows drain — known rows were transmitted before or sit in the retransmit machinery. v1 assumption (pre-§14): exactly ONE device holds each friendship's woven chain.
             if from_sibling && self.contacts[idx].chain_woven {
-                let fwd: Vec<(String, i64)> = fresh
+                let fwd: Vec<(String, i64, Option<(crate::types::RefKind, i64)>)> = fresh
                     .iter()
                     .filter(|m| m.is_outgoing && !m.delivered)
-                    .map(|m| (m.content.clone(), m.timestamp))
+                    .map(|m| (m.content.clone(), m.timestamp, m.reference))
                     .collect();
-                for (text, ts) in fwd {
-                    if self.chain_transmit(idx, &text, ts) {
+                for (text, ts, re_ref) in fwd {
+                    if self.chain_transmit(idx, &text, ts, re_ref) {
                         crate::log("CHAT: fleet-forwarded row transmitted on the local chain");
                     }
                 }
@@ -18684,6 +18766,7 @@ impl PhotonApp {
                 sender_outgoing: m.is_outgoing,
                 delivered: m.delivered,
                 deleted: m.deleted,
+                reference: m.reference.map(|(k, t)| (k as u8, t)),
             })
             .collect();
         if hist_rows.is_empty() {
@@ -21830,6 +21913,9 @@ impl PhotonApp {
                                                 sender_outgoing: m.is_outgoing,
                                                 delivered: m.delivered,
                                                 deleted: m.deleted,
+                                                reference: m
+                                                    .reference
+                                                    .map(|(k, t)| (k as u8, t)),
                                             })
                                             .collect();
                                         let page = HistoryPagePlain {
@@ -24168,5 +24254,61 @@ fn restamp_hit_rect(
         for x in xs..xe {
             hit_map[row_base + x] = hit_id;
         }
+    }
+}
+
+#[cfg(test)]
+mod wire_reference_tests {
+    /// The typed reference rides as a SECOND VSF field after the message field — this pins the exact build/parse pair chain_transmit and commit_braid_rx use: sequential fields concatenate, the first parse stops at the boundary, the second reads the reference, and a payload WITHOUT the second field parses identically to the pre-feature layout.
+    #[test]
+    fn reference_field_round_trips_behind_the_message_field() {
+        use vsf::schema::section::FieldValue;
+        let values = vec![
+            vsf::VsfType::x("hello".to_string()),
+            vsf::VsfType::hp(vec![7u8; 32]),
+        ];
+        let mut payload = FieldValue::new("message", values).flatten();
+        let bare_len = payload.len();
+        payload.extend(
+            FieldValue::new(
+                "ref",
+                vec![
+                    vsf::VsfType::u3(crate::types::RefKind::Reply as u8),
+                    vsf::VsfType::e(vsf::EtType::e6(123_456_789)),
+                ],
+            )
+            .flatten(),
+        );
+
+        let mut ptr = 0usize;
+        let field = vsf::file_format::VsfField::parse(&payload, &mut ptr).unwrap();
+        assert_eq!(field.name, "message");
+        assert_eq!(ptr, bare_len, "field one must stop exactly at the boundary");
+        let reference = vsf::file_format::VsfField::parse(&payload, &mut ptr)
+            .ok()
+            .filter(|f| f.name == "ref")
+            .and_then(|f| {
+                let mut kind = None;
+                let mut target = None;
+                for v in &f.values {
+                    match v {
+                        vsf::VsfType::u3(k) => kind = crate::types::RefKind::from_wire(*k),
+                        vsf::VsfType::e(vsf::EtType::e6(t)) => target = Some(*t),
+                        _ => {}
+                    }
+                }
+                Some((kind?, target?))
+            });
+        assert_eq!(
+            reference,
+            Some((crate::types::RefKind::Reply, 123_456_789))
+        );
+
+        // A payload with no second field: the lenient read yields None, never an error.
+        let bare = FieldValue::new("message", vec![vsf::VsfType::x("hi".to_string())]).flatten();
+        let mut p2 = 0usize;
+        let f2 = vsf::file_format::VsfField::parse(&bare, &mut p2).unwrap();
+        assert_eq!(f2.name, "message");
+        assert!(vsf::file_format::VsfField::parse(&bare, &mut p2).is_err());
     }
 }

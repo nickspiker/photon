@@ -44,6 +44,25 @@ impl PartySlot {
 }
 
 /// A chat message in a conversation (UI-level representation)
+/// What a referencing row IS to its target: a reply to it, an edit superseding it, or a reaction on it. Wire/storage value is the discriminant (u3 on the wire, u64 in the row record) — zero is reserved for "no reference" so an absent field and an explicit none read the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefKind {
+    Reply = 1,
+    Edit = 2,
+    React = 3,
+}
+
+impl RefKind {
+    pub fn from_wire(v: u8) -> Option<RefKind> {
+        match v {
+            1 => Some(RefKind::Reply),
+            2 => Some(RefKind::Edit),
+            3 => Some(RefKind::React),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ChatMessage {
     pub content: String,
@@ -56,6 +75,8 @@ pub struct ChatMessage {
     pub recovered: bool,
     /// TOMBSTONE: the message is deleted-for-everyone — hidden from every UI, propagated monotonically (true wins) thru fleet sync AND to the friend via the hidden delete marker. The CONTENT IS PRESERVED internally on purpose: the braid weaves prior message content into future keys, so blanking it would fork chains that later weave this row — true content shredding needs a braid-safe redaction design (ticketed). Persisted.
     pub deleted: bool,
+    /// TYPED reference metadata: this row points at another row (by eagle_time) — a reply to it, an edit superseding it, or a reaction on it. `content` then carries ONLY the body (reply text / corrected text / reaction glyph — empty glyph = retract). A field, never a string encoding: metadata smuggled thru content is what put marker droppings on old builds' screens (field, 2026-08-09). Rides its own wire field, row-record fields, and history-page columns; the braid is untouched (strands weave content, which stays byte-identical both sides). Persisted; absent on pre-feature rows.
+    pub reference: Option<(RefKind, i64)>,
 }
 
 impl ChatMessage {
@@ -68,6 +89,7 @@ impl ChatMessage {
             ack_hash: None,
             recovered: false,
             deleted: false,
+            reference: None,
         }
     }
 
@@ -81,7 +103,14 @@ impl ChatMessage {
             ack_hash: None,
             recovered: false,
             deleted: false,
+            reference: None,
         }
+    }
+
+    /// Builder: attach the typed reference (reply/edit/react target).
+    pub fn with_reference(mut self, kind: RefKind, target_ts: i64) -> Self {
+        self.reference = Some((kind, target_ts));
+        self
     }
 
     /// Builder: attach the ACK hash (the plaintext_hash we ACK this message with). Used on the receive path so a later duplicate can be re-ACKed from storage.
@@ -143,66 +172,6 @@ pub const DELETE_MARKER_PREFIX: &str = "\u{1}\u{2}photon-delete\u{2}\u{1}";
 /// True for any CONTROL message content (chain probe, delete marker) — machinery rows that no UI, digest, weave window, or history page may surface.
 pub fn is_control_content(content: &str) -> bool {
     content == CHAIN_PROBE_MARKER || content.starts_with(DELETE_MARKER_PREFIX)
-}
-
-/// Reply row marker. NOT control content — a reply is a VISIBLE message that REFERENCES its target by eagle_time (`PREFIX + dozenal_bytes(target_ts) + \u{2} + body`), the braid's own referencing discipline. The renderer resolves the reference live against the row store (a half-alpha snippet above the body) — the target is never quoted into the reply, so an edit of the target ripples into every reply that points at it. The timestamp serializes as DOZENAL GLYPH BYTES, never ASCII decimal (AGENT.md): a client that predates this marker renders photon numerals, not arabic droppings.
-pub const REPLY_MARKER_PREFIX: &str = "\u{1}\u{2}photon-reply\u{2}\u{1}";
-
-/// Build a reply row's content string.
-pub fn reply_content(target_ts: i64, body: &str) -> String {
-    format!(
-        "{}{}\u{2}{}",
-        REPLY_MARKER_PREFIX,
-        crate::dozenal_bytes(target_ts),
-        body
-    )
-}
-
-/// Parse a reply row → (target eagle_time, body). None for non-reply content.
-pub fn parse_reply_content(content: &str) -> Option<(i64, &str)> {
-    let rest = content.strip_prefix(REPLY_MARKER_PREFIX)?;
-    let (ts, body) = rest.split_once('\u{2}')?;
-    Some((crate::parse_dozenal_bytes(ts)?, body))
-}
-
-/// Edit row marker. NOT control content — an edit is a real synced row (`PREFIX + dozenal_bytes(target_ts) + \u{2} + new_body`) that SUPERSEDES its target at render time only. The original row is NEVER mutated: its content is braid key material (strands resolve stored content by eagle_time), so rewriting it would fork the chain the next time that row is woven. The newest edit row targeting a ts wins; the edit row draws no bubble of its own while its target is present, and it rides pages/fleet-sync/digests like any row — convergence for free.
-pub const EDIT_MARKER_PREFIX: &str = "\u{1}\u{2}photon-edit\u{2}\u{1}";
-
-/// Build an edit row's content string.
-pub fn edit_content(target_ts: i64, body: &str) -> String {
-    format!(
-        "{}{}\u{2}{}",
-        EDIT_MARKER_PREFIX,
-        crate::dozenal_bytes(target_ts),
-        body
-    )
-}
-
-/// Parse an edit row → (target eagle_time, new body). None for non-edit content.
-pub fn parse_edit_content(content: &str) -> Option<(i64, &str)> {
-    let rest = content.strip_prefix(EDIT_MARKER_PREFIX)?;
-    let (ts, body) = rest.split_once('\u{2}')?;
-    Some((crate::parse_dozenal_bytes(ts)?, body))
-}
-
-/// Reaction row marker. NOT control content — a reaction is a synced referencing row (`PREFIX + dozenal_bytes(target_ts) + \u{2} + glyph`), family sibling of reply/edit. Resolution is newest-live-per-sender-per-target: reacting again REPLACES yours, an empty glyph RETRACTS. The glyph is an arbitrary short string (the fixed strip today; any emoji/letter tomorrow — the wire already carries it). Reaction rows draw no bubble of their own, ever — an orphan (target not synced yet) stays invisible and attaches when the target lands.
-pub const REACT_MARKER_PREFIX: &str = "\u{1}\u{2}photon-react\u{2}\u{1}";
-
-/// Build a reaction row's content string. An empty `glyph` is the retract.
-pub fn react_content(target_ts: i64, glyph: &str) -> String {
-    format!(
-        "{}{}\u{2}{}",
-        REACT_MARKER_PREFIX,
-        crate::dozenal_bytes(target_ts),
-        glyph
-    )
-}
-
-/// Parse a reaction row → (target eagle_time, glyph). None for non-reaction content.
-pub fn parse_react_content(content: &str) -> Option<(i64, &str)> {
-    let rest = content.strip_prefix(REACT_MARKER_PREFIX)?;
-    let (ts, glyph) = rest.split_once('\u{2}')?;
-    Some((crate::parse_dozenal_bytes(ts)?, glyph))
 }
 
 /// Attachment row marker. NOT control content — attachment rows are VISIBLE messages (bubble = pill), they ACK, sync fleet-wide, tombstone, and weave like any row; only their DISPLAY differs. The content string is the whole record: `PREFIX + blake3_hex(64) + \u{2} + filename + \u{2} + size_bytes` — riding the ordinary content field means zero codec changes anywhere (vault, history pages, fleet sync all carry it as text). The blob itself travels separately over PT (attach_blob frames) and lives as a sealed file beside the vault, NEVER in a row.
