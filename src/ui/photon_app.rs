@@ -506,6 +506,28 @@ struct HistPageOpened {
     page: crate::network::history_pages::HistoryPagePlain,
 }
 
+/// A queued background job — boxed so heterogeneous closures share one worker.
+type Job = Box<dyn FnOnce() + Send>;
+
+/// Spawn ONE immortal named worker draining a job queue. Two of these replace the spawn-per-item pattern: a launch burst of fifty history pages once spawned fifty threads at once — fifty 8MB stack mmaps plus fifty kete opens contending with the render thread, the unattributed 400-1700ms ticks in the 2026-08-08 field log. Jobs carry their own reply channels and storage handles, so a session swap is safe: a stale job posts into a dropped receiver, harmlessly.
+fn spawn_job_worker(name: &'static str) -> std::sync::mpsc::Sender<Job> {
+    let (tx, rx) = std::sync::mpsc::channel::<Job>();
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn(move || {
+            while let Ok(job) = rx.recv() {
+                job();
+            }
+        })
+        .expect("job worker spawn at construction");
+    tx
+}
+
+/// Enqueue on a job worker — same call shape as the `std::thread::spawn` it replaces, so converted sites keep their closure bodies verbatim.
+fn queue_job(tx: &std::sync::mpsc::Sender<Job>, job: impl FnOnce() + Send + 'static) {
+    let _ = tx.send(Box::new(job));
+}
+
 /// RAII release for the fleet-heal latch: `acquire` CASes false→true and hands back a guard whose Drop stores false — so a panic anywhere in a heal (fold, rotate, push) can never park key sync for the whole session behind a latch nothing clears. The panic still kills its worker thread; the next sync edge retries against a released latch.
 struct HealLatch(std::sync::Arc<std::sync::atomic::AtomicBool>);
 impl HealLatch {
@@ -1010,6 +1032,10 @@ pub struct PhotonApp {
     braid_tx_rx: std::sync::mpsc::Receiver<BraidTxEncrypted>,
     /// Friendships with a send encrypt in flight: a second dispatch would mint a second frame at the SAME lane position (the commit CAS would void it), so the gate holds the row and the commit edge re-fires it thru resend_held_messages.
     send_encrypt_busy: std::collections::HashSet<[u8; 32]>,
+    /// The sealed-I/O worker: kete opens/seals, page builds, blob serves — everything AEAD-shaped queues here instead of spawning a thread per item (see spawn_job_worker).
+    seal_job_tx: std::sync::mpsc::Sender<Job>,
+    /// The braid-crypto worker: memory-hard scratch decrypts + encrypts. ONE worker on purpose — the lockstep already serialized same-lane frames; serializing across lanes trades a few ms of queue latency for zero render-thread contention.
+    braid_job_tx: std::sync::mpsc::Sender<Job>,
     /// Handles we've already kicked an avatar download for this session, so we don't re-spawn a fetch every time a conversation is reopened or the contact list re-renders.
     avatar_dl_started: std::collections::HashSet<[u8; 32]>,
     /// Mutual peers we've sent a direct P2P AvatarRequest to, mapped to the eagle-time we sent it. The per-tick sweep asks each mutual peer once, then — if no AvatarResponse has installed an avatar within `AVATAR_P2P_FALLBACK_OSC` — falls back to FGTW. So a friend's avatar comes from the friend first, and FGTW only covers the case where the friend is offline or avatar-less.
@@ -1571,6 +1597,8 @@ impl PhotonApp {
             },
             braid_tx_rx: std::sync::mpsc::channel().1,
             send_encrypt_busy: std::collections::HashSet::new(),
+            seal_job_tx: spawn_job_worker("photon-seal"),
+            braid_job_tx: spawn_job_worker("photon-braid"),
             fleet_heal_busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             fanout_rotate_pending: false,
             self_avatar_recover_pending: None,
@@ -14097,7 +14125,7 @@ impl PhotonApp {
         let tx = self.braid_tx_tx.clone();
         let wake = self.event_proxy.clone();
         let text_len = text.len();
-        std::thread::spawn(move || {
+        queue_job(&self.braid_job_tx, move || {
             let result = snapshot
                 .prepare_send_encrypt(&payload, eagle_time)
                 .map(
@@ -18648,7 +18676,7 @@ impl PhotonApp {
         if work.is_empty() || targets.is_empty() {
             return;
         }
-        std::thread::spawn(move || {
+        queue_job(&self.seal_job_tx, move || {
             for (fid_bytes, subset, lane_count) in work {
                 let bytes = match crate::storage::friendship::chains_to_vsf_bytes(&subset) {
                     Ok(b) => b,
@@ -18779,7 +18807,7 @@ impl PhotonApp {
         let kp_pub = *kp.public.as_bytes();
         let kp_sec = *kp.secret.as_bytes();
         let dispatch = checker.history_dispatch();
-        std::thread::spawn(move || {
+        queue_job(&self.seal_job_tx, move || {
             let vsf_bytes = match seal_history_page(&page, &fleet_key).and_then(|sealed| {
                 crate::network::fgtw::protocol::build_history_page_vsf(
                     &token,
@@ -19372,17 +19400,29 @@ impl PhotonApp {
         // NOTE: ClutchRequest and ClutchRequestType imports removed - legacy v1 CLUTCH no longer used
         use crate::types::ClutchState;
 
+        // Per-DRAIN stall attribution, the arm timer's sibling: the 2026-08-08 field log showed 400-1700ms ticks with almost no arm attribution — the time was in these drains, which nothing named. >50ms logs the drain, so the next log round points at code instead of at a guess.
+        macro_rules! timed_drain {
+            ($label:literal, $body:expr) => {{
+                let __t = std::time::Instant::now();
+                let __r = $body;
+                let __ms = __t.elapsed().as_millis();
+                if __ms > 50 {
+                    crate::logf!("PERF: drain {} took {}ms (UI thread)", $label, __ms);
+                }
+                __r
+            }};
+        }
         // Peer avatars: install any completed downloads, then kick a fetch (once/session/handle) for any contact still without one. Cache-first + dedup'd by avatar_dl_started, so this is cheap to run every tick — it spawns at most one thread per peer per session.
-        self.drain_avatar_downloads();
-        self.drain_attach_installed();
+        timed_drain!("avatar", self.drain_avatar_downloads());
+        timed_drain!("attach", self.drain_attach_installed());
         // History pages the decrypt workers finished since last tick — merge before the arm loop so a walk's next request goes out on this tick's sweep, not the next.
-        self.drain_history_pages();
+        timed_drain!("history_pages", self.drain_history_pages());
         // Chain-sync blobs the open workers finished — adopt before the arm loop so this tick's replication push already carries the adopted heads.
-        self.drain_chain_syncs();
+        timed_drain!("chain_syncs", self.drain_chain_syncs());
         // Braid decrypts the workers finished — commit before the arm loop so a gap-refill replay re-enters THIS tick's gates.
-        self.drain_braid_rx();
+        timed_drain!("braid_rx", self.drain_braid_rx());
         // Send encrypts the workers finished — commit + hand to the durable-transmit writer.
-        self.drain_braid_tx();
+        timed_drain!("braid_tx", self.drain_braid_tx());
 
         // Our OWN just-picked avatar, arriving from the off-thread set pipeline (decode ran there too): install + repaint, then drop the channel — one avatar per pick.
         if let Some(rx) = self.avatar_set_rx.as_ref() {
@@ -20200,7 +20240,7 @@ impl PhotonApp {
                         let their_last_plaintext = chains.last_plaintext(&lane).to_vec();
                         let tx = self.braid_rx_tx.clone();
                         let wake = self.event_proxy.clone();
-                        std::thread::spawn(move || {
+                        queue_job(&self.braid_job_tx, move || {
                             use crate::crypto::chain::{
                                 decrypt_layers, derive_salt, generate_scratch, CURRENT_KEY_INDEX,
                             };
@@ -21842,7 +21882,7 @@ impl PhotonApp {
                             let device_pubkey = *kp.public.as_bytes();
                             let device_secret = *kp.secret.as_bytes();
                             let recipient = *sender_pubkey.as_bytes();
-                            std::thread::spawn(move || {
+                            queue_job(&self.seal_job_tx, move || {
                                 use crate::network::history_pages::{
                                     seal_history_page, HistoryPagePlain, HistoryRow,
                                 };
@@ -21956,7 +21996,7 @@ impl PhotonApp {
                     } else if let (Some(wire_key), Some(seed)) = (wire_key, seed) {
                         // OFF-THREAD: an attachment blob is arbitrary-size, and the AEAD open + blake3-over-the-whole-blob + disk store all ran inline on the render thread. A worker does the three, then posts back so the drain (which holds the keypair + checker) sends the attach_have confirm and clears the compose wrap. A hash mismatch or store failure logs and posts nothing.
                         let tx = self.attach_installed_tx.clone();
-                        std::thread::spawn(move || match kete::decrypt_bytes(&sealed, &wire_key) {
+                        queue_job(&self.seal_job_tx, move || match kete::decrypt_bytes(&sealed, &wire_key) {
                             Ok(plain) if *blake3::hash(&plain).as_bytes() == content_hash => {
                                 match crate::storage::blob_store(&seed, &content_hash, &plain) {
                                     Ok(()) => {
@@ -22025,7 +22065,7 @@ impl PhotonApp {
                         let kp_pub = *kp.public.as_bytes();
                         let kp_sec = *kp.secret.as_bytes();
                         let dispatch = checker.history_dispatch();
-                        std::thread::spawn(move || {
+                        queue_job(&self.seal_job_tx, move || {
                             let Some(plain) = crate::storage::blob_load(&seed, &content_hash)
                             else {
                                 crate::log("ATTACH: requested blob not held here");
@@ -22082,7 +22122,7 @@ impl PhotonApp {
                     // OFF-THREAD: the kete open + VSF decode ran inline — 17KB+ per lane, and a fresh sibling join repushes EVERY friendship at once (an adopt storm on the render thread). The worker opens and decodes; the adopt (cheap position compares) runs in drain_chain_syncs.
                     let tx = self.chain_sync_opened_tx.clone();
                     let wake = self.event_proxy.clone();
-                    std::thread::spawn(move || {
+                    queue_job(&self.seal_job_tx, move || {
                         let Ok(plain) = kete::decrypt_bytes(&sealed, &fleet_key) else {
                             crate::log("CHAIN-SYNC: blob failed to open under the fleet key — dropped (stale key generation?)");
                             return;
@@ -22219,7 +22259,7 @@ impl PhotonApp {
                         // OFF-THREAD: opening the sealed page (kete over up to MAX_PAGE_BYTES) ran inline here — 210-485ms per page in the field (2026-08-08), the largest single status-arm stall. The worker only decrypts and posts back; EVERY gate that reads mutable state (in-flight rid match, sibling trust, contact indexes) lives in drain_history_pages, evaluated against current state instead of a dispatch-time snapshot.
                         let tx = self.hist_opened_tx.clone();
                         let wake = self.event_proxy.clone();
-                        std::thread::spawn(move || {
+                        queue_job(&self.seal_job_tx, move || {
                             match crate::network::history_pages::open_history_page(&sealed, &key) {
                                 Ok(page) => {
                                     let _ = tx.send(HistPageOpened {
