@@ -40,6 +40,8 @@ pub struct Conversation {
     pub scroll_offset: f32,
     /// Friend-assisted history recovery state machine (newest-first cursor pagination from a participant's copy). `None` = no recovery running/known. Runtime struct; the durable cursor + complete flag persist in conversation state.
     pub history_recovery: Option<HistoryRecovery>,
+    /// Cached anti-entropy digest `(count, digest)` — invalidated (set `None`) on any message-set mutation and recomputed lazily by `anti_entropy_digest`. Runtime-only: it is recomputed on load. Stops the digest being re-folded over EVERY row on every sync-record build (it was an O(rows) blake3 pass per call, on the render thread).
+    digest_cache: Option<(u32, [u8; 32])>,
 }
 
 impl Conversation {
@@ -56,7 +58,40 @@ impl Conversation {
             unread_count: 0,
             scroll_offset: 0.0,
             history_recovery: None,
+            digest_cache: None,
         }
+    }
+
+    /// The anti-entropy digest `(count, digest)` over the syncable rows, ORDER-DEPENDENT and sorted by eagle_time. `digest = rolling H(prev ‖ H(timestamp ‖ H(content)))` walking rows oldest-first (the order `insert_message_sorted` maintains). Order matters ON PURPOSE: two sides holding the same messages in the same sequence hash identically; a mismatch means one side is MISSING or has REORDERED a message — which an order-free XOR fold would have hidden (its whole point was to reveal exactly that). Probe/control rows and tombstones are excluded (they never sync / carry no content to compare). Cached; recomputed only after a mutation invalidates it.
+    pub fn anti_entropy_digest(&mut self) -> (u32, [u8; 32]) {
+        if let Some(cached) = self.digest_cache {
+            return cached;
+        }
+        let mut rolling = [0u8; 32];
+        let mut n: u32 = 0;
+        for m in self
+            .messages
+            .iter()
+            .filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted)
+        {
+            let row = blake3::Hasher::new()
+                .update(&m.timestamp.to_le_bytes())
+                .update(blake3::hash(m.content.as_bytes()).as_bytes())
+                .finalize();
+            rolling = *blake3::Hasher::new()
+                .update(&rolling)
+                .update(row.as_bytes())
+                .finalize()
+                .as_bytes();
+            n += 1;
+        }
+        self.digest_cache = Some((n, rolling));
+        (n, rolling)
+    }
+
+    /// Invalidate the cached digest — called on every path that changes the syncable row set (insert, tombstone). Cheap; the next `anti_entropy_digest` recomputes.
+    pub fn invalidate_digest(&mut self) {
+        self.digest_cache = None;
     }
 
     /// This conversation's stable id.
@@ -93,6 +128,8 @@ impl Conversation {
 
     /// Insert preserving timestamp order, upgrading a friend-recovered copy in place when the same row arrives over the wire. Mirrors `Contact::insert_message_sorted`, which this replaces.
     pub fn insert_message_sorted(&mut self, msg: ChatMessage) {
+        // Any insert or in-place upgrade can change the syncable set (a new row, or a deleted-flag flip below), so drop the cached anti-entropy digest — recomputed lazily on the next request.
+        self.digest_cache = None;
         // IDENTITY = (timestamp, content): the eagle_time and the bare text, never the metadata. One message reaches a device by several routes — the live wire frame, a sibling fleet-forward, a history-recovery page — and those copies differ ONLY in metadata (delivered / recovered / ack_hash; the live frame carries a real ack_hash a forward lacks). Keying dedup on anything else let two copies of one message coexist: the mac's duplicated message (2026-08-08) was a sibling fleet-forward (stored recovered=false) plus the live frame, which the old recovered-only collapse never merged. On a match, upgrade the surviving row's metadata monotonically and drop the duplicate.
         if let Some(existing) = self
             .messages
@@ -208,5 +245,44 @@ mod tests {
         assert_eq!(c2.messages.len(), 1, "recovered placeholder replaced, not duplicated");
         assert_eq!(c2.messages[0].content, "the real text");
         assert!(!c2.messages[0].recovered);
+    }
+
+    /// The anti-entropy digest is ORDER-DEPENDENT (a rolling hash), so a missing OR reordered message shows as a mismatch — the property the old order-free XOR fold destroyed. It is also cached: recomputed only after a mutation.
+    #[test]
+    fn digest_is_order_dependent_and_cached() {
+        use crate::types::ChatMessage;
+        let m = |t: i64, s: &str| ChatMessage::new_with_timestamp(s.into(), false, t);
+
+        // Same messages, same order → identical digest (two sides agree).
+        let mut a = Conversation::new([pid(1), pid(2)]);
+        let mut b = Conversation::new([pid(2), pid(1)]);
+        for (t, s) in [(10, "one"), (20, "two"), (30, "three")] {
+            a.insert_message_sorted(m(t, s));
+            b.insert_message_sorted(m(t, s));
+        }
+        assert_eq!(a.anti_entropy_digest(), b.anti_entropy_digest(), "same set + order agree");
+
+        // MISSING a message → different digest (the whole point).
+        let mut c = Conversation::new([pid(1), pid(2)]);
+        c.insert_message_sorted(m(10, "one"));
+        c.insert_message_sorted(m(30, "three"));
+        assert_ne!(a.anti_entropy_digest(), c.anti_entropy_digest(), "a missing message must mismatch");
+
+        // Same three texts at DIFFERENT eagle_times = a different sequence → different digest (an XOR fold of (ts,content) would also differ here, but the rolling hash also catches a pure reorder that a content-set fold cannot).
+        let mut d = Conversation::new([pid(1), pid(2)]);
+        for (t, s) in [(11, "one"), (21, "two"), (31, "three")] {
+            d.insert_message_sorted(m(t, s));
+        }
+        assert_ne!(a.anti_entropy_digest(), d.anti_entropy_digest(), "different sequence must mismatch");
+
+        // Count is the non-deleted syncable rows.
+        assert_eq!(a.anti_entropy_digest().0, 3);
+
+        // Cache: a second call without mutation returns the same value; a new message invalidates it.
+        let first = a.anti_entropy_digest();
+        assert_eq!(a.anti_entropy_digest(), first, "cached, stable without mutation");
+        a.insert_message_sorted(m(40, "four"));
+        assert_ne!(a.anti_entropy_digest(), first, "a new message invalidates the cache");
+        assert_eq!(a.anti_entropy_digest().0, 4);
     }
 }
