@@ -1090,6 +1090,8 @@ pub struct PhotonApp {
     last_fleet_sweep: Option<Instant>,
     /// Fleet chain-replication bookkeeping: per-friendship, the `mutated_osc` we last PUSHED to siblings (or last ADOPTED from one — recording the adopted stamp stops the echo). The per-tick `drive_chain_replication` sweep pushes any chain whose live stamp is newer; comparing stamps instead of hooking every mutation site coalesces bursts and covers every path (send, ACK, receive, ceremony completion, reset) for free.
     chain_pushed_osc: std::collections::HashMap<[u8; 32], i64>,
+    /// Per-LANE replication bookkeeping: (friendship_id ‖ lane_label) → the lane position we last pushed to siblings. `drive_chain_replication` sends ONLY the lanes whose position advanced past this, as a per-lane checkpoint subset — so a mutation on one lane no longer re-transmits every other lane's 16KB chain (the 85KB whole-blob frame that stalled the render thread every tick).
+    lane_pushed_pos: std::collections::HashMap<[u8; 64], u64>,
     /// Base hit id for the settings stub action pills (immediate-mode Buttons — Add device, Lock, Shred, Snapshot, …). Each page draws its pills over a small contiguous slice of this range; clicks land here and log a stub line. Allocated in `init` with a fixed span.
     settings_btn_base: HitId,
     /// Appearance-page theme selector — a real fluor `Dropdown`. Only in the widget walk while the Settings/Appearance page is up.
@@ -1440,6 +1442,7 @@ impl PhotonApp {
             last_seal_reseed: None,
             last_fleet_sweep: None,
             chain_pushed_osc: std::collections::HashMap::new(),
+            lane_pushed_pos: std::collections::HashMap::new(),
             settings_btn_base: HIT_NONE,
             settings_theme_dropdown: None,
             settings_zoom_slider: None,
@@ -16704,7 +16707,7 @@ impl PhotonApp {
             .filter_map(|c| c.friendship_id.map(|f| *f.as_bytes()))
             .collect();
         // Collect due frames first (read-only pass over the chains), send after.
-        let mut frames: Vec<([u8; 32], i64, Vec<u8>)> = Vec::new();
+        let mut frames: Vec<([u8; 32], i64, Vec<([u8; 32], u64)>, Vec<u8>)> = Vec::new();
         for (fid, chains) in &self.friendship_chains {
             let fid_bytes = *fid.as_bytes();
             if sibling_fids.contains(&fid_bytes) {
@@ -16712,9 +16715,27 @@ impl PhotonApp {
             }
             let pushed = self.chain_pushed_osc.get(&fid_bytes).copied().unwrap_or(0);
             if chains.mutated_osc <= pushed {
+                continue; // coarse gate: nothing on this friendship moved since the last push
+            }
+            // PER-LANE: send only the lanes whose position advanced past what we last pushed — a per-lane checkpoint subset, not the whole blob. A key of fid ‖ label.
+            let changed: Vec<([u8; 32], u64)> = chains
+                .lane_summary()
+                .into_iter()
+                .filter(|(label, pos)| {
+                    let mut key = [0u8; 64];
+                    key[..32].copy_from_slice(&fid_bytes);
+                    key[32..].copy_from_slice(label);
+                    self.lane_pushed_pos.get(&key).copied().unwrap_or(0) < *pos
+                })
+                .collect();
+            if changed.is_empty() {
+                // mutated_osc moved but no lane position did (e.g. a last_plaintext-only touch); record the coarse stamp so we don't re-scan every tick.
+                frames.push((fid_bytes, chains.mutated_osc, Vec::new(), Vec::new()));
                 continue;
             }
-            let bytes = match crate::storage::friendship::chains_to_vsf_bytes(chains) {
+            let changed_labels: Vec<[u8; 32]> = changed.iter().map(|(l, _)| *l).collect();
+            let subset = chains.replication_subset(&changed_labels);
+            let bytes = match crate::storage::friendship::chains_to_vsf_bytes(&subset) {
                 Ok(b) => b,
                 Err(e) => {
                     crate::logf!("CHAIN-SYNC: encode failed: {}", e);
@@ -16740,12 +16761,18 @@ impl PhotonApp {
                     continue;
                 }
             };
-            frames.push((fid_bytes, chains.mutated_osc, frame));
+            crate::logf!("CHAIN-SYNC: pushing {} changed lane(s) for {} (per-lane checkpoint, {} bytes)", changed.len(), crate::fp(&fid_bytes), frame.len());
+            frames.push((fid_bytes, chains.mutated_osc, changed, frame));
         }
         if frames.is_empty() {
             return;
         }
-        for (fid_bytes, osc, frame) in frames {
+        for (fid_bytes, osc, changed, frame) in frames {
+            // A frame-less entry is the "stamp moved but no lane did" case: record the coarse stamp and move on, no transmit.
+            if frame.is_empty() {
+                self.chain_pushed_osc.insert(fid_bytes, osc);
+                continue;
+            }
             let mut pushed_to = 0usize;
             let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
             for sib in self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out) {
@@ -16773,8 +16800,16 @@ impl PhotonApp {
                 pushed_to += 1;
             }
             self.chain_pushed_osc.insert(fid_bytes, osc);
+            // Record each pushed lane's position so we don't re-send it until it advances again.
+            for (label, pos) in &changed {
+                let mut key = [0u8; 64];
+                key[..32].copy_from_slice(&fid_bytes);
+                key[32..].copy_from_slice(label);
+                self.lane_pushed_pos.insert(key, *pos);
+            }
             crate::logf!(
-                "CHAIN-SYNC: pushed chain state ({}) to {} sibling(s)",
+                "CHAIN-SYNC: pushed {} lane(s) ({}) to {} sibling(s)",
+                changed.len(),
                 crate::fp(&fid_bytes),
                 pushed_to
             );
