@@ -93,13 +93,31 @@ impl Conversation {
 
     /// Insert preserving timestamp order, upgrading a friend-recovered copy in place when the same row arrives over the wire. Mirrors `Contact::insert_message_sorted`, which this replaces.
     pub fn insert_message_sorted(&mut self, msg: ChatMessage) {
+        // IDENTITY = (timestamp, content): the eagle_time and the bare text, never the metadata. One message reaches a device by several routes — the live wire frame, a sibling fleet-forward, a history-recovery page — and those copies differ ONLY in metadata (delivered / recovered / ack_hash; the live frame carries a real ack_hash a forward lacks). Keying dedup on anything else let two copies of one message coexist: the mac's duplicated message (2026-08-08) was a sibling fleet-forward (stored recovered=false) plus the live frame, which the old recovered-only collapse never merged. On a match, upgrade the surviving row's metadata monotonically and drop the duplicate.
         if let Some(existing) = self
             .messages
             .iter_mut()
-            .find(|m| m.timestamp == msg.timestamp && m.recovered && !msg.recovered)
+            .find(|m| m.timestamp == msg.timestamp && m.content == msg.content)
         {
-            *existing = msg;
+            existing.delivered |= msg.delivered;
+            existing.deleted |= msg.deleted;
+            if existing.ack_hash.is_none() {
+                existing.ack_hash = msg.ack_hash;
+            }
+            // A row witnessed live on the wire supersedes a friend-attested recovered copy.
+            existing.recovered = existing.recovered && msg.recovered;
             return;
+        }
+        // A recovered PLACEHOLDER at this timestamp yields to an authoritative (live/witnessed) row even if the text differs — what we saw on the wire outranks friend-attested content.
+        if !msg.recovered {
+            if let Some(existing) = self
+                .messages
+                .iter_mut()
+                .find(|m| m.timestamp == msg.timestamp && m.recovered)
+            {
+                *existing = msg;
+                return;
+            }
         }
         let pos = self
             .messages
@@ -161,5 +179,34 @@ mod tests {
         assert_eq!(c.participant_index(&pid(9)), Some(2));
         assert_eq!(c.participant_index(&pid(4)), None);
         assert!(c.includes(&pid(5)) && !c.includes(&pid(4)));
+    }
+
+    /// REGRESSION (mac dupe, 2026-08-08): one message reaching a device by two routes — a sibling fleet-forward (recovered=false, no ack_hash) and then the live wire frame (recovered=false, with an ack_hash) — must collapse to ONE row keyed on (timestamp, content), upgrading metadata. The old recovered-only collapse left both, because neither copy was `recovered`.
+    #[test]
+    fn same_timestamp_and_content_collapses_across_routes() {
+        use crate::types::ChatMessage;
+        let mut c = Conversation::new([pid(1), pid(2)]);
+        // Route 1: sibling fleet-forward — a plain non-recovered incoming row, no ACK yet.
+        c.insert_message_sorted(ChatMessage::new_with_timestamp("hi".into(), false, 1000));
+        // Route 2: the live wire frame for the SAME message — carries the real ack_hash.
+        c.insert_message_sorted(
+            ChatMessage::new_with_timestamp("hi".into(), false, 1000).with_ack_hash([7u8; 32]),
+        );
+        assert_eq!(c.messages.len(), 1, "the two routes are one message — must not duplicate");
+        assert_eq!(c.messages[0].ack_hash, Some([7u8; 32]), "the live frame's ack_hash is adopted");
+
+        // A different text at the same tick is a different message (astronomically rare, but not the same row).
+        c.insert_message_sorted(ChatMessage::new_with_timestamp("yo".into(), false, 1000));
+        assert_eq!(c.messages.len(), 2, "distinct content at one tick stays distinct");
+
+        // A recovered placeholder is superseded by a live row even when the text differs.
+        let mut c2 = Conversation::new([pid(1), pid(2)]);
+        let mut ph = ChatMessage::new_with_timestamp("placeholder".into(), false, 2000);
+        ph.recovered = true;
+        c2.insert_message_sorted(ph);
+        c2.insert_message_sorted(ChatMessage::new_with_timestamp("the real text".into(), false, 2000));
+        assert_eq!(c2.messages.len(), 1, "recovered placeholder replaced, not duplicated");
+        assert_eq!(c2.messages[0].content, "the real text");
+        assert!(!c2.messages[0].recovered);
     }
 }
