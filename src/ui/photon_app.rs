@@ -413,6 +413,31 @@ struct HistPageOpened {
     page: crate::network::history_pages::HistoryPagePlain,
 }
 
+/// A signal the chains writer fires only AFTER its snapshot lands on disk — the durable-then-signal half of the commit-point law, kept intact with the write off the UI thread. Receive: persist-before-ACK (a lost write withholds the ACK; the sender retransmits and we re-process). Send: persist-before-transmit (a crash before the write means no frame ever left; the reload re-sends from the persisted tip, never at a stale position).
+enum ChainsPostDurable {
+    Ack(
+        std::sync::mpsc::Sender<crate::network::status::AckRequest>,
+        crate::network::status::AckRequest,
+    ),
+    Message(
+        std::sync::mpsc::Sender<crate::network::status::MessageRequest>,
+        crate::network::status::MessageRequest,
+    ),
+}
+
+impl ChainsPostDurable {
+    fn fire(self) {
+        match self {
+            ChainsPostDurable::Ack(tx, req) => {
+                let _ = tx.send(req);
+            }
+            ChainsPostDurable::Message(tx, req) => {
+                let _ = tx.send(req);
+            }
+        }
+    }
+}
+
 /// A sibling chain_sync blob opened + decoded OFF the UI thread. The kete open ran inline — 17KB+ per lane, and a fresh sibling join repushes every friendship at once, an adopt storm on the render thread. The drain re-gates the sender (lockout can land mid-flight) and runs the cheap position-compare adopt.
 struct ChainSyncOpened {
     conversation_token: [u8; 32],
@@ -990,11 +1015,12 @@ pub struct PhotonApp {
             std::sync::Arc<crate::storage::FlatStorage>,
         )>,
     >,
-    /// Chains persist worker: the SAME coalescing shape as `persist_tx` but for FriendshipChains, keyed by friendship id. Used ONLY for the safe-to-delay saves — an ACK's pending-removal (a lost one just re-transmits, the peer dedups) and a sibling chain-sync adopt (a lost one re-adopts idempotently). The two COMMIT-POINT saves stay synchronous and are NOT routed here: the receive save (persist-before-ACK — a lost one after we ACK forks, since the sender clears its pending) and the send save (persist-before-send under advance-on-send — a lost one re-sends at a stale position).
+    /// Chains persist worker: the SAME coalescing shape as `persist_tx` but for FriendshipChains, keyed by friendship id. The safe-to-delay saves (ACK pending-removal, chain-sync adopt) ride with no attachments; the two COMMIT-POINT saves ride with their gated signal attached (see ChainsPostDurable) — the writer fires the receive's ACK / the send's transmit only after the durable write lands, so persist-before-signal holds with zero encrypt+IO on the UI thread. Coalescing merges a superseded snapshot's signals into its replacement: the newest snapshot contains every advance the older one did.
     chains_persist_tx: Option<
         std::sync::mpsc::Sender<(
             crate::types::friendship::FriendshipChains,
             std::sync::Arc<crate::storage::FlatStorage>,
+            Vec<ChainsPostDurable>,
         )>,
     >,
     /// Conversation-state persist worker: the 13-byte unread + history-cursor record, coalesced newest-per-address. The payload is tiny but the vault write is still an encrypt + file IO stall — and a history walk fired one per merged page on the render thread.
@@ -12915,7 +12941,7 @@ impl PhotonApp {
         let _ = tx.send((conv, storage));
     }
 
-    /// Persist a friendship's chains OFF the UI thread, coalescing a burst to the newest snapshot per friendship id. ONLY for the safe-to-delay saves (see `chains_persist_tx`): an ACK's pending-removal and a sibling chain-sync adopt. NEVER call this from a commit point (receive-before-ACK, send-before-dispatch) — those must hit disk synchronously.
+    /// Persist a friendship's chains OFF the UI thread with no gated signal — the safe-to-delay saves (ACK pending-removal, chain-sync adopt), where a lost write just re-converges idempotently.
     fn persist_chains_async(&mut self, fid: &crate::types::friendship::FriendshipId) {
         let Some((_, chains)) = self
             .friendship_chains
@@ -12925,33 +12951,60 @@ impl PhotonApp {
             return;
         };
         let chains = chains.clone();
+        self.persist_chains_then(chains, Vec::new());
+    }
+
+    /// Persist a chains snapshot OFF the UI thread, coalescing a burst to the newest snapshot per friendship id, then fire the attached signals — the commit-point path (receive's ACK, send's transmit) with persist-before-signal intact. A write failure withholds every attached signal, loudly: no ACK for an unwritten receive (the sender retransmits), no transmit for an unwritten send (the reload re-sends from the persisted tip).
+    fn persist_chains_then(
+        &mut self,
+        chains: crate::types::friendship::FriendshipChains,
+        actions: Vec<ChainsPostDurable>,
+    ) {
         let Some(storage) = self.storage.as_ref().cloned() else {
             return;
         };
         type ChainsItem = (
             crate::types::friendship::FriendshipChains,
             std::sync::Arc<crate::storage::FlatStorage>,
+            Vec<ChainsPostDurable>,
         );
         let tx = self.chains_persist_tx.get_or_insert_with(|| {
             let (tx, rx) = std::sync::mpsc::channel::<ChainsItem>();
             std::thread::spawn(move || {
                 while let Ok(first) = rx.recv() {
-                    // Coalesce the burst: keep the newest snapshot per friendship id.
+                    // Coalesce the burst: keep the newest snapshot per friendship id — and CARRY the superseded snapshot's signals into its replacement. The newest snapshot contains every advance the older one did, so firing them after the newer write keeps persist-before-signal true for all of them.
                     let mut latest: Vec<ChainsItem> = vec![first];
                     while let Ok(next) = rx.try_recv() {
-                        latest.retain(|(c, _)| c.id() != next.0.id());
-                        latest.push(next);
+                        let mut carried: Vec<ChainsPostDurable> = Vec::new();
+                        latest.retain_mut(|(c, _, acts)| {
+                            if c.id() == next.0.id() {
+                                carried.append(acts);
+                                false
+                            } else {
+                                true
+                            }
+                        });
+                        let (c, st, mut acts) = next;
+                        carried.append(&mut acts);
+                        latest.push((c, st, carried));
                     }
-                    for (c, st) in latest {
-                        if let Err(e) = crate::storage::friendship::save_friendship_chains(&c, &st) {
-                            crate::logf!("STORAGE: async chains persist failed: {}", e);
+                    for (c, st, acts) in latest {
+                        match crate::storage::friendship::save_friendship_chains(&c, &st) {
+                            Ok(()) => {
+                                for a in acts {
+                                    a.fire();
+                                }
+                            }
+                            Err(e) => {
+                                crate::logf!("STORAGE CRITICAL: chains persist failed — withholding {} gated signal(s) (ACK/transmit): {}", acts.len(), e);
+                            }
                         }
                     }
                 }
             });
             tx
         });
-        let _ = tx.send((chains, storage));
+        let _ = tx.send((chains, storage, actions));
     }
 
     /// Persist a conversation's durable bits (unread + history cursor) OFF the UI thread, coalesced to the newest record per conversation. Same worker discipline as the message/chains writers: storage rides with each item so a vault swap can't strand the thread on a dead session.
@@ -13212,39 +13265,40 @@ impl PhotonApp {
             }
         };
 
-        // CRASH SAFETY: persist chains (pending message + last_sent_hash) BEFORE the network send — disk is the commit point, the network is just notification.
-        if let Some(storage) = self.storage.as_ref() {
-            if let Some((_, chains)) = self
-                .friendship_chains
-                .iter()
-                .find(|(id, _)| *id == friendship_id)
-            {
-                let __persist_t = std::time::Instant::now();
-                if let Err(e) = crate::storage::friendship::save_friendship_chains(chains, storage)
-                {
-                    crate::logf!("STORAGE CRITICAL: save chains before send: {}", e);
-                }
-                let ms = __persist_t.elapsed().as_millis();
-                if ms > 50 {
-                    crate::logf!("PERF: chains persist took {}ms (UI thread)", ms as u64);
-                }
+        // CRASH SAFETY, kept — relocated: disk is still the commit point (pending message + last_sent_hash + the advanced lane) and it still lands BEFORE the frame leaves — but the write rides the chains writer and the TRANSMIT fires from it after the write (durable-then-signal). The encrypt+IO that ran here per send moves off the UI thread; a crash before the write completes means no frame ever left, and the reload re-sends from the persisted tip, never at a stale position.
+        let snapshot = self
+            .friendship_chains
+            .iter()
+            .find(|(id, _)| *id == friendship_id)
+            .map(|(_, c)| c.clone());
+        let dispatch = self.status_checker.as_ref().map(|c| c.message_dispatch());
+        match (snapshot, dispatch) {
+            (Some(snapshot), Some(dispatch)) => {
+                let req = crate::network::status::MessageRequest {
+                    peer_addr,
+                    alt_addr,
+                    recipient_pubkey,
+                    conversation_token,
+                    lane,
+                    prev_msg_hp,
+                    ciphertext,
+                    eagle_time,
+                    relay_to: msg_relay_to,
+                };
+                self.persist_chains_then(
+                    snapshot,
+                    vec![ChainsPostDurable::Message(dispatch, req)],
+                );
+                crate::logf!(
+                    "CHAT: message ({} chars) queued behind the durable chains write",
+                    text.len()
+                );
             }
-        }
-
-        // Send over PT (UDP-preferred, TCP/relay fallback already wired).
-        if let Some(ref checker) = self.status_checker {
-            checker.send_message(crate::network::status::MessageRequest {
-                peer_addr,
-                alt_addr,
-                recipient_pubkey,
-                conversation_token,
-                lane,
-                prev_msg_hp,
-                ciphertext,
-                eagle_time,
-                relay_to: msg_relay_to,
-            });
-            crate::logf!("CHAT: sent message ({} chars) to contact", text.len());
+            (Some(snapshot), None) => {
+                // No checker (shutdown race): the advance still persists; the retransmit sweep re-serves the pending next session.
+                self.persist_chains_then(snapshot, Vec::new());
+            }
+            _ => {}
         }
 
         true
@@ -14575,18 +14629,18 @@ impl PhotonApp {
         });
     }
 
-    /// Zero this contact's unread counter — called at every site where their conversation becomes the active view (contact tap, panel back/Esc re-entry). Persists only on an actual change, so the common already-read path costs nothing. Interaction-cleared by doctrine: this is the ONLY way the counter ever goes down.
+    /// Zero this contact's unread counter — called at every site where their conversation becomes the active view (contact tap, panel back/Esc re-entry). Persists only on an actual change (off-thread, coalesced), so the common already-read path costs nothing. Interaction-cleared by doctrine: this is the ONLY way the counter ever goes down.
     fn clear_unread(&mut self, ci: usize) {
-        let storage = self.storage.clone();
-        if let Some(conv) = self.conv_mut_of(ci) {
-            if conv.unread_count > 0 {
+        let dirty_id = match self.conv_mut_of(ci) {
+            Some(conv) if conv.unread_count > 0 => {
                 conv.unread_count = 0;
-                if let Some(storage) = storage.as_ref() {
-                    if let Err(e) = crate::storage::contacts::save_conversation_state(conv, storage)
-                    {
-                        crate::logf!("STORAGE: Failed to save unread clear: {}", e);
-                    }
-                }
+                Some(conv.id())
+            }
+            _ => None,
+        };
+        if let Some(id) = dirty_id {
+            if let Some(pos) = self.conversations.iter().position(|v| v.id() == id) {
+                self.persist_conv_state_async(pos);
             }
         }
     }
@@ -18125,6 +18179,13 @@ impl PhotonApp {
         let mut persist_hashes: Vec<[u8; 32]> = Vec::new();
         // Friendships whose chains changed in a SAFE-to-delay way (ACK pending-removal, chain-sync adopt) — persisted AFTER the loop via the coalescing chains writer. The `checker` borrow spans the loop, so a &mut self method can't run inside it (the same deferral every arm here uses).
         let mut chains_persist_fids: Vec<crate::types::friendship::FriendshipId> = Vec::new();
+        // Receive commit points: (chains snapshot at the advance, the ACK it gates). Enqueued to the chains writer after the loop; the writer fires each ACK only after its snapshot is durably written — persist-before-ACK, off the UI thread.
+        let mut ack_after_durable: Vec<(
+            crate::types::friendship::FriendshipChains,
+            crate::network::status::AckRequest,
+        )> = Vec::new();
+        // Conversations whose 13-byte durable state (unread counter) moved in an arm — written after the loop via the coalescing conv-state writer.
+        let mut conv_state_dirty: Vec<usize> = Vec::new();
 
         // The braid / strict-ordering replay queue: when a successful decrypt fills a hash-chain gap, the now-contiguous buffered messages are pushed here as synthetic ChatMessage updates and drained BEFORE the next channel item, so a buffered N+1 is reprocessed immediately after N (and can itself cascade to N+2). FIFO front-drain.
         let mut replay_queue: std::collections::VecDeque<StatusUpdate> =
@@ -19018,17 +19079,10 @@ impl PhotonApp {
                             }
                         }
 
-                        // CRASH SAFETY: Persist to disk BEFORE sending ACK If we crash after ACK but before disk, sender thinks we have it but we don't. Disk write is the commit point - ACK is just notification. If chain save fails, DO NOT send ACK. Sender will retransmit and we can try again, preventing permanent desync.
-                        if let Some(storage) = self.storage.as_ref() {
-                            if let Err(e) =
-                                crate::storage::friendship::save_friendship_chains(chains, storage)
-                            {
-                                crate::logf!("STORAGE CRITICAL: Failed to save chains after recv, skipping ACK: {}", e);
-                                continue;
-                            }
-                            // Flag to update sync records after borrow ends
-                            need_sync_records_update = true;
-                        }
+                        // CRASH SAFETY, kept — relocated: disk is still the commit point and the ACK is still gated on it, but the write rides the chains writer and the ACK FIRES FROM IT after the write lands (durable-then-signal; the sync encrypt+IO here billed the render thread per received frame). The snapshot is taken NOW — at the advance — so nothing a later arm does to this chain rides along uncommitted. A failed write withholds the ACK: the sender retransmits and we re-process, the exact old skip-ACK semantics.
+                        let chains_commit_snapshot = chains.clone();
+                        // Flag to update sync records after borrow ends
+                        need_sync_records_update = true;
 
                         // Add message to contact's message list and persist — UNLESS this is the hidden chain-weave probe, which advances/ACKs the chain but must never surface a bubble or chime. For the probe we flip `their_probe_seen` (their TX / our RX proven), PERSIST a hidden row, and try to seal the chain.
                         // Hidden DELETE marker: the friend tombstoned a message — apply it here (either direction, matched by timestamp), persist a HIDDEN marker row for re-ACK durability (the probe pattern), and gossip the tombstoned row to our siblings. No bubble, no chime, no notify.
@@ -19129,15 +19183,9 @@ impl PhotonApp {
                             let looking = conversation_open
                                 && crate::platform::jni_android::app_in_foreground();
                             if !contact.is_sibling && !looking {
-                                // A real friend message landed while nobody was looking — bump the persistent unread counter (contacts-list inner ring + float-to-top; cleared at conversation-open).
+                                // A real friend message landed while nobody was looking — bump the persistent unread counter (contacts-list inner ring + float-to-top; cleared at conversation-open). Written after the loop via the coalescing conv-state writer.
                                 conv.unread_count += 1;
-                                if let Some(storage) = self.storage.as_ref() {
-                                    if let Err(e) = crate::storage::contacts::save_conversation_state(
-                                        conv, storage,
-                                    ) {
-                                        crate::logf!("STORAGE: Failed to save unread state: {}", e);
-                                    }
-                                }
+                                conv_state_dirty.push(conv_pos);
                             }
 
                             // System notification, POST-DECRYPT: real sender display name + message text BY DESIGN — hiding content on the lock screen is the OS's job, and the pre-decrypt RX worker no longer notifies at all (it over-dinged on probes and sibling fleet-sync frames it couldn't tell apart). RUST is the one suppression decision now: `looking` (this conversation active + app/window attended) gates the call — Kotlin's old blanket Activity-foreground bail is gone, so a message from anyone whose conversation ISN'T open dings even with the app on screen. Desktop's notify keeps its own visual gate (no toast while attended) + both dedup on msg_hp.
@@ -19183,35 +19231,35 @@ impl PhotonApp {
                             recv_seal_idx = Some(contact_idx);
                         }
 
-                        // *** THEN send ACK - if we crash here, sender will resend, we can dedup *** Get recipient pubkey for relay fallback
+                        // *** THEN the ACK — attached to the commit snapshot above; the chains writer fires it only after the write lands. If we crash before that, no ACK ever left: the sender resends, we dedup. *** Get recipient pubkey for relay fallback
                         let recipient_pubkey = self
                             .contacts
                             .get(contact_idx)
                             .map(|c| *c.public_identity.as_bytes())
                             .unwrap_or([0u8; 32]);
-                        // The re-ACK source is now the per-message ack_hash persisted on the stored ChatMessage (see the duplicate handler above + with_ack_hash below), which heals a lost ACK for ANY message — not just the most recent. The old single-slot last_acked is retired.
-                        if let Some(ref checker) = self.status_checker {
-                            // ACK always rides the relay alongside any direct leg — see the re-ACK site above for the field-observed one-directional case this closes.
-                            let relay_to = self
-                                .contacts
-                                .get(contact_idx)
-                                .map(|c| c.relay_device_list())
-                                .unwrap_or_default();
-                            checker.send_ack(AckRequest {
+                        // The re-ACK source is the per-message ack_hash persisted on the stored ChatMessage (see the duplicate handler above + with_ack_hash below), which heals a lost ACK for ANY message — not just the most recent. ACK always rides the relay alongside any direct leg — see the re-ACK site above for the field-observed one-directional case this closes.
+                        let relay_to = self
+                            .contacts
+                            .get(contact_idx)
+                            .map(|c| c.relay_device_list())
+                            .unwrap_or_default();
+                        ack_after_durable.push((
+                            chains_commit_snapshot,
+                            AckRequest {
                                 peer_addr: sender_addr,
                                 recipient_pubkey,
                                 conversation_token,
                                 acked_eagle_time: timestamp,
                                 plaintext_hash,
                                 relay_to,
-                            });
-                            crate::logf!(
-                                "CHAT: Sent ACK to {} (eagle_time {}, hash {}...)",
-                                handle,
-                                timestamp,
-                                hex::encode(&plaintext_hash[..8])
-                            );
-                        }
+                            },
+                        ));
+                        crate::logf!(
+                            "CHAT: ACK to {} (eagle_time {}, hash {}...) queued behind the durable chains write",
+                            handle,
+                            timestamp,
+                            hex::encode(&plaintext_hash[..8])
+                        );
                         let _ = fid; // We looked up by token, fid is available if needed
                     } else {
                         crate::logf!(
@@ -21756,9 +21804,23 @@ impl PhotonApp {
             // ACK-ADVANCE FLUSH: the serial-send gate holds every message behind the one in flight, so the ACK that just advanced the lane is the edge that releases the next held row at the fresh chain position. No-op when nothing is held.
             self.resend_held_messages(idx);
         }
+        // Receive commit points FIRST, then the safe-to-delay saves: the writer coalesces by arrival order (last in = newest), and the ack snapshots were taken mid-loop — older than the end-of-loop state the fid saves snapshot. Enqueue in age order so coalescing keeps the truly-newest copy, with every ACK carried onto it.
+        let ack_dispatch = self.status_checker.as_ref().map(|c| c.ack_dispatch());
+        for (snapshot, req) in ack_after_durable {
+            let actions = match ack_dispatch.as_ref() {
+                Some(d) => vec![ChainsPostDurable::Ack(d.clone(), req)],
+                None => Vec::new(),
+            };
+            self.persist_chains_then(snapshot, actions);
+        }
         // Coalesced off-thread chains persists (ACK pending-removals, chain-sync adopts) — the safe-to-delay saves, now that the checker borrow has ended.
         for fid in chains_persist_fids {
             self.persist_chains_async(&fid);
+        }
+        // Unread-counter records dirtied in the arms — the coalescing 13-byte writer.
+        conv_state_dirty.dedup();
+        for pos in conv_state_dirty {
+            self.persist_conv_state_async(pos);
         }
         // Sibling fork repair (deferred past the checker borrow): apply inbound resets first (each echoes once so the initiator converges), then fire any detector-initiated resets (mint nonce + apply + send).
         for (idx, nonce, echo) in chain_reset_apply {
