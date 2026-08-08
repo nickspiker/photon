@@ -4671,6 +4671,24 @@ impl FluorApp for PhotonApp {
     }
 
     fn render(&mut self, target: &mut [u32], ctx: &mut Context) {
+        // TEMP render-time probe (typing-lag hunt, 2026-08-08): a full-viewport re-rasterize per keystroke is the suspect. A Drop guard so it fires on every return path; 8ms ≈ one dropped frame at 120fps, so anything logged here is a visible hitch.
+        struct RenderTimer(std::time::Instant, &'static str);
+        impl Drop for RenderTimer {
+            fn drop(&mut self) {
+                let ms = self.0.elapsed().as_millis();
+                if ms > 8 {
+                    crate::logf!("PERF: render took {}ms on {} (UI thread)", ms, self.1);
+                }
+            }
+        }
+        let _rt = RenderTimer(
+            std::time::Instant::now(),
+            match self.state {
+                AppState::Conversation => "Conversation",
+                AppState::Ready => "Ready",
+                _ => "other",
+            },
+        );
         // Press-hold-release: sync the "held" visual on every clickable WIDGET (attest / + / send Buttons) to the pointer arbiter's currently-pressed hit id. On desktop the host's overlay pass then paints the held tint from each Button's `tint_delta`; the app's own hit-stamped elements (pills, contact rows, nav rows) read `ctx.pressed_hit` directly further down. Must run before the widget tree is walked for overlay deltas (post-render), so a press lights up the same frame.
         let pressed_hit = ctx.pressed_hit;
         widget::apply_pressed(self, pressed_hit);
