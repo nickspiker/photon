@@ -9415,6 +9415,8 @@ impl PhotonApp {
             if tiers != self.painted_ring_tiers {
                 self.painted_ring_tiers = tiers;
                 needs_redraw = true;
+                // Marked here, not via the return: the Android service tick runs this headless and drops the bool — but it still updated painted_ring_tiers above, so on resume the diff read "already painted" and the ring stayed stale until a click (field, 2026-08-08). The dirty flag is state; it survives to the first visible frame.
+                self.scene_dirty = true;
             }
         }
         if timed!("check_clutch_keygens", self.check_clutch_keygens()) {
@@ -10057,6 +10059,8 @@ impl PhotonApp {
             _ => {} // still pending, or no pull in flight
         }
 
+        // Every needs_redraw in this function is content (protocol state — presence, roster, ceremony; the blinkey-narrow discipline lives in tick, not here), so convert it to scene_dirty HERE rather than trusting the caller: the Android service tick calls this headless and drops the return, and any content change it applied must still paint on the first visible frame.
+        self.scene_dirty |= needs_redraw;
         needs_redraw
     }
     /// Send a [`PhotonEvent`] thru the event-loop proxy. Returns `false` if the proxy hasn't been set yet (host hasn't called `set_event_proxy`) or if the event loop has closed. Background tasks clone the proxy once at startup and call this; UI-thread code should mutate state directly + return `true` from `tick` or `on_event` instead of going thru the proxy.
@@ -22208,6 +22212,8 @@ impl PhotonApp {
             self.seal_chain_if_ready(idx);
         }
 
+        // Content marks the scene dirty HERE, not via the caller's return: the Android foreground SERVICE also runs this drain headless (nativeServiceTick → advance_protocol) and drops the returned bool — so a presence flip or name/pin adoption that landed while backgrounded painted nothing on resume (the field "online ring is stale until you click thru", 2026-08-08). scene_dirty is app state, so marking it at the mutation site survives the headless window and the first visible frame repaints.
+        self.scene_dirty |= changed;
         changed
     }
 
