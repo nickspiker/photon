@@ -13945,7 +13945,6 @@ impl PhotonApp {
         eagle_time: i64,
         reference: Option<(crate::types::RefKind, i64)>,
     ) -> bool {
-        use vsf::schema::section::FieldValue;
         // Contact must be CLUTCH-Complete with a friendship chain.
         let (friendship_id, recipient_pubkey, addr_pair, _our_handle_hash, msg_relay_to) = {
             let Some(contact) = self.contacts.get(ci) else {
@@ -14045,7 +14044,7 @@ impl PhotonApp {
             (strands, times)
         };
 
-        // Build the message VSF the receiver parses: (message: x{text}, hp{incorporated_hp}, e6{woven_time}…, hR{pad}), field order shuffled to enforce type-marker (not positional) parsing. The e6 values name the woven peer messages (0, 1, or 2). The receive path reads them back via VsfField::parse.
+        // Build the MESSAGE PACKAGE the receiver parses: a complete framed VSF document (AGENT.md "COMPLETE VSF FILES ONLY") — body, incorporated hp, woven strand times, the typed reference, and a random pad, every one a named schema field. Describing something new about a message is adding a field, never an encoding trick.
         // ENCRYPT-IN-FLIGHT GATE: one braid encrypt per friendship at a time — a second dispatch would mint a second frame at the SAME lane position, and the commit CAS would void it. Returning false keeps the row held-undelivered (the bubble stays); the commit edge re-fires it thru resend_held_messages.
         if self.send_encrypt_busy.contains(friendship_id.as_bytes()) {
             crate::log("CHAT: braid encrypt already in flight for this friendship — row held for the commit edge");
@@ -14071,38 +14070,24 @@ impl PhotonApp {
                 .last_incorporated_hp()
                 .map(|h| *h)
                 .unwrap_or([0u8; 32]);
-            let mut values = vec![
-                vsf::VsfType::x(text.to_string()),
-                vsf::VsfType::hp(incorporated_hp.to_vec()),
-            ];
-            // The braid: name each woven peer message by its eagle_time (e6). 0, 1, or 2 of these.
-            for &t in &woven_times {
-                values.push(vsf::VsfType::e(vsf::EtType::e6(t)));
-            }
-            // Short random pad (median ~53B) for traffic-analysis resistance.
+            // Short random pad (median ~53B) for traffic-analysis size jitter; the schema parses by NAME, the stronger form of what the old field-order shuffle enforced.
             let pad_len = rand::random::<u8>()
                 .min(rand::random::<u8>())
                 .min(rand::random::<u8>()) as usize;
-            if pad_len > 0 {
-                let pad: Vec<u8> = (0..pad_len).map(|_| rand::random()).collect();
-                values.push(vsf::VsfType::hR(pad));
-            }
-            use rand::seq::SliceRandom;
-            values.shuffle(&mut rand::thread_rng());
-            let mut payload = FieldValue::new("message", values).flatten();
-            // TYPED reference: a SECOND VSF field after the message body — kind + target as tagged values, never string-encoded into the x-text. A parser that predates it reads field one and ignores the trailing bytes (a reply degrades to its bare body); the payload hash / msg_hp cover BOTH fields, so the reference is tamper-bound to the message.
-            if let Some((kind, target)) = reference {
-                payload.extend(
-                    FieldValue::new(
-                        "ref",
-                        vec![
-                            vsf::VsfType::u3(kind as u8),
-                            vsf::VsfType::e(vsf::EtType::e6(target)),
-                        ],
-                    )
-                    .flatten(),
-                );
-            }
+            let pad: Vec<u8> = (0..pad_len).map(|_| rand::random()).collect();
+            let payload = match crate::network::message_package::build_message_package(
+                text,
+                &incorporated_hp,
+                &woven_times,
+                reference.map(|(k, t)| (k as u8, t)),
+                &pad,
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    crate::logf!("CHAT: message package build failed: {}", e);
+                    return false;
+                }
+            };
             // Chain ingredient = the bare x-text only (the hp/hR pad are siblings of x in the field, not part of it, and are never chain-key material). The full `payload` is what's encrypted onto the wire; `text` is what salts/advances the chain.
             let salt_text = text.to_string().into_bytes();
             let token = chains.conversation_token;
@@ -15683,17 +15668,11 @@ impl PhotonApp {
                     }
                 }
             };
-            // Parse VSF field: (d{message}:x{text},hp{inc_hp},hR{pad}) Uses VsfField::parse() per AGENT.md
-            let mut ptr = 0usize;
-            let mut message_text = String::new();
-            let mut incorporated_hp = [0u8; 32];
-            // The braid: eagle_times naming the prior peer (=our outgoing) messages this step weaves. 0, 1, or 2.
-            let mut woven_times: Vec<i64> = Vec::new();
-
-            let field = match vsf::file_format::VsfField::parse(&plaintext, &mut ptr) {
-                Ok(f) => f,
+            // THE MESSAGE PACKAGE: one verified framed document — body, incorporated hp, woven times, the typed reference — parsed by name (message_package.rs). A failed parse is the fork detector's evidence exactly as the old bare-field parse was: the CAS above proved the decrypt inputs were current, so garbage here means divergent key material (or a version-skewed peer, which the same repair ladder converges).
+            let pkg = match crate::network::message_package::parse_message_package(&plaintext) {
+                Ok(p) => p,
                 Err(e) => {
-                    crate::logf!("CHAT: VsfField parse error: {}", e);
+                    crate::logf!("CHAT: message package parse error: {}", e);
                     // FORK DETECTOR — now the SOLE fork evidence (gaps became pure transport; strand-miss holds instead of forking). A frame that passed signature + chain-link verify but decrypted to garbage means the two sides hold different key material at this position. Every non-fork cause is handled upstream, so re-key is the escalation, but CONVERGENCE GETS FIRST CRACK: the commonest real cause is a stale era (the peer re-keyed, we still hold old chains) — collapsing the ping backoff below forces a prompt head exchange, so the owner's chain-sync / era-supersede can adopt the new era before the streak escalates. A genuine fork keeps failing past that; era stragglers and stale-era holders converge and never reach re-key.
                     // Siblings repair via the fleet-key chain_reset at 2; FRIENDS re-key at 3 (no shared key to rebuild from, but a fresh ceremony is always legal: our new-keys offer hits their Complete-rekey path, history rows survive, recovery backfills after the re-weave). A re-key resets chain_woven, so the UI already surfaces it as "establishing the secure channel". Observed live: a woven pair forked mid-conversation — one side decrypted one message as garbage and every later one buffered "ahead" forever, greying every send (2026-07-25).
                     // Fresh-weave grace: LATE relay copies of a superseded era's frames straggle in for a minute after a re-key, and three of them re-keyed a 16-second-old weave (live pair, 2026-08-07). A just-woven chain cannot have forked — one writer per lane — so garbage inside the grace is stragglers, not evidence; a real fork keeps failing past it.
@@ -15732,68 +15711,20 @@ impl PhotonApp {
                     break 'commit;
                 }
             };
-
-            if field.name != "message" {
-                crate::logf!(
-                    "CHAT: Expected field name 'message', got '{}'",
-                    field.name
-                );
-                break 'commit;
-            }
             // A clean decrypt+parse clears the fork detector.
             if let Some(contact) = self.contacts.get_mut(contact_idx) {
                 contact.chain_fail_streak = 0;
             }
-
-            // Extract values by type marker (not position)
-            for value in &field.values {
-                match value {
-                    vsf::VsfType::x(s) => message_text = s.clone(),
-                    vsf::VsfType::hp(hash) if hash.len() == 32 => {
-                        incorporated_hp.copy_from_slice(hash);
-                    }
-                    vsf::VsfType::e(et) => match et {
-                        vsf::EtType::e5(t) => woven_times.push(*t as i64),
-                        vsf::EtType::e6(t) => woven_times.push(*t),
-                        vsf::EtType::e7(t) => woven_times.push(*t as i64),
-                        _ => {}
-                    },
-                    vsf::VsfType::hR(_) => {} // Random padding - ignore
-                    other => {
-                        crate::logf!(
-                            "CHAT: Unexpected type in message: {}",
-                            format!("{:?}", other)
-                        );
-                    }
-                }
-            }
-
-            if message_text.is_empty() {
-                crate::log("CHAT: No message text found in payload");
-                break 'commit;
-            }
+            // An EMPTY body is legal now (a reaction retract) — the package parse itself is the validity gate.
+            let message_text = pkg.body;
+            let incorporated_hp = pkg.incorporated_hp;
+            let woven_times = pkg.woven_times;
+            let wire_reference: Option<(crate::types::RefKind, i64)> = pkg
+                .reference
+                .and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t)));
 
             // Hidden chain-weave probe: a reserved-marker message that proves the ratchet works but must show NO chat bubble. Everything else on the receive path (chain advance, set_last_plaintext, mark_received, ACK send) still runs so the sender's chain advances and dedup works — only the UI is suppressed.
             let is_chain_probe = message_text == crate::types::CHAIN_PROBE_MARKER;
-            // The TYPED reference, if this frame carries one: a second VSF field after the message body. Absent, unparseable, or unknown-kind = a plain row (an older sender, or no reference) — the hash already covered whatever was there, so lenient reading can't be tampered into.
-            let wire_reference: Option<(crate::types::RefKind, i64)> =
-                vsf::file_format::VsfField::parse(&plaintext, &mut ptr)
-                    .ok()
-                    .filter(|f| f.name == "ref")
-                    .and_then(|f| {
-                        let mut kind = None;
-                        let mut target = None;
-                        for v in &f.values {
-                            match v {
-                                vsf::VsfType::u3(k) => {
-                                    kind = crate::types::RefKind::from_wire(*k)
-                                }
-                                vsf::VsfType::e(vsf::EtType::e6(t)) => target = Some(*t),
-                                _ => {}
-                            }
-                        }
-                        Some((kind?, target?))
-                    });
             // An EDIT or REACTION row lands as an ordinary message (row, ACK, sync) but must not ALERT — the target bubble repaints; a chime/unread/scroll-jump for it would read as a new message that isn't there. (Whether a reaction should ding is a one-gate flip if the field wants it.)
             let is_edit_row = matches!(
                 wire_reference,
@@ -24277,60 +24208,7 @@ fn restamp_hit_rect(
 }
 
 #[cfg(test)]
-mod wire_reference_tests {
-    /// The typed reference rides as a SECOND VSF field after the message field — this pins the exact build/parse pair chain_transmit and commit_braid_rx use: sequential fields concatenate, the first parse stops at the boundary, the second reads the reference, and a payload WITHOUT the second field parses identically to the pre-feature layout.
-    #[test]
-    fn reference_field_round_trips_behind_the_message_field() {
-        use vsf::schema::section::FieldValue;
-        let values = vec![
-            vsf::VsfType::x("hello".to_string()),
-            vsf::VsfType::hp(vec![7u8; 32]),
-        ];
-        let mut payload = FieldValue::new("message", values).flatten();
-        let bare_len = payload.len();
-        payload.extend(
-            FieldValue::new(
-                "ref",
-                vec![
-                    vsf::VsfType::u3(crate::types::RefKind::Reply as u8),
-                    vsf::VsfType::e(vsf::EtType::e6(123_456_789)),
-                ],
-            )
-            .flatten(),
-        );
-
-        let mut ptr = 0usize;
-        let field = vsf::file_format::VsfField::parse(&payload, &mut ptr).unwrap();
-        assert_eq!(field.name, "message");
-        assert_eq!(ptr, bare_len, "field one must stop exactly at the boundary");
-        let reference = vsf::file_format::VsfField::parse(&payload, &mut ptr)
-            .ok()
-            .filter(|f| f.name == "ref")
-            .and_then(|f| {
-                let mut kind = None;
-                let mut target = None;
-                for v in &f.values {
-                    match v {
-                        vsf::VsfType::u3(k) => kind = crate::types::RefKind::from_wire(*k),
-                        vsf::VsfType::e(vsf::EtType::e6(t)) => target = Some(*t),
-                        _ => {}
-                    }
-                }
-                Some((kind?, target?))
-            });
-        assert_eq!(
-            reference,
-            Some((crate::types::RefKind::Reply, 123_456_789))
-        );
-
-        // A payload with no second field: the lenient read yields None, never an error.
-        let bare = FieldValue::new("message", vec![vsf::VsfType::x("hi".to_string())]).flatten();
-        let mut p2 = 0usize;
-        let f2 = vsf::file_format::VsfField::parse(&bare, &mut p2).unwrap();
-        assert_eq!(f2.name, "message");
-        assert!(vsf::file_format::VsfField::parse(&bare, &mut p2).is_err());
-    }
-
+mod compose_codec_tests {
     /// The reaction-recency settings blob: typed x/e6 pairs round-trip in order, and garbage decodes as empty rather than erroring (the strip falls back to defaults).
     #[test]
     fn react_recency_blob_round_trips_typed() {
