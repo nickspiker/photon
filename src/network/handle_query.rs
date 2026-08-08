@@ -949,7 +949,8 @@ impl HandleQuery {
             match crate::network::fgtw::fleet::current_members_full(&handle_proof) {
                 Ok(v) => v,
                 Err(e) => {
-                    crate::logf!("Network: '{}' chain fetch failed ({}) — reporting not found", handle, e);
+                    // NEVER the handle string: it derives the identity seed (the honeypot doctrine), and this line put it in the submitted log at attest.
+                    crate::logf!("Network: chain fetch failed ({}) — reporting not found", e);
                     return SearchResult::NotFound;
                 }
             };
