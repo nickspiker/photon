@@ -620,6 +620,15 @@ fn attach_curve(t: f32) -> (u32, u8) {
     }
 }
 
+/// The starter reaction vocabulary, default order — the strip re-ranks by fleet-wide usage on top of this (stable sort, so ties keep this order). Emoji-as-text is the proven path (the paperclip pill); the heart carries VS16 so it renders emoji-style, not text-style.
+const DEFAULT_REACTIONS: [&str; 5] = [
+    "\u{1F44D}",
+    "\u{2764}\u{FE0F}",
+    "\u{1F602}",
+    "\u{1F62E}",
+    "\u{1F44E}",
+];
+
 fn display_content(content: &str) -> String {
     if let Some((hash, name, size)) = crate::types::parse_attachment_content(content) {
         let (units, label) = crate::types::size_units(size);
@@ -641,6 +650,9 @@ fn display_content(content: &str) -> String {
     } else if let Some((_, body)) = crate::types::parse_edit_content(content) {
         // Edit rows read as the new body — a preview/notification of an edit shows what the message says NOW.
         body.to_string()
+    } else if let Some((_, glyph)) = crate::types::parse_react_content(content) {
+        // Reaction rows preview as their glyph (a retract previews empty — the list preview just shows the prior row's text soon after).
+        glyph.to_string()
     } else {
         content.to_string()
     }
@@ -1314,6 +1326,12 @@ pub struct PhotonApp {
     compose_reply_to: Option<i64>,
     /// Armed edit target: the eagle_time of OUR row the next send SUPERSEDES. The compose box prefills with the current body and the send button trades its arrowhead for a check mark. Cleared on send, Esc (which also clears the prefill), or conversation switch.
     compose_edit_of: Option<i64>,
+    /// Armed custom-reaction target (the strip's circled "+"): the next send is a REACTION row carrying whatever short string is typed — the system keyboard is the emoji picker. Cleared like the reply/edit arms.
+    compose_react_to: Option<i64>,
+    /// Base hit id for the details-strip reaction row: glyph pills 0..=8, the circled "+" at 9.
+    react_strip_base: HitId,
+    /// The glyphs drawn on the reaction row last frame, in ranked order — the tap handler maps pill slot → glyph thru this (ranking can shift as counts change).
+    react_strip_glyphs: Vec<String>,
     /// Conversation top-bar slide-off in PIXELS (0 = fully shown): the "‹ Contacts" strip slides out/in WITH the scroll gesture, browser-toolbar style — pure scroll-delta accumulation, no timers, clamped to the bar height in the wheel arm and at render. Reset on conversation open.
     conv_topbar_off: f32,
     /// Word-wrap cache for the conversation's message list: key (contact idx, message count, avail_w bits, msg_size bits) + the wrapped line STRINGS per visible message (chronological, probes excluded) + the total line count. Rebuilt only when the key changes (resize / zoom / new message / conversation switch). Caching the STRINGS (not just counts) means scroll frames do ZERO text shaping — the per-frame re-wrap of drawn messages was the "glitches and sticks" scroll regression.
@@ -1704,6 +1722,9 @@ impl PhotonApp {
             pending_delete: None,
             compose_reply_to: None,
             compose_edit_of: None,
+            compose_react_to: None,
+            react_strip_base: HIT_NONE,
+            react_strip_glyphs: Vec::new(),
             conv_topbar_off: 0.0,
             msg_wrap: None,
             #[cfg(target_os = "android")]
@@ -2492,6 +2513,8 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.msg_action_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(8); // reply/edit/resend/delete + room
+        self.react_strip_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(10); // reaction glyph pills 0..=8 + the "+" (custom) at 9
         self.settings_theme_dropdown = Some(fluor::widgets::Dropdown::new(
             &mut self.hit_counter,
             0.,
@@ -3511,6 +3534,44 @@ impl FluorApp for PhotonApp {
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
+            // Details-strip reaction row: ranked glyph pills + the circled "+" on the selected message. Tap your current glyph = retract; another = replace; "+" arms the compose box as the picker.
+            if self.react_strip_base != HIT_NONE
+                && hit_id >= self.react_strip_base
+                && hit_id < self.react_strip_base.wrapping_add(10)
+            {
+                let slot = (hit_id - self.react_strip_base) as usize;
+                if let Some((sci, ts, _)) = self.selected_msg {
+                    if slot == 9 {
+                        // The circled "+": type anything, send commits it as the reaction.
+                        self.compose_react_to = Some(ts);
+                        self.compose_reply_to = None;
+                        self.compose_edit_of = None;
+                        if let Some(tb) = self.message_textbox.as_mut() {
+                            tb.clear();
+                            let id = tb.hit_id();
+                            self.change_focus(Some(id));
+                        }
+                        self.selected_msg = None;
+                        self.scene_dirty = true;
+                    } else if let Some(glyph) = self.react_strip_glyphs.get(slot).cloned() {
+                        let ours: Option<String> = self
+                            .conv_of(sci)
+                            .and_then(|v| v.current_reaction(ts, true));
+                        let toggled_off = ours.as_deref() == Some(glyph.as_str());
+                        let body = if toggled_off { String::new() } else { glyph.clone() };
+                        if self.send_chain_message(sci, &crate::types::react_content(ts, &body), false)
+                            && !toggled_off
+                        {
+                            self.bump_react_count(&glyph);
+                        }
+                        self.selected_msg = None;
+                        self.scene_dirty = true;
+                    }
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
+            }
+
             // Details-strip action row: reply / edit / resend / delete on the selected message.
             if self.msg_action_base != HIT_NONE
                 && hit_id >= self.msg_action_base
@@ -4196,14 +4257,18 @@ impl FluorApp for PhotonApp {
                             return EventResponse::Handled;
                         }
                         if matches!(self.state, AppState::Conversation) {
-                            // First Esc (or Android back) disarms a pending reply/edit — clearing an armed edit also clears its prefill; the next Esc navigates back.
-                            if self.compose_reply_to.is_some() || self.compose_edit_of.is_some() {
+                            // First Esc (or Android back) disarms a pending reply/edit/react — clearing an armed edit also clears its prefill; the next Esc navigates back.
+                            if self.compose_reply_to.is_some()
+                                || self.compose_edit_of.is_some()
+                                || self.compose_react_to.is_some()
+                            {
                                 if self.compose_edit_of.take().is_some() {
                                     if let Some(tb) = self.message_textbox.as_mut() {
                                         tb.clear();
                                     }
                                 }
                                 self.compose_reply_to = None;
+                                self.compose_react_to = None;
                                 self.scene_dirty = true;
                                 ctx.window.request_redraw();
                                 return EventResponse::Handled;
@@ -4990,6 +5055,8 @@ impl FluorApp for PhotonApp {
         // The open conversation's contact row + compose gate, resolved ONCE before the chrome borrow — the borrow lives thru the whole render, so no `&self` method can run past this point.
         let active_ci = self.active_contact();
         let compose_ready = self.compose_ready();
+        // The ranked reaction strip, same pre-chrome discipline (reads fleet settings thru &self). Cheap: a prefix scan of the settings map.
+        let ranked_reactions = self.ranked_reactions();
         // Title-bar text by screen, computed BEFORE the chrome borrow (peer count reads `self.handle_query` / `self.session`). Launch/attest shows the "← Network" affordance; once attested (Ready) it shows the peer count — distinct identities in the store EXCLUDING our own: peers are PEOPLE, so the FGTW seed is not a peer (the old `+1` when online) and neither are our own fleet siblings (their records ride the same store for direct routing). `set_title` only re-rasterizes chrome when the string actually changes, so this is cheap to recompute each frame.
         let title_text: String = if matches!(
             self.state,
@@ -6943,10 +7010,11 @@ impl FluorApp for PhotonApp {
                         let compose_h = unit * 1.8;
                         let compose_margin = unit * 0.8;
                         // Armed reply/edit strip: one extra band above the compose box naming what the next send references (drawn half-alpha below). Reserved OUT of the list so it never overdraws the newest message.
-                        let compose_strip: Option<(i64, bool)> = if compose_ready {
+                        let compose_strip: Option<(i64, u8)> = if compose_ready {
                             self.compose_edit_of
-                                .map(|t| (t, true))
-                                .or(self.compose_reply_to.map(|t| (t, false)))
+                                .map(|t| (t, 1u8))
+                                .or(self.compose_react_to.map(|t| (t, 2u8)))
+                                .or(self.compose_reply_to.map(|t| (t, 0u8)))
                         } else {
                             None
                         };
@@ -6982,6 +7050,31 @@ impl FluorApp for PhotonApp {
                                 }
                             }
                         }
+                        // Current reaction per target per direction — newest live wins, empty glyph = retracted (None). [0]=theirs, [1]=ours.
+                        let mut react_over: std::collections::HashMap<i64, [Option<(i64, String)>; 2]> =
+                            std::collections::HashMap::new();
+                        for m in raw_msgs.iter().filter(|m| !m.deleted) {
+                            if let Some((t, g)) = crate::types::parse_react_content(&m.content) {
+                                let slot = &mut react_over.entry(t).or_default()[m.is_outgoing as usize];
+                                if slot.as_ref().map_or(true, |(ts, _)| m.timestamp >= *ts) {
+                                    *slot = Some((m.timestamp, g.to_string()));
+                                }
+                            }
+                        }
+                        // The line a reacted bubble grows underneath: theirs then ours, retracts dropped.
+                        let react_line = |ts: i64| -> Option<String> {
+                            let slots = react_over.get(&ts)?;
+                            let glyphs: Vec<&str> = slots
+                                .iter()
+                                .filter_map(|s| s.as_ref().map(|(_, g)| g.as_str()))
+                                .filter(|g| !g.is_empty())
+                                .collect();
+                            if glyphs.is_empty() {
+                                None
+                            } else {
+                                Some(glyphs.join("  "))
+                            }
+                        };
                         // Bubble DISPLAY body: attachments keep their pill line; an edited row shows its newest edit body; reply/edit markers strip to their text.
                         let body_of = |m: &crate::types::ChatMessage| -> String {
                             if crate::types::parse_attachment_content(&m.content).is_none() {
@@ -6995,6 +7088,10 @@ impl FluorApp for PhotonApp {
                             .iter()
                             .filter(|m| {
                                 if crate::types::is_control_content(&m.content) || m.deleted {
+                                    return false;
+                                }
+                                // A reaction row NEVER draws a bubble — resolved onto its target; an orphan (target not synced yet) stays invisible and attaches when the target lands (a lone glyph bubble reads as a bug, unlike an orphan edit whose body is real prose).
+                                if crate::types::parse_react_content(&m.content).is_some() {
                                     return false;
                                 }
                                 // An edit row draws no bubble of its own while its target row exists in ANY state (the supersede belongs to the target's bubble); a target that never synced here renders the edit standalone so nothing silently vanishes.
@@ -7022,7 +7119,7 @@ impl FluorApp for PhotonApp {
                             .selected_msg
                             .filter(|(sci, _, _)| *sci == ci)
                             .map(|(_, ts, out)| (ts, out));
-                        let detail_h = line_h * 2.0; // two strip lines: meta (sent/age/state) + the action row (reply · edit · copy · resend · delete)
+                        let detail_h = line_h * 3.0; // three strip lines: meta (sent/age/state), the action row (reply · edit · copy · resend · delete), and the reaction row (ranked glyphs + the circled "+")
                         let sel_in_stream = sel_key.is_some_and(|(ts, out)| {
                             visible
                                 .iter()
@@ -7046,6 +7143,10 @@ impl FluorApp for PhotonApp {
                                 total += lines.len();
                                 // A reply row reserves ONE extra line for its half-alpha reference snippet above the body.
                                 if crate::types::parse_reply_content(&m.content).is_some() {
+                                    total += 1;
+                                }
+                                // A reacted row reserves ONE extra line for its reaction glyphs below the body.
+                                if react_line(m.timestamp).is_some() {
                                     total += 1;
                                 }
                                 all_lines.push(lines);
@@ -7081,10 +7182,13 @@ impl FluorApp for PhotonApp {
                             // Cached wrapped lines — scroll frames do zero shaping. `y` is the LAST line's baseline, earlier lines stack upward at `intra` spacing.
                             static EMPTY_LINES: Vec<String> = Vec::new();
                             let lines: &Vec<String> = wrap_cache.get(vi).unwrap_or(&EMPTY_LINES);
-                            // A reply row's reference snippet occupies one extra line ABOVE the body (already counted into the wrap total).
+                            // A reply row's reference snippet occupies one extra line ABOVE the body; a reacted row grows one BELOW (both counted into the wrap total). The reaction line sits at the block's bottom baseline, so the body shifts up by react_off.
                             let reply_target = crate::types::parse_reply_content(&msg.content).map(|(t, _)| t);
+                            let reactions = react_line(msg.timestamp);
+                            let react_off = if reactions.is_some() { intra } else { 0.0 };
                             let block_extra = (lines.len() as f32 - 1.0) * intra
-                                + if reply_target.is_some() { intra } else { 0.0 };
+                                + if reply_target.is_some() { intra } else { 0.0 }
+                                + react_off;
                             // Attachment transfer progress: a thin fill under the pill while a matching PT transfer runs (outbound for our un-confirmed sends, inbound for blobs we're missing). Matched loosely by direction — the throttled snapshot only ever contains big sharded transfers.
                             if let Some((hash, _, _)) =
                                 crate::types::parse_attachment_content(&msg.content)
@@ -7193,12 +7297,21 @@ impl FluorApp for PhotonApp {
                                     TextStyle::new(detail_size, *theme::LABEL_COLOUR)
                                         .weight(500)
                                         .font("Oxanium");
+                                // Reaction attribution joins the meta line — whose glyph is whose lives here, not on the bubble.
+                                if let Some(slots) = react_over.get(&msg.timestamp) {
+                                    if let Some(g) = slots[0].as_ref().map(|(_, g)| g).filter(|g| !g.is_empty()) {
+                                        detail.push_str(&format!(" \u{00b7} they {}", g));
+                                    }
+                                    if let Some(g) = slots[1].as_ref().map(|(_, g)| g).filter(|g| !g.is_empty()) {
+                                        detail.push_str(&format!(" \u{00b7} you {}", g));
+                                    }
+                                }
                                 // Upper strip line: the meta text.
                                 ctx.text.draw_text_left(
                                     &mut canvas,
                                     &detail,
                                     pad_x,
-                                    y - line_h,
+                                    y - line_h * 2.0,
                                     &detail_style,
                                     Some(list_clip),
                                     None,
@@ -7276,7 +7389,7 @@ impl FluorApp for PhotonApp {
                                         &mut canvas,
                                         label,
                                         px_cursor,
-                                        y,
+                                        y - line_h,
                                         &style,
                                         Some(list_clip),
                                         None,
@@ -7286,13 +7399,102 @@ impl FluorApp for PhotonApp {
                                         buf_w,
                                         buf_h,
                                         (px_cursor - pad_hit * 0.5) as isize,
-                                        ((y - line_h * 0.5).max(list_top)) as isize,
+                                        ((y - line_h * 1.5).max(list_top)) as isize,
                                         (px_cursor + w + pad_hit * 0.5) as isize,
-                                        ((y + line_h * 0.5).min(list_bottom)) as isize,
+                                        ((y - line_h * 0.5).min(list_bottom)) as isize,
                                         hid,
                                     );
                                     px_cursor += w + pad_hit * 2.0;
                                 }
+                                // Bottom strip line: the REACTION ROW — as many ranked glyphs as fit, our current one highlighted green (tap it again to retract; tap another to replace), then the circled "+" for anything the keyboard can type. Drawn order is snapshotted so the tap handler maps slot → glyph even as the ranking shifts.
+                                let ours_now: Option<String> = raw_msgs
+                                    .iter()
+                                    .rev()
+                                    .filter(|m| !m.deleted && m.is_outgoing)
+                                    .find_map(|m| {
+                                        crate::types::parse_react_content(&m.content)
+                                            .filter(|(t, _)| *t == msg.timestamp)
+                                            .map(|(_, g)| g.to_string())
+                                    })
+                                    .filter(|g| !g.is_empty());
+                                let glyph_size = detail_size * 1.2;
+                                let plus_r = glyph_size * 0.62;
+                                let mut rx_cursor = pad_x;
+                                self.react_strip_glyphs.clear();
+                                for g in ranked_reactions.iter() {
+                                    if self.react_strip_glyphs.len() >= 9 {
+                                        break;
+                                    }
+                                    let style = TextStyle::new(
+                                        glyph_size,
+                                        if ours_now.as_deref() == Some(g.as_str()) {
+                                            *theme::SEARCH_FOUND_COLOUR
+                                        } else {
+                                            *theme::COPY_PILL_COLOUR
+                                        },
+                                    )
+                                    .weight(500);
+                                    let w = ctx.text.measure_text(g, &style);
+                                    // Fit gate: always leave room for the circled "+" at the row's end.
+                                    if rx_cursor + w + pad_hit + plus_r * 2.0 + pad_hit > buf_w as f32 - pad_x {
+                                        break;
+                                    }
+                                    ctx.text.draw_text_left(
+                                        &mut canvas,
+                                        g,
+                                        rx_cursor,
+                                        y,
+                                        &style,
+                                        Some(list_clip),
+                                        None,
+                                    );
+                                    restamp_hit_rect(
+                                        &mut chrome.hit_test_map,
+                                        buf_w,
+                                        buf_h,
+                                        (rx_cursor - pad_hit * 0.4) as isize,
+                                        ((y - line_h * 0.5).max(list_top)) as isize,
+                                        (rx_cursor + w + pad_hit * 0.4) as isize,
+                                        ((y + line_h * 0.5).min(list_bottom)) as isize,
+                                        self.react_strip_base
+                                            .wrapping_add(self.react_strip_glyphs.len() as HitId),
+                                    );
+                                    self.react_strip_glyphs.push(g.clone());
+                                    rx_cursor += w + pad_hit;
+                                }
+                                // The circled "+": react with ANYTHING — arms the compose box, the system keyboard is the picker.
+                                let plus_cx = rx_cursor + plus_r;
+                                let plus_cy = y - glyph_size * 0.32;
+                                paint::draw_circle(
+                                    &mut canvas,
+                                    plus_cx,
+                                    plus_cy,
+                                    plus_r,
+                                    *theme::COPY_PILL_COLOUR,
+                                    Some(list_clip),
+                                );
+                                let plus_style =
+                                    TextStyle::new(glyph_size, *theme::COPY_PILL_COLOUR).weight(500);
+                                let plus_w = ctx.text.measure_text("+", &plus_style);
+                                ctx.text.draw_text_left(
+                                    &mut canvas,
+                                    "+",
+                                    plus_cx - plus_w * 0.5,
+                                    y,
+                                    &plus_style,
+                                    Some(list_clip),
+                                    None,
+                                );
+                                restamp_hit_rect(
+                                    &mut chrome.hit_test_map,
+                                    buf_w,
+                                    buf_h,
+                                    (plus_cx - plus_r - pad_hit * 0.4) as isize,
+                                    ((y - line_h * 0.5).max(list_top)) as isize,
+                                    (plus_cx + plus_r + pad_hit * 0.4) as isize,
+                                    ((y + line_h * 0.5).min(list_bottom)) as isize,
+                                    self.react_strip_base.wrapping_add(9),
+                                );
                                 y -= detail_h;
                             }
                             // Dim outgoing until delivered; incoming always full. Self-as-contact: every message is ours (there is no other party), so everything sits on the right in the neutral grey — their_colour is already the anchor in that case, and the loopback "incoming" copy renders like a delivered outgoing.
@@ -7336,7 +7538,7 @@ impl FluorApp for PhotonApp {
                                         theme::half_colour(*theme::LABEL_COLOUR),
                                     ));
                                 let ref_style = TextStyle::new(msg_size, ref_colour).weight(500);
-                                let ref_y = y - lines.len() as f32 * intra;
+                                let ref_y = y - react_off - lines.len() as f32 * intra;
                                 if msg.is_outgoing || is_self_contact {
                                     ctx.text.draw_text_right(
                                         &mut canvas,
@@ -7360,7 +7562,7 @@ impl FluorApp for PhotonApp {
                                 }
                             }
                             for (k, line) in lines.iter().enumerate() {
-                                let ly = y - (lines.len() - 1 - k) as f32 * intra;
+                                let ly = y - react_off - (lines.len() - 1 - k) as f32 * intra;
                                 if msg.is_outgoing || is_self_contact {
                                     ctx.text.draw_text_right(
                                         &mut canvas,
@@ -7378,6 +7580,32 @@ impl FluorApp for PhotonApp {
                                         pad_x,
                                         ly,
                                         &msg_style,
+                                        Some(list_clip),
+                                        None,
+                                    );
+                                }
+                            }
+                            // The reaction line: theirs then ours under the bubble, full alpha (a reaction is content, not context — half alpha is the reference language), slightly small, bubble-side aligned. Attribution lives in the details strip meta.
+                            if let Some(rl) = reactions.as_ref() {
+                                let r_style =
+                                    TextStyle::new(msg_size * 0.8, *theme::LABEL_COLOUR).weight(500);
+                                if msg.is_outgoing || is_self_contact {
+                                    ctx.text.draw_text_right(
+                                        &mut canvas,
+                                        rl,
+                                        buf_w as f32 - pad_x,
+                                        y,
+                                        &r_style,
+                                        Some(list_clip),
+                                        None,
+                                    );
+                                } else {
+                                    ctx.text.draw_text_left(
+                                        &mut canvas,
+                                        rl,
+                                        pad_x,
+                                        y,
+                                        &r_style,
                                         Some(list_clip),
                                         None,
                                     );
@@ -7439,7 +7667,7 @@ impl FluorApp for PhotonApp {
                         let _ = n;
 
                         // ── Armed reply/edit strip: the referenced message at HALF alpha (its sender's colour), in the reserved band. While editing, the strip shows what the row says NOW — the box holds the correction, so the pair reads as a before/after diff.
-                        if let Some((t, is_edit)) = compose_strip {
+                        if let Some((t, strip_kind)) = compose_strip {
                             let target = raw_msgs.iter().find(|x| {
                                 x.timestamp == t
                                     && !x.deleted
@@ -7465,10 +7693,10 @@ impl FluorApp for PhotonApp {
                                     }
                                 })
                                 .unwrap_or(*theme::LABEL_COLOUR);
-                            let text = if is_edit {
-                                format!("editing \u{00bb} {}", snippet)
-                            } else {
-                                format!("\u{00bb} {}", snippet)
+                            let text = match strip_kind {
+                                1 => format!("editing \u{00bb} {}", snippet),
+                                2 => format!("react \u{00bb} {}", snippet),
+                                _ => format!("\u{00bb} {}", snippet),
                             };
                             ctx.text.draw_text_left(
                                 &mut canvas,
@@ -12162,6 +12390,76 @@ impl PhotonApp {
         true
     }
 
+    /// Fleet-wide reaction usage, summed across every device's own counts key. Per-DEVICE keys (`react.counts.<device>`) because the settings layer is LWW per key — one shared key would drop concurrent increments across devices, the exact `fleet.locked` race shape; a key only its device writes can never lose one. Value encoding: `glyph\u{2}count` pairs joined by `\u{3}`.
+    fn react_counts(&self) -> std::collections::HashMap<String, u64> {
+        let mut out: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        let Some(fs) = self.fleet_settings.as_ref() else {
+            return out;
+        };
+        for e in fs
+            .global
+            .iter()
+            .filter(|e| !e.tombstone && e.key.starts_with("react.counts."))
+        {
+            let Ok(s) = std::str::from_utf8(&e.value) else {
+                continue;
+            };
+            for pair in s.split('\u{3}') {
+                if let Some((g, n)) = pair.split_once('\u{2}') {
+                    if let Ok(n) = n.parse::<u64>() {
+                        *out.entry(g.to_string()).or_insert(0) += n;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Bump OUR device's usage count for a just-sent reaction (single-writer key; see react_counts). Rides the ordinary settings persist+push, so the ranking follows the fleet.
+    fn bump_react_count(&mut self, glyph: &str) {
+        let Some(pk) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else {
+            return;
+        };
+        let key = format!("react.counts.{}", hex::encode(&pk[..8]));
+        let mut counts: Vec<(String, u64)> = Vec::new();
+        if let Some(v) = self.fleet_settings.as_ref().and_then(|fs| fs.effective(&key)) {
+            if let Ok(s) = std::str::from_utf8(v) {
+                for pair in s.split('\u{3}') {
+                    if let Some((g, n)) = pair.split_once('\u{2}') {
+                        if let Ok(n) = n.parse::<u64>() {
+                            counts.push((g.to_string(), n));
+                        }
+                    }
+                }
+            }
+        }
+        match counts.iter_mut().find(|(g, _)| g == glyph) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((glyph.to_string(), 1)),
+        }
+        let blob = counts
+            .iter()
+            .map(|(g, n)| format!("{}\u{2}{}", g, n))
+            .collect::<Vec<_>>()
+            .join("\u{3}");
+        self.settings_set(&key, blob.into_bytes());
+    }
+
+    /// The reaction strip, ranked: defaults seeded, usage re-ranks (stable — ties keep default order), custom glyphs with any use join the pool in sorted order so the ranking is deterministic.
+    fn ranked_reactions(&self) -> Vec<String> {
+        let counts = self.react_counts();
+        let mut pool: Vec<String> = DEFAULT_REACTIONS.iter().map(|s| s.to_string()).collect();
+        let mut extras: Vec<String> = counts
+            .keys()
+            .filter(|g| !pool.iter().any(|p| p == *g) && !g.is_empty())
+            .cloned()
+            .collect();
+        extras.sort();
+        pool.extend(extras);
+        pool.sort_by_key(|g| std::cmp::Reverse(counts.get(g).copied().unwrap_or(0)));
+        pool
+    }
+
     /// Flip a key's link on this device (unlink = set locally from now on; relink = follow the fleet). Persists + pushes on change.
     /// Not yet wired to a UI (the per-key link toggle is a designed settings-page control that hasn't landed) — kept as the API half so the storage layer's `set_link` has its app-side entry point.
     #[allow(dead_code)]
@@ -13203,14 +13501,30 @@ impl PhotonApp {
             None => return,
         };
         if text.is_empty() {
-            // Empty while a reply/edit is armed = cancel the arm, nothing sends (an "empty edit" is a delete's job, and probing from an armed state would be a surprise ping).
-            if self.compose_reply_to.take().is_some() | self.compose_edit_of.take().is_some() {
+            // Empty while a reply/edit/react is armed = cancel the arm, nothing sends (an "empty edit" is a delete's job, and probing from an armed state would be a surprise ping).
+            if self.compose_reply_to.take().is_some()
+                | self.compose_edit_of.take().is_some()
+                | self.compose_react_to.take().is_some()
+            {
                 self.scene_dirty = true;
                 return;
             }
             // Empty send = liveness probe. Optimistically mark the peer offline and ping them; a returning pong flips is_online back true (check_status_updates), so an empty send confirms whether they're actually reachable right now instead of doing nothing.
             self.contacts[ci].is_online = false;
             self.ping_contact(ci);
+            return;
+        }
+        // An armed custom reaction takes the typed text (capped short — it's a reaction, not a message) as the glyph.
+        if let Some(target) = self.compose_react_to.take() {
+            let glyph: String = text.chars().take(8).collect();
+            if self.send_chain_message(ci, &crate::types::react_content(target, &glyph), false) {
+                self.bump_react_count(&glyph);
+            }
+            if let Some(tb) = self.message_textbox.as_mut() {
+                tb.clear();
+            }
+            self.pending_input_reset = true;
+            self.scene_dirty = true;
             return;
         }
         // An armed edit/reply wraps the text in its referencing marker; the row then rides every path (chain, ACK, fleet sync, pages, digest) as an ordinary message — the reference resolves at render.
@@ -13248,6 +13562,9 @@ impl PhotonApp {
             },
             None => return false,
         };
+        // A reaction/edit targets an EXISTING row — inserting its referencing row must not yank the view to the bottom (the target the user is looking at may be far up the stream).
+        let is_quiet_row = crate::types::parse_react_content(&text).is_some()
+            || crate::types::parse_edit_content(&text).is_some();
         if remotes == 0 {
             let mut msg =
                 ChatMessage::new_with_timestamp(text, true, vsf::eagle_time_oscillations());
@@ -13256,7 +13573,9 @@ impl PhotonApp {
                 return false;
             };
             conv.insert_message_sorted(msg.clone());
-            conv.scroll_offset = 0.0;
+            if !is_quiet_row {
+                conv.scroll_offset = 0.0;
+            }
             self.persist_messages_async(ci);
             // Live fleet propagation: a note typed here appears on our other devices now, not at the next sweep.
             self.push_rows_to_siblings(ci, std::slice::from_ref(&msg), None);
@@ -13273,7 +13592,9 @@ impl PhotonApp {
         let msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
         if let Some(conv) = self.conv_mut_of(ci) {
             conv.insert_message_sorted(msg.clone());
-            conv.scroll_offset = 0.0;
+            if !is_quiet_row {
+                conv.scroll_offset = 0.0;
+            }
         }
         self.persist_messages_async(ci);
 
@@ -14781,9 +15102,10 @@ impl PhotonApp {
             .contacts
             .get(ci)
             .and_then(|c| self.our_party_id(c).map(|us| c.conversation(&us).id()));
-        // An armed reply/edit targets a row of the conversation it was armed IN — switching conversations disarms it.
+        // An armed reply/edit/react targets a row of the conversation it was armed IN — switching conversations disarms it.
         self.compose_reply_to = None;
         self.compose_edit_of = None;
+        self.compose_react_to = None;
     }
 
     /// The open conversation itself, if it has materialized.
@@ -15382,8 +15704,9 @@ impl PhotonApp {
 
             // Hidden chain-weave probe: a reserved-marker message that proves the ratchet works but must show NO chat bubble. Everything else on the receive path (chain advance, set_last_plaintext, mark_received, ACK send) still runs so the sender's chain advances and dedup works — only the UI is suppressed.
             let is_chain_probe = message_text == crate::types::CHAIN_PROBE_MARKER;
-            // An EDIT row lands as an ordinary message (row, ACK, sync) but must not ALERT — the correction repaints the target bubble; a chime/unread/scroll-jump for it would read as a new message that isn't there.
-            let is_edit_row = crate::types::parse_edit_content(&message_text).is_some();
+            // An EDIT or REACTION row lands as an ordinary message (row, ACK, sync) but must not ALERT — the target bubble repaints; a chime/unread/scroll-jump for it would read as a new message that isn't there. (Whether a reaction should ding is a one-gate flip if the field wants it.)
+            let is_edit_row = crate::types::parse_edit_content(&message_text).is_some()
+                || crate::types::parse_react_content(&message_text).is_some();
 
             crate::logf!(
                 "CHAT: Decrypted message from {}: \"{}\" (incorporated_hp={}...)",

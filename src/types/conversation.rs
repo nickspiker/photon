@@ -107,6 +107,20 @@ impl Conversation {
             })
     }
 
+    /// The CURRENT reaction from one side of the conversation on the row at `target_ts` — the newest live reaction row in that direction wins; an empty glyph is the retract (reads as none). Per-sender is per-direction until group rows carry real sender attribution.
+    pub fn current_reaction(&self, target_ts: i64, from_outgoing: bool) -> Option<String> {
+        self.messages
+            .iter()
+            .rev()
+            .filter(|m| !m.deleted && m.is_outgoing == from_outgoing)
+            .find_map(|m| {
+                crate::types::parse_react_content(&m.content)
+                    .filter(|(t, _)| *t == target_ts)
+                    .map(|(_, g)| g.to_string())
+            })
+            .filter(|g| !g.is_empty())
+    }
+
     /// This conversation's stable id.
     pub fn id(&self) -> ConversationId {
         self.id
@@ -259,6 +273,40 @@ mod tests {
                 .content,
             "orignal"
         );
+    }
+
+    /// Reactions: newest-per-sender wins, empty retracts, replacing works, and the other party's slot is independent.
+    #[test]
+    fn current_reaction_is_newest_per_sender_and_empty_retracts() {
+        let mut conv = Conversation::new([pid(1), pid(2)]);
+        conv.insert_message_sorted(crate::types::ChatMessage::new_with_timestamp(
+            "hello".to_string(),
+            false,
+            100,
+        ));
+        assert_eq!(conv.current_reaction(100, true), None);
+
+        conv.insert_message_sorted(crate::types::ChatMessage::new_with_timestamp(
+            crate::types::react_content(100, "\u{1F44D}"),
+            true,
+            200,
+        ));
+        assert_eq!(conv.current_reaction(100, true), Some("\u{1F44D}".to_string()));
+        assert_eq!(conv.current_reaction(100, false), None, "their slot is theirs");
+
+        // Replace, then retract.
+        conv.insert_message_sorted(crate::types::ChatMessage::new_with_timestamp(
+            crate::types::react_content(100, "\u{2764}"),
+            true,
+            300,
+        ));
+        assert_eq!(conv.current_reaction(100, true), Some("\u{2764}".to_string()));
+        conv.insert_message_sorted(crate::types::ChatMessage::new_with_timestamp(
+            crate::types::react_content(100, ""),
+            true,
+            400,
+        ));
+        assert_eq!(conv.current_reaction(100, true), None);
     }
 
     /// The property the whole refactor rests on: "who must this reach" answers correctly for 0, 1 and N without being told which case it is.
