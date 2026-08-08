@@ -100,24 +100,18 @@ impl Conversation {
             .iter()
             .rev()
             .filter(|m| !m.deleted)
-            .find_map(|m| {
-                crate::types::parse_edit_content(&m.content)
-                    .filter(|(t, _)| *t == target_ts)
-                    .map(|(_, body)| (m.timestamp, body.to_string()))
-            })
+            .find(|m| m.reference == Some((crate::types::RefKind::Edit, target_ts)))
+            .map(|m| (m.timestamp, m.content.clone()))
     }
 
-    /// The CURRENT reaction from one side of the conversation on the row at `target_ts` — the newest live reaction row in that direction wins; an empty glyph is the retract (reads as none). Per-sender is per-direction until group rows carry real sender attribution.
+    /// The CURRENT reaction from one side of the conversation on the row at `target_ts` — the newest live reaction row in that direction wins; an empty glyph (empty content) is the retract, reading as none. Per-sender is per-direction until group rows carry real sender attribution.
     pub fn current_reaction(&self, target_ts: i64, from_outgoing: bool) -> Option<String> {
         self.messages
             .iter()
             .rev()
             .filter(|m| !m.deleted && m.is_outgoing == from_outgoing)
-            .find_map(|m| {
-                crate::types::parse_react_content(&m.content)
-                    .filter(|(t, _)| *t == target_ts)
-                    .map(|(_, g)| g.to_string())
-            })
+            .find(|m| m.reference == Some((crate::types::RefKind::React, target_ts)))
+            .map(|m| m.content.clone())
             .filter(|g| !g.is_empty())
     }
 
@@ -167,6 +161,10 @@ impl Conversation {
             existing.deleted |= msg.deleted;
             if existing.ack_hash.is_none() {
                 existing.ack_hash = msg.ack_hash;
+            }
+            // Reference is origin-written-once row identity; a copy that lost it (a route that predates the field) never un-sets it.
+            if existing.reference.is_none() {
+                existing.reference = msg.reference;
             }
             // A row witnessed live on the wire supersedes a friend-attested recovered copy.
             existing.recovered = existing.recovered && msg.recovered;
@@ -233,26 +231,21 @@ mod tests {
         ));
         assert_eq!(conv.latest_edit_for(100), None);
 
-        let e1 = crate::types::edit_content(100, "original");
-        conv.insert_message_sorted(crate::types::ChatMessage::new_with_timestamp(
-            e1, true, 200,
-        ));
-        let e2 = crate::types::edit_content(100, "original, truly");
-        conv.insert_message_sorted(crate::types::ChatMessage::new_with_timestamp(
-            e2, true, 300,
-        ));
+        conv.insert_message_sorted(
+            crate::types::ChatMessage::new_with_timestamp("original".to_string(), true, 200)
+                .with_reference(crate::types::RefKind::Edit, 100),
+        );
+        conv.insert_message_sorted(
+            crate::types::ChatMessage::new_with_timestamp(
+                "original, truly".to_string(),
+                true,
+                300,
+            )
+            .with_reference(crate::types::RefKind::Edit, 100),
+        );
         assert_eq!(
             conv.latest_edit_for(100),
             Some((300, "original, truly".to_string()))
-        );
-        // Round-trip sanity on the marker itself.
-        assert_eq!(
-            crate::types::parse_edit_content(&crate::types::edit_content(100, "x")),
-            Some((100, "x"))
-        );
-        assert_eq!(
-            crate::types::parse_reply_content(&crate::types::reply_content(100, "y")),
-            Some((100, "y"))
         );
 
         // Deleting the newest edit reverts to the previous one; the original row is untouched throughout.
@@ -286,26 +279,23 @@ mod tests {
         ));
         assert_eq!(conv.current_reaction(100, true), None);
 
-        conv.insert_message_sorted(crate::types::ChatMessage::new_with_timestamp(
-            crate::types::react_content(100, "\u{1F44D}"),
-            true,
-            200,
-        ));
+        conv.insert_message_sorted(
+            crate::types::ChatMessage::new_with_timestamp("\u{1F44D}".to_string(), true, 200)
+                .with_reference(crate::types::RefKind::React, 100),
+        );
         assert_eq!(conv.current_reaction(100, true), Some("\u{1F44D}".to_string()));
         assert_eq!(conv.current_reaction(100, false), None, "their slot is theirs");
 
-        // Replace, then retract.
-        conv.insert_message_sorted(crate::types::ChatMessage::new_with_timestamp(
-            crate::types::react_content(100, "\u{2764}"),
-            true,
-            300,
-        ));
+        // Replace, then retract (empty content).
+        conv.insert_message_sorted(
+            crate::types::ChatMessage::new_with_timestamp("\u{2764}".to_string(), true, 300)
+                .with_reference(crate::types::RefKind::React, 100),
+        );
         assert_eq!(conv.current_reaction(100, true), Some("\u{2764}".to_string()));
-        conv.insert_message_sorted(crate::types::ChatMessage::new_with_timestamp(
-            crate::types::react_content(100, ""),
-            true,
-            400,
-        ));
+        conv.insert_message_sorted(
+            crate::types::ChatMessage::new_with_timestamp(String::new(), true, 400)
+                .with_reference(crate::types::RefKind::React, 100),
+        );
         assert_eq!(conv.current_reaction(100, true), None);
     }
 

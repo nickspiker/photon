@@ -19,6 +19,8 @@ pub struct HistoryRow {
     pub delivered: bool,
     /// Tombstone flag — deleted-for-everyone, monotonic true-wins on merge. Content still rides (braid weave dependency; see ChatMessage::deleted).
     pub deleted: bool,
+    /// Typed reference (raw wire kind, target eagle_time) — reply/edit/react metadata as page COLUMNS, never string-encoded into content. Absent on pre-feature pages ⇒ None (the m_tomb additive idiom).
+    pub reference: Option<(u8, i64)>,
 }
 
 /// A decoded (pre-seal / post-open) history page.
@@ -45,6 +47,8 @@ fn page_schema() -> SectionSchema {
         .field("m_out", TypeConstraint::AnyUnsigned) // bool, one per row (sender's is_outgoing)
         .field("m_del", TypeConstraint::AnyUnsigned) // bool, one per row
         .field("m_tomb", TypeConstraint::AnyUnsigned) // bool, one per row: the deleted-for-everyone tombstone (absent on pre-feature pages → all false)
+        .field("m_refk", TypeConstraint::AnyUnsigned) // reference kind, one per row: 0 = none, else RefKind wire value (absent on pre-feature pages → all none)
+        .field("m_reft", TypeConstraint::Any) // e6 reference target, one per row: 0 when kind is none
 }
 
 /// Encode + AEAD-seal a page under `key`. Key-agnostic: friendship history key today, fleet key later.
@@ -72,6 +76,18 @@ pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<
             .append_multi("m_del", vec![VsfType::u3(row.delivered as u8)])
             .map_err(|e| e.to_string())?
             .append_multi("m_tomb", vec![VsfType::u3(row.deleted as u8)])
+            .map_err(|e| e.to_string())?
+            .append_multi(
+                "m_refk",
+                vec![VsfType::u3(row.reference.map(|(k, _)| k).unwrap_or(0))],
+            )
+            .map_err(|e| e.to_string())?
+            .append_multi(
+                "m_reft",
+                vec![VsfType::e(vsf::types::EtType::e6(
+                    row.reference.map(|(_, t)| t).unwrap_or(0),
+                ))],
+            )
             .map_err(|e| e.to_string())?;
     }
     let section_bytes = builder.encode().map_err(|e| e.to_string())?;
@@ -144,6 +160,26 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
         .filter_map(|f| f.values.first())
         .filter_map(vsf_bool)
         .collect();
+    // Typed references (optional parallel columns — absent on pre-feature pages ⇒ all none).
+    let ref_kinds: Vec<u8> = section
+        .get_fields("m_refk")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::u3(n) => Some(*n),
+            VsfType::u4(n) => Some(*n as u8),
+            _ => None,
+        })
+        .collect();
+    let ref_targets: Vec<i64> = section
+        .get_fields("m_reft")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::e(vsf::types::EtType::e6(osc)) => Some(*osc),
+            _ => None,
+        })
+        .collect();
 
     // Zip the parallel arrays; a malformed page (mismatched lengths) yields the common prefix.
     let n = times.len().min(texts.len()).min(outs.len()).min(dels.len());
@@ -155,6 +191,10 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
             sender_outgoing: outs[i],
             delivered: dels[i],
             deleted: tombs.get(i).copied().unwrap_or(false),
+            reference: match ref_kinds.get(i).copied().unwrap_or(0) {
+                0 => None,
+                k => Some((k, ref_targets.get(i).copied().unwrap_or(0))),
+            },
         });
     }
     Ok(HistoryPagePlain {
@@ -188,6 +228,7 @@ mod tests {
                     sender_outgoing: true,
                     delivered: true,
                     deleted: false,
+                    reference: None,
                 },
                 HistoryRow {
                     timestamp: 2_000,
@@ -195,6 +236,7 @@ mod tests {
                     sender_outgoing: false,
                     delivered: false,
                     deleted: false,
+                    reference: Some((1, 1_000)), // a reply column rides the page
                 },
                 HistoryRow {
                     timestamp: 3_000,
@@ -202,6 +244,7 @@ mod tests {
                     sender_outgoing: true,
                     delivered: false,
                     deleted: false,
+                    reference: None,
                 },
             ],
             oldest_osc: 1_000,
@@ -249,6 +292,7 @@ mod tests {
                 sender_outgoing: true,
                 delivered: false,
                 deleted: false,
+                reference: None,
             }],
             oldest_osc: 7,
             more: false,

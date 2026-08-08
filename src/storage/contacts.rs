@@ -1016,6 +1016,12 @@ pub fn save_messages(
         if msg.deleted {
             rec = rec.set("deleted", 1u64);
         }
+        // reference: typed reply/edit/react target — two fields, written only when present (absent = plain row).
+        if let Some((kind, target)) = msg.reference {
+            rec = rec
+                .set("ref_kind", kind as u64)
+                .set("ref_ts", Value::Time(target));
+        }
         db.put_row_in(&table, Pk::Int(msg.timestamp as u64), &rec)
             .map_err(|e| StorageError::Vault(e.to_string()))?;
     }
@@ -1075,6 +1081,7 @@ pub fn load_messages(
             ack_hash,
             recovered: rec.uint("recovered").unwrap_or(0) != 0,
             deleted: rec.uint("deleted").unwrap_or(0) != 0,
+            reference: record_reference(&rec),
         });
     }
 
@@ -1100,6 +1107,12 @@ pub fn conversation_state_record(conv: &crate::types::Conversation) -> ([u8; 32]
         crate::storage::vault_key("conv_state", conv.id().as_bytes()),
         buf,
     )
+}
+
+/// Decode a row record's typed reference (reply/edit/react target) — absent or unknown-kind reads as None, the pre-feature default.
+fn record_reference(rec: &Record) -> Option<(crate::types::RefKind, i64)> {
+    let kind = crate::types::RefKind::from_wire(rec.uint("ref_kind")? as u8)?;
+    Some((kind, rec.time("ref_ts")?))
 }
 
 /// Persist the conversation-scoped durable bits — unread count and the history-recovery cursor — under the conversation id. These historically rode the contact record; a conversation is not a contact, so they get their own tiny record.
@@ -1199,6 +1212,12 @@ pub fn save_messages_page(
         if msg.deleted {
             rec = rec.set("deleted", 1u64);
         }
+        // reference: typed reply/edit/react target — two fields, written only when present (absent = plain row).
+        if let Some((kind, target)) = msg.reference {
+            rec = rec
+                .set("ref_kind", kind as u64)
+                .set("ref_ts", Value::Time(target));
+        }
         db.put_row_in(&table, Pk::Int(msg.timestamp as u64), &rec)
             .map_err(|e| StorageError::Vault(e.to_string()))?;
     }
@@ -1262,6 +1281,7 @@ pub fn load_message_page_before(
             ack_hash: None, // never leaves this device; not part of a served page
             recovered: rec.uint("recovered").unwrap_or(0) != 0,
             deleted: rec.uint("deleted").unwrap_or(0) != 0,
+            reference: record_reference(&rec),
         });
         taken += 1;
     }
@@ -1340,6 +1360,7 @@ mod tests {
                 ack_hash: None,
                 recovered: false,
                 deleted: false,
+                reference: None,
             },
             ChatMessage {
                 content: "hey".to_string(),
@@ -1349,6 +1370,7 @@ mod tests {
                 ack_hash: Some([0x7Au8; 32]), // received msg: its ACK hash must survive the round-trip
                 recovered: false,
                 deleted: false,
+                reference: None,
             },
             ChatMessage {
                 content: "👋 unicode".to_string(),
@@ -1358,6 +1380,7 @@ mod tests {
                 ack_hash: None,
                 recovered: true, // friend-attested provenance must survive the round-trip,
                 deleted: false,
+                reference: None,
             },
         ];
 
@@ -1578,6 +1601,7 @@ mod tests {
             ack_hash: None,
             recovered: t <= 60, // the "older, recovered" half
             deleted: false,
+            reference: None,
         };
         let newer: Vec<ChatMessage> = (61..=120).map(make).collect();
         let older: Vec<ChatMessage> = (1..=60).map(make).collect();
