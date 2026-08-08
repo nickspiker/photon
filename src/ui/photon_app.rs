@@ -15634,11 +15634,10 @@ impl PhotonApp {
                 Some(h) => *h,
                 None => break 'commit,
             };
-            let Some((contact_idx, handle)) = self
+            let Some(contact_idx) = self
                 .contacts
                 .iter()
-                .enumerate()
-                .find_map(|(i, c)| (c.handle_hash == from_handle_hash).then(|| (i, c.display_name())))
+                .position(|c| c.handle_hash == from_handle_hash)
             else {
                 break 'commit;
             };
@@ -15732,13 +15731,14 @@ impl PhotonApp {
             );
 
             crate::logf!(
-                "CHAT: Decrypted message from {}: \"{}\" (incorporated_hp={}...)",
-                handle,
+                "CHAT: Decrypted message from {} ({}, {} chars, incorporated_hp={}...)",
+                crate::fp(&from_handle_hash),
                 if is_chain_probe {
-                    "<chain-weave probe>"
+                    "chain-weave probe"
                 } else {
-                    &message_text
+                    "text"
                 },
+                message_text.chars().count(),
                 hex::encode(&incorporated_hp[..8])
             );
 
@@ -15771,7 +15771,7 @@ impl PhotonApp {
                 strands
             };
             if let Some(t) = strand_miss {
-                crate::logf!("LANE: braid strand miss from {} — no outgoing row at eagle_time {} yet; holding this frame (no advance, no ACK) until sibling replication lands it", handle, t);
+                crate::logf!("LANE: braid strand miss from {} — no outgoing row at eagle_time {} yet; holding this frame (no advance, no ACK) until sibling replication lands it", crate::fp(&from_handle_hash), t);
                 let c = &mut self.contacts[contact_idx];
                 c.ping_backoff = 0;
                 c.last_pinged = None;
@@ -15802,7 +15802,7 @@ impl PhotonApp {
             chains.update_received_hash(&lane, msg_hp);
             crate::logf!(
                 "CHAT: Updated hash chain for {} - msg_hp={}...",
-                handle,
+                crate::fp(&from_handle_hash),
                 hex::encode(&msg_hp[..8])
             );
 
@@ -16010,7 +16010,7 @@ impl PhotonApp {
             ));
             crate::logf!(
                 "CHAT: ACK to {} (eagle_time {}, hash {}...) queued behind the durable chains write",
-                handle,
+                crate::fp(&from_handle_hash),
                 timestamp,
                 hex::encode(&plaintext_hash[..8])
             );
@@ -17404,7 +17404,8 @@ impl PhotonApp {
 
             // Find the contact and update state
             if let Some(contact) = self.contacts.iter_mut().find(|c| c.id == result.contact_id) {
-                let contact_handle = contact.display_name();
+                // Pseudonymous log label — the display name is a REAL name in the field ("Theresa" in a submitted log, 2026-08-08); fp is the doctrine.
+                let contact_handle = crate::fp(&contact.handle_proof);
                 contact.clutch_ceremony_in_progress = false;
                 contact.friendship_id = Some(friendship_id);
 
@@ -17581,7 +17582,8 @@ impl PhotonApp {
         let contact_is_sibling = contact.is_sibling;
         let contact_hp = contact.handle_proof;
         let contact_id = contact.id.clone();
-        let contact_handle = contact.display_name();
+        // Pseudonymous log label (see the ceremony-completion twin above).
+        let contact_handle = crate::fp(&contact.handle_proof);
         // The eggs bind a device-pubkey pair: use the device that SIGNED their offer (the ceremony's actual participant), never the pinned public_identity — pongs re-elect the pin, so a multi-device friend answering from an unpinned device desynced one egg and the proofs mismatched on a perfect round (live pair 2026-07-24). Legacy-persisted slots lack the signer → fall back to the pin, which is exact for single-device friends.
         let their_device_pub = contact
             .get_slot(&contact.handle_hash)
@@ -20074,7 +20076,7 @@ impl PhotonApp {
                             }
                         });
 
-                        let (contact_idx, handle) = match contact_info {
+                        let (contact_idx, _handle) = match contact_info {
                             Some((idx, h)) => (idx, h),
                             None => {
                                 crate::logf!(
@@ -20089,7 +20091,7 @@ impl PhotonApp {
                         if !self.contacts[contact_idx].knows_device(&sender_pubkey.key)
                             || self.contacts[contact_idx].locked_out
                         {
-                            crate::logf!("CHAT: dropped frame from {} — signer {}... is not a trusted device of this conversation (refused/locked/unfolded)", handle, hex::encode(&sender_pubkey.key[..8]));
+                            crate::logf!("CHAT: dropped frame from {} — signer {}... is not a trusted device of this conversation (refused/locked/unfolded)", crate::fp(&from_handle_hash), hex::encode(&sender_pubkey.key[..8]));
                             continue;
                         }
 
@@ -20144,10 +20146,10 @@ impl PhotonApp {
                                         plaintext_hash: ph,
                                         relay_to,
                                     });
-                                    crate::logf!("CHAT: Re-ACKed duplicate from {} (eagle_time {}) — our earlier ACK was likely lost", handle, timestamp);
+                                    crate::logf!("CHAT: Re-ACKed duplicate from {} (eagle_time {}) — our earlier ACK was likely lost", crate::fp(&from_handle_hash), timestamp);
                                 }
                             } else {
-                                crate::logf!("CHAT: Skipping duplicate from {} (eagle_time {}) — no stored ack_hash (pre-fix message or outgoing)", handle, timestamp);
+                                crate::logf!("CHAT: Skipping duplicate from {} (eagle_time {}) — no stored ack_hash (pre-fix message or outgoing)", crate::fp(&from_handle_hash), timestamp);
                             }
                             continue;
                         }
@@ -20156,7 +20158,7 @@ impl PhotonApp {
                         if let Err(expected) =
                             chains.verify_chain_link(&lane, &prev_msg_hp)
                         {
-                            crate::logf!("CHAT: Hash chain gap from {} - expected prev {}..., got {}... — buffering (ahead of us)", handle, hex::encode(&expected[..8]), hex::encode(&prev_msg_hp[..8]));
+                            crate::logf!("CHAT: Hash chain gap from {} - expected prev {}..., got {}... — buffering (ahead of us)", crate::fp(&from_handle_hash), hex::encode(&expected[..8]), hex::encode(&prev_msg_hp[..8]));
                             // GAPS ARE TRANSPORT, NEVER FORK EVIDENCE: a missing predecessor means a frame is in flight, lost (anti-entropy re-serves it on the next pong edge), or a stale-era straggler — none of which a re-key repairs and all of which a re-key destroys (the ≥8-streak trigger here nuked healthy weaves all week, 2026-08-03→07, and masked the actual salt bug). Fork evidence lives solely in the decrypt-fail streak: a fill that arrives and still produces garbage is the only proof both heads committed differently.
                             {
                                 let c = &mut self.contacts[contact_idx];
@@ -20182,7 +20184,7 @@ impl PhotonApp {
 
                         crate::logf!(
                             "CHAT: Received message from {} (eagle_time {}), {} bytes ciphertext",
-                            handle,
+                            crate::fp(&from_handle_hash),
                             timestamp,
                             ciphertext.len()
                         );
@@ -20291,7 +20293,7 @@ impl PhotonApp {
                             }
                         });
 
-                        let (contact_idx, handle) = match contact_info {
+                        let (contact_idx, _handle) = match contact_info {
                             Some((idx, h)) => (idx, h),
                             None => {
                                 crate::logf!(
@@ -20304,7 +20306,7 @@ impl PhotonApp {
 
                         crate::logf!(
                             "CHAT: ACK received from {} for eagle_time {} (hash: {}...)",
-                            handle,
+                            crate::fp(&from_handle_hash),
                             acked_eagle_time,
                             hex::encode(&plaintext_hash[..8])
                         );
@@ -20325,7 +20327,7 @@ impl PhotonApp {
 
                         // Process ACK: advance our chain and remove pending message
                         if chains.process_ack(acked_eagle_time, &plaintext_hash) {
-                            crate::logf!("CHAT: Chain advanced for {} (ACK verified)", handle);
+                            crate::logf!("CHAT: Chain advanced for {} (ACK verified)", crate::fp(&from_handle_hash));
 
                             // Our TX chain just advanced on a matching ACK — their RX is proven. Record it so the chain-weave can seal (sealing itself happens after the `chains` borrow ends, below). This is the "our TX / their RX" half of woven.
                             if let Some(contact) = self.contacts.get_mut(contact_idx) {
@@ -20386,11 +20388,12 @@ impl PhotonApp {
                                     crate::LogLevel::Debug,
                                     &format!(
                                         "CHAT: Duplicate ACK from {} (eagle_time {}) — already delivered, dual-path echo",
-                                        handle, acked_eagle_time
+                                        crate::fp(&from_handle_hash),
+                                        acked_eagle_time
                                     ),
                                 );
                             } else {
-                                crate::logf!("CHAT: ACK verification failed for {} (no matching pending message)", handle);
+                                crate::logf!("CHAT: ACK verification failed for {} (no matching pending message)", crate::fp(&from_handle_hash));
                             }
                         }
 
