@@ -17868,8 +17868,11 @@ impl PhotonApp {
                                     {
                                         // SAME digest the producer publishes — the cached, order-dependent rolling hash (Conversation::anti_entropy_digest). Both sides MUST compute it identically or every comparison false-mismatches.
                                         let (n_rows, digest) = conv.anti_entropy_digest();
-                                        let mismatch =
-                                            n_rows != record.row_count || digest != record.row_digest;
+                                        // A history walk PULLS rows FROM the peer, so it can only help when the peer has rows WE lack. When we already hold MORE than the peer (n_rows > theirs), a pull returns 0 new every time — it cannot deliver our extra row to THEM. That was a permanent loop: one undelivered message we hold (a lane wedged at the peer's anchor) kept ours = theirs+1 forever, re-walking every 120s and decrypting pages on the UI thread (the 2026-08-08 typing lag). Only walk when the peer is at-least-even (they may have rows we're missing, or an equal-count content divergence a walk can reconcile). When we're strictly ahead the fix is on the delivery side (re-serve / lane repair), not a pull.
+                                        let we_might_be_behind = record.row_count >= n_rows;
+                                        let mismatch = (n_rows != record.row_count
+                                            || digest != record.row_digest)
+                                            && we_might_be_behind;
                                         const DIGEST_KICK_COOLDOWN_OSC: i64 =
                                             120 * vsf::OSCILLATIONS_PER_SECOND as i64;
                                         let idle = conv
