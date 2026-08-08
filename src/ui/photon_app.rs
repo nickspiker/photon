@@ -20908,7 +20908,23 @@ impl PhotonApp {
                                     };
                                     let conv = &mut self.conversations[conv_pos];
                                     // Merge to OUR perspective: friend pages flip direction (their outgoing = our incoming); sibling pages ride verbatim (same identity, their flags ARE ours). Friend-recovered outgoing is delivered by definition (the friend has it); dedup on (timestamp, content) against what we already hold.
+                                    // Index existing rows ONCE by (timestamp, content-hash) — the merge was O(rows × messages) with a full string compare per pair (50 rows × ~90 messages × up-to-123 pages ≈ half a million compares a session, a top render-thread cost in the field audit). Each row is now an O(1) lookup; inserts are deferred so the indices stay valid through the upgrade pass.
+                                    let row_hash = |c: &str| -> u64 {
+                                        u64::from_le_bytes(
+                                            blake3::hash(c.as_bytes()).as_bytes()[..8]
+                                                .try_into()
+                                                .unwrap(),
+                                        )
+                                    };
+                                    let mut existing_idx: std::collections::HashMap<(i64, u64), usize> =
+                                        std::collections::HashMap::with_capacity(conv.messages.len());
+                                    for (i, m) in conv.messages.iter().enumerate() {
+                                        existing_idx
+                                            .entry((m.timestamp, row_hash(&m.content)))
+                                            .or_insert(i);
+                                    }
                                     let mut fresh: Vec<crate::types::ChatMessage> = Vec::new();
+                                    let mut to_insert: Vec<crate::types::ChatMessage> = Vec::new();
                                     for row in &page.rows {
                                         if crate::types::is_control_content(&row.content) {
                                             continue;
@@ -20918,13 +20934,14 @@ impl PhotonApp {
                                         } else {
                                             (!row.sender_outgoing, !row.sender_outgoing, true)
                                         };
-                                        if let Some(existing) =
-                                            conv.messages.iter_mut().find(|m| {
-                                                m.timestamp == row.timestamp
-                                                    && m.content == row.content
-                                            })
-                                        {
+                                        // O(1) existence check; the exact content compare confirms the hit (guards the astronomically-rare 8-byte-hash + exact-timestamp collision).
+                                        let hit = existing_idx
+                                            .get(&(row.timestamp, row_hash(&row.content)))
+                                            .copied()
+                                            .filter(|&i| conv.messages[i].content == row.content);
+                                        if let Some(idx) = hit {
                                             // Delivered AND deleted are monotonic (true wins): a copy that saw the ACK — or the tombstone — upgrades ours. Upgraded rows ride `fresh` (persist + gossip) but are NOT re-inserted.
+                                            let existing = &mut conv.messages[idx];
                                             let mut upgraded = false;
                                             if delivered
                                                 && !existing.delivered
@@ -20949,7 +20966,7 @@ impl PhotonApp {
                                             }
                                             continue;
                                         }
-                                        let msg = crate::types::ChatMessage {
+                                        to_insert.push(crate::types::ChatMessage {
                                             content: row.content.clone(),
                                             timestamp: row.timestamp,
                                             is_outgoing,
@@ -20957,7 +20974,10 @@ impl PhotonApp {
                                             ack_hash: None,
                                             recovered,
                                             deleted: row.deleted,
-                                        };
+                                        });
+                                    }
+                                    // Deferred inserts (they'd shift indices the map holds); insert_message_sorted dedups again defensively, so a page carrying two identical rows still lands one.
+                                    for msg in to_insert {
                                         conv.insert_message_sorted(msg.clone());
                                         fresh.push(msg);
                                     }
