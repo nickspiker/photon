@@ -14121,46 +14121,48 @@ impl PhotonApp {
 
         let mut records = Vec::new();
         for (fid, chains) in &self.friendship_chains {
-            // Get the max last_received_time across all participants This is when we last received ANY message in this conversation
+            // Max last_received across all lanes — kept for legacy peers as the single-tip fallback. Per-lane heads below are the precise version.
             let max_time = chains
                 .last_received_times()
                 .iter()
                 .filter_map(|t| *t)
-                .fold(None, |acc: Option<i64>, t| {
-                    Some(acc.map_or(t, |a| if t > a { t } else { a }))
-                });
+                .fold(0i64, |acc, t| if t > acc { t } else { acc });
 
-            if let Some(last_received_osc) = max_time {
-                // Anti-entropy digest over the conversation's rows: order-free XOR fold of blake3(timestamp ‖ content_hash), probe rows excluded (they never sync) and DIRECTION excluded (both sides hold the same set with flipped flags). Digests equal ⇒ provably the same message set; the pong receiver full-walks recovery on mismatch.
-                let (row_count, row_digest) =
-                    self.contacts
+            // Publish a record for EVERY conversation, even one we've received nothing in yet (tip 0): its absence used to hide our head from a peer whose given-up pending needed exactly that head to revive. The peer reads tip 0 / no lane head as "send from the anchor".
+            let lane_heads = chains.lane_heads();
+
+            // Anti-entropy digest over the conversation's rows: order-free XOR fold of blake3(timestamp ‖ content_hash), probe rows excluded (they never sync) and DIRECTION excluded (both sides hold the same set with flipped flags). Digests equal ⇒ provably the same message set; the pong receiver full-walks recovery on mismatch.
+            let (row_count, row_digest) = self
+                .contacts
+                .iter()
+                .position(|c| c.friendship_id == Some(*fid))
+                .and_then(|ci| self.conv_of(ci))
+                .map(|v| {
+                    let mut fold = [0u8; 32];
+                    let mut n: u32 = 0;
+                    for m in v
+                        .messages
                         .iter()
-                        .position(|c| c.friendship_id == Some(*fid))
-                        .and_then(|ci| self.conv_of(ci))
-                        .map(|v| {
-                            let mut fold = [0u8; 32];
-                            let mut n: u32 = 0;
-                            for m in v.messages.iter().filter(|m| {
-                                !crate::types::is_control_content(&m.content) && !m.deleted
-                            }) {
-                                let mut h = blake3::Hasher::new();
-                                h.update(&m.timestamp.to_le_bytes());
-                                h.update(blake3::hash(m.content.as_bytes()).as_bytes());
-                                for (f, b) in fold.iter_mut().zip(h.finalize().as_bytes()) {
-                                    *f ^= b;
-                                }
-                                n += 1;
-                            }
-                            (n, fold)
-                        })
-                        .unwrap_or((0, [0u8; 32]));
-                records.push(SyncRecord {
-                    conversation_token: chains.conversation_token,
-                    last_received_osc,
-                    row_count,
-                    row_digest,
-                });
-            }
+                        .filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted)
+                    {
+                        let mut h = blake3::Hasher::new();
+                        h.update(&m.timestamp.to_le_bytes());
+                        h.update(blake3::hash(m.content.as_bytes()).as_bytes());
+                        for (f, b) in fold.iter_mut().zip(h.finalize().as_bytes()) {
+                            *f ^= b;
+                        }
+                        n += 1;
+                    }
+                    (n, fold)
+                })
+                .unwrap_or((0, [0u8; 32]));
+            records.push(SyncRecord {
+                conversation_token: chains.conversation_token,
+                last_received_osc: max_time,
+                row_count,
+                row_digest,
+                lane_heads,
+            });
         }
 
         // Update the shared provider
@@ -17664,7 +17666,7 @@ impl PhotonApp {
                     avatar_pin,
                     locked_reports,
                 } => {
-                    // Stall recovery (runs EVERY ping that carries sync records, not just the offline→online edge): each record is the peer's contiguous tip (last_received_osc = "I have everything in order up to here"). Re-arm any pending message of ours that's newer than that tip AND has exhausted its retransmit attempts — so a gap-filler the sender already gave up on gets resent, and a receiver stuck behind a permanently-lost message un-sticks. collect_due_retransmits (the tick path) then actually sends the revived messages.
+                    // Stall recovery (runs EVERY ping that carries sync records, not just the offline→online edge): each record advertises the peer's contiguous head. Re-arm any pending of ours newer than the head for OUR lane AND already given up (exhausted attempts) — so a gap-filler the sender abandoned gets resent and a receiver stuck behind a permanently-lost message un-sticks. The staleness gate stays (a fresh send is left to normal backoff; only a given-up one is revived), which keeps a pong that merely raced ahead of the ACK from double-sending. collect_due_retransmits (the tick path) then actually sends the revived messages.
                     let now_osc = vsf::eagle_time_oscillations();
                     for record in &sync_records {
                         if let Some((fid, chains)) = self
@@ -17672,9 +17674,24 @@ impl PhotonApp {
                             .iter_mut()
                             .find(|(_, c)| c.conversation_token == record.conversation_token)
                         {
-                            let n = chains.rearm_pending_after(record.last_received_osc, now_osc);
+                            // The peer's head for the lane WE send on — exact when it carries per-lane heads, the max-across-lanes tip for a legacy peer. Absence of our lane among non-empty heads = they've received nothing on it → send from the anchor (tip 0).
+                            let tip = if record.lane_heads.is_empty() {
+                                record.last_received_osc
+                            } else {
+                                chains
+                                    .our_label()
+                                    .and_then(|l| {
+                                        record
+                                            .lane_heads
+                                            .iter()
+                                            .find(|(lab, _)| lab == l)
+                                            .map(|(_, t)| *t)
+                                    })
+                                    .unwrap_or(0)
+                            };
+                            let n = chains.rearm_pending_after(tip, now_osc);
                             if n > 0 {
-                                crate::logf!("CHAT: re-armed {} given-up pending msg(s) past peer tip {} (stall recovery)", n, record.last_received_osc);
+                                crate::logf!("CHAT: re-armed {} given-up pending msg(s) past peer lane tip {} (stall recovery)", n, tip);
                             }
                             // ANTI-ENTROPY: the pong carries the peer's (row_count, XOR-fold) for this conversation. A digest mismatch means the two sides provably hold DIFFERENT message sets — the heuristic cursor walk left a hole (the greyed sends a peer never got, 2026-07-25) — so force a FULL recovery walk (early-stop disabled). Zero count+digest = legacy peer, no comparison. Cooldown per contact so a persistent mismatch (peer can't serve) re-fires at a polite cadence instead of every pong.
                             if record.row_count != 0 || record.row_digest != [0u8; 32] {

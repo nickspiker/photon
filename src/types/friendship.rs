@@ -1087,6 +1087,15 @@ impl FriendshipChains {
         &self.last_received_times
     }
 
+    /// Per-lane contiguous heads: (lane_label, last_received_osc) for every lane we've received a frame on. This is what a peer needs to know EXACTLY which of its lanes we're missing — a single max-across-lanes tip over-reports for a multi-device sender (a fast lane's tip hides a slow lane's gap), suppressing the slow lane's resends. Lanes with no receipt yet are omitted (their absence tells the peer "send from the anchor").
+    pub fn lane_heads(&self) -> Vec<([u8; 32], i64)> {
+        self.lane_labels
+            .iter()
+            .zip(self.last_received_times.iter())
+            .filter_map(|(label, tip)| tip.map(|t| (*label, t)))
+            .collect()
+    }
+
     /// Get last_received_hash for a sender (for debugging/logging).
     pub fn last_received_hash(&self, sender_handle_hash: &[u8; 32]) -> Option<&[u8; 32]> {
         let idx = self.participant_index(sender_handle_hash)?;
