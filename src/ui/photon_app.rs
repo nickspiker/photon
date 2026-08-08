@@ -438,6 +438,42 @@ impl ChainsPostDurable {
     }
 }
 
+/// A send's braid encrypt finished OFF the UI thread. The drain CAS-commits the advance (prepare_send_commit) and rides the durable-transmit writer; `result: None` means the encrypt itself failed (lane vanished) — the drain still clears the per-friendship encrypt gate either way.
+struct BraidTxEncrypted {
+    friendship_id: FriendshipId,
+    conversation_token: [u8; 32],
+    eagle_time: i64,
+    salt_text: Vec<u8>,
+    woven_strands: Vec<Vec<u8>>,
+    peer_addr: std::net::SocketAddr,
+    alt_addr: Option<std::net::SocketAddr>,
+    recipient_pubkey: [u8; 32],
+    relay_to: Vec<[u8; 32]>,
+    text_len: usize,
+    result: Option<BraidTxWire>,
+}
+
+/// The wire half a send encrypt produced: everything prepare_send_commit and the MessageRequest need.
+struct BraidTxWire {
+    ciphertext: Vec<u8>,
+    prev_msg_hp: [u8; 32],
+    msg_hp: [u8; 32],
+    plaintext_hash: [u8; 32],
+    lane: [u8; 32],
+    expected_key: [u8; 32],
+}
+
+/// A chat frame's braid decrypt finished OFF the UI thread. The arm dispatches only after its cheap gates pass (auth, dup, chain-link verify); the worker runs the pure crypto (salt → memory-hard scratch → layer peel) against a snapshot of the lane; commit_braid_rx re-gates against CURRENT state and runs everything after the decrypt. Serialization is free: until a frame commits, its successor's chain-link verify fails and gap-buffers, exactly as when the decrypt was inline.
+struct BraidRxDecrypted {
+    conversation_token: [u8; 32],
+    lane: [u8; 32],
+    prev_msg_hp: [u8; 32],
+    timestamp: i64,
+    sender_addr: std::net::SocketAddr,
+    sender_pubkey: crate::types::DevicePubkey,
+    plaintext: Vec<u8>,
+}
+
 /// A sibling chain_sync blob opened + decoded OFF the UI thread. The kete open ran inline — 17KB+ per lane, and a fresh sibling join repushes every friendship at once, an adopt storm on the render thread. The drain re-gates the sender (lockout can land mid-flight) and runs the cheap position-compare adopt.
 struct ChainSyncOpened {
     conversation_token: [u8; 32],
@@ -845,6 +881,16 @@ pub struct PhotonApp {
     /// Sibling chain_sync blobs opened off-thread (see ChainSyncOpened) — the drain adopts.
     chain_sync_opened_tx: std::sync::mpsc::Sender<ChainSyncOpened>,
     chain_sync_opened_rx: std::sync::mpsc::Receiver<ChainSyncOpened>,
+    /// Chat-frame braid decrypts finished off-thread (see BraidRxDecrypted) — the drain commits.
+    braid_rx_tx: std::sync::mpsc::Sender<BraidRxDecrypted>,
+    braid_rx_rx: std::sync::mpsc::Receiver<BraidRxDecrypted>,
+    /// Gap-refill replays minted by commit_braid_rx: buffered frames whose predecessor just committed, re-entering the arm's full gates ahead of new channel items (FIFO — a refilled N+1 processes before anything newer).
+    chat_replay_queue: std::collections::VecDeque<crate::network::status::StatusUpdate>,
+    /// Send braid encrypts finished off-thread (see BraidTxEncrypted) — the drain commits.
+    braid_tx_tx: std::sync::mpsc::Sender<BraidTxEncrypted>,
+    braid_tx_rx: std::sync::mpsc::Receiver<BraidTxEncrypted>,
+    /// Friendships with a send encrypt in flight: a second dispatch would mint a second frame at the SAME lane position (the commit CAS would void it), so the gate holds the row and the commit edge re-fires it thru resend_held_messages.
+    send_encrypt_busy: std::collections::HashSet<[u8; 32]>,
     /// Handles we've already kicked an avatar download for this session, so we don't re-spawn a fetch every time a conversation is reopened or the contact list re-renders.
     avatar_dl_started: std::collections::HashSet<[u8; 32]>,
     /// Mutual peers we've sent a direct P2P AvatarRequest to, mapped to the eagle-time we sent it. The per-tick sweep asks each mutual peer once, then — if no AvatarResponse has installed an avatar within `AVATAR_P2P_FALLBACK_OSC` — falls back to FGTW. So a friend's avatar comes from the friend first, and FGTW only covers the case where the friend is offline or avatar-less.
@@ -1384,6 +1430,18 @@ impl PhotonApp {
                 tx
             },
             chain_sync_opened_rx: std::sync::mpsc::channel().1,
+            braid_rx_tx: {
+                let (tx, _) = std::sync::mpsc::channel();
+                tx
+            },
+            braid_rx_rx: std::sync::mpsc::channel().1,
+            chat_replay_queue: std::collections::VecDeque::new(),
+            braid_tx_tx: {
+                let (tx, _) = std::sync::mpsc::channel();
+                tx
+            },
+            braid_tx_rx: std::sync::mpsc::channel().1,
+            send_encrypt_busy: std::collections::HashSet::new(),
             fleet_heal_busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             fanout_rotate_pending: false,
             self_avatar_recover_pending: None,
@@ -2492,6 +2550,14 @@ impl FluorApp for PhotonApp {
             let (cstx, csrx) = std::sync::mpsc::channel();
             self.chain_sync_opened_tx = cstx;
             self.chain_sync_opened_rx = csrx;
+            let (brtx, brrx) = std::sync::mpsc::channel();
+            self.braid_rx_tx = brtx;
+            self.braid_rx_rx = brrx;
+            self.chat_replay_queue.clear();
+            let (bttx, btrx) = std::sync::mpsc::channel();
+            self.braid_tx_tx = bttx;
+            self.braid_tx_rx = btrx;
+            self.send_encrypt_busy.clear();
             let (frtx, frrx) = std::sync::mpsc::channel();
             self.fleet_rotated_tx = frtx;
             self.fleet_rotated_rx = frrx;
@@ -13043,6 +13109,85 @@ impl PhotonApp {
         let _ = tx.send((addr, buf, storage));
     }
 
+    /// Commit finished send encrypts: CAS-advance the lane (prepare_send_commit), then ride the durable-transmit writer — the frame leaves only after the chains land on disk (the C2 law). A CAS miss (an era adopt landed mid-encrypt) voids the ciphertext and re-fires the held row at the fresh position. Always clears the per-friendship encrypt gate, success or not.
+    fn drain_braid_tx(&mut self) {
+        while let Ok(done) = self.braid_tx_rx.try_recv() {
+            self.send_encrypt_busy.remove(done.friendship_id.as_bytes());
+            let contact_idx = self
+                .contacts
+                .iter()
+                .position(|c| c.friendship_id == Some(done.friendship_id));
+            let Some(wire) = done.result else {
+                crate::log("CHAT: braid encrypt failed off-thread (lane vanished mid-flight) — row stays held for the sweep");
+                continue;
+            };
+            let committed = self
+                .friendship_chains
+                .iter_mut()
+                .find(|(id, _)| *id == done.friendship_id)
+                .map(|(_, chains)| {
+                    chains.prepare_send_commit(
+                        &wire.lane,
+                        &wire.expected_key,
+                        wire.ciphertext.clone(),
+                        wire.prev_msg_hp,
+                        wire.msg_hp,
+                        wire.plaintext_hash,
+                        done.salt_text.clone(),
+                        done.eagle_time,
+                        done.woven_strands.clone(),
+                    )
+                })
+                .unwrap_or(false);
+            if !committed {
+                crate::log("CHAT: send commit CAS voided — the lane moved while encrypting (era adopt); the held-row sweep re-encrypts at the fresh position");
+                if let Some(ci) = contact_idx {
+                    self.resend_held_messages(ci);
+                }
+                continue;
+            }
+            // Durable-then-transmit: snapshot now WITH the pending recorded; the transmit fires from the writer after the write lands.
+            let snapshot = self
+                .friendship_chains
+                .iter()
+                .find(|(id, _)| *id == done.friendship_id)
+                .map(|(_, c)| c.clone());
+            let dispatch = self.status_checker.as_ref().map(|c| c.message_dispatch());
+            match (snapshot, dispatch) {
+                (Some(snapshot), Some(dispatch)) => {
+                    let req = crate::network::status::MessageRequest {
+                        peer_addr: done.peer_addr,
+                        alt_addr: done.alt_addr,
+                        recipient_pubkey: done.recipient_pubkey,
+                        conversation_token: done.conversation_token,
+                        lane: wire.lane,
+                        prev_msg_hp: wire.prev_msg_hp,
+                        ciphertext: wire.ciphertext,
+                        eagle_time: done.eagle_time,
+                        relay_to: done.relay_to,
+                    };
+                    self.persist_chains_then(
+                        snapshot,
+                        vec![ChainsPostDurable::Message(dispatch, req)],
+                    );
+                    crate::logf!(
+                        "CHAT: message ({} chars) committed — transmit rides the durable chains write",
+                        done.text_len
+                    );
+                }
+                (Some(snapshot), None) => {
+                    // No checker (shutdown race): the advance still persists; the retransmit sweep re-serves the pending next session.
+                    self.persist_chains_then(snapshot, Vec::new());
+                }
+                _ => {}
+            }
+            // The encrypt gate just opened — release the next held row (window permitting) on this commit edge. The just-committed row is pending now, so the sweep's idempotency gate skips it.
+            if let Some(ci) = contact_idx {
+                self.resend_held_messages(ci);
+            }
+        }
+    }
+
     /// Run the deferred WIRE half of queued sends — one tick after their bubbles rendered. Failure handling matches the old inline path: no local chain but a sibling exists → fleet-forward (the sibling's merge drain transmits on the braid); no chain and no sibling → the send has nowhere to go, take the bubble back out.
     fn drain_pending_chain_sends(&mut self) -> bool {
         if self.pending_chain_sends.is_empty() {
@@ -13211,7 +13356,14 @@ impl PhotonApp {
         };
 
         // Build the message VSF the receiver parses: (message: x{text}, hp{incorporated_hp}, e6{woven_time}…, hR{pad}), field order shuffled to enforce type-marker (not positional) parsing. The e6 values name the woven peer messages (0, 1, or 2). The receive path reads them back via VsfField::parse.
-        let (ciphertext, prev_msg_hp, conversation_token, lane) = {
+        // ENCRYPT-IN-FLIGHT GATE: one braid encrypt per friendship at a time — a second dispatch would mint a second frame at the SAME lane position, and the commit CAS would void it. Returning false keeps the row held-undelivered (the bubble stays); the commit edge re-fires it thru resend_held_messages.
+        if self.send_encrypt_busy.contains(friendship_id.as_bytes()) {
+            crate::log("CHAT: braid encrypt already in flight for this friendship — row held for the commit edge");
+            return false;
+        }
+
+        // Build the wire payload + snapshot the chains, then hand the memory-hard braid encrypt to a worker — the scratch ran inline here, on the Enter keypress. The commit (CAS + advance + pending + durable transmit) runs in drain_braid_tx when the worker posts back.
+        let (snapshot, payload, salt_text, conversation_token) = {
             let Some((_, chains)) = self
                 .friendship_chains
                 .iter_mut()
@@ -13220,6 +13372,11 @@ impl PhotonApp {
                 crate::log("CHAT: friendship chains missing for open contact");
                 return false;
             };
+            // Mint-our-lane stays inline: once per era, and the encrypt snapshot must carry the minted label.
+            if chains.mint_our_lane().is_none() {
+                crate::log("CHAT: prepare_send failed (no lane root — pre-lanes chains)");
+                return false;
+            }
             let incorporated_hp = chains
                 .last_incorporated_hp()
                 .map(|h| *h)
@@ -13243,63 +13400,47 @@ impl PhotonApp {
             use rand::seq::SliceRandom;
             values.shuffle(&mut rand::thread_rng());
             let payload = FieldValue::new("message", values).flatten();
-
             // Chain ingredient = the bare x-text only (the hp/hR pad are siblings of x in the field, not part of it, and are never chain-key material). The full `payload` is what's encrypted onto the wire; `text` is what salts/advances the chain.
             let salt_text = text.to_string().into_bytes();
-
-            let conv_token = chains.conversation_token;
-            let __prep_t = std::time::Instant::now();
-            match chains.prepare_send(payload, salt_text, eagle_time, woven_strands) {
-                Some((ct, prev, _msg_hp, _ph, lane)) => {
-                    // Name the send-path work: the UI no longer lags (the bubble renders first), but the wire half still runs on this thread and "the mac works hard on send" — this says whether it's the braid crypto or the chains persist below.
-                    let ms = __prep_t.elapsed().as_millis();
-                    if ms > 50 {
-                        crate::logf!("PERF: chain prepare_send took {}ms (UI thread)", ms as u64);
-                    }
-                    (ct, prev, conv_token, lane)
-                }
-                None => {
-                    crate::log("CHAT: prepare_send failed (no lane root — pre-lanes chains)");
-                    return false;
-                }
-            }
+            let token = chains.conversation_token;
+            (chains.clone(), payload, salt_text, token)
         };
-
-        // CRASH SAFETY, kept — relocated: disk is still the commit point (pending message + last_sent_hash + the advanced lane) and it still lands BEFORE the frame leaves — but the write rides the chains writer and the TRANSMIT fires from it after the write (durable-then-signal). The encrypt+IO that ran here per send moves off the UI thread; a crash before the write completes means no frame ever left, and the reload re-sends from the persisted tip, never at a stale position.
-        let snapshot = self
-            .friendship_chains
-            .iter()
-            .find(|(id, _)| *id == friendship_id)
-            .map(|(_, c)| c.clone());
-        let dispatch = self.status_checker.as_ref().map(|c| c.message_dispatch());
-        match (snapshot, dispatch) {
-            (Some(snapshot), Some(dispatch)) => {
-                let req = crate::network::status::MessageRequest {
-                    peer_addr,
-                    alt_addr,
-                    recipient_pubkey,
-                    conversation_token,
-                    lane,
-                    prev_msg_hp,
-                    ciphertext,
-                    eagle_time,
-                    relay_to: msg_relay_to,
-                };
-                self.persist_chains_then(
-                    snapshot,
-                    vec![ChainsPostDurable::Message(dispatch, req)],
+        self.send_encrypt_busy.insert(*friendship_id.as_bytes());
+        let tx = self.braid_tx_tx.clone();
+        let wake = self.event_proxy.clone();
+        let text_len = text.len();
+        std::thread::spawn(move || {
+            let result = snapshot
+                .prepare_send_encrypt(&payload, eagle_time)
+                .map(
+                    |(ciphertext, prev_msg_hp, msg_hp, plaintext_hash, lane, expected_key)| {
+                        BraidTxWire {
+                            ciphertext,
+                            prev_msg_hp,
+                            msg_hp,
+                            plaintext_hash,
+                            lane,
+                            expected_key,
+                        }
+                    },
                 );
-                crate::logf!(
-                    "CHAT: message ({} chars) queued behind the durable chains write",
-                    text.len()
-                );
+            let _ = tx.send(BraidTxEncrypted {
+                friendship_id,
+                conversation_token,
+                eagle_time,
+                salt_text,
+                woven_strands,
+                peer_addr,
+                alt_addr,
+                recipient_pubkey,
+                relay_to: msg_relay_to,
+                text_len,
+                result,
+            });
+            if let Some(w) = wake.as_ref() {
+                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
             }
-            (Some(snapshot), None) => {
-                // No checker (shutdown race): the advance still persists; the retransmit sweep re-serves the pending next session.
-                self.persist_chains_then(snapshot, Vec::new());
-            }
-            _ => {}
-        }
+        });
 
         true
     }
@@ -14734,6 +14875,513 @@ impl PhotonApp {
             }
             self.msg_wrap = None;
             self.scene_dirty = true;
+        }
+    }
+
+    /// Drain finished braid decrypts and commit each — the other half of the ChatMessage arm.
+    fn drain_braid_rx(&mut self) {
+        while let Ok(d) = self.braid_rx_rx.try_recv() {
+            self.commit_braid_rx(d);
+        }
+    }
+
+    /// The commit half of a received chat frame, after its braid decrypt finished on a worker: re-resolve everything against CURRENT state, CAS the lane position, then run the exact post-decrypt pipeline the arm ran inline — parse (fork detector), strand resolve (hold), advance, gap-buffer replay, durable-ACK enqueue, row insert, notify, seal. Every early-out just drops the frame: the sender's retransmit ladder re-enters it through the arm's full gates, so a drop is never a loss.
+    fn commit_braid_rx(&mut self, d: BraidRxDecrypted) {
+        let BraidRxDecrypted {
+            conversation_token,
+            lane,
+            prev_msg_hp,
+            timestamp,
+            sender_addr,
+            sender_pubkey,
+            plaintext,
+        } = d;
+        let Some(our_handle_hash) = self
+            .session
+            .as_ref()
+            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        else {
+            return;
+        };
+        let our_sibling_pid = self.our_sibling_pid();
+        let Some(our_device_pubkey) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes())
+        else {
+            return;
+        };
+        // Deferrals out of the `chains` borrow — the same discipline the arm loop used, locally scoped and acted on in the tail below.
+        let mut ack_enqueue: Option<(FriendshipChains, AckRequest)> = None;
+        let mut fork_sibling_reset: Option<usize> = None;
+        let mut fork_friend_rekey: Option<usize> = None;
+        let mut sibling_push: Option<(usize, ChatMessage)> = None;
+        let mut recv_seal_idx: Option<usize> = None;
+        let mut persist_ci: Option<usize> = None;
+        let mut conv_state_pos: Option<usize> = None;
+        let mut replays: Vec<crate::network::status::StatusUpdate> = Vec::new();
+        let mut need_sync = false;
+        'commit: {
+            let Some((_, chains)) = self
+                .friendship_chains
+                .iter_mut()
+                .find(|(_, c)| c.conversation_token == conversation_token)
+            else {
+                crate::logf!(
+                    "CHAT: decrypted frame's friendship vanished (token {}...) — dropped",
+                    hex::encode(&conversation_token[..8])
+                );
+                break 'commit;
+            };
+            // Party-id seam, re-run: our participant id is the identity PARTY id (friends) or the sibling pid (siblings) — whichever the chain actually holds.
+            let our_handle_hash = if chains.participants().contains(&our_handle_hash) {
+                our_handle_hash
+            } else if let Some(pid) = our_sibling_pid.filter(|p| chains.participants().contains(p)) {
+                pid
+            } else {
+                break 'commit;
+            };
+            let from_handle_hash = match chains.other_participant(&our_handle_hash) {
+                Some(h) => *h,
+                None => break 'commit,
+            };
+            let Some((contact_idx, handle)) = self
+                .contacts
+                .iter()
+                .enumerate()
+                .find_map(|(i, c)| (c.handle_hash == from_handle_hash).then(|| (i, c.display_name())))
+            else {
+                break 'commit;
+            };
+            // AUTH re-check: a refusal or lockout landing while the worker ran must still block the commit.
+            if !self.contacts[contact_idx].knows_device(&sender_pubkey.key)
+                || self.contacts[contact_idx].locked_out
+            {
+                crate::logf!("CHAT: decrypted frame's signer lost trust mid-flight — dropped");
+                break 'commit;
+            }
+            // CAS: the lane must be EXACTLY where dispatch saw it. The expected prev still verifying proves no advance, no era swap, no adopt moved the lane while the worker ran — which also proves the decrypt's salt inputs were current, so a parse failure below IS fork evidence. Any mismatch means this plaintext came from dead state: drop it and never feed it to the fork detector; is_duplicate covers the raced-copy case (two UDP copies of one frame both dispatched pre-mark, the first committed).
+            if chains.chain(&lane).is_none()
+                || chains.verify_chain_link(&lane, &prev_msg_hp).is_err()
+                || chains.is_duplicate(&lane, timestamp)
+            {
+                crate::logf!("CHAT: braid decrypt landed on moved lane state (raced duplicate or era adopt) — dropped; a live frame re-enters clean thru the arm");
+                break 'commit;
+            }
+            // The conversation this frame lands in — the SAME participant set the chain holds, materialized on first touch.
+            let conv_pos = {
+                let fresh = crate::types::Conversation::new(chains.participants().iter().copied());
+                match self.conversations.iter().position(|v| v.id() == fresh.id()) {
+                    Some(p) => p,
+                    None => {
+                        self.conversations.push(fresh);
+                        self.conversations.len() - 1
+                    }
+                }
+            };
+            // Parse VSF field: (d{message}:x{text},hp{inc_hp},hR{pad}) Uses VsfField::parse() per AGENT.md
+            let mut ptr = 0usize;
+            let mut message_text = String::new();
+            let mut incorporated_hp = [0u8; 32];
+            // The braid: eagle_times naming the prior peer (=our outgoing) messages this step weaves. 0, 1, or 2.
+            let mut woven_times: Vec<i64> = Vec::new();
+
+            let field = match vsf::file_format::VsfField::parse(&plaintext, &mut ptr) {
+                Ok(f) => f,
+                Err(e) => {
+                    crate::logf!("CHAT: VsfField parse error: {}", e);
+                    // FORK DETECTOR — now the SOLE fork evidence (gaps became pure transport; strand-miss holds instead of forking). A frame that passed signature + chain-link verify but decrypted to garbage means the two sides hold different key material at this position. Every non-fork cause is handled upstream, so re-key is the escalation, but CONVERGENCE GETS FIRST CRACK: the commonest real cause is a stale era (the peer re-keyed, we still hold old chains) — collapsing the ping backoff below forces a prompt head exchange, so the owner's chain-sync / era-supersede can adopt the new era before the streak escalates. A genuine fork keeps failing past that; era stragglers and stale-era holders converge and never reach re-key.
+                    // Siblings repair via the fleet-key chain_reset at 2; FRIENDS re-key at 3 (no shared key to rebuild from, but a fresh ceremony is always legal: our new-keys offer hits their Complete-rekey path, history rows survive, recovery backfills after the re-weave). A re-key resets chain_woven, so the UI already surfaces it as "establishing the secure channel". Observed live: a woven pair forked mid-conversation — one side decrypted one message as garbage and every later one buffered "ahead" forever, greying every send (2026-07-25).
+                    // Fresh-weave grace: LATE relay copies of a superseded era's frames straggle in for a minute after a re-key, and three of them re-keyed a 16-second-old weave (live pair, 2026-08-07). A just-woven chain cannot have forked — one writer per lane — so garbage inside the grace is stragglers, not evidence; a real fork keeps failing past it.
+                    let era_grace_active = chains.genesis_osc > 0
+                        && vsf::eagle_time_oscillations().saturating_sub(chains.genesis_osc)
+                            < 120 * vsf::OSCILLATIONS_PER_SECOND as i64;
+                    if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                        contact.chain_fail_streak =
+                            contact.chain_fail_streak.saturating_add(1);
+                        // CONVERGE BEFORE RE-KEY: collapse the presence backoff on every garbage hit so the next sweep pings immediately — the pong carries heads and the fleet chain-sync rides the same edge, letting a stale-era holder adopt the peer's current era instead of destroying it with a re-key.
+                        contact.ping_backoff = 0;
+                        contact.last_pinged = None;
+                        if contact.chain_fail_streak >= 2 && contact.is_sibling {
+                            crate::logf!("CHAIN FORK SUSPECTED: {} — {} consecutive garbage decrypts past chain-link verify — initiating sibling chain reset", crate::fp(&contact.handle_proof), contact.chain_fail_streak);
+                            fork_sibling_reset = Some(contact_idx);
+                        } else if contact.chain_fail_streak >= 3
+                            && !contact.is_sibling
+                            && era_grace_active
+                        {
+                            crate::logf!("CHAIN FORK: garbage streak on a freshly-woven chain — era stragglers, holding the re-key");
+                            contact.chain_fail_streak = 0;
+                        } else if contact.chain_fail_streak >= 3
+                            && !contact.is_sibling
+                            && contact.ceremony_owner.is_some()
+                            && contact.ceremony_owner != Some(our_device_pubkey)
+                        {
+                            // Mirror of the gap-streak rule: a non-owner's garbage streak is stale-era evidence about ITSELF, not the friendship — only the ceremony owner may re-key (§4.2), everyone else waits for the owner's chain-sync.
+                            crate::logf!("CHAIN FORK: garbage streak but this device does not own the ceremony — stale era suspected, awaiting sibling chain-sync");
+                            contact.chain_fail_streak = 0;
+                        } else if contact.chain_fail_streak >= 3 && !contact.is_sibling
+                        {
+                            crate::logf!("CHAIN FORK SUSPECTED: {} — {} consecutive garbage decrypts past chain-link verify — initiating friend re-key", crate::fp(&contact.handle_proof), contact.chain_fail_streak);
+                            fork_friend_rekey = Some(contact_idx);
+                        }
+                    }
+                    break 'commit;
+                }
+            };
+
+            if field.name != "message" {
+                crate::logf!(
+                    "CHAT: Expected field name 'message', got '{}'",
+                    field.name
+                );
+                break 'commit;
+            }
+            // A clean decrypt+parse clears the fork detector.
+            if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                contact.chain_fail_streak = 0;
+            }
+
+            // Extract values by type marker (not position)
+            for value in &field.values {
+                match value {
+                    vsf::VsfType::x(s) => message_text = s.clone(),
+                    vsf::VsfType::hp(hash) if hash.len() == 32 => {
+                        incorporated_hp.copy_from_slice(hash);
+                    }
+                    vsf::VsfType::e(et) => match et {
+                        vsf::EtType::e5(t) => woven_times.push(*t as i64),
+                        vsf::EtType::e6(t) => woven_times.push(*t),
+                        vsf::EtType::e7(t) => woven_times.push(*t as i64),
+                        _ => {}
+                    },
+                    vsf::VsfType::hR(_) => {} // Random padding - ignore
+                    other => {
+                        crate::logf!(
+                            "CHAT: Unexpected type in message: {}",
+                            format!("{:?}", other)
+                        );
+                    }
+                }
+            }
+
+            if message_text.is_empty() {
+                crate::log("CHAT: No message text found in payload");
+                break 'commit;
+            }
+
+            // Hidden chain-weave probe: a reserved-marker message that proves the ratchet works but must show NO chat bubble. Everything else on the receive path (chain advance, set_last_plaintext, mark_received, ACK send) still runs so the sender's chain advances and dedup works — only the UI is suppressed.
+            let is_chain_probe = message_text == crate::types::CHAIN_PROBE_MARKER;
+
+            crate::logf!(
+                "CHAT: Decrypted message from {}: \"{}\" (incorporated_hp={}...)",
+                handle,
+                if is_chain_probe {
+                    "<chain-weave probe>"
+                } else {
+                    &message_text
+                },
+                hex::encode(&incorporated_hp[..8])
+            );
+
+            // Compute plaintext hash for ACK
+            let plaintext_hash = *blake3::hash(&plaintext).as_bytes();
+
+            // Derive this message's hash pointer (for bidirectional tracking)
+            use crate::types::friendship::derive_msg_hp;
+            let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, timestamp);
+
+            // The braid: resolve each woven eagle_time to its message content. The peer wove messages IT received — i.e. messages WE authored — so we resolve against our OUTGOING rows (is_outgoing == true). Both sides hold identical `content` for any such message → identical strands → the chains advance in lockstep. Sort by eagle_time so framing matches the sender's (which also sorted). A single device can't emit two messages at the same 704ps tick, so eagle_time is unique within our stream; the adversarial same-tick collision is not handled here (would need a content_hash tiebreak carried on the wire) — left as a known guard gap.
+            // HOLD ON A STRAND MISS, NEVER SKIP: a woven row we don't hold yet (a sibling composed it and its replication hasn't landed) must NOT be silently dropped — a short strand vector changes strand_count in derive_fresh_link, so our advance diverges from the sender's and the lane forks permanently (silent, surfaced only as later garbage). Resolve strands FIRST, before any chain mutation; if any is missing, make zero mutations, don't ACK, collapse backoff so sibling replication catches us up, and let the sender's retransmit replay this frame once the row lands.
+            let mut strand_miss: Option<i64> = None;
+            let woven_strands: Vec<Vec<u8>> = {
+                let mut times = woven_times.clone();
+                times.sort_unstable();
+                let mut strands = Vec::with_capacity(times.len());
+                for t in times {
+                    if let Some(m) = self.conversations[conv_pos]
+                        .messages
+                        .iter()
+                        .find(|m| m.is_outgoing && m.timestamp == t)
+                    {
+                        strands.push(m.content.as_bytes().to_vec());
+                    } else {
+                        strand_miss = Some(t);
+                        break;
+                    }
+                }
+                strands
+            };
+            if let Some(t) = strand_miss {
+                crate::logf!("LANE: braid strand miss from {} — no outgoing row at eagle_time {} yet; holding this frame (no advance, no ACK) until sibling replication lands it", handle, t);
+                let c = &mut self.contacts[contact_idx];
+                c.ping_backoff = 0;
+                c.last_pinged = None;
+                break 'commit;
+            }
+            let strand_refs: Vec<&[u8]> =
+                woven_strands.iter().map(|s| s.as_slice()).collect();
+
+            // Update the lane's last_plaintext for the next message's salt — the x-text ONLY (must match what the sender stored: salt source is text, never the full payload/pad).
+            // Keyed by LANE LABEL: the pre-lane call here passed the party id, which no lane label ever equals, so the write no-opped and the salt stayed empty while the sender's moved — every second message on a lane garbage-decrypted (field, 2026-08-07).
+            chains.set_last_plaintext(
+                &lane,
+                message_text.clone().into_bytes(),
+            );
+
+            // Update bidirectional entropy state (derive weave hash from full message context)
+            chains.update_received_for_mixing(timestamp, msg_hp, &plaintext);
+
+            // Advance their chain with the braid strands. our_plaintext = the decrypted x-text ONLY (must match the sender's process_ack, which advances with the stored salt-text — never the full payload/pad).
+            let message_text_bytes = message_text.clone().into_bytes();
+            let eagle_time_for_advance = vsf::EagleTime::from_oscillations(timestamp);
+            chains.advance(&lane, &eagle_time_for_advance, &message_text_bytes, &strand_refs);
+
+            // Mark as received for deduplication (protects against UDP duplicates)
+            chains.mark_received(&lane, timestamp);
+
+            // Update hash chain state for next message verification
+            chains.update_received_hash(&lane, msg_hp);
+            crate::logf!(
+                "CHAT: Updated hash chain for {} - msg_hp={}...",
+                handle,
+                hex::encode(&msg_hp[..8])
+            );
+
+            // Layer 1 gap-buffer drain: this message's msg_hp is now our last_received_hash, so any buffered message that was waiting on THIS as its predecessor is now contiguous. Replay them (front of the queue) so they're processed in order immediately — and each can cascade to fill the next gap when IT advances.
+            let ready = chains.take_buffered_for(&msg_hp);
+            if !ready.is_empty() {
+                crate::logf!("CHAT: gap filled — replaying {} buffered message(s) after msg_hp={}...", ready.len(), hex::encode(&msg_hp[..8]));
+                // A fill proves the pipeline is healthy — the no-fill counter starts over.
+                self.contacts[contact_idx].gap_streak = (0, 0);
+                for buf in ready {
+                    replays.push(crate::network::status::StatusUpdate::ChatMessage {
+                        conversation_token,
+                        lane: buf.sender_handle_hash,
+                        prev_msg_hp: buf.prev_msg_hp,
+                        ciphertext: buf.ciphertext,
+                        timestamp: buf.eagle_time,
+                        sender_addr: buf.sender_addr,
+                        // (buf.sender_addr is SocketAddr; matches the variant field)
+                        sender_pubkey: crate::types::DevicePubkey::from_bytes(
+                            buf.sender_pubkey,
+                        ),
+                    });
+                }
+            }
+
+            // CRASH SAFETY, kept — relocated: disk is still the commit point and the ACK is still gated on it, but the write rides the chains writer and the ACK FIRES FROM IT after the write lands (durable-then-signal; the sync encrypt+IO here billed the render thread per received frame). The snapshot is taken NOW — at the advance — so nothing a later arm does to this chain rides along uncommitted. A failed write withholds the ACK: the sender retransmits and we re-process, the exact old skip-ACK semantics.
+            let chains_commit_snapshot = chains.clone();
+            // Flag to update sync records after borrow ends
+            need_sync = true;
+
+            // Add message to contact's message list and persist — UNLESS this is the hidden chain-weave probe, which advances/ACKs the chain but must never surface a bubble or chime. For the probe we flip `their_probe_seen` (their TX / our RX proven), PERSIST a hidden row, and try to seal the chain.
+            // Hidden DELETE marker: the friend tombstoned a message — apply it here (either direction, matched by timestamp), persist a HIDDEN marker row for re-ACK durability (the probe pattern), and gossip the tombstoned row to our siblings. No bubble, no chime, no notify.
+            if let Some(ts_str) =
+                message_text.strip_prefix(crate::types::DELETE_MARKER_PREFIX)
+            {
+                let target_ts: i64 = ts_str.trim().parse().unwrap_or(0);
+                {
+                    let conv = &mut self.conversations[conv_pos];
+                    let mut tombstoned: Option<ChatMessage> = None;
+                    if let Some(m) = conv.messages.iter_mut().find(|m| {
+                        m.timestamp == target_ts
+                            && !crate::types::is_control_content(&m.content)
+                    }) {
+                        if !m.deleted {
+                            m.deleted = true;
+                            tombstoned = Some(m.clone());
+                        }
+                    }
+                    // The marker row itself (hidden, ack_hash-bearing) — a lost ACK re-ACKs from it.
+                    let marker_row = ChatMessage::new_with_timestamp(
+                        message_text.clone(),
+                        false,
+                        timestamp,
+                    )
+                    .with_ack_hash(plaintext_hash);
+                    conv.insert_message_sorted(marker_row);
+                    persist_ci = Some(contact_idx);
+                    if let Some(row) = tombstoned {
+                        if let Some((hash, _, _)) =
+                            crate::types::parse_attachment_content(&row.content)
+                        {
+                            crate::storage::blob_delete(&hash);
+                        }
+                        crate::logf!("CHAT: friend deleted a message (ts {}) — tombstone applied + gossiped", target_ts);
+                        sibling_push = Some((contact_idx, row));
+                    } else {
+                        crate::logf!("CHAT: friend delete marker for ts {} — no matching live row (already tombstoned or never held)", target_ts);
+                    }
+                    self.scene_dirty = true;
+                }
+                recv_seal_idx = Some(contact_idx);
+            } else if is_chain_probe {
+                if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                    contact.their_probe_seen = true;
+                    // Attribute the probe to the ceremony whose chain just decrypted it, so a completion landing microseconds later can tell "the peer's probe for THIS ceremony" from "a stale seal for the chain we just replaced".
+                    contact.their_probe_ceremony = contact.ceremony_id;
+                }
+                // Persist the probe as a HIDDEN rarangi row carrying its ack_hash: without a row the duplicate handler has nothing to re-ACK from, so a probe whose ACK was lost froze the sender's chain at the pre-probe position forever — the sibling weave fork of 2026-07-23. Every UI/history/preview path already filters CHAIN_PROBE_MARKER, so the row never surfaces; it exists purely as the durable dedup + re-ACK record. No chime, no sibling push (probes stay device-pair-local).
+                let probe_row = ChatMessage::new_with_timestamp(
+                    crate::types::CHAIN_PROBE_MARKER.to_string(),
+                    false,
+                    timestamp,
+                )
+                .with_ack_hash(plaintext_hash);
+                self.conversations[conv_pos].insert_message_sorted(probe_row);
+                persist_ci = Some(contact_idx);
+                crate::log(
+                    "CHAIN-PROBE: received peer's chain-weave probe — RX chain proven",
+                );
+                recv_seal_idx = Some(contact_idx);
+            } else if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                // Any real received message means the chain is demonstrably working end-to-end in at least the RX direction — belt-and-suspenders toward woven.
+                contact.their_probe_seen = true;
+                contact.their_probe_ceremony = contact.ceremony_id;
+                // A real message that DECRYPTED and advanced the chain is DEFINITIVE proof the ratchet works — stronger than the hidden probe ever was. Seal here unconditionally on a Complete contact, WITHOUT waiting for chain_advanced_by_ack. That flag is runtime-only and resets on reload, so a chain that completed but never sealed before a restart (probe lost, or the seal raced) reloaded chain_woven=false with no way back: the compose box stayed hidden, so no outgoing message could ever set chain_advanced_by_ack, so it could never seal — a functional chain locked out of composing forever (observed after a peer's re-attest, 2026-07-25). Receiving a decryptable message breaks that deadlock.
+                if !contact.chain_woven
+                    && contact.clutch_state == crate::types::ClutchState::Complete
+                {
+                    contact.chain_advanced_by_ack = true;
+                }
+                // Use actual eagle_time and sorted insert for correct chronological order
+                let msg = ChatMessage::new_with_timestamp(
+                    message_text,
+                    false,     // is_outgoing = false (received)
+                    timestamp, // Use message's actual eagle_time, not current time
+                )
+                // Persist the ACK hash so a later duplicate (our ACK was lost) can be re-ACKed from storage — keeps the sender's chain from stalling.
+                .with_ack_hash(plaintext_hash);
+                let conv = &mut self.conversations[conv_pos];
+                conv.insert_message_sorted(msg.clone());
+                conv.scroll_offset = 0.0; // Scroll to show new message
+                self.scene_dirty = true;
+
+                // Persist (async — see persist_hashes)
+                persist_ci = Some(contact_idx);
+
+                // Unread gate: is the user plausibly looking at THIS conversation right now? "Looking" = this contact's conversation (or its contact-scoped panel) is the active view AND, on desktop, the window is visible + focused. Event-shown, interaction-cleared doctrine: the counter only ever moves on a message landing or the user opening the conversation — no timers anywhere.
+                let conversation_open = matches!(
+                    self.state,
+                    AppState::Conversation | AppState::ContactPanel(_)
+                ) && self.active_conversation == Some(conv.id());
+                #[cfg(not(target_os = "android"))]
+                let looking = conversation_open
+                    && crate::platform::desktop_notify::window_attended();
+                // Android: conversation-open AND the Activity actually on screen (the onResume/onPause JNI mirror). Either alone is not "looking": app foregrounded on ANOTHER screen must still alert (the silent-message hole), and app backgrounded while parked ON this conversation must too.
+                #[cfg(target_os = "android")]
+                let looking = conversation_open
+                    && crate::platform::jni_android::app_in_foreground();
+                if !contact.is_sibling && !looking {
+                    // A real friend message landed while nobody was looking — bump the persistent unread counter (contacts-list inner ring + float-to-top; cleared at conversation-open). Written after the loop via the coalescing conv-state writer.
+                    conv.unread_count += 1;
+                    conv_state_pos = Some(conv_pos);
+                }
+
+                // System notification, POST-DECRYPT: real sender display name + message text BY DESIGN — hiding content on the lock screen is the OS's job, and the pre-decrypt RX worker no longer notifies at all (it over-dinged on probes and sibling fleet-sync frames it couldn't tell apart). RUST is the one suppression decision now: `looking` (this conversation active + app/window attended) gates the call — Kotlin's old blanket Activity-foreground bail is gone, so a message from anyone whose conversation ISN'T open dings even with the app on screen. Desktop's notify keeps its own visual gate (no toast while attended) + both dedup on msg_hp.
+                if !contact.is_sibling && !looking {
+                    let sender_name = contact.display_name();
+                    // The notification chirp seeds from the RELATIONSHIP DIGEST — the same value the desktop in-app chirp and the contact's colours use — so one sender sounds the same on EVERY device. It seeded from the pinned device key before, which differs per device (each pins its own first-met device) and per platform: "messages from one sender sound different on each device".
+                    #[cfg(target_os = "android")]
+                    {
+                        let chirp_seed =
+                            relationship_digest(&contact.handle_hash, &our_handle_hash);
+                        crate::platform::jni_android::notify_new_message(
+                            &msg_hp,
+                            &chirp_seed,
+                            &sender_name,
+                            &msg.content,
+                        );
+                    }
+                    #[cfg(not(target_os = "android"))]
+                    crate::platform::desktop_notify::notify_new_message(
+                        &msg_hp,
+                        &sender_name,
+                        &msg.content,
+                    );
+                }
+
+                // Live fleet propagation: the friend only delivered this to the device in hand — our other devices hear it from us (pushed after the `chains` borrow ends, below).
+                sibling_push = Some((contact_idx, msg));
+
+                // Per-contact notification chime: the sender's relationship digest → deterministic modal bell (chirp crate) — the SAME digest that colours their handle and messages, so ears and eyes agree. The handle TEXT never touches the session store by design; the pre-PoW hashes are the canonical identity material. Synthesis (~a second of f64 modal math) + playback run on a detached thread so the receive loop never blocks; desktop-only (Android gets platform notifications).
+                // Only ding for a real human message from a friend: a chain-weave probe (hidden ceremony frame) and a sibling/fleet-sync frame (our own devices propagating a conversation) both arrive as ChatMessages, and neither is something a person sent us — so neither should ring. And only when NOT looking at this conversation (`!looking`): watching the message land IS the alert; the chirp is for everyone else's messages (the user ask: "ding when I get a message from anyone and I'm not in a conversation with them"). The old unconditional chirp over-dinged in-conversation.
+                #[cfg(not(any(target_os = "redox", target_os = "android")))]
+                if !is_chain_probe && !self.contacts[contact_idx].is_sibling && !looking
+                {
+                    let digest =
+                        relationship_digest(&from_handle_hash, &our_handle_hash);
+                    std::thread::spawn(move || {
+                        chirp::Chirp::from_hash(digest)
+                            .play_blocking()
+                            .unwrap_or_else(|e| crate::logf!("CHIME: {}", e));
+                    });
+                }
+                // A real inbound message proves both directions once ACKed, but even the RX half alone can seal if our TX was already ACK-confirmed.
+                recv_seal_idx = Some(contact_idx);
+            }
+
+            // *** THEN the ACK — attached to the commit snapshot above; the chains writer fires it only after the write lands. If we crash before that, no ACK ever left: the sender resends, we dedup. *** Get recipient pubkey for relay fallback
+            let recipient_pubkey = self
+                .contacts
+                .get(contact_idx)
+                .map(|c| *c.public_identity.as_bytes())
+                .unwrap_or([0u8; 32]);
+            // The re-ACK source is the per-message ack_hash persisted on the stored ChatMessage (see the duplicate handler above + with_ack_hash below), which heals a lost ACK for ANY message — not just the most recent. ACK always rides the relay alongside any direct leg — see the re-ACK site above for the field-observed one-directional case this closes.
+            let relay_to = self
+                .contacts
+                .get(contact_idx)
+                .map(|c| c.relay_device_list())
+                .unwrap_or_default();
+            ack_enqueue = Some((
+                chains_commit_snapshot,
+                AckRequest {
+                    peer_addr: sender_addr,
+                    recipient_pubkey,
+                    conversation_token,
+                    acked_eagle_time: timestamp,
+                    plaintext_hash,
+                    relay_to,
+                },
+            ));
+            crate::logf!(
+                "CHAT: ACK to {} (eagle_time {}, hash {}...) queued behind the durable chains write",
+                handle,
+                timestamp,
+                hex::encode(&plaintext_hash[..8])
+            );
+        }
+        // The tail — everything the arm ran after the `chains` borrow ended or after the loop, direct calls now.
+        if let Some((snapshot, req)) = ack_enqueue {
+            let dispatch = self.status_checker.as_ref().map(|c| c.ack_dispatch());
+            let actions = match dispatch {
+                Some(d) => vec![ChainsPostDurable::Ack(d, req)],
+                None => Vec::new(),
+            };
+            self.persist_chains_then(snapshot, actions);
+        }
+        if let Some(ci) = persist_ci {
+            self.persist_messages_async(ci);
+        }
+        if let Some(pos) = conv_state_pos {
+            self.persist_conv_state_async(pos);
+        }
+        if let Some((idx, m)) = sibling_push {
+            self.push_rows_to_siblings(idx, std::slice::from_ref(&m), None);
+        }
+        if let Some(idx) = recv_seal_idx {
+            self.seal_chain_if_ready(idx);
+            // ACK-ADVANCE FLUSH, receive-edge twin: a commit can free a window slot (dedup) and always proves the pipeline moves — release any held row now. No-op when nothing is held.
+            self.resend_held_messages(idx);
+        }
+        if let Some(idx) = fork_sibling_reset {
+            self.initiate_sibling_chain_reset(idx);
+        }
+        if let Some(idx) = fork_friend_rekey {
+            self.initiate_friend_rekey(idx);
+        }
+        if need_sync {
+            self.update_sync_records();
+        }
+        if !replays.is_empty() {
+            self.chat_replay_queue.extend(replays);
         }
     }
 
@@ -18025,6 +18673,10 @@ impl PhotonApp {
         self.drain_history_pages();
         // Chain-sync blobs the open workers finished — adopt before the arm loop so this tick's replication push already carries the adopted heads.
         self.drain_chain_syncs();
+        // Braid decrypts the workers finished — commit before the arm loop so a gap-refill replay re-enters THIS tick's gates.
+        self.drain_braid_rx();
+        // Send encrypts the workers finished — commit + hand to the durable-transmit writer.
+        self.drain_braid_tx();
 
         // Our OWN just-picked avatar, arriving from the off-thread set pipeline (decode ran there too): install + repaint, then drop the channel — one avatar per pick.
         if let Some(rx) = self.avatar_set_rx.as_ref() {
@@ -18161,14 +18813,12 @@ impl PhotonApp {
             Option<i64>,
         )> = Vec::new();
         // Flag to update sync records after the loop (when borrows are released)
-        let mut need_sync_update = false;
+
         // Deferred probe-before-generate verdict (maybe_generate_s needs &mut self; the loop holds the checker borrow) — set when a blind_srv miss lands while S is None.
         let mut check_s_genesis = false;
 
         // Chain-weave probe deferrals — the loop holds an immutable `checker` borrow of `self`, so the `&mut self` seal/probe helpers can't run inline; collect contact indices and process them after the loop, like ceremony_completions / lan_ping_indices already do.
         let mut chain_seal_indices: Vec<usize> = Vec::new(); // seal_chain_if_ready after loop
-        let mut chain_reset_initiate: Vec<usize> = Vec::new(); // fork detector hits — repair fired after loop (checker borrow)
-        let mut friend_rekey_initiate: Vec<usize> = Vec::new(); // friend-side fork hits — full re-key fired after loop
         let mut chain_reset_apply: Vec<(usize, [u8; 32], bool)> = Vec::new(); // (contact idx, nonce, echo_back) from ChainResetReceived — applied after loop
         let mut chain_probe_indices: Vec<usize> = Vec::new(); // maybe_send_chain_probe after loop
                                                               // Parked-ceremony offer re-fires on a path-up edge (resend_clutch_offer needs &mut self) — same deferral discipline.
@@ -18179,17 +18829,10 @@ impl PhotonApp {
         let mut persist_hashes: Vec<[u8; 32]> = Vec::new();
         // Friendships whose chains changed in a SAFE-to-delay way (ACK pending-removal, chain-sync adopt) — persisted AFTER the loop via the coalescing chains writer. The `checker` borrow spans the loop, so a &mut self method can't run inside it (the same deferral every arm here uses).
         let mut chains_persist_fids: Vec<crate::types::friendship::FriendshipId> = Vec::new();
-        // Receive commit points: (chains snapshot at the advance, the ACK it gates). Enqueued to the chains writer after the loop; the writer fires each ACK only after its snapshot is durably written — persist-before-ACK, off the UI thread.
-        let mut ack_after_durable: Vec<(
-            crate::types::friendship::FriendshipChains,
-            crate::network::status::AckRequest,
-        )> = Vec::new();
-        // Conversations whose 13-byte durable state (unread counter) moved in an arm — written after the loop via the coalescing conv-state writer.
-        let mut conv_state_dirty: Vec<usize> = Vec::new();
 
-        // The braid / strict-ordering replay queue: when a successful decrypt fills a hash-chain gap, the now-contiguous buffered messages are pushed here as synthetic ChatMessage updates and drained BEFORE the next channel item, so a buffered N+1 is reprocessed immediately after N (and can itself cascade to N+2). FIFO front-drain.
+        // The braid / strict-ordering replay queue: when a committed decrypt fills a hash-chain gap, commit_braid_rx minted the now-contiguous buffered frames as synthetic ChatMessage updates on chat_replay_queue — seeded here so they re-enter the arm's full gates BEFORE the next channel item (a refilled N+1 processes ahead of anything newer, and can itself cascade). FIFO front-drain.
         let mut replay_queue: std::collections::VecDeque<StatusUpdate> =
-            std::collections::VecDeque::new();
+            std::mem::take(&mut self.chat_replay_queue);
 
         // Per-ARM stall attribution. PERF already showed check_status_updates blocking the UI thread for seconds, but not WHICH update type — this names it. Timed from loop top to loop top (arms `continue`, so an end-of-body probe would be skipped); the post-loop check closes the last iteration.
         fn arm_label(u: &StatusUpdate) -> &'static str {
@@ -18691,12 +19334,7 @@ impl PhotonApp {
                         .iter_mut()
                         .find(|(_, c)| c.conversation_token == conversation_token);
 
-                    let mut need_sync_records_update = false;
-                    // Contact index to seal the chain-weave for AFTER the `chains` borrow ends.
-                    let mut recv_seal_idx: Option<usize> = None;
-                    // Live fleet push deferred the same way (push_rows_to_siblings takes &self; the `chains` iter_mut borrow lives to the end of the block).
-                    let mut sibling_push: Option<(usize, ChatMessage)> = None;
-                    if let Some((fid, chains)) = chains_result {
+                    if let Some((_, chains)) = chains_result {
                         // Party-id seam: our participant id is the identity PARTY id (friends) or the sibling pid (siblings) — whichever the chain actually holds. (The raw seed is never a chain participant post-pin-set.)
                         let our_handle_hash = if chains.participants().contains(&our_handle_hash) {
                             our_handle_hash
@@ -18845,422 +19483,40 @@ impl PhotonApp {
                             ciphertext.len()
                         );
 
-                        use crate::crypto::chain::{
-                            decrypt_layers, derive_salt, generate_scratch, CURRENT_KEY_INDEX,
-                        };
-
-                        // Get sender's chain for decryption
+                        // OFF-THREAD: the braid decrypt (memory-hard scratch + layer peel) ran inline per frame — and the gap-cascade replays a burst of them in ONE tick. The worker gets the same lane snapshot the inline path cloned; commit_braid_rx re-gates against current state and runs everything after the decrypt. Until this frame commits, the next frame's chain-link verify fails and gap-buffers — the ordering the inline path enforced, kept for free.
                         let sender_chain = match chains.chain(&lane) {
-                            Some(c) => c.clone(), // Clone to avoid borrow issues
+                            Some(c) => c.clone(),
                             None => {
                                 crate::log("CHAT: Sender chain not found");
                                 continue;
                             }
                         };
-
-                        // Get sender's last plaintext for salt derivation
-                        let their_last_plaintext =
-                            chains.last_plaintext(&lane).to_vec();
-
-                        // Derive salt from their previous plaintext
-                        let salt = derive_salt(&their_last_plaintext, &sender_chain);
-
-                        // Generate scratch pad
-                        let scratch = generate_scratch(&sender_chain, &salt);
-
-                        // Convert eagle time for decryption
-                        let eagle_time = vsf::EagleTime::from_oscillations(timestamp);
-
-                        // DEBUG: Log decryption parameters
-                        crate::logf!("CHAIN DECRYPT: lane={}..., key={}..., salt={}..., eagle_time={}, ciphertext_len={}", hex::encode(&lane[..4]), hex::encode(&sender_chain.current_key()[..4]), hex::encode(&salt[..4]), timestamp, ciphertext.len());
-
-                        // Decrypt using sender's chain
-                        let plaintext = decrypt_layers(
-                            &ciphertext,
-                            &sender_chain,
-                            CURRENT_KEY_INDEX,
-                            &scratch,
-                            &eagle_time,
-                        );
-
-                        // DEBUG: Log raw decrypted bytes
-                        crate::logf!(
-                            "CHAIN DECRYPT: raw plaintext bytes = {}",
-                            format!("{:?}", &plaintext)
-                        );
-
-                        // Parse VSF field: (d{message}:x{text},hp{inc_hp},hR{pad}) Uses VsfField::parse() per AGENT.md
-                        let mut ptr = 0usize;
-                        let mut message_text = String::new();
-                        let mut incorporated_hp = [0u8; 32];
-                        // The braid: eagle_times naming the prior peer (=our outgoing) messages this step weaves. 0, 1, or 2.
-                        let mut woven_times: Vec<i64> = Vec::new();
-
-                        let field = match vsf::file_format::VsfField::parse(&plaintext, &mut ptr) {
-                            Ok(f) => f,
-                            Err(e) => {
-                                crate::logf!("CHAT: VsfField parse error: {}", e);
-                                // FORK DETECTOR — now the SOLE fork evidence (gaps became pure transport; strand-miss holds instead of forking). A frame that passed signature + chain-link verify but decrypted to garbage means the two sides hold different key material at this position. Every non-fork cause is handled upstream, so re-key is the escalation, but CONVERGENCE GETS FIRST CRACK: the commonest real cause is a stale era (the peer re-keyed, we still hold old chains) — collapsing the ping backoff below forces a prompt head exchange, so the owner's chain-sync / era-supersede can adopt the new era before the streak escalates. A genuine fork keeps failing past that; era stragglers and stale-era holders converge and never reach re-key.
-                                // Siblings repair via the fleet-key chain_reset at 2; FRIENDS re-key at 3 (no shared key to rebuild from, but a fresh ceremony is always legal: our new-keys offer hits their Complete-rekey path, history rows survive, recovery backfills after the re-weave). A re-key resets chain_woven, so the UI already surfaces it as "establishing the secure channel". Observed live: a woven pair forked mid-conversation — one side decrypted one message as garbage and every later one buffered "ahead" forever, greying every send (2026-07-25).
-                                // Fresh-weave grace: LATE relay copies of a superseded era's frames straggle in for a minute after a re-key, and three of them re-keyed a 16-second-old weave (live pair, 2026-08-07). A just-woven chain cannot have forked — one writer per lane — so garbage inside the grace is stragglers, not evidence; a real fork keeps failing past it.
-                                let era_grace_active = chains.genesis_osc > 0
-                                    && vsf::eagle_time_oscillations().saturating_sub(chains.genesis_osc)
-                                        < 120 * vsf::OSCILLATIONS_PER_SECOND as i64;
-                                if let Some(contact) = self.contacts.get_mut(contact_idx) {
-                                    contact.chain_fail_streak =
-                                        contact.chain_fail_streak.saturating_add(1);
-                                    // CONVERGE BEFORE RE-KEY: collapse the presence backoff on every garbage hit so the next sweep pings immediately — the pong carries heads and the fleet chain-sync rides the same edge, letting a stale-era holder adopt the peer's current era instead of destroying it with a re-key.
-                                    contact.ping_backoff = 0;
-                                    contact.last_pinged = None;
-                                    if contact.chain_fail_streak >= 2 && contact.is_sibling {
-                                        crate::logf!("CHAIN FORK SUSPECTED: {} — {} consecutive garbage decrypts past chain-link verify — initiating sibling chain reset", crate::fp(&contact.handle_proof), contact.chain_fail_streak);
-                                        chain_reset_initiate.push(contact_idx);
-                                    } else if contact.chain_fail_streak >= 3
-                                        && !contact.is_sibling
-                                        && era_grace_active
-                                    {
-                                        crate::logf!("CHAIN FORK: garbage streak on a freshly-woven chain — era stragglers, holding the re-key");
-                                        contact.chain_fail_streak = 0;
-                                    } else if contact.chain_fail_streak >= 3
-                                        && !contact.is_sibling
-                                        && contact.ceremony_owner.is_some()
-                                        && contact.ceremony_owner != Some(our_device_pubkey)
-                                    {
-                                        // Mirror of the gap-streak rule: a non-owner's garbage streak is stale-era evidence about ITSELF, not the friendship — only the ceremony owner may re-key (§4.2), everyone else waits for the owner's chain-sync.
-                                        crate::logf!("CHAIN FORK: garbage streak but this device does not own the ceremony — stale era suspected, awaiting sibling chain-sync");
-                                        contact.chain_fail_streak = 0;
-                                    } else if contact.chain_fail_streak >= 3 && !contact.is_sibling
-                                    {
-                                        crate::logf!("CHAIN FORK SUSPECTED: {} — {} consecutive garbage decrypts past chain-link verify — initiating friend re-key", crate::fp(&contact.handle_proof), contact.chain_fail_streak);
-                                        friend_rekey_initiate.push(contact_idx);
-                                    }
-                                }
-                                continue;
-                            }
-                        };
-
-                        if field.name != "message" {
-                            crate::logf!(
-                                "CHAT: Expected field name 'message', got '{}'",
-                                field.name
-                            );
-                            continue;
-                        }
-                        // A clean decrypt+parse clears the fork detector.
-                        if let Some(contact) = self.contacts.get_mut(contact_idx) {
-                            contact.chain_fail_streak = 0;
-                        }
-
-                        // Extract values by type marker (not position)
-                        for value in &field.values {
-                            match value {
-                                vsf::VsfType::x(s) => message_text = s.clone(),
-                                vsf::VsfType::hp(hash) if hash.len() == 32 => {
-                                    incorporated_hp.copy_from_slice(hash);
-                                }
-                                vsf::VsfType::e(et) => match et {
-                                    vsf::EtType::e5(t) => woven_times.push(*t as i64),
-                                    vsf::EtType::e6(t) => woven_times.push(*t),
-                                    vsf::EtType::e7(t) => woven_times.push(*t as i64),
-                                    _ => {}
-                                },
-                                vsf::VsfType::hR(_) => {} // Random padding - ignore
-                                other => {
-                                    crate::logf!(
-                                        "CHAT: Unexpected type in message: {}",
-                                        format!("{:?}", other)
-                                    );
-                                }
-                            }
-                        }
-
-                        if message_text.is_empty() {
-                            crate::log("CHAT: No message text found in payload");
-                            continue;
-                        }
-
-                        // Hidden chain-weave probe: a reserved-marker message that proves the ratchet works but must show NO chat bubble. Everything else on the receive path (chain advance, set_last_plaintext, mark_received, ACK send) still runs so the sender's chain advances and dedup works — only the UI is suppressed.
-                        let is_chain_probe = message_text == crate::types::CHAIN_PROBE_MARKER;
-
-                        crate::logf!(
-                            "CHAT: Decrypted message from {}: \"{}\" (incorporated_hp={}...)",
-                            handle,
-                            if is_chain_probe {
-                                "<chain-weave probe>"
-                            } else {
-                                &message_text
-                            },
-                            hex::encode(&incorporated_hp[..8])
-                        );
-
-                        // Compute plaintext hash for ACK
-                        let plaintext_hash = *blake3::hash(&plaintext).as_bytes();
-
-                        // Derive this message's hash pointer (for bidirectional tracking)
-                        use crate::types::friendship::derive_msg_hp;
-                        let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, timestamp);
-
-                        // The braid: resolve each woven eagle_time to its message content. The peer wove messages IT received — i.e. messages WE authored — so we resolve against our OUTGOING rows (is_outgoing == true). Both sides hold identical `content` for any such message → identical strands → the chains advance in lockstep. Sort by eagle_time so framing matches the sender's (which also sorted). A single device can't emit two messages at the same 704ps tick, so eagle_time is unique within our stream; the adversarial same-tick collision is not handled here (would need a content_hash tiebreak carried on the wire) — left as a known guard gap.
-                        // HOLD ON A STRAND MISS, NEVER SKIP: a woven row we don't hold yet (a sibling composed it and its replication hasn't landed) must NOT be silently dropped — a short strand vector changes strand_count in derive_fresh_link, so our advance diverges from the sender's and the lane forks permanently (silent, surfaced only as later garbage). Resolve strands FIRST, before any chain mutation; if any is missing, make zero mutations, don't ACK, collapse backoff so sibling replication catches us up, and let the sender's retransmit replay this frame once the row lands.
-                        let mut strand_miss: Option<i64> = None;
-                        let woven_strands: Vec<Vec<u8>> = {
-                            let mut times = woven_times.clone();
-                            times.sort_unstable();
-                            let mut strands = Vec::with_capacity(times.len());
-                            for t in times {
-                                if let Some(m) = self.conversations[conv_pos]
-                                    .messages
-                                    .iter()
-                                    .find(|m| m.is_outgoing && m.timestamp == t)
-                                {
-                                    strands.push(m.content.as_bytes().to_vec());
-                                } else {
-                                    strand_miss = Some(t);
-                                    break;
-                                }
-                            }
-                            strands
-                        };
-                        if let Some(t) = strand_miss {
-                            crate::logf!("LANE: braid strand miss from {} — no outgoing row at eagle_time {} yet; holding this frame (no advance, no ACK) until sibling replication lands it", handle, t);
-                            let c = &mut self.contacts[contact_idx];
-                            c.ping_backoff = 0;
-                            c.last_pinged = None;
-                            continue;
-                        }
-                        let strand_refs: Vec<&[u8]> =
-                            woven_strands.iter().map(|s| s.as_slice()).collect();
-
-                        // Update the lane's last_plaintext for the next message's salt — the x-text ONLY (must match what the sender stored: salt source is text, never the full payload/pad).
-                        // Keyed by LANE LABEL: the pre-lane call here passed the party id, which no lane label ever equals, so the write no-opped and the salt stayed empty while the sender's moved — every second message on a lane garbage-decrypted (field, 2026-08-07).
-                        chains.set_last_plaintext(
-                            &lane,
-                            message_text.clone().into_bytes(),
-                        );
-
-                        // Update bidirectional entropy state (derive weave hash from full message context)
-                        chains.update_received_for_mixing(timestamp, msg_hp, &plaintext);
-
-                        // Advance their chain with the braid strands. our_plaintext = the decrypted x-text ONLY (must match the sender's process_ack, which advances with the stored salt-text — never the full payload/pad).
-                        let message_text_bytes = message_text.clone().into_bytes();
-                        let eagle_time_for_advance = vsf::EagleTime::from_oscillations(timestamp);
-                        chains.advance(&lane, &eagle_time_for_advance, &message_text_bytes, &strand_refs);
-
-                        // Mark as received for deduplication (protects against UDP duplicates)
-                        chains.mark_received(&lane, timestamp);
-
-                        // Update hash chain state for next message verification
-                        chains.update_received_hash(&lane, msg_hp);
-                        crate::logf!(
-                            "CHAT: Updated hash chain for {} - msg_hp={}...",
-                            handle,
-                            hex::encode(&msg_hp[..8])
-                        );
-
-                        // Layer 1 gap-buffer drain: this message's msg_hp is now our last_received_hash, so any buffered message that was waiting on THIS as its predecessor is now contiguous. Replay them (front of the queue) so they're processed in order immediately — and each can cascade to fill the next gap when IT advances.
-                        let ready = chains.take_buffered_for(&msg_hp);
-                        if !ready.is_empty() {
-                            crate::logf!("CHAT: gap filled — replaying {} buffered message(s) after msg_hp={}...", ready.len(), hex::encode(&msg_hp[..8]));
-                            // A fill proves the pipeline is healthy — the no-fill counter starts over.
-                            self.contacts[contact_idx].gap_streak = (0, 0);
-                            for buf in ready {
-                                replay_queue.push_back(StatusUpdate::ChatMessage {
-                                    conversation_token,
-                                    lane: buf.sender_handle_hash,
-                                    prev_msg_hp: buf.prev_msg_hp,
-                                    ciphertext: buf.ciphertext,
-                                    timestamp: buf.eagle_time,
-                                    sender_addr: buf.sender_addr,
-                                    // (buf.sender_addr is SocketAddr; matches the variant field)
-                                    sender_pubkey: crate::types::DevicePubkey::from_bytes(
-                                        buf.sender_pubkey,
-                                    ),
-                                });
-                            }
-                        }
-
-                        // CRASH SAFETY, kept — relocated: disk is still the commit point and the ACK is still gated on it, but the write rides the chains writer and the ACK FIRES FROM IT after the write lands (durable-then-signal; the sync encrypt+IO here billed the render thread per received frame). The snapshot is taken NOW — at the advance — so nothing a later arm does to this chain rides along uncommitted. A failed write withholds the ACK: the sender retransmits and we re-process, the exact old skip-ACK semantics.
-                        let chains_commit_snapshot = chains.clone();
-                        // Flag to update sync records after borrow ends
-                        need_sync_records_update = true;
-
-                        // Add message to contact's message list and persist — UNLESS this is the hidden chain-weave probe, which advances/ACKs the chain but must never surface a bubble or chime. For the probe we flip `their_probe_seen` (their TX / our RX proven), PERSIST a hidden row, and try to seal the chain.
-                        // Hidden DELETE marker: the friend tombstoned a message — apply it here (either direction, matched by timestamp), persist a HIDDEN marker row for re-ACK durability (the probe pattern), and gossip the tombstoned row to our siblings. No bubble, no chime, no notify.
-                        if let Some(ts_str) =
-                            message_text.strip_prefix(crate::types::DELETE_MARKER_PREFIX)
-                        {
-                            let target_ts: i64 = ts_str.trim().parse().unwrap_or(0);
-                            {
-                                let conv = &mut self.conversations[conv_pos];
-                                let mut tombstoned: Option<ChatMessage> = None;
-                                if let Some(m) = conv.messages.iter_mut().find(|m| {
-                                    m.timestamp == target_ts
-                                        && !crate::types::is_control_content(&m.content)
-                                }) {
-                                    if !m.deleted {
-                                        m.deleted = true;
-                                        tombstoned = Some(m.clone());
-                                    }
-                                }
-                                // The marker row itself (hidden, ack_hash-bearing) — a lost ACK re-ACKs from it.
-                                let marker_row = ChatMessage::new_with_timestamp(
-                                    message_text.clone(),
-                                    false,
-                                    timestamp,
-                                )
-                                .with_ack_hash(plaintext_hash);
-                                conv.insert_message_sorted(marker_row);
-                                persist_hashes.push(from_handle_hash);
-                                if let Some(row) = tombstoned {
-                                    if let Some((hash, _, _)) =
-                                        crate::types::parse_attachment_content(&row.content)
-                                    {
-                                        crate::storage::blob_delete(&hash);
-                                    }
-                                    crate::logf!("CHAT: friend deleted a message (ts {}) — tombstone applied + gossiped", target_ts);
-                                    sibling_push = Some((contact_idx, row));
-                                } else {
-                                    crate::logf!("CHAT: friend delete marker for ts {} — no matching live row (already tombstoned or never held)", target_ts);
-                                }
-                                changed = true;
-                            }
-                            recv_seal_idx = Some(contact_idx);
-                        } else if is_chain_probe {
-                            if let Some(contact) = self.contacts.get_mut(contact_idx) {
-                                contact.their_probe_seen = true;
-                                // Attribute the probe to the ceremony whose chain just decrypted it, so a completion landing microseconds later can tell "the peer's probe for THIS ceremony" from "a stale seal for the chain we just replaced".
-                                contact.their_probe_ceremony = contact.ceremony_id;
-                            }
-                            // Persist the probe as a HIDDEN rarangi row carrying its ack_hash: without a row the duplicate handler has nothing to re-ACK from, so a probe whose ACK was lost froze the sender's chain at the pre-probe position forever — the sibling weave fork of 2026-07-23. Every UI/history/preview path already filters CHAIN_PROBE_MARKER, so the row never surfaces; it exists purely as the durable dedup + re-ACK record. No chime, no sibling push (probes stay device-pair-local).
-                            let probe_row = ChatMessage::new_with_timestamp(
-                                crate::types::CHAIN_PROBE_MARKER.to_string(),
-                                false,
-                                timestamp,
-                            )
-                            .with_ack_hash(plaintext_hash);
-                            self.conversations[conv_pos].insert_message_sorted(probe_row);
-                            persist_hashes.push(from_handle_hash);
-                            crate::log(
-                                "CHAIN-PROBE: received peer's chain-weave probe — RX chain proven",
-                            );
-                            recv_seal_idx = Some(contact_idx);
-                        } else if let Some(contact) = self.contacts.get_mut(contact_idx) {
-                            // Any real received message means the chain is demonstrably working end-to-end in at least the RX direction — belt-and-suspenders toward woven.
-                            contact.their_probe_seen = true;
-                            contact.their_probe_ceremony = contact.ceremony_id;
-                            // A real message that DECRYPTED and advanced the chain is DEFINITIVE proof the ratchet works — stronger than the hidden probe ever was. Seal here unconditionally on a Complete contact, WITHOUT waiting for chain_advanced_by_ack. That flag is runtime-only and resets on reload, so a chain that completed but never sealed before a restart (probe lost, or the seal raced) reloaded chain_woven=false with no way back: the compose box stayed hidden, so no outgoing message could ever set chain_advanced_by_ack, so it could never seal — a functional chain locked out of composing forever (observed after a peer's re-attest, 2026-07-25). Receiving a decryptable message breaks that deadlock.
-                            if !contact.chain_woven
-                                && contact.clutch_state == crate::types::ClutchState::Complete
-                            {
-                                contact.chain_advanced_by_ack = true;
-                            }
-                            // Use actual eagle_time and sorted insert for correct chronological order
-                            let msg = ChatMessage::new_with_timestamp(
-                                message_text,
-                                false,     // is_outgoing = false (received)
-                                timestamp, // Use message's actual eagle_time, not current time
-                            )
-                            // Persist the ACK hash so a later duplicate (our ACK was lost) can be re-ACKed from storage — keeps the sender's chain from stalling.
-                            .with_ack_hash(plaintext_hash);
-                            let conv = &mut self.conversations[conv_pos];
-                            conv.insert_message_sorted(msg.clone());
-                            conv.scroll_offset = 0.0; // Scroll to show new message
-                            changed = true;
-
-                            // Persist (async — see persist_hashes)
-                            persist_hashes.push(from_handle_hash);
-
-                            // Unread gate: is the user plausibly looking at THIS conversation right now? "Looking" = this contact's conversation (or its contact-scoped panel) is the active view AND, on desktop, the window is visible + focused. Event-shown, interaction-cleared doctrine: the counter only ever moves on a message landing or the user opening the conversation — no timers anywhere.
-                            let conversation_open = matches!(
-                                self.state,
-                                AppState::Conversation | AppState::ContactPanel(_)
-                            ) && self.active_conversation == Some(conv.id());
-                            #[cfg(not(target_os = "android"))]
-                            let looking = conversation_open
-                                && crate::platform::desktop_notify::window_attended();
-                            // Android: conversation-open AND the Activity actually on screen (the onResume/onPause JNI mirror). Either alone is not "looking": app foregrounded on ANOTHER screen must still alert (the silent-message hole), and app backgrounded while parked ON this conversation must too.
-                            #[cfg(target_os = "android")]
-                            let looking = conversation_open
-                                && crate::platform::jni_android::app_in_foreground();
-                            if !contact.is_sibling && !looking {
-                                // A real friend message landed while nobody was looking — bump the persistent unread counter (contacts-list inner ring + float-to-top; cleared at conversation-open). Written after the loop via the coalescing conv-state writer.
-                                conv.unread_count += 1;
-                                conv_state_dirty.push(conv_pos);
-                            }
-
-                            // System notification, POST-DECRYPT: real sender display name + message text BY DESIGN — hiding content on the lock screen is the OS's job, and the pre-decrypt RX worker no longer notifies at all (it over-dinged on probes and sibling fleet-sync frames it couldn't tell apart). RUST is the one suppression decision now: `looking` (this conversation active + app/window attended) gates the call — Kotlin's old blanket Activity-foreground bail is gone, so a message from anyone whose conversation ISN'T open dings even with the app on screen. Desktop's notify keeps its own visual gate (no toast while attended) + both dedup on msg_hp.
-                            if !contact.is_sibling && !looking {
-                                let sender_name = contact.display_name();
-                                // The notification chirp seeds from the RELATIONSHIP DIGEST — the same value the desktop in-app chirp and the contact's colours use — so one sender sounds the same on EVERY device. It seeded from the pinned device key before, which differs per device (each pins its own first-met device) and per platform: "messages from one sender sound different on each device".
-                                #[cfg(target_os = "android")]
-                                {
-                                    let chirp_seed =
-                                        relationship_digest(&contact.handle_hash, &our_handle_hash);
-                                    crate::platform::jni_android::notify_new_message(
-                                        &msg_hp,
-                                        &chirp_seed,
-                                        &sender_name,
-                                        &msg.content,
-                                    );
-                                }
-                                #[cfg(not(target_os = "android"))]
-                                crate::platform::desktop_notify::notify_new_message(
-                                    &msg_hp,
-                                    &sender_name,
-                                    &msg.content,
-                                );
-                            }
-
-                            // Live fleet propagation: the friend only delivered this to the device in hand — our other devices hear it from us (pushed after the `chains` borrow ends, below).
-                            sibling_push = Some((contact_idx, msg));
-
-                            // Per-contact notification chime: the sender's relationship digest → deterministic modal bell (chirp crate) — the SAME digest that colours their handle and messages, so ears and eyes agree. The handle TEXT never touches the session store by design; the pre-PoW hashes are the canonical identity material. Synthesis (~a second of f64 modal math) + playback run on a detached thread so the receive loop never blocks; desktop-only (Android gets platform notifications).
-                            // Only ding for a real human message from a friend: a chain-weave probe (hidden ceremony frame) and a sibling/fleet-sync frame (our own devices propagating a conversation) both arrive as ChatMessages, and neither is something a person sent us — so neither should ring. And only when NOT looking at this conversation (`!looking`): watching the message land IS the alert; the chirp is for everyone else's messages (the user ask: "ding when I get a message from anyone and I'm not in a conversation with them"). The old unconditional chirp over-dinged in-conversation.
-                            #[cfg(not(any(target_os = "redox", target_os = "android")))]
-                            if !is_chain_probe && !self.contacts[contact_idx].is_sibling && !looking
-                            {
-                                let digest =
-                                    relationship_digest(&from_handle_hash, &our_handle_hash);
-                                std::thread::spawn(move || {
-                                    chirp::Chirp::from_hash(digest)
-                                        .play_blocking()
-                                        .unwrap_or_else(|e| crate::logf!("CHIME: {}", e));
-                                });
-                            }
-                            // A real inbound message proves both directions once ACKed, but even the RX half alone can seal if our TX was already ACK-confirmed.
-                            recv_seal_idx = Some(contact_idx);
-                        }
-
-                        // *** THEN the ACK — attached to the commit snapshot above; the chains writer fires it only after the write lands. If we crash before that, no ACK ever left: the sender resends, we dedup. *** Get recipient pubkey for relay fallback
-                        let recipient_pubkey = self
-                            .contacts
-                            .get(contact_idx)
-                            .map(|c| *c.public_identity.as_bytes())
-                            .unwrap_or([0u8; 32]);
-                        // The re-ACK source is the per-message ack_hash persisted on the stored ChatMessage (see the duplicate handler above + with_ack_hash below), which heals a lost ACK for ANY message — not just the most recent. ACK always rides the relay alongside any direct leg — see the re-ACK site above for the field-observed one-directional case this closes.
-                        let relay_to = self
-                            .contacts
-                            .get(contact_idx)
-                            .map(|c| c.relay_device_list())
-                            .unwrap_or_default();
-                        ack_after_durable.push((
-                            chains_commit_snapshot,
-                            AckRequest {
-                                peer_addr: sender_addr,
-                                recipient_pubkey,
+                        let their_last_plaintext = chains.last_plaintext(&lane).to_vec();
+                        let tx = self.braid_rx_tx.clone();
+                        let wake = self.event_proxy.clone();
+                        std::thread::spawn(move || {
+                            use crate::crypto::chain::{
+                                decrypt_layers, derive_salt, generate_scratch, CURRENT_KEY_INDEX,
+                            };
+                            let salt = derive_salt(&their_last_plaintext, &sender_chain);
+                            let scratch = generate_scratch(&sender_chain, &salt);
+                            let et = vsf::EagleTime::from_oscillations(timestamp);
+                            crate::logf!("CHAIN DECRYPT: lane={}..., key={}..., salt={}..., eagle_time={}, ciphertext_len={}", hex::encode(&lane[..4]), hex::encode(&sender_chain.current_key()[..4]), hex::encode(&salt[..4]), timestamp, ciphertext.len());
+                            let plaintext =
+                                decrypt_layers(&ciphertext, &sender_chain, CURRENT_KEY_INDEX, &scratch, &et);
+                            let _ = tx.send(BraidRxDecrypted {
                                 conversation_token,
-                                acked_eagle_time: timestamp,
-                                plaintext_hash,
-                                relay_to,
-                            },
-                        ));
-                        crate::logf!(
-                            "CHAT: ACK to {} (eagle_time {}, hash {}...) queued behind the durable chains write",
-                            handle,
-                            timestamp,
-                            hex::encode(&plaintext_hash[..8])
-                        );
-                        let _ = fid; // We looked up by token, fid is available if needed
+                                lane,
+                                prev_msg_hp,
+                                timestamp,
+                                sender_addr,
+                                sender_pubkey,
+                                plaintext,
+                            });
+                            if let Some(w) = wake.as_ref() {
+                                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                            }
+                        });
                     } else {
                         crate::logf!(
                             "CHAT: No friendship found for conversation_token {}...",
@@ -19268,20 +19524,6 @@ impl PhotonApp {
                         );
                     }
 
-                    // Live fleet push, now that the `chains` borrow is gone.
-                    if let Some((idx, m)) = sibling_push {
-                        self.push_rows_to_siblings(idx, std::slice::from_ref(&m), None);
-                    }
-
-                    // Defer the chain-weave seal until after the loop (the outer `checker` borrow blocks `&mut self` here). No-op later unless both directions are proven.
-                    if let Some(idx) = recv_seal_idx {
-                        chain_seal_indices.push(idx);
-                    }
-
-                    // Flag to update sync records after outer loop (checker borrow must end first)
-                    if need_sync_records_update {
-                        need_sync_update = true;
-                    }
                 }
                 StatusUpdate::MessageAck {
                     conversation_token,
@@ -21804,35 +22046,13 @@ impl PhotonApp {
             // ACK-ADVANCE FLUSH: the serial-send gate holds every message behind the one in flight, so the ACK that just advanced the lane is the edge that releases the next held row at the fresh chain position. No-op when nothing is held.
             self.resend_held_messages(idx);
         }
-        // Receive commit points FIRST, then the safe-to-delay saves: the writer coalesces by arrival order (last in = newest), and the ack snapshots were taken mid-loop — older than the end-of-loop state the fid saves snapshot. Enqueue in age order so coalescing keeps the truly-newest copy, with every ACK carried onto it.
-        let ack_dispatch = self.status_checker.as_ref().map(|c| c.ack_dispatch());
-        for (snapshot, req) in ack_after_durable {
-            let actions = match ack_dispatch.as_ref() {
-                Some(d) => vec![ChainsPostDurable::Ack(d.clone(), req)],
-                None => Vec::new(),
-            };
-            self.persist_chains_then(snapshot, actions);
-        }
         // Coalesced off-thread chains persists (ACK pending-removals, chain-sync adopts) — the safe-to-delay saves, now that the checker borrow has ended.
         for fid in chains_persist_fids {
             self.persist_chains_async(&fid);
         }
-        // Unread-counter records dirtied in the arms — the coalescing 13-byte writer.
-        conv_state_dirty.dedup();
-        for pos in conv_state_dirty {
-            self.persist_conv_state_async(pos);
-        }
         // Sibling fork repair (deferred past the checker borrow): apply inbound resets first (each echoes once so the initiator converges), then fire any detector-initiated resets (mint nonce + apply + send).
         for (idx, nonce, echo) in chain_reset_apply {
             self.apply_sibling_chain_reset(idx, nonce, echo);
-            changed = true;
-        }
-        for idx in chain_reset_initiate {
-            self.initiate_sibling_chain_reset(idx);
-            changed = true;
-        }
-        for idx in friend_rekey_initiate {
-            self.initiate_friend_rekey(idx);
             changed = true;
         }
         if fleet_sweep_due {
@@ -21914,11 +22134,6 @@ impl PhotonApp {
         // 2. check_clutch_keygens() processes results, stores keypairs + ceremony_id
         // 3. Offers are sent from check_clutch_keygens or the KeysGenerated handler above
         // This avoids UI freeze from synchronous McEliece keygen (~100ms) and handle_proof (~1s)
-
-        // Update sync records if any messages were received (for pong responses)
-        if need_sync_update {
-            self.update_sync_records();
-        }
 
         // Persist any published-name adoptions from this drain (deferred: saving inside the loop would fight the contacts borrow). The name lives in the per-contact STATE entry, not the index.
         let name_adopted = self.contacts.iter().any(|c| c.published_name_dirty);
