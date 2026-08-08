@@ -18067,6 +18067,7 @@ impl PhotonApp {
                     ciphertext,
                     timestamp,
                     sender_addr,
+                    sender_pubkey,
                 } => {
                     // Get our handle_hash for chain lookups
                     let our_handle_hash = match self
@@ -18142,6 +18143,14 @@ impl PhotonApp {
                             }
                         };
 
+                        // KNOWN∧NOT-REFUSED, the same gate ChainSyncReceived applies (knows_device already excludes refused_devices; locked_out is the sibling case). The RX worker proved only "some contact knows this signing key"; here we prove the signer is a current device of THIS conversation's peer and not one the fold has refused or the fleet has locked — so a stolen/refused device cannot inject frames that drive the fork detectors.
+                        if !self.contacts[contact_idx].knows_device(&sender_pubkey.key)
+                            || self.contacts[contact_idx].locked_out
+                        {
+                            crate::logf!("CHAT: dropped frame from {} — signer {}... is not a trusted device of this conversation (refused/locked/unfolded)", handle, hex::encode(&sender_pubkey.key[..8]));
+                            continue;
+                        }
+
                         // The conversation this frame lands in — the SAME participant set the chain holds, materialized on first touch. Field-precise (`chains` pins `friendship_chains` for this whole block, so no &mut self method fits here).
                         let conv_pos = {
                             let fresh = crate::types::Conversation::new(
@@ -18206,35 +18215,16 @@ impl PhotonApp {
                             chains.verify_chain_link(&lane, &prev_msg_hp)
                         {
                             crate::logf!("CHAT: Hash chain gap from {} - expected prev {}..., got {}... — buffering (ahead of us)", handle, hex::encode(&expected[..8]), hex::encode(&prev_msg_hp[..8]));
-                            let era_grace_active = chains.genesis_osc > 0
-                                && vsf::eagle_time_oscillations().saturating_sub(chains.genesis_osc)
-                                    < 120 * vsf::OSCILLATIONS_PER_SECOND as i64;
-                            // PERSISTENT-GAP FORK DETECTOR: the same expected/got pair repeating means the predecessor is never coming (both heads committed — the 07-23 sibling wedge, live again desktop↔phone 2026-07-26). The decrypt-fail streak can't see it (buffering isn't a failure), so repair fires from HERE: sibling → deterministic chain reset; friend → re-key streak path. Deferred past the checker borrow via the existing vecs.
+                            // GAPS ARE TRANSPORT, NEVER FORK EVIDENCE: a missing predecessor means a frame is in flight, lost (anti-entropy re-serves it on the next pong edge), or a stale-era straggler — none of which a re-key repairs and all of which a re-key destroys (the ≥8-streak trigger here nuked healthy weaves all week, 2026-08-03→07, and masked the actual salt bug). Fork evidence lives solely in the decrypt-fail streak: a fill that arrives and still produces garbage is the only proof both heads committed differently.
                             {
-                                // Count gaps WITHOUT a fill, not repeats of one key: a multi-device peer sends on several lanes, and two stuck lanes' alternating gap keys reset a keyed streak forever — 13 identical gaps and the repair never fired (field, 2026-08-03). The counter now rises on every buffered frame and only a successful gap FILL (the replay drain) clears it.
+                                let c = &mut self.contacts[contact_idx];
+                                // The depth still rides the log-visible counter (cleared by a successful fill) so field logs show how far behind a lane is running.
                                 let key = u64::from_le_bytes(expected[..8].try_into().unwrap())
                                     ^ u64::from_le_bytes(prev_msg_hp[..8].try_into().unwrap());
-                                let c = &mut self.contacts[contact_idx];
                                 c.gap_streak = (key, c.gap_streak.1.saturating_add(1));
                                 // A gap means the SENDER is missing our tip — and the tip travels in our ping's sync records, which an hour-deep presence backoff would sit on. A buffered frame is the loudest possible "this contact matters right now": collapse the backoff so the next sweep pings, the pong's tip re-arms their given-up retransmit, and the gap fills in seconds instead of an hour (the "some messages lag a very long time" of 2026-08-02).
                                 c.ping_backoff = 0;
                                 c.last_pinged = None;
-                                if c.gap_streak.1 >= 8 {
-                                    c.gap_streak.1 = 0;
-                                    if c.is_sibling {
-                                        crate::logf!("CHAT: gap from {} repeated 6× identically — FORK, initiating sibling chain reset", handle);
-                                        chain_reset_initiate.push(contact_idx);
-                                    } else if era_grace_active {
-                                        // A JUST-woven chain cannot have forked — one writer per lane makes it structurally impossible this early. A gap burst here is a superseded sibling's stragglers (its blob adopts the new era within a chain-sync round trip, and the era-supersede merge kills its old lanes); discarding the fresh weave for them was the completed-then-back-to-6/12 regression of 2026-08-05. A real fork keeps failing past the grace and repairs then.
-                                        crate::logf!("CHAT: gap streak from {} on a freshly-woven chain — era stragglers, holding the re-key", handle);
-                                    } else if c.ceremony_owner.is_some() && c.ceremony_owner != Some(our_device_pubkey) {
-                                        // A NON-OWNER sibling never re-keys a friendship: its gap evidence means ITS OWN blob is the stale era — the friend re-wove with the owner, the new-era frames can't link to the old chains, and the repair here nuked the fleet's seven-second-old weave (2026-08-07). The cure is the owner's chain-sync push, already on its way; the era supersede adopts it and the buffered frames replay or expire.
-                                        crate::logf!("CHAT: gap streak from {} but this device does not own the ceremony — stale era suspected, awaiting sibling chain-sync", handle);
-                                    } else {
-                                        crate::logf!("CHAT: gap from {} repeated 6× identically — FORK, initiating friend re-key", handle);
-                                        friend_rekey_initiate.push(contact_idx);
-                                    }
-                                }
                             }
                             // The buffered entry carries the LANE label (the field predates lanes and keeps its name) — the replay re-enters the arm with it, resolving the same lane.
                             chains.buffer_for_gap(
@@ -18243,6 +18233,7 @@ impl PhotonApp {
                                 timestamp,
                                 ciphertext.clone(),
                                 sender_addr,
+                                sender_pubkey.key,
                             );
                             continue;
                         }
@@ -18405,17 +18396,9 @@ impl PhotonApp {
                         use crate::types::friendship::derive_msg_hp;
                         let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, timestamp);
 
-                        // Update the lane's last_plaintext for the next message's salt — the x-text ONLY (must match what the sender stored: salt source is text, never the full payload/pad).
-                        // Keyed by LANE LABEL: the pre-lane call here passed the party id, which no lane label ever equals, so the write no-opped and the salt stayed empty while the sender's moved — every second message on a lane garbage-decrypted (field, 2026-08-07).
-                        chains.set_last_plaintext(
-                            &lane,
-                            message_text.clone().into_bytes(),
-                        );
-
-                        // Update bidirectional entropy state (derive weave hash from full message context)
-                        chains.update_received_for_mixing(timestamp, msg_hp, &plaintext);
-
                         // The braid: resolve each woven eagle_time to its message content. The peer wove messages IT received — i.e. messages WE authored — so we resolve against our OUTGOING rows (is_outgoing == true). Both sides hold identical `content` for any such message → identical strands → the chains advance in lockstep. Sort by eagle_time so framing matches the sender's (which also sorted). A single device can't emit two messages at the same 704ps tick, so eagle_time is unique within our stream; the adversarial same-tick collision is not handled here (would need a content_hash tiebreak carried on the wire) — left as a known guard gap.
+                        // HOLD ON A STRAND MISS, NEVER SKIP: a woven row we don't hold yet (a sibling composed it and its replication hasn't landed) must NOT be silently dropped — a short strand vector changes strand_count in derive_fresh_link, so our advance diverges from the sender's and the lane forks permanently (silent, surfaced only as later garbage). Resolve strands FIRST, before any chain mutation; if any is missing, make zero mutations, don't ACK, collapse backoff so sibling replication catches us up, and let the sender's retransmit replay this frame once the row lands.
+                        let mut strand_miss: Option<i64> = None;
                         let woven_strands: Vec<Vec<u8>> = {
                             let mut times = woven_times.clone();
                             times.sort_unstable();
@@ -18428,13 +18411,31 @@ impl PhotonApp {
                                 {
                                     strands.push(m.content.as_bytes().to_vec());
                                 } else {
-                                    crate::logf!("CHAT: braid strand miss — no outgoing message at eagle_time {}", t);
+                                    strand_miss = Some(t);
+                                    break;
                                 }
                             }
                             strands
                         };
+                        if let Some(t) = strand_miss {
+                            crate::logf!("LANE: braid strand miss from {} — no outgoing row at eagle_time {} yet; holding this frame (no advance, no ACK) until sibling replication lands it", handle, t);
+                            let c = &mut self.contacts[contact_idx];
+                            c.ping_backoff = 0;
+                            c.last_pinged = None;
+                            continue;
+                        }
                         let strand_refs: Vec<&[u8]> =
                             woven_strands.iter().map(|s| s.as_slice()).collect();
+
+                        // Update the lane's last_plaintext for the next message's salt — the x-text ONLY (must match what the sender stored: salt source is text, never the full payload/pad).
+                        // Keyed by LANE LABEL: the pre-lane call here passed the party id, which no lane label ever equals, so the write no-opped and the salt stayed empty while the sender's moved — every second message on a lane garbage-decrypted (field, 2026-08-07).
+                        chains.set_last_plaintext(
+                            &lane,
+                            message_text.clone().into_bytes(),
+                        );
+
+                        // Update bidirectional entropy state (derive weave hash from full message context)
+                        chains.update_received_for_mixing(timestamp, msg_hp, &plaintext);
 
                         // Advance their chain with the braid strands. our_plaintext = the decrypted x-text ONLY (must match the sender's process_ack, which advances with the stored salt-text — never the full payload/pad).
                         let message_text_bytes = message_text.clone().into_bytes();
@@ -18467,6 +18468,9 @@ impl PhotonApp {
                                     timestamp: buf.eagle_time,
                                     sender_addr: buf.sender_addr,
                                     // (buf.sender_addr is SocketAddr; matches the variant field)
+                                    sender_pubkey: crate::types::DevicePubkey::from_bytes(
+                                        buf.sender_pubkey,
+                                    ),
                                 });
                             }
                         }
