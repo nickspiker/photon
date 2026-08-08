@@ -195,6 +195,8 @@ pub struct SyncRecord {
     pub row_count: u32,
     /// Anti-entropy digest half 2: order-free XOR fold of blake3(timestamp ‖ content_hash) over the same rows. Digests equal ⇒ both sides provably hold the same message set; a mismatch triggers a FULL history walk (early-stop disabled) — heuristic cursor recovery left holes (the two greyed sends a peer never got, 2026-07-25).
     pub row_digest: [u8; 32],
+    /// Per-lane contiguous heads: (lane_label, last_received_osc) for each of the peer's lanes WE'VE received on. A sending device looks up ITS OWN lane's head here to learn exactly what we're missing — the flat `last_received_osc` above is the max across lanes, which over-reports for a multi-device sender. Empty = a legacy peer (fall back to `last_received_osc`) or a peer who has received nothing here.
+    pub lane_heads: Vec<([u8; 32], i64)>,
 }
 
 /// Convert SocketAddr to binary format for VSF Format:
@@ -1104,8 +1106,30 @@ fn extract_sync_records(section: &vsf::VsfSection) -> Result<Vec<SyncRecord>, St
                 last_received_osc,
                 row_count: count,
                 row_digest: digest,
+                lane_heads: Vec::new(),
             }),
             _ => return Err("sync row missing token or timestamp".to_string()),
+        }
+    }
+    // Attach per-lane heads (a separate `lhead` row: hb token, hb lane, e6 tip) to their conversation. A row whose token matches no `sync` record is dropped — the record is the authority on which conversations exist.
+    for field in section.get_fields("lhead") {
+        let mut token: Option<[u8; 32]> = None;
+        let mut lane: Option<[u8; 32]> = None;
+        let mut tip: Option<i64> = None;
+        for v in &field.values {
+            match v {
+                VsfType::hb(h) if h.len() == 32 && token.is_none() => {
+                    token = h.as_slice().try_into().ok()
+                }
+                VsfType::hb(h) if h.len() == 32 => lane = h.as_slice().try_into().ok(),
+                VsfType::e(vsf::types::EtType::e6(t)) => tip = Some(*t),
+                _ => {}
+            }
+        }
+        if let (Some(token), Some(lane), Some(tip)) = (token, lane, tip) {
+            if let Some(rec) = records.iter_mut().find(|r| r.conversation_token == token) {
+                rec.lane_heads.push((lane, tip));
+            }
         }
     }
     Ok(records)
@@ -1159,6 +1183,17 @@ fn add_pong_sensitive_fields(
                 VsfType::hg(record.row_digest.to_vec()),
             ],
         );
+        // Per-lane heads as their own rows (hb token, hb lane, e6 tip) — a NEW field name, so a legacy peer that only reads `sync` skips them entirely. A sending device finds its own lane's exact tip here instead of the max-across-lanes value.
+        for (lane, tip) in &record.lane_heads {
+            section.add_field_multi(
+                "lhead",
+                vec![
+                    VsfType::hb(record.conversation_token.to_vec()),
+                    VsfType::hb(lane.to_vec()),
+                    VsfType::e(vsf::types::EtType::e6(*tip)),
+                ],
+            );
+        }
     }
     // Always-granted display name — only when set (absent parses back to None).
     if let Some(name) = display_name {
@@ -3086,12 +3121,14 @@ mod pong_seal_tests {
                 last_received_osc: 123_456_789,
                 row_count: 42,
                 row_digest: [0x5Cu8; 32],
+                lane_heads: vec![([0x11u8; 32], 123_456_789), ([0x22u8; 32], 120_000_000)],
             },
             SyncRecord {
                 conversation_token: [0xB8u8; 32],
                 last_received_osc: 987_654_321,
                 row_count: 0,
                 row_digest: [0u8; 32],
+                lane_heads: Vec::new(),
             },
         ]
     }
