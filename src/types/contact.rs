@@ -145,49 +145,64 @@ pub fn is_control_content(content: &str) -> bool {
     content == CHAIN_PROBE_MARKER || content.starts_with(DELETE_MARKER_PREFIX)
 }
 
-/// Reply row marker. NOT control content — a reply is a VISIBLE message that REFERENCES its target by eagle_time (`PREFIX + target_ts + \u{2} + body`), the braid's own referencing discipline. The renderer resolves the reference live against the row store (a half-alpha snippet above the body) — the target is never quoted into the reply, so an edit of the target ripples into every reply that points at it.
+/// Reply row marker. NOT control content — a reply is a VISIBLE message that REFERENCES its target by eagle_time (`PREFIX + dozenal_bytes(target_ts) + \u{2} + body`), the braid's own referencing discipline. The renderer resolves the reference live against the row store (a half-alpha snippet above the body) — the target is never quoted into the reply, so an edit of the target ripples into every reply that points at it. The timestamp serializes as DOZENAL GLYPH BYTES, never ASCII decimal (AGENT.md): a client that predates this marker renders photon numerals, not arabic droppings.
 pub const REPLY_MARKER_PREFIX: &str = "\u{1}\u{2}photon-reply\u{2}\u{1}";
 
 /// Build a reply row's content string.
 pub fn reply_content(target_ts: i64, body: &str) -> String {
-    format!("{}{}\u{2}{}", REPLY_MARKER_PREFIX, target_ts, body)
+    format!(
+        "{}{}\u{2}{}",
+        REPLY_MARKER_PREFIX,
+        crate::dozenal_bytes(target_ts),
+        body
+    )
 }
 
 /// Parse a reply row → (target eagle_time, body). None for non-reply content.
 pub fn parse_reply_content(content: &str) -> Option<(i64, &str)> {
     let rest = content.strip_prefix(REPLY_MARKER_PREFIX)?;
     let (ts, body) = rest.split_once('\u{2}')?;
-    Some((ts.parse().ok()?, body))
+    Some((crate::parse_dozenal_bytes(ts)?, body))
 }
 
-/// Edit row marker. NOT control content — an edit is a real synced row (`PREFIX + target_ts + \u{2} + new_body`) that SUPERSEDES its target at render time only. The original row is NEVER mutated: its content is braid key material (strands resolve stored content by eagle_time), so rewriting it would fork the chain the next time that row is woven. The newest edit row targeting a ts wins; the edit row draws no bubble of its own while its target is present, and it rides pages/fleet-sync/digests like any row — convergence for free.
+/// Edit row marker. NOT control content — an edit is a real synced row (`PREFIX + dozenal_bytes(target_ts) + \u{2} + new_body`) that SUPERSEDES its target at render time only. The original row is NEVER mutated: its content is braid key material (strands resolve stored content by eagle_time), so rewriting it would fork the chain the next time that row is woven. The newest edit row targeting a ts wins; the edit row draws no bubble of its own while its target is present, and it rides pages/fleet-sync/digests like any row — convergence for free.
 pub const EDIT_MARKER_PREFIX: &str = "\u{1}\u{2}photon-edit\u{2}\u{1}";
 
 /// Build an edit row's content string.
 pub fn edit_content(target_ts: i64, body: &str) -> String {
-    format!("{}{}\u{2}{}", EDIT_MARKER_PREFIX, target_ts, body)
+    format!(
+        "{}{}\u{2}{}",
+        EDIT_MARKER_PREFIX,
+        crate::dozenal_bytes(target_ts),
+        body
+    )
 }
 
 /// Parse an edit row → (target eagle_time, new body). None for non-edit content.
 pub fn parse_edit_content(content: &str) -> Option<(i64, &str)> {
     let rest = content.strip_prefix(EDIT_MARKER_PREFIX)?;
     let (ts, body) = rest.split_once('\u{2}')?;
-    Some((ts.parse().ok()?, body))
+    Some((crate::parse_dozenal_bytes(ts)?, body))
 }
 
-/// Reaction row marker. NOT control content — a reaction is a synced referencing row (`PREFIX + target_ts + \u{2} + glyph`), family sibling of reply/edit. Resolution is newest-live-per-sender-per-target: reacting again REPLACES yours, an empty glyph RETRACTS. The glyph is an arbitrary short string (the fixed strip today; any emoji/letter tomorrow — the wire already carries it). Reaction rows draw no bubble of their own, ever — an orphan (target not synced yet) stays invisible and attaches when the target lands.
+/// Reaction row marker. NOT control content — a reaction is a synced referencing row (`PREFIX + dozenal_bytes(target_ts) + \u{2} + glyph`), family sibling of reply/edit. Resolution is newest-live-per-sender-per-target: reacting again REPLACES yours, an empty glyph RETRACTS. The glyph is an arbitrary short string (the fixed strip today; any emoji/letter tomorrow — the wire already carries it). Reaction rows draw no bubble of their own, ever — an orphan (target not synced yet) stays invisible and attaches when the target lands.
 pub const REACT_MARKER_PREFIX: &str = "\u{1}\u{2}photon-react\u{2}\u{1}";
 
 /// Build a reaction row's content string. An empty `glyph` is the retract.
 pub fn react_content(target_ts: i64, glyph: &str) -> String {
-    format!("{}{}\u{2}{}", REACT_MARKER_PREFIX, target_ts, glyph)
+    format!(
+        "{}{}\u{2}{}",
+        REACT_MARKER_PREFIX,
+        crate::dozenal_bytes(target_ts),
+        glyph
+    )
 }
 
 /// Parse a reaction row → (target eagle_time, glyph). None for non-reaction content.
 pub fn parse_react_content(content: &str) -> Option<(i64, &str)> {
     let rest = content.strip_prefix(REACT_MARKER_PREFIX)?;
     let (ts, glyph) = rest.split_once('\u{2}')?;
-    Some((ts.parse().ok()?, glyph))
+    Some((crate::parse_dozenal_bytes(ts)?, glyph))
 }
 
 /// Attachment row marker. NOT control content — attachment rows are VISIBLE messages (bubble = pill), they ACK, sync fleet-wide, tombstone, and weave like any row; only their DISPLAY differs. The content string is the whole record: `PREFIX + blake3_hex(64) + \u{2} + filename + \u{2} + size_bytes` — riding the ordinary content field means zero codec changes anywhere (vault, history pages, fleet sync all carry it as text). The blob itself travels separately over PT (attach_blob frames) and lives as a sealed file beside the vault, NEVER in a row.
