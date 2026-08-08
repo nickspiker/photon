@@ -930,6 +930,43 @@ impl FriendshipChains {
             .collect()
     }
 
+    /// A replication SUBSET: a copy carrying only the lanes named in `labels`, with device-local state (pendings, gap buffer, send tip, weave view) stripped. This is what a per-lane checkpoint push serializes — a sibling's `merge_lanes_from` adopts these lanes and leaves the rest, so we transmit ONLY the lane(s) that advanced instead of the whole chains blob (docs/lanes.md checkpoints; the whole-blob push it replaces re-sent every lane on every mutation — one friendship at 5 device-lanes was an 85KB frame decrypted on the render thread every tick). Root, history key, genesis, participants and token ride so the receiver's era check and token match still work. Never carries pendings: those reference OUR chain position and a sibling never advances our lane (writer discipline), so they are pure waste on the wire.
+    pub fn replication_subset(&self, labels: &[[u8; 32]]) -> FriendshipChains {
+        let keep: Vec<usize> = self
+            .lane_labels
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| labels.contains(l))
+            .map(|(i, _)| i)
+            .collect();
+        let pick_hashes = |v: &Vec<Option<[u8; 32]>>| keep.iter().map(|&i| v[i]).collect();
+        FriendshipChains {
+            friendship_id: self.friendship_id,
+            participants: self.participants.clone(),
+            conversation_token: self.conversation_token,
+            lane_labels: keep.iter().map(|&i| self.lane_labels[i]).collect(),
+            lane_positions: keep.iter().map(|&i| self.lane_positions[i]).collect(),
+            chains: keep.iter().map(|&i| self.chains[i].clone()).collect(),
+            last_plaintexts: keep.iter().map(|&i| self.last_plaintexts[i].clone()).collect(),
+            last_received_times: keep.iter().map(|&i| self.last_received_times[i]).collect(),
+            first_message_anchors: keep.iter().map(|&i| self.first_message_anchors[i]).collect(),
+            last_received_hashes: pick_hashes(&self.last_received_hashes),
+            // Device-local — never replicated, never adopted by a sibling.
+            our_label: None,
+            pending_messages: Vec::new(),
+            gap_buffer: Vec::new(),
+            last_sent_hash: None,
+            last_received_weave: None,
+            last_sent_weave: None,
+            last_incorporated_hp: None,
+            // Era + custody: the receiver needs these for differs_in_era_from and to adopt a root it lacks.
+            history_key: self.history_key,
+            lane_root: self.lane_root,
+            genesis_osc: self.genesis_osc,
+            mutated_osc: self.mutated_osc,
+        }
+    }
+
     // ==================== HASH CHAIN METHODS ====================
 
     /// Get the first message anchor for a lane. Used as prev_msg_hp for the first message on it.
@@ -1665,6 +1702,45 @@ mod tests {
 
         // An ACK for an eagle_time we never sent still matches nothing.
         assert!(!sender.process_ack(9_999, &ph));
+    }
+
+    /// PER-LANE REPLICATION: a subset carrying only some lanes must round-trip through merge_lanes_from and adopt EXACTLY those lanes at their real positions, leaving other lanes untouched — index-alignment across the parallel per-lane vecs is load-bearing (a slip corrupts a lane's chain/position/anchors).
+    #[test]
+    fn replication_subset_adopts_only_named_lanes_at_the_right_position() {
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        // A source holding two peer lanes at different positions.
+        let mut src = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        let lane_a = [0xAAu8; 32];
+        let lane_b = [0xBBu8; 32];
+        src.ensure_lane(&lane_a).unwrap();
+        src.ensure_lane(&lane_b).unwrap();
+        // Advance lane_a twice, lane_b once (distinct positions to catch an index slip).
+        let et = vsf::EagleTime::from_oscillations(1);
+        src.advance(&lane_a, &et, b"a1", &[]);
+        src.advance(&lane_a, &et, b"a2", &[]);
+        src.advance(&lane_b, &et, b"b1", &[]);
+        let pos_a = src.lane_position(&lane_a).unwrap();
+        let pos_b = src.lane_position(&lane_b).unwrap();
+        assert_ne!(pos_a, pos_b, "test needs distinct positions");
+
+        // A subset of just lane_a.
+        let subset = src.replication_subset(&[lane_a]);
+        assert_eq!(subset.lane_summary().len(), 1, "subset carries only the named lane");
+        assert!(subset.pending_messages.is_empty(), "subset never carries pendings");
+
+        // A fresh receiver adopts the subset: it gains lane_a at pos_a and knows nothing of lane_b.
+        let mut rx = FriendshipChains::from_clutch(&[bob, alice], &eggs);
+        assert!(rx.merge_lanes_from(&subset));
+        assert_eq!(rx.lane_position(&lane_a), Some(pos_a), "adopted lane_a at its real position");
+        assert_eq!(rx.lane_position(&lane_b), None, "lane_b not in the subset, so not adopted");
+
+        // Now push lane_b's subset separately — it adopts alongside, lane_a unchanged.
+        let subset_b = src.replication_subset(&[lane_b]);
+        assert!(rx.merge_lanes_from(&subset_b));
+        assert_eq!(rx.lane_position(&lane_a), Some(pos_a));
+        assert_eq!(rx.lane_position(&lane_b), Some(pos_b));
     }
 
     #[test]
