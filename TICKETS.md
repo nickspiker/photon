@@ -46,6 +46,10 @@ Auto-attest after reboot with NO durable identity secret at rest. The capsule st
 - NFC tap transport for device-add (HCE; candidate machine built, tap delivers, touch selects); BLE transport (lock word + proof beacon; shadow beacon proven).
 - Self-departure UI: Security-page "Remove this device from fleet" stub — `depart_device` exists, unwired. (The other half of this pairing, LOST-device handling, SHIPPED 2026-08-05/06 as the treat-as-stolen lockout: fleet-synced locked set, handle-gated confirm, key rotation, friend-side refusal.)
 - Remove the two v0→v1 flag-day supersession branches (worker `handle_fleet_op`, client `ensure_member`) once no v0 chain plausibly remains; drop pairing-v2's retired word-list leftovers (`words_to_pair_pubkey`/`pair_entry_complete`, no production callers).
+- **B4 remainder — fleet CRDT repairs still open** (from the 2026-08-08 solidity plan; the adopt-echo kill + HealLatch halves SHIPPED same day @aa8ccfd):
+  - **`fleet.locked` / `fleet.released` union-merge race — SECURITY**: both are grow-only sets by convention but ride ONE LWW setting key; `lock_out_device` does read-union-write, so two devices locking DIFFERENT pubkeys concurrently each write old+own and LWW drops one — a stolen device stays trusted on part of the fleet until someone re-locks. The comment on `locked_devices` claims "LWW still converges to the union", which holds only for sequential writes. Fix: per-key entries (one setting key per locked pubkey) or a set-union merge rule for these keys in fgtw's `merge_global_settings`. Lockout must never lose a lock to a race.
+  - **`merge_rosters` deterministic tie-break**: equal-stamp entries need the value-bytes fallback `merge_global_settings` already has (fgtw fstate.rs), else two devices can hold different winners forever.
+  - **fstate convergence backstop**: WS down + 8 push retries exhausted = no roster sync until relaunch; hang the retry off the existing 45s refold edge instead of giving up.
 
 ## Blinding flag-day debris (2026-07-14, folded 2026-08-06)
 
