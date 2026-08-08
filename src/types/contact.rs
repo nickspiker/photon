@@ -175,6 +175,21 @@ pub fn parse_edit_content(content: &str) -> Option<(i64, &str)> {
     Some((ts.parse().ok()?, body))
 }
 
+/// Reaction row marker. NOT control content — a reaction is a synced referencing row (`PREFIX + target_ts + \u{2} + glyph`), family sibling of reply/edit. Resolution is newest-live-per-sender-per-target: reacting again REPLACES yours, an empty glyph RETRACTS. The glyph is an arbitrary short string (the fixed strip today; any emoji/letter tomorrow — the wire already carries it). Reaction rows draw no bubble of their own, ever — an orphan (target not synced yet) stays invisible and attaches when the target lands.
+pub const REACT_MARKER_PREFIX: &str = "\u{1}\u{2}photon-react\u{2}\u{1}";
+
+/// Build a reaction row's content string. An empty `glyph` is the retract.
+pub fn react_content(target_ts: i64, glyph: &str) -> String {
+    format!("{}{}\u{2}{}", REACT_MARKER_PREFIX, target_ts, glyph)
+}
+
+/// Parse a reaction row → (target eagle_time, glyph). None for non-reaction content.
+pub fn parse_react_content(content: &str) -> Option<(i64, &str)> {
+    let rest = content.strip_prefix(REACT_MARKER_PREFIX)?;
+    let (ts, glyph) = rest.split_once('\u{2}')?;
+    Some((ts.parse().ok()?, glyph))
+}
+
 /// Attachment row marker. NOT control content — attachment rows are VISIBLE messages (bubble = pill), they ACK, sync fleet-wide, tombstone, and weave like any row; only their DISPLAY differs. The content string is the whole record: `PREFIX + blake3_hex(64) + \u{2} + filename + \u{2} + size_bytes` — riding the ordinary content field means zero codec changes anywhere (vault, history pages, fleet sync all carry it as text). The blob itself travels separately over PT (attach_blob frames) and lives as a sealed file beside the vault, NEVER in a row.
 pub const ATTACHMENT_PREFIX: &str = "\u{1}\u{2}photon-attach\u{2}\u{1}";
 
