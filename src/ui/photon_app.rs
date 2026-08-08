@@ -4279,6 +4279,7 @@ impl FluorApp for PhotonApp {
                     }
                 }
                 if tombstoned.is_some() {
+                    conv.invalidate_digest(); // a tombstone drops a row from the syncable set
                     if let Some(storage) = storage.as_ref() {
                         let _ = crate::storage::contacts::save_messages(conv, storage);
                     }
@@ -14222,30 +14223,13 @@ impl PhotonApp {
             // Publish a record for EVERY conversation, even one we've received nothing in yet (tip 0): its absence used to hide our head from a peer whose given-up pending needed exactly that head to revive. The peer reads tip 0 / no lane head as "send from the anchor".
             let lane_heads = chains.lane_heads();
 
-            // Anti-entropy digest over the conversation's rows: order-free XOR fold of blake3(timestamp ‖ content_hash), probe rows excluded (they never sync) and DIRECTION excluded (both sides hold the same set with flipped flags). Digests equal ⇒ provably the same message set; the pong receiver full-walks recovery on mismatch.
+            // Anti-entropy digest over the conversation's rows: an ORDER-DEPENDENT rolling hash sorted by eagle_time (Conversation::anti_entropy_digest — the single source of truth, cached). Order matters: a mismatch means the peer is MISSING or has REORDERED a message, which the old order-free XOR fold hid. Digests equal ⇒ same messages in the same sequence; the pong receiver full-walks recovery on mismatch.
+            // The conversation shares the friendship's id (both derive from the sorted participant set), so look it up by fid directly — a disjoint-field borrow that doesn't fight the &friendship_chains loop.
             let (row_count, row_digest) = self
-                .contacts
-                .iter()
-                .position(|c| c.friendship_id == Some(*fid))
-                .and_then(|ci| self.conv_of(ci))
-                .map(|v| {
-                    let mut fold = [0u8; 32];
-                    let mut n: u32 = 0;
-                    for m in v
-                        .messages
-                        .iter()
-                        .filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted)
-                    {
-                        let mut h = blake3::Hasher::new();
-                        h.update(&m.timestamp.to_le_bytes());
-                        h.update(blake3::hash(m.content.as_bytes()).as_bytes());
-                        for (f, b) in fold.iter_mut().zip(h.finalize().as_bytes()) {
-                            *f ^= b;
-                        }
-                        n += 1;
-                    }
-                    (n, fold)
-                })
+                .conversations
+                .iter_mut()
+                .find(|v| v.id() == *fid)
+                .map(|v| v.anti_entropy_digest())
                 .unwrap_or((0, [0u8; 32]));
             records.push(SyncRecord {
                 conversation_token: chains.conversation_token,
@@ -17864,24 +17848,10 @@ impl PhotonApp {
                                     if let Some(conv) =
                                         self.conversations.iter_mut().find(|v| v.id() == cid)
                                     {
-                                        let mut fold = [0u8; 32];
-                                        let mut n_rows: u32 = 0;
-                                        for m in conv.messages.iter().filter(|m| {
-                                            !crate::types::is_control_content(&m.content)
-                                                && !m.deleted
-                                        }) {
-                                            let mut h = blake3::Hasher::new();
-                                            h.update(&m.timestamp.to_le_bytes());
-                                            h.update(blake3::hash(m.content.as_bytes()).as_bytes());
-                                            for (f, b) in
-                                                fold.iter_mut().zip(h.finalize().as_bytes())
-                                            {
-                                                *f ^= b;
-                                            }
-                                            n_rows += 1;
-                                        }
+                                        // SAME digest the producer publishes — the cached, order-dependent rolling hash (Conversation::anti_entropy_digest). Both sides MUST compute it identically or every comparison false-mismatches.
+                                        let (n_rows, digest) = conv.anti_entropy_digest();
                                         let mismatch =
-                                            n_rows != record.row_count || fold != record.row_digest;
+                                            n_rows != record.row_count || digest != record.row_digest;
                                         const DIGEST_KICK_COOLDOWN_OSC: i64 =
                                             120 * vsf::OSCILLATIONS_PER_SECOND as i64;
                                         let idle = conv
@@ -20957,6 +20927,7 @@ impl PhotonApp {
                                     }
                                     let mut fresh: Vec<crate::types::ChatMessage> = Vec::new();
                                     let mut to_insert: Vec<crate::types::ChatMessage> = Vec::new();
+                                    let mut tombstoned_in_merge = false;
                                     for row in &page.rows {
                                         if crate::types::is_control_content(&row.content) {
                                             continue;
@@ -20984,6 +20955,7 @@ impl PhotonApp {
                                             }
                                             if row.deleted && !existing.deleted {
                                                 existing.deleted = true;
+                                                tombstoned_in_merge = true; // drops a row from the syncable set (inserts self-invalidate; this upgrade path doesn't)
                                                 if let Some((hash, _, _)) =
                                                     crate::types::parse_attachment_content(
                                                         &existing.content,
@@ -21012,6 +20984,10 @@ impl PhotonApp {
                                     for msg in to_insert {
                                         conv.insert_message_sorted(msg.clone());
                                         fresh.push(msg);
+                                    }
+                                    // A tombstone flip on an existing row doesn't pass through insert_message_sorted, so invalidate the digest for that case (inserts already self-invalidated).
+                                    if tombstoned_in_merge {
+                                        conv.invalidate_digest();
                                     }
 
                                     // Cursor + completion — only for a page we ASKED for; a live push must not fast-forward a walk that never ran. Early-stop: if history was already complete before this (re-)kickoff and the page brought nothing new, we're still complete — a routine re-key on an intact pair stops after one page instead of re-walking years.
