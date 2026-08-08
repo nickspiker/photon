@@ -2,6 +2,18 @@ apply plugin: 'com.android.application'
 apply plugin: 'org.jetbrains.kotlin.android'
 apply plugin: 'com.google.gms.google-services'
 
+// SINGLE SOURCE OF TRUTH: the version is Cargo.toml (the bible), the same string the Rust binary reports via CARGO_PKG_VERSION. Parse it here so the APK can never drift from it — a hand-maintained versionName had frozen at 0.0.38 while the crate was at 0.51.x, so the Android app lied about which build it was. versionName is the dotted crate version verbatim; versionCode is a monotonic integer derived as major*1_000_000 + minor*1_000 + patch, which stays increasing as long as minor/patch each stay under 1000 (Android requires a strictly rising integer to accept an update).
+def cargoVersion = {
+    def toml = new File(rootDir, "../Cargo.toml")
+    def m = (toml.text =~ /(?m)^version\s*=\s*"([^"]+)"/)
+    if (!m) { throw new GradleException("Could not read version from ${toml} — the APK version must track Cargo.toml") }
+    return m[0][1]
+}()
+def cargoVersionCode = {
+    def p = cargoVersion.tokenize('.')
+    return p[0].toInteger() * 1_000_000 + p[1].toInteger() * 1_000 + p[2].toInteger()
+}()
+
 android {
     namespace 'com.photon.messenger'
     compileSdk 34
@@ -10,8 +22,8 @@ android {
         applicationId "com.photon.messenger"
         minSdk 26  // API 26 for IMEI access and modern features
         targetSdk 34
-        versionCode 1
-        versionName "0.0.38"
+        versionCode cargoVersionCode
+        versionName cargoVersion
 
         // ARM64 only
         ndk {
