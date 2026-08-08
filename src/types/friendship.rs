@@ -158,6 +158,9 @@ const RETRY_BASE_SECS: u64 = 1;
 const RETRY_CAP_SECS: u64 = 30;
 const MAX_SEND_ATTEMPTS: u8 = 8;
 
+/// How many un-ACKed messages a lane may have in flight at once (advance-on-send makes pipelining safe; each frame encrypts at its own position). Held at 4 while pre-hardening receivers may still be in the field: their now-removed gap-streak fork trigger fired at 8 buffered frames, so a burst must stay well under that. Lift once the fleet has updated.
+pub const IN_FLIGHT_WINDOW: usize = 4;
+
 /// Backoff delay (in eagle-time oscillations) before the `attempts`-th send's resend: 1s, 2s, 4s, 8s, 16s, then capped at 30s. `attempts` is 1-based (1 = after the first transmit).
 fn retry_delay_osc(attempts: u8) -> i64 {
     let shift = attempts.saturating_sub(1).min(6); // cap the shift so 1<<shift can't overflow
@@ -1139,7 +1142,7 @@ impl FriendshipChains {
     ///
     /// The exact inverse of the receive path: derive the salt from our previous plaintext, generate the scratch pad, encrypt with our current chain key. `plaintext` is the already-VSF-encoded message body (the `(message: x{text}, hp{incorporated_hp}, hR{pad})` field the receiver parses) — the caller builds it so this layer stays agnostic to message shape.
     ///
-    /// Does NOT advance the chain — advancement is deferred to [`process_ack`](Self::process_ack), the same invariant the receive side relies on (advancing on send would desync if the peer never decrypts).
+    /// ADVANCES OUR LANE ON SEND. The ciphertext is frozen at the current position, then the lane ratchets forward immediately so the next message encrypts at the next position (pipelining, up to the caller's in-flight window). This is crypto-identical to the old ACK-time advance — same eagle_time, same salt-text as `our_plaintext`, same frozen strands the receiver resolves from the wire — only earlier; the receiver still advances on decrypt, so the two copies stay in lockstep. It also makes a mid-flight restart safe: the advance persists with the chain, so a reloaded pending (whose `woven_strands` aren't persisted) never re-advances and cannot fork.
     ///
     /// Returns `(ciphertext, prev_msg_hp, msg_hp, plaintext_hash)` for the wire send, or `None` if `our_handle_hash` isn't a participant. `plaintext` is the FULL flattened VSF payload (`(message: x{}, hp{}, hR{pad})`) — this is what goes on the wire (encrypted) and what both sides hash for `msg_hp`/ACK. `salt_text` is the bare message x-text only: the salt source + the `our_plaintext` fed to the braid's `derive_fresh_link` on ACK-advance. The two are SEPARATE on purpose — the random `hR` pad and the public `hp` are traffic-analysis/wire concerns, never chain-key material, and keeping them out of the chain ingredient keeps it valid UTF-8 (so it stores losslessly) and matches the receiver, which advances + salts from the decrypted x-text only.
     /// Returns `(ciphertext, prev_msg_hp, msg_hp, plaintext_hash, lane_label)` — the label rides every frame so any holder of the lane root can derive the decrypting lane (docs/lanes.md). Mints OUR lane on first send; writer discipline is structural: this is the only method that ever advances it.
@@ -1175,7 +1178,16 @@ impl FriendshipChains {
         let plaintext_hash = *blake3::hash(&plaintext).as_bytes();
         let msg_hp = derive_msg_hp(&prev_msg_hp, &plaintext_hash, eagle_time);
 
-        // Pending stores the SALT-TEXT (not the full payload): process_ack advances the chain with it (as our_plaintext) and it becomes last_plaintext for the next salt — both must equal what the receiver uses, which is the decrypted x-text only.
+        // ADVANCE ON SEND: ratchet our lane forward now, with the SAME arguments the old ACK-path used (this message's eagle_time, its salt-text as our_plaintext, the frozen strands) and set last_plaintext to the salt-text for the next message's salt. Done via borrows BEFORE add_pending moves salt_text/woven_strands.
+        {
+            let strand_refs: Vec<&[u8]> = woven_strands.iter().map(|s| s.as_slice()).collect();
+            self.advance(&our_label, &et, &salt_text, &strand_refs);
+        }
+        if let Some(idx) = self.lane_index(&our_label) {
+            self.last_plaintexts[idx] = salt_text.clone();
+        }
+
+        // Pending stores the SALT-TEXT + frozen strands for retransmit and ACK matching. The ACK is now a pure delivery receipt (the chain already moved); the strands stay frozen only so a retransmit resends byte-identically.
         self.add_pending(
             eagle_time,
             salt_text,
@@ -1189,36 +1201,17 @@ impl FriendshipChains {
         Some((ciphertext, prev_msg_hp, msg_hp, plaintext_hash, our_label))
     }
 
-    /// Process ACK: find pending message, advance our chain, update last_plaintext, clear pending. Chain advancement is deferred to ACK to prevent desync — if we advanced on send and the receiver never processed the message, both sides' copies of our chain would diverge. Returns true if ACK was valid and chain was advanced.
+    /// Process ACK: match the pending by (eagle_time, plaintext_hash), remove it, report the match. Under advance-on-send the chain already ratcheted forward when this message was encrypted, so the ACK is a pure delivery RECEIPT — it MUST NOT advance again (that would double-ratchet past the receiver). The match edge is what the caller hangs delivery, CLUTCH-ephemeral zeroize, and chain-seal on. No mutated_osc stamp: removing a pending is device-local (siblings never adopt our pendings) and the send already pushed the advanced lane, so an ACK needs no fleet replication.
     pub fn process_ack(
         &mut self,
         acked_eagle_time: i64,
         acked_plaintext_hash: &[u8; 32],
     ) -> bool {
-        // Fleet chain-replication ordering key: every local mutation stamps NOW (see mutated_osc).
-        self.mutated_osc = vsf::eagle_time_oscillations();
-        // Find the pending message by eagle_time and plaintext_hash (exact i64 match)
-        let pos = self.pending_messages.iter().position(|m| {
+        if let Some(idx) = self.pending_messages.iter().position(|m| {
             m.eagle_time == acked_eagle_time && &m.plaintext_hash == acked_plaintext_hash
-        });
-
-        if let Some(idx) = pos {
-            let pending = self.pending_messages.remove(idx);
-
-            // The braid: advance with the EXACT woven strands this message braided at send time (frozen on the PendingMessage), NOT whatever we hold now. The receiver advanced its copy of our chain using the strands named by the two eagle_times on the wire; these frozen bytes are those same strands. Using "latest plaintext" here was the original desync (order-dependent). Strands are already sorted by eagle_time.
-            let eagle_time = vsf::EagleTime::from_oscillations(pending.eagle_time);
-            let strand_refs: Vec<&[u8]> =
-                pending.woven_strands.iter().map(|s| s.as_slice()).collect();
-            let Some(our_label) = self.our_label else {
-                return false;
-            };
-            self.advance(&our_label, &eagle_time, &pending.plaintext, &strand_refs);
-
-            // Update last_plaintext for salt derivation on next message
-            if let Some(chain_idx) = self.lane_index(&our_label) {
-                self.last_plaintexts[chain_idx] = pending.plaintext;
-                return true;
-            }
+        }) {
+            self.pending_messages.remove(idx);
+            return true;
         }
         false
     }
@@ -1623,7 +1616,7 @@ mod tests {
         assert_eq!(chains1.get_anchor(&label), chains2.get_anchor(&label));
     }
 
-    /// THE lockstep property (docs/lanes.md): a receiver processing a lane's frames in order holds byte-identical lane state to the sender advancing on ACKs — across multiple messages, so the salt chain (last_plaintext) is proven too. This is the whole contract: one writer, any number of deterministic followers.
+    /// THE lockstep property (docs/lanes.md): a receiver processing a lane's frames in order holds byte-identical lane state to the sender, which now advances on SEND — across multiple messages, so the salt chain (last_plaintext) is proven too. This is the whole contract: one writer, any number of deterministic followers.
     #[test]
     fn send_and_receive_advance_stay_in_lockstep_on_a_lane() {
         use crate::crypto::chain::{
@@ -1651,7 +1644,7 @@ mod tests {
             receiver.advance(&lane, &et, text, &[]);
             receiver.set_last_plaintext(&lane, text.to_vec());
             receiver.update_received_hash(&lane, msg_hp);
-            // Sender advances only on the ACK — and both sides land on the same key.
+            // The sender already advanced on send; the ACK is a pure receipt that matches + clears the pending, and both sides sit on the same key.
             assert!(sender.process_ack(osc, &ph));
             assert_eq!(
                 sender.current_key(&lane).unwrap(),
@@ -1660,6 +1653,63 @@ mod tests {
             );
             assert_eq!(sender.lane_position(&lane), receiver.lane_position(&lane));
         }
+    }
+
+    /// PIPELINING: advance-on-send lets a sender emit a burst of frames with NO ACK between them, each encrypted at its own position, and a receiver walking them in order decrypts every one and lands byte-identical. This is what the in-flight window makes safe and what the serial gate used to forbid.
+    #[test]
+    fn a_pipelined_burst_decrypts_in_order_and_stays_in_lockstep() {
+        use crate::crypto::chain::{
+            decrypt_layers, derive_salt, generate_scratch, CURRENT_KEY_INDEX,
+        };
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut sender = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        let mut receiver = FriendshipChains::from_clutch(&[bob, alice], &eggs);
+
+        // Burst FIVE messages with no ACK in between — the sender advances on each send.
+        let texts: [&[u8]; 5] = [b"one", b"two", b"three", b"four", b"five"];
+        let mut sent = Vec::new();
+        for (i, text) in texts.iter().enumerate() {
+            let osc = 1_000i64 + i as i64;
+            let (ct, prev, msg_hp, ph, lane) = sender
+                .prepare_send(text.to_vec(), text.to_vec(), osc, vec![])
+                .unwrap();
+            sent.push((ct, prev, msg_hp, ph, lane, osc, text.to_vec()));
+        }
+        // All five are in flight at once — the crypto layer imposes no serial limit (the in-flight window is UI-level flow control in chain_transmit, not here).
+        assert_eq!(sender.pending_messages.len(), 5);
+
+        // Receiver processes them strictly in order — each decrypts at its own position.
+        for (ct, prev, msg_hp, _ph, lane, osc, text) in &sent {
+            receiver.ensure_lane(lane).unwrap();
+            assert!(
+                receiver.verify_chain_link(lane, prev).is_ok(),
+                "burst frame osc {osc} did not link in order"
+            );
+            let chain = receiver.chain(lane).unwrap().clone();
+            let salt = derive_salt(receiver.last_plaintext(lane), &chain);
+            let scratch = generate_scratch(&chain, &salt);
+            let et = vsf::EagleTime::from_oscillations(*osc);
+            let plain = decrypt_layers(ct, &chain, CURRENT_KEY_INDEX, &scratch, &et);
+            assert_eq!(&plain, text, "pipelined frame osc {osc} failed to decrypt");
+            receiver.advance(lane, &et, text, &[]);
+            receiver.set_last_plaintext(lane, text.clone());
+            receiver.update_received_hash(lane, *msg_hp);
+        }
+
+        // ACKs arrive in ANY order and only clear pendings — the chains already agree.
+        let lane = sent[0].4;
+        for (_ct, _prev, _msg_hp, ph, _lane, osc, _text) in sent.iter().rev() {
+            assert!(sender.process_ack(*osc, ph));
+        }
+        assert!(sender.pending_messages.is_empty());
+        assert_eq!(
+            sender.current_key(&lane).unwrap(),
+            receiver.current_key(&lane).unwrap(),
+            "sender and receiver diverged after a pipelined burst"
+        );
+        assert_eq!(sender.lane_position(&lane), receiver.lane_position(&lane));
     }
 
     #[test]
