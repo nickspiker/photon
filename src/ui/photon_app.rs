@@ -12831,7 +12831,7 @@ impl PhotonApp {
                 let has_fleet = self.contacts.iter().any(|c| c.is_sibling);
                 let is_friend = self.contacts.get(ci).map_or(false, |c| !c.is_sibling);
                 if !(has_fleet && is_friend) {
-                    // The bubble STAYS. Withdrawing it deleted what the user typed — and the commonest reason to land here is a re-key in flight (a wire flag-day, a peer that lost its chains), which resolves in seconds. The row is already persisted and marked undelivered, so it renders dim, survives a relaunch, and goes out the moment a chain exists (`rearm_undelivered_after_rekey`).
+                    // The bubble STAYS. Withdrawing it deleted what the user typed — and the commonest reason to land here is a re-key in flight (a wire flag-day, a peer that lost its chains), which resolves in seconds. The row is already persisted and marked undelivered, so it renders dim, survives a relaunch, and goes out the moment a chain exists — the held-message flush (resend_held_messages) sends it once a lane and a send slot are available.
                     self.persist_messages_async(ci);
                     crate::logf!(
                         "CHAT: no chain yet for this contact — message held undelivered, will send when the ceremony completes ({} queued)",
@@ -12907,14 +12907,16 @@ impl PhotonApp {
                 relay_to,
             )
         };
-        // STRICT SERIAL PER LANE: the ratchet advances on ACK, not on send — that is the braid's whole desync defence — so a second prepare_send before the first ACK encrypts at the SAME position: identical key and salt, and the receiver can decrypt exactly one of the batch (all four flushed messages shared key 96e0f452 and three of them plus a probe stayed grey forever, 2026-08-07; this is also July's parked "chain-advance desync by msg 2"). One message in flight per lane: while a pending exists, the row stays held — the ACK-advance flush sends the next one at the fresh position.
+        // IN-FLIGHT WINDOW: advance-on-send gives each message its own position, so pipelining is safe — but keep a bounded window so a burst can't outrun the receiver's gap buffer (and stays well under the count that tripped older receivers' fork detector). While the lane already holds the window's worth of un-ACKed sends, the row stays held and the ACK-advance flush sends the next as a slot frees.
         if self
             .friendship_chains
             .iter()
             .find(|(id, _)| *id == friendship_id)
-            .map_or(false, |(_, c)| !c.pending_messages.is_empty())
+            .map_or(false, |(_, c)| {
+                c.pending_messages.len() >= crate::types::friendship::IN_FLIGHT_WINDOW
+            })
         {
-            crate::logf!("CHAT: lane busy — un-ACKed send in flight; holding this message for the ACK-advance flush");
+            crate::logf!("CHAT: lane at the in-flight window ({}) — holding this message for an ACK slot", crate::types::friendship::IN_FLIGHT_WINDOW);
             return false;
         }
 
@@ -13293,12 +13295,15 @@ impl PhotonApp {
                 c.clutch_state == crate::types::ClutchState::Complete
                     && c.friendship_id.is_some()
                     && !c.probe_sent
-                    // A BUSY LANE needs no probe: the un-ACKed message already in flight proves the same thing the probe would, and its ACK advances the chain. Without this the serial-send gate and the presence re-probe sweep spun against each other — probe attempted, held, never latched, re-attempted every frame (196 attempts in 3.4s on a phone, 2026-08-07). The probe fires later, from the same sweep, once the lane is free.
+                    // A LANE AT ITS WINDOW needs no probe: an un-ACKed message already in flight proves what the probe would, and it advances the chain. Without this the send window and the presence re-probe sweep spun against each other — probe attempted, held, never latched, re-attempted every frame (196 attempts in 3.4s on a phone, 2026-08-07). The probe fires later, from the same sweep, once a slot frees.
                     && c.friendship_id.is_none_or(|fid| {
                         self.friendship_chains
                             .iter()
                             .find(|(id, _)| *id == fid)
-                            .is_none_or(|(_, ch)| ch.pending_messages.is_empty())
+                            .is_none_or(|(_, ch)| {
+                                ch.pending_messages.len()
+                                    < crate::types::friendship::IN_FLIGHT_WINDOW
+                            })
                     })
                     // A weave probe proves a chain reaches someone; with no remote participants there is no chain and nobody to answer it.
                     && self.our_party_id(c).is_some_and(|us| c.remote_count(&us) > 0)
