@@ -2,16 +2,24 @@ apply plugin: 'com.android.application'
 apply plugin: 'org.jetbrains.kotlin.android'
 apply plugin: 'com.google.gms.google-services'
 
-// SINGLE SOURCE OF TRUTH: the version is Cargo.toml (the bible), the same string the Rust binary reports via CARGO_PKG_VERSION. Parse it here so the APK can never drift from it — a hand-maintained versionName had frozen at 0.0.38 while the crate was at 0.51.x, so the Android app lied about which build it was. versionName is the dotted crate version verbatim; versionCode is a monotonic integer derived as major*1_000_000 + minor*1_000 + patch, which stays increasing as long as minor/patch each stay under 1000 (Android requires a strictly rising integer to accept an update).
+// TWO NUMBERS, TWO JOBS. versionName is the ONLY correct version — the Cargo.toml crate version (the bible), verbatim, the same string the Rust binary reports via CARGO_PKG_VERSION. It carries the real major.minor.patch and is what humans and Photon's own update check read.
+// versionCode is Android's private "is this build newer?" gate: a meaningless monotonic i32 (max 2,147,483,647) that the OS compares to decide whether to accept an update, and NOTHING else reads for meaning. It must NOT encode major.minor.patch — a positional scheme overflows and collides on real numbers (patch alone has been 14648), which is the whole reason the two are separate. So versionCode = the git commit count: stateless, reproducible from any checkout, no stored counter to bump or desync, and it rises by exactly 1 per commit (a few thousand now — decades of headroom under the i32 cap).
 def cargoVersion = {
     def toml = new File(rootDir, "../Cargo.toml")
     def m = (toml.text =~ /(?m)^version\s*=\s*"([^"]+)"/)
     if (!m) { throw new GradleException("Could not read version from ${toml} — the APK version must track Cargo.toml") }
     return m[0][1]
 }()
-def cargoVersionCode = {
-    def p = cargoVersion.tokenize('.')
-    return p[0].toInteger() * 1_000_000 + p[1].toInteger() * 1_000 + p[2].toInteger()
+def gitCommitCount = {
+    def out = new ByteArrayOutputStream()
+    def rc = exec {
+        commandLine 'git', 'rev-list', '--count', 'HEAD'
+        workingDir rootDir
+        standardOutput = out
+        ignoreExitValue = true
+    }
+    if (rc.exitValue != 0) { throw new GradleException("git rev-list failed — versionCode is the commit count; the build must run inside the git repo") }
+    return out.toString().trim().toInteger()
 }()
 
 android {
@@ -22,7 +30,7 @@ android {
         applicationId "com.photon.messenger"
         minSdk 26  // API 26 for IMEI access and modern features
         targetSdk 34
-        versionCode cargoVersionCode
+        versionCode gitCommitCount
         versionName cargoVersion
 
         // ARM64 only
