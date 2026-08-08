@@ -1031,47 +1031,6 @@ impl FriendshipChains {
         rearmed
     }
 
-    /// Get pending messages that come after a given hash pointer. Used for resync: peer says "I have hash X", we return messages after X.
-    ///
-    /// Returns Vec of (eagle_time, ciphertext, prev_msg_hp) for resending.
-    pub fn get_pending_after(&self, after_hash: &[u8; 32]) -> Vec<(i64, Vec<u8>, [u8; 32])> {
-        let mut found_start = false;
-        let mut result = Vec::new();
-
-        // Check if after_hash matches our anchor (they want everything) or if it's somewhere in our pending chain
-        for pending in &self.pending_messages {
-            if found_start {
-                result.push((
-                    pending.eagle_time,
-                    pending.ciphertext.clone(),
-                    pending.prev_msg_hp,
-                ));
-            } else if &pending.prev_msg_hp == after_hash || pending.msg_hp == *after_hash {
-                // Found the starting point - include this one and all after
-                if &pending.prev_msg_hp == after_hash {
-                    // They have the message before this one
-                    result.push((
-                        pending.eagle_time,
-                        pending.ciphertext.clone(),
-                        pending.prev_msg_hp,
-                    ));
-                }
-                found_start = true;
-            }
-        }
-
-        // If after_hash is one of our anchors, return all pending
-        if !found_start && self.first_message_anchors.iter().any(|a| a == after_hash) {
-            return self
-                .pending_messages
-                .iter()
-                .map(|p| (p.eagle_time, p.ciphertext.clone(), p.prev_msg_hp))
-                .collect();
-        }
-
-        result
-    }
-
     /// Get last_sent_hash (for debugging/logging).
     pub fn last_sent_hash(&self) -> Option<&[u8; 32]> {
         self.last_sent_hash.as_ref()
@@ -1225,34 +1184,6 @@ impl FriendshipChains {
         false
     }
 
-    /// Clear all pending messages up to and including the given msg_hp. Used for hp-based sync: peer tells us their last_received_hp, we clear everything they have. Returns count of messages cleared.
-    pub fn clear_pending_up_to(&mut self, up_to_hp: &[u8; 32]) -> usize {
-        let mut cleared = 0;
-        let mut last_plaintext_to_set: Option<Vec<u8>> = None;
-
-        // Remove all pending messages up to and including the one with msg_hp == up_to_hp
-        self.pending_messages.retain(|m| {
-            if cleared > 0 || m.msg_hp == *up_to_hp {
-                // This message or earlier - they have it, clear it
-                last_plaintext_to_set = Some(m.plaintext.clone());
-                cleared += 1;
-                false // remove
-            } else {
-                true // keep - this is after the sync point
-            }
-        });
-
-        // Update last_plaintext for salt derivation
-        if let (Some(plaintext), Some(chain_idx)) = (
-            last_plaintext_to_set,
-            self.our_label.and_then(|l| self.lane_index(&l)),
-        ) {
-            self.last_plaintexts[chain_idx] = plaintext;
-        }
-
-        cleared
-    }
-
     /// Get the most recent pending plaintext (for salt derivation of next send). If no pending messages, returns last_plaintext for our chain.
     pub fn current_send_plaintext(&self) -> &[u8] {
         // If we have pending messages, use the last one's plaintext
@@ -1306,24 +1237,6 @@ impl FriendshipChains {
     pub fn update_sent_for_mixing(&mut self, eagle_time: i64, msg_hp: [u8; 32], plaintext: &[u8]) {
         let weave = derive_weave_hash(eagle_time, &msg_hp, plaintext);
         self.last_sent_weave = Some(weave);
-    }
-
-    /// Process implicit ACK from their_incorporated_hp. Removes all pending messages up to and including the given msg_hp. Returns number of messages cleared.
-    pub fn process_implicit_ack(&mut self, their_incorporated_hp: &[u8; 32]) -> usize {
-        let mut cleared = 0;
-
-        // Find the position of the acked message
-        if let Some(ack_pos) = self
-            .pending_messages
-            .iter()
-            .position(|m| &m.msg_hp == their_incorporated_hp)
-        {
-            // Remove all messages up to and including this one They're in order, so we can drain 0..=ack_pos
-            cleared = ack_pos + 1;
-            self.pending_messages.drain(0..cleared);
-        }
-
-        cleared
     }
 
     /// Look up a pending message's plaintext by its msg_hp. Used by receiver to get the plaintext for bidirectional weave.
