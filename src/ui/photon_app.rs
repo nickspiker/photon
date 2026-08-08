@@ -405,6 +405,15 @@ fn party_colour(digest: &[u8; 32]) -> u32 {
     vsf_rgb_to_stored(rgb_vsf)
 }
 
+/// A verified+stored attachment blob, posted from the off-thread worker back to the UI drain. Carries only what the drain needs to confirm receipt (attach_have) and refresh the view; the plaintext is already on disk.
+struct AttachInstalled {
+    conversation_token: [u8; 32],
+    content_hash: [u8; 32],
+    sender_pubkey: crate::types::DevicePubkey,
+    sender_addr: std::net::SocketAddr,
+    len: usize,
+}
+
 /// Greedy word-wrap for the message list: split `s` into lines that each measure ≤ `max_w` under `style`. Word widths are measured individually and summed (kerning across a space is negligible at chat sizes), so the cost is O(words), not O(words²) re-shapes. A single word wider than the line hard-breaks by chars — a pasted URL/hash must wrap, not vanish off-screen. Empty input yields one empty line so the row keeps its height.
 /// Bubble DISPLAY text for a row: attachment rows render as a pill line — paperclip, name, dozenal size, and an actions hint while the blob isn't held locally. Everything else passes thru. The raw marker string never reaches a glyph.
 /// Attachment resample card geometry: (centre_x, centre_y, w, h) — shared by layout + render + hit rects.
@@ -787,6 +796,9 @@ pub struct PhotonApp {
     /// Peer-avatar background downloads (fetched from FGTW by handle, off the UI thread). The result carries the decoded VSF-RGB pixels (or None if the peer has no avatar / fetch failed); the drain in `check_status_updates` colour-converts and installs them on the matching contact.
     avatar_dl_tx: std::sync::mpsc::Sender<crate::ui::avatar::AvatarDownloadResult>,
     avatar_dl_rx: std::sync::mpsc::Receiver<crate::ui::avatar::AvatarDownloadResult>,
+    /// Attachment blobs verified + stored OFF the UI thread: the receive arm hands (sealed, key, hash, seed) to a worker that AEAD-opens the whole blob, checks its content hash, and writes it to blob storage — all heavy on the render thread inline (an arbitrary-size file). The worker posts back here on success; the drain sends the attach_have confirm (needs the keypair + checker) and clears the compose wrap.
+    attach_installed_tx: std::sync::mpsc::Sender<AttachInstalled>,
+    attach_installed_rx: std::sync::mpsc::Receiver<AttachInstalled>,
     /// Handles we've already kicked an avatar download for this session, so we don't re-spawn a fetch every time a conversation is reopened or the contact list re-renders.
     avatar_dl_started: std::collections::HashSet<[u8; 32]>,
     /// Mutual peers we've sent a direct P2P AvatarRequest to, mapped to the eagle-time we sent it. The per-tick sweep asks each mutual peer once, then — if no AvatarResponse has installed an avatar within `AVATAR_P2P_FALLBACK_OSC` — falls back to FGTW. So a friend's avatar comes from the friend first, and FGTW only covers the case where the friend is offline or avatar-less.
@@ -1301,6 +1313,11 @@ impl PhotonApp {
                 tx
             },
             avatar_dl_rx: std::sync::mpsc::channel().1,
+            attach_installed_tx: {
+                let (tx, _) = std::sync::mpsc::channel();
+                tx
+            },
+            attach_installed_rx: std::sync::mpsc::channel().1,
             fleet_heal_busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             fanout_rotate_pending: false,
             self_avatar_recover_pending: None,
@@ -2400,6 +2417,9 @@ impl FluorApp for PhotonApp {
             let (atx, arx) = std::sync::mpsc::channel();
             self.avatar_dl_tx = atx;
             self.avatar_dl_rx = arx;
+            let (aitx, airx) = std::sync::mpsc::channel();
+            self.attach_installed_tx = aitx;
+            self.attach_installed_rx = airx;
             let (frtx, frrx) = std::sync::mpsc::channel();
             self.fleet_rotated_tx = frtx;
             self.fleet_rotated_rx = frrx;
@@ -14552,6 +14572,33 @@ impl PhotonApp {
     }
 
     /// Drain completed peer-avatar downloads: colour-convert the VSF-RGB pixels to the display buffer (same path as the self avatar) and install them on the matching contact, invalidating its scaled cache so the next render rebuilds + shows it. A `None` result (no avatar / fetch failed) just leaves the placeholder.
+    /// Drain attachment blobs a worker verified + stored off-thread: send the attach_have confirm (needs the keypair + checker, which is why it can't run in the worker) so the pusher's pill flips to delivered, then clear the compose wrap and repaint.
+    fn drain_attach_installed(&mut self) {
+        while let Ok(r) = self.attach_installed_rx.try_recv() {
+            crate::logf!("ATTACH: blob received + stored ({} bytes)", r.len);
+            if let (Some(kp), Some(checker)) =
+                (self.device_keypair.as_ref(), self.status_checker.as_ref())
+            {
+                if let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_attach_have_vsf(
+                    &r.conversation_token,
+                    &r.content_hash,
+                    kp.public.as_bytes(),
+                    kp.secret.as_bytes(),
+                ) {
+                    checker.send_history(crate::network::status::HistorySendRequest {
+                        peer_addr: r.sender_addr,
+                        alt_addr: None,
+                        recipient_pubkey: r.sender_pubkey.key,
+                        vsf_bytes,
+                        relay_to: vec![r.sender_pubkey.key], // always the one-device relay copy — responses die on one-directional reverse paths
+                    });
+                }
+            }
+            self.msg_wrap = None;
+            self.scene_dirty = true;
+        }
+    }
+
     fn drain_avatar_downloads(&mut self) {
         while let Ok(result) = self.avatar_dl_rx.try_recv() {
             let Some(vsf_rgb) = result.pixels else {
@@ -17546,6 +17593,7 @@ impl PhotonApp {
 
         // Peer avatars: install any completed downloads, then kick a fetch (once/session/handle) for any contact still without one. Cache-first + dedup'd by avatar_dl_started, so this is cheap to run every tick — it spawns at most one thread per peer per session.
         self.drain_avatar_downloads();
+        self.drain_attach_installed();
 
         // Our OWN just-picked avatar, arriving from the off-thread set pipeline (decode ran there too): install + repaint, then drop the channel — one avatar per pick.
         if let Some(rx) = self.avatar_set_rx.as_ref() {
@@ -20311,33 +20359,33 @@ impl PhotonApp {
                         ),
                         Some(idx) => {
                             let party_id = self.contacts[idx].handle_hash;
+                            let owner_hp = self.contacts[idx].handle_proof;
                             let mut pin_key = [0u8; 32];
                             pin_key.copy_from_slice(&self.contacts[idx].avatar_pin[..32]);
-                            // Decode the AVIF-in-VSF to display pixels with the PINNED key (same as an FGTW download under the pin-set).
-                            match crate::ui::avatar::load_avatar_from_bytes_with_key(
-                                &avatar_vsf,
-                                &pin_key,
-                            ) {
-                                Some((_, vsf_rgb)) => {
-                                    // Cache it (party-id scope) so a restart shows it without another round-trip.
-                                    if let Some(storage) = self.storage.as_ref() {
+                            // OFF-THREAD: the AVIF-in-VSF decode (dav1d) + the cache write ran inline on the render thread. Small avatars are cheap, but a large one hitches the frame — mirror the FGTW download path: a worker decodes with the PINNED key and caches (party-id scope, so a restart shows it without a round-trip), then delivers the display pixels back over avatar_dl_tx keyed by owner handle_proof, which the existing drain installs on the matching contact next tick.
+                            let storage = self.storage.as_ref().map(std::sync::Arc::clone);
+                            let tx = self.avatar_dl_tx.clone();
+                            std::thread::spawn(move || {
+                                let pixels = crate::ui::avatar::load_avatar_from_bytes_with_key(
+                                    &avatar_vsf,
+                                    &pin_key,
+                                )
+                                .map(|(_, vsf_rgb)| {
+                                    if let Some(st) = storage.as_ref() {
                                         let _ = crate::ui::avatar::save_avatar_to_cache_from_seed(
-                                            &party_id,
-                                            &avatar_vsf,
-                                            storage,
+                                            &party_id, &avatar_vsf, st,
                                         );
                                     }
-                                    let display =
-                                        crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb);
-                                    let contact = &mut self.contacts[idx];
-                                    contact.avatar_pixels = Some(display);
-                                    contact.avatar_scaled = None;
-                                    contact.avatar_scaled_diameter = 0;
-                                    changed = true;
-                                    crate::log("Avatar: installed mutual peer's avatar (P2P)");
+                                    vsf_rgb
+                                });
+                                if pixels.is_none() {
+                                    crate::log("Avatar: failed to decode peer avatar bytes");
                                 }
-                                None => crate::log("Avatar: failed to decode peer avatar bytes"),
-                            }
+                                let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
+                                    owner: Some(owner_hp),
+                                    pixels,
+                                });
+                            });
                         }
                     }
                 }
@@ -20537,49 +20585,33 @@ impl PhotonApp {
                         .contacts
                         .iter()
                         .any(|c| c.knows_device(&sender_pubkey.key));
+                    let wire_key = self.attach_wire_key(&sender_pubkey.key, &conversation_token);
+                    let seed = self.session.as_ref().map(|s| s.identity_seed);
                     if !known {
                         crate::log("ATTACH: blob from unknown device — dropped");
-                    } else if let Some(wire_key) =
-                        self.attach_wire_key(&sender_pubkey.key, &conversation_token)
-                    {
-                        match kete::decrypt_bytes(&sealed, &wire_key) {
+                    } else if let (Some(wire_key), Some(seed)) = (wire_key, seed) {
+                        // OFF-THREAD: an attachment blob is arbitrary-size, and the AEAD open + blake3-over-the-whole-blob + disk store all ran inline on the render thread. A worker does the three, then posts back so the drain (which holds the keypair + checker) sends the attach_have confirm and clears the compose wrap. A hash mismatch or store failure logs and posts nothing.
+                        let tx = self.attach_installed_tx.clone();
+                        std::thread::spawn(move || match kete::decrypt_bytes(&sealed, &wire_key) {
                             Ok(plain) if *blake3::hash(&plain).as_bytes() == content_hash => {
-                                if let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) {
-                                    match crate::storage::blob_store(&seed, &content_hash, &plain) {
-                                        Ok(()) => {
-                                            crate::logf!(
-                                                "ATTACH: blob received + stored ({} bytes)",
-                                                plain.len()
-                                            );
-                                            // Confirm to the pusher (attach_have) so their pill flips to delivered. Relay reply when the blob came thru the pipe.
-                                            if let (Some(kp), Some(checker)) = (
-                                                self.device_keypair.as_ref(),
-                                                self.status_checker.as_ref(),
-                                            ) {
-                                                if let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_attach_have_vsf(&conversation_token, &content_hash, kp.public.as_bytes(), kp.secret.as_bytes()) {
-                                                    let via_relay = sender_addr == crate::network::status::RELAY_ADDR;
-                                                    checker.send_history(crate::network::status::HistorySendRequest {
-                                                        peer_addr: sender_addr,
-                                                        alt_addr: None,
-                                                        recipient_pubkey: sender_pubkey.key,
-                                                        vsf_bytes,
-                                                        relay_to: vec![sender_pubkey.key], // always the one-device relay copy — see the page-serve site: responses die on one-directional reverse paths
-                                                    });
-                                                }
-                                            }
-                                            self.msg_wrap = None;
-                                            self.scene_dirty = true;
-                                            changed = true;
-                                        }
-                                        Err(e) => crate::logf!("ATTACH: blob store failed: {}", e),
+                                match crate::storage::blob_store(&seed, &content_hash, &plain) {
+                                    Ok(()) => {
+                                        let _ = tx.send(AttachInstalled {
+                                            conversation_token,
+                                            content_hash,
+                                            sender_pubkey,
+                                            sender_addr,
+                                            len: plain.len(),
+                                        });
                                     }
+                                    Err(e) => crate::logf!("ATTACH: blob store failed: {}", e),
                                 }
                             }
                             Ok(_) => crate::log("ATTACH: blob hash mismatch — dropped"),
                             Err(e) => crate::logf!("ATTACH: blob seal open failed: {}", e),
-                        }
+                        });
                     } else {
-                        crate::log("ATTACH: no wire key for the blob's conversation — dropped");
+                        crate::log("ATTACH: no wire key / no session for the blob's conversation — dropped");
                     }
                 }
                 // Throttled PT transfer progress — drives the pill progress bars.
