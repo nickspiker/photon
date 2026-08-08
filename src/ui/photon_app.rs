@@ -413,6 +413,22 @@ struct HistPageOpened {
     page: crate::network::history_pages::HistoryPagePlain,
 }
 
+/// RAII release for the fleet-heal latch: `acquire` CASes false→true and hands back a guard whose Drop stores false — so a panic anywhere in a heal (fold, rotate, push) can never park key sync for the whole session behind a latch nothing clears. The panic still kills its worker thread; the next sync edge retries against a released latch.
+struct HealLatch(std::sync::Arc<std::sync::atomic::AtomicBool>);
+impl HealLatch {
+    fn acquire(flag: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> Option<Self> {
+        use std::sync::atomic::Ordering;
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| HealLatch(flag.clone()))
+    }
+}
+impl Drop for HealLatch {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// A signal the chains writer fires only AFTER its snapshot lands on disk — the durable-then-signal half of the commit-point law, kept intact with the write off the UI thread. Receive: persist-before-ACK (a lost write withholds the ACK; the sender retransmits and we re-process). Send: persist-before-transmit (a crash before the write means no frame ever left; the reload re-sends from the persisted tip, never at a stale position).
 enum ChainsPostDurable {
     Ack(
@@ -10934,20 +10950,14 @@ impl PhotonApp {
         let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
         let busy = self.fleet_heal_busy.clone();
         std::thread::spawn(move || {
-            use std::sync::atomic::Ordering;
-            if busy
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_err()
-            {
+            // RAII latch: released on EVERY exit, panics included — a manual store(false) here once left a poisoned latch parking key sync for the whole session.
+            let Some(_latch) = HealLatch::acquire(&busy) else {
                 return; // a heal already holds the latch; its rotation covers this too
-            }
+            };
             // Genesis-verified fold: never rotate toward a member set a relay could have swapped.
             let members = match fleet::current_members_verified(&hp, &identity_seed) {
                 Ok(m) if !m.is_empty() => m,
-                _ => {
-                    busy.store(false, Ordering::Release);
-                    return;
-                }
+                _ => return,
             };
             match fleet::rotate_fleet_key(&hp, &device_key, &members, Some(&storage)) {
                 Ok((epoch, k)) => {
@@ -10960,7 +10970,6 @@ impl PhotonApp {
                 }
                 Err(e) => crate::logf!("FANOUT: compliance rotation failed: {}", e),
             }
-            busy.store(false, Ordering::Release);
         });
     }
 
@@ -11012,12 +11021,10 @@ impl PhotonApp {
                 fleet::fanout_needs_rotation(wraps.len(), desired.len()).then_some(desired)
             })();
             if let Some(members) = heal_members {
-                if busy
-                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .is_err()
-                {
+                // RAII latch — released on every exit including a panic mid-rotate (the old manual store left it poisoned).
+                let Some(_latch) = HealLatch::acquire(&busy) else {
                     return;
-                }
+                };
                 // Preserve the slot BEFORE the re-key makes it unopenable. A racing sibling's re-push can already have re-sealed it (AEAD miss → default) — then our push carries `ours` alone, and whatever the slot uniquely held rides back on that sibling's next write (CRDT union, no tombstone loss).
                 let old_key = storage
                     .read_addr(&addr)
@@ -11054,7 +11061,6 @@ impl PhotonApp {
                         }
                     }
                 }
-                busy.store(false, Ordering::Release);
                 return;
             }
             match fleet::recover_or_establish_fleet_key(&hp, &device_key, Some(&storage)) {
@@ -15406,6 +15412,13 @@ impl PhotonApp {
                 continue;
             }
             let fid = incoming.friendship_id;
+            // Pre-adopt lane positions — the echo kill below stamps only what the ADOPT moved.
+            let pre_positions: std::collections::HashMap<[u8; 32], u64> = self
+                .friendship_chains
+                .iter()
+                .find(|(id, _)| *id == fid)
+                .map(|(_, c)| c.lane_summary().into_iter().collect())
+                .unwrap_or_default();
             // LANE-WISE adopt (docs/lanes.md): a lane merges iff its position is strictly greater — replacing whole-blob newest-wins, whose fork window was two devices clobbering each other's live lanes and pendings. A fresh device takes the whole copy SANITIZED (the sender's minted label, pendings and send tip stripped — adopting those would make this device write on the sender's lane). Echo dies naturally: a sibling merging our pushed union finds no greater positions and stays silent.
             let mut incoming = incoming;
             let adopted = match self
@@ -15433,6 +15446,22 @@ impl PhotonApp {
             };
             if !adopted {
                 continue;
+            }
+            // ECHO KILL (the chain_pushed_osc field doc promised this): a lane the ADOPT moved is already fleet-known — the ORIGIN pushed it at every sibling itself (relay copies cover the offline ones) — so stamp it pushed at its adopted position. Without the stamp the next replication sweep read "position > pushed" and re-broadcast every adopted lane, one redundant fleet-wide push per adopt. Lanes the adopt did NOT move keep their stamps, so a local advance that raced the adopt still pushes — and the coarse mutated_osc stamp is deliberately NOT recorded here for the same reason (the sweep's empty-changed pass records it safely once nothing per-lane is due).
+            let fid_bytes = *fid.as_bytes();
+            let post_positions: Vec<([u8; 32], u64)> = self
+                .friendship_chains
+                .iter()
+                .find(|(id, _)| *id == fid)
+                .map(|(_, c)| c.lane_summary())
+                .unwrap_or_default();
+            for (label, pos) in post_positions {
+                if pre_positions.get(&label).copied().unwrap_or(0) < pos {
+                    let mut key = [0u8; 64];
+                    key[..32].copy_from_slice(&fid_bytes);
+                    key[32..].copy_from_slice(&label);
+                    self.lane_pushed_pos.insert(key, pos);
+                }
             }
             // Persist the adopted lanes off-thread (coalesced): a chain-sync adopt is idempotent — a delayed/lost write just re-adopts from the sibling's next push, never a fork, so it is not a commit point.
             self.persist_chains_async(&fid);
