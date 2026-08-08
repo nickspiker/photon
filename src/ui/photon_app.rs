@@ -3562,7 +3562,7 @@ impl FluorApp for PhotonApp {
                         if self.send_chain_message(sci, &crate::types::react_content(ts, &body), false)
                             && !toggled_off
                         {
-                            self.bump_react_count(&glyph);
+                            self.stamp_react_used(&glyph);
                         }
                         self.selected_msg = None;
                         self.scene_dirty = true;
@@ -12390,24 +12390,25 @@ impl PhotonApp {
         true
     }
 
-    /// Fleet-wide reaction usage, summed across every device's own counts key. Per-DEVICE keys (`react.counts.<device>`) because the settings layer is LWW per key — one shared key would drop concurrent increments across devices, the exact `fleet.locked` race shape; a key only its device writes can never lose one. Value encoding: `glyph\u{2}count` pairs joined by `\u{3}`.
-    fn react_counts(&self) -> std::collections::HashMap<String, u64> {
-        let mut out: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    /// Fleet-wide reaction RECENCY: each device keeps `glyph → last_used_osc` in its own single-writer key (`react.recent.<device>` — per-device because the settings layer is LWW per key: one shared key would drop concurrent stamps across devices, the `fleet.locked` race shape). The fleet view is the max stamp per glyph across keys. Recency, not tally, ON PURPOSE: all-time counts ossify (an old habit needs to be out-used to dethrone), while most-recent-first keeps the strip current and reshuffles the moment a new codepoint is used — the contacts list's float-to-top, derived from stamps because two devices' bare orders can't merge. Value encoding: `glyph\u{2}last_osc` pairs joined by `\u{3}`, lenient parse so the blob can grow fields later without a flag-day.
+    fn react_recency(&self) -> std::collections::HashMap<String, i64> {
+        let mut out: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
         let Some(fs) = self.fleet_settings.as_ref() else {
             return out;
         };
         for e in fs
             .global
             .iter()
-            .filter(|e| !e.tombstone && e.key.starts_with("react.counts."))
+            .filter(|e| !e.tombstone && e.key.starts_with("react.recent."))
         {
             let Ok(s) = std::str::from_utf8(&e.value) else {
                 continue;
             };
             for pair in s.split('\u{3}') {
-                if let Some((g, n)) = pair.split_once('\u{2}') {
-                    if let Ok(n) = n.parse::<u64>() {
-                        *out.entry(g.to_string()).or_insert(0) += n;
+                if let Some((g, t)) = pair.split_once('\u{2}') {
+                    if let Ok(t) = t.parse::<i64>() {
+                        let e = out.entry(g.to_string()).or_insert(t);
+                        *e = (*e).max(t);
                     }
                 }
             }
@@ -12415,48 +12416,51 @@ impl PhotonApp {
         out
     }
 
-    /// Bump OUR device's usage count for a just-sent reaction (single-writer key; see react_counts). Rides the ordinary settings persist+push, so the ranking follows the fleet.
-    fn bump_react_count(&mut self, glyph: &str) {
+    /// Stamp a just-used reaction NOW on OUR device's recency key (single-writer; see react_recency), pruning to the newest 24 so the blob stays bounded — an old one-off falls off the end instead of living forever. Rides the ordinary settings persist+push, so the order follows the fleet.
+    fn stamp_react_used(&mut self, glyph: &str) {
         let Some(pk) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else {
             return;
         };
-        let key = format!("react.counts.{}", hex::encode(&pk[..8]));
-        let mut counts: Vec<(String, u64)> = Vec::new();
+        let key = format!("react.recent.{}", hex::encode(&pk[..8]));
+        let mut stamps: Vec<(String, i64)> = Vec::new();
         if let Some(v) = self.fleet_settings.as_ref().and_then(|fs| fs.effective(&key)) {
             if let Ok(s) = std::str::from_utf8(v) {
                 for pair in s.split('\u{3}') {
-                    if let Some((g, n)) = pair.split_once('\u{2}') {
-                        if let Ok(n) = n.parse::<u64>() {
-                            counts.push((g.to_string(), n));
+                    if let Some((g, t)) = pair.split_once('\u{2}') {
+                        if let Ok(t) = t.parse::<i64>() {
+                            stamps.push((g.to_string(), t));
                         }
                     }
                 }
             }
         }
-        match counts.iter_mut().find(|(g, _)| g == glyph) {
-            Some((_, n)) => *n += 1,
-            None => counts.push((glyph.to_string(), 1)),
+        let now = vsf::eagle_time_oscillations();
+        match stamps.iter_mut().find(|(g, _)| g == glyph) {
+            Some((_, t)) => *t = now,
+            None => stamps.push((glyph.to_string(), now)),
         }
-        let blob = counts
+        stamps.sort_by_key(|(_, t)| std::cmp::Reverse(*t));
+        stamps.truncate(24);
+        let blob = stamps
             .iter()
-            .map(|(g, n)| format!("{}\u{2}{}", g, n))
+            .map(|(g, t)| format!("{}\u{2}{}", g, t))
             .collect::<Vec<_>>()
             .join("\u{3}");
         self.settings_set(&key, blob.into_bytes());
     }
 
-    /// The reaction strip, ranked: defaults seeded, usage re-ranks (stable — ties keep default order), custom glyphs with any use join the pool in sorted order so the ranking is deterministic.
+    /// The reaction strip, most-recent-first: defaults seeded at stamp zero (so unused ones hold the tail in default order — the sort is stable), every used glyph floats by its fleet-wide newest stamp, custom glyphs join the pool in sorted order for determinism.
     fn ranked_reactions(&self) -> Vec<String> {
-        let counts = self.react_counts();
+        let recency = self.react_recency();
         let mut pool: Vec<String> = DEFAULT_REACTIONS.iter().map(|s| s.to_string()).collect();
-        let mut extras: Vec<String> = counts
+        let mut extras: Vec<String> = recency
             .keys()
             .filter(|g| !pool.iter().any(|p| p == *g) && !g.is_empty())
             .cloned()
             .collect();
         extras.sort();
         pool.extend(extras);
-        pool.sort_by_key(|g| std::cmp::Reverse(counts.get(g).copied().unwrap_or(0)));
+        pool.sort_by_key(|g| std::cmp::Reverse(recency.get(g).copied().unwrap_or(0)));
         pool
     }
 
@@ -13518,7 +13522,7 @@ impl PhotonApp {
         if let Some(target) = self.compose_react_to.take() {
             let glyph: String = text.chars().take(8).collect();
             if self.send_chain_message(ci, &crate::types::react_content(target, &glyph), false) {
-                self.bump_react_count(&glyph);
+                self.stamp_react_used(&glyph);
             }
             if let Some(tb) = self.message_textbox.as_mut() {
                 tb.clear();
