@@ -12920,6 +12920,19 @@ impl PhotonApp {
             return false;
         }
 
+        // IDEMPOTENT PER MESSAGE: if this eagle_time is ALREADY pending, it was sent once and is in flight — the retransmit sweep resends its FROZEN ciphertext. Re-encrypting here would mint a fresh random pad (a different plaintext_hash) AND, under advance-on-send, ratchet the lane a SECOND time — double-advancing the position and forking it, so the peer's ACK (bound to the first hash) can never clear the pending and the message retransmits forever (field, 2026-08-08: Mary re-ACKing one message every ~2s, Nick never once logging "ACK verified"). resend_held_messages re-invokes this for every undelivered row, so the guard lives here, not only at that caller.
+        if self
+            .friendship_chains
+            .iter()
+            .find(|(id, _)| *id == friendship_id)
+            .map_or(false, |(_, c)| {
+                c.pending_messages.iter().any(|m| m.eagle_time == eagle_time)
+            })
+        {
+            crate::logf!("CHAT: message at eagle_time {} already in flight — leaving it to the retransmit sweep, not re-encrypting", eagle_time);
+            return true;
+        }
+
         // NO direct address is not NO send: the weave probe fired the moment a ceremony completed over the relay, hit this bail (the peer's addresses hadn't validated yet), and died silently — the probe never retransmits, so "testing the secure channel" sat forever on a chain that provably worked one direction (live pair, 2026-08-06). Same shape as the retransmit sweep: hand the sentinel so the UDP leg sends nowhere harmlessly and the relay copy carries it.
         let (peer_addr, alt_addr) = match addr_pair {
             Some(pair) => pair,

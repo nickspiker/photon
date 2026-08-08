@@ -1175,9 +1175,15 @@ impl FriendshipChains {
         acked_eagle_time: i64,
         acked_plaintext_hash: &[u8; 32],
     ) -> bool {
-        if let Some(idx) = self.pending_messages.iter().position(|m| {
-            m.eagle_time == acked_eagle_time && &m.plaintext_hash == acked_plaintext_hash
-        }) {
+        // Match on eagle_time ALONE. A device physically cannot emit two messages at the same 704ps tick (braid.md §1.5), so eagle_time uniquely names our outgoing message. The plaintext_hash was a hard co-gate, but it is taken over the FULL payload including the random hR pad, so any re-encryption of the same message yields a different hash — a hash mismatch then leaked the pending and the message retransmitted forever while the peer re-ACKed each copy (field, 2026-08-08: Mary re-ACKing one message every ~2s, Nick never advancing). The ACK is already Ed25519-authenticated over (token, eagle_time, hash); keep the hash as a logged soft-check, never a match gate.
+        if let Some(idx) = self
+            .pending_messages
+            .iter()
+            .position(|m| m.eagle_time == acked_eagle_time)
+        {
+            if self.pending_messages[idx].plaintext_hash != *acked_plaintext_hash {
+                crate::logf!("CHAT: ACK hash mismatch for eagle_time {} — clearing on eagle_time (the pad differs or a re-encrypt raced); the message is delivered either way", acked_eagle_time);
+            }
             self.pending_messages.remove(idx);
             return true;
         }
@@ -1632,6 +1638,33 @@ mod tests {
             "sender and receiver diverged after a pipelined burst"
         );
         assert_eq!(sender.lane_position(&lane), receiver.lane_position(&lane));
+    }
+
+    /// REGRESSION (field, 2026-08-08): an ACK whose plaintext_hash differs from the frozen pending — because the random hR pad made the hash unstable, or a re-encrypt raced — must STILL clear the pending, matched on eagle_time alone. When it didn't, the pending leaked and the message retransmitted forever while the peer re-ACKed every copy.
+    #[test]
+    fn process_ack_clears_on_eagle_time_even_when_hash_differs() {
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut sender = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+
+        let osc = 4_242i64;
+        let (_ct, _prev, _msg_hp, ph, _lane) = sender
+            .prepare_send(b"hi".to_vec(), b"hi".to_vec(), osc, vec![])
+            .unwrap();
+        assert_eq!(sender.pending_messages.len(), 1);
+
+        // A wrong hash for the RIGHT eagle_time still clears the pending (soft-check, not a gate).
+        let wrong_hash = [0xABu8; 32];
+        assert_ne!(&wrong_hash, &ph, "test needs a genuinely different hash");
+        assert!(sender.process_ack(osc, &wrong_hash));
+        assert!(
+            sender.pending_messages.is_empty(),
+            "pending must clear on eagle_time match despite the hash mismatch — else it retransmits forever"
+        );
+
+        // An ACK for an eagle_time we never sent still matches nothing.
+        assert!(!sender.process_ack(9_999, &ph));
     }
 
     #[test]
