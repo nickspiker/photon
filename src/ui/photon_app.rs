@@ -277,6 +277,99 @@ fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u
     }
 }
 
+/// Draw a check mark centred at (cx, cy) in a `size`×`size` box — the send button's glyph while an EDIT is armed (commit-the-correction, visually distinct from the send arrowhead by shape AND colour). Same contract as `draw_up_arrowhead`: a filled polygon (two stroke arms as one 6-vertex even-odd shape), source-over onto the already-drawn pill, 1px boundary feather, NEVER touches the hit map. A drawn primitive, not text — the Android font lacks the glyph codepoints (the "→ rendered blank" lesson at the send button's construction site).
+fn draw_check_mark(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u32) {
+    // The two arms as a closed hexagon (unit box, y down): short arm down-right, long arm up-right, ~0.16 stroke weight.
+    let p = |u: f32, v: f32| (cx + (u - 0.5) * size, cy + (v - 0.5) * size);
+    let verts = [
+        p(0.08, 0.52),
+        p(0.38, 0.82),
+        p(0.92, 0.24),
+        p(0.79, 0.12),
+        p(0.38, 0.57),
+        p(0.20, 0.40),
+    ];
+
+    let (w, h) = (canvas.width, canvas.height);
+    let x0 = (cx - size * 0.5 - 1.0).floor().max(0.0) as usize;
+    let x1 = ((cx + size * 0.5 + 1.0).ceil() as usize).min(w);
+    let y0 = (cy - size * 0.5 - 1.0).floor().max(0.0) as usize;
+    let y1 = ((cy + size * 0.5 + 1.0).ceil() as usize).min(h);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    canvas.damage.add_bounds(x0, y0, x1, y1);
+    let glyph_a = ((colour >> 24) & 0xFF) as f32 / 255.0;
+    let (gr, gg, gb) = (
+        ((colour >> 16) & 0xFF) as f32,
+        ((colour >> 8) & 0xFF) as f32,
+        (colour & 0xFF) as f32,
+    );
+    let inside = |px: f32, py: f32| -> bool {
+        let mut wind = false;
+        let mut j = verts.len() - 1;
+        for i in 0..verts.len() {
+            let (xi, yi) = verts[i];
+            let (xj, yj) = verts[j];
+            if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+                wind = !wind;
+            }
+            j = i;
+        }
+        wind
+    };
+    let edge_dist = |px: f32, py: f32| -> f32 {
+        let mut best = f32::MAX;
+        let mut j = verts.len() - 1;
+        for i in 0..verts.len() {
+            let (xi, yi) = verts[i];
+            let (xj, yj) = verts[j];
+            let (ex, ey) = (xj - xi, yj - yi);
+            let len2 = ex * ex + ey * ey;
+            let t = if len2 > 0.0 {
+                (((px - xi) * ex + (py - yi) * ey) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let (dx, dy) = (px - (xi + t * ex), py - (yi + t * ey));
+            best = best.min((dx * dx + dy * dy).sqrt());
+            j = i;
+        }
+        best
+    };
+    for py in y0..y1 {
+        let row = py * w;
+        for px in x0..x1 {
+            let fx = px as f32 + 0.5;
+            let fy = py as f32 + 0.5;
+            let d = edge_dist(fx, fy);
+            let cov = if inside(fx, fy) {
+                (d + 0.5).min(1.0)
+            } else {
+                (0.5 - d).clamp(0.0, 1.0)
+            };
+            if cov <= 0.0 {
+                continue;
+            }
+            let a = cov * glyph_a;
+            if a <= 0.0 {
+                continue;
+            }
+            let idx = row + px;
+            let dst = canvas.pixels[idx];
+            let (dr, dg, db) = (
+                ((dst >> 16) & 0xFF) as f32,
+                ((dst >> 8) & 0xFF) as f32,
+                (dst & 0xFF) as f32,
+            );
+            let nr = (gr * a + dr * (1.0 - a)) as u32;
+            let ng = (gg * a + dg * (1.0 - a)) as u32;
+            let nb = (gb * a + db * (1.0 - a)) as u32;
+            canvas.pixels[idx] = (dst & 0xFF00_0000) | (nr << 16) | (ng << 8) | nb;
+        }
+    }
+}
+
 // Tiered presence-ping cadence — frequent while the user is engaged, sparse once they've walked away, so an idle/unfocused window isn't waking the radio every few seconds for rings nobody is watching. The tier is chosen by time-since-last-interaction; any interaction (input or focus gain) resets the clock AND fires an immediate sweep, so presence is always fresh the moment the user looks, regardless of how far the cadence had backed off.
 /// Active tier: sweep every 5s while interacting (idle < `PRESENCE_IDLE_NEAR`).
 const PRESENCE_PING_ACTIVE: std::time::Duration = std::time::Duration::from_secs(5);
@@ -542,6 +635,12 @@ fn display_content(content: &str) -> String {
             label,
             state
         )
+    } else if let Some((_, body)) = crate::types::parse_reply_content(content) {
+        // Reply rows read as their body everywhere generic (previews, notifications, excerpts) — the reference renders only in the bubble stream.
+        body.to_string()
+    } else if let Some((_, body)) = crate::types::parse_edit_content(content) {
+        // Edit rows read as the new body — a preview/notification of an edit shows what the message says NOW.
+        body.to_string()
     } else {
         content.to_string()
     }
@@ -1211,10 +1310,14 @@ pub struct PhotonApp {
     selected_msg_copied: bool,
     /// Deferred delete: ((contact idx, timestamp, is_outgoing), painted). The press only ARMS this and repaints — the strip shows "deleting…" on that frame — and the tick performs the actual removal + mirror-verified persist AFTER the feedback frame painted (the synchronous save blocked the UI for a beat, reading as stuck).
     pending_delete: Option<((usize, i64, bool), bool)>,
+    /// Armed reply target: the eagle_time the next send REFERENCES (a reply row, not a quote). Set by the strip's reply pill; the compose strip shows the referenced message at half alpha. Cleared on send, Esc, or conversation switch.
+    compose_reply_to: Option<i64>,
+    /// Armed edit target: the eagle_time of OUR row the next send SUPERSEDES. The compose box prefills with the current body and the send button trades its arrowhead for a check mark. Cleared on send, Esc (which also clears the prefill), or conversation switch.
+    compose_edit_of: Option<i64>,
     /// Conversation top-bar slide-off in PIXELS (0 = fully shown): the "‹ Contacts" strip slides out/in WITH the scroll gesture, browser-toolbar style — pure scroll-delta accumulation, no timers, clamped to the bar height in the wheel arm and at render. Reset on conversation open.
     conv_topbar_off: f32,
     /// Word-wrap cache for the conversation's message list: key (contact idx, message count, avail_w bits, msg_size bits) + the wrapped line STRINGS per visible message (chronological, probes excluded) + the total line count. Rebuilt only when the key changes (resize / zoom / new message / conversation switch). Caching the STRINGS (not just counts) means scroll frames do ZERO text shaping — the per-frame re-wrap of drawn messages was the "glitches and sticks" scroll regression.
-    msg_wrap: Option<((usize, usize, u32, u32), Vec<Vec<String>>, usize)>,
+    msg_wrap: Option<((usize, usize, usize, u32, u32), Vec<Vec<String>>, usize)>,
     /// Last IME inset applied to the layout (Android) — the tick diffs the JNI mirror against this and relayouts on change, since the keyboard no longer produces resize events.
     #[cfg(target_os = "android")]
     last_ime_inset: i32,
@@ -1599,6 +1702,8 @@ impl PhotonApp {
             selected_msg: None,
             selected_msg_copied: false,
             pending_delete: None,
+            compose_reply_to: None,
+            compose_edit_of: None,
             conv_topbar_off: 0.0,
             msg_wrap: None,
             #[cfg(target_os = "android")]
@@ -3414,35 +3519,38 @@ impl FluorApp for PhotonApp {
                 let slot = hit_id - self.msg_action_base;
                 if let Some((sci, ts, out)) = self.selected_msg {
                     match slot {
-                        // REPLY: quote-prefill the compose box and focus it — works today with no wire change; true reply threading (a reply_to field) rides the message-format rework.
+                        // REPLY = a REFERENCE, never a quote: arm the target eagle_time; the compose strip shows the referenced message at half alpha, and the sent row carries only the reference — the renderer resolves it live, so a later edit of the target updates every reply pointing at it.
                         0 => {
-                            let excerpt: Option<String> = self.conv_of(sci).and_then(|v| {
-                                v.messages
-                                    .iter()
-                                    .find(|m| m.timestamp == ts && m.is_outgoing == out)
-                                    .map(|m| {
-                                        let d = display_content(&m.content);
-                                        let mut e: String = d.chars().take(40).collect();
-                                        if d.chars().count() > 40 {
-                                            e.push('\u{2026}');
-                                        }
-                                        e
-                                    })
-                            });
-                            if let (Some(e), Some(tb)) = (excerpt, self.message_textbox.as_mut()) {
-                                tb.clear();
-                                tb.insert_str(
-                                    &format!("\u{21a9} \u{201c}{}\u{201d} \u{2014} ", e),
-                                    ctx.text,
-                                );
+                            let _ = out; // the reference is by eagle_time alone (either direction resolves it)
+                            self.compose_reply_to = Some(ts);
+                            self.compose_edit_of = None;
+                            if let Some(tb) = self.message_textbox.as_mut() {
                                 let id = tb.hit_id();
                                 self.change_focus(Some(id));
                             }
+                            self.selected_msg = None;
+                            self.scene_dirty = true;
                         }
-                        // EDIT: honest stub — the braid is append-only; a real edit op (supersede-by-reference) lands with the message-format rework.
+                        // EDIT = supersede-by-reference: prefill the box with the target's CURRENT body (respecting prior edits), arm the target, and the send button becomes a check mark. The original row never mutates — its content is braid key material (strands resolve stored content by eagle_time), so the correction rides as its own referencing row.
                         1 => {
-                            self.ready_toast = Some("editing arrives with the message rework \u{2014} for now, send a correction".to_string());
-                            self.ready_toast_screen = None;
+                            let body: Option<String> = self.conv_of(sci).and_then(|v| {
+                                v.latest_edit_for(ts).map(|(_, b)| b).or_else(|| {
+                                    v.messages
+                                        .iter()
+                                        .find(|m| m.timestamp == ts && m.is_outgoing == out)
+                                        .map(|m| display_content(&m.content))
+                                })
+                            });
+                            if let (Some(b), Some(tb)) = (body, self.message_textbox.as_mut()) {
+                                tb.clear();
+                                tb.insert_str(&b, ctx.text);
+                                let id = tb.hit_id();
+                                self.change_focus(Some(id));
+                                self.compose_edit_of = Some(ts);
+                                self.compose_reply_to = None;
+                                self.selected_msg = None;
+                                self.scene_dirty = true;
+                            }
                         }
                         // RESEND: manually re-fire an undelivered outgoing on the chain with its ORIGINAL timestamp (identity preserved — the friend dedups + re-ACKs, so this is always safe); chainless devices re-push thru the fleet instead.
                         2 => {
@@ -4088,6 +4196,18 @@ impl FluorApp for PhotonApp {
                             return EventResponse::Handled;
                         }
                         if matches!(self.state, AppState::Conversation) {
+                            // First Esc (or Android back) disarms a pending reply/edit — clearing an armed edit also clears its prefill; the next Esc navigates back.
+                            if self.compose_reply_to.is_some() || self.compose_edit_of.is_some() {
+                                if self.compose_edit_of.take().is_some() {
+                                    if let Some(tb) = self.message_textbox.as_mut() {
+                                        tb.clear();
+                                    }
+                                }
+                                self.compose_reply_to = None;
+                                self.scene_dirty = true;
+                                ctx.window.request_redraw();
+                                return EventResponse::Handled;
+                            }
                             self.state = AppState::Ready;
                             self.active_conversation = None;
                             ctx.window.request_redraw();
@@ -6822,8 +6942,20 @@ impl FluorApp for PhotonApp {
                         // Compose bar reserves the bottom strip, lifted off the bottom edge by `compose_margin` — and above the soft keyboard (`ime_lift`; the surface never resizes for the IME). The list lives between list_top and list_bottom. Must match the layout pass's `compose_h`/`compose_margin` below.
                         let compose_h = unit * 1.8;
                         let compose_margin = unit * 0.8;
-                        let list_bottom =
-                            buf_h as f32 - ime_lift - compose_h - compose_margin - unit * 0.5;
+                        // Armed reply/edit strip: one extra band above the compose box naming what the next send references (drawn half-alpha below). Reserved OUT of the list so it never overdraws the newest message.
+                        let compose_strip: Option<(i64, bool)> = if compose_ready {
+                            self.compose_edit_of
+                                .map(|t| (t, true))
+                                .or(self.compose_reply_to.map(|t| (t, false)))
+                        } else {
+                            None
+                        };
+                        let list_bottom = buf_h as f32
+                            - ime_lift
+                            - compose_h
+                            - compose_margin
+                            - unit * 0.5
+                            - if compose_strip.is_some() { unit * 0.9 } else { 0.0 };
                         // Clamp so a short window (tall header) can never invert the clip (list_top > list_bottom) — that's what made every message vanish on resize. When there's no room, list_bottom collapses to list_top and the list is simply empty rather than drawing with a negative-height (inverted) clip.
                         let list_bottom = list_bottom.max(list_top);
                         let list_clip = fluor::paint::Clip::new(
@@ -6835,11 +6967,46 @@ impl FluorApp for PhotonApp {
 
                         // Lay messages out bottom-up so the newest sits at list_bottom. Clamp scroll offset to the actual overscroll range so a stale offset from a previous (larger) window size can't push every message above list_top on resize.
                         // Probe rows (hidden chain-weave records, persisted for re-ACK durability) never render — filter before layout so the scroll height matches what's drawn.
-                        let visible: Vec<&crate::types::ChatMessage> = conv
-                            .map(|v| v.messages.as_slice())
-                            .unwrap_or(&[])
+                        let raw_msgs: &[crate::types::ChatMessage] =
+                            conv.map(|v| v.messages.as_slice()).unwrap_or(&[]);
+                        // Newest live edit row per target — render-time supersede (the original row is braid key material and never mutates; see EDIT_MARKER_PREFIX). Deleting an edit row reverts to the previous edit or the original.
+                        let mut edit_over: std::collections::HashMap<i64, (i64, String)> =
+                            std::collections::HashMap::new();
+                        for m in raw_msgs.iter().filter(|m| !m.deleted) {
+                            if let Some((t, body)) = crate::types::parse_edit_content(&m.content) {
+                                let e = edit_over
+                                    .entry(t)
+                                    .or_insert_with(|| (m.timestamp, body.to_string()));
+                                if m.timestamp >= e.0 {
+                                    *e = (m.timestamp, body.to_string());
+                                }
+                            }
+                        }
+                        // Bubble DISPLAY body: attachments keep their pill line; an edited row shows its newest edit body; reply/edit markers strip to their text.
+                        let body_of = |m: &crate::types::ChatMessage| -> String {
+                            if crate::types::parse_attachment_content(&m.content).is_none() {
+                                if let Some((_, b)) = edit_over.get(&m.timestamp) {
+                                    return b.clone();
+                                }
+                            }
+                            display_content(&m.content)
+                        };
+                        let visible: Vec<&crate::types::ChatMessage> = raw_msgs
                             .iter()
-                            .filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted)
+                            .filter(|m| {
+                                if crate::types::is_control_content(&m.content) || m.deleted {
+                                    return false;
+                                }
+                                // An edit row draws no bubble of its own while its target row exists in ANY state (the supersede belongs to the target's bubble); a target that never synced here renders the edit standalone so nothing silently vanishes.
+                                if let Some((t, _)) = crate::types::parse_edit_content(&m.content) {
+                                    return !raw_msgs.iter().any(|x| {
+                                        x.timestamp == t
+                                            && !crate::types::is_control_content(&x.content)
+                                            && crate::types::parse_edit_content(&x.content).is_none()
+                                    });
+                                }
+                                true
+                            })
                             .collect();
                         let n = visible.len();
                         // Stream entry #0 (avatar + name + optional status) is the oldest item: its height joins content_h so scrolling to genesis reveals it above message 1. Unconditional — every conversation has entry #0.
@@ -6865,18 +7032,22 @@ impl FluorApp for PhotonApp {
                         let wrap_style = TextStyle::new(msg_size, 0).weight(500);
                         let avail_w = (buf_w as f32 - pad_x * 2.0).max(msg_size);
                         let intra = msg_size * 1.25;
-                        let wrap_key = (ci, n, avail_w.to_bits(), msg_size.to_bits());
+                        let wrap_key = (ci, n, raw_msgs.len(), avail_w.to_bits(), msg_size.to_bits());
                         if self.msg_wrap.as_ref().map(|(k, _, _)| *k) != Some(wrap_key) {
                             let mut all_lines: Vec<Vec<String>> = Vec::with_capacity(n);
                             let mut total = 0usize;
                             for m in &visible {
                                 let lines = wrap_text_lines(
                                     ctx.text,
-                                    &display_content(&m.content),
+                                    &body_of(m),
                                     &wrap_style,
                                     avail_w,
                                 );
                                 total += lines.len();
+                                // A reply row reserves ONE extra line for its half-alpha reference snippet above the body.
+                                if crate::types::parse_reply_content(&m.content).is_some() {
+                                    total += 1;
+                                }
                                 all_lines.push(lines);
                             }
                             self.msg_wrap = Some((wrap_key, all_lines, total));
@@ -6910,7 +7081,10 @@ impl FluorApp for PhotonApp {
                             // Cached wrapped lines — scroll frames do zero shaping. `y` is the LAST line's baseline, earlier lines stack upward at `intra` spacing.
                             static EMPTY_LINES: Vec<String> = Vec::new();
                             let lines: &Vec<String> = wrap_cache.get(vi).unwrap_or(&EMPTY_LINES);
-                            let block_extra = (lines.len() as f32 - 1.0) * intra;
+                            // A reply row's reference snippet occupies one extra line ABOVE the body (already counted into the wrap total).
+                            let reply_target = crate::types::parse_reply_content(&msg.content).map(|(t, _)| t);
+                            let block_extra = (lines.len() as f32 - 1.0) * intra
+                                + if reply_target.is_some() { intra } else { 0.0 };
                             // Attachment transfer progress: a thin fill under the pill while a matching PT transfer runs (outbound for our un-confirmed sends, inbound for blobs we're missing). Matched loosely by direction — the throttled snapshot only ever contains big sharded transfers.
                             if let Some((hash, _, _)) =
                                 crate::types::parse_attachment_content(&msg.content)
@@ -6995,6 +7169,11 @@ impl FluorApp for PhotonApp {
                                 if msg.recovered {
                                     detail.push_str(" · recovered");
                                 }
+                                if crate::types::parse_attachment_content(&msg.content).is_none()
+                                    && edit_over.contains_key(&msg.timestamp)
+                                {
+                                    detail.push_str(" \u{00b7} edited");
+                                }
                                 // Attachment blob state joins the meta line: held/confirmed vs still travelling.
                                 if let Some((hash, _, _)) =
                                     crate::types::parse_attachment_content(&msg.content)
@@ -7032,7 +7211,9 @@ impl FluorApp for PhotonApp {
                                 };
                                 let mut pills: Vec<(&str, u32, HitId)> =
                                     vec![("reply", *theme::COPY_PILL_COLOUR, self.msg_action_base)];
-                                if msg.is_outgoing {
+                                if msg.is_outgoing
+                                    && crate::types::parse_attachment_content(&msg.content).is_none()
+                                {
                                     pills.push((
                                         "edit",
                                         *theme::COPY_PILL_COLOUR,
@@ -7125,6 +7306,59 @@ impl FluorApp for PhotonApp {
                                 their_colour
                             };
                             let msg_style = TextStyle::new(msg_size, colour).weight(500);
+                            // The referenced message, resolved LIVE (so its own edits show) at HALF alpha — quarter stays the not-yet-ACKed signal, and the two must read differently. Missing target (not synced yet) renders as a bare ellipsis.
+                            if let Some(t) = reply_target {
+                                let (ref_text, ref_colour) = raw_msgs
+                                    .iter()
+                                    .find(|x| {
+                                        x.timestamp == t
+                                            && !x.deleted
+                                            && !crate::types::is_control_content(&x.content)
+                                            && crate::types::parse_edit_content(&x.content).is_none()
+                                    })
+                                    .map(|x| {
+                                        let d = body_of(x);
+                                        let mut s: String = d.chars().take(48).collect();
+                                        if d.chars().count() > 48 {
+                                            s.push('\u{2026}');
+                                        }
+                                        (
+                                            format!("\u{00bb} {}", s),
+                                            theme::half_colour(if x.is_outgoing || is_self_contact {
+                                                our_colour
+                                            } else {
+                                                their_colour
+                                            }),
+                                        )
+                                    })
+                                    .unwrap_or((
+                                        "\u{00bb} \u{2026}".to_string(),
+                                        theme::half_colour(*theme::LABEL_COLOUR),
+                                    ));
+                                let ref_style = TextStyle::new(msg_size, ref_colour).weight(500);
+                                let ref_y = y - lines.len() as f32 * intra;
+                                if msg.is_outgoing || is_self_contact {
+                                    ctx.text.draw_text_right(
+                                        &mut canvas,
+                                        &ref_text,
+                                        buf_w as f32 - pad_x,
+                                        ref_y,
+                                        &ref_style,
+                                        Some(list_clip),
+                                        None,
+                                    );
+                                } else {
+                                    ctx.text.draw_text_left(
+                                        &mut canvas,
+                                        &ref_text,
+                                        pad_x,
+                                        ref_y,
+                                        &ref_style,
+                                        Some(list_clip),
+                                        None,
+                                    );
+                                }
+                            }
                             for (k, line) in lines.iter().enumerate() {
                                 let ly = y - (lines.len() - 1 - k) as f32 * intra;
                                 if msg.is_outgoing || is_self_contact {
@@ -7204,6 +7438,49 @@ impl FluorApp for PhotonApp {
                         }
                         let _ = n;
 
+                        // ── Armed reply/edit strip: the referenced message at HALF alpha (its sender's colour), in the reserved band. While editing, the strip shows what the row says NOW — the box holds the correction, so the pair reads as a before/after diff.
+                        if let Some((t, is_edit)) = compose_strip {
+                            let target = raw_msgs.iter().find(|x| {
+                                x.timestamp == t
+                                    && !x.deleted
+                                    && !crate::types::is_control_content(&x.content)
+                                    && crate::types::parse_edit_content(&x.content).is_none()
+                            });
+                            let snippet = target
+                                .map(|x| {
+                                    let d = body_of(x);
+                                    let mut s: String = d.chars().take(56).collect();
+                                    if d.chars().count() > 56 {
+                                        s.push('\u{2026}');
+                                    }
+                                    s
+                                })
+                                .unwrap_or("\u{2026}".to_string());
+                            let col = target
+                                .map(|x| {
+                                    if x.is_outgoing || is_self_contact {
+                                        our_colour
+                                    } else {
+                                        their_colour
+                                    }
+                                })
+                                .unwrap_or(*theme::LABEL_COLOUR);
+                            let text = if is_edit {
+                                format!("editing \u{00bb} {}", snippet)
+                            } else {
+                                format!("\u{00bb} {}", snippet)
+                            };
+                            ctx.text.draw_text_left(
+                                &mut canvas,
+                                &text,
+                                pad_x,
+                                list_bottom + unit * 0.55,
+                                &TextStyle::new(msg_size * 0.85, theme::half_colour(col)).weight(500),
+                                None,
+                                None,
+                            );
+                        }
+
                         // ── Compose box (pinned bottom) ──────────────────────────── Shown when THIS device can dispatch — the pre-chrome `compose_ready` snapshot, the same one definition the focus walk reads.
                         if compose_ready {
                             let compose_empty = self
@@ -7241,13 +7518,24 @@ impl FluorApp for PhotonApp {
                                     Some(&mut chrome.hit_test_map),
                                     id,
                                 );
-                                draw_up_arrowhead(
-                                    &mut canvas,
-                                    btn.center_x,
-                                    btn.center_y,
-                                    btn.height * 0.5,
-                                    *theme::SEND_ARROW_COLOUR,
-                                );
+                                if self.compose_edit_of.is_some() {
+                                    // EDIT armed: commit-the-correction — a green check, distinct from the send arrow by shape AND colour.
+                                    draw_check_mark(
+                                        &mut canvas,
+                                        btn.center_x,
+                                        btn.center_y,
+                                        btn.height * 0.5,
+                                        *theme::SEARCH_FOUND_COLOUR,
+                                    );
+                                } else {
+                                    draw_up_arrowhead(
+                                        &mut canvas,
+                                        btn.center_x,
+                                        btn.center_y,
+                                        btn.height * 0.5,
+                                        *theme::SEND_ARROW_COLOUR,
+                                    );
+                                }
                             }
                             if let Some(tb) = self.message_textbox.as_mut() {
                                 let id = tb.hit_id();
@@ -12915,12 +13203,25 @@ impl PhotonApp {
             None => return,
         };
         if text.is_empty() {
+            // Empty while a reply/edit is armed = cancel the arm, nothing sends (an "empty edit" is a delete's job, and probing from an armed state would be a surprise ping).
+            if self.compose_reply_to.take().is_some() | self.compose_edit_of.take().is_some() {
+                self.scene_dirty = true;
+                return;
+            }
             // Empty send = liveness probe. Optimistically mark the peer offline and ping them; a returning pong flips is_online back true (check_status_updates), so an empty send confirms whether they're actually reachable right now instead of doing nothing.
             self.contacts[ci].is_online = false;
             self.ping_contact(ci);
             return;
         }
-        self.send_chain_message(ci, &text, false);
+        // An armed edit/reply wraps the text in its referencing marker; the row then rides every path (chain, ACK, fleet sync, pages, digest) as an ordinary message — the reference resolves at render.
+        let wire_text = if let Some(target) = self.compose_edit_of.take() {
+            crate::types::edit_content(target, &text)
+        } else if let Some(target) = self.compose_reply_to.take() {
+            crate::types::reply_content(target, &text)
+        } else {
+            text.clone()
+        };
+        self.send_chain_message(ci, &wire_text, false);
         if let Some(tb) = self.message_textbox.as_mut() {
             tb.clear();
         }
@@ -14480,6 +14781,9 @@ impl PhotonApp {
             .contacts
             .get(ci)
             .and_then(|c| self.our_party_id(c).map(|us| c.conversation(&us).id()));
+        // An armed reply/edit targets a row of the conversation it was armed IN — switching conversations disarms it.
+        self.compose_reply_to = None;
+        self.compose_edit_of = None;
     }
 
     /// The open conversation itself, if it has materialized.
@@ -15078,6 +15382,8 @@ impl PhotonApp {
 
             // Hidden chain-weave probe: a reserved-marker message that proves the ratchet works but must show NO chat bubble. Everything else on the receive path (chain advance, set_last_plaintext, mark_received, ACK send) still runs so the sender's chain advances and dedup works — only the UI is suppressed.
             let is_chain_probe = message_text == crate::types::CHAIN_PROBE_MARKER;
+            // An EDIT row lands as an ordinary message (row, ACK, sync) but must not ALERT — the correction repaints the target bubble; a chime/unread/scroll-jump for it would read as a new message that isn't there.
+            let is_edit_row = crate::types::parse_edit_content(&message_text).is_some();
 
             crate::logf!(
                 "CHAT: Decrypted message from {}: \"{}\" (incorporated_hp={}...)",
@@ -15261,7 +15567,9 @@ impl PhotonApp {
                 .with_ack_hash(plaintext_hash);
                 let conv = &mut self.conversations[conv_pos];
                 conv.insert_message_sorted(msg.clone());
-                conv.scroll_offset = 0.0; // Scroll to show new message
+                if !is_edit_row {
+                    conv.scroll_offset = 0.0; // Scroll to show new message (an edit repaints in place)
+                }
                 self.scene_dirty = true;
 
                 // Persist (async — see persist_hashes)
@@ -15279,14 +15587,14 @@ impl PhotonApp {
                 #[cfg(target_os = "android")]
                 let looking = conversation_open
                     && crate::platform::jni_android::app_in_foreground();
-                if !contact.is_sibling && !looking {
+                if !contact.is_sibling && !looking && !is_edit_row {
                     // A real friend message landed while nobody was looking — bump the persistent unread counter (contacts-list inner ring + float-to-top; cleared at conversation-open). Written after the loop via the coalescing conv-state writer.
                     conv.unread_count += 1;
                     conv_state_pos = Some(conv_pos);
                 }
 
                 // System notification, POST-DECRYPT: real sender display name + message text BY DESIGN — hiding content on the lock screen is the OS's job, and the pre-decrypt RX worker no longer notifies at all (it over-dinged on probes and sibling fleet-sync frames it couldn't tell apart). RUST is the one suppression decision now: `looking` (this conversation active + app/window attended) gates the call — Kotlin's old blanket Activity-foreground bail is gone, so a message from anyone whose conversation ISN'T open dings even with the app on screen. Desktop's notify keeps its own visual gate (no toast while attended) + both dedup on msg_hp.
-                if !contact.is_sibling && !looking {
+                if !contact.is_sibling && !looking && !is_edit_row {
                     let sender_name = contact.display_name();
                     // The notification chirp seeds from the RELATIONSHIP DIGEST — the same value the desktop in-app chirp and the contact's colours use — so one sender sounds the same on EVERY device. It seeded from the pinned device key before, which differs per device (each pins its own first-met device) and per platform: "messages from one sender sound different on each device".
                     #[cfg(target_os = "android")]
@@ -15314,7 +15622,10 @@ impl PhotonApp {
                 // Per-contact notification chime: the sender's relationship digest → deterministic modal bell (chirp crate) — the SAME digest that colours their handle and messages, so ears and eyes agree. The handle TEXT never touches the session store by design; the pre-PoW hashes are the canonical identity material. Synthesis (~a second of f64 modal math) + playback run on a detached thread so the receive loop never blocks; desktop-only (Android gets platform notifications).
                 // Only ding for a real human message from a friend: a chain-weave probe (hidden ceremony frame) and a sibling/fleet-sync frame (our own devices propagating a conversation) both arrive as ChatMessages, and neither is something a person sent us — so neither should ring. And only when NOT looking at this conversation (`!looking`): watching the message land IS the alert; the chirp is for everyone else's messages (the user ask: "ding when I get a message from anyone and I'm not in a conversation with them"). The old unconditional chirp over-dinged in-conversation.
                 #[cfg(not(any(target_os = "redox", target_os = "android")))]
-                if !is_chain_probe && !self.contacts[contact_idx].is_sibling && !looking
+                if !is_chain_probe
+                    && !is_edit_row
+                    && !self.contacts[contact_idx].is_sibling
+                    && !looking
                 {
                     let digest =
                         relationship_digest(&from_handle_hash, &our_handle_hash);
