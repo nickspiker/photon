@@ -134,6 +134,51 @@ pub fn dozenal_glyphs(mut n: u32) -> String {
     digits.iter().rev().collect()
 }
 
+/// Dozenal-glyph SERIALIZATION of a non-negative i64 — same byte convention as [`dozenal_glyphs`] (0x10..=0x1B = digits 0..11, most-significant first), widened for eagle times. THE encoding for numbers inside content-string markers (the reply/edit/react references): ASCII decimal never enters a row (AGENT.md — the `s{idx}_` concatenation shape is forbidden), and a client that predates a marker renders photon's own numerals instead of arabic droppings. Negative input clamps to zero (eagle times are non-negative; a clamped reference simply resolves to nothing).
+pub fn dozenal_bytes(n: i64) -> String {
+    let mut n = n.max(0) as u64;
+    if n == 0 {
+        return char::from(0x10).to_string();
+    }
+    let mut digits = Vec::new();
+    while n > 0 {
+        digits.push(char::from(0x10 + (n % 12) as u8));
+        n /= 12;
+    }
+    digits.iter().rev().collect()
+}
+
+/// Parse a [`dozenal_bytes`] number. None on empty input, any byte outside the digit block, or overflow — marker parsers treat that as "not a reference".
+pub fn parse_dozenal_bytes(s: &str) -> Option<i64> {
+    if s.is_empty() {
+        return None;
+    }
+    let mut n: i64 = 0;
+    for c in s.chars() {
+        let d = (c as u32).checked_sub(0x10)?;
+        if d > 11 {
+            return None;
+        }
+        n = n.checked_mul(12)?.checked_add(d as i64)?;
+    }
+    Some(n)
+}
+
+#[cfg(test)]
+mod dozenal_serialization_tests {
+    /// The marker-reference number codec: round-trips at eagle-time scale, zero included, and REJECTS arabic — a decimal string must read as "not a reference", never mis-parse.
+    #[test]
+    fn dozenal_bytes_round_trip_and_arabic_rejected() {
+        for n in [0i64, 1, 11, 12, 143, 1_000_000, i64::MAX / 2] {
+            assert_eq!(super::parse_dozenal_bytes(&super::dozenal_bytes(n)), Some(n));
+        }
+        assert!(super::dozenal_bytes(7).chars().all(|c| (c as u32) >= 0x10 && (c as u32) <= 0x1B));
+        assert_eq!(super::parse_dozenal_bytes("1234"), None);
+        assert_eq!(super::parse_dozenal_bytes(""), None);
+        assert_eq!(super::dozenal_bytes(-5), super::dozenal_bytes(0));
+    }
+}
+
 /// Spell `n` in dozenal digit words, space-separated ("Zilor Stela") — the read-aloud form.
 pub fn dozenal_spell(mut n: u32) -> String {
     if n == 0 {
