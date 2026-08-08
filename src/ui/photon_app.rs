@@ -957,6 +957,13 @@ pub struct PhotonApp {
             std::sync::Arc<crate::storage::FlatStorage>,
         )>,
     >,
+    /// Chains persist worker: the SAME coalescing shape as `persist_tx` but for FriendshipChains, keyed by friendship id. Used ONLY for the safe-to-delay saves — an ACK's pending-removal (a lost one just re-transmits, the peer dedups) and a sibling chain-sync adopt (a lost one re-adopts idempotently). The two COMMIT-POINT saves stay synchronous and are NOT routed here: the receive save (persist-before-ACK — a lost one after we ACK forks, since the sender clears its pending) and the send save (persist-before-send under advance-on-send — a lost one re-sends at a stale position).
+    chains_persist_tx: Option<
+        std::sync::mpsc::Sender<(
+            crate::types::friendship::FriendshipChains,
+            std::sync::Arc<crate::storage::FlatStorage>,
+        )>,
+    >,
     /// Last zoom value actually persisted. Android saves on the pinch-release edge (onScaleEnd → take_scale_ended); desktop saves on modifier release. This tracker suppresses redundant re-saves of the restored value.
     zoom_saved_ru: f32,
     /// Monotonic tick counter — the frame-gap fence for `pending_chain_sends` (see `drain_pending_chain_sends`).
@@ -1246,6 +1253,7 @@ impl PhotonApp {
             peer_store_persisted_len: 0,
             zoom_saved_ru: 1.0,
             persist_tx: None,
+            chains_persist_tx: None,
             tick_serial: 0,
             pending_chain_sends: Vec::new(),
             seed_identity_count: 0,
@@ -10649,6 +10657,7 @@ impl PhotonApp {
             return;
         };
         let mut changed = false;
+        let mut added_sibling = false;
 
         // Add newly-folded members.
         for device in members {
@@ -10677,6 +10686,7 @@ impl PhotonApp {
             }
             self.contacts.push(sib);
             changed = true;
+            added_sibling = true;
         }
 
         // Drop de-folded members (device removed from OUR chain).
@@ -10719,6 +10729,12 @@ impl PhotonApp {
         if changed {
             self.reseed_contact_pubkeys();
             // Freshly-created siblings start address-less; the stalled-contact pulse resolves their devices from the registry (the announce echo that used to address them here is gone — the worker acks without a peer list).
+        }
+
+        // A NEWLY-folded sibling has none of the fleet's chain state. Per-lane replication only sends lanes that ADVANCE, so an idle lane already far ahead (a peer device that sent a burst then went quiet) would never reach the new device, leaving it stuck at position 0 for that lane. Clear the per-lane + per-friendship push watermarks so the next drive_chain_replication pass re-pushes EVERY current lane checkpoint to the whole fleet — a one-time full catch-up on the join edge, the deltas resume after. Existing siblings no-op the re-adopt (no greater positions).
+        if added_sibling {
+            self.lane_pushed_pos.clear();
+            self.chain_pushed_osc.clear();
         }
     }
 
@@ -12812,6 +12828,45 @@ impl PhotonApp {
             tx
         });
         let _ = tx.send((conv, storage));
+    }
+
+    /// Persist a friendship's chains OFF the UI thread, coalescing a burst to the newest snapshot per friendship id. ONLY for the safe-to-delay saves (see `chains_persist_tx`): an ACK's pending-removal and a sibling chain-sync adopt. NEVER call this from a commit point (receive-before-ACK, send-before-dispatch) — those must hit disk synchronously.
+    fn persist_chains_async(&mut self, fid: &crate::types::friendship::FriendshipId) {
+        let Some((_, chains)) = self
+            .friendship_chains
+            .iter()
+            .find(|(id, _)| id == fid)
+        else {
+            return;
+        };
+        let chains = chains.clone();
+        let Some(storage) = self.storage.as_ref().cloned() else {
+            return;
+        };
+        type ChainsItem = (
+            crate::types::friendship::FriendshipChains,
+            std::sync::Arc<crate::storage::FlatStorage>,
+        );
+        let tx = self.chains_persist_tx.get_or_insert_with(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<ChainsItem>();
+            std::thread::spawn(move || {
+                while let Ok(first) = rx.recv() {
+                    // Coalesce the burst: keep the newest snapshot per friendship id.
+                    let mut latest: Vec<ChainsItem> = vec![first];
+                    while let Ok(next) = rx.try_recv() {
+                        latest.retain(|(c, _)| c.id() != next.0.id());
+                        latest.push(next);
+                    }
+                    for (c, st) in latest {
+                        if let Err(e) = crate::storage::friendship::save_friendship_chains(&c, &st) {
+                            crate::logf!("STORAGE: async chains persist failed: {}", e);
+                        }
+                    }
+                }
+            });
+            tx
+        });
+        let _ = tx.send((chains, storage));
     }
 
     /// Run the deferred WIRE half of queued sends — one tick after their bubbles rendered. Failure handling matches the old inline path: no local chain but a sibling exists → fleet-forward (the sibling's merge drain transmits on the braid); no chain and no sibling → the send has nowhere to go, take the bubble back out.
@@ -17645,6 +17700,8 @@ impl PhotonApp {
         let mut fleet_sweep_due = false;
         // Conversations whose message table changed in an arm below — persisted AFTER the loop via the async writer (the arms hold a &mut contact borrow; the inline save_messages here was the named 600ms-5.7s UI stall).
         let mut persist_hashes: Vec<[u8; 32]> = Vec::new();
+        // Friendships whose chains changed in a SAFE-to-delay way (ACK pending-removal, chain-sync adopt) — persisted AFTER the loop via the coalescing chains writer. The `checker` borrow spans the loop, so a &mut self method can't run inside it (the same deferral every arm here uses).
+        let mut chains_persist_fids: Vec<crate::types::friendship::FriendshipId> = Vec::new();
 
         // The braid / strict-ordering replay queue: when a successful decrypt fills a hash-chain gap, the now-contiguous buffered messages are pushed here as synthetic ChatMessage updates and drained BEFORE the next channel item, so a buffered N+1 is reprocessed immediately after N (and can itself cascade to N+2). FIFO front-drain.
         let mut replay_queue: std::collections::VecDeque<StatusUpdate> =
@@ -18795,7 +18852,10 @@ impl PhotonApp {
 
                     // Contact index to seal AFTER the `chains` borrow ends (seal needs &mut self).
                     let mut ack_sealed_idx: Option<usize> = None;
-                    if let Some((_, chains)) = chains_result {
+                    // Friendship whose chains to persist AFTER the borrow — an ACK only removes a pending, so the save is safe to coalesce off-thread (a lost removal just re-transmits; the peer dedups).
+                    let mut ack_persist_fid: Option<crate::types::friendship::FriendshipId> = None;
+                    if let Some((fid_ref, chains)) = chains_result {
+                        let ack_fid = *fid_ref;
                         // Party-id seam: whichever of (identity seed, sibling pid) is a participant is "us".
                         let our_handle_hash = if chains.participants().contains(&our_handle_hash) {
                             our_handle_hash
@@ -18908,17 +18968,8 @@ impl PhotonApp {
                                 }
                             }
 
-                            // Persist chains (AGENT.md: every change hits disk)
-                            if let Some(storage) = self.storage.as_ref() {
-                                if let Err(e) = crate::storage::friendship::save_friendship_chains(
-                                    chains, storage,
-                                ) {
-                                    crate::logf!(
-                                        "STORAGE CRITICAL: Failed to save chains after ACK: {}",
-                                        e
-                                    );
-                                }
-                            }
+                            // Persist chains OFF-thread (coalesced): an ACK only removed a pending — not a commit point, so a delayed/lost write just costs a redundant retransmit the peer dedups. Deferred past the `chains` borrow.
+                            ack_persist_fid = Some(ack_fid);
                         } else {
                             // No pending message matched. Two cases: (a) a DUPLICATE ACK — dual-path racing (P3) delivers the same ACK on both the LAN and public path, so the second copy arrives after the first already advanced + cleared the pending entry; (b) a genuinely UNKNOWN ACK. Tell them apart via the outgoing message: if it exists and is already `delivered`, this is the benign duplicate — log at DEBUG so it stops reading as a failure.
                             let is_dup = self.conversations[conv_pos].messages.iter().any(|m| {
@@ -18979,6 +19030,10 @@ impl PhotonApp {
                     // Defer the chain-weave seal until after the loop (outer `checker` borrow blocks `&mut self` here). No-op later unless both directions are proven.
                     if let Some(idx) = ack_sealed_idx {
                         chain_seal_indices.push(idx);
+                    }
+                    // Coalesced off-thread chains persist for the ACK's pending-removal — deferred past the `checker` borrow like every other &mut-self action here.
+                    if let Some(fid) = ack_persist_fid {
+                        chains_persist_fids.push(fid);
                     }
                 }
 
@@ -20670,17 +20725,8 @@ impl PhotonApp {
                     if !adopted {
                         continue;
                     }
-                    if let Some(storage) = self.storage.as_ref() {
-                        if let Some((_, c)) =
-                            self.friendship_chains.iter().find(|(id, _)| *id == fid)
-                        {
-                            if let Err(e) =
-                                crate::storage::friendship::save_friendship_chains(c, storage)
-                            {
-                                crate::logf!("CHAIN-SYNC: adopt persist failed: {}", e);
-                            }
-                        }
-                    }
+                    // Persist the adopted lanes OFF-thread (coalesced): a chain-sync adopt is idempotent — a delayed/lost write just re-adopts from the sibling's next push, never a fork, so it is not a commit point. Deferred past the `checker` borrow.
+                    chains_persist_fids.push(fid);
                     // Wire the contact: a device that never ran this ceremony gains the chain here — flip it sendable (Complete + woven; the owner proved the ratchet end-to-end before the state ever replicated).
                     if let Some(ci) = self.contact_idx_for_conversation_token(&conversation_token) {
                         let contact = &mut self.contacts[ci];
@@ -21495,6 +21541,10 @@ impl PhotonApp {
             self.seal_chain_if_ready(idx);
             // ACK-ADVANCE FLUSH: the serial-send gate holds every message behind the one in flight, so the ACK that just advanced the lane is the edge that releases the next held row at the fresh chain position. No-op when nothing is held.
             self.resend_held_messages(idx);
+        }
+        // Coalesced off-thread chains persists (ACK pending-removals, chain-sync adopts) — the safe-to-delay saves, now that the checker borrow has ended.
+        for fid in chains_persist_fids {
+            self.persist_chains_async(&fid);
         }
         // Sibling fork repair (deferred past the checker borrow): apply inbound resets first (each echoes once so the initiator converges), then fire any detector-initiated resets (mint nonce + apply + send).
         for (idx, nonce, echo) in chain_reset_apply {
