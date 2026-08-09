@@ -3110,12 +3110,18 @@ async fn run_checker(
                 }
                 // No direct path → also send the WHOLE chat VSF (not the PT shard) over the relay pipe.
                 // The peer receives it on its pipe and its dispatch decrypts + ACKs exactly as a direct message; the ACK returns over the peer's pipe. Chat now works with no direct path.
+                // DETACHED like the ping relay legs: each relayed send is an HTTPS round trip (~1.3s against an offline recipient), and awaiting them inline serialised this whole drain loop — a retransmit burst put every queued ACK 5-10 seconds behind the spray (field log, 2026-08-09: ACK queued at :04.8, dispatched :14.4). Best-effort by design; the message-layer retransmit is the reliability.
                 for dev in &request.relay_to {
-                    if let Err(e) =
-                        crate::network::fgtw::relay::send_via_relay(&keypair, dev, &msg_bytes).await
-                    {
-                        crate::logf!("RELAY: chat to {} failed: {}", hex::encode(&dev[..4]), e);
-                    }
+                    let kp = keypair.clone();
+                    let dev = *dev;
+                    let bytes = msg_bytes.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            crate::network::fgtw::relay::send_via_relay(&kp, &dev, &bytes).await
+                        {
+                            crate::logf!("RELAY: chat to {} failed: {}", hex::encode(&dev[..4]), e);
+                        }
+                    });
                 }
             }
         }
@@ -3139,13 +3145,18 @@ async fn run_checker(
                     }
                 }
             }
+            // DETACHED for the same reason as the chat drain above: pages are big, HTTPS trips are slow, and the requester's rid-dedup + expiry-refetch already tolerate loss and reorder.
             for dev in &request.relay_to {
-                if let Err(e) =
-                    crate::network::fgtw::relay::send_via_relay(&keypair, dev, &request.vsf_bytes)
-                        .await
-                {
-                    crate::logf!("RELAY: history to {} failed: {}", hex::encode(&dev[..4]), e);
-                }
+                let kp = keypair.clone();
+                let dev = *dev;
+                let bytes = request.vsf_bytes.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        crate::network::fgtw::relay::send_via_relay(&kp, &dev, &bytes).await
+                    {
+                        crate::logf!("RELAY: history to {} failed: {}", hex::encode(&dev[..4]), e);
+                    }
+                });
             }
         }
 
@@ -3198,12 +3209,18 @@ async fn run_checker(
                     }
                 }
                 // No direct path → relay the whole ACK VSF so it returns over the sender's pipe.
+                // DETACHED like the chat drain: an inline await here put the NEXT queued ACK a full HTTPS round trip behind this one. The sender's retransmit re-provokes a lost ACK (the receiver's re-ACK is deterministic), so best-effort holds.
                 for dev in &request.relay_to {
-                    if let Err(e) =
-                        crate::network::fgtw::relay::send_via_relay(&keypair, dev, &msg_bytes).await
-                    {
-                        crate::logf!("RELAY: ack to {} failed: {}", hex::encode(&dev[..4]), e);
-                    }
+                    let kp = keypair.clone();
+                    let dev = *dev;
+                    let bytes = msg_bytes.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            crate::network::fgtw::relay::send_via_relay(&kp, &dev, &bytes).await
+                        {
+                            crate::logf!("RELAY: ack to {} failed: {}", hex::encode(&dev[..4]), e);
+                        }
+                    });
                 }
             }
         }
@@ -3579,32 +3596,38 @@ async fn run_checker(
                 }
 
                 // If both UDP and TCP exhausted, try relay via /conduit
+                // DETACHED like every other relay leg in this loop: the HTTPS trip blocked the whole PT tick, so every OTHER peer's ladder (and the drains behind this loop) waited on this one's relay round trip. The offline-parking verdict still lands — the task carries its own handle to the PT manager.
                 if let Some(relay_info) = tick.relay {
                     crate::logf!(
                         "PT: Relaying to {} via /conduit",
                         hex::encode(&relay_info.recipient_pubkey[..4])
                     );
-                    match crate::network::fgtw::relay::send_via_relay(
-                        &keypair_for_relay,
-                        &relay_info.recipient_pubkey,
-                        &relay_info.payload,
-                    )
-                    .await
-                    {
-                        Ok(()) => {
-                            crate::log("PT: Relay send succeeded");
-                        }
-                        Err(e) => {
-                            // OFFLINE VERDICT PARKS THE LADDER: the relay is authoritative — "recipient offline (frame discarded)" means every further direct retry + TCP connect + relay POST is guaranteed waste, and seven offline fleets' ladders running their full backoff schedules was a sustained retransmit storm (field, 2026-08-09: 32 retransmits in 31s, UI ticks to 1075ms riding it). Clear this peer's outbounds; the came-online edge (pong → retransmit sweep / attach re-request) re-serves the payload when the device actually returns.
-                            if e.contains("recipient offline") {
-                                let mut pt_mgr = pt.lock().unwrap();
-                                pt_mgr.clear_outbound(&tick.peer_addr);
-                                crate::logf!("PT: relay says recipient offline — parking the ladder to {} (re-serves on the came-online edge)", tick.peer_addr);
-                            } else {
-                                crate::logf!("PT: Relay send failed: {}", e);
+                    let kp = keypair_for_relay.clone();
+                    let pt_for_park = pt.clone();
+                    let peer_addr = tick.peer_addr;
+                    tokio::spawn(async move {
+                        match crate::network::fgtw::relay::send_via_relay(
+                            &kp,
+                            &relay_info.recipient_pubkey,
+                            &relay_info.payload,
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                crate::log("PT: Relay send succeeded");
+                            }
+                            Err(e) => {
+                                // OFFLINE VERDICT PARKS THE LADDER: the relay is authoritative — "recipient offline (frame discarded)" means every further direct retry + TCP connect + relay POST is guaranteed waste, and seven offline fleets' ladders running their full backoff schedules was a sustained retransmit storm (field, 2026-08-09: 32 retransmits in 31s, UI ticks to 1075ms riding it). Clear this peer's outbounds; the came-online edge (pong → retransmit sweep / attach re-request) re-serves the payload when the device actually returns.
+                                if e.contains("recipient offline") {
+                                    let mut pt_mgr = pt_for_park.lock().unwrap();
+                                    pt_mgr.clear_outbound(&peer_addr);
+                                    crate::logf!("PT: relay says recipient offline — parking the ladder to {} (re-serves on the came-online edge)", peer_addr);
+                                } else {
+                                    crate::logf!("PT: Relay send failed: {}", e);
+                                }
                             }
                         }
-                    }
+                    });
                 }
             }
         }

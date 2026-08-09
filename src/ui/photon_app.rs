@@ -811,12 +811,11 @@ fn chord_hint_bbox(viewport: Viewport, vw: usize, vh: usize) -> PixelRect {
     PixelRect::new(x0, y0, x1, y1)
 }
 
-/// Which textbox a registry entry is, so callers that need per-role behaviour can branch (freeze keys off Launch-vs-Contacts busy state; the launch box gates the Attest button; the contacts box filters the contact list). Generic concerns — focus, IME routing, blink — ignore the role and treat every entry the same. Add the conversation compose bar here when it lands.
+/// Which textbox a registry entry is, so callers that need per-role behaviour can branch (freeze keys off Launch-vs-Contacts busy state; the launch box gates the Attest button; the contacts box filters the contact list). Generic concerns — focus, IME routing, blink — ignore the role and treat every entry the same. The conversation compose bar is NOT here: it's the dedicated MultiTextbox with its own branches at every registry seam.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TextboxRole {
     LaunchHandle,
     ContactsSearch,
-    MessageCompose,
     /// The Diagnostics optional-note field — in the registry so click-to-focus raises the Android IME + blinkie like every other box.
     SettingsNote,
     /// Any You-page profile field (display name, first, email, a custom one, …) or the add-a-field entry — same registry so click-to-focus raises the IME + blinkie. The form treats them all alike; the `field_id` that distinguishes them lives on [`ProfileField`], not here.
@@ -3850,14 +3849,14 @@ impl FluorApp for PhotonApp {
         // Live shift mirror for `on_close_requested` (which has no Context): a shift-held close — the chrome ✕, Alt-F4, anything — means the REAL exit, not the resident hide. Refreshed on every event so the click that lands on the close button has already stamped it.
         self.shift_held = ctx.modifiers.shift_key();
         // Every event except cursor movement may move immediate-mode content, so it claims a full-viewport frame. CursorMoved's effects are all narrow-tracked: hover tints live in the host overlay pass, drag-select is the textbox's own damage, and the one content-flavoured hover (the Ready avatar hint) sets `scene_dirty` at its flip site.
-        // COMPOSE TYPING is the other narrow case: a plain keystroke (or Android IME commit) into the focused compose box only moves pixels the box's own damage tracking already claims — and the full-viewport re-raster it used to trigger cost the phone an average 21ms PER KEYSTROKE against a 16.6ms frame budget (the 2026-08-08 typing lag, measured by the render probe). Chorded keys stay full (zoom/clipboard reach beyond the box), as do Enter (submits), Esc (disarms/navigates), Tab (moves focus), and any edit while the box holds fewer than two chars — the emptiness transitions repaint the "message" placeholder, which lives on the scene, not in the box.
+        // COMPOSE TYPING is the other narrow case: a plain keystroke (or Android IME commit) into the focused compose box only moves pixels the box's own damage tracking already claims — and the full-viewport re-raster it used to trigger cost the phone an average 21ms PER KEYSTROKE against a 16.6ms frame budget (the 2026-08-08 typing lag, measured by the render probe). Chorded keys stay full (zoom/clipboard reach beyond the box), as do Enter (submits), Esc (disarms/navigates), and Tab (moves focus). Emptiness transitions need nothing extra since the placeholder's removal — no scene pixels depend on the box's char count.
         let compose_typing = matches!(self.state, AppState::Conversation)
             && !ctx.modifiers.control_key()
             && !ctx.modifiers.super_key()
             && self
                 .message_textbox
                 .as_ref()
-                .is_some_and(|tb| Some(tb.hit_id()) == self.focused && tb.chars.len() >= 2)
+                .is_some_and(|tb| Some(tb.hit_id()) == self.focused)
             && match event {
                 Event::Ime(Ime::Commit(_)) => true,
                 Event::KeyboardInput { event: kev, .. } => matches!(
@@ -5188,12 +5187,12 @@ impl FluorApp for PhotonApp {
     }
 
     fn render(&mut self, target: &mut [u32], ctx: &mut Context) {
-        // TEMP render-time probe (typing-lag hunt, 2026-08-08): a full-viewport re-rasterize per keystroke is the suspect. A Drop guard so it fires on every return path; 8ms ≈ one dropped frame at 120fps, so anything logged here is a visible hitch.
+        // Standing render probe (born in the 2026-08-08 typing-lag hunt, kept for regressions). A Drop guard so it fires on every return path. The bar is a MISSED 60fps FRAME: the phone's healthy full-viewport render is 9-16ms, and the hunt's original 8ms bar logged every one of those — 3,326 lines in a 15-minute field log, the single biggest log-volume source (2026-08-09).
         struct RenderTimer(std::time::Instant, &'static str);
         impl Drop for RenderTimer {
             fn drop(&mut self) {
                 let ms = self.0.elapsed().as_millis();
-                if ms > 8 {
+                if ms > 16 {
                     crate::logf!("PERF: render took {}ms on {} (UI thread)", ms, self.1);
                 }
             }
@@ -7913,34 +7912,8 @@ impl FluorApp for PhotonApp {
                             );
                         }
 
-                        // ── Compose box (pinned bottom) ──────────────────────────── Shown when THIS device can dispatch — the pre-chrome `compose_ready` snapshot, the same one definition the focus walk reads.
+                        // ── Compose box (pinned bottom) ──────────────────────────── Shown when THIS device can dispatch — the pre-chrome `compose_ready` snapshot, the same one definition the focus walk reads. No placeholder text: the box's position says what it's for (Nick, 2026-08-09 — the hint lingered after sends and earned nothing).
                         if compose_ready {
-                            let compose_empty = self
-                                .message_textbox
-                                .as_ref()
-                                .map(|t| t.chars.is_empty())
-                                .unwrap_or(true);
-                            let compose_focused = self
-                                .message_textbox
-                                .as_ref()
-                                .map(|t| Some(t.hit_id()) == self.focused)
-                                .unwrap_or(false);
-                            let compose_cy = self
-                                .message_textbox
-                                .as_ref()
-                                .map(|t| t.center_y)
-                                .unwrap_or(buf_h as f32 - ime_lift - compose_margin - compose_h * 0.5);
-                            if compose_empty && !compose_focused {
-                                ctx.text.draw_text_left(
-                                    &mut canvas,
-                                    "message",
-                                    pad_x * 1.2,
-                                    compose_cy,
-                                    &TextStyle::new(msg_size, *theme::LABEL_COLOUR),
-                                    None,
-                                    None,
-                                );
-                            }
                             // Send button COLOUR first (its under() blit lands on the noise), then the arrowhead over the pill (source-over). The textbox draws after — it sits over the button and clobbers the button's hit stamp with its own id — so we re-stamp the button's TRUE pill silhouette (fill + stroke, which also covers the arrowhead) AFTER the textbox, as the last writer. That's the whole click + hover region: shape-accurate, not a bbox rectangle.
                             if let Some(btn) = self.message_send_btn.as_mut() {
                                 let id = btn.hit_id();
@@ -19902,6 +19875,8 @@ impl PhotonApp {
             };
         }
 
+        // Friendships whose send lane the wedge heal rotated this pass — persisted and row-flushed after the drain loop, where &mut self is available again.
+        let mut rotated_flush: Vec<crate::types::friendship::FriendshipId> = Vec::new();
         loop {
             let update = match replay_queue.pop_front() {
                 Some(u) => u,
@@ -19924,6 +19899,8 @@ impl PhotonApp {
                 } => {
                     // Stall recovery (runs EVERY ping that carries sync records, not just the offline→online edge): each record advertises the peer's contiguous head. Re-arm any pending of ours newer than the head for OUR lane AND already given up (exhausted attempts) — so a gap-filler the sender abandoned gets resent and a receiver stuck behind a permanently-lost message un-sticks. The staleness gate stays (a fresh send is left to normal backoff; only a given-up one is revived), which keeps a pong that merely raced ahead of the ACK from double-sending. collect_due_retransmits (the tick path) then actually sends the revived messages.
                     let now_osc = vsf::eagle_time_oscillations();
+                    // Lanes rotated by the wedge heal below — flushed AFTER the record loop (the loop holds the chains borrow; resend_held_messages needs &mut self).
+                    let mut rotated_fids: Vec<crate::types::friendship::FriendshipId> = Vec::new();
                     for record in &sync_records {
                         if let Some((fid, chains)) = self
                             .friendship_chains
@@ -19945,6 +19922,13 @@ impl PhotonApp {
                                     })
                                     .unwrap_or(0)
                             };
+                            // LANE WEDGE HEAL — checked BEFORE stall recovery, because the wedge's terminal loop was exactly that re-arm: give-up → "past peer lane tip 0" revive → give-up, forever (2,913 retransmit lines in one overnight log, 2026-08-09, every frame gap-buffered by a peer that lost the lane state and expects the anchor — unlinkable by hash AND undecryptable at their position-0 key). Rotation retires the dead lane and its pendings; the post-loop flush re-serves every undelivered row thru chain_transmit on the fresh lane at the ORIGINAL eagle_times, so row identity — and history — converges instead of forking.
+                            if chains.our_lane_wedged_at_peer_anchor(tip) {
+                                if let Some((dead, fresh, retired)) = chains.rotate_our_lane() {
+                                    crate::logf!("LANE: peer at the ANCHOR of {}... with {} unlinkable exhausted pending(s) — rotated to {}..., re-serving undelivered rows on the fresh lane", hex::encode(&dead[..4]), retired, hex::encode(&fresh[..4]));
+                                    rotated_fids.push(*fid);
+                                }
+                            }
                             let n = chains.rearm_pending_after(tip, now_osc);
                             if n > 0 {
                                 crate::logf!("CHAT: re-armed {} given-up pending msg(s) past peer lane tip {} (stall recovery)", n, tip);
@@ -20002,6 +19986,8 @@ impl PhotonApp {
                             }
                         }
                     }
+                    // Rotated lanes flush AFTER the drain loop (the loop pins `checker` = &self.status_checker, so no &mut self method fits anywhere in this arm — same constraint the digest branch documents above).
+                    rotated_flush.extend(rotated_fids);
                     // LOCKOUT gate: a locked device is still a fold member, so knows_device would happily honour its pong — presence, addresses, relay flags, all of it. Refuse the frame at the door instead; the lockout is precisely "stop listening".
                     if self.is_locked_device(&peer_pubkey.key) {
                         crate::logf!("Status: frame from LOCKED-OUT device {} — refused", crate::fp(&peer_pubkey.key));
@@ -23039,6 +23025,18 @@ impl PhotonApp {
         for hh in persist_hashes {
             if let Some(idx) = self.contacts.iter().position(|c| c.handle_hash == hh) {
                 self.persist_messages_async(idx);
+            }
+        }
+
+        // Rotated-lane flush (after releasing the checker borrow): persist the rotation — a crash before the write just re-detects and re-rotates, the wedge evidence is durable on the peer — then re-serve every undelivered row thru the normal send path on the fresh lane. chain_transmit rebuilds fresh frames at the rows' ORIGINAL eagle_times; the in-flight window paces the burst and the ACK edges keep flushing the rest.
+        for fid in rotated_flush {
+            self.persist_chains_async(&fid);
+            if let Some(ci) = self
+                .contacts
+                .iter()
+                .position(|c| c.friendship_id == Some(fid))
+            {
+                self.resend_held_messages(ci);
             }
         }
 
