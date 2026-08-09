@@ -1156,7 +1156,7 @@ pub struct PhotonApp {
     /// Plus button to the right of `contacts_textbox` — clicking it (or pressing Enter in the textbox) triggers the add-contact flow (`HandleQuery::search`). Will eventually carry an idle "+" glyph and an in-progress rotating-hourglass animation (legacy port from `compositing.rs`); that lands when `ProgressButton` gets extracted to fluor.
     contacts_plus_btn: Option<Button>,
     /// Conversation-screen message compose box (Conversation state). Distinct from the launch/search boxes so content never bleeds between screens. Enter sends (`submit_message`); the contents encrypt onto the open contact's friendship chain.
-    message_textbox: Option<Textbox>,
+    message_textbox: Option<fluor::widgets::MultiTextbox>,
     /// Send button overlaid inside `message_textbox`'s right edge — mirrors the contacts-screen search `+` button (same size, same overlay treatment). Clicking it sends the compose box contents, same as pressing Enter.
     message_send_btn: Option<Button>,
     /// Encrypted local storage — initialized after attestation success with the device secret + handle. Held behind an `Arc` so it can be handed to the avatar background-download/sync threads (a plain `&FlatStorage` borrow can't cross `thread::spawn`); the inner `Mutex<Vault>` makes `Arc<FlatStorage>` `Send + Sync`.
@@ -1390,6 +1390,8 @@ pub struct PhotonApp {
     msg_hit_rows: Vec<(i64, bool, Option<(f32, f32, i64)>)>,
     /// The list viewport height at the last conversation render — the scroll-to-message centering math needs it outside the render pass (same pattern as msg_max_scroll).
     msg_view_h: f32,
+    /// Compose-box line count at the last frame — the growth edge: a change moves list_bottom, so the next frame reflows the whole scene while ordinary keystrokes stay on the narrow path.
+    painted_compose_lines: usize,
     /// The message whose details strip is open: (contact idx, timestamp, is_outgoing). Keyed by identity, not list index, so backfills can't shift the selection. `None` = no strip.
     selected_msg: Option<(usize, i64, bool)>,
     /// The open strip's copy pill has fired (text on the clipboard): pill turns green + reads "copied". Event-cleared — reset whenever the selection moves or closes, never on a timer.
@@ -1794,6 +1796,7 @@ impl PhotonApp {
             msg_action_base: HIT_NONE,
             msg_hit_rows: Vec::new(),
             msg_view_h: 0.0,
+            painted_compose_lines: 1,
             selected_msg: None,
             selected_msg_copied: false,
             pending_delete: None,
@@ -2388,6 +2391,16 @@ impl FluorApp for PhotonApp {
     /// Honest-IME read: the FOCUSED textbox's text + cursor (chars), thru the one registry — any box (compose, search, profile fields) mirrors truthfully to the Android InputConnection.
     fn ime_editor_state(&mut self) -> Option<(String, usize)> {
         let focus = self.focused?;
+        // The multi-line compose box lives outside the single-line registry — its branch first.
+        if let Some(tb) = self
+            .message_textbox
+            .as_ref()
+            .filter(|t| t.hit_id() == focus)
+        {
+            let text: String = tb.chars.iter().collect();
+            let cursor = tb.cursor.min(tb.chars.len());
+            return Some((text, cursor));
+        }
         let tb = self.textbox_by_hit_mut(focus)?;
         let text: String = tb.chars.iter().collect();
         let cursor = tb.cursor.min(tb.chars.len());
@@ -2403,7 +2416,13 @@ impl FluorApp for PhotonApp {
         text: &mut fluor::text::TextRenderer,
     ) {
         let Some(focus) = self.focused else { return };
-        if let Some(tb) = self.textbox_by_hit_mut(focus) {
+        if let Some(tb) = self
+            .message_textbox
+            .as_mut()
+            .filter(|t| t.hit_id() == focus)
+        {
+            tb.replace_char_range(start, end, s, text);
+        } else if let Some(tb) = self.textbox_by_hit_mut(focus) {
             tb.replace_char_range(start, end, s, text);
         }
         self.scene_dirty = true;
@@ -2524,7 +2543,11 @@ impl FluorApp for PhotonApp {
         self.contacts_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         self.contacts_plus_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "+"));
         // Conversation compose box — placeholder geometry; positioned each frame via `update_widget_layout`.
-        self.message_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        self.message_textbox = Some(fluor::widgets::MultiTextbox::new(
+            &mut self.hit_counter,
+            12.,
+            "Oxanium",
+        ));
         // Send button overlaid in the compose box. ASCII ">" (not "→" U+2192 — absent from the Android font, so it rendered blank there; the contacts "+" button proves ASCII renders). Geometry set each frame in `update_widget_layout`. Empty label — the glyph is a drawn 4-vertex up arrowhead (draw_up_arrowhead), not text.
         self.message_send_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
         // Specific subtle hover for the two overlay-in-textbox action buttons (pre-fluor per-control hover colours), instead of the generic saturated BUTTON_HOVER. Held = the SAME subtle fill: these fire on release, so a press must read as "nothing happened yet" — the default BUTTON_HELD ramp flashed a heavy fill mid-press (the "+" ticket).
@@ -4474,8 +4497,8 @@ impl FluorApp for PhotonApp {
                             .map(|t| Some(t.hit_id()) == self.focused)
                             .unwrap_or(false);
                         if focused_is_compose {
-                            // Shift+Enter inserts a newline (multi-line compose); plain Enter sends.
-                            if ctx.modifiers.shift_key() {
+                            // Desktop: Enter sends, Shift+Enter inserts the newline. ANDROID: every Enter is a newline — a soft IME has no Shift+Enter, so the send button is the only send (the messenger convention thumbs already know).
+                            if ctx.modifiers.shift_key() || cfg!(target_os = "android") {
                                 if let Some(focus_id) = self.focused {
                                     let resp = widget::dispatch_key(
                                         self,
@@ -4578,7 +4601,24 @@ impl FluorApp for PhotonApp {
                 // Android: soft IME committed `s` (typing, swipe, autocomplete). Route it to whichever textbox holds focus — the attest handle field OR the contacts search box. (This used to be hardcoded to the attest box, so typing on the contacts screen was silently dropped on Android even though focus + the soft keyboard were correct; desktop never hit this because physical keys go thru the focus-generic `widget::dispatch_key`.) Backspace arrives as the literal "\b" character from PhotonSurfaceView's deleteSurroundingText / composing-text replacement path, so peel those off and route to `backspace`; everything else inserts verbatim. No-op when no textbox is focused (focus might sit on the attest button via Tab).
                 let mut handled = false;
                 let words_screen = matches!(self.state, AppState::AddDevice);
-                if let Some(tb) = self.focused_textbox_mut() {
+                // The multi-line compose box lives OUTSIDE the single-line registry — its IME branch comes first. A committed "\n" inserts (the Android model: Enter is a newline, the send button sends).
+                let compose_focused = self
+                    .message_textbox
+                    .as_ref()
+                    .map(|t| Some(t.hit_id()) == self.focused)
+                    .unwrap_or(false);
+                if compose_focused {
+                    if let Some(tb) = self.message_textbox.as_mut() {
+                        for c in s.chars() {
+                            if c == '\u{0008}' {
+                                tb.backspace(ctx.text);
+                            } else {
+                                tb.insert_char(c, ctx.text);
+                            }
+                        }
+                        handled = true;
+                    }
+                } else if let Some(tb) = self.focused_textbox_mut() {
                     for c in s.chars() {
                         if c == '\u{0008}' {
                             tb.backspace(ctx.text);
@@ -5039,6 +5079,11 @@ impl FluorApp for PhotonApp {
         // Drive the blinkey on the focused textbox. `BlinkTimer::poll(now)` returns `true` ONLY on the rising edge of each fire (then schedules the next random 0-300ms interval and returns false the rest of the time). On each fire, toggle the focused textbox's blinkey via `flip_blinkey` — which is a no-op on an unfocused textbox, so we can call it on every textbox without gating. Tracked SEPARATELY from `needs_redraw`: a blinkey flip is fully covered by the textbox's own `damage_rect`, so a pure-blink frame must not raise `scene_dirty` — that's what keeps the idle repaint a teeny cursor-sized rect instead of the whole window.
         let mut blink_redraw = false;
         if self.blink_timer.poll(now) {
+            if let Some(tb) = self.message_textbox.as_mut() {
+                if tb.flip_blinkey() {
+                    blink_redraw = true;
+                }
+            }
             for (_, tb) in self.textboxes_mut() {
                 if tb.flip_blinkey() {
                     blink_redraw = true;
@@ -5092,6 +5137,18 @@ impl FluorApp for PhotonApp {
         }
 
         // Everything network/protocol lives in advance_protocol(): presence sweep, channel drains, CLUTCH ceremony + chain advancement, retransmits. It touches NO surface, so it can also run headless from the Android foreground service while the app is backgrounded (screen off ⇒ the Choreographer stops calling tick, but the state is alive — see docs/background-tick.md). The frame-only work (animations above, render below) stays here in tick.
+        // Compose GROWTH is a layout edge: a keystroke that changes the wrapped line count moves list_bottom, so the following frame reflows the scene — the keystroke frame itself stays narrow (the grown box paints over the stale list for that one frame; its own damage covers the new bbox).
+        let compose_lines = self
+            .message_textbox
+            .as_ref()
+            .map(|t| t.line_count())
+            .unwrap_or(1);
+        if compose_lines != self.painted_compose_lines {
+            self.painted_compose_lines = compose_lines;
+            self.scene_dirty = true;
+            needs_redraw = true;
+        }
+
         needs_redraw |= self.advance_protocol(now);
 
         // Content-flavoured redraws dirty the scene (full-viewport frame); a pure blinkey flip stays out so its frame narrows to the textbox's own damage rect.
@@ -7139,9 +7196,16 @@ impl FluorApp for PhotonApp {
                         } else {
                             None
                         };
+                        // The compose box GROWS upward now — the list yields to its live height, not the one-line constant.
+                        let live_compose_h = self
+                            .message_textbox
+                            .as_ref()
+                            .map(|t| t.height)
+                            .unwrap_or(compose_h)
+                            .max(compose_h);
                         let list_bottom = buf_h as f32
                             - ime_lift
-                            - compose_h
+                            - live_compose_h
                             - compose_margin
                             - unit * 0.5
                             - if compose_strip.is_some() { unit * 0.9 } else { 0.0 };
@@ -7861,8 +7925,11 @@ impl FluorApp for PhotonApp {
                                 .as_ref()
                                 .map(|t| Some(t.hit_id()) == self.focused)
                                 .unwrap_or(false);
-                            let compose_cy =
-                                buf_h as f32 - ime_lift - compose_margin - compose_h * 0.5;
+                            let compose_cy = self
+                                .message_textbox
+                                .as_ref()
+                                .map(|t| t.center_y)
+                                .unwrap_or(buf_h as f32 - ime_lift - compose_margin - compose_h * 0.5);
                             if compose_empty && !compose_focused {
                                 ctx.text.draw_text_left(
                                     &mut canvas,
@@ -7913,7 +7980,6 @@ impl FluorApp for PhotonApp {
                                     0.,
                                     ctx.text,
                                     None,
-                                    None,
                                     Some(&mut chrome.hit_test_map),
                                     id,
                                 );
@@ -7932,8 +7998,14 @@ impl FluorApp for PhotonApp {
                             let clip_visible = self.pending_attach.is_some();
                             if let Some(tb) = self.message_textbox.as_ref().filter(|_| clip_visible)
                             {
-                                let (tcx, tcy, tw, th) =
-                                    (tb.center_x, tb.center_y, tb.width, tb.height);
+                                // Anchor off the bottom ROW: the box grows upward, and a clip that scaled with the grown height drifted huge and mid-box.
+                                let row = tb.row_h() + tb.pad_y() * 2.0;
+                                let (tcx, tcy, tw) = (
+                                    tb.center_x,
+                                    tb.center_y + tb.height * 0.5 - row * 0.5,
+                                    tb.width,
+                                );
+                                let th = row;
                                 let clip_size = th * 0.55;
                                 let clip_cx = tcx - tw * 0.5 - th * 0.55;
                                 let clip_style =
@@ -10801,10 +10873,12 @@ impl PhotonApp {
         // `ime_lift` rides the anchor so the compose bar (and its overlaid send button) sits above the soft keyboard — same term the render's list_bottom subtracts.
         let compose_cy = buf_h as f32 - self.ime_lift() - compose_margin - compose_h * 0.5;
         if let Some(tb) = self.message_textbox.as_mut() {
-            tb.set_rect(compose_cx, compose_cy, compose_w, compose_h);
             tb.set_font_size(font_size, ctx.text);
             // Exclude the overlaid send button's footprint (7/8-height square + 1/16 inset, matching the button block below) so typing never runs under the arrow.
             tb.set_right_inset(compose_h * 7.0 / 8.0 + compose_h / 16.0);
+            // Bottom-anchored growth: the box's bottom edge stays where the single-line bar sat; extra lines grow UPWARD into the list, capped at a third of the screen (the field call: line COUNT varies wildly with zoom, screen fraction doesn't).
+            let bottom_y = compose_cy + compose_h * 0.5;
+            tb.set_layout(compose_cx, bottom_y, compose_w, buf_h as f32 / 3.0, ctx.text);
         }
         if let Some(btn) = self.message_send_btn.as_mut() {
             let send_size = compose_h * 7.0 / 8.0;
@@ -11089,6 +11163,48 @@ impl PhotonApp {
             .map(|t| Some(t.hit_id()) == self.focused)
             .unwrap_or(false);
         let words_filter = matches!(self.state, AppState::AddDevice);
+        // The multi-line compose box lives outside the single-line registry — its clipboard branch first (paste is how long multi-line text usually ARRIVES).
+        if self
+            .message_textbox
+            .as_ref()
+            .is_some_and(|t| t.hit_id() == focus)
+        {
+            let tb = self.message_textbox.as_mut().unwrap();
+            let mut edited = false;
+            match op {
+                "c" => {
+                    if let Some(sel) = tb.selected_text() {
+                        if let Ok(mut clip) = arboard::Clipboard::new() {
+                            let _ = clip.set_text(sel);
+                        }
+                    }
+                }
+                "x" => {
+                    if let Some(sel) = tb.selected_text() {
+                        if let Ok(mut clip) = arboard::Clipboard::new() {
+                            if clip.set_text(sel).is_ok() {
+                                tb.delete_selection(text);
+                                edited = true;
+                            }
+                        }
+                    }
+                }
+                "v" => {
+                    if let Ok(mut clip) = arboard::Clipboard::new() {
+                        if let Ok(s) = clip.get_text() {
+                            tb.insert_str(&s, text);
+                            edited = true;
+                        }
+                    }
+                }
+                _ => return EventResponse::Pass,
+            }
+            if edited {
+                self.blink_timer.start(Instant::now());
+                self.scene_dirty = true;
+            }
+            return EventResponse::Handled;
+        }
         // A busy field can't be the clipboard target: `sync_busy_freeze` releases focus before disabling it, so a frozen box never matches `self.focused` here.
         let Some(tb) = self.textbox_by_hit_mut(focus) else {
             return EventResponse::Pass;
@@ -23134,9 +23250,6 @@ impl PhotonApp {
             self.contacts_textbox
                 .as_mut()
                 .map(|t| (TextboxRole::ContactsSearch, t)),
-            self.message_textbox
-                .as_mut()
-                .map(|t| (TextboxRole::MessageCompose, t)),
             self.settings_note_textbox
                 .as_mut()
                 .map(|t| (TextboxRole::SettingsNote, t)),
