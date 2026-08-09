@@ -1068,6 +1068,38 @@ impl FriendshipChains {
         rearmed
     }
 
+    /// True when OUR lane is provably DEAD to the peer: they advertise the ANCHOR (zero receipts, tip 0) while our oldest exhausted pending does not link there — the frame they need next is one we no longer hold, so nothing in `pending_messages` can EVER be accepted (hash-unlinkable, and position-N ciphertext against their position-0 key besides).
+    /// This is the field wedge of 2026-08-09 (receiver lost/never-held the lane state, sender mid-chain): 2,913 retransmit lines in one overnight log, every frame gap-buffered by the peer as "ahead of us", give-up → stall-recovery re-arm → give-up, forever.
+    /// Exhaustion is the gate that keeps a healthy first burst (pendings genuinely in flight toward a fresh lane) from reading as a wedge: give-up means the full retry ladder ran — direct, TCP, relay — and nobody of the peer's fleet linked it. A nonzero STUCK tip can wedge the same way (mid-chain regression) but is indistinguishable from a healthy gap-stall by osc alone — that case waits on head HASHES in the sync records (TICKETS).
+    pub fn our_lane_wedged_at_peer_anchor(&self, tip_osc: i64) -> bool {
+        if tip_osc != 0 {
+            return false;
+        }
+        let Some(label) = self.our_label else {
+            return false;
+        };
+        let Some(idx) = self.lane_index(&label) else {
+            return false;
+        };
+        let Some(oldest) = self.pending_messages.first() else {
+            return false;
+        };
+        oldest.attempts >= MAX_SEND_ATTEMPTS && oldest.prev_msg_hp != self.first_message_anchors[idx]
+    }
+
+    /// LANE ROTATION — the wedge heal: retire the dead lane, mint a fresh one. The "era-supersede should retire the orphan lane" repair, minus the era: same root, no ceremony, no key material touched. The receiver materializes the new lane from its wire label on first frame (`ensure_lane`) and expects its anchor — a slate it can actually link.
+    /// The retired pendings are DROPPED, not carried: their frozen ciphertext is position-N under the dead lane's keys, unlinkable and undecryptable by construction. Their CONTENT survives as undelivered rows — the caller flushes those thru the normal send path, which rebuilds fresh frames at the ORIGINAL eagle_times, so row identity stays fleet-wide and history converges (the receiver's row insert dedupes by eagle_time and adopts; a frame the peer secretly already had just yields a free re-ACK).
+    /// The dead lane's state stays behind receive-only (bytes, not risk) — label GC is the Phase C rotation sweep. Returns (dead_label, fresh_label, retired_pending_count); `None` for pre-lane blobs (no root — they cannot wedge this way and cannot rotate).
+    pub fn rotate_our_lane(&mut self) -> Option<([u8; 32], [u8; 32], usize)> {
+        self.lane_root?;
+        let dead = self.our_label?;
+        let retired = self.pending_messages.len();
+        self.pending_messages.clear();
+        self.our_label = None;
+        let fresh = self.mint_our_lane()?;
+        Some((dead, fresh, retired))
+    }
+
     /// Get last_sent_hash (for debugging/logging).
     pub fn last_sent_hash(&self) -> Option<&[u8; 32]> {
         self.last_sent_hash.as_ref()
@@ -2037,5 +2069,97 @@ mod tests {
 
         // Re-arming past the newest tip revives nothing.
         assert_eq!(chains.rearm_pending_after(t0 + 10 * one_s, far), 0);
+    }
+
+    /// The anchor-wedge detector: peer-at-anchor is HEALTHY while our oldest pending still links there (a first burst the retransmit can deliver), and a WEDGE only once the oldest exhausted pending builds mid-chain — the peer needs a frame we no longer hold, so no retransmit can ever be accepted (the 2026-08-09 field wedge: receiver lost the lane state, sender days deep, 2,913 retransmit lines overnight).
+    #[test]
+    fn wedge_detector_fires_only_on_unlinkable_exhausted_pendings() {
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut sender = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        let one_s = vsf::OSCILLATIONS_PER_SECOND as i64;
+        let t0 = 1_000_000i64;
+
+        // Two sends, no ACKs yet.
+        let (_ct1, _prev1, _hp1, ph1, _lane) = sender
+            .prepare_send(b"one".to_vec(), b"one".to_vec(), t0, vec![])
+            .unwrap();
+        let (_ct2, _prev2, _hp2, _ph2, _lane) = sender
+            .prepare_send(b"two".to_vec(), b"two".to_vec(), t0 + one_s, vec![])
+            .unwrap();
+
+        // Fresh + un-exhausted: never a wedge, at any tip.
+        assert!(!sender.our_lane_wedged_at_peer_anchor(0));
+
+        // Exhaust the whole ladder. Peer at the anchor with our oldest pending LINKING at the anchor is still healthy — the retransmit sweep can deliver the first frame and cascade.
+        for k in 1..20 {
+            let _ = sender.collect_due_retransmits(t0 + one_s * 60 * k);
+        }
+        assert!(!sender.our_lane_wedged_at_peer_anchor(0));
+
+        // The first message gets ACKed (the peer held the lane once), then the peer loses the lane state and advertises the anchor again. Our oldest pending now builds on msg one's hash — unlinkable at their anchor, exhausted: WEDGED.
+        assert!(sender.process_ack(t0, &ph1));
+        assert!(sender.our_lane_wedged_at_peer_anchor(0));
+        // A nonzero tip is never this wedge (gap-stall vs regression is undecidable by osc alone — head-hash territory).
+        assert!(!sender.our_lane_wedged_at_peer_anchor(t0));
+    }
+
+    /// Lane rotation heals the wedge END TO END: the dead lane's pendings retire, the fresh lane starts at ITS anchor, and a receiver that never held (or lost) the old lane links + decrypts the re-served content at the ORIGINAL eagle_time — history converges on row identity instead of forking.
+    #[test]
+    fn rotation_retires_the_dead_lane_and_the_fresh_lane_links_from_its_anchor() {
+        use crate::crypto::chain::{
+            decrypt_layers, derive_salt, generate_scratch, CURRENT_KEY_INDEX,
+        };
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut sender = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        let mut receiver = FriendshipChains::from_clutch(&[bob, alice], &eggs);
+        let one_s = vsf::OSCILLATIONS_PER_SECOND as i64;
+        let t0 = 1_000_000i64;
+
+        // Build the wedge: two sends, first ACKed, second exhausted, peer back at the anchor.
+        let (_ct, _p, _h, ph1, dead_label) = sender
+            .prepare_send(b"one".to_vec(), b"one".to_vec(), t0, vec![])
+            .unwrap();
+        let (_ct, _p, _h, _ph2, _l) = sender
+            .prepare_send(b"two".to_vec(), b"two".to_vec(), t0 + one_s, vec![])
+            .unwrap();
+        for k in 1..20 {
+            let _ = sender.collect_due_retransmits(t0 + one_s * 60 * k);
+        }
+        assert!(sender.process_ack(t0, &ph1));
+        assert!(sender.our_lane_wedged_at_peer_anchor(0));
+
+        let (dead, fresh, retired) = sender.rotate_our_lane().unwrap();
+        assert_eq!(dead, dead_label);
+        assert_ne!(fresh, dead);
+        assert_eq!(retired, 1);
+        assert!(sender.pending_messages.is_empty());
+        assert_eq!(sender.our_label(), Some(&fresh));
+
+        // Re-serve the undelivered content at its ORIGINAL eagle_time on the fresh lane. The first frame's prev is the FRESH lane's anchor.
+        let (ct, prev, msg_hp, _ph, lane) = sender
+            .prepare_send(b"two".to_vec(), b"two".to_vec(), t0 + one_s, vec![])
+            .unwrap();
+        assert_eq!(lane, fresh);
+
+        // A receiver with NO memory of any of it materializes the fresh lane from the wire label, links at the anchor, and decrypts.
+        receiver.ensure_lane(&lane).unwrap();
+        assert!(receiver.verify_chain_link(&lane, &prev).is_ok());
+        let chain = receiver.chain(&lane).unwrap().clone();
+        let salt = derive_salt(receiver.last_plaintext(&lane), &chain);
+        let scratch = generate_scratch(&chain, &salt);
+        let et = vsf::EagleTime::from_oscillations(t0 + one_s);
+        let plain = decrypt_layers(&ct, &chain, CURRENT_KEY_INDEX, &scratch, &et);
+        assert_eq!(plain, b"two", "re-served frame must decrypt on the fresh lane");
+        receiver.advance(&lane, &et, b"two", &[]);
+        receiver.update_received_hash(&lane, msg_hp);
+        assert_eq!(
+            sender.current_key(&lane).unwrap(),
+            receiver.current_key(&lane).unwrap(),
+            "fresh-lane keys diverged after the re-serve"
+        );
     }
 }
