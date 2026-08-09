@@ -672,12 +672,66 @@ fn display_content(content: &str) -> String {
     }
 }
 
+/// Is this row a BUBBLE in the stream? One source of truth for the renderer's visible-list filter AND the tap-to-jump scroll walk — the two must count identically or a jump lands off-target. Control rows and tombstones never draw; reaction rows resolve onto their target; an edit row hides while its target exists (renders standalone only when the target never synced).
+fn chat_row_visible(raw: &[crate::types::ChatMessage], m: &crate::types::ChatMessage) -> bool {
+    if crate::types::is_control_content(&m.content) || m.deleted {
+        return false;
+    }
+    if matches!(m.reference, Some((crate::types::RefKind::React, _))) {
+        return false;
+    }
+    if let Some((crate::types::RefKind::Edit, t)) = m.reference {
+        return !raw.iter().any(|x| {
+            x.timestamp == t
+                && !crate::types::is_control_content(&x.content)
+                && !matches!(x.reference, Some((crate::types::RefKind::Edit, _)))
+        });
+    }
+    true
+}
+
+/// Current reaction per target per direction — newest live wins, empty glyph = retracted. [0]=theirs, [1]=ours. Shared by the renderer and the scroll walk (a reacted row is one line taller).
+fn build_react_over(
+    raw: &[crate::types::ChatMessage],
+) -> std::collections::HashMap<i64, [Option<(i64, String)>; 2]> {
+    let mut out: std::collections::HashMap<i64, [Option<(i64, String)>; 2]> =
+        std::collections::HashMap::new();
+    for m in raw.iter().filter(|m| !m.deleted) {
+        if let Some((crate::types::RefKind::React, t)) = m.reference {
+            let slot = &mut out.entry(t).or_default()[m.is_outgoing as usize];
+            if slot.as_ref().map_or(true, |(ts, _)| m.timestamp >= *ts) {
+                *slot = Some((m.timestamp, m.content.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// Does the react_over map hold any LIVE glyph for this row? (The retract leaves a slot with an empty string.)
+fn row_has_reaction(
+    over: &std::collections::HashMap<i64, [Option<(i64, String)>; 2]>,
+    ts: i64,
+) -> bool {
+    over.get(&ts).is_some_and(|slots| {
+        slots
+            .iter()
+            .any(|s| s.as_ref().is_some_and(|(_, g)| !g.is_empty()))
+    })
+}
+
 fn wrap_text_lines(
     tr: &mut fluor::text::TextRenderer,
     s: &str,
     style: &TextStyle,
     max_w: f32,
 ) -> Vec<String> {
+    // Explicit newlines are HARD breaks: each segment word-wraps independently, an empty segment keeps its blank line. Without this a multi-line message word-wrapped as one soup line and its drawn lines OVERLAPPED (field, 2026-08-09 — the renderer stacks by wrapped-line count, which undercounted).
+    if s.contains('\n') {
+        return s
+            .split('\n')
+            .flat_map(|seg| wrap_text_lines(tr, seg, style, max_w))
+            .collect();
+    }
     let space_w = tr.measure_text(" ", style);
     let mut lines: Vec<String> = Vec::new();
     let mut cur = String::new();
@@ -1333,7 +1387,9 @@ pub struct PhotonApp {
     /// Base hit id for the rest of the details-strip action pills (span 8): 0=reply, 1=edit, 2=resend, 3=delete. Copy keeps its own id above.
     msg_action_base: HitId,
     /// Visible-row → message identity map, rebuilt each conversation render, parallel to the `msg_hit_base` stamps. The identity is (timestamp, is_outgoing) — index-free so a mid-frame history backfill can't redirect a tap.
-    msg_hit_rows: Vec<(i64, bool)>,
+    msg_hit_rows: Vec<(i64, bool, Option<(f32, f32, i64)>)>,
+    /// The list viewport height at the last conversation render — the scroll-to-message centering math needs it outside the render pass (same pattern as msg_max_scroll).
+    msg_view_h: f32,
     /// The message whose details strip is open: (contact idx, timestamp, is_outgoing). Keyed by identity, not list index, so backfills can't shift the selection. `None` = no strip.
     selected_msg: Option<(usize, i64, bool)>,
     /// The open strip's copy pill has fired (text on the clipboard): pill turns green + reads "copied". Event-cleared — reset whenever the selection moves or closes, never on a timer.
@@ -1737,6 +1793,7 @@ impl PhotonApp {
             msg_copy_id: HIT_NONE,
             msg_action_base: HIT_NONE,
             msg_hit_rows: Vec::new(),
+            msg_view_h: 0.0,
             selected_msg: None,
             selected_msg_copied: false,
             pending_delete: None,
@@ -3723,9 +3780,17 @@ impl FluorApp for PhotonApp {
             }
             if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(64) {
                 let vis = (hit_id - self.msg_hit_base) as usize;
-                if let (Some(ci), Some(&(ts, out))) =
+                if let (Some(ci), Some(&(ts, out, ref_band))) =
                     (self.active_contact(), self.msg_hit_rows.get(vis))
                 {
+                    // Reference-line tap = JUMP to the source row, centered — the hint is a link, not part of the select band.
+                    if let Some((band_y0, band_y1, target)) = ref_band {
+                        if (ctx.cursor_y as f32) >= band_y0 && (ctx.cursor_y as f32) <= band_y1 {
+                            self.scroll_to_message(ci, target);
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
+                    }
                     let key = (ci, ts, out);
                     // Toggle: same message deselects; another message moves the strip. Event-shown, interaction-cleared — no timers.
                     self.selected_msg = if self.selected_msg == Some(key) {
@@ -7106,29 +7171,22 @@ impl FluorApp for PhotonApp {
                                 }
                             }
                         }
-                        // Current reaction per target per direction — newest live wins, empty glyph = retracted (None). [0]=theirs, [1]=ours.
-                        let mut react_over: std::collections::HashMap<i64, [Option<(i64, String)>; 2]> =
-                            std::collections::HashMap::new();
-                        for m in raw_msgs.iter().filter(|m| !m.deleted) {
-                            if let Some((crate::types::RefKind::React, t)) = m.reference {
-                                let slot = &mut react_over.entry(t).or_default()[m.is_outgoing as usize];
-                                if slot.as_ref().map_or(true, |(ts, _)| m.timestamp >= *ts) {
-                                    *slot = Some((m.timestamp, m.content.clone()));
-                                }
-                            }
-                        }
-                        // The line a reacted bubble grows underneath: theirs then ours, retracts dropped.
-                        let react_line = |ts: i64| -> Option<String> {
+                        // Current reaction per target per direction — the shared builder (the scroll walk counts with the same map).
+                        let react_over = build_react_over(raw_msgs);
+                        // The line a reacted bubble grows underneath — PER PARTY, because each glyph paints in its reactor's colour (the field call, 2026-08-09: "make sure the colour matches the party"): (theirs, ours), retracts dropped, None when neither.
+                        let react_line = |ts: i64| -> Option<(Option<String>, Option<String>)> {
                             let slots = react_over.get(&ts)?;
-                            let glyphs: Vec<&str> = slots
-                                .iter()
-                                .filter_map(|s| s.as_ref().map(|(_, g)| g.as_str()))
-                                .filter(|g| !g.is_empty())
-                                .collect();
-                            if glyphs.is_empty() {
+                            let pick = |s: &Option<(i64, String)>| {
+                                s.as_ref()
+                                    .map(|(_, g)| g.clone())
+                                    .filter(|g| !g.is_empty())
+                            };
+                            let theirs = pick(&slots[0]);
+                            let ours = pick(&slots[1]);
+                            if theirs.is_none() && ours.is_none() {
                                 None
                             } else {
-                                Some(glyphs.join("  "))
+                                Some((theirs, ours))
                             }
                         };
                         // Bubble DISPLAY body: attachments keep their pill line; an edited row shows its newest edit body; reply/edit markers strip to their text.
@@ -7142,27 +7200,7 @@ impl FluorApp for PhotonApp {
                         };
                         let visible: Vec<&crate::types::ChatMessage> = raw_msgs
                             .iter()
-                            .filter(|m| {
-                                if crate::types::is_control_content(&m.content) || m.deleted {
-                                    return false;
-                                }
-                                // A reaction row NEVER draws a bubble — resolved onto its target; an orphan (target not synced yet) stays invisible and attaches when the target lands (a lone glyph bubble reads as a bug, unlike an orphan edit whose body is real prose).
-                                if matches!(m.reference, Some((crate::types::RefKind::React, _))) {
-                                    return false;
-                                }
-                                // An edit row draws no bubble of its own while its target row exists in ANY state (the supersede belongs to the target's bubble); a target that never synced here renders the edit standalone so nothing silently vanishes.
-                                if let Some((crate::types::RefKind::Edit, t)) = m.reference {
-                                    return !raw_msgs.iter().any(|x| {
-                                        x.timestamp == t
-                                            && !crate::types::is_control_content(&x.content)
-                                            && !matches!(
-                                                x.reference,
-                                                Some((crate::types::RefKind::Edit, _))
-                                            )
-                                    });
-                                }
-                                true
-                            })
+                            .filter(|m| chat_row_visible(raw_msgs, m))
                             .collect();
                         let n = visible.len();
                         // Stream entry #0 (avatar + name + optional status) is the oldest item: its height joins content_h so scrolling to genesis reveals it above message 1. Unconditional — every conversation has entry #0.
@@ -7221,6 +7259,7 @@ impl FluorApp for PhotonApp {
                         let max_scroll = (content_h - view_h).max(0.0);
                         // Publish the ceiling so the tick can clamp the STORED offset (this field write is disjoint from the `contact` borrow above); the local `scroll` only fixes THIS frame's draw.
                         self.msg_max_scroll = max_scroll;
+                        self.msg_view_h = view_h;
                         let scroll = conv
                             .map(|v| v.scroll_offset)
                             .unwrap_or(0.0)
@@ -7569,9 +7608,9 @@ impl FluorApp for PhotonApp {
                                 their_colour
                             };
                             let msg_style = TextStyle::new(msg_size, colour).weight(500);
-                            // The referenced message, resolved LIVE (so its own edits show) at HALF alpha — quarter stays the not-yet-ACKed signal, and the two must read differently. Missing target (not synced yet) renders as a bare ellipsis.
+                            // The referenced message, resolved LIVE (so its own edits show) at HALF alpha in the REPLIER'S colour — the whole reply block is one party's utterance, so its reference line tints like its body (field call, 2026-08-09: the target-colour scheme made a friend's reply-to-us carry a grey reference, since our own colour is the neutral grey). Half vs full separates context from content; quarter stays the not-yet-ACKed signal. Missing target (not synced yet) renders as a bare ellipsis.
                             if let Some(t) = reply_target {
-                                let (ref_text, ref_colour) = raw_msgs
+                                let ref_text = raw_msgs
                                     .iter()
                                     .find(|x| {
                                         x.timestamp == t
@@ -7583,24 +7622,20 @@ impl FluorApp for PhotonApp {
                                             )
                                     })
                                     .map(|x| {
-                                        let d = body_of(x);
+                                        // One display line: hard newlines flatten to spaces before the truncate.
+                                        let d = body_of(x).replace('\n', " ");
                                         let mut s: String = d.chars().take(48).collect();
                                         if d.chars().count() > 48 {
                                             s.push('\u{2026}');
                                         }
-                                        (
-                                            format!("\u{00bb} {}", s),
-                                            theme::half_colour(if x.is_outgoing || is_self_contact {
-                                                our_colour
-                                            } else {
-                                                their_colour
-                                            }),
-                                        )
+                                        format!("\u{00bb} {}", s)
                                     })
-                                    .unwrap_or((
-                                        "\u{00bb} \u{2026}".to_string(),
-                                        theme::half_colour(*theme::LABEL_COLOUR),
-                                    ));
+                                    .unwrap_or("\u{00bb} \u{2026}".to_string());
+                                let ref_colour = theme::half_colour(if msg.is_outgoing || is_self_contact {
+                                    our_colour
+                                } else {
+                                    their_colour
+                                });
                                 let ref_style = TextStyle::new(msg_size, ref_colour).weight(500);
                                 let ref_y = y - react_off - lines.len() as f32 * intra;
                                 if msg.is_outgoing || is_self_contact {
@@ -7649,30 +7684,64 @@ impl FluorApp for PhotonApp {
                                     );
                                 }
                             }
-                            // The reaction line: theirs then ours under the bubble, full alpha (a reaction is content, not context — half alpha is the reference language), slightly small, bubble-side aligned. Attribution lives in the details strip meta.
-                            if let Some(rl) = reactions.as_ref() {
-                                let r_style =
-                                    TextStyle::new(msg_size * 0.8, *theme::LABEL_COLOUR).weight(500);
+                            // The reaction line: theirs then ours under the bubble, EACH GLYPH IN ITS REACTOR'S COLOUR at half alpha (the reference treatment — and the emoji rasterize thru the style tint, so grey made every reaction read as nobody's). Bubble-side aligned; attribution words live in the details strip meta.
+                            if let Some((r_theirs, r_ours)) = reactions.as_ref() {
+                                let r_sz = msg_size * 0.8;
+                                let r_gap = r_sz * 0.6;
+                                let their_style =
+                                    TextStyle::new(r_sz, theme::half_colour(their_colour)).weight(500);
+                                let our_style =
+                                    TextStyle::new(r_sz, theme::half_colour(our_colour)).weight(500);
                                 if msg.is_outgoing || is_self_contact {
-                                    ctx.text.draw_text_right(
-                                        &mut canvas,
-                                        rl,
-                                        buf_w as f32 - pad_x,
-                                        y,
-                                        &r_style,
-                                        Some(list_clip),
-                                        None,
-                                    );
+                                    let mut right_x = buf_w as f32 - pad_x;
+                                    if let Some(o) = r_ours {
+                                        ctx.text.draw_text_right(
+                                            &mut canvas,
+                                            o,
+                                            right_x,
+                                            y,
+                                            &our_style,
+                                            Some(list_clip),
+                                            None,
+                                        );
+                                        right_x -= ctx.text.measure_text(o, &our_style) + r_gap;
+                                    }
+                                    if let Some(t) = r_theirs {
+                                        ctx.text.draw_text_right(
+                                            &mut canvas,
+                                            t,
+                                            right_x,
+                                            y,
+                                            &their_style,
+                                            Some(list_clip),
+                                            None,
+                                        );
+                                    }
                                 } else {
-                                    ctx.text.draw_text_left(
-                                        &mut canvas,
-                                        rl,
-                                        pad_x,
-                                        y,
-                                        &r_style,
-                                        Some(list_clip),
-                                        None,
-                                    );
+                                    let mut left_x = pad_x;
+                                    if let Some(t) = r_theirs {
+                                        ctx.text.draw_text_left(
+                                            &mut canvas,
+                                            t,
+                                            left_x,
+                                            y,
+                                            &their_style,
+                                            Some(list_clip),
+                                            None,
+                                        );
+                                        left_x += ctx.text.measure_text(t, &their_style) + r_gap;
+                                    }
+                                    if let Some(o) = r_ours {
+                                        ctx.text.draw_text_left(
+                                            &mut canvas,
+                                            o,
+                                            left_x,
+                                            y,
+                                            &our_style,
+                                            Some(list_clip),
+                                            None,
+                                        );
+                                    }
                                 }
                             }
                             // Stamp the row band — the WHOLE wrapped block — so a tap selects this message (details strip). Clamped to the list region so header/compose never lose their own hits; capped at the 64-id span (a taller screen than that doesn't exist).
@@ -7690,7 +7759,13 @@ impl FluorApp for PhotonApp {
                                     ((y + line_h * 0.5).min(list_bottom)) as isize,
                                     row_hit,
                                 );
-                                self.msg_hit_rows.push((msg.timestamp, msg.is_outgoing));
+                                // A reply row's reference line is its own tap target: the band + the referenced ts ride the hit row, and a tap inside it JUMPS to the source row instead of opening the strip.
+                                let ref_band = reply_target.map(|t| {
+                                    let ref_y = y - react_off - lines.len() as f32 * intra;
+                                    (ref_y - line_h * 0.5, ref_y + line_h * 0.5, t)
+                                });
+                                self.msg_hit_rows
+                                    .push((msg.timestamp, msg.is_outgoing, ref_band));
                             }
                             y -= line_h + block_extra;
                         }
@@ -7740,7 +7815,8 @@ impl FluorApp for PhotonApp {
                             });
                             let snippet = target
                                 .map(|x| {
-                                    let d = body_of(x);
+                                    // One display line: hard newlines flatten to spaces before the truncate.
+                                    let d = body_of(x).replace('\n', " ");
                                     let mut s: String = d.chars().take(56).collect();
                                     if d.chars().count() > 56 {
                                         s.push('\u{2026}');
@@ -15516,6 +15592,64 @@ impl PhotonApp {
         });
     }
 
+    /// Scroll the open conversation so the row at `target_ts` sits centered — the reply-reference tap's jump. Reuses the render's own wrap cache (line counts per visible row) and mirrors its height math exactly thru the SHARED helpers (chat_row_visible / build_react_over), so the landing can't drift from what the renderer draws. A stale cache (different conversation / no render yet) or a missing target no-ops — the tap just does nothing rather than jumping wrong.
+    fn scroll_to_message(&mut self, ci: usize, target_ts: i64) {
+        let Some(conv) = self.conv_of(ci) else {
+            return;
+        };
+        let raw: &[crate::types::ChatMessage] = &conv.messages;
+        let visible: Vec<&crate::types::ChatMessage> = raw
+            .iter()
+            .filter(|m| chat_row_visible(raw, m))
+            .collect();
+        let Some((_, wrap_lines, _)) = self.msg_wrap.as_ref() else {
+            return;
+        };
+        if wrap_lines.len() != visible.len() || self.msg_wrap.as_ref().is_some_and(|(k, _, _)| k.0 != ci) {
+            return; // cache is for another conversation/row set — a jump from stale math lands wrong, so don't
+        }
+        let react_over = build_react_over(raw);
+        // The same per-row metrics the render walk uses. line_h/intra derive from msg_size, which derives from unit — recover the pair from the stored view scale via the ratio the render fixes (line_h = msg_size*1.6, intra = msg_size*1.25); msg_size itself rides the wrap cache key as bits.
+        let Some((key, _, _)) = self.msg_wrap.as_ref() else {
+            return;
+        };
+        let msg_size = f32::from_bits(key.4);
+        let line_h = msg_size * 1.6;
+        let intra = msg_size * 1.25;
+        let sel_key = self
+            .selected_msg
+            .filter(|(sci, _, _)| *sci == ci)
+            .map(|(_, ts, out)| (ts, out));
+        let mut dist_from_bottom = 0.0f32;
+        let mut found: Option<f32> = None;
+        for (vi, m) in visible.iter().enumerate().rev() {
+            let lines_n = wrap_lines.get(vi).map(|l| l.len()).unwrap_or(1).max(1);
+            let mut block = line_h + (lines_n as f32 - 1.0) * intra;
+            if matches!(m.reference, Some((crate::types::RefKind::Reply, _))) {
+                block += intra;
+            }
+            if row_has_reaction(&react_over, m.timestamp) {
+                block += intra;
+            }
+            if sel_key.is_some_and(|(ts, out)| m.timestamp == ts && m.is_outgoing == out) {
+                block += line_h * 3.0; // the open details strip occupies its slot
+            }
+            if m.timestamp == target_ts {
+                found = Some(dist_from_bottom + block * 0.5);
+                break;
+            }
+            dist_from_bottom += block;
+        }
+        let Some(center_dist) = found else {
+            return; // target not in the visible stream (never synced here)
+        };
+        let scroll = (center_dist - self.msg_view_h * 0.5).clamp(0.0, self.msg_max_scroll);
+        if let Some(v) = self.conv_mut_of(ci) {
+            v.scroll_offset = scroll;
+        }
+        self.scene_dirty = true;
+    }
+
     /// Zero this contact's unread counter — called at every site where their conversation becomes the active view (contact tap, panel back/Esc re-entry). Persists only on an actual change (off-thread, coalesced), so the common already-read path costs nothing. Interaction-cleared by doctrine: this is the ONLY way the counter ever goes down.
     fn clear_unread(&mut self, ci: usize) {
         let dirty_id = match self.conv_mut_of(ci) {
@@ -15958,13 +16092,15 @@ impl PhotonApp {
                     contact.chain_advanced_by_ack = true;
                 }
                 // Use actual eagle_time and sorted insert for correct chronological order
-                let msg = ChatMessage::new_with_timestamp(
+                let mut msg = ChatMessage::new_with_timestamp(
                     message_text,
                     false,     // is_outgoing = false (received)
                     timestamp, // Use message's actual eagle_time, not current time
                 )
                 // Persist the ACK hash so a later duplicate (our ACK was lost) can be re-ACKed from storage — keeps the sender's chain from stalling.
                 .with_ack_hash(plaintext_hash);
+                // The wire's typed reference lands ON THE ROW — without this the sender saw its own reply hint (the send path stamps its row) while the receiver's copy arrived bare (field, 2026-08-09: "responses don't show the hinted message on the receive side").
+                msg.reference = wire_reference;
                 let conv = &mut self.conversations[conv_pos];
                 conv.insert_message_sorted(msg.clone());
                 if !is_edit_row {
