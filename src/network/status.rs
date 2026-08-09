@@ -3595,7 +3595,14 @@ async fn run_checker(
                             crate::log("PT: Relay send succeeded");
                         }
                         Err(e) => {
-                            crate::logf!("PT: Relay send failed: {}", e);
+                            // OFFLINE VERDICT PARKS THE LADDER: the relay is authoritative — "recipient offline (frame discarded)" means every further direct retry + TCP connect + relay POST is guaranteed waste, and seven offline fleets' ladders running their full backoff schedules was a sustained retransmit storm (field, 2026-08-09: 32 retransmits in 31s, UI ticks to 1075ms riding it). Clear this peer's outbounds; the came-online edge (pong → retransmit sweep / attach re-request) re-serves the payload when the device actually returns.
+                            if e.contains("recipient offline") {
+                                let mut pt_mgr = pt.lock().unwrap();
+                                pt_mgr.clear_outbound(&tick.peer_addr);
+                                crate::logf!("PT: relay says recipient offline — parking the ladder to {} (re-serves on the came-online edge)", tick.peer_addr);
+                            } else {
+                                crate::logf!("PT: Relay send failed: {}", e);
+                            }
                         }
                     }
                 }

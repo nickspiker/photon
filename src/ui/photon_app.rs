@@ -3894,7 +3894,7 @@ impl FluorApp for PhotonApp {
                 }
                 // Pointer-down over a textbox → this move pans its TEXT with the pointer (the caret rides the grabbed character), and while panning the hover doesn't matter. Handled first so a drag reads as a gesture, not a hover.
                 if self.pointer_down && self.drag_select_hit != HIT_NONE {
-                    if self.drag_pan_text(ctx.cursor_x) {
+                    if self.drag_pan_text(ctx.cursor_x, ctx.cursor_y) {
                         changed = true;
                     }
                 }
@@ -4257,7 +4257,7 @@ impl FluorApp for PhotonApp {
                 }
 
                 // Textbox press: photon owns textbox pointer gestures end-to-end — focus + place the caret + drop a drag anchor here (double-click → word, triple → all), extend on drag in `CursorMoved`, finalize on release. `on_activate` therefore SKIPS `dispatch_release` for textboxes, so fluor's on_click can't clobber the selection on release.
-                if self.textbox_press(hit_id, ctx.cursor_x) {
+                if self.textbox_press(hit_id, ctx.cursor_x, ctx.cursor_y) {
                     ctx.window.request_redraw();
                     return EventResponse::Handled;
                 }
@@ -23303,7 +23303,8 @@ impl PhotonApp {
         let Some(id) = id else {
             return false;
         };
-        self.textboxes_mut().any(|(_, t)| t.hit_id() == id)
+        self.message_textbox.as_ref().is_some_and(|t| t.hit_id() == id)
+            || self.textboxes_mut().any(|(_, t)| t.hit_id() == id)
     }
 
     /// The textbox that currently holds focus, or `None`. The Android IME commit path routes the committed string here, since (unlike desktop keys) it has no focus-generic dispatcher.
@@ -23325,7 +23326,42 @@ impl PhotonApp {
     }
 
     /// Pointer press over hit `id`: if it's a textbox, focus it, place the caret under the pointer, and grab the text for the pan (drag = the text follows the finger — see `drag_pan_text`). Multi-tap streak: double → select word, triple → select paragraph (the whole single-line box). The tap interval comes from the OS (Android's ViewConfiguration double-tap timeout via JNI, X11 XSettings on Linux, 400 ms default). Returns true if a textbox was engaged (caller consumes the press so it can't start a window drag). Works for ANY textbox on ANY screen — the uniform pointer model, every platform.
-    fn textbox_press(&mut self, id: HitId, x: Coord) -> bool {
+    fn textbox_press(&mut self, id: HitId, x: Coord, y: Coord) -> bool {
+        // The multi-line compose box lives outside the single-line registry — its press branch first: focus (which raises the soft keyboard thru change_focus), caret at (x, y), the same multi-tap streak (double = word, triple = all), and the drag baseline for selection.
+        if self
+            .message_textbox
+            .as_ref()
+            .is_some_and(|t| t.hit_id() == id)
+        {
+            let now = Instant::now();
+            let interval = fluor::host::os_input::double_click_interval();
+            let continues = self.last_click_hit == id
+                && self
+                    .last_click_time
+                    .map_or(false, |t| now.duration_since(t) <= interval);
+            let streak = if continues {
+                (self.click_streak + 1).min(3)
+            } else {
+                1
+            };
+            self.last_click_hit = id;
+            self.last_click_time = Some(now);
+            self.click_streak = streak;
+            self.drag_select_hit = id;
+            self.pointer_down = true;
+            self.change_focus(Some(id));
+            if let Some(tb) = self.message_textbox.as_mut() {
+                match streak {
+                    2 => {
+                        let idx = tb.cursor_index_from_xy(x, y);
+                        tb.select_word_at(idx);
+                    }
+                    3 => tb.select_all(),
+                    _ => tb.pointer_press(x, y),
+                }
+            }
+            return true;
+        }
         // A busy-frozen box (`!is_enabled`) takes no pointer input — treat it as "not a textbox" so the press falls through to the normal consume, matching the pre-rework behaviour.
         if self
             .textbox_by_hit_mut(id)
@@ -23369,10 +23405,19 @@ impl PhotonApp {
     }
 
     /// Pointer drag while a textbox press is live: pan the TEXT with the pointer — `grab_scroll + (x − grab_x)`, unclamped, so the grabbed character (caret riding it) stays under the finger and the text can be carried infinitely either way; `tick()`'s spring pass eases it home after release. A word/paragraph select (streak ≥ 2) doesn't pan. Returns true if the text moved.
-    fn drag_pan_text(&mut self, x: Coord) -> bool {
+    fn drag_pan_text(&mut self, x: Coord, y: Coord) -> bool {
         let id = self.drag_select_hit;
         if self.click_streak >= 2 {
             return false;
+        }
+        // Compose drag = SELECTION (the multi-line box selects like an editor, it doesn't pan).
+        if let Some(tb) = self
+            .message_textbox
+            .as_mut()
+            .filter(|t| t.hit_id() == id)
+        {
+            tb.pointer_drag(x, y);
+            return true;
         }
         let offset = self.pan_grab_scroll + (x - self.pan_grab_x);
         match self.textbox_by_hit_mut(id) {
