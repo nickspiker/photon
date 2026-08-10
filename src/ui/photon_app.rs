@@ -1093,6 +1093,8 @@ pub struct PhotonApp {
     avatar_dl_started: std::collections::HashSet<[u8; 32]>,
     /// Mutual peers we've sent a direct P2P AvatarRequest to, mapped to the eagle-time we sent it. The per-tick sweep asks each mutual peer once, then — if no AvatarResponse has installed an avatar within `AVATAR_P2P_FALLBACK_OSC` — falls back to FGTW. So a friend's avatar comes from the friend first, and FGTW only covers the case where the friend is offline or avatar-less.
     avatar_req_pending: std::collections::HashMap<[u8; 32], i64>,
+    /// Request ids WE minted for history pages, rid → (the conversation the request was FOR, sent osc). The AUTHORITATIVE page-match: the per-conversation `in_flight` rid alone starved recovery when two contact rows resolved the same peer (field, 2026-08-10 — a duplicated contact meant the page's token resolved to one conversation while the rid lived on the OTHER's record, so every served page dropped "rid unmatched" forever). A page matching ANY rid here was asked for by us, whatever contact the token resolves to today. Entries are consumed on match and swept by the same in-flight timeout.
+    hist_rid_map: std::collections::HashMap<[u8; 32], (crate::types::ConversationId, i64)>,
     /// History-serve rate limiting, keyed by conversation_token: (last-served eagle-time, recent request ids). Dedups replayed hist_req frames (the redundant alt-path copy arrives ~always) and caps the serve cadence per conversation.
     history_serve: std::collections::HashMap<[u8; 32], (i64, std::collections::VecDeque<[u8; 32]>)>,
     /// Completed friendship chains, keyed by friendship id — populated when a CLUTCH ceremony completes (the per-conversation rolling key material lives here). Persisted via `save_friendship_chains`; loaded on attest/resume.
@@ -1669,6 +1671,7 @@ impl PhotonApp {
             fleet_rotated_rx: std::sync::mpsc::channel().1,
             avatar_dl_started: std::collections::HashSet::new(),
             avatar_req_pending: std::collections::HashMap::new(),
+            hist_rid_map: std::collections::HashMap::new(),
             history_serve: std::collections::HashMap::new(),
             friendship_chains: Vec::new(),
             chord_lb_press: None,
@@ -2980,6 +2983,30 @@ impl FluorApp for PhotonApp {
                             "UI: loaded {} contact(s) from local vault on resume",
                             self.contacts.len()
                         );
+                        // STORAGE CENSUS (field diagnosis, 2026-08-10): one line per contact naming the conversation table and how many rows actually loaded from it. The "messages don't recover" round showed devices advertising 92 rows while serving 3 — the row sets had split across contact keys, and nothing in the logs could say WHICH table held what. This makes the next log round ground truth. Delete once the split-conversation incident is closed.
+                        {
+                            let mut census: Vec<(String, [u8; 32], usize)> = Vec::new();
+                            for ci in 0..self.contacts.len() {
+                                let fp = crate::fp(&self.contacts[ci].handle_proof);
+                                let Some(conv) = self.conv_of(ci) else {
+                                    continue;
+                                };
+                                census.push((fp, *conv.id().as_bytes(), conv.messages.len()));
+                            }
+                            for (fp, table, rows) in &census {
+                                crate::logf!("STORAGE: census — {} table {} holds {} row(s) in RAM after load", fp, hex::encode(&table[..4]), rows);
+                            }
+                            // Split-identity detector: two contact rows sharing a handle_proof but keyed by different conversation tables IS the duplicated-contact state (one row per identity is the invariant). Loud, because every downstream system — recovery walks, digest records, ceremonies — silently picks whichever row it finds first.
+                            for i in 0..self.contacts.len() {
+                                for j in (i + 1)..self.contacts.len() {
+                                    if self.contacts[i].handle_proof == self.contacts[j].handle_proof
+                                        && self.contacts[i].handle_hash != self.contacts[j].handle_hash
+                                    {
+                                        crate::logf!("STORAGE: census — DUPLICATE CONTACT for {}: two rows with different conversation keys ({}… vs {}…) — conversations are SPLIT across them", crate::fp(&self.contacts[i].handle_proof), hex::encode(&self.contacts[i].handle_hash[..4]), hex::encode(&self.contacts[j].handle_hash[..4]));
+                                    }
+                                }
+                            }
+                        }
                         // Load friendship chains NOW too, not just contacts. Resume paints Ready and the status checker starts answering immediately, but chains used to arrive only later via query_resume — so any chat that landed in that window hit "No friendship found for conversation_token" and was DROPPED (no chain = no decrypt, no buffer). Loading chains here closes that gap so a peer messaging us the instant we come back online doesn't lose messages. query_resume still merges (and won't clobber these — it only adds ids we don't already hold).
                         let friendship_ids: Vec<crate::types::FriendshipId> = self
                             .contacts
@@ -16445,8 +16472,10 @@ impl PhotonApp {
                 );
                 continue;
             };
-            // rid must match our in-flight request — a page we didn't ask for (or asked for long ago) is dropped; merging is idempotent so a raced duplicate that DOES match is harmless. A friend page must match; a sibling page without a matching rid is the live push — merge it, but leave the cursor alone.
-            let rid_matches = {
+            // rid must match a request WE minted — a page we didn't ask for (or asked for long ago) is dropped; merging is idempotent so a raced duplicate that DOES match is harmless. A friend page must match; a sibling page without a matching rid is the live push — merge it, but leave the cursor alone.
+            // The rid registry is consulted FIRST and is authoritative: the token-resolved conversation's in_flight alone starved recovery when two contact rows resolved the same peer (the rid lived on the other row's conversation — field, 2026-08-10, every Mary page dropped for days of walk rounds). Consumed on match so the map stays bounded.
+            let rid_registered = self.hist_rid_map.remove(&request_id).is_some();
+            let rid_matches = rid_registered || {
                 let cid = self.contacts[idx].conversation(&our_pid).id();
                 self.conversations
                     .iter()
@@ -19428,6 +19457,10 @@ impl PhotonApp {
                     rec.in_flight = Some((rid, now_osc, before));
                     rec.next_request_osc = now_osc + HIST_TRICKLE_OSC;
                     rec.urgent = false;
+                    // Authoritative rid registry (see hist_rid_map): sweep stale entries, then register this request so its page merges even if another contact resolving the same peer re-arms this conversation's in_flight before the answer lands.
+                    self.hist_rid_map
+                        .retain(|_, (_, sent)| now_osc.saturating_sub(*sent) <= HIST_INFLIGHT_TIMEOUT_OSC);
+                    self.hist_rid_map.insert(rid, (cid, now_osc));
                     crate::logf!(
                         "HISTORY: requesting page before {} from {}",
                         if before == i64::MAX {
