@@ -142,6 +142,35 @@ impl FleetSettings {
         map.updated = now;
     }
 
+    /// A fleet-wide GROW-ONLY pubkey set read as the union of its per-key entries (`<prefix><hex pubkey>`, value = the raw 32 bytes) and its legacy one-blob key (concatenated pubkeys — deployed data, read forever, never written again).
+    /// Per-key because the settings layer is LWW per key: two devices growing ONE blob concurrently each wrote old+own and LWW dropped one — for `fleet.locked` that meant a stolen device stayed trusted on part of the fleet until someone re-locked (the B4 union-merge race). One key per member makes concurrent adds COMMUTE: `merge_global_settings` unions distinct keys by construction, so no write order can lose an entry.
+    /// Grow-only holds by convention exactly as before: per-key entries are never tombstoned (an unlock/un-release is a deliberate future flow, not a merge artifact).
+    pub fn pubkey_set_union(&self, legacy_key: &str, prefix: &str) -> Vec<[u8; 32]> {
+        let mut out: Vec<[u8; 32]> = Vec::new();
+        let mut push = |bytes: &[u8]| {
+            if bytes.len() == 32 {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(bytes);
+                if !out.contains(&a) {
+                    out.push(a);
+                }
+            }
+        };
+        if let Some(bytes) = self.effective(legacy_key) {
+            for c in bytes.chunks_exact(32) {
+                push(c);
+            }
+        }
+        for e in self
+            .global
+            .iter()
+            .filter(|e| !e.tombstone && e.key.starts_with(prefix))
+        {
+            push(&e.value);
+        }
+        out
+    }
+
     /// Fold a pulled remote state in (global LWW + device newest-copy-wins). Returns true if our cached state changed (caller persists + re-applies live values).
     pub fn merge_from(
         &mut self,
@@ -270,6 +299,40 @@ mod tests {
         assert_eq!(fs.effective("updates.auto"), Some(&[1u8][..]));
         // No-op set returns false (nothing to persist or push).
         assert!(!fs.set("updates.auto", vec![1], 500));
+    }
+
+    /// THE B4 LOCKOUT RACE, closed: two devices locking DIFFERENT pubkeys at the SAME instant each write their own per-key entry, and the merge unions distinct keys — no write order can drop a lock. The old one-blob shape lost exactly this race (each side wrote old+own into one LWW key; one lock vanished and a stolen device stayed trusted on part of the fleet). The legacy blob still unions in read-only, so deployed locks survive the format change.
+    #[test]
+    fn concurrent_locks_of_different_devices_both_survive_the_merge() {
+        const STOLEN_A: [u8; 32] = [0xAA; 32];
+        const STOLEN_B: [u8; 32] = [0xBB; 32];
+        const LEGACY: [u8; 32] = [0xCC; 32];
+
+        // Device 1 and device 2 share a base state carrying one legacy-blob lock.
+        let mut dev1 = FleetSettings::new([1; 32]);
+        dev1.set("fleet.locked", LEGACY.to_vec(), 100);
+        let mut dev2 = dev1.clone();
+        dev2.our_device = [2; 32];
+
+        // The race: both lock a different device at the SAME stamp, before either sees the other's write.
+        dev1.set(&format!("fleet.locked.{}", hex::encode(STOLEN_A)), STOLEN_A.to_vec(), 500);
+        dev2.set(&format!("fleet.locked.{}", hex::encode(STOLEN_B)), STOLEN_B.to_vec(), 500);
+
+        // Each side pulls the other's state (either order).
+        dev1.merge_from(dev2.global.clone(), dev2.devices.clone());
+        dev2.merge_from(dev1.global.clone(), dev1.devices.clone());
+
+        for fs in [&dev1, &dev2] {
+            let locked = fs.pubkey_set_union("fleet.locked", "fleet.locked.");
+            assert!(locked.contains(&STOLEN_A), "device A's lock must survive the race");
+            assert!(locked.contains(&STOLEN_B), "device B's lock must survive the race");
+            assert!(locked.contains(&LEGACY), "a deployed legacy-blob lock reads forever");
+            assert_eq!(locked.len(), 3, "union, no duplicates");
+        }
+        // A tombstoned per-key entry does NOT count (grow-only by convention — nothing writes tombstones today, but a hostile/buggy one must not read as a lock either way… and a malformed value never parses as a pubkey).
+        let mut fs = FleetSettings::new([3; 32]);
+        fs.set("fleet.locked.deadbeef", vec![1, 2, 3], 100);
+        assert!(fs.pubkey_set_union("fleet.locked", "fleet.locked.").is_empty());
     }
 
     #[test]

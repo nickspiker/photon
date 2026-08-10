@@ -1300,6 +1300,8 @@ pub struct PhotonApp {
     needs_initial_roster_pull: bool,
     /// Retry budget for the initial roster pull. A fresh device's pairing-recovered key is a PRE-rotation generation (adding a device rotates the fleet key via the fan-out re-key), so the first pull decrypts the current roster with a stale key and fails `aead::Error`. The in-flight `spawn_fleet_key_sync` writes the current key within ~150ms, so on a failed pull we re-arm `needs_initial_roster_pull` and retry — the pull's own ~150ms round-trip naturally spaces attempts, and this budget caps them so a genuinely-undecryptable roster gives up instead of spinning (next fleet event / relaunch re-tries).
     roster_pull_retries_left: u8,
+    /// True once the pull budget above ran dry WITHOUT a successful pull — the B4 convergence hole: with the WebSocket down there is no "next fleet event", so an exhausted device had no roster until relaunch. The 45s fleet-refold edge reads this and re-arms a small budget, making the existing poll the backstop. Cleared on success and on each re-arm.
+    roster_pull_exhausted: bool,
     /// This device's avatar in BT.2020 γ=2.0 u8 RGB, sized `crate::avatar::AVATAR_SIZE × AVATAR_SIZE × 3`. `None` until `on_query_result` pulls one from local storage (no saved avatar = stays `None`, Ready screen falls back to the grey placeholder).
     device_avatar_pixels: Option<Vec<u8>>,
     /// Cached Mitchell resize of `device_avatar_pixels` at the current Ready-screen circle diameter. Rebuilt on diameter change (resize / zoom).
@@ -1750,6 +1752,7 @@ impl PhotonApp {
             fleet_settings: None,
             needs_initial_roster_pull: false,
             roster_pull_retries_left: 0,
+            roster_pull_exhausted: false,
             device_avatar_pixels: None,
             device_avatar_scaled: None,
             device_avatar_scaled_diameter: 0,
@@ -3340,14 +3343,8 @@ impl FluorApp for PhotonApp {
                                     {
                                         Ok(()) => {
                                             crate::logf!("FLEET: released the brand on {} — hardware free for a new identity", name);
-                                            let mut rel: Vec<u8> = self
-                                                .fleet_settings
-                                                .as_ref()
-                                                .and_then(|fs| fs.effective("fleet.released"))
-                                                .map(|b| b.to_vec())
-                                                .unwrap_or_default();
-                                            rel.extend_from_slice(&pk);
-                                            self.settings_set("fleet.released", rel);
+                                            // Per-key entry, same shape as the locked set: concurrent releases of different brands commute instead of racing one LWW blob.
+                                            self.settings_set(&format!("fleet.released.{}", hex::encode(pk)), pk.to_vec());
                                             self.fleet_retired.retain(|d| d != &pk);
                                             self.ready_toast = Some(format!("{name} released \u{2014} it can join a new identity now."));
                                         }
@@ -10018,6 +10015,13 @@ impl PhotonApp {
                 {
                     self.last_fleet_refold = Some(now);
                     self.spawn_contact_fleet_refresh(vec![our_hp]);
+                    // Roster-pull backstop (B4): an exhausted pull used to wait on "the next fleet event", which never comes with the WebSocket down — no roster until relaunch. This edge re-arms a small budget at the refold cadence; success clears the flag, failure re-exhausts and the next sweep tries again.
+                    if self.roster_pull_exhausted && self.roster_pull_rx.is_none() {
+                        self.roster_pull_exhausted = false;
+                        self.needs_initial_roster_pull = true;
+                        self.roster_pull_retries_left = 2;
+                        crate::log("FLEET: refold edge re-arming the exhausted roster pull (2 attempts)");
+                    }
                 }
             }
         }
@@ -10703,6 +10707,7 @@ impl PhotonApp {
             Some(Ok(Ok(state))) => {
                 self.roster_pull_rx = None;
                 self.roster_pull_retries_left = 0;
+                self.roster_pull_exhausted = false;
                 // Settings layers fold in first (global LWW + device newest-copy-wins); a change persists and takes effect on the next read of each key — a sibling's toggle lands here.
                 if self.ensure_fleet_settings() {
                     let changed = self
@@ -10762,7 +10767,8 @@ impl PhotonApp {
                     self.needs_initial_roster_pull = true;
                     crate::logf!("FLEET: roster pull failed — retrying once the current fleet key lands ({} attempt(s) left)", self.roster_pull_retries_left);
                 } else {
-                    crate::log("FLEET: roster pull retries exhausted — will re-try on the next fleet event or relaunch");
+                    self.roster_pull_exhausted = true;
+                    crate::log("FLEET: roster pull retries exhausted — the 45s refold edge re-arms it (fleet events help sooner when the socket is up)");
                     // Exhausted against an UNDECRYPTABLE slot is a deadlock, not patience running out: the bytes are sealed under a superseded fleet key, so no number of re-reads will ever open them, and a device that only ever pulls will retry forever with nothing to show (a wiped field device: 27 aead failures, no contacts, no name, no avatar). A push breaks it — `push_roster` re-seals from local state when it finds the slot unreadable — so fire one instead of waiting for an event that cannot help.
                     if _e.contains("aead") || _e.contains("decrypt") {
                         crate::log("FLEET: the slot cannot be decrypted under the current key — pushing to re-seal it rather than re-reading bytes nobody can open");
@@ -13238,24 +13244,12 @@ impl PhotonApp {
         }
     }
 
-    /// The `fleet.released` setting decoded: concatenated 32-byte device pubkeys the owner has already released (binary at rest, fleet-synced so a release on one device drops the row everywhere).
-    /// The `fleet.locked` setting decoded: concatenated 32-byte device pubkeys the fleet has LOCKED OUT (treat-as-stolen). Grow-only by convention — lock_out_device unions before writing, and apply_locked_set only ever sets `locked_out`, never clears it — so LWW on the setting still converges to the union.
+    /// The devices the fleet has LOCKED OUT (treat-as-stolen): per-key entries `fleet.locked.<hex pubkey>` unioned with the legacy one-blob key (see FleetSettings::pubkey_set_union for why per-key — the B4 race where concurrent locks of DIFFERENT devices dropped one). apply_locked_set only ever sets `locked_out`, never clears it, so the sweep stays monotonic on top.
     fn locked_devices(&self) -> Vec<[u8; 32]> {
-        let Some(bytes) = self
-            .fleet_settings
+        self.fleet_settings
             .as_ref()
-            .and_then(|fs| fs.effective("fleet.locked"))
-        else {
-            return Vec::new();
-        };
-        bytes
-            .chunks_exact(32)
-            .map(|c| {
-                let mut a = [0u8; 32];
-                a.copy_from_slice(c);
-                a
-            })
-            .collect()
+            .map(|fs| fs.pubkey_set_union("fleet.locked", "fleet.locked."))
+            .unwrap_or_default()
     }
 
     fn is_locked_device(&self, pk: &[u8; 32]) -> bool {
@@ -13295,37 +13289,21 @@ impl PhotonApp {
 
     /// Treat-as-stolen: lock a fleet device out WITHOUT touching the membership chain (removal is self-signed only, zero exceptions). The device stays a permanent member; the fleet stops trusting it — the locked set syncs fleet-wide, every trust gate refuses it, and the fleet key rotates so its cached key goes stale.
     fn lock_out_device(&mut self, pk: [u8; 32]) {
-        let mut set: Vec<u8> = self
-            .fleet_settings
-            .as_ref()
-            .and_then(|fs| fs.effective("fleet.locked"))
-            .map(|b| b.to_vec())
-            .unwrap_or_default();
-        if !set.chunks_exact(32).any(|c| c == pk) {
-            set.extend_from_slice(&pk);
-            self.settings_set("fleet.locked", set);
+        // PER-KEY write, never read-union-write on one blob: two devices locking DIFFERENT pubkeys concurrently each unioned old+own into the same LWW key and one lock was DROPPED — a stolen device stayed trusted on part of the fleet until someone re-locked. Distinct keys commute under merge_global_settings, so a lock can no longer lose a race. The legacy blob stays readable (locked_devices unions it) and is never written again.
+        if !self.is_locked_device(&pk) {
+            self.settings_set(&format!("fleet.locked.{}", hex::encode(pk)), pk.to_vec());
         }
         self.apply_locked_set();
         // Rotation NOW, not at the next sentinel pass: the locked device holds the current fleet key until an epoch it isn't wrapped into exists.
         self.spawn_fleet_key_sync();
     }
 
+    /// The brands the owner has released (hardware freed for a new identity): same per-key + legacy-blob union as the locked set — the release pill had the identical concurrent-write race, it just cost a reappearing row instead of a trust hole.
     fn released_brands(&self) -> Vec<[u8; 32]> {
-        let Some(bytes) = self
-            .fleet_settings
+        self.fleet_settings
             .as_ref()
-            .and_then(|fs| fs.effective("fleet.released"))
-        else {
-            return Vec::new();
-        };
-        bytes
-            .chunks_exact(32)
-            .map(|c| {
-                let mut a = [0u8; 32];
-                a.copy_from_slice(c);
-                a
-            })
-            .collect()
+            .map(|fs| fs.pubkey_set_union("fleet.released", "fleet.released."))
+            .unwrap_or_default()
     }
 
     /// Off-thread submit of this device's diagnostic log to FGTW (the Diagnostics "Submit" pill).
