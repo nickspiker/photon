@@ -436,6 +436,8 @@ pub enum StatusUpdate {
     },
     /// Our own reflexive (public) address, learned+adopted from peer-echoed reflection (pong `observed_addr` or a `ReflectResponse`). The app stores it as `PhotonApp.our_reflexive`, feeding candidate gathering and the FGTW announce (so our published address is the one seen on the live UDP data socket, not fgtw.org's cone-only TLS view).
     ReflexiveLearned { addr: SocketAddr },
+    /// Our own LAN address, learned from our OWN looped-back discovery beacon: its SOURCE address is kernel truth for the interface the beacon actually left on. This is the LAN counterpart of `ReflexiveLearned`, and the fix for the multi-homed hole `get_local_ip` falls into — the routing trick asks which interface reaches the INTERNET, and a phone routing internet over cellular answers with the CLAT/CGNAT interface while its Wi-Fi holds the real LAN address (published record then carried no LAN entry; the peer probed only an unreachable WAN and parked on relay, 2026-08-11).
+    OurLanAddrObserved { ip: Ipv4Addr },
     /// A hole-punch to `peer_pubkey` round-tripped: `remote` is a validated direct path. The app records it on the matching contact's `validated_path`, so `race_addrs` prefers it. `peer_pubkey` may be any device in the friend's fleet (match via `Contact::knows_device`).
     PathValidated {
         peer_pubkey: DevicePubkey,
@@ -3849,7 +3851,15 @@ fn parse_lan_discovery(
     let (handle_proof, local_ip, port, beacon_device) = udp::parse_lan_discovery(packet, src_addr)?;
     // Our own beacon loops back to us (multicast loopback + broadcast self-delivery). Pre-fleet that was harmless — our own handle_proof was never a contact — but the self-conversation makes our handle a contact, so accepting our own beacon overwrites that contact's LAN address with OUR OWN IP and every send boomerangs back to ourselves (observed: phone retransmitting to itself for 20+ minutes). The fleet shares one handle_proof, so self is detected by the beacon's device key; the source-IP test is only the fallback for pre-ke beacons, and it misses on multi-homed devices (Android wifi + cellular CLAT have different IPs and get_local_ip sees the cellular one).
     match beacon_device {
-        Some(ke) if ke == *our_device_pubkey => return None,
+        Some(ke) if ke == *our_device_pubkey => {
+            // OUR OWN beacon is not just noise to drop — its looped-back SOURCE is our LAN address on the interface the beacon actually left, which is exactly what the multi-homed get_local_ip hole loses. Hand it to the app so the published record carries a real LAN entry.
+            if let SocketAddr::V4(v4) = src_addr {
+                if udp::is_usable_lan_ipv4(*v4.ip()) {
+                    return Some(StatusUpdate::OurLanAddrObserved { ip: *v4.ip() });
+                }
+            }
+            return None;
+        }
         None if udp::get_local_ip() == Some(local_ip) => return None,
         _ => {}
     }

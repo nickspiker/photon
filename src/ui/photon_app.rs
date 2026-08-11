@@ -1541,6 +1541,8 @@ pub struct PhotonApp {
 
     /// This node's own reflexive (public) address, learned via peer-echoed reflection (see [`crate::network::traverse::reflexive`]). `None` until the first signed pong / `ReflectResponse` echo. Fed forward to candidate gathering and the FGTW announce so our published address is the one seen on the live UDP data socket — not fgtw.org's TLS-flow `cf-connecting-ip`, which is only right for cone NATs.
     our_reflexive: Option<std::net::SocketAddr>,
+    /// This node's own LAN address, learned from our OWN looped-back discovery beacon (its source is kernel truth for the interface the beacon left on). The LAN counterpart of `our_reflexive`, and the record's LAN slot prefers it over `get_local_ip` — the routing trick asks which interface reaches the INTERNET, which on a phone routing internet over cellular names the CLAT/CGNAT interface while the Wi-Fi holds the real LAN address (the published record then carried no LAN entry and the peer parked on relay, 2026-08-11).
+    our_lan_ip: Option<std::net::Ipv4Addr>,
     /// The address we last published a signed self-record for. Differs from `our_reflexive` exactly when the record peers hold for us is stale — on first learn, on a network change, or when the first echo beat attestation and there was no `handle_proof` to sign against yet.
     self_record_published_for: Option<std::net::SocketAddr>,
     /// Whether the persisted phonebook has been merged into the live store this session. One-shot: also stops an unreadable vault entry being retried every tick.
@@ -1576,6 +1578,7 @@ impl PhotonApp {
             hit_counter: 0,
             event_proxy: None,
             our_reflexive: None,
+            our_lan_ip: None,
             self_record_published_for: None,
             peer_store_loaded: false,
             registry_converged_fold: Vec::new(),
@@ -2985,21 +2988,24 @@ impl FluorApp for PhotonApp {
                         );
                         // STORAGE CENSUS (field diagnosis, 2026-08-10): one line per contact naming the conversation table and how many rows actually loaded from it. The "messages don't recover" round showed devices advertising 92 rows while serving 3 — the row sets had split across contact keys, and nothing in the logs could say WHICH table held what. This makes the next log round ground truth. Delete once the split-conversation incident is closed.
                         {
-                            let mut census: Vec<(String, [u8; 32], usize)> = Vec::new();
+                            let mut census: Vec<(String, [u8; 32], usize, bool)> = Vec::new();
                             for ci in 0..self.contacts.len() {
                                 let fp = crate::fp(&self.contacts[ci].handle_proof);
+                                let sib = self.contacts[ci].is_sibling;
                                 let Some(conv) = self.conv_of(ci) else {
                                     continue;
                                 };
-                                census.push((fp, *conv.id().as_bytes(), conv.messages.len()));
+                                census.push((fp, *conv.id().as_bytes(), conv.messages.len(), sib));
                             }
-                            for (fp, table, rows) in &census {
-                                crate::logf!("STORAGE: census — {} table {} holds {} row(s) in RAM after load", fp, hex::encode(&table[..4]), rows);
+                            for (fp, table, rows, sib) in &census {
+                                crate::logf!("STORAGE: census — {} table {} holds {} row(s) in RAM after load{}", fp, hex::encode(&table[..4]), rows, if *sib { " (sibling)" } else { "" });
                             }
-                            // Split-identity detector: two contact rows sharing a handle_proof but keyed by different conversation tables IS the duplicated-contact state (one row per identity is the invariant). Loud, because every downstream system — recovery walks, digest records, ceremonies — silently picks whichever row it finds first.
+                            // Split-identity detector: two FRIEND rows sharing a handle_proof but keyed by different conversation tables IS the duplicated-contact state (one row per identity is the invariant). SIBLINGS are excluded: the whole fleet shares our handle_proof with a per-device hash BY DESIGN — the first census run flagged ordinary sibling pairs as "duplicates" for two log rounds (2026-08-11). Loud, because every downstream system — recovery walks, digest records, ceremonies — silently picks whichever row it finds first.
                             for i in 0..self.contacts.len() {
                                 for j in (i + 1)..self.contacts.len() {
-                                    if self.contacts[i].handle_proof == self.contacts[j].handle_proof
+                                    if !self.contacts[i].is_sibling
+                                        && !self.contacts[j].is_sibling
+                                        && self.contacts[i].handle_proof == self.contacts[j].handle_proof
                                         && self.contacts[i].handle_hash != self.contacts[j].handle_hash
                                     {
                                         crate::logf!("STORAGE: census — DUPLICATE CONTACT for {}: two rows with different conversation keys ({}… vs {}…) — conversations are SPLIT across them", crate::fp(&self.contacts[i].handle_proof), hex::encode(&self.contacts[i].handle_hash[..4]), hex::encode(&self.contacts[j].handle_hash[..4]));
@@ -15958,23 +15964,47 @@ impl PhotonApp {
             };
             // Party-id seam, re-run: our participant id is the identity PARTY id (friends) or the sibling pid (siblings) — whichever the chain actually holds. The UNSHADOWED identity pid is kept for the conversation resolution below, which must NOT follow the chains' expression of us.
             let identity_hh = our_handle_hash;
-            let our_handle_hash = if chains.participants().contains(&our_handle_hash) {
-                our_handle_hash
-            } else if let Some(pid) = our_sibling_pid.filter(|p| chains.participants().contains(p)) {
-                pid
-            } else {
-                break 'commit;
-            };
-            let from_handle_hash = match chains.other_participant(&our_handle_hash) {
-                Some(h) => *h,
-                None => break 'commit,
-            };
-            let Some(contact_idx) = self
-                .contacts
-                .iter()
-                .position(|c| c.handle_hash == from_handle_hash)
-            else {
-                break 'commit;
+            let (our_handle_hash, from_handle_hash, contact_idx) = {
+                let in_set = |p: &[u8; 32]| chains.participants().contains(p);
+                let us = if in_set(&identity_hh) {
+                    Some(identity_hh)
+                } else {
+                    our_sibling_pid.filter(in_set)
+                };
+                match us {
+                    Some(us) => {
+                        let Some(them) = chains.other_participant(&us).copied() else {
+                            break 'commit;
+                        };
+                        let Some(idx) =
+                            self.contacts.iter().position(|c| c.handle_hash == them)
+                        else {
+                            break 'commit;
+                        };
+                        (us, them, idx)
+                    }
+                    None => {
+                        // STALE-ERA PARTICIPANTS — the shadow seam one gate earlier: NEITHER of our pids appears in this blob's participant set (a pre-flag-day ceremony's expression of us), yet the frame DECRYPTED — lanes key on wire labels, not participants, so the crypto is fine and only the identity resolution is stale. Breaking silently here was the field's decrypts-forever-never-ACKs loop (2026-08-11: one device re-decrypted the same retransmitted frame every ~15s for ten minutes — no row, no ACK, no persist, and the SHADOW SEAM log below never got the chance to fire). Resolve THEM by matching the participants against the contact list instead, and shout: this blob deserves a re-key.
+                        let Some((idx, them)) = chains.participants().iter().find_map(|p| {
+                            self.contacts
+                                .iter()
+                                .position(|c| !c.is_sibling && c.handle_hash == *p)
+                                .map(|idx| (idx, *p))
+                        }) else {
+                            crate::logf!("CHAT: SHADOW SEAM — stale-era participant set matches NO known contact; frame dropped (token {}...)", hex::encode(&conversation_token[..8]));
+                            break 'commit;
+                        };
+                        crate::logf!("CHAT: SHADOW SEAM — our pid is absent from the chains' stale-era participant set; peer resolved by contact match ({}) — this blob should re-key", crate::fp(&self.contacts[idx].handle_proof));
+                        // The chains' "us" is whatever the set holds beside them — kept only for the relationship-digest calls below, which must use the CHAINS' expression to stay comparable with the peer's.
+                        let stale_us = chains
+                            .participants()
+                            .iter()
+                            .find(|p| **p != them)
+                            .copied()
+                            .unwrap_or(them);
+                        (stale_us, them, idx)
+                    }
+                }
             };
             // AUTH re-check: a refusal or lockout landing while the worker ran must still block the commit.
             if !self.contacts[contact_idx].knows_device(&sender_pubkey.key)
@@ -19439,8 +19469,8 @@ impl PhotonApp {
                 if rec.complete {
                     return None;
                 }
-                // Friend route: token from the chain (identical to the derived one — same participant set).
-                if c.is_online && c.chain_woven {
+                // Friend route: token from the chain (identical to the derived one — same participant set). No chain_woven gate — the page-seal capability is the HISTORY KEY (required just below), and stale woven flags from the wedge/rotation era stranded a behind device with an armed walk it could never drive (2026-08-11).
+                if c.is_online {
                     if let Some(fid) = c.friendship_id {
                         if let Some((_, chains)) =
                             self.friendship_chains.iter().find(|(id, _)| *id == fid)
@@ -19932,6 +19962,7 @@ impl PhotonApp {
                 StatusUpdate::ClutchKemResponseReceived { .. } => "ClutchKemResponseReceived",
                 StatusUpdate::ClutchCompleteReceived { .. } => "ClutchCompleteReceived",
                 StatusUpdate::LanPeerDiscovered { .. } => "LanPeerDiscovered",
+                StatusUpdate::OurLanAddrObserved { .. } => "OurLanAddrObserved",
                 StatusUpdate::ReflexiveLearned { .. } => "ReflexiveLearned",
                 StatusUpdate::PathValidated { .. } => "PathValidated",
             }
@@ -20013,14 +20044,12 @@ impl PhotonApp {
                             // ANTI-ENTROPY: the pong carries the peer's (row_count, XOR-fold) for this conversation. A digest mismatch means the two sides provably hold DIFFERENT message sets — the heuristic cursor walk left a hole (the greyed sends a peer never got, 2026-07-25) — so force a FULL recovery walk (early-stop disabled). Zero count+digest = legacy peer, no comparison. Cooldown per contact so a persistent mismatch (peer can't serve) re-fires at a polite cadence instead of every pong.
                             if record.row_count != 0 || record.row_digest != [0u8; 32] {
                                 let fid = *fid;
+                                // No chain_woven gate here: the wedge/rotation era leaves woven flags stale while the HISTORY KEY (the actual page-seal capability, checked at the route) is present — and gating the digest kick on woven left a receiving-fine device 100 rows behind with its walk never arming (field, 2026-08-11: 8 rows vs the peer's advertised 109, zero pull attempts all session).
                                 let ci = self
                                     .contacts
                                     .iter()
                                     .position(|c| c.friendship_id == Some(fid))
-                                    .filter(|&ci| {
-                                        !self.contacts[ci].is_sibling
-                                            && self.contacts[ci].chain_woven
-                                    });
+                                    .filter(|&ci| !self.contacts[ci].is_sibling);
                                 // Field-precise conversation lookup — `chains` above holds a borrow of `friendship_chains`, so no &mut self method fits here.
                                 if let Some(ci) = ci {
                                     let cid =
@@ -23057,6 +23086,15 @@ impl PhotonApp {
                     }
                 }
 
+                StatusUpdate::OurLanAddrObserved { ip } => {
+                    // Our own LAN address, from our looped-back beacon's source — the interface the beacon actually left on, not the one that routes to the internet. On change, clear `self_record_published_for` so the same tick edge that handles a reflexive change re-signs and re-publishes the record WITH the LAN entry (same idempotent re-publish path, same reason it isn't done inline here).
+                    if self.our_lan_ip != Some(ip) {
+                        self.our_lan_ip = Some(ip);
+                        crate::logf!("TRAVERSE: our LAN address = {} (from our own looped-back beacon)", ip);
+                        self.self_record_published_for = None;
+                    }
+                }
+
                 StatusUpdate::PathValidated {
                     peer_pubkey,
                     remote,
@@ -23689,11 +23727,16 @@ impl PhotonApp {
             return;
         }
 
+        // LAN slot: the beacon-observed address FIRST (kernel truth for the interface the beacon left on), the routing-trick detection only as the fallback — the trick names the internet-routing interface, which on a phone routing over cellular is the CLAT/CGNAT one while the Wi-Fi holds the real LAN address (a record without its LAN entry left the peer probing an unreachable-without-hairpin WAN, 2026-08-11).
+        let local_ip = self
+            .our_lan_ip
+            .or_else(crate::network::udp::get_local_ip)
+            .map(std::net::IpAddr::V4);
         let mut rec = crate::network::fgtw::PeerRecord {
             handle_proof: hp,
             device_pubkey: crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes()),
             ip: addr,
-            local_ip: crate::network::udp::get_local_ip().map(std::net::IpAddr::V4),
+            local_ip,
             last_seen: vsf::eagle_time_oscillations(),
             signature: [0u8; 64],
         };
@@ -23716,7 +23759,7 @@ impl PhotonApp {
 
         // ALSO publish to the seed's registry. Gossip alone cannot bootstrap: carrying a record needs a validated path, a path needs a punch, and a punch needs an address we could only have learned from a peer we cannot yet reach. The seed breaks that circle — it is the one place reachable without already knowing anyone. Fire-and-forget off-thread: this is a discovery-path nicety, and a seed that is down must never stall the UI or the local store (which is already updated above and persists regardless).
         let secret = kp.secret.clone();
-        let local = crate::network::udp::get_local_ip().map(std::net::IpAddr::V4);
+        let local = local_ip; // the same beacon-first LAN value the signed record carries — the seed must never publish a WORSE address than gossip does
         crate::network::http::runtime().spawn(async move {
             match crate::network::fgtw::phonebook_client::publish_address(&secret, &hp, addr, local)
                 .await
