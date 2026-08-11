@@ -19979,10 +19979,18 @@ impl PhotonApp {
             }
         }
         let mut arm_timer: Option<(&'static str, std::time::Instant)> = None;
+        // Per-PASS accounting beside the per-arm timer: the 2026-08-11 desktop showed 1.8s passes with ZERO arms over 100ms — death by hundreds of moderate updates, invisible to a threshold that only names single offenders. The profile line names the cumulative eaters; the budget below bounds the stall.
+        let pass_start = std::time::Instant::now();
+        let mut pass_updates: u32 = 0;
+        let mut pass_profile: std::collections::HashMap<&'static str, (u32, u128)> =
+            std::collections::HashMap::new();
         macro_rules! close_arm_timer {
             () => {
                 if let Some((label, t)) = arm_timer.take() {
                     let ms = t.elapsed().as_millis();
+                    let slot = pass_profile.entry(label).or_insert((0, 0));
+                    slot.0 += 1;
+                    slot.1 += ms;
                     if ms > 100 {
                         crate::logf!(
                             "PERF: status arm {} took {}ms (UI thread)",
@@ -19997,6 +20005,11 @@ impl PhotonApp {
         // Friendships whose send lane the wedge heal rotated this pass — persisted and row-flushed after the drain loop, where &mut self is available again.
         let mut rotated_flush: Vec<crate::types::friendship::FriendshipId> = Vec::new();
         loop {
+            // TIME BUDGET — the UI thread's stall is bounded whatever the storm size: past 250ms the rest of the backlog waits for the next tick (the channel holds it; un-replayed synthetic frames go back on chat_replay_queue below, order preserved). Unbounded, a churny catch-up pass measured 1.8s on the desktop — taps landed but nothing painted until the drain yielded (2026-08-11).
+            if pass_start.elapsed().as_millis() > 250 {
+                crate::logf!("PERF: status pass hit the 250ms budget after {} update(s) — deferring the rest to the next tick", pass_updates);
+                break;
+            }
             let update = match replay_queue.pop_front() {
                 Some(u) => u,
                 None => match checker.try_recv() {
@@ -20004,6 +20017,7 @@ impl PhotonApp {
                     None => break,
                 },
             };
+            pass_updates += 1;
             close_arm_timer!();
             arm_timer = Some((arm_label(&update), std::time::Instant::now()));
             match update {
@@ -23175,6 +23189,24 @@ impl PhotonApp {
             }
         }
         close_arm_timer!();
+        // Budget-deferred synthetic replays go back on the FRONT so strict ordering holds across ticks (anything newly minted this pass queues behind them).
+        if !replay_queue.is_empty() {
+            replay_queue.extend(std::mem::take(&mut self.chat_replay_queue));
+            self.chat_replay_queue = replay_queue;
+        }
+        // The pass profile — logged for any heavy pass so the field log names the CUMULATIVE eaters, not just single >100ms offenders.
+        let pass_ms = pass_start.elapsed().as_millis();
+        if pass_ms > 200 {
+            let mut top: Vec<(&'static str, (u32, u128))> = pass_profile.into_iter().collect();
+            top.sort_by_key(|&(_, (_, ms))| std::cmp::Reverse(ms));
+            let summary = top
+                .iter()
+                .take(3)
+                .map(|(label, (n, ms))| format!("{label} {ms}ms x{n}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            crate::logf!("PERF: status pass {}ms over {} update(s) — top arms: {}", pass_ms as u64, pass_updates, summary);
+        }
 
         // Async-persist every conversation an arm touched (deduped — one snapshot per conversation per drain).
         persist_hashes.dedup();
