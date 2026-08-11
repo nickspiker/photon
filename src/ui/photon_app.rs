@@ -3006,6 +3006,47 @@ impl FluorApp for PhotonApp {
                                     }
                                 }
                             }
+                            // SELF-STUB PURGE: a non-sibling row carrying OUR handle_proof under a handle_hash that is NOT our identity pid is a corrupt self-contact stub — the source of the "CLUTCH offers toward its OWN identity" storm (ticketed 2026-08-07; the census caught THREE self rows on one desktop, 2026-08-11, two of them empty stubs spraying 573KB offers at the fleet's own contacts). Empty-conversation stubs only: a row that somehow holds messages is somebody's data and stays for a deliberate repair, never a boot-time sweep.
+                            if let Some((our_proof, our_seed)) =
+                                self.session.as_ref().map(|s| (s.handle_proof, s.identity_seed))
+                            {
+                                let our_pid = crate::crypto::clutch::identity_party_id(&our_seed);
+                                let stub_hashes: Vec<[u8; 32]> = self
+                                    .contacts
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(ci, c)| {
+                                        !c.is_sibling
+                                            && c.handle_proof == our_proof
+                                            && c.handle_hash != our_pid
+                                            && self.conv_of(*ci).map_or(true, |v| v.messages.is_empty())
+                                    })
+                                    .map(|(_, c)| c.handle_hash)
+                                    .collect();
+                                if !stub_hashes.is_empty() {
+                                    for hh in &stub_hashes {
+                                        crate::logf!("STORAGE: census — PURGING empty self-contact stub (key {}…) — its ceremony queue dies with it", hex::encode(&hh[..4]));
+                                        let _ = crate::storage::contacts::delete_contact(hh, &s);
+                                    }
+                                    self.contacts.retain(|c| !stub_hashes.contains(&c.handle_hash));
+                                    // Rewrite the index too, or the next launch resurrects the stubs from the list (same rule as the ostracism path).
+                                    let index: Vec<crate::storage::contacts::ContactIdentity> = self
+                                        .contacts
+                                        .iter()
+                                        .filter(|c| !c.is_sibling)
+                                        .map(|c| crate::storage::contacts::ContactIdentity {
+                                            handle_proof: c.handle_proof,
+                                            party_id: c.handle_hash,
+                                            avatar_pin: c.avatar_pin,
+                                        })
+                                        .collect();
+                                    if let Err(e) =
+                                        crate::storage::contacts::save_contact_list(&index, &s)
+                                    {
+                                        crate::logf!("STORAGE: census — stub-purge index rewrite failed: {}", e);
+                                    }
+                                }
+                            }
                         }
                         // Load friendship chains NOW too, not just contacts. Resume paints Ready and the status checker starts answering immediately, but chains used to arrive only later via query_resume — so any chat that landed in that window hit "No friendship found for conversation_token" and was DROPPED (no chain = no decrypt, no buffer). Loading chains here closes that gap so a peer messaging us the instant we come back online doesn't lose messages. query_resume still merges (and won't clobber these — it only adds ids we don't already hold).
                         let friendship_ids: Vec<crate::types::FriendshipId> = self
@@ -12049,6 +12090,17 @@ impl PhotonApp {
             if e.tombstone {
                 continue; // removal of a contact we never held — nothing to do locally
             }
+            // SELF-GUARD: never mint a NEW row bearing OUR handle_proof under a foreign key — that is the self-contact stub (an empty duplicate whose keygen queue CLUTCHes at our own fleet; the census caught two of them beside the legit self row, 2026-08-11). The true notes-to-self row keys on our identity pid and merges thru the position() match above; anything else claiming our proof is stale roster debris.
+            if let Some((our_proof, our_seed)) =
+                self.session.as_ref().map(|s| (s.handle_proof, s.identity_seed))
+            {
+                if e.handle_proof == our_proof
+                    && e.handle_hash != crate::crypto::clutch::identity_party_id(&our_seed)
+                {
+                    crate::logf!("FLEET: roster entry claims OUR identity under a foreign key ({}…) — refused (self-stub debris)", hex::encode(&e.handle_hash[..4]));
+                    continue;
+                }
+            }
             let device_pubkey = crate::types::DevicePubkey::from_bytes(e.public_identity);
             let mut contact = crate::types::Contact::from_pin(
                 e.avatar_pin,
@@ -15904,7 +15956,8 @@ impl PhotonApp {
                 );
                 break 'commit;
             };
-            // Party-id seam, re-run: our participant id is the identity PARTY id (friends) or the sibling pid (siblings) — whichever the chain actually holds.
+            // Party-id seam, re-run: our participant id is the identity PARTY id (friends) or the sibling pid (siblings) — whichever the chain actually holds. The UNSHADOWED identity pid is kept for the conversation resolution below, which must NOT follow the chains' expression of us.
+            let identity_hh = our_handle_hash;
             let our_handle_hash = if chains.participants().contains(&our_handle_hash) {
                 our_handle_hash
             } else if let Some(pid) = our_sibling_pid.filter(|p| chains.participants().contains(p)) {
@@ -15938,13 +15991,26 @@ impl PhotonApp {
                 crate::logf!("CHAT: braid decrypt landed on moved lane state (raced duplicate or era adopt) — dropped; a live frame re-enters clean thru the arm");
                 break 'commit;
             }
-            // The conversation this frame lands in — the SAME participant set the chain holds, materialized on first touch.
+            // The conversation this frame lands in — resolved THRU THE CONTACT, the same derivation the loader, the persist snapshot, the page server, and the census all use. It used to materialize from chains.participants(): whenever the chains' expression of OUR half differs from the contact path's pid (a stale-era ceremony's participant set), that minted a SHADOW conversation — live rows accumulated in an object no loader fills and no persist snapshot reads, so they rendered all session and DIED at restart (field, 2026-08-11: a device advertised 92 rows from RAM while its disk table held 7). The chains stay crypto truth; the CONTACT is conversation truth.
             let conv_pos = {
-                let fresh = crate::types::Conversation::new(chains.participants().iter().copied());
-                match self.conversations.iter().position(|v| v.id() == fresh.id()) {
+                let conv_our_pid = if self.contacts[contact_idx].is_sibling {
+                    match our_sibling_pid {
+                        Some(p) => p,
+                        None => break 'commit,
+                    }
+                } else {
+                    identity_hh
+                };
+                let derived = self.contacts[contact_idx].conversation(&conv_our_pid);
+                let chains_id =
+                    crate::types::Conversation::new(chains.participants().iter().copied()).id();
+                if chains_id != derived.id() {
+                    crate::logf!("CHAT: SHADOW SEAM — chains derive conversation {} but the contact derives {}; rows land in the contact's (the chains carry a stale-era participant set)", hex::encode(&chains_id.as_bytes()[..4]), hex::encode(&derived.id().as_bytes()[..4]));
+                }
+                match self.conversations.iter().position(|v| v.id() == derived.id()) {
                     Some(p) => p,
                     None => {
-                        self.conversations.push(fresh);
+                        self.conversations.push(derived);
                         self.conversations.len() - 1
                     }
                 }
@@ -20356,7 +20422,8 @@ impl PhotonApp {
                         .find(|(_, c)| c.conversation_token == conversation_token);
 
                     if let Some((_, chains)) = chains_result {
-                        // Party-id seam: our participant id is the identity PARTY id (friends) or the sibling pid (siblings) — whichever the chain actually holds. (The raw seed is never a chain participant post-pin-set.)
+                        // Party-id seam: our participant id is the identity PARTY id (friends) or the sibling pid (siblings) — whichever the chain actually holds. (The raw seed is never a chain participant post-pin-set.) The UNSHADOWED identity pid survives for the conversation resolution below.
+                        let identity_hh = our_handle_hash;
                         let our_handle_hash = if chains.participants().contains(&our_handle_hash) {
                             our_handle_hash
                         } else if let Some(pid) =
@@ -20410,15 +20477,29 @@ impl PhotonApp {
                             continue;
                         }
 
-                        // The conversation this frame lands in — the SAME participant set the chain holds, materialized on first touch. Field-precise (`chains` pins `friendship_chains` for this whole block, so no &mut self method fits here).
+                        // The conversation this frame lands in — resolved THRU THE CONTACT (see the braid drain's SHADOW SEAM note: chains-derived resolution minted an unpersisted shadow object when the chains carry a stale-era participant set). Field-precise (`chains` pins `friendship_chains` for this whole block, so no &mut self method fits here).
                         let conv_pos = {
-                            let fresh = crate::types::Conversation::new(
+                            let conv_our_pid = if self.contacts[contact_idx].is_sibling {
+                                match our_sibling_pid {
+                                    Some(p) => p,
+                                    None => continue,
+                                }
+                            } else {
+                                identity_hh
+                            };
+                            let derived =
+                                self.contacts[contact_idx].conversation(&conv_our_pid);
+                            let chains_id = crate::types::Conversation::new(
                                 chains.participants().iter().copied(),
-                            );
-                            match self.conversations.iter().position(|v| v.id() == fresh.id()) {
+                            )
+                            .id();
+                            if chains_id != derived.id() {
+                                crate::logf!("CHAT: SHADOW SEAM — chains derive conversation {} but the contact derives {}; rows land in the contact's (the chains carry a stale-era participant set)", hex::encode(&chains_id.as_bytes()[..4]), hex::encode(&derived.id().as_bytes()[..4]));
+                            }
+                            match self.conversations.iter().position(|v| v.id() == derived.id()) {
                                 Some(p) => p,
                                 None => {
-                                    self.conversations.push(fresh);
+                                    self.conversations.push(derived);
                                     self.conversations.len() - 1
                                 }
                             }
@@ -20579,7 +20660,8 @@ impl PhotonApp {
                     let mut ack_persist_fid: Option<crate::types::friendship::FriendshipId> = None;
                     if let Some((fid_ref, chains)) = chains_result {
                         let ack_fid = *fid_ref;
-                        // Party-id seam: whichever of (identity seed, sibling pid) is a participant is "us".
+                        // Party-id seam: whichever of (identity seed, sibling pid) is a participant is "us". The UNSHADOWED identity pid survives for the conversation resolution below.
+                        let identity_hh = our_handle_hash;
                         let our_handle_hash = if chains.participants().contains(&our_handle_hash) {
                             our_handle_hash
                         } else if let Some(pid) =
@@ -20626,15 +20708,29 @@ impl PhotonApp {
                             hex::encode(&plaintext_hash[..8])
                         );
 
-                        // The conversation this ACK lands in — field-precise, same shape as the ChatMessage arm (`chains` pins `friendship_chains` here too).
+                        // The conversation this ACK lands in — resolved THRU THE CONTACT (see the braid drain's SHADOW SEAM note: chains-derived resolution put delivered-flag flips on an unpersisted shadow object). Field-precise, same shape as the ChatMessage arm (`chains` pins `friendship_chains` here too).
                         let conv_pos = {
-                            let fresh = crate::types::Conversation::new(
+                            let conv_our_pid = if self.contacts[contact_idx].is_sibling {
+                                match our_sibling_pid {
+                                    Some(p) => p,
+                                    None => continue,
+                                }
+                            } else {
+                                identity_hh
+                            };
+                            let derived =
+                                self.contacts[contact_idx].conversation(&conv_our_pid);
+                            let chains_id = crate::types::Conversation::new(
                                 chains.participants().iter().copied(),
-                            );
-                            match self.conversations.iter().position(|v| v.id() == fresh.id()) {
+                            )
+                            .id();
+                            if chains_id != derived.id() {
+                                crate::logf!("CHAT: SHADOW SEAM — chains derive conversation {} but the contact derives {} (ACK path); landing in the contact's", hex::encode(&chains_id.as_bytes()[..4]), hex::encode(&derived.id().as_bytes()[..4]));
+                            }
+                            match self.conversations.iter().position(|v| v.id() == derived.id()) {
                                 Some(p) => p,
                                 None => {
-                                    self.conversations.push(fresh);
+                                    self.conversations.push(derived);
                                     self.conversations.len() - 1
                                 }
                             }
