@@ -1451,6 +1451,8 @@ async fn run_checker(
         let mut recent_chat_frames: Vec<(([u8; 8], i64, [u8; 8]), std::time::Instant)> = Vec::new();
         // Devices whose sealed pong tail we could not open (no key seeded yet, or a stale key across their re-attest) — logged ONCE per device, not per pong: pongs arrive every cycle and a still-loading key map would otherwise spam a line every few seconds. An entry clears on the first successful open, so a key change that breaks again re-logs.
         let mut pong_open_failed: Vec<[u8; 32]> = Vec::new();
+        // Probe-REFLECTION rate cap: at most one reverse probe per device per minute. Reflection is how the side with NO working candidates ever validates its own direction (see the PunchProbe arm); the cap keeps two reflecting peers from probe ping-pong, and validation quiets both sides naturally (a validated side probes only its validated remote as keepalive).
+        let mut reverse_probed: Vec<([u8; 32], std::time::Instant)> = Vec::new();
         loop {
             // Take the next datagram from EITHER the real UDP socket OR the relay pipe. A pipe frame is handed `RELAY_ADDR` as its source, so everything below this line — the entire ~900-line dispatch — cannot tell a relayed message from a directly-received one, except that RELAY_ADDR tells the app to skip address-learning and mark reached_via_relay. This is the whole reason the pipe is one select! arm and not a parallel dispatch: presence, chat, acks and CLUTCH all reuse the proven receive path.
             // A UDP datagram lands in the fixed 64 KiB `buf`; an injected pipe frame is held in `injected_holder` (owned Vec) because it can be a whole ~548 KB CLUTCH offer — FAR larger than `buf`. Copying it into `buf` truncated it to 64 KiB and the offer never parsed ("Not enough data"), which is why the ceremony stalled over the relay: the offer was injected but chopped to 12% of itself. `msg_bytes` points at whichever holds this iteration's frame.
@@ -2721,6 +2723,43 @@ async fn run_checker(
                                     );
                                     if !ack.is_empty() {
                                         udp::send(&socket_recv, &ack, src_addr).await;
+                                    }
+                                    // PROBE REFLECTION — the asymmetry killer. Their probe reaching us proves src_addr is a WORKING address for this device (their NAT opened toward us; our ack just rode back thru it) — yet we used to discard it after acking, so path validation was ONE-DIRECTIONAL by construction: the side with good candidates validated, the side without stayed relay-only forever (field, 2026-08-11: one end's published record carried no LAN address, so its peer probed only an unreachable WAN — "online but no direct path after 3 cycles — pending relay" — while its own probes kept arriving perfectly). Fire our own probe at the proven source; the existing ack machinery then validates OUR direction (PathValidated → endpoint election), no new wire format, no new trust: the probe was signature-verified against a known device above.
+                                    if !crate::network::traverse::gather::is_bogus_addr(&src_addr) {
+                                        let now = std::time::Instant::now();
+                                        reverse_probed.retain(|(_, at)| {
+                                            now.duration_since(*at)
+                                                < std::time::Duration::from_secs(60)
+                                        });
+                                        if !reverse_probed
+                                            .iter()
+                                            .any(|(pk, _)| pk == sender_pubkey.as_bytes())
+                                        {
+                                            reverse_probed.push((*sender_pubkey.as_bytes(), now));
+                                            let mut nonce = [0u8; 32];
+                                            nonce.copy_from_slice(
+                                                blake3::hash(src_addr.to_string().as_bytes())
+                                                    .as_bytes(),
+                                            );
+                                            let (probe_bytes, provenance) =
+                                                crate::network::traverse::punch::build_probe(
+                                                    &keypair_recv,
+                                                    our_pubkey_recv.clone(),
+                                                    nonce,
+                                                );
+                                            {
+                                                let mut probes =
+                                                    pending_probes_recv.lock().unwrap();
+                                                probes.insert(
+                                                    provenance,
+                                                    sender_pubkey.clone(),
+                                                    src_addr,
+                                                    now,
+                                                );
+                                            }
+                                            udp::send(&socket_recv, &probe_bytes, src_addr).await;
+                                            crate::logf!("TRAVERSE: reflecting probe back at {} — their probe proved the address, validating our own direction", src_addr);
+                                        }
                                     }
                                 }
 
