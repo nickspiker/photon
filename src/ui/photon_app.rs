@@ -15964,6 +15964,7 @@ impl PhotonApp {
             };
             // Party-id seam, re-run: our participant id is the identity PARTY id (friends) or the sibling pid (siblings) — whichever the chain actually holds. The UNSHADOWED identity pid is kept for the conversation resolution below, which must NOT follow the chains' expression of us.
             let identity_hh = our_handle_hash;
+            // TOTAL identity resolution — no silent exits. The normal path: one of our pids is a participant, the other participant is a known contact. EITHER half can be stale-era (a pre-flag-day ceremony's expression of us, OR a contact whose key has since migrated) — and the frame still DECRYPTED, because lanes key on wire labels, not participants: the crypto is fine, only the naming is stale. Breaking silently on any half was the field's decrypts-forever-never-ACKs loop (2026-08-11: one device re-decrypted the same retransmitted frame every ~15s for six-plus HOURS — no row, no ACK, no persist, nothing in its log). The fallback resolves the peer by matching participants against the contact list; only a set matching NO known contact drops, loudly.
             let (our_handle_hash, from_handle_hash, contact_idx) = {
                 let in_set = |p: &[u8; 32]| chains.participants().contains(p);
                 let us = if in_set(&identity_hh) {
@@ -15971,20 +15972,17 @@ impl PhotonApp {
                 } else {
                     our_sibling_pid.filter(in_set)
                 };
-                match us {
-                    Some(us) => {
-                        let Some(them) = chains.other_participant(&us).copied() else {
-                            break 'commit;
-                        };
-                        let Some(idx) =
-                            self.contacts.iter().position(|c| c.handle_hash == them)
-                        else {
-                            break 'commit;
-                        };
-                        (us, them, idx)
-                    }
+                let normal = us.and_then(|us| {
+                    let them = *chains.other_participant(&us)?;
+                    let idx = self
+                        .contacts
+                        .iter()
+                        .position(|c| c.handle_hash == them)?;
+                    Some((us, them, idx))
+                });
+                match normal {
+                    Some(resolved) => resolved,
                     None => {
-                        // STALE-ERA PARTICIPANTS — the shadow seam one gate earlier: NEITHER of our pids appears in this blob's participant set (a pre-flag-day ceremony's expression of us), yet the frame DECRYPTED — lanes key on wire labels, not participants, so the crypto is fine and only the identity resolution is stale. Breaking silently here was the field's decrypts-forever-never-ACKs loop (2026-08-11: one device re-decrypted the same retransmitted frame every ~15s for ten minutes — no row, no ACK, no persist, and the SHADOW SEAM log below never got the chance to fire). Resolve THEM by matching the participants against the contact list instead, and shout: this blob deserves a re-key.
                         let Some((idx, them)) = chains.participants().iter().find_map(|p| {
                             self.contacts
                                 .iter()
@@ -15994,7 +15992,7 @@ impl PhotonApp {
                             crate::logf!("CHAT: SHADOW SEAM — stale-era participant set matches NO known contact; frame dropped (token {}...)", hex::encode(&conversation_token[..8]));
                             break 'commit;
                         };
-                        crate::logf!("CHAT: SHADOW SEAM — our pid is absent from the chains' stale-era participant set; peer resolved by contact match ({}) — this blob should re-key", crate::fp(&self.contacts[idx].handle_proof));
+                        crate::logf!("CHAT: SHADOW SEAM — stale-era participant set ({} half); peer resolved by contact match ({}) — this blob should re-key", if us.is_some() { "their" } else { "our" }, crate::fp(&self.contacts[idx].handle_proof));
                         // The chains' "us" is whatever the set holds beside them — kept only for the relationship-digest calls below, which must use the CHAINS' expression to stay comparable with the peer's.
                         let stale_us = chains
                             .participants()
