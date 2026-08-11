@@ -16147,10 +16147,23 @@ impl PhotonApp {
                 strands
             };
             if let Some(t) = strand_miss {
-                crate::logf!("LANE: braid strand miss from {} — no outgoing row at eagle_time {} yet; holding this frame (no advance, no ACK) until sibling replication lands it", crate::fp(&from_handle_hash), t);
+                crate::logf!("LANE: braid strand miss from {} — no outgoing row at eagle_time {} yet; holding this frame (no advance, no ACK)", crate::fp(&from_handle_hash), t);
                 let c = &mut self.contacts[contact_idx];
                 c.ping_backoff = 0;
                 c.last_pinged = None;
+                // A strand miss IS row-lack evidence, and the SENDER provably holds the missing row (they just wove it — it's one of OUR OWN messages, held by them as an incoming row). Sibling replication heals a fleet that has the row somewhere, but a device that LOST its history — maybe with no siblings at all — can only get it back from the FRIEND. Arm the full history walk right here: the pages carry our outgoing rows home (original stamps, delivered flags), the retransmitted frame then resolves its strands on replay, and the hold releases. Waiting on sibling replication alone left one device re-decrypting the same frame every ~15s for six-plus hours (2026-08-11), its walk never arming because every digest-record path had its own silent gate.
+                let conv = &mut self.conversations[conv_pos];
+                if conv.history_recovery.as_ref().map_or(true, |r| r.complete) {
+                    crate::logf!("LANE: strand miss arms the history walk — the friend holds our missing row(s)");
+                    conv.history_recovery = Some(crate::types::HistoryRecovery {
+                        oldest_recovered_osc: i64::MAX,
+                        complete: false,
+                        in_flight: None,
+                        next_request_osc: 0,
+                        urgent: true,
+                        was_complete_before: false,
+                    });
+                }
                 break 'commit;
             }
             let strand_refs: Vec<&[u8]> =

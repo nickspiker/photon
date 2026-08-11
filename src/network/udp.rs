@@ -145,25 +145,24 @@ pub fn parse_lan_discovery(
     packet: &[u8],
     src_addr: SocketAddr,
 ) -> Option<([u8; 32], std::net::Ipv4Addr, u16, Option<[u8; 32]>)> {
-    use vsf::file_format::{VsfHeader, VsfSection};
+    use vsf::file_format::VsfHeader;
     use vsf::VsfType;
 
     // Parse header to get provenance hash (sender identity) and find section start Note: No is_original() check - LAN discovery is a simple unsigned broadcast
     let (header, header_end) = VsfHeader::decode(packet).ok()?;
 
-    // Extract handle_proof from header provenance hash
-    let handle_proof = match header.provenance_hash {
+    // Extract handle_proof from header provenance hash (by ref — the header is still needed below to resolve the TOC-named section)
+    let handle_proof = match &header.provenance_hash {
         VsfType::hp(bytes) if bytes.len() == 32 => {
             let mut hp = [0u8; 32];
-            hp.copy_from_slice(&bytes);
+            hp.copy_from_slice(bytes);
             hp
         }
         _ => return None,
     };
 
-    // Parse section
-    let mut ptr = header_end;
-    let section = VsfSection::parse(packet, &mut ptr).ok()?;
+    // Resolve the section via `primary_section`, NOT a bare `VsfSection::parse`: the section NAME lives in the header TOC (near-form), so a body parse returns `section.name == ""` and the `== "pt_disc"` check below silently rejected EVERY beacon on EVERY device — LAN discovery dead fleet-wide, no log line anywhere, same-LAN peers stuck learning each other from (WAN-only-when-multi-homed) registry records and parking on relay (field, 2026-08-11). Third documented victim of this trap after the relay pipe and the hub push accelerator (see relay.rs).
+    let section = header.primary_section(packet, header_end).ok()?;
 
     if section.name != "pt_disc" {
         return None;
@@ -222,6 +221,20 @@ pub fn build_lan_discovery(handle_proof: [u8; 32], port: u16, device_pubkey: [u8
 mod lan_addr_tests {
     use super::is_usable_lan_ipv4;
     use std::net::Ipv4Addr;
+
+    /// The discovery beacon must round-trip thru its own parser. Field, 2026-08-11: every device logged Multicast RX for every beacon and ZERO "Discovered peer" — the parse failed fleet-wide, silently, which is why LAN candidates only ever came from the (WAN-only-when-multi-homed) registry records and same-LAN peers parked on relay.
+    #[test]
+    fn lan_discovery_beacon_round_trips() {
+        let packet = super::build_lan_discovery([7u8; 32], 4383, [9u8; 32]);
+        assert!(!packet.is_empty(), "beacon build produced no bytes");
+        let src: std::net::SocketAddr = "192.168.1.5:9999".parse().unwrap();
+        let parsed = super::parse_lan_discovery(&packet, src);
+        let (hp, ip, port, dev) = parsed.expect("our own beacon must parse");
+        assert_eq!(hp, [7u8; 32]);
+        assert_eq!(ip, Ipv4Addr::new(192, 168, 1, 5), "local ip comes from the observed source");
+        assert_eq!(port, 4383);
+        assert_eq!(dev, Some([9u8; 32]));
+    }
 
     #[test]
     fn rejects_clat_and_specials_keeps_real_lan() {
