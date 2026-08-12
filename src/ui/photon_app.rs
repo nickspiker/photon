@@ -2899,11 +2899,15 @@ impl FluorApp for PhotonApp {
             if let Some(kp) = &self.device_keypair {
                 let device_secret = *kp.secret.as_bytes();
                 // open_shared, NEVER new: query_resume below spawns the attest worker, which opens this same vault — a second independent engine racing this one is how the vault corruption happened (stale engine committed over the live one's blocks → seal verification failed at every subsequent open).
-                match crate::storage::FlatStorage::open_shared(
+                // Phase-timed (the PERF summary below): everything in this arm runs on the UI thread BEFORE the first Ready frame, and the field measured ~1.2s of it with no line naming the eater — the timers make the next boot log ground truth.
+                let t_boot = std::time::Instant::now();
+                let opened = crate::storage::FlatStorage::open_shared(
                     crate::storage::APP,
                     remembered.vault_seed,
                     device_secret,
-                ) {
+                );
+                let ms_vault = t_boot.elapsed().as_millis();
+                match opened {
                     Ok(s) => {
                         // Preserve any IN-FLIGHT ceremony round across this reload. CLUTCH keypairs/slots are ephemeral scratch, so a wholesale reload from disk wipes a live round — and a warm resume (Android foregrounds constantly) then trips the keygen sweep into minting a DIVERGENT round the peer never agreed to. That is exactly what stranded the relay ceremony: the slow relay round-trip outlived the keys, the peer's KEM came back addressed to keys we'd already discarded, and it was dropped as "old keys". Re-key must be deliberate on real failure — never a side effect of a lifecycle event. Snapshot rounds that are still FRESH by eagle time (a genuinely stale one is let go, to be re-keyed cleanly) and restore them after the reload.
                         let now = vsf::eagle_time_oscillations();
@@ -2931,8 +2935,11 @@ impl FluorApp for PhotonApp {
                                 )
                             })
                             .collect();
+                        let t_phase = std::time::Instant::now();
                         self.contacts = crate::storage::contacts::load_all_contacts(&s);
                         self.apply_locked_set();
+                        let ms_contacts = t_phase.elapsed().as_millis();
+                        let t_phase = std::time::Instant::now();
                         // One-time re-home onto the participant-set table key (the local key used to mix our raw seed with their party id). Self-terminating: it copies only when the legacy table has rows and the new one does not, so every launch after the first is a no-op and the MIGRATION line stops appearing. Runs BEFORE messages load, or the first read would find an empty table and the conversation would look wiped.
                         match crate::storage::contacts::migrate_conversation_tables(&self.contacts, &s)
                         {
@@ -2953,6 +2960,7 @@ impl FluorApp for PhotonApp {
                             Err(e) => crate::logf!("MIGRATION: domain re-key failed: {}", e),
                             _ => {}
                         }
+                        let ms_migrations = t_phase.elapsed().as_millis();
                         for c in self.contacts.iter_mut() {
                             if let Some((
                                 kp,
@@ -2994,6 +3002,7 @@ impl FluorApp for PhotonApp {
                             self.contacts.extend(siblings);
                         }
                         // Load each contact's conversation too — load_all_contacts only loads per-peer contact STATE from the vault, not the messages (those live in the rārangi DB, loaded separately). Without this the resume frame paints contacts with empty message lists, and the later query_resume result can't fix it: on_query_result merges by handle_proof and SKIPS already-loaded contacts as duplicates, so the message-bearing copy is discarded → history looks wiped until the next app launch. Loading here makes resume show full history at once.
+                        let t_phase = std::time::Instant::now();
                         for ci in 0..self.contacts.len() {
                             let (proof, key) =
                                 (self.contacts[ci].handle_proof, self.contacts[ci].handle_hash);
@@ -3009,6 +3018,7 @@ impl FluorApp for PhotonApp {
                                 );
                             }
                         }
+                        let ms_messages = t_phase.elapsed().as_millis();
                         crate::logf!(
                             "UI: loaded {} contact(s) from local vault on resume",
                             self.contacts.len()
@@ -3082,6 +3092,7 @@ impl FluorApp for PhotonApp {
                             }
                         }
                         // Load friendship chains NOW too, not just contacts. Resume paints Ready and the status checker starts answering immediately, but chains used to arrive only later via query_resume — so any chat that landed in that window hit "No friendship found for conversation_token" and was DROPPED (no chain = no decrypt, no buffer). Loading chains here closes that gap so a peer messaging us the instant we come back online doesn't lose messages. query_resume still merges (and won't clobber these — it only adds ids we don't already hold).
+                        let t_phase = std::time::Instant::now();
                         let friendship_ids: Vec<crate::types::FriendshipId> = self
                             .contacts
                             .iter()
@@ -3110,15 +3121,22 @@ impl FluorApp for PhotonApp {
                         hps.sort_unstable();
                         hps.dedup();
                         self.spawn_contact_fleet_refresh(hps);
+                        let ms_chains = t_phase.elapsed().as_millis();
                         // Rehydrate each contact's saved ephemeral keypairs from disk (~588KB each). load_contact_state deliberately doesn't pull these (they're huge and live in a separate vault key), so without this every resume re-runs the McEliece-heavy keygen below — which is what froze the UI on launch. Loading the persisted keypairs makes the re-key filter a no-op for contacts that already have them, so keygen only fires for genuinely keyless Pending ones.
+                        // Complete contacts are SKIPPED: their ceremony sealed, the chains carry the conversation, and every live path that could want keys again (peer-lost-chains re-key, reclutch) mints a fresh round anyway — so ~588KB per settled contact was pure frame-one tax (the bulk of the field's 1.2s resume, 2026-08-12).
+                        let t_phase = std::time::Instant::now();
+                        let mut rehydrated = 0usize;
                         for contact in self.contacts.iter_mut() {
-                            if contact.clutch_our_keypairs.is_none() {
+                            if contact.clutch_our_keypairs.is_none()
+                                && contact.clutch_state != crate::types::ClutchState::Complete
+                            {
                                 match crate::storage::contacts::load_clutch_keypairs(
                                     &contact.handle_hash,
                                     &s,
                                 ) {
                                     Ok(Some(keypairs)) => {
                                         contact.clutch_our_keypairs = Some(keypairs);
+                                        rehydrated += 1;
                                     }
                                     Ok(None) => {}
                                     Err(e) => crate::logf!(
@@ -3129,29 +3147,56 @@ impl FluorApp for PhotonApp {
                                 }
                             }
                         }
+                        let ms_keypairs = t_phase.elapsed().as_millis();
                         self.storage = Some(s);
-                        // Load this device's avatar from the vault now that storage exists, and colour-convert it for the Ready screen. The vault read needs the just-built storage handle, so this can't run before storage init like the old filesystem path did.
-                        if let Some(storage) = self.storage.as_ref() {
-                            self.device_avatar_pixels = crate::ui::avatar::load_avatar_from_seed(
-                                &remembered.identity_seed,
-                                storage,
-                            )
-                            .map(|(_, vsf_rgb)| {
-                                crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb)
-                            });
-                        }
-                        // Local vault had no avatar (e.g. this device was cleared) — recover our own from FGTW, where it was published. Off-thread; installs via the avatar drain.
-                        if self.device_avatar_pixels.is_none()
-                            && !self.spawn_self_avatar_recover(remembered.identity_seed)
-                        {
-                            // No pin at rest yet (settings still loading) — the tick retries once one lands.
-                            self.self_avatar_recover_pending = Some(remembered.identity_seed);
+                        // Frame one owns the persisted ergonomics: fleet_settings live on disk, but nothing read them at boot — every ensure_fleet_settings caller was a user action or the network merge drain, so the zoom restore waited ~5s for the first fleet pull (and forever offline), painting every launch at default scale (Nick, 2026-08-12).
+                        let t_phase = std::time::Instant::now();
+                        self.ensure_fleet_settings();
+                        let ms_settings = t_phase.elapsed().as_millis();
+                        // This device's avatar: ONE cheap vault read decides recovery now; the heavy VSF-parse + AV1 decode runs off-thread and installs thru the avatar drain (owner: None), so frame one never waits on dav1d.
+                        let own_avatar_bytes = self.storage.as_ref().and_then(|storage| {
+                            storage
+                                .read_addr(&crate::storage::vault_key(
+                                    "avatar",
+                                    &remembered.identity_seed,
+                                ))
+                                .ok()
+                                .flatten()
+                        });
+                        match own_avatar_bytes {
+                            Some(bytes) => {
+                                let seed = remembered.identity_seed;
+                                let tx = self.avatar_dl_tx.clone();
+                                std::thread::spawn(move || {
+                                    let pixels = crate::ui::avatar::load_avatar_from_bytes_from_seed(
+                                        &bytes, &seed,
+                                    )
+                                    .map(|(_, px)| px);
+                                    let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
+                                        owner: None,
+                                        pixels,
+                                    });
+                                });
+                                // Decode failure (poisoned bytes) arms the FGTW recovery in the drain — never here, or the tick would race the in-flight decode into a pointless network fetch every boot.
+                            }
+                            // Local vault had no avatar (e.g. this device was cleared) — recover our own from FGTW, where it was published. Off-thread; installs via the avatar drain.
+                            None => {
+                                if !self.spawn_self_avatar_recover(remembered.identity_seed) {
+                                    // No pin at rest yet (settings still loading) — the tick retries once one lands.
+                                    self.self_avatar_recover_pending =
+                                        Some(remembered.identity_seed);
+                                }
+                            }
                         }
                         // Notes-to-self is NOT bootstrapped (Nick 2026-08-01): an empty conversation with yourself is not a contact you asked for, and it sat at the top of the list looking broken because it has no peer to pong a name or avatar. Add yourself deliberately and it appears; until then the list holds only people you chose. The stale-key migration still runs so a self row carried from an older build is re-homed before the keygen sweep looks at it.
                         self.migrate_stale_self_row();
                         self.settle_self_display();
                         // Re-key Pending contacts that still lack keypairs after the rehydrate — but ONE AT A TIME (spawn_next_pending_keygen, repeated each tick), never all at once: parallel McEliece keygens on launch starved the UI thread.
                         self.spawn_next_pending_keygen();
+                        crate::logf!(
+                            "PERF: resume load — vault {}ms, contacts {}ms, migrations {}ms, messages {}ms, chains {}ms, keypairs {}ms ({} rehydrated), settings {}ms → local Ready in {}ms (UI thread)",
+                            ms_vault, ms_contacts, ms_migrations, ms_messages, ms_chains, ms_keypairs, rehydrated, ms_settings, t_boot.elapsed().as_millis()
+                        );
                     }
                     Err(e) => {
                         crate::logf!("STORAGE: init failed on resume: {}", e);
@@ -16110,30 +16155,57 @@ impl PhotonApp {
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
         std::thread::spawn(move || {
+            // LOCAL-FIRST, always: the sweep's LocalCached plan promises "never touches the network", but the scoped-slot read used to run before any cache look — every boot re-fetched every scoped avatar, and an offline boot showed placeholders for faces sitting in the vault (Nick, 2026-08-12). The one party-id cache slot holds either form — raw AV1 (scoped write-through below) or the pin-sealed VSF (the pinned path's own cache) — and each decode rejects the other form cleanly, so try both before any network. The pin-rotation sweep evicts this slot, which is what keeps a changed avatar from being served stale.
+            let cached = storage
+                .read_addr(&crate::storage::vault_key("avatar", &party_id))
+                .ok()
+                .flatten();
+            let mut pixels = cached.as_ref().and_then(|bytes| {
+                crate::ui::avatar::decode_avatar_av1_to_display(bytes)
+                    .map(|(_, px)| px)
+                    .or_else(|| {
+                        (avatar_pin != [0u8; 64])
+                            .then(|| {
+                                let mut key = [0u8; 32];
+                                key.copy_from_slice(&avatar_pin[..32]);
+                                crate::ui::avatar::load_avatar_from_bytes_with_key(bytes, &key)
+                                    .map(|(_, px)| px)
+                            })
+                            .flatten()
+                    })
+            });
             // Scoped blob first (docs/scoped-blobs.md): our private slot names the ciphertext and carries its key. Falls back to the legacy pin only while avatars published under the old scheme are still out there — a friend who has re-set their avatar since is served entirely by the slot.
-            let pixels = scoped_kek
-                .and_then(|kek| {
-                    // THEIR avatar, so the purpose carries THEIR pid — the friend is the publisher of the blob we are reading.
-                    let raw = crate::ui::avatar_scoped::fetch_blocking(
-                        &kek,
-                        &crate::ui::avatar_scoped::avatar_purpose(&party_id),
-                    )?;
-                    let (_, px) = crate::ui::avatar::decode_avatar_av1_to_display(&raw)?;
-                    crate::log("AVATAR: fetched from our scoped slot");
-                    Some(px)
-                })
-                .or_else(|| {
-                    (avatar_pin != [0u8; 64])
-                        .then(|| {
-                            crate::ui::avatar::download_avatar_pinned(
-                                &party_id,
-                                &avatar_pin,
-                                &storage,
-                            )
-                            .map(|(_, p)| p)
-                        })
-                        .flatten()
-                });
+            if pixels.is_none() {
+                pixels = scoped_kek
+                    .and_then(|kek| {
+                        // THEIR avatar, so the purpose carries THEIR pid — the friend is the publisher of the blob we are reading.
+                        let raw = crate::ui::avatar_scoped::fetch_blocking(
+                            &kek,
+                            &crate::ui::avatar_scoped::avatar_purpose(&party_id),
+                        )?;
+                        let (_, px) = crate::ui::avatar::decode_avatar_av1_to_display(&raw)?;
+                        // Write-through so the next boot is local (the vault encrypts at rest; the raw-AV1 form is what the cache read above tries first).
+                        if let Err(e) = storage
+                            .write_addr(&crate::storage::vault_key("avatar", &party_id), &raw)
+                        {
+                            crate::logf!("AVATAR: scoped cache write failed: {}", e);
+                        }
+                        crate::log("AVATAR: fetched from our scoped slot");
+                        Some(px)
+                    })
+                    .or_else(|| {
+                        (avatar_pin != [0u8; 64])
+                            .then(|| {
+                                crate::ui::avatar::download_avatar_pinned(
+                                    &party_id,
+                                    &avatar_pin,
+                                    &storage,
+                                )
+                                .map(|(_, p)| p)
+                            })
+                            .flatten()
+                    });
+            }
             let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
                 owner: Some(hp),
                 pixels,
@@ -17008,15 +17080,21 @@ impl PhotonApp {
     fn drain_avatar_downloads(&mut self) {
         while let Ok(result) = self.avatar_dl_rx.try_recv() {
             let Some(vsf_rgb) = result.pixels else {
+                // Own-avatar decode failed (poisoned vault bytes) — arm the FGTW recovery the old synchronous load fired inline. Only the boot decode worker sends owner-None with no pixels (the recover worker sends success only), so this can't loop.
+                if result.owner.is_none() {
+                    if let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) {
+                        self.self_avatar_recover_pending = Some(seed);
+                    }
+                }
                 continue;
             };
             let display = crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb);
-            // `owner: None` = our OWN avatar recovered from FGTW (the local vault was cleared). Install it as the device avatar and invalidate the scaled cache so the Ready screen repaints it.
+            // `owner: None` = our OWN avatar (boot vault decode, or recovered from FGTW after a local clear). Install it as the device avatar and invalidate the scaled cache so the Ready screen repaints it.
             let Some(owner_hp) = result.owner else {
                 self.device_avatar_pixels = Some(display);
                 self.device_avatar_scaled = None;
                 self.device_avatar_scaled_diameter = 0;
-                crate::log("Avatar: recovered own avatar from FGTW after local clear");
+                crate::log("Avatar: own avatar installed (async vault load / recovery)");
                 self.refresh_self_row_avatar();
                 continue;
             };
@@ -23837,6 +23915,11 @@ impl PhotonApp {
                 // A rotated pin names a NEW avatar: drop the once-per-session latch first, or the fetch dedups itself into a no-op and the new picture never arrives until a restart (one device picked, the peer kept the old face — 2026-08-02).
                 if let Some(hp) = self.contacts.get(i).map(|c| c.handle_proof) {
                     self.avatar_dl_started.remove(&hp);
+                }
+                // Evict the party-id avatar cache too — the fetch worker is local-first now, and a raw-AV1 cache entry decodes fine under ANY pin, so without this eviction the old face would be re-served forever.
+                if let (Some(c), Some(storage)) = (self.contacts.get(i), self.storage.as_ref()) {
+                    let _ = storage
+                        .delete_addr(&crate::storage::vault_key("avatar", &c.handle_hash));
                 }
                 self.spawn_avatar_download(i);
             }
