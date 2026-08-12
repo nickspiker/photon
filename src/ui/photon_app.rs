@@ -1252,6 +1252,20 @@ pub struct PhotonApp {
     add_join_rx: Option<std::sync::mpsc::Receiver<JoinUpdate>>,
     /// Fleet key received during a JOIN, held until attest sets the vault up so it can be persisted (the new device has no storage during the join thread).
     pending_fleet_key: Option<[u8; 32]>,
+    /// The fleet epoch spine (docs/braid.md §14.4): (k, epoch_k), vault-cached; advances only on checkpoint edges.
+    fleet_epoch: Option<(u64, [u8; 32])>,
+    /// The immediately-prior epoch, held one checkpoint crossing so in-flight k−1 frames still open.
+    fleet_epoch_prev: Option<(u64, [u8; 32])>,
+    /// A rotation (or other epoch-worthy edge) happened — the next sweep mints a checkpoint.
+    ckpt_mint_due: bool,
+    /// A mint/bootstrap thread is in flight — the single-minter re-entry guard.
+    ckpt_busy: bool,
+    /// Outcome channel for the off-thread checkpoint work.
+    ckpt_rx: Option<std::sync::mpsc::Receiver<CkptOutcome>>,
+    /// One vault probe per session — the spine loads once, not per frame.
+    ckpt_loaded: bool,
+    /// Last spawn attempt — bounds bootstrap retries to the sweep cadence, not the frame rate.
+    ckpt_last_attempt: Option<Instant>,
     /// In-flight fleet-roster pull; its `Ok` result merges into contacts, its `Err` triggers a retry — both drained in `tick`. `Some` = a pull is running, which also debounces re-spawns.
     roster_pull_rx: Option<std::sync::mpsc::Receiver<Result<fgtw::fstate::FleetState, String>>>,
     /// Message-table persist worker: conversation snapshots go over this channel to ONE background thread that coalesces (latest snapshot per conversation id wins) and writes. `save_messages` is a full encrypted table rewrite — on the UI thread it was the named 600ms–5.7s stall behind every ChatMessage/MessageAck arm; off it, an ack is a field flip.
@@ -1754,6 +1768,13 @@ impl PhotonApp {
             add_join_words: None,
             add_join_rx: None,
             pending_fleet_key: None,
+            fleet_epoch: None,
+            fleet_epoch_prev: None,
+            ckpt_mint_due: false,
+            ckpt_busy: false,
+            ckpt_rx: None,
+            ckpt_loaded: false,
+            ckpt_last_attempt: None,
             roster_pull_rx: None,
             fleet_settings: None,
             needs_initial_roster_pull: false,
@@ -2219,6 +2240,12 @@ enum AddDeviceUpdate {
 }
 
 /// Off-thread results for the new-device JOIN flow (binding-request post + membership poll), drained in `tick`.
+/// Off-thread checkpoint work reporting home: a spine advance (minted here or adopted from custody), or "nothing landed, re-arm on the next edge".
+enum CkptOutcome {
+    Advanced { k: u64, epoch: [u8; 32], prev: Option<(u64, [u8; 32])>, root: Option<[u8; 32]>, fanout_epoch: u64, minted_here: bool },
+    Idle,
+}
+
 enum JoinUpdate {
     /// The fleet-masked words this device displays for the user to type on an existing device.
     ShowWords(String),
@@ -10100,6 +10127,11 @@ impl PhotonApp {
             }
         }
 
+        // The checkpoint spine driver rides the same fleet sweep cadence: lazy vault load, outcome drain, and the bootstrap/rotation mint edges.
+        if matches!(self.state, AppState::Ready | AppState::Conversation | AppState::Settings(_)) {
+            self.ckpt_tick();
+        }
+
         // Stalled-address re-fetch — the deadlock breaker for flaky-fgtw address discovery.
         // A contact whose address fetch failed sits with `ip = None`: its CLUTCH offer can't send (send needs an address), name/avatar never arrive (they ride the pong, which needs a reachable path), and the ceremony loops keygen forever. There is no periodic address re-fetch otherwise, so while any non-self contact is Pending-CLUTCH with no address, pulse a lightweight background resume (gossip + registry resolve below). A single success learns the address, fire-on-learn punches, the offer sends, and the pong then carries name/avatar. Self-limiting: stops the moment the address lands. (Stopgap for the peer-gossip fix, TICKETS T0.)
         const STALLED_ADDR_REFETCH: std::time::Duration = std::time::Duration::from_secs(15);
@@ -11568,6 +11600,230 @@ impl PhotonApp {
             }
         }
         None
+    }
+
+    /// Load the epoch spine from the vault into RAM (idempotent; called from the fleet sweep until it lands).
+    fn fleet_epoch_load(&mut self) {
+        if self.fleet_epoch.is_some() || self.ckpt_loaded {
+            return;
+        }
+        let (Some(storage), Some(session)) = (self.storage.as_ref(), self.session.as_ref()) else {
+            return;
+        };
+        self.ckpt_loaded = true;
+        let addr = crate::storage::vault_key("fleet_epoch", &session.vault_seed);
+        if let Ok(Some(bytes)) = storage.read_addr(&addr) {
+            if let Some((k, epoch, prev)) = crate::network::fgtw::fleet::ckpt_state_decode(&bytes) {
+                self.fleet_epoch = Some((k, epoch));
+                self.fleet_epoch_prev = prev;
+            }
+        }
+    }
+
+    /// Persist the epoch spine to the vault (same bytes the custody slot and ckpt_state frames carry).
+    fn fleet_epoch_store(&self) {
+        let (Some(storage), Some(session), Some((k, epoch))) = (self.storage.as_ref(), self.session.as_ref(), self.fleet_epoch) else {
+            return;
+        };
+        let addr = crate::storage::vault_key("fleet_epoch", &session.vault_seed);
+        let bytes = crate::network::fgtw::fleet::ckpt_state_bytes(k, &epoch, self.fleet_epoch_prev);
+        if let Err(e) = storage.write_addr(&addr, &bytes) {
+            crate::logf!("CKPT: epoch spine store failed: {}", e);
+        }
+    }
+
+    /// The fleet-wide settled root over every non-sibling conversation's rows in RAM: per-conversation merkle over (eagle_time, content) leaves in (stamp, leaf) order, conversations bound in token order. Sibling 1:1 chatter is device-pair-local and deliberately outside the root — the root must be derivable identically fleet-wide.
+    fn settled_root_now(&self) -> [u8; 32] {
+        use crate::crypto::clutch::{ckpt_conv_root, ckpt_leaf, ckpt_settled_root};
+        let mut convs: Vec<([u8; 32], [u8; 32])> = Vec::new();
+        for ci in 0..self.contacts.len() {
+            if self.contacts[ci].is_sibling {
+                continue;
+            }
+            let Some(conv) = self.conv_of(ci) else {
+                continue;
+            };
+            let mut leaves: Vec<(i64, [u8; 32])> = conv
+                .messages
+                .iter()
+                .filter(|m| !crate::types::is_control_content(&m.content))
+                .map(|m| (m.timestamp, ckpt_leaf(m.timestamp, &m.content)))
+                .collect();
+            leaves.sort();
+            convs.push((*conv.id().as_bytes(), ckpt_conv_root(leaves.into_iter().map(|(_, l)| l).collect())));
+        }
+        convs.sort();
+        ckpt_settled_root(&convs)
+    }
+
+    /// Ship one fleet-scoped frame to every non-locked sibling (direct legs race, relay covers the rest) — the ckpt frames' transport, same targeting as the chain_sync push.
+    fn dispatch_frame_to_siblings(&self, frame: Vec<u8>) {
+        let Some(checker) = self.status_checker.as_ref() else {
+            return;
+        };
+        let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
+        let dispatch = checker.history_dispatch();
+        for sib in self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out) {
+            let (primary, alt, relay_to) = match sib.race_addrs() {
+                Some((p, a)) => (p, a, relay_unless_direct_trusted(&sib, crate::network::udp::get_local_ip())),
+                None => {
+                    let relays = sib.relay_device_list();
+                    if relays.is_empty() {
+                        continue;
+                    }
+                    (unspecified, None, relays)
+                }
+            };
+            let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                peer_addr: primary,
+                alt_addr: alt,
+                recipient_pubkey: *sib.public_identity.as_bytes(),
+                relay_to,
+                vsf_bytes: frame.clone(),
+            });
+        }
+    }
+
+    /// The checkpoint spine driver, run from the fleet sweep: lazy vault load, mint-outcome drain, and the two mint edges (no spine yet → bootstrap k=1; rotation flagged → advance). Off-thread for everything that touches the network; single-flight via `ckpt_busy`.
+    fn ckpt_tick(&mut self) {
+        self.fleet_epoch_load();
+        // Drain the off-thread outcome first — a landed advance clears busy and may satisfy the pending edge.
+        if let Some(rx) = self.ckpt_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(CkptOutcome::Advanced { k, epoch, prev, root, fanout_epoch, minted_here }) => {
+                    self.ckpt_busy = false;
+                    self.ckpt_rx = None;
+                    self.fleet_epoch_prev = prev;
+                    self.fleet_epoch = Some((k, epoch));
+                    self.fleet_epoch_store();
+                    crate::logf!("CKPT: epoch spine at k={} ({})", k, if minted_here { "minted here" } else { "adopted" });
+                    // The winner hands the SECRET root to siblings current at k−1; they verify by open-success and derive. k=1 has no prior epoch anywhere — siblings jump via ckpt_state instead.
+                    if minted_here {
+                        if let (Some((root, fe)), Some((_, prev_epoch)), Some(kp)) = (root.map(|r| (r, fanout_epoch)), prev, self.device_keypair.as_ref()) {
+                            let seal_key = crate::crypto::clutch::fleet_epoch_seal_key(&prev_epoch, b"ckpt_root");
+                            if let Ok(sealed) = kete::encrypt_bytes(&root, &seal_key) {
+                                if let Ok(frame) = crate::network::fgtw::protocol::build_ckpt_root_vsf(k, fe, sealed, kp.public.as_bytes(), kp.secret.as_bytes()) {
+                                    self.dispatch_frame_to_siblings(frame);
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(CkptOutcome::Idle) => {
+                    self.ckpt_busy = false;
+                    self.ckpt_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.ckpt_busy = false;
+                    self.ckpt_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if self.ckpt_busy {
+            return;
+        }
+        let bootstrap = self.fleet_epoch.is_none();
+        if !bootstrap && !self.ckpt_mint_due {
+            return;
+        }
+        // Sweep-cadence bound: a wedged bootstrap (custody unreadable, fgtw down) must not become a per-frame fetch storm.
+        if self.ckpt_last_attempt.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(45)) {
+            return;
+        }
+        self.ckpt_last_attempt = Some(Instant::now());
+        let (Some(kp), Some(hp), Some(fleet_key), Some(storage)) = (
+            self.device_keypair.clone(),
+            self.our_handle_proof(),
+            self.fleet_key_cached(),
+            self.storage.as_ref().cloned(),
+        ) else {
+            return;
+        };
+        self.ckpt_mint_due = false;
+        self.ckpt_busy = true;
+        let root = self.settled_root_now();
+        let cur = self.fleet_epoch;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.ckpt_rx = Some(rx);
+        std::thread::spawn(move || {
+            use crate::network::fgtw::fleet;
+            let send = |o: CkptOutcome| {
+                let _ = tx.send(o);
+            };
+            // The fan-out epoch names WHICH fleet key folds into the derivation — recover the pair together so they can't skew.
+            let (fanout_epoch, fk) = match fleet::recover_fleet_key_with_epoch(&hp, &kp, Some(&storage)) {
+                Ok(Some((e, k))) => (e, k),
+                _ => (0, fleet_key),
+            };
+            if let Some((have_k, have_epoch)) = cur {
+                // Steady-state advance (rotation edge): push k+1 folding the fresh key; a loss means a sibling minted — its ckpt_root frame carries the root home.
+                let commit = crate::crypto::clutch::ckpt_commit(&root);
+                match fleet::push_checkpoint(&hp, &kp, have_k + 1, commit, fanout_epoch) {
+                    Ok(None) => {
+                        let epoch = crate::crypto::clutch::advance_fleet_epoch(&have_epoch, &root, &fk, fanout_epoch, have_k + 1);
+                        let state = fleet::ckpt_state_bytes(have_k + 1, &epoch, Some((have_k, have_epoch)));
+                        if let Err(e) = fleet::ckpt_custody_write(&fk, &state, &kp, &hp) {
+                            crate::logf!("CKPT: custody write failed (spine still advanced): {}", e);
+                        }
+                        send(CkptOutcome::Advanced { k: have_k + 1, epoch, prev: Some((have_k, have_epoch)), root: Some(root), fanout_epoch, minted_here: true });
+                    }
+                    Ok(Some((wk, _, _))) => {
+                        crate::logf!("CKPT: lost the k={} race to a sibling (chain holds k={}) — adopting via its root hand-off", have_k + 1, wk);
+                        send(CkptOutcome::Idle);
+                    }
+                    Err(e) => {
+                        crate::logf!("CKPT: checkpoint push failed (re-arms on the next edge): {}", e);
+                        send(CkptOutcome::Idle);
+                    }
+                }
+                return;
+            }
+            // Bootstrap: no spine here. Custody first (a sibling may have minted), else mint epoch 0 (the 2MB reservoir collapse — the one-time fleet birth cost) and race k=1 on the chain.
+            if let Some(bytes) = fleet::ckpt_custody_read(&fk) {
+                if let Some((k, epoch, prev)) = fleet::ckpt_state_decode(&bytes) {
+                    send(CkptOutcome::Advanced { k, epoch, prev, root: None, fanout_epoch, minted_here: false });
+                    return;
+                }
+            }
+            let genesis_hash = match fleet::fetch(&hp) {
+                Ok(Some(blob)) => {
+                    if blob.latest_checkpoint().is_some() {
+                        // The chain has a spine but custody didn't open (rotation gap, or the winner is mid-write) — wait for ckpt_state/custody on a later sweep.
+                        crate::log("CKPT: chain has a spine but custody is unreadable yet — holding for ckpt_state");
+                        send(CkptOutcome::Idle);
+                        return;
+                    }
+                    blob.genesis_hash().unwrap_or([0u8; 32])
+                }
+                _ => {
+                    send(CkptOutcome::Idle);
+                    return;
+                }
+            };
+            let epoch_zero = crate::crypto::clutch::mint_fleet_epoch_seed(&kp.public.to_bytes(), &genesis_hash, &fk);
+            let commit = crate::crypto::clutch::ckpt_commit(&root);
+            match fleet::push_checkpoint(&hp, &kp, 1, commit, fanout_epoch) {
+                Ok(None) => {
+                    let epoch = crate::crypto::clutch::advance_fleet_epoch(&epoch_zero, &root, &fk, fanout_epoch, 1);
+                    let state = fleet::ckpt_state_bytes(1, &epoch, Some((0, epoch_zero)));
+                    if let Err(e) = fleet::ckpt_custody_write(&fk, &state, &kp, &hp) {
+                        crate::logf!("CKPT: bootstrap custody write failed (siblings jump via ckpt_state): {}", e);
+                    }
+                    crate::log("CKPT: fleet epoch spine born — reservoir minted, k=1 on the chain");
+                    // No root broadcast at k=1: nobody else holds epoch 0, so siblings jump via ckpt_state/custody.
+                    send(CkptOutcome::Advanced { k: 1, epoch, prev: Some((0, epoch_zero)), root: None, fanout_epoch, minted_here: true });
+                }
+                Ok(Some((wk, _, _))) => {
+                    crate::logf!("CKPT: bootstrap race lost (chain holds k={}) — adopting the winner's custody next sweep", wk);
+                    send(CkptOutcome::Idle);
+                }
+                Err(e) => {
+                    crate::logf!("CKPT: bootstrap checkpoint push failed: {}", e);
+                    send(CkptOutcome::Idle);
+                }
+            }
+        });
     }
 
     /// Recover the current fleet key from the fan-out (or establish it at genesis), off-thread, and cache it in the vault. This is how a device gets the fleet key now — sealed to its own device key, recoverable with just its `ihi` — superseding the pairing-secret hand-off. Triggered on attest and after a membership change, so a rotation propagates to every device. Session-long subscription to the FGTW hub's typed events for OUR identity. "fstate" (roster changed by a sibling device) and "fleet" (membership chain extended) land in `fleet_evt_rx`; tick drains them into a roster pull / key sync, and the wake proxy pokes the loop so it reacts immediately. Reconnects with jittered backoff — unlike the join ceremony's throwaway socket, this one is the LIVE propagation path (friend added on one device appears on the others), so it survives network blips. Idempotent: repeat calls while a subscription is live are no-ops.
@@ -14944,6 +15200,8 @@ impl PhotonApp {
                 }
                 // If we just joined a fleet, the vault is now open — persist the fleet key we recovered from the fan-out during pairing so this device shares the fleet's private state.
                 if let Some(k) = self.pending_fleet_key.take() {
+                    // A fresh fleet key is an epoch-worthy edge: the next checkpoint folds it (rotation = the PCS boundary).
+                    self.ckpt_mint_due = true;
                     self.fleet_key_store(&k);
                     crate::log("FLEET: stored fleet key recovered during pairing");
                 }
@@ -18934,7 +19192,12 @@ impl PhotonApp {
 
     /// Fleet chain replication, the PUSH half ("if another device is ahead, I just catch up" — the catch-up is the ChainSyncReceived adopt arm). Per tick: any FRIEND chain whose mutated_osc is newer than the last push ships to EVERY sibling as a fleet-sealed chain_sync frame (canonical chains VSF bytes, kete-sealed under the fleet key, device-signed). Sibling 1:1 chains never replicate (device-pair-local by definition). The receiving sibling adopts iff the stamp is newer than its copy — so after any device advances a friendship (send ACK, receive), the whole fleet converges on the new head within transport latency, and any device can transmit next. Concurrent same-instant sends from two devices can still fork the braid (the §14 linearizer is the real serializer); catch-up shrinks that window to transport latency, and the fork-repair machinery (reset + re-key streak) is the backstop.
     fn drive_chain_replication(&mut self) {
-        let Some(fleet_key) = self.fleet_key_cached() else {
+        // The B3 re-seal: chain_sync frames seal under the EPOCH chain_sync key, never the raw fleet key. No spine yet = the bounded bootstrap window — hold the push (the lane re-pushes the moment it next advances) rather than fork the seal.
+        let Some((epoch_k, epoch)) = self.fleet_epoch else {
+            return;
+        };
+        let chain_seal_key = crate::crypto::clutch::fleet_epoch_seal_key(&epoch, b"chain_sync");
+        let Some(_fleet_key) = self.fleet_key_cached() else {
             return;
         };
         let (Some(kp), Some(checker)) =
@@ -19050,7 +19313,7 @@ impl PhotonApp {
                         continue;
                     }
                 };
-                let sealed = match kete::encrypt_bytes(&bytes, &fleet_key) {
+                let sealed = match kete::encrypt_bytes(&bytes, &chain_seal_key) {
                     Ok(s) => s,
                     Err(e) => {
                         crate::logf!("CHAIN-SYNC CRITICAL: seal failed off-thread: {} — {} lane(s) for {} unpushed until the lane next advances", e, lane_count, crate::fp(&fid_bytes));
@@ -19059,6 +19322,7 @@ impl PhotonApp {
                 };
                 let frame = match crate::network::fgtw::protocol::build_chain_sync_vsf(
                     &subset.conversation_token,
+                    epoch_k,
                     sealed,
                     &kp_pub,
                     &kp_sec,
@@ -19957,6 +20221,9 @@ impl PhotonApp {
                 StatusUpdate::ChainResetReceived { .. } => "ChainResetReceived",
                 StatusUpdate::PongSealMissing { .. } => "PongSealMissing",
                 StatusUpdate::ChainSyncReceived { .. } => "ChainSyncReceived",
+                StatusUpdate::CkptRootReceived { .. } => "CkptRootReceived",
+                StatusUpdate::CkptReqReceived { .. } => "CkptReqReceived",
+                StatusUpdate::CkptStateReceived { .. } => "CkptStateReceived",
                 StatusUpdate::AttachBlobReceived { .. } => "AttachBlobReceived",
                 StatusUpdate::AttachProgress { .. } => "AttachProgress",
                 StatusUpdate::AttachHaveReceived { .. } => "AttachHaveReceived",
@@ -22527,6 +22794,7 @@ impl PhotonApp {
                 }
                 StatusUpdate::ChainSyncReceived {
                     conversation_token,
+                    epoch_k,
                     sealed,
                     sender_pubkey,
                 } => {
@@ -22541,15 +22809,29 @@ impl PhotonApp {
                         );
                         continue;
                     }
-                    let Some(fleet_key) = self.fleet_key_cached() else {
+                    // The B3 re-seal: the blob opens under the chain_sync key of the epoch it names — current, or prev across a checkpoint crossing. A frame ahead of our spine means we lag; ask the sender to serve its state and drop (the chain re-pushes on its next advance).
+                    let epoch = match (self.fleet_epoch, self.fleet_epoch_prev) {
+                        (Some((k, e)), _) if k == epoch_k => Some(e),
+                        (_, Some((k, e))) if k == epoch_k => Some(e),
+                        _ => None,
+                    };
+                    let Some(epoch) = epoch else {
+                        let our_k = self.fleet_epoch.map(|(k, _)| k).unwrap_or(0);
+                        crate::logf!("CKPT: chain_sync sealed at k={} but our spine is at k={} — requesting state from {}", epoch_k, our_k, crate::fp(&sender_pubkey.key));
+                        if let Some(kp) = self.device_keypair.as_ref() {
+                            if let Ok(frame) = crate::network::fgtw::protocol::build_ckpt_req_vsf(our_k, kp.public.as_bytes(), kp.secret.as_bytes()) {
+                                self.dispatch_frame_to_siblings(frame);
+                            }
+                        }
                         continue;
                     };
+                    let seal_key = crate::crypto::clutch::fleet_epoch_seal_key(&epoch, b"chain_sync");
                     // OFF-THREAD: the kete open + VSF decode ran inline — 17KB+ per lane, and a fresh sibling join repushes EVERY friendship at once (an adopt storm on the render thread). The worker opens and decodes; the adopt (cheap position compares) runs in drain_chain_syncs.
                     let tx = self.chain_sync_opened_tx.clone();
                     let wake = self.event_proxy.clone();
                     queue_job(&self.seal_job_tx, move || {
-                        let Ok(plain) = kete::decrypt_bytes(&sealed, &fleet_key) else {
-                            crate::log("CHAIN-SYNC: blob failed to open under the fleet key — dropped (stale key generation?)");
+                        let Ok(plain) = kete::decrypt_bytes(&sealed, &seal_key) else {
+                            crate::log("CHAIN-SYNC: blob failed to open under the epoch chain_sync key — dropped (stale epoch?)");
                             return;
                         };
                         let incoming = match crate::storage::friendship::chains_from_vsf_bytes(&plain) {
@@ -22572,6 +22854,151 @@ impl PhotonApp {
                             let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
                         }
                     });
+                }
+
+                // A checkpoint minter's root hand-off: open-success under the k−1 ckpt_root key is member-grade authentication (only fleet devices past epoch k−1 hold it); the chain's public commitment reconciles on the next refold as defence-in-depth, never as the liveness gate.
+                StatusUpdate::CkptRootReceived {
+                    k,
+                    fanout_epoch,
+                    sealed,
+                    sender_pubkey,
+                } => {
+                    if !self
+                        .contacts
+                        .iter()
+                        .any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key))
+                    {
+                        crate::log("CKPT: root frame from a non-sibling or unknown device — dropped");
+                        continue;
+                    }
+                    let (Some((our_k, our_epoch)), Some(fleet_key)) = (self.fleet_epoch, self.fleet_key_cached()) else {
+                        continue;
+                    };
+                    if k != our_k + 1 {
+                        if k > our_k + 1 {
+                            // More than one checkpoint ahead — sequential root-opening can't bridge it; jump via state serve.
+                            if let Some(kp) = self.device_keypair.as_ref() {
+                                if let Ok(frame) = crate::network::fgtw::protocol::build_ckpt_req_vsf(our_k, kp.public.as_bytes(), kp.secret.as_bytes()) {
+                                    self.dispatch_frame_to_siblings(frame);
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    let open_key = crate::crypto::clutch::fleet_epoch_seal_key(&our_epoch, b"ckpt_root");
+                    let Ok(root_bytes) = kete::decrypt_bytes(&sealed, &open_key) else {
+                        crate::logf!("CKPT: root for k={} failed to open under our k={} key — spines diverged, requesting state", k, our_k);
+                        if let Some(kp) = self.device_keypair.as_ref() {
+                            if let Ok(frame) = crate::network::fgtw::protocol::build_ckpt_req_vsf(our_k, kp.public.as_bytes(), kp.secret.as_bytes()) {
+                                self.dispatch_frame_to_siblings(frame);
+                            }
+                        }
+                        continue;
+                    };
+                    let Ok(root) = <[u8; 32]>::try_from(root_bytes.as_slice()) else {
+                        crate::log("CKPT: root frame carried a malformed root — dropped");
+                        continue;
+                    };
+                    // Divergence diagnostic, not a gate: a differing local root means we hold a different settled set — repair is convergence (the history sweep), never a wedge.
+                    let local_root = self.settled_root_now();
+                    if local_root != root {
+                        crate::logf!("CKPT DIVERGENCE: minter's settled root for k={} differs from ours — adopting theirs, the history sweep reconciles rows", k);
+                    }
+                    let epoch = crate::crypto::clutch::advance_fleet_epoch(&our_epoch, &root, &fleet_key, fanout_epoch, k);
+                    self.fleet_epoch_prev = Some((our_k, our_epoch));
+                    self.fleet_epoch = Some((k, epoch));
+                    self.fleet_epoch_store();
+                    crate::logf!("CKPT: advanced to k={} from {}'s root hand-off", k, crate::fp(&sender_pubkey.key));
+                }
+
+                // A sibling's catch-up ask: serve our whole spine state fleet-key-sealed if we are ahead — the fgtw-independent jump path.
+                StatusUpdate::CkptReqReceived {
+                    have_k,
+                    sender_pubkey,
+                    sender_addr,
+                } => {
+                    if !self
+                        .contacts
+                        .iter()
+                        .any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key))
+                    {
+                        continue;
+                    }
+                    let (Some((our_k, our_epoch)), Some(fleet_key), Some(kp), Some(checker)) = (
+                        self.fleet_epoch,
+                        self.fleet_key_cached(),
+                        self.device_keypair.as_ref(),
+                        self.status_checker.as_ref(),
+                    ) else {
+                        continue;
+                    };
+                    if our_k <= have_k {
+                        continue;
+                    }
+                    let state = crate::network::fgtw::fleet::ckpt_state_bytes(our_k, &our_epoch, self.fleet_epoch_prev);
+                    let custody_sealed = {
+                        // The same custody sealing the slot uses — one key derivation, one ciphertext shape, whichever bearer serves it.
+                        let mut h = blake3::Hasher::new();
+                        h.update(b"PHOTON_FLEET_EPOCH_CUSTODY_v\x01");
+                        h.update(&fleet_key);
+                        kete::encrypt_bytes(&state, h.finalize().as_bytes())
+                    };
+                    let Ok(sealed) = custody_sealed else {
+                        continue;
+                    };
+                    if let Ok(frame) = crate::network::fgtw::protocol::build_ckpt_state_vsf(our_k, sealed, kp.public.as_bytes(), kp.secret.as_bytes()) {
+                        let _ = checker.history_dispatch().send(crate::network::status::HistorySendRequest {
+                            peer_addr: sender_addr,
+                            alt_addr: None,
+                            recipient_pubkey: sender_pubkey.key,
+                            relay_to: vec![sender_pubkey.key],
+                            vsf_bytes: frame,
+                        });
+                        crate::logf!("CKPT: served spine state k={} to {} (they were at k={})", our_k, crate::fp(&sender_pubkey.key), have_k);
+                    }
+                }
+
+                // A sibling's spine state: adopt if ahead. Fleet-key seal = the custody trust boundary, sibling-signed outer = the transport gate.
+                StatusUpdate::CkptStateReceived {
+                    k,
+                    sealed,
+                    sender_pubkey,
+                } => {
+                    if !self
+                        .contacts
+                        .iter()
+                        .any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key))
+                    {
+                        continue;
+                    }
+                    let Some(fleet_key) = self.fleet_key_cached() else {
+                        continue;
+                    };
+                    let our_k = self.fleet_epoch.map(|(x, _)| x).unwrap_or(0);
+                    if k <= our_k {
+                        continue;
+                    }
+                    let custody_key = {
+                        let mut h = blake3::Hasher::new();
+                        h.update(b"PHOTON_FLEET_EPOCH_CUSTODY_v\x01");
+                        h.update(&fleet_key);
+                        *h.finalize().as_bytes()
+                    };
+                    let Ok(plain) = kete::decrypt_bytes(&sealed, &custody_key) else {
+                        crate::log("CKPT: state frame failed to open under the custody key — dropped");
+                        continue;
+                    };
+                    let Some((sk, epoch, prev)) = crate::network::fgtw::fleet::ckpt_state_decode(&plain) else {
+                        crate::log("CKPT: state frame malformed — dropped");
+                        continue;
+                    };
+                    if sk <= our_k {
+                        continue;
+                    }
+                    self.fleet_epoch_prev = prev;
+                    self.fleet_epoch = Some((sk, epoch));
+                    self.fleet_epoch_store();
+                    crate::logf!("CKPT: adopted spine state k={} from {}", sk, crate::fp(&sender_pubkey.key));
                 }
 
                 StatusUpdate::ChainResetReceived {

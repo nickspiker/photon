@@ -2335,9 +2335,10 @@ pub fn parse_history_page_vsf(
     Ok(((conversation_token, request_id, sealed), sender_pubkey))
 }
 
-/// Build a `chain_sync` frame — fleet chain-state replication ("if another device is ahead, I just catch up"). `sealed_chains` = the friendship's canonical chains VSF bytes (storage::friendship::chains_to_vsf_bytes) AEAD-sealed under the FLEET key; only fleet members can read or forge one, and the outer frame is device-signed like every sibling frame. Receiver: open, decode, adopt iff the embedded mutated_osc is NEWER than the local copy's.
+/// Build a `chain_sync` frame — fleet chain-state replication ("if another device is ahead, I just catch up"). `sealed_chains` = the friendship's canonical chains VSF bytes (storage::friendship::chains_to_vsf_bytes) AEAD-sealed under the EPOCH chain_sync key (`fleet_epoch_seal_key(epoch_k, b"chain_sync")` — the B3 re-seal, 2026-08-12); `epoch_k` rides beside the blob so the receiver picks the right epoch (it accepts k and k−1 across a checkpoint crossing). The outer frame is device-signed like every sibling frame. Receiver: open, decode, adopt iff the embedded mutated_osc is NEWER than the local copy's.
 pub fn build_chain_sync_vsf(
     conversation_token: &[u8; 32],
+    epoch_k: u64,
     sealed_chains: Vec<u8>,
     device_pubkey: &[u8; 32],
     device_secret: &[u8; 32],
@@ -2347,6 +2348,7 @@ pub fn build_chain_sync_vsf(
 
     let mut section = VsfSection::new("chain_sync");
     section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    section.add_field("ek", VsfType::u(epoch_k as usize, false));
     let blob_len = sealed_chains.len();
     section.add_field(
         "data",
@@ -2363,8 +2365,8 @@ pub fn build_chain_sync_vsf(
     vsf::verification::sign_file(unsigned, device_secret)
 }
 
-/// Parse + verify a `chain_sync` frame. Returns ((conversation_token, sealed_chains), sender_pubkey). The blob is opaque here; the receiver opens it with the fleet key (AEAD failure = drop).
-pub fn parse_chain_sync_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], Vec<u8>), [u8; 32]), String> {
+/// Parse + verify a `chain_sync` frame. Returns ((conversation_token, epoch_k, sealed_chains), sender_pubkey). The blob is opaque here; the receiver opens it with the epoch's chain_sync key (AEAD failure = drop). A frame without `ek` is a pre-epoch build's — the flag-day rejects it here, loudly, no tolerant branch.
+pub fn parse_chain_sync_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], u64, Vec<u8>), [u8; 32]), String> {
     let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
         .map_err(|e| format!("chain_sync verification failed: {}", e))?;
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
@@ -2380,6 +2382,7 @@ pub fn parse_chain_sync_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], Vec<u8>), [u
 
     let conversation_token = field_hash32(fields, "tok", |v| matches!(v, VsfType::hg(_)))
         .ok_or("chain_sync missing tok")?;
+    let epoch_k = field_u64(fields, "ek").ok_or("chain_sync missing ek (pre-epoch build)")?;
     let sealed = fields
         .iter()
         .find(|f| f.name == "data")
@@ -2390,7 +2393,155 @@ pub fn parse_chain_sync_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], Vec<u8>), [u
         })
         .ok_or("chain_sync missing data")?;
 
-    Ok(((conversation_token, sealed), sender_pubkey))
+    Ok(((conversation_token, epoch_k, sealed), sender_pubkey))
+}
+
+/// Read a plain unsigned-integer field.
+fn field_u64(fields: &[vsf::file_format::VsfField], name: &str) -> Option<u64> {
+    fields.iter().find(|f| f.name == name).and_then(|f| f.values.first()).and_then(|v| match v {
+        VsfType::u(n, false) => Some(*n as u64),
+        _ => None,
+    })
+}
+
+/// Build a `ckpt_root` frame — the checkpoint minter handing siblings the SECRET settled root for epoch `k`. `sealed_root` = the 32-byte root kete-sealed under `fleet_epoch_seal_key(epoch_{k-1}, b"ckpt_root")`: openable exactly by siblings current at the prior epoch, who then verify it against the chain op's public commitment and derive epoch_k themselves. Fleet-scoped (no conversation token); device-signed like every sibling frame.
+pub fn build_ckpt_root_vsf(
+    k: u64,
+    fanout_epoch: u64,
+    sealed_root: Vec<u8>,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+
+    let mut section = VsfSection::new("ckpt_root");
+    section.add_field("ek", VsfType::u(k as usize, false));
+    section.add_field("fe", VsfType::u(fanout_epoch as usize, false));
+    let blob_len = sealed_root.len();
+    section.add_field(
+        "data",
+        VsfType::t_u3(vsf::Tensor::new(vec![blob_len], sealed_root)),
+    );
+
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build ckpt_root VSF: {}", e))?;
+
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse + verify a `ckpt_root` frame. Returns ((k, fanout_epoch, sealed_root), sender_pubkey).
+pub fn parse_ckpt_root_vsf(vsf_bytes: &[u8]) -> Result<((u64, u64, Vec<u8>), [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("ckpt_root verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "ckpt_root" {
+        return Err(format!("Expected 'ckpt_root' section, got '{}'", section_name));
+    }
+    let fields = &section.fields;
+    let k = field_u64(fields, "ek").ok_or("ckpt_root missing ek")?;
+    let fanout_epoch = field_u64(fields, "fe").ok_or("ckpt_root missing fe")?;
+    let sealed = fields
+        .iter()
+        .find(|f| f.name == "data")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::t_u3(tensor) => Some(tensor.data.clone()),
+            _ => None,
+        })
+        .ok_or("ckpt_root missing data")?;
+    Ok(((k, fanout_epoch, sealed), sender_pubkey))
+}
+
+/// Build a `ckpt_req` frame — "my epoch spine ends at `have_k`; serve me forward". Fired on any epoch-sealed frame we can't open because its k is ahead of ours. A sibling ahead answers with `ckpt_state`.
+pub fn build_ckpt_req_vsf(
+    have_k: u64,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+
+    let mut section = VsfSection::new("ckpt_req");
+    section.add_field("ek", VsfType::u(have_k as usize, false));
+
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build ckpt_req VSF: {}", e))?;
+
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse + verify a `ckpt_req` frame. Returns (have_k, sender_pubkey).
+pub fn parse_ckpt_req_vsf(vsf_bytes: &[u8]) -> Result<(u64, [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("ckpt_req verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "ckpt_req" {
+        return Err(format!("Expected 'ckpt_req' section, got '{}'", section_name));
+    }
+    let k = field_u64(&section.fields, "ek").ok_or("ckpt_req missing ek")?;
+    Ok((k, sender_pubkey))
+}
+
+/// Build a `ckpt_state` frame — the whole current epoch state `(k ‖ epoch_k ‖ prev_epoch)` kete-sealed under the FLEET key, served sibling-to-sibling so a lagging or freshly-recovered device jumps straight to the head without replaying roots. The fleet-key seal is the same trust boundary the custody slot already grants; this frame is the fgtw-independent path for it.
+pub fn build_ckpt_state_vsf(
+    k: u64,
+    sealed_state: Vec<u8>,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+
+    let mut section = VsfSection::new("ckpt_state");
+    section.add_field("ek", VsfType::u(k as usize, false));
+    let blob_len = sealed_state.len();
+    section.add_field(
+        "data",
+        VsfType::t_u3(vsf::Tensor::new(vec![blob_len], sealed_state)),
+    );
+
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build ckpt_state VSF: {}", e))?;
+
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse + verify a `ckpt_state` frame. Returns ((k, sealed_state), sender_pubkey).
+pub fn parse_ckpt_state_vsf(vsf_bytes: &[u8]) -> Result<((u64, Vec<u8>), [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("ckpt_state verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "ckpt_state" {
+        return Err(format!("Expected 'ckpt_state' section, got '{}'", section_name));
+    }
+    let fields = &section.fields;
+    let k = field_u64(fields, "ek").ok_or("ckpt_state missing ek")?;
+    let sealed = fields
+        .iter()
+        .find(|f| f.name == "data")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::t_u3(tensor) => Some(tensor.data.clone()),
+            _ => None,
+        })
+        .ok_or("ckpt_state missing data")?;
+    Ok(((k, sealed), sender_pubkey))
 }
 
 /// Build a `chain_reset` frame — the sibling fork repair (plans/fleet-plane phase 0). `sealed_nonce` is the 32-byte reset nonce AEAD-sealed under the FLEET key (kete::encrypt_bytes), so only a fleet member can mint or read one; the outer frame is device-signed like every sibling frame. Receiver semantics live in the app: rebuild the sibling 1:1 chains deterministically from the nonce, echo the same frame once, re-probe.

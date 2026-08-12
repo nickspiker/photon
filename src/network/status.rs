@@ -315,9 +315,29 @@ pub enum StatusUpdate {
     },
     /// A sealed pong tail failed to open (no pairwise key for that device yet) — the UI thread reseeds the pong-seal map (rate-limited): on a freshly-restored device the map fills in fold/roster order, and a pong racing ahead of the reseed walk stayed tail-less forever (names + avatar pins ride the tail — the blank-restore of 2026-07-26).
     PongSealMissing { device: DevicePubkey },
-    /// Fleet chain-state replication (chain_sync): a sibling's fleet-sealed chains snapshot, opaque to this layer — the UI thread opens with the fleet key, decodes, and adopts iff its mutated_osc is newer than the local copy's.
+    /// Fleet chain-state replication (chain_sync): a sibling's epoch-sealed chains snapshot, opaque to this layer — the UI thread opens with the chain_sync key of `epoch_k` (accepting k and k−1), decodes, and adopts iff its mutated_osc is newer than the local copy's.
     ChainSyncReceived {
         conversation_token: [u8; 32],
+        epoch_k: u64,
+        sealed: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+    },
+    /// A checkpoint minter's settled-root hand-off for epoch `k`, sealed under the PRIOR epoch's ckpt_root key — the UI thread opens it (open success under a member-only key IS the authentication), derives epoch_k, and reconciles the chain's commitment on the next refold.
+    CkptRootReceived {
+        k: u64,
+        fanout_epoch: u64,
+        sealed: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+    },
+    /// A sibling's "my spine ends at have_k, serve me forward" — the UI thread answers with a fleet-key-sealed ckpt_state if it is ahead.
+    CkptReqReceived {
+        have_k: u64,
+        sender_pubkey: DevicePubkey,
+        sender_addr: SocketAddr,
+    },
+    /// A sibling's whole epoch state (k ‖ epoch ‖ prev), fleet-key-sealed — the UI thread adopts it if it is ahead of the local spine.
+    CkptStateReceived {
+        k: u64,
         sealed: Vec<u8>,
         sender_pubkey: DevicePubkey,
     },
@@ -1980,7 +2000,7 @@ async fn run_checker(
                                 continue;
                             }
                             // Fleet chain-state replication (chain_sync — a sibling pushing its advanced chains). Same mandatory packet-ack.
-                            if let Ok(((conversation_token, sealed), sender_pubkey)) =
+                            if let Ok(((conversation_token, epoch_k, sealed), sender_pubkey)) =
                                 crate::network::fgtw::protocol::parse_chain_sync_vsf(msg_bytes)
                             {
                                 {
@@ -1994,6 +2014,72 @@ async fn run_checker(
                                     &status_tx_recv,
                                     StatusUpdate::ChainSyncReceived {
                                         conversation_token,
+                                        epoch_k,
+                                        sealed,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            // The checkpoint spine's three sibling frames (root hand-off, catch-up request, state serve). Same mandatory packet-ack on each.
+                            if let Ok(((k, fanout_epoch, sealed), sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_ckpt_root_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::CkptRootReceived {
+                                        k,
+                                        fanout_epoch,
+                                        sealed,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            if let Ok((have_k, sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_ckpt_req_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::CkptReqReceived {
+                                        have_k,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                        sender_addr: src_addr,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            if let Ok(((k, sealed), sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_ckpt_state_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::CkptStateReceived {
+                                        k,
                                         sealed,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                     },
