@@ -3025,17 +3025,37 @@ impl FluorApp for PhotonApp {
                         );
                         // STORAGE CENSUS (field diagnosis, 2026-08-10): one line per contact naming the conversation table and how many rows actually loaded from it. The "messages don't recover" round showed devices advertising 92 rows while serving 3 — the row sets had split across contact keys, and nothing in the logs could say WHICH table held what. This makes the next log round ground truth. Delete once the split-conversation incident is closed.
                         {
-                            let mut census: Vec<(String, [u8; 32], usize, bool)> = Vec::new();
+                            let mut census: Vec<(String, [u8; 32], usize, String)> = Vec::new();
                             for ci in 0..self.contacts.len() {
-                                let fp = crate::fp(&self.contacts[ci].handle_proof);
-                                let sib = self.contacts[ci].is_sibling;
+                                let c = &self.contacts[ci];
+                                let fp = crate::fp(&c.handle_proof);
+                                // The row's full identity beside its table: handle_hash names the party id the tokens/tables derive from, first-met names the pinned device, state names the ceremony posture. The 2026-08-12 evening round proved fp+table alone can't distinguish a stale-keyed self row / debris row / sibling from the outside — this makes the next round ground truth without another guessing session.
+                                let detail = format!(
+                                    " [hash {} first-met {} {:?}{}]",
+                                    hex::encode(&c.handle_hash[..4]),
+                                    hex::encode(&c.public_identity.key[..4]),
+                                    c.clutch_state,
+                                    if c.is_sibling { " sibling" } else { "" }
+                                );
                                 let Some(conv) = self.conv_of(ci) else {
                                     continue;
                                 };
-                                census.push((fp, *conv.id().as_bytes(), conv.messages.len(), sib));
+                                census.push((fp, *conv.id().as_bytes(), conv.messages.len(), detail));
                             }
-                            for (fp, table, rows, sib) in &census {
-                                crate::logf!("STORAGE: census — {} table {} holds {} row(s) in RAM after load{}", fp, hex::encode(&table[..4]), rows, if *sib { " (sibling)" } else { "" });
+                            for (fp, table, rows, detail) in &census {
+                                crate::logf!("STORAGE: census — {} table {} holds {} row(s) in RAM after load{}", fp, hex::encode(&table[..4]), rows, detail);
+                            }
+                            // The reference values the census hashes are read against — without these in the same log, "is that hash our pid or debris?" needs a second device round-trip.
+                            if let (Some(sess), Some(sib_pid)) =
+                                (self.session.as_ref(), self.our_sibling_pid())
+                            {
+                                let our_pid =
+                                    crate::crypto::clutch::identity_party_id(&sess.identity_seed);
+                                crate::logf!(
+                                    "STORAGE: census — OUR ids: identity pid {}, this device's sibling pid {}",
+                                    hex::encode(&our_pid[..4]),
+                                    hex::encode(&sib_pid[..4])
+                                );
                             }
                             // Split-identity detector: two FRIEND rows sharing a handle_proof but keyed by different conversation tables IS the duplicated-contact state (one row per identity is the invariant). SIBLINGS are excluded: the whole fleet shares our handle_proof with a per-device hash BY DESIGN — the first census run flagged ordinary sibling pairs as "duplicates" for two log rounds (2026-08-11). Loud, because every downstream system — recovery walks, digest records, ceremonies — silently picks whichever row it finds first.
                             for i in 0..self.contacts.len() {
@@ -21333,18 +21353,18 @@ impl PhotonApp {
                     };
                     let our_sibling_pid = self.our_sibling_pid();
 
-                    // Find contact by conversation_token (compute token for each contact and match). Party-id seam: sibling candidates token with the device-derived pid pair; the resolved "our" id shadows the seed for the whole arm.
-                    let (their_handle_hash, our_handle_hash) =
-                        match self.contacts.iter().find_map(|c| {
+                    // Find contact by conversation_token (compute token for each contact and match). Party-id seam: sibling candidates token with the device-derived pid pair; the resolved "our" id shadows the seed for the whole arm. The matched INDEX travels with the pair — the trust gate below must judge THE ROW THE TOKEN NAMED, and a re-find by handle_hash first-match could bind a different row sharing the hash (the shadow-row class again: sibling vs debris vs self, and the gate then reads the wrong row's trust).
+                    let (matched_ci, their_handle_hash, our_handle_hash) =
+                        match self.contacts.iter().enumerate().find_map(|(ci, c)| {
                             let our = if c.is_sibling {
                                 our_sibling_pid?
                             } else {
                                 our_handle_hash
                             };
                             (derive_conversation_token(&[our, c.handle_hash]) == conversation_token)
-                                .then_some((c.handle_hash, our))
+                                .then_some((ci, c.handle_hash, our))
                         }) {
-                            Some(pair) => pair,
+                            Some(hit) => hit,
                             None => {
                                 crate::logf!(
                                     "CLUTCH: Received offer with unknown conversation_token {}",
@@ -21361,26 +21381,16 @@ impl PhotonApp {
                     );
 
                     // Gate: the sender must be a CURRENTLY-TRUSTED device of this contact (fold-respecting `knows_device`). Post-fold this widens to ANY current fleet member (a friend's 2nd device can now CLUTCH — was pinned to first-met only) AND revokes a removed device (it fails membership); pre-fold + siblings pin to the one known device exactly as before.
-                    let sender_known = self
-                        .contacts
-                        .iter()
-                        .find(|c| c.handle_hash == their_handle_hash)
-                        .map(|c| self.sender_trusted_for(c, &sender_pubkey));
-                    match sender_known {
-                        None => {
-                            #[cfg(feature = "development")]
-                            crate::log("CLUTCH: Received offer from unknown contact");
-                            continue;
-                        }
-                        Some(false) => {
-                            crate::logf!(
-                                "CLUTCH: offer from untrusted/removed device {} for {} — dropping",
-                                hex::encode(&sender_pubkey[..8]),
-                                hex::encode(&their_handle_hash[..8])
-                            );
-                            continue;
-                        }
-                        Some(true) => {} // Trusted current device — proceed
+                    if !self.sender_trusted_for(&self.contacts[matched_ci], &sender_pubkey) {
+                        crate::logf!(
+                            "CLUTCH: offer from untrusted/removed device {} for {} (row: fp {} sib={} first-met {}) — dropping",
+                            hex::encode(&sender_pubkey[..8]),
+                            hex::encode(&their_handle_hash[..8]),
+                            crate::fp(&self.contacts[matched_ci].handle_proof).as_str(),
+                            self.contacts[matched_ci].is_sibling,
+                            hex::encode(&self.contacts[matched_ci].public_identity.key[..4])
+                        );
+                        continue;
                     }
 
                     // The payload is already parsed
