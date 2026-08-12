@@ -134,6 +134,204 @@ pub fn identity_friendship_secret(
     Some(*hasher.finalize().as_bytes())
 }
 
+// ── The fleet epoch spine (docs/braid.md §14.3-14.4): message content as fleet-plane key material. Domains use binary version numerals per convention. ──
+
+/// Domain for epoch 0 — spaghettified over the full 2MB reservoir pad at fleet birth.
+const FLEET_EPOCH_SEED_DOMAIN: &[u8] = b"PHOTON_FLEET_EPOCH_SEED_v\x01";
+/// Domain for the per-checkpoint epoch advance.
+const FLEET_EPOCH_DOMAIN: &[u8] = b"PHOTON_FLEET_EPOCH_v\x01";
+/// Domain for the settled-root commitment that rides the public membership chain.
+const CKPT_COMMIT_DOMAIN: &[u8] = b"PHOTON_CKPT_COMMIT_v\x01";
+/// Domain for per-purpose frame-seal keys derived from an epoch key.
+const FLEET_EPOCH_SEAL_DOMAIN: &[u8] = b"PHOTON_FLEET_EPOCH_SEAL_v\x01";
+/// Domains for the settled-root merkle: leaf, inner node, per-conversation binding.
+const CKPT_LEAF_DOMAIN: &[u8] = b"PHOTON_CKPT_LEAF_v\x01";
+const CKPT_NODE_DOMAIN: &[u8] = b"PHOTON_CKPT_NODE_v\x01";
+const CKPT_CONV_DOMAIN: &[u8] = b"PHOTON_CKPT_CONV_v\x01";
+
+/// Mint the fleet epoch seed (epoch 0) at fleet birth: labeled CSPRNG eggs plus the fleet's identity binders, avalanche-expanded to the 2MB pad, collapsed thru spaghettify, then EVERYTHING but the 32-byte seed is dropped (the §14.3 eggs-dropped rule, applied one level up — keeping pad or eggs would make the seed re-derivable, voiding FS).
+/// Single-device mint is sound: the seed's security is CSPRNG entropy plus custody, not multi-party agreement — custody (fleet-key-sealed) is what distributes it, and the k=1 checkpoint race on the chain picks exactly one mint fleet-wide.
+pub fn mint_fleet_epoch_seed(
+    device_pubkey: &[u8; 32],
+    genesis_hash: &[u8; 32],
+    fleet_key: &[u8; 32],
+) -> [u8; 32] {
+    let mut eggs = ClutchEggs::new();
+    // Eight independent CSPRNG draws stand in for the ceremony's exchanged secrets; the labels keep the egg-hash domain separation the expander expects.
+    let labels = [
+        "fleet_rng_a", "fleet_rng_b", "fleet_rng_c", "fleet_rng_d",
+        "fleet_rng_e", "fleet_rng_f", "fleet_rng_g", "fleet_rng_h",
+    ];
+    for label in labels {
+        let mut draw = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut draw);
+        eggs.add_egg(label, &draw);
+        draw.zeroize();
+    }
+    // The binders tie the seed to THIS fleet's chain and current key epoch — a transplanted seed can never masquerade across fleets.
+    eggs.add_egg("fleet_device", device_pubkey);
+    eggs.add_egg("fleet_genesis", genesis_hash);
+    eggs.add_egg("fleet_key", fleet_key);
+    let mut pad = avalanche_expand_eggs(&eggs);
+    let mut input = Vec::with_capacity(FLEET_EPOCH_SEED_DOMAIN.len() + pad.len());
+    input.extend_from_slice(FLEET_EPOCH_SEED_DOMAIN);
+    input.extend_from_slice(&pad);
+    let seed = spaghettify(&input);
+    input.zeroize();
+    pad.zeroize();
+    for egg in eggs.eggs.iter_mut() {
+        egg.zeroize();
+    }
+    seed
+}
+
+/// Advance the epoch spine one checkpoint: `epoch_k = spaghettify(domain ‖ epoch_{k-1} ‖ settled_root ‖ fleet_key ‖ fanout_epoch ‖ k)`.
+/// Previous messages are key material (the settled root), and the rotating fleet key folds in so membership rotation is the PCS boundary (braid.md G4). Deterministic: every sibling holding the same four secrets derives the identical epoch.
+pub fn advance_fleet_epoch(
+    prev_epoch: &[u8; 32],
+    settled_root: &[u8; 32],
+    fleet_key: &[u8; 32],
+    fanout_epoch: u64,
+    k: u64,
+) -> [u8; 32] {
+    let mut input = Vec::with_capacity(FLEET_EPOCH_DOMAIN.len() + 32 + 32 + 32 + 8 + 8);
+    input.extend_from_slice(FLEET_EPOCH_DOMAIN);
+    input.extend_from_slice(prev_epoch);
+    input.extend_from_slice(settled_root);
+    input.extend_from_slice(fleet_key);
+    input.extend_from_slice(&fanout_epoch.to_le_bytes());
+    input.extend_from_slice(&k.to_le_bytes());
+    let key = spaghettify(&input);
+    input.zeroize();
+    key
+}
+
+/// The preimage-hiding commitment a Checkpoint op carries on the PUBLIC chain: blake3 over the secret settled root. A holder of the chain (or even a leaked epoch key) sees only this — no root, no next epoch.
+pub fn ckpt_commit(settled_root: &[u8; 32]) -> [u8; 32] {
+    let mut h = Hasher::new();
+    h.update(CKPT_COMMIT_DOMAIN);
+    h.update(settled_root);
+    *h.finalize().as_bytes()
+}
+
+/// Derive a frame-seal key from an epoch key for one purpose (b"chain_sync", b"hist_page", b"ckpt_root", ...) — sibling transports never seal under a raw epoch or fleet key, so a break of one frame family never crosses to another.
+pub fn fleet_epoch_seal_key(epoch_key: &[u8; 32], purpose: &[u8]) -> [u8; 32] {
+    let mut h = Hasher::new();
+    h.update(FLEET_EPOCH_SEAL_DOMAIN);
+    h.update(epoch_key);
+    h.update(purpose);
+    *h.finalize().as_bytes()
+}
+
+/// One settled-root leaf: the immutable identity of a message row, `(eagle_time, blake3(content))`. Mutable row state (delivered, deleted) deliberately stays out — the root must not shift when an ACK lands.
+pub fn ckpt_leaf(eagle_time: i64, content: &str) -> [u8; 32] {
+    let mut h = Hasher::new();
+    h.update(CKPT_LEAF_DOMAIN);
+    h.update(&eagle_time.to_le_bytes());
+    h.update(blake3::hash(content.as_bytes()).as_bytes());
+    *h.finalize().as_bytes()
+}
+
+/// Merkle-fold one conversation's SORTED leaves to its subtree root; an empty conversation folds to the bare domain hash. Odd nodes promote unpaired.
+pub fn ckpt_conv_root(mut layer: Vec<[u8; 32]>) -> [u8; 32] {
+    if layer.is_empty() {
+        let mut h = Hasher::new();
+        h.update(CKPT_NODE_DOMAIN);
+        return *h.finalize().as_bytes();
+    }
+    while layer.len() > 1 {
+        layer = layer
+            .chunks(2)
+            .map(|pair| {
+                if pair.len() == 1 {
+                    return pair[0];
+                }
+                let mut h = Hasher::new();
+                h.update(CKPT_NODE_DOMAIN);
+                h.update(&pair[0]);
+                h.update(&pair[1]);
+                *h.finalize().as_bytes()
+            })
+            .collect();
+    }
+    layer[0]
+}
+
+/// The fleet-wide settled root: every conversation's `(token, subtree root)` bound in token-sorted order. Callers pass the pairs pre-sorted by token (the strict fleet-wide conversation order).
+pub fn ckpt_settled_root(conv_roots_token_sorted: &[([u8; 32], [u8; 32])]) -> [u8; 32] {
+    let mut h = Hasher::new();
+    h.update(CKPT_CONV_DOMAIN);
+    for (token, root) in conv_roots_token_sorted {
+        h.update(token);
+        h.update(root);
+    }
+    *h.finalize().as_bytes()
+}
+
+#[cfg(test)]
+mod fleet_epoch_tests {
+    use super::*;
+
+    #[test]
+    fn epoch_advance_is_deterministic_and_input_sensitive() {
+        let e0 = [0x11; 32];
+        let root = [0x22; 32];
+        let fk = [0x33; 32];
+        let a = advance_fleet_epoch(&e0, &root, &fk, 4, 1);
+        // Same inputs, same epoch — the fleet-wide fork-free requirement.
+        assert_eq!(a, advance_fleet_epoch(&e0, &root, &fk, 4, 1));
+        // Every input is load-bearing: root (messages ARE key material), fleet key + its epoch (rotation = PCS boundary), k, and the prior epoch.
+        assert_ne!(a, advance_fleet_epoch(&[0x12; 32], &root, &fk, 4, 1));
+        assert_ne!(a, advance_fleet_epoch(&e0, &[0x23; 32], &fk, 4, 1));
+        assert_ne!(a, advance_fleet_epoch(&e0, &root, &[0x34; 32], 4, 1));
+        assert_ne!(a, advance_fleet_epoch(&e0, &root, &fk, 5, 1));
+        assert_ne!(a, advance_fleet_epoch(&e0, &root, &fk, 4, 2));
+        // The public commitment reveals neither the root nor the epoch.
+        let c = ckpt_commit(&root);
+        assert_ne!(c, root);
+        assert_ne!(c, a);
+        assert_eq!(c, ckpt_commit(&root));
+    }
+
+    #[test]
+    fn seal_keys_separate_by_purpose() {
+        let epoch = [0x44; 32];
+        let cs = fleet_epoch_seal_key(&epoch, b"chain_sync");
+        let hp = fleet_epoch_seal_key(&epoch, b"hist_page");
+        assert_ne!(cs, hp);
+        assert_ne!(cs, epoch);
+        assert_eq!(cs, fleet_epoch_seal_key(&epoch, b"chain_sync"));
+    }
+
+    #[test]
+    fn settled_root_orders_and_binds() {
+        let l1 = ckpt_leaf(100, "first");
+        let l2 = ckpt_leaf(200, "second");
+        assert_ne!(l1, l2);
+        // Delivered/deleted state is not an input: the same (stamp, content) leaf is stable for life.
+        assert_eq!(l1, ckpt_leaf(100, "first"));
+        let r12 = ckpt_conv_root(vec![l1, l2]);
+        assert_ne!(r12, ckpt_conv_root(vec![l2, l1]));
+        assert_ne!(r12, ckpt_conv_root(vec![l1]));
+        assert_ne!(ckpt_conv_root(Vec::new()), ckpt_conv_root(vec![l1]));
+        let fleet_a = ckpt_settled_root(&[([0xaa; 32], r12)]);
+        let fleet_b = ckpt_settled_root(&[([0xab; 32], r12)]);
+        assert_ne!(fleet_a, fleet_b);
+    }
+
+    #[test]
+    fn minted_seeds_are_unique() {
+        let dev = [0x55; 32];
+        let gen = [0x66; 32];
+        let fk = [0x77; 32];
+        let a = mint_fleet_epoch_seed(&dev, &gen, &fk);
+        let b = mint_fleet_epoch_seed(&dev, &gen, &fk);
+        // CSPRNG eggs: identical binders must still never repeat a seed.
+        assert_ne!(a, b);
+        assert_ne!(a, [0u8; 32]);
+    }
+}
+
 /// Domain separation for sibling (own-fleet device) party ids
 const SIBLING_PARTY_DOMAIN: &[u8] = b"PHOTON_SIBLING_PARTY_v\x01";
 

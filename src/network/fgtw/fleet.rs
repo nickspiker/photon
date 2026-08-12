@@ -291,6 +291,93 @@ pub fn recover_fleet_key_from_oracle(identity_seed: &[u8; 32]) -> Option<[u8; 32
     fgtw::scoped_blob::open_value(&kek, &purpose, &sealed)
 }
 
+// ── The epoch-spine custody slot: {k ‖ epoch_k ‖ prev_k ‖ prev_epoch} sealed under a fleet-key-derived custody key, addressed by the fleet key — the wiped-device jump-to-head, refreshed by each checkpoint winner and re-sealed across rotations. Live siblings never need it (ckpt_state frames serve device-to-device). ──
+
+/// Custody domain — binary version numeral per convention.
+const CKPT_CUSTODY_PURPOSE: &[u8] = b"PHOTON_FLEET_EPOCH_STATE_v\x01";
+
+fn ckpt_custody_key(fleet_key: &[u8; 32]) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(b"PHOTON_FLEET_EPOCH_CUSTODY_v\x01");
+    h.update(fleet_key);
+    *h.finalize().as_bytes()
+}
+
+fn ckpt_custody_addr(fleet_key: &[u8; 32]) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    URL_SAFE_NO_PAD.encode(fgtw::scoped_blob::slot_address(fleet_key, CKPT_CUSTODY_PURPOSE))
+}
+
+/// Encode the epoch spine state for custody/serve: `k ‖ epoch ‖ prev_k ‖ prev` (prev zeroed when absent).
+pub fn ckpt_state_bytes(k: u64, epoch: &[u8; 32], prev: Option<(u64, [u8; 32])>) -> Vec<u8> {
+    let (pk, pe) = prev.unwrap_or((0, [0u8; 32]));
+    let mut v = Vec::with_capacity(80);
+    v.extend_from_slice(&k.to_le_bytes());
+    v.extend_from_slice(epoch);
+    v.extend_from_slice(&pk.to_le_bytes());
+    v.extend_from_slice(&pe);
+    v
+}
+
+/// Decode [`ckpt_state_bytes`]. `None` on wrong length or a void head.
+pub fn ckpt_state_decode(bytes: &[u8]) -> Option<(u64, [u8; 32], Option<(u64, [u8; 32])>)> {
+    if bytes.len() != 80 {
+        return None;
+    }
+    let k = u64::from_le_bytes(bytes[..8].try_into().ok()?);
+    let epoch: [u8; 32] = bytes[8..40].try_into().ok()?;
+    if k == 0 || epoch == [0u8; 32] {
+        return None;
+    }
+    let pk = u64::from_le_bytes(bytes[40..48].try_into().ok()?);
+    let pe: [u8; 32] = bytes[48..80].try_into().ok()?;
+    let prev = if pk == 0 || pe == [0u8; 32] { None } else { Some((pk, pe)) };
+    Some((k, epoch, prev))
+}
+
+/// Write the custody slot (blocking — call off-thread). The winner of each checkpoint refreshes it; a rotation's re-seal is a rewrite under the new fleet key by whoever rotates next checkpoint.
+pub fn ckpt_custody_write(
+    fleet_key: &[u8; 32],
+    state: &[u8],
+    device_keypair: &Keypair,
+    handle_proof: &[u8; 32],
+) -> Result<(), String> {
+    let sealed = kete::encrypt_bytes(state, &ckpt_custody_key(fleet_key))?;
+    crate::network::fgtw::blob::put_blob_blocking(&ckpt_custody_addr(fleet_key), &sealed, device_keypair, handle_proof)
+        .map_err(|e| format!("epoch custody put: {e:?}"))
+}
+
+/// Read + open the custody slot (blocking). `None` = absent or sealed under a different fleet-key epoch.
+pub fn ckpt_custody_read(fleet_key: &[u8; 32]) -> Option<Vec<u8>> {
+    let sealed = crate::network::fgtw::blob::get_blob_blocking(&ckpt_custody_addr(fleet_key)).ok().flatten()?;
+    kete::decrypt_bytes(&sealed, &ckpt_custody_key(fleet_key)).ok()
+}
+
+/// Append + publish a Checkpoint op (blocking). `Ok(None)` = we won k; `Ok(Some(winner))` = a competing checkpoint rides the chain; `Err` = transport/raced-membership, re-arm on the next edge.
+pub fn push_checkpoint(
+    handle_proof: &[u8; 32],
+    device_key: &Keypair,
+    k: u64,
+    commit: [u8; 32],
+    fanout_epoch: u64,
+) -> Result<Option<(u64, [u8; 32], u64)>, String> {
+    fgtw::client::push_checkpoint(&PhotonTransport, handle_proof, device_key, k, commit, fanout_epoch)
+}
+
+/// Recover the current fleet key WITH its fan-out epoch — derivation callers need the pair (the epoch spine folds the key and names the epoch).
+pub fn recover_fleet_key_with_epoch(
+    handle_proof: &[u8; 32],
+    device_key: &Keypair,
+    storage: Option<&crate::storage::FlatStorage>,
+) -> Result<Option<(u64, [u8; 32])>, String> {
+    fgtw::client::recover_fleet_key_with_epoch(
+        &PhotonTransport,
+        handle_proof,
+        device_key,
+        &pair_lookup(device_key, storage),
+    )
+}
+
 /// Recover the current fleet key from the fan-out with this device's key + its pair secret toward the rotator (None if not a current member, or not yet egged with whoever rotated).
 pub fn recover_fleet_key(
     handle_proof: &[u8; 32],
