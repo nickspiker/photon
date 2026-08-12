@@ -86,6 +86,10 @@ pub async fn send_via_relay(
     recipient_pubkey: &[u8; 32],
     message_bytes: &[u8],
 ) -> Result<(), String> {
+    // A fan-out list can carry our own device after an echo-poisoned era (an own frame looping back elected us a contact's endpoint, field 2026-08-12) — relaying to ourselves just manufactures the next echo, so refuse it at the one seam every relay send passes through.
+    if recipient_pubkey == keypair.public.as_bytes() {
+        return Err("relay: recipient is OUR OWN device — echo refused".to_string());
+    }
     if relay_target_locked(recipient_pubkey) {
         return Err("relay: recipient is locked out".to_string());
     }
@@ -164,6 +168,10 @@ pub fn send_via_relay_sync(
     recipient_pubkey: &[u8; 32],
     message_bytes: &[u8],
 ) -> Result<(), String> {
+    // Same self-recipient refusal as the async path — see send_via_relay.
+    if recipient_pubkey == keypair.public.as_bytes() {
+        return Err("relay: recipient is OUR OWN device — echo refused".to_string());
+    }
     if relay_target_locked(recipient_pubkey) {
         return Err("relay: recipient is locked out".to_string());
     }

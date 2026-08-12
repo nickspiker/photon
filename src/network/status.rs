@@ -465,6 +465,35 @@ pub enum StatusUpdate {
     },
 }
 
+impl StatusUpdate {
+    /// The verified authoring DEVICE of this update, when it carries one. The app's drain drops any update authored by OUR OWN device before an arm can touch it: a frame we sent can arrive back at us (relay echo, LAN multicast loopback, a send aimed at an endpoint already poisoned to our own address), and every receive arm trusts its sender enough to adopt endpoints, addresses and liveness from it — processing an own frame as peer traffic is how a sibling contact elected US its active device and a ceremony spent a day offering at itself (field, 2026-08-12).
+    pub fn sender_device(&self) -> Option<&[u8; 32]> {
+        match self {
+            StatusUpdate::Online { peer_pubkey, .. } => Some(peer_pubkey.as_bytes()),
+            StatusUpdate::ChatMessage { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::ChainResetReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::PongSealMissing { device } => Some(device.as_bytes()),
+            StatusUpdate::ChainSyncReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::CkptRootReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::CkptReqReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::CkptStateReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::AttachBlobReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::AttachHaveReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::AttachReqReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::AvatarRequestReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::AvatarReceived { responder_pubkey, .. } => Some(responder_pubkey.as_bytes()),
+            StatusUpdate::HistoryRequestReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::HistoryPageReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::BlindFrameReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::ClutchOfferReceived { sender_pubkey, .. } => Some(sender_pubkey),
+            StatusUpdate::ClutchKemResponseReceived { sender_pubkey, .. } => Some(sender_pubkey),
+            StatusUpdate::ClutchCompleteReceived { sender_pubkey, .. } => Some(sender_pubkey),
+            StatusUpdate::PathValidated { peer_pubkey, .. } => Some(peer_pubkey.as_bytes()),
+            _ => None,
+        }
+    }
+}
+
 /// Pending ping waiting for pong
 struct PendingPing {
     recipient_pubkey: DevicePubkey,
