@@ -13770,10 +13770,15 @@ impl PhotonApp {
 
     /// Rebuild the status checker's answerable-pubkey set from every contact's FULL fleet (`answerable_pubkeys` = first-met device union folded members). Idempotent — clears and refills, so it's safe after any change to contacts or their fleet_members. This is the single seam that makes presence + CLUTCH honour a friend's every device: seed here, and the offer/KEM/complete/SPEC gates (all of which read this one set) open for the whole fleet at once. The pong-seal key map reseeds from the same walk, so every call site — contacts load, roster merge, fold adoption, sibling reconcile — keeps both in lockstep for free.
     fn reseed_contact_pubkeys(&self) {
+        // OUR OWN device never enters the set: a contact row can carry us among its devices (the self row's first-met device is whichever of ours minted it; an echo-poisoned era added us as endpoints) — and a device that pings itself answers itself, which is the echo loop confirming its own poison (field, 2026-08-12).
+        let ours = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
         if let Ok(mut pks) = self.contact_pubkeys.lock() {
             pks.clear();
             for c in &self.contacts {
                 for k in c.answerable_pubkeys() {
+                    if Some(k) == ours {
+                        continue;
+                    }
                     let dk = crate::types::DevicePubkey::from_bytes(k);
                     if !pks.contains(&dk) {
                         pks.push(dk);
@@ -20284,6 +20289,17 @@ impl PhotonApp {
                     None => break,
                 },
             };
+            // OWN-FRAME GUARD — the one seam every receive path funnels through. A frame we authored can loop back (relay echo, LAN multicast loopback, a send aimed at an endpoint already poisoned to our own address), and the arms below adopt endpoints/addresses/liveness from whatever sender they see: one echoed offer elected US the sibling's active device, every later send aimed at ourselves, and the ceremony parked for a day ringing its own doorbell (field, 2026-08-12). Nothing a device tells ITSELF over the network is information — drop it before any arm can act on it.
+            if let (Some(sender), Some(kp)) = (update.sender_device(), self.device_keypair.as_ref())
+            {
+                if sender == kp.public.as_bytes() {
+                    crate::logf!(
+                        "ECHO: own {} frame back at us (relay echo / LAN loopback) — dropped",
+                        arm_label(&update)
+                    );
+                    continue;
+                }
+            }
             pass_updates += 1;
             close_arm_timer!();
             arm_timer = Some((arm_label(&update), std::time::Instant::now()));
