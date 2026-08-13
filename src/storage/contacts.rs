@@ -637,8 +637,9 @@ pub fn load_all_siblings(our_handle_proof: [u8; 32], storage: &FlatStorage) -> V
                 );
             }
         }
-        // The applied state's stored pubkey/id equal the index-derived ones by construction; the sibling flag is authoritative from new_sibling, not the blob.
+        // The sibling flag AND id are authoritative from new_sibling, not the blob: a pre-fix blob carries the colliding blake3(pubkey) id (the notes-row keygen misroute, 2026-08-13), so the derived pid-keyed id is re-asserted after the state apply.
         c.is_sibling = true;
+        c.id = ContactId::from_bytes(c.handle_hash);
         siblings.push(c);
     }
     siblings

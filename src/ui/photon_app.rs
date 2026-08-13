@@ -1312,6 +1312,8 @@ pub struct PhotonApp {
     >,
     /// The linked-settings cache (per-device maps + link-to-global; docs/global-vault.md). Lazily loaded from the vault once storage + device key exist; merged from every fstate pull; every local set persists + pushes.
     fleet_settings: Option<crate::storage::fleet_settings::FleetSettings>,
+    /// RAM copy of the vault's fleet key, shared with every key-writer thread. `fleet_key_cached` used to read the vault on EVERY call — and it runs once per inbound history page on the UI thread, where each read stalls behind the async writers' kete commits during a backfill storm (88-559ms status passes = the laggy window drag, field 2026-08-13). Writers refresh this beside each key write; the UI never touches the vault for a key it already holds.
+    fleet_key_ram: std::sync::Arc<std::sync::Mutex<Option<[u8; 32]>>>,
     /// Set on each attest/resume: "do one roster pull as soon as the fleet key is available." The key is written by an ASYNC fan-out sync, so an immediate pull races it and loses — this flag makes tick fire the pull the moment `fleet_key_cached()` goes Some, which is the wake-up catch-up that brings a friend added on a sibling device onto this one.
     needs_initial_roster_pull: bool,
     /// Retry budget for the initial roster pull. A fresh device's pairing-recovered key is a PRE-rotation generation (adding a device rotates the fleet key via the fan-out re-key), so the first pull decrypts the current roster with a stale key and fails `aead::Error`. The in-flight `spawn_fleet_key_sync` writes the current key within ~150ms, so on a failed pull we re-arm `needs_initial_roster_pull` and retry — the pull's own ~150ms round-trip naturally spaces attempts, and this budget caps them so a genuinely-undecryptable roster gives up instead of spinning (next fleet event / relaunch re-tries).
@@ -1777,6 +1779,7 @@ impl PhotonApp {
             ckpt_last_attempt: None,
             roster_pull_rx: None,
             fleet_settings: None,
+            fleet_key_ram: std::sync::Arc::new(std::sync::Mutex::new(None)),
             needs_initial_roster_pull: false,
             roster_pull_retries_left: 0,
             roster_pull_exhausted: false,
@@ -3031,7 +3034,8 @@ impl FluorApp for PhotonApp {
                                 let fp = crate::fp(&c.handle_proof);
                                 // The row's full identity beside its table: handle_hash names the party id the tokens/tables derive from, first-met names the pinned device, state names the ceremony posture. The 2026-08-12 evening round proved fp+table alone can't distinguish a stale-keyed self row / debris row / sibling from the outside — this makes the next round ground truth without another guessing session.
                                 let detail = format!(
-                                    " [hash {} first-met {} {:?}{}]",
+                                    " [id {} hash {} first-met {} {:?}{}]",
+                                    hex::encode(&c.id.as_bytes()[..4]),
                                     hex::encode(&c.handle_hash[..4]),
                                     hex::encode(&c.public_identity.key[..4]),
                                     c.clutch_state,
@@ -3211,6 +3215,7 @@ impl FluorApp for PhotonApp {
                         // Notes-to-self is NOT bootstrapped (Nick 2026-08-01): an empty conversation with yourself is not a contact you asked for, and it sat at the top of the list looking broken because it has no peer to pong a name or avatar. Add yourself deliberately and it appears; until then the list holds only people you chose. The stale-key migration still runs so a self row carried from an older build is re-homed before the keygen sweep looks at it.
                         self.migrate_stale_self_row();
                         self.settle_self_display();
+                        self.scrub_zero_remote_rounds();
                         // Re-key Pending contacts that still lack keypairs after the rehydrate — but ONE AT A TIME (spawn_next_pending_keygen, repeated each tick), never all at once: parallel McEliece keygens on launch starved the UI thread.
                         self.spawn_next_pending_keygen();
                         crate::logf!(
@@ -11656,11 +11661,18 @@ impl PhotonApp {
 
     /// The fleet key from the local vault cache (fast, no network, no mint). `None` until a fan-out recover/establish has populated it (`spawn_fleet_key_sync`). Callers that seal/open fleet state read this; the background sync keeps it fresh so a rotation propagates.
     fn fleet_key_cached(&self) -> Option<[u8; 32]> {
+        // RAM first — the vault read below stalls the UI thread behind kete write commits during history storms; it now runs only until the first hit, and key writers refresh the RAM copy on every rotation/sync.
+        if let Some(k) = self.fleet_key_ram.lock().ok().and_then(|g| *g) {
+            return Some(k);
+        }
         let storage = self.storage.as_ref()?;
         let session = self.session.as_ref()?;
         let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
         if let Ok(Some(bytes)) = storage.read_addr(&addr) {
             if let Ok(k) = <[u8; 32]>::try_from(bytes.as_slice()) {
+                if let Ok(mut g) = self.fleet_key_ram.lock() {
+                    *g = Some(k);
+                }
                 return Some(k);
             }
         }
@@ -12095,6 +12107,7 @@ impl PhotonApp {
         let identity_seed = session.identity_seed;
         let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
         let busy = self.fleet_heal_busy.clone();
+        let fkc = self.fleet_key_ram.clone();
         std::thread::spawn(move || {
             // RAII latch: released on EVERY exit, panics included — a manual store(false) here once left a poisoned latch parking key sync for the whole session.
             let Some(_latch) = HealLatch::acquire(&busy) else {
@@ -12109,6 +12122,9 @@ impl PhotonApp {
                 Ok((epoch, k)) => {
                     if let Err(e) = storage.write_addr(&addr, &k) {
                         crate::logf!("FANOUT: fleet key cache failed: {}", e);
+                    }
+                    if let Ok(mut g) = fkc.lock() {
+                        *g = Some(k);
                     }
                     // Every key edge refreshes OUR wipe-proof recovery slot — the path a wiped, sibling-less device gets its contacts back thru.
                     fleet::publish_recovery_slot(&k, &identity_seed, &device_key, &hp);
@@ -12133,6 +12149,7 @@ impl PhotonApp {
         let identity_seed = session.identity_seed;
         let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
         let busy = self.fleet_heal_busy.clone();
+        let fkc = self.fleet_key_ram.clone();
         let rotated_tx = self.fleet_rotated_tx.clone();
         let wake = self.event_proxy.clone();
         // Locked devices (treat-as-stolen) are chain members that must NOT be wrapped: the heal rotates whenever the live fan-out covers more devices than the DESIRED set (fold minus locked), which fires on a member's self-departure AND on a lockout identically.
@@ -12185,6 +12202,9 @@ impl PhotonApp {
                         if let Err(e) = storage.write_addr(&addr, &new_key) {
                             crate::logf!("FLEET: rotated key cache failed: {}", e);
                         }
+                        if let Ok(mut g) = fkc.lock() {
+                            *g = Some(new_key);
+                        }
                         fleet::publish_recovery_slot(&new_key, &identity_seed, &device_key, &hp);
                         let merged = fgtw::fstate::merge_fstate(preserved, ours);
                         match fleet::push_fstate(&hp, &device_key, &new_key, &merged) {
@@ -12203,6 +12223,9 @@ impl PhotonApp {
                             fleet::recover_fleet_key(&hp, &device_key, Some(&storage))
                         {
                             let _ = storage.write_addr(&addr, &k);
+                            if let Ok(mut g) = fkc.lock() {
+                                *g = Some(k);
+                            }
                             fleet::publish_recovery_slot(&k, &identity_seed, &device_key, &hp);
                         }
                     }
@@ -12215,6 +12238,9 @@ impl PhotonApp {
                         crate::logf!("FLEET: fleet key cache failed: {}", e);
                     } else {
                         crate::log("FLEET: fleet key synced from fan-out");
+                    }
+                    if let Ok(mut g) = fkc.lock() {
+                        *g = Some(k);
                     }
                     fleet::publish_recovery_slot(&k, &identity_seed, &device_key, &hp);
                 }
@@ -12243,11 +12269,15 @@ impl PhotonApp {
             .fleet_settings
             .as_ref()
             .map(|fs| (fs.global.clone(), fs.devices.clone()));
+        let fkc = self.fleet_key_ram.clone();
         std::thread::spawn(
             move || match fleet::recover_or_establish_fleet_key(&hp, &kp, Some(&storage)) {
                 Ok(Some(k)) => {
                     if let Err(e) = storage.write_addr(&addr, &k) {
                         crate::logf!("FLEET: fleet key cache failed: {}", e);
+                    }
+                    if let Ok(mut g) = fkc.lock() {
+                        *g = Some(k);
                     }
                     // Key edge → refresh the wipe-proof recovery slot.
                     fleet::publish_recovery_slot(&k, &identity_seed, &kp, &hp);
@@ -12275,6 +12305,9 @@ impl PhotonApp {
             let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
             if let Err(e) = storage.write_addr(&addr, key) {
                 crate::logf!("FLEET: fleet key store failed: {}", e);
+            }
+            if let Ok(mut g) = self.fleet_key_ram.lock() {
+                *g = Some(*key);
             }
             // Key edge → refresh the wipe-proof recovery slot (off-thread: it is a blocking upload).
             if let (Some(kp), Some(hp)) = (
@@ -17529,6 +17562,15 @@ impl PhotonApp {
                     // Clear the in-progress flag now that keygen is complete
                     contact.clutch_keygen_in_progress = false;
 
+                    // ZERO-REMOTE GUARD: a conversation with no remote participants has no ceremony to run, so keys landing here are MIS-ROUTED — the notes row shared its ContactId with the sibling row for its first-met device (both derived blake3 of the same pubkey), this first-match scan installed the sibling's re-key onto it, and the row then offered 573KB at our own fleet on the self-pair token forever (field, 2026-08-13). The sibling's own keygen re-fires from its ceremony edges; nothing zero-remote may ever hold a round.
+                    if contact.remote_count(&our_handle_hash) == 0 {
+                        crate::logf!(
+                            "CLUTCH: keygen result for zero-remote conversation {} — discarded (nothing to exchange)",
+                            crate::fp(&contact.handle_proof).as_str()
+                        );
+                        break;
+                    }
+
                     // §4.2: a claim landed while keygen was running (roster merge parked this contact mid-flight) — installing the result would resurrect the parked round and re-send a competing offer. Drop it on the floor.
                     if ceremony_parked_by(contact, Some(device_pubkey), &siblings) {
                         // RESPONDER EXCEPTION, gated on a STALE owner: the friend's offer sitting in their slot deadlocks a parked device when their build offers to one device only (observed live against a v0.40 peer: the drain dropped the responding keygen, their KEM/proofs then fell on a keyless Pending contact forever, both sides stalled) — so ownership may FOLLOW the friend's offer. But a friend's offer is NOT a choice of device: a responder's offer fans out over the relay to the whole fleet, so every sibling receives it — and ungated, each one "followed the choice", stole the ceremony from a sibling actively running it, and minted its own round (three concurrent rounds, cross-round proof drops on every side, the ceremony stuck "testing the secure channel" — live pair, 2026-08-03). The roster clock separates the two shapes: a live owner claimed within the round TTL, a deadlocked one has been silent past it. Recent claim → park and drop the keygen below, the owner's round completes and fleet sync carries the chains; stale claim → the original rescue: claim, bump the LWW clock so siblings adopt + discard-on-park, and install the keys.
@@ -18660,6 +18702,35 @@ impl PhotonApp {
                     let _ = crate::storage::contacts::save_contact(contact, storage);
                     // Conversation rows re-home at the storage layer (`migrate_conversation_tables`) once the pid is right — nothing message-shaped lives on the contact any more.
                 }
+            }
+        }
+    }
+
+    /// A conversation with zero remote participants can hold NO ceremony — nothing to exchange, nobody to offer at. Yet the field found the notes row Pending with a sent offer (the ContactId collision routed a sibling's keygen onto it, 2026-08-13), which rings the parked-ceremony doorbell every ~5min and re-arms 573KB offers at our own fleet on every path-up edge. Scrub round debris off zero-remote rows and settle them Complete (zero-remote is keyed-on-arrival by doctrine).
+    fn scrub_zero_remote_rounds(&mut self) {
+        for ci in 0..self.contacts.len() {
+            let c = &self.contacts[ci];
+            if !self.is_zero_remote(c) {
+                continue;
+            }
+            let has_round = c.clutch_state != crate::types::ClutchState::Complete
+                || c.clutch_our_keypairs.is_some()
+                || !c.clutch_slots.is_empty()
+                || c.ceremony_id.is_some()
+                || c.clutch_offer_sent
+                || c.clutch_round_started.is_some();
+            if !has_round {
+                continue;
+            }
+            crate::logf!(
+                "CLUTCH: scrubbed a parked round off zero-remote conversation {} — settled Complete",
+                crate::fp(&self.contacts[ci].handle_proof).as_str()
+            );
+            let c = &mut self.contacts[ci];
+            c.discard_clutch_round();
+            c.clutch_state = crate::types::ClutchState::Complete;
+            if let Some(storage) = self.storage.as_ref() {
+                let _ = crate::storage::contacts::save_contact(&self.contacts[ci], storage);
             }
         }
     }
@@ -24569,6 +24640,9 @@ impl PhotonApp {
         self.storage = None; // next attest re-opens a fresh vault
                              // EVERY identity-flavoured RAM slot dies here (observed: one identity's avatar surfaced under a different identity after a wipe — the in-place reset only cleared what it knew about, and the settings cache kept feeding the OLD identity's avatar pin + name into the new session's pongs and wall sync). Desktop re-execs below anyway; Android's in-place reset is exactly this list, so the list must be COMPLETE.
         self.fleet_settings = None; // the big one: cached profile.avatar_pin / profile.name of the OLD identity
+        if let Ok(mut g) = self.fleet_key_ram.lock() {
+            *g = None; // the OLD identity's fleet key must not serve the next session's pages
+        }
         self.device_avatar_pixels = None;
         self.device_avatar_scaled = None;
         self.device_avatar_scaled_diameter = 0;
