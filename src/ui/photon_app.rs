@@ -18892,6 +18892,8 @@ impl PhotonApp {
                         punch.push(ip);
                     }
                 }
+                // No bogus candidate ever reaches the wire: the belt-and-suspenders ip push above has no filter of its own, and a poisoned-era contact.ip put 0.0.0.0:4383 in a live probe set (field, 2026-08-13).
+                punch.retain(|a| !crate::network::traverse::gather::is_bogus_addr(a));
                 if !punch.is_empty() {
                     let set = punch
                         .iter()

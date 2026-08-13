@@ -2285,6 +2285,48 @@ async fn run_checker(
                                         failures.retain(|(k, _)| k != sender_pubkey.as_bytes());
                                     }
 
+                                    // PING REFLECTION — the probe arm's asymmetry killer, on the steadier signal. A DIRECT ping from a known device proves src_addr is a working return path (their NAT opened it toward us), and for a relay-only pair it is the ONLY direct frame that ever arrives: the side with the validated path keeps it warm with pings, so the probe arm's reflection never gets a trigger (field 2026-08-13: Mary direct→Nick while both Nick devices held only her unreachable LAN row and pinged relay forever — both fleets publish self-claimed :4383 records no NAT honours). Probe back at the proven source; the ack validates OUR direction, and its observed-addr echo teaches us the true public mapping our next announce publishes. Relay-injected pings carry the sentinel address, which is_bogus_addr rejects.
+                                    if sender_pubkey != our_pubkey_recv
+                                        && !crate::network::traverse::gather::is_bogus_addr(
+                                            &src_addr,
+                                        )
+                                    {
+                                        let now = std::time::Instant::now();
+                                        reverse_probed.retain(|(_, at)| {
+                                            now.duration_since(*at)
+                                                < std::time::Duration::from_secs(60)
+                                        });
+                                        if !reverse_probed
+                                            .iter()
+                                            .any(|(pk, _)| pk == sender_pubkey.as_bytes())
+                                        {
+                                            reverse_probed.push((*sender_pubkey.as_bytes(), now));
+                                            let mut nonce = [0u8; 32];
+                                            nonce.copy_from_slice(
+                                                blake3::hash(src_addr.to_string().as_bytes())
+                                                    .as_bytes(),
+                                            );
+                                            let (probe_bytes, provenance) =
+                                                crate::network::traverse::punch::build_probe(
+                                                    &keypair_recv,
+                                                    our_pubkey_recv.clone(),
+                                                    nonce,
+                                                );
+                                            {
+                                                let mut probes =
+                                                    pending_probes_recv.lock().unwrap();
+                                                probes.insert(
+                                                    provenance,
+                                                    sender_pubkey.clone(),
+                                                    src_addr,
+                                                    now,
+                                                );
+                                            }
+                                            udp::send(&socket_recv, &probe_bytes, src_addr).await;
+                                            crate::logf!("TRAVERSE: reflecting probe at pinger {} — their direct ping proved the address, validating our own direction", src_addr);
+                                        }
+                                    }
+
                                     // Mark sender as online (they pinged us, so they're online!) No sync_records from ping - we'll send our sync info in pong
                                     send_status_update(
                                         &status_tx_recv,
