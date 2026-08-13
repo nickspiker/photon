@@ -23713,6 +23713,8 @@ impl PhotonApp {
                         crate::logf!("TRAVERSE: our reflexive address = {}", addr);
                         // The re-publish happens in tick, not here: this arm sits inside a borrow of `status_checker`, and publishing also needs `handle_proof`, which can arrive AFTER the first reflexive echo. Comparing against `self_record_published_for` there makes it idempotent and self-retrying instead of a one-shot that could fire too early.
                     }
+                    // A UDP-observed mapping is now in hand — stop carrying Reflects beside pings (the bootstrap is self-extinguishing; the LAN-change edge below re-arms it).
+                    checker.set_reflect_needed(false);
                 }
 
                 StatusUpdate::OurLanAddrObserved { ip } => {
@@ -23721,6 +23723,8 @@ impl PhotonApp {
                         self.our_lan_ip = Some(ip);
                         crate::logf!("TRAVERSE: our LAN address = {} (from our own looped-back beacon)", ip);
                         self.self_record_published_for = None;
+                        // Interface change = our NAT mapping likely changed too — re-arm the reflect-beside-pings bootstrap so the published record re-learns the TRUE mapping.
+                        checker.set_reflect_needed(true);
                     }
                 }
 
