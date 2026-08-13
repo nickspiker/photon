@@ -985,6 +985,14 @@ pub fn migrate_conversation_domains(
 }
 
 /// Save a conversation's messages as rows in its table — keyed by the conversation's own participant-set id, the same value the wire and the UI derive. Idempotent: each message is written at its sequence index, so re-saving the same history overwrites row-for-row identically.
+/// The message row key: 8 BE bytes of eagle_time ‖ the first 8 of blake3(content). Byte order IS the canonical (time, content-hash) row order, and same-tick rows from DIFFERENT senders get distinct keys — the bare-Int eagle_time key made them ONE row, so the second sender's message silently overwrote the first at persistence (RAM held both, every reboot held one). Within one sender's stream eagle_time is unique (704ps ticks), so collisions are strictly the cross-sender case.
+fn message_row_key(timestamp: i64, content: &str) -> [u8; 16] {
+    let mut key = [0u8; 16];
+    key[..8].copy_from_slice(&(timestamp as u64).to_be_bytes());
+    key[8..].copy_from_slice(&blake3::hash(content.as_bytes()).as_bytes()[..8]);
+    key
+}
+
 pub fn save_messages(
     conv: &crate::types::Conversation,
     storage: &FlatStorage,
@@ -1023,8 +1031,20 @@ pub fn save_messages(
                 .set("ref_kind", kind as u64)
                 .set("ref_ts", Value::Time(target));
         }
-        db.put_row_in(&table, Pk::Int(msg.timestamp as u64), &rec)
-            .map_err(|e| StorageError::Vault(e.to_string()))?;
+        db.put_row_in(
+            &table,
+            Pk::bytes(&message_row_key(msg.timestamp, &msg.content)),
+            &rec,
+        )
+        .map_err(|e| StorageError::Vault(e.to_string()))?;
+    }
+    // Self-terminating key migration: every row was just re-put under its composite key, so any legacy bare-Int keys left in the table are stale twins — delete them or the table doubles (load would dedup by row identity, but the vault must not carry the ghosts).
+    if let Ok(pks) = db.list_in(&table) {
+        for pk in pks {
+            if matches!(pk, Pk::Int(_)) {
+                let _ = db.delete_row_in(&table, pk);
+            }
+        }
     }
 
     #[cfg(feature = "development")]
@@ -1049,20 +1069,25 @@ pub fn load_messages(
         .list_in(&table)
         .map_err(|e| StorageError::Vault(e.to_string()))?;
 
-    // Sort keys numerically — the catalog yields INSERTION order, which matched chronological order only while rows were appended live. History recovery inserts OLDER rows later, so trusting insertion order would interleave the conversation. Key = eagle_time, so numeric sort = time sort.
-    let mut keys: Vec<u64> = pks
+    // Sort keys canonically — the catalog yields INSERTION order, which matched chronological order only while rows were appended live. Both key forms load: the 16-byte composite (BE eagle_time ‖ blake3(content)[..8] — byte order == the canonical (time, hash) order, same-tick rows coexist) and the legacy bare-Int eagle_time key (pre-composite vaults; save_messages re-puts + sweeps them, so that arm self-terminates).
+    let mut keys: Vec<(u64, [u8; 8], Pk)> = pks
         .into_iter()
-        .filter_map(|pk| match pk {
-            Pk::Int(t) => Some(t),
+        .filter_map(|pk| match &pk {
+            Pk::Int(t) => Some((*t, [0u8; 8], pk)),
+            Pk::Bytes(b) if b.len() == 16 => {
+                let ts = u64::from_be_bytes(b[..8].try_into().unwrap());
+                let tie: [u8; 8] = b[8..16].try_into().unwrap();
+                Some((ts, tie, pk))
+            }
             _ => None,
         })
         .collect();
-    keys.sort_unstable();
+    keys.sort_unstable_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
 
     conv.messages.clear();
-    for key in keys {
+    for (_, _, pk) in keys {
         let Some(rec) = db
-            .get_row_in(&table, Pk::Int(key))
+            .get_row_in(&table, pk)
             .map_err(|e| StorageError::Vault(e.to_string()))?
         else {
             continue;
@@ -1219,7 +1244,11 @@ pub fn save_messages_page(
                 .set("ref_kind", kind as u64)
                 .set("ref_ts", Value::Time(target));
         }
-        db.put_row_in(&table, Pk::Int(msg.timestamp as u64), &rec)
+        db.put_row_in(
+            &table,
+            Pk::bytes(&message_row_key(msg.timestamp, &msg.content)),
+            &rec,
+        )
             .map_err(|e| StorageError::Vault(e.to_string()))?;
     }
     Ok(())
@@ -1245,25 +1274,33 @@ pub fn load_message_page_before(
     } else {
         before_osc as u64
     };
-    let mut keys: Vec<u64> = pks
+    // Both key forms page (composite + legacy Int — see load_messages), ordered canonically by (time, hash).
+    let mut keys: Vec<(u64, [u8; 8], Pk)> = pks
         .into_iter()
-        .filter_map(|pk| match pk {
-            Pk::Int(t) if t < before => Some(t),
+        .filter_map(|pk| match &pk {
+            Pk::Int(t) if *t < before => Some((*t, [0u8; 8], pk)),
+            Pk::Bytes(b) if b.len() == 16 => {
+                let ts = u64::from_be_bytes(b[..8].try_into().unwrap());
+                let tie: [u8; 8] = b[8..16].try_into().unwrap();
+                (ts < before).then_some((ts, tie, pk))
+            }
             _ => None,
         })
         .collect();
-    keys.sort_unstable();
+    keys.sort_unstable_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    // The oldest candidate's timestamp, read before the loop consumes the keys — the `more` flag below compares against it.
+    let oldest_key_ts = keys.first().map(|k| k.0);
 
     // Take the NEWEST max_rows of the older set (the tail), walking backwards under the byte budget.
     let mut page: Vec<ChatMessage> = Vec::new();
     let mut bytes = 0usize;
     let mut taken = 0usize;
-    for &key in keys.iter().rev() {
+    for (ts, _, pk) in keys.into_iter().rev() {
         if taken >= max_rows || bytes >= max_bytes {
             break;
         }
         let Some(rec) = db
-            .get_row_in(&table, Pk::Int(key))
+            .get_row_in(&table, pk)
             .map_err(|e| StorageError::Vault(e.to_string()))?
         else {
             taken += 1; // a missing row still consumes cursor progress
@@ -1276,7 +1313,7 @@ pub fn load_message_page_before(
         bytes += content.len();
         page.push(ChatMessage {
             content: content.to_string(),
-            timestamp: rec.time("timestamp").unwrap_or(key as i64),
+            timestamp: rec.time("timestamp").unwrap_or(ts as i64),
             is_outgoing: rec.uint("is_outgoing").unwrap_or(0) != 0,
             delivered: rec.uint("delivered").unwrap_or(0) != 0,
             ack_hash: None, // never leaves this device; not part of a served page
@@ -1290,7 +1327,7 @@ pub fn load_message_page_before(
 
     // More rows remain iff any key is older than the oldest we returned.
     let more = match page.first() {
-        Some(oldest) => keys.first().is_some_and(|&k| k < oldest.timestamp as u64),
+        Some(oldest) => oldest_key_ts.is_some_and(|k| k < oldest.timestamp as u64),
         None => false,
     };
     Ok((page, more))
