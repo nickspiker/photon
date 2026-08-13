@@ -505,6 +505,8 @@ struct PendingPing {
 ///
 /// Spawns a background thread to handle async UDP ping/pong and CLUTCH messages. Uses the shared UDP socket from HandleQuery. For large CLUTCH payloads, uses TCP fallback (raw254 not yet implemented).
 pub struct StatusChecker {
+    /// While true, every direct ping carries a `Reflect` beside it — the UDP-observed self-discovery bootstrap. The app clears it on the first quorum-adopted ReflexiveLearned and re-arms it on a LAN-interface change; default TRUE because a fresh process never has a UDP-confirmed mapping (the announce otherwise publishes the self-claimed bind port, which no NAT honours — field 2026-08-13).
+    needs_reflect: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ping_sender: Sender<PingRequest>,
     // NOTE: clutch_sender removed - legacy v1 CLUTCH no longer used
     message_sender: Sender<MessageRequest>,
@@ -537,6 +539,8 @@ impl StatusChecker {
         event_proxy: Arc<dyn WakeSender<PhotonEvent>>,
         peer_store: Arc<Mutex<crate::network::fgtw::PeerStore>>,
     ) -> Result<Self, String> {
+        let needs_reflect = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let needs_reflect_loop = needs_reflect.clone();
         let (ping_tx, ping_rx) = channel::<PingRequest>();
         let (message_tx, message_rx) = channel::<MessageRequest>();
         let (ack_tx, ack_rx) = channel::<AckRequest>();
@@ -599,6 +603,7 @@ impl StatusChecker {
                     Some(event_proxy),
                     phonebook_req_rx,
                     peer_store,
+                    needs_reflect_loop,
                 )
                 .await;
             });
@@ -621,6 +626,7 @@ impl StatusChecker {
         }
 
         Ok(Self {
+            needs_reflect,
             ping_sender: ping_tx,
             message_sender: message_tx,
             ack_sender: ack_tx,
@@ -648,6 +654,8 @@ impl StatusChecker {
         pong_seal_keys: PongSealKeys,
         peer_store: Arc<Mutex<crate::network::fgtw::PeerStore>>,
     ) -> Result<Self, String> {
+        let needs_reflect = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let needs_reflect_loop = needs_reflect.clone();
         let (ping_tx, ping_rx) = channel::<PingRequest>();
         let (message_tx, message_rx) = channel::<MessageRequest>();
         let (ack_tx, ack_rx) = channel::<AckRequest>();
@@ -710,6 +718,7 @@ impl StatusChecker {
                     None,
                     phonebook_req_rx,
                     peer_store,
+                    needs_reflect_loop,
                 )
                 .await;
             });
@@ -732,6 +741,7 @@ impl StatusChecker {
         }
 
         Ok(Self {
+            needs_reflect,
             ping_sender: ping_tx,
             message_sender: message_tx,
             ack_sender: ack_tx,
@@ -750,6 +760,12 @@ impl StatusChecker {
     }
 
     /// Request to ping a contact (non-blocking). `relay_to` = peer device keys to also ping over the relay pipe (empty = direct only); set when no direct path is proven so presence works for a relay-only peer.
+    /// Flip the reflect-beside-pings bootstrap (see `needs_reflect`). The app clears it on the first quorum-adopted ReflexiveLearned and re-arms it when the LAN interface changes.
+    pub fn set_reflect_needed(&self, needed: bool) {
+        self.needs_reflect
+            .store(needed, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub fn ping(
         &self,
         peer_addr: SocketAddr,
@@ -937,6 +953,7 @@ async fn run_checker(
     event_proxy: OptionalEventProxy,
     phonebook_req_rx: Receiver<SocketAddr>,
     peer_store: Arc<Mutex<crate::network::fgtw::PeerStore>>,
+    needs_reflect: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     use tokio::net::UdpSocket as TokioUdpSocket;
 
@@ -3118,6 +3135,22 @@ async fn run_checker(
                 }
 
                 udp::send(&socket, &msg_bytes, request.peer_addr).await;
+
+                // UDP-OBSERVED SELF-DISCOVERY (the record-heal bootstrap): while the app holds no UDP-confirmed reflexive, every direct ping carries a Reflect beside it. Any signed node answers with the source it saw; two distinct answers pass the anti-poison quorum, ReflexiveLearned adopts, and the next announce publishes the TRUE mapping instead of the self-claimed bind port (field 2026-08-13: both Nick devices published identical :4383 records no NAT honours, stranding every peer without a working record on relay). Self-extinguishing — the app drops the flag on the first quorum-adopted learn. Reuses the ping's signed provenance; the serve arm only verifies the signature and echoes the observed source.
+                if needs_reflect.load(std::sync::atomic::Ordering::Relaxed)
+                    && !crate::network::traverse::gather::is_bogus_addr(&request.peer_addr)
+                {
+                    let reflect = FgtwMessage::Reflect {
+                        timestamp,
+                        sender_pubkey: our_pubkey.clone(),
+                        provenance_hash,
+                        signature: sig_bytes,
+                    };
+                    let reflect_bytes = reflect.to_vsf_bytes();
+                    if !reflect_bytes.is_empty() {
+                        udp::send(&socket, &reflect_bytes, request.peer_addr).await;
+                    }
+                }
 
                 // No direct path → also ping over the relay pipe so PRESENCE works for a relay-only peer.
                 // The peer receives it on its pipe and pongs back over its own pipe; each side flips the other online (reached_via_relay). Best-effort — a live pipe means the peer is reachable; a dropped frame just means they're offline, which a missed pong already conveys.
