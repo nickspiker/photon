@@ -18797,10 +18797,10 @@ impl PhotonApp {
                 }
             }
             // Parked-ceremony safety net: our offer went out, a direct path is PROVEN up, and the peer's offer still hasn't arrived — so ours (or theirs) died in transit and nothing pong-driven will ever retry it. Re-fire ours every few cycles until the exchange moves; bounded to one half-MB transfer per threshold-crossing, self-terminating the moment their offer lands.
-            let stalled = !c.is_sibling
-                && c.clutch_state == crate::types::ClutchState::Pending
+            // Reachable by ANY path counts — not just a validated direct one. A relay-online peer with a lost offer had NO re-send edge at all: the stall arm required a validated path, the dozed doorbell requires 90s of SILENCE (relay pongs keep last_heard fresh forever), and the one 573KB send was "delivered" into a dead pipe socket while the recipient slept through a network change (field 2026-08-13: the sibling pair deadlocked cross-round — one side at proof of round A, the other awaiting a KEM to round B the peer never saw). Siblings are included: their re-fire is gated by the same no-peer-offer slot check, so only the side whose answer is genuinely missing re-sends, and ceremony_parked_by never parks a sibling by design.
+            let stalled = c.clutch_state == crate::types::ClutchState::Pending
                 && c.clutch_offer_sent
-                && c.validated_path.is_some()
+                && (c.validated_path.is_some() || c.is_online)
                 && c.get_slot(&c.handle_hash)
                     .map_or(true, |s| s.offer.is_none())
                 && !ceremony_parked_by(c, our_device, &siblings);
@@ -18839,7 +18839,7 @@ impl PhotonApp {
             }
         }
         for i in stalled_offers {
-            crate::logf!("CLUTCH: {} still has no offer from the peer after {} validated-path ping cycles — re-firing ours", crate::fp(&self.contacts[i].handle_proof), OFFER_STALL_CYCLES);
+            crate::logf!("CLUTCH: {} still has no offer from the peer after {} reachable ping cycles — re-firing ours", crate::fp(&self.contacts[i].handle_proof), OFFER_STALL_CYCLES);
             self.contacts[i].clutch_offer_sent = false;
             self.resend_clutch_offer(i);
         }
