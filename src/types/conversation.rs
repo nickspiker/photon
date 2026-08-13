@@ -181,9 +181,16 @@ impl Conversation {
                 return;
             }
         }
+        // TOTAL order = (timestamp, blake3(content)) — the row-identity fields and nothing else, THE SAME order the storage key encodes (message_row_key: BE time ‖ hash[..8]). Timestamp alone left same-tick rows in ARRIVAL order, which differs per device — two devices holding identical rows rendered different orders AND computed different anti-entropy digests (the rolling hash is order-dependent), re-firing the history walk forever between converged copies. The hash tiebreak runs only on equal timestamps (cross-sender same-tick — within one sender's 704ps stream ties are impossible); equal (timestamp, content) is the dedup branch above and never reaches here.
         let pos = self
             .messages
-            .binary_search_by(|m| m.timestamp.cmp(&msg.timestamp))
+            .binary_search_by(|m| {
+                m.timestamp.cmp(&msg.timestamp).then_with(|| {
+                    blake3::hash(m.content.as_bytes())
+                        .as_bytes()
+                        .cmp(blake3::hash(msg.content.as_bytes()).as_bytes())
+                })
+            })
             .unwrap_or_else(|pos| pos);
         self.messages.insert(pos, msg);
     }

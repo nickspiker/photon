@@ -793,6 +793,11 @@ impl FriendshipChains {
         Some(label)
     }
 
+    /// Can a device holding this blob WRITE the braid — i.e. mint and advance its own lane? True from the moment the lane root exists, which only ever happens post-ceremony (`from_clutch`) — so on a sibling-replicated copy, a live root IS the proof the friendship completed somewhere in the fleet (per-device lanes: any device with the root transmits itself instead of forwarding through the chain owner).
+    pub fn lane_capable(&self) -> bool {
+        self.lane_root.is_some()
+    }
+
     /// The label our device minted, if any.
     pub fn our_label(&self) -> Option<&[u8; 32]> {
         self.our_label.as_ref()
@@ -1519,6 +1524,47 @@ mod tests {
         let ours = chains.mint_our_lane().unwrap();
         assert_eq!(chains.mint_our_lane().unwrap(), ours);
         assert!(chains.current_key(&ours).is_some());
+    }
+
+    #[test]
+    fn per_device_lanes_converge_on_cross_merge() {
+        // Two of OUR devices, one friendship: each mints its own lane and advances it independently (per-device lanes), then each merges the other's replicated copy. The property Nick asked for outright: all copies converge to the union of lanes at max positions, device-local send state untouched — a join-semilattice, order-free.
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut dev_a = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        let mut dev_b = dev_a.clone();
+        dev_b.sanitize_replicated(); // dev_b holds the sibling-replicated copy: no label, no pendings, no send tip
+
+        let (_, _, _, _, lane_a) = dev_a
+            .prepare_send(b"from a".to_vec(), b"from a".to_vec(), 1_000, vec![])
+            .unwrap();
+        let (_, _, _, _, lane_b) = dev_b
+            .prepare_send(b"from b".to_vec(), b"from b".to_vec(), 1_001, vec![])
+            .unwrap();
+        assert_ne!(lane_a, lane_b, "each device mints its OWN lane");
+
+        // Cross-replicate: each side merges a sanitized copy of the other.
+        let mut a_copy = dev_a.clone();
+        a_copy.sanitize_replicated();
+        let mut b_copy = dev_b.clone();
+        b_copy.sanitize_replicated();
+        assert!(dev_a.merge_lanes_from(&b_copy));
+        assert!(dev_b.merge_lanes_from(&a_copy));
+
+        // Converged: identical lane sets at identical positions on both devices…
+        let mut sum_a = dev_a.lane_summary();
+        let mut sum_b = dev_b.lane_summary();
+        sum_a.sort();
+        sum_b.sort();
+        assert_eq!(sum_a, sum_b, "lane-wise merge converges every copy");
+        // …while each device still owns exactly its own lane and pendings.
+        assert_eq!(dev_a.our_label(), Some(&lane_a));
+        assert_eq!(dev_b.our_label(), Some(&lane_b));
+        assert_eq!(dev_a.pending_messages.len(), 1);
+        assert_eq!(dev_b.pending_messages.len(), 1);
+        // A re-merge of the same copies is a no-op: the semilattice has settled.
+        assert!(!dev_a.merge_lanes_from(&b_copy));
     }
 
     #[test]

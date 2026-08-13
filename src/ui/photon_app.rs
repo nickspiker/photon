@@ -14586,19 +14586,24 @@ impl PhotonApp {
         eagle_time: i64,
         reference: Option<(crate::types::RefKind, i64)>,
     ) -> bool {
-        // Contact must be CLUTCH-Complete with a friendship chain.
+        // Contact must be CLUTCH-Complete with a friendship chain — OR hold the sibling-replicated chains with a live lane root. Local Complete is only the ceremony OWNER's shape (§4.2 parks every other device at Pending forever), and gating on it made the owner the single writer: every other device fleet-forwarded through it, which parks messages behind a dead battery an ocean away (Nick, 2026-08-13). Per-device lanes end that: `prepare_send` mints THIS device's own lane, the friend materializes it from the wire label (`ensure_lane`), and the lane-wise CRDT merge converges every copy — so holding the root is the whole capability.
         let (friendship_id, recipient_pubkey, addr_pair, _our_handle_hash, msg_relay_to) = {
             let Some(contact) = self.contacts.get(ci) else {
                 return false;
             };
-            if contact.clutch_state != crate::types::ClutchState::Complete {
-                crate::log("CHAT: cannot send — CLUTCH not complete");
-                return false;
-            }
             let Some(fid) = contact.friendship_id else {
                 crate::log("CHAT: cannot send — no friendship chain");
                 return false;
             };
+            let lane_capable = !contact.is_sibling
+                && self
+                    .friendship_chains
+                    .iter()
+                    .any(|(id, c)| *id == fid && c.lane_capable());
+            if contact.clutch_state != crate::types::ClutchState::Complete && !lane_capable {
+                crate::log("CHAT: cannot send — CLUTCH not complete");
+                return false;
+            }
             // Party id per contact: identity seed for friends, device-derived pid for fleet siblings — the chain index in prepare_send must match what from_clutch was keyed with.
             let Some(our_pid) = self.our_party_id(contact) else {
                 return false;
@@ -15813,7 +15818,22 @@ impl PhotonApp {
         self.conversations.iter_mut().find(|v| v.id() == id)
     }
 
-    /// Can the open conversation dispatch from THIS device — a locally-woven chain, zero remote participants (loopback), or COMPOSE-ANYWHERE (history + a fleet to forward thru)? THE one definition: the focus walk and the render both call it, where two hand-mirrored copies used to drift ("textbox appears but can't type", desktop 2026-07-26). A truly fresh un-clutched contact still answers false (nothing anywhere can transmit yet).
+    /// Can THIS device write the braid for `contacts[ci]` itself — replicated chains with a live lane root (per-device lanes)? This is the capability every non-owner device gains from chain replication; the owner's local Complete+woven shape is checked beside it at each gate.
+    fn lane_transmit_capable(&self, ci: usize) -> bool {
+        let Some(c) = self.contacts.get(ci) else {
+            return false;
+        };
+        if c.is_sibling {
+            return false;
+        }
+        c.friendship_id.map_or(false, |fid| {
+            self.friendship_chains
+                .iter()
+                .any(|(id, ch)| *id == fid && ch.lane_capable())
+        })
+    }
+
+    /// Can the open conversation dispatch from THIS device — a locally-woven chain, zero remote participants (loopback), a replicated chain this device writes on its own lane (per-device lanes), or COMPOSE-ANYWHERE (history + a fleet to forward thru)? THE one definition: the focus walk and the render both call it, where two hand-mirrored copies used to drift ("textbox appears but can't type", desktop 2026-07-26). A truly fresh un-clutched contact still answers false (nothing anywhere can transmit yet).
     fn compose_ready(&self) -> bool {
         let Some(ci) = self.active_contact() else {
             return false;
@@ -15822,7 +15842,10 @@ impl PhotonApp {
         let has_history = self.conv_of(ci).is_some_and(|v| !v.messages.is_empty());
         let can_fleet_forward =
             !c.is_sibling && has_history && self.contacts.iter().any(|s| s.is_sibling);
-        self.is_zero_remote(c) || c.chain_woven || can_fleet_forward
+        self.is_zero_remote(c)
+            || c.chain_woven
+            || self.lane_transmit_capable(ci)
+            || can_fleet_forward
     }
 
     /// The conversation for `self.contacts[ci]`, materialized empty on first touch — so no caller ever branches on "does it exist yet". `None` only before the session is up.
@@ -16883,6 +16906,35 @@ impl PhotonApp {
             if !adopted {
                 continue;
             }
+            // WIRE THE CONTACT AT THE CHAINS (per-device lanes): the adopt used to leave contact.friendship_id unset on every non-owner device — the chains sat adopted in RAM while chain_transmit bailed at "no friendship chain" and boot never re-loaded them (the vault load walks contact-referenced fids only). With the id wired and persisted, this device is transmit-capable on its own lane from the first replicated frame.
+            if let Some(our_pid) = self
+                .session
+                .as_ref()
+                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+            {
+                let other = self
+                    .friendship_chains
+                    .iter()
+                    .find(|(id, _)| *id == fid)
+                    .and_then(|(_, c)| {
+                        c.participants().iter().find(|p| **p != our_pid).copied()
+                    });
+                if let Some(other) = other {
+                    if let Some(c) = self
+                        .contacts
+                        .iter_mut()
+                        .find(|c| !c.is_sibling && c.handle_hash == other)
+                    {
+                        if c.friendship_id.is_none() {
+                            c.friendship_id = Some(fid);
+                            crate::logf!("CHAIN-SYNC: wired {} to its replicated chains — this device transmits on its own lane now", crate::fp(&c.handle_proof).as_str());
+                            if let Some(storage) = self.storage.as_ref() {
+                                let _ = crate::storage::contacts::save_contact(c, storage);
+                            }
+                        }
+                    }
+                }
+            }
             // ECHO KILL (the chain_pushed_osc field doc promised this): a lane the ADOPT moved is already fleet-known — the ORIGIN pushed it at every sibling itself (relay copies cover the offline ones) — so stamp it pushed at its adopted position. Without the stamp the next replication sweep read "position > pushed" and re-broadcast every adopted lane, one redundant fleet-wide push per adopt. Lanes the adopt did NOT move keep their stamps, so a local advance that raced the adopt still pushes — and the coarse mutated_osc stamp is deliberately NOT recorded here for the same reason (the sweep's empty-changed pass records it safely once nothing per-lane is due).
             let fid_bytes = *fid.as_bytes();
             let post_positions: Vec<([u8; 32], u64)> = self
@@ -17113,8 +17165,8 @@ impl PhotonApp {
                 // Gossip hop: anything genuinely fresh re-pushes to the OTHER online siblings (never back at the sender), so a message crosses the whole fleet even when only one device can reach its origin. Zero-fresh pages stop the echo.
                 self.push_rows_to_siblings(idx, &fresh, Some(sender_pubkey.key));
             }
-            // FLEET-FORWARD DRAIN (compose anywhere): outgoing UNDELIVERED rows arriving from a SIBLING are messages a chain-less device composed and forwarded — if THIS device holds the woven chain, transmit them on the braid with their ORIGINAL timestamps (one row identity fleet-wide, so the friend's dedup + the delivered upgrade all cohere; a retransmit after a crash is re-ACKed harmlessly from the friend's stored ack_hash). Only FRESH rows drain — known rows were transmitted before or sit in the retransmit machinery. v1 assumption (pre-§14): exactly ONE device holds each friendship's woven chain.
-            if from_sibling && self.contacts[idx].chain_woven {
+            // FLEET-FORWARD DRAIN (compose anywhere): outgoing UNDELIVERED rows arriving from a SIBLING are messages another device composed and forwarded — if THIS device can write the braid (locally woven, or lane-capable on replicated chains: per-device lanes), transmit them with their ORIGINAL timestamps (one row identity fleet-wide, so the friend's dedup + the delivered upgrade all cohere; a retransmit after a crash is re-ACKed harmlessly from the friend's stored ack_hash). Only FRESH rows drain — known rows were transmitted before or sit in the retransmit machinery. The origin usually transmits itself now; this drain is the DEAD-ORIGIN backstop (battery died between compose and delivery — the rows replicated, the origin's lane went silent, and this device re-serves them on ITS lane; the friend dedups the brief both-alive overlap).
+            if from_sibling && (self.contacts[idx].chain_woven || self.lane_transmit_capable(idx)) {
                 let fwd: Vec<(String, i64, Option<(crate::types::RefKind, i64)>)> = fresh
                     .iter()
                     .filter(|m| m.is_outgoing && !m.delivered)
