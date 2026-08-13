@@ -531,6 +531,8 @@ impl Contact {
     pub fn new_sibling(our_handle_proof: [u8; 32], sibling_device: DevicePubkey) -> Self {
         let party_id = crate::crypto::clutch::sibling_party_id(&sibling_device.key);
         let mut c = Self::from_pin([0u8; 64], our_handle_proof, party_id, sibling_device);
+        // The id keys on the SIBLING pid (domain-separated), never from_pin's blake3(pubkey): that derivation collides with any non-sibling row pinned to the same device — the notes row first-met on device X and the sibling row FOR device X shared one id, and the keygen drain's first-match-by-id installed the sibling's re-key onto the notes row, which then offered 573KB at our own fleet on the self-pair token forever (field, 2026-08-13).
+        c.id = ContactId::from_bytes(party_id);
         c.is_sibling = true;
         c.trust_level = TrustLevel::Inner;
         c
@@ -988,8 +990,9 @@ mod fold_honour_tests {
             sib.handle_hash,
             crate::types::Handle::to_identity_seed("me")
         );
-        // ContactId is device-keyed — two siblings of one handle never collide.
-        assert_eq!(sib.id, ContactId::from_pubkey(&sib.public_identity));
+        // ContactId keys on the sibling pid — two siblings of one handle never collide, AND a sibling never shares an id with a non-sibling row pinned to the same device (from_pin's blake3(pubkey) id — the notes-row keygen misroute, 2026-08-13).
+        assert_eq!(sib.id, ContactId::from_bytes(sib.handle_hash));
+        assert_ne!(sib.id, ContactId::from_pubkey(&sib.public_identity));
         // knows_device answers ONLY that one device (empty fleet_members is load-bearing for first-match routing).
         assert!(sib.knows_device(&sib_device));
         assert!(!sib.knows_device(&[6u8; 32]));
