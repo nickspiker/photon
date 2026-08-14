@@ -25310,9 +25310,11 @@ impl PhotonApp {
                 // Full clean-slate reset for the dev loop: nuke the vault ([]n), clear the session ([]u), then KILL the process so the window dies and the next launch starts truly fresh — no lingering in-memory state, no half-reset UI. The disk wipe is the part that must persist; everything else dies with the process, so we exit right after.
                 let count = Self::dev_wipe_vault_files("[]x");
                 tohu::clear_session();
+                // Clear the device-identity BINDING marker too, or the next launch sees a still-bound device and shows "this device already carries an identity — type its handle to resume" (device_binding.vsf lives in the config dir, OUTSIDE the vault the wipe above walks, so it survives a vault nuke). []x means TRULY fresh; the proper Security-page shred (clean_device_for_reuse) already clears it, and this dev chord must match.
+                crate::storage::device_binding::clear();
                 crate::clear_log(); // wipe photon.log.vsf too — a clean relaunch leaves no trace
                 eprintln!(
-                    "[]x nuked {} vault file(s) + de-attested + wiped logs; exiting for a clean relaunch",
+                    "[]x nuked {} vault file(s) + de-attested + cleared device binding + wiped logs; exiting for a clean relaunch",
                     count
                 );
                 std::process::exit(0);
