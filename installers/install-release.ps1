@@ -28,8 +28,15 @@ if ($arch -ne "AMD64" -and $arch -ne "ARM64") {
 Write-Host "Detected: Windows ($arch)" -ForegroundColor White
 Write-Host ""
 
-# Download binary directly to install location (TEMP often blocked by Defender)
-$downloadUrl = "https://brobdingnagian.holdmyoscilloscope.com/photon/photon-messenger-windows-release.exe"
+# Download binary directly to install location (TEMP often blocked by Defender).
+# Pick the native asset per arch: ARM64 (Snapdragon X / Copilot+ PCs) gets the native aarch64 build — no x86
+# emulation — while x64 keeps the existing asset. If the arm64 asset is ever absent for a release, an ARM64 box
+# can still run the x64 build under Windows' Prism emulation, so a missing native build degrades, never breaks.
+if ($arch -eq "ARM64") {
+    $downloadUrl = "https://brobdingnagian.holdmyoscilloscope.com/photon/photon-messenger-windows-arm64-release.exe"
+} else {
+    $downloadUrl = "https://brobdingnagian.holdmyoscilloscope.com/photon/photon-messenger-windows-release.exe"
+}
 $installDir = "$env:LOCALAPPDATA\Programs\PhotonMessenger"
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 $binaryPath = "$installDir\photon-messenger.exe"
@@ -47,7 +54,13 @@ try {
 # Verify SHA256 hash (Defender blocks execution, so we verify hash instead)
 Write-Host "Verifying integrity..." -ForegroundColor Yellow
 
-$expectedHash = "867F644EEB52B2979339681025DB70650400FAE1011F815AAF72064E59935719"
+# Per-arch expected hashes — deploy.sh patches BOTH placeholders (x64 from the x86_64 build, arm64 from the
+# aarch64 build). The arm64 line stays a zero placeholder for any release built without the Windows-ARM
+# toolchain; an ARM64 box only reaches it when it actually downloaded the arm64 asset, so a placeholder there
+# means "no native arm64 this release" and the mismatch correctly refuses a wrong download.
+$expectedHashX64 = "867F644EEB52B2979339681025DB70650400FAE1011F815AAF72064E59935719"
+$expectedHashArm64 = "0000000000000000000000000000000000000000000000000000000000000000"
+if ($arch -eq "ARM64") { $expectedHash = $expectedHashArm64 } else { $expectedHash = $expectedHashX64 }
 $actualHash = (Get-FileHash $binaryPath -Algorithm SHA256).Hash
 
 if ($actualHash -ne $expectedHash) {

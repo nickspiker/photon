@@ -16,8 +16,12 @@ fn main() {
         println!("cargo:rerun-if-changed=photon-messenger.rc");
         println!("cargo:rerun-if-changed=assets/photon-messenger.ico");
 
-        // Try to compile the resource file with windres (MinGW cross-compiler)
-        let windres = if target.contains("x86_64") {
+        // Try to compile the resource file with windres (MinGW cross-compiler). aarch64 (Windows on ARM,
+        // the Snapdragon X target) has no widely-packaged mingw windres, so use llvm-rc — clang's resource
+        // compiler, part of the same LLVM toolchain that links the gnullvm target — which handles .rc/.ico.
+        let windres = if target.contains("aarch64") {
+            "llvm-rc"
+        } else if target.contains("x86_64") {
             "x86_64-w64-mingw32-windres"
         } else {
             "i686-w64-mingw32-windres"
