@@ -79,10 +79,49 @@ if snapbuild_take; then
 fi
 # Run a cargo build from the frozen source (falls back to the live tree if the snapshot didn't take).
 # Env vars set inline by the caller (cross sysroots, osxcross wrappers) pass through the subshell unchanged.
-snap_cargo() { ( cd "$SNAP_DIR" && cargo "$@" ); }
+# A bare `( subshell )` that fails at the tail of a function called under `set -e` aborts the script but does
+# NOT trigger the ERR trap (bash swallows it) — that silently killed the whole deploy at the Redox build with
+# no message and the version bump left committed (2026-08-13: forkpty missing on redox). Catch the failure
+# explicitly, name the target that tore, and `return` non-zero so the ERR trap fires and rolls the bump back.
+# Every build's stderr is TEE'd: streamed live to the terminal (nothing hidden) AND captured so warnings can
+# be counted. Cargo only re-emits warnings for crates it recompiles, so a warm-cache deploy would otherwise
+# look pristine while the tree carries lint (2026-08-13: 11 workspace warnings invisible across a 6-target run).
+# DEPLOY_WARNINGS accumulates the count across every target for the end-of-deploy summary.
+DEPLOY_WARNINGS=0
+snap_cargo() {
+    local errlog; errlog="$(mktemp)"
+    if ! ( cd "$SNAP_DIR" && cargo "$@" ) 2> >(tee "$errlog" >&2); then
+        # cargo's real diagnostic (the error[...] block) has already streamed to stderr above — this only
+        # names WHICH invocation tore so it isn't lost in the scroll. Read the cargo error above, not this line.
+        echo "" >&2
+        echo "^^^ BUILD FAILED here: cargo $* (in $SNAP_DIR) — the cargo error is ABOVE this line ^^^" >&2
+        rm -f "$errlog"
+        return 1
+    fi
+    local n; n="$(grep -c '^warning' "$errlog" 2>/dev/null || echo 0)"
+    DEPLOY_WARNINGS=$(( DEPLOY_WARNINGS + n ))
+    [ "$n" -gt 0 ] && echo "  ⚠ cargo $* — $n warning(s) this build (running total: $DEPLOY_WARNINGS)" >&2
+    rm -f "$errlog"
+}
+
+# Lint gate: report the TRUE warning state of the tree up front, cache or no cache. The per-build tallies
+# below only catch what each target recompiles; a fully warm cache re-emits nothing, so this cache-fresh
+# check is the one place the deploy always names how much lint the release is shipping. Advisory (never
+# aborts) — surfacing the count is the point, not gating on it.
+echo ""
+echo "Lint check (cache-fresh warning count for the whole workspace)..."
+LINT_WARNINGS="$( ( cd "$SNAP_DIR" && cargo check --workspace --message-format=short 2>&1 ) | grep -E '^warning' | grep -v 'generated .* warning' | sort | uniq)"
+LINT_COUNT="$(printf '%s' "$LINT_WARNINGS" | grep -c '^warning' || echo 0)"
+if [ "$LINT_COUNT" -gt 0 ]; then
+    echo "  ⚠ $LINT_COUNT distinct warning(s) in the tree — this release is NOT lint-clean:"
+    printf '%s\n' "$LINT_WARNINGS" | sed 's/^/      /'
+else
+    echo "  ✓ workspace is lint-clean"
+fi
 
 # The two release TOOLS first — a failure to build the signer or the manifest tool must abort before any
 # platform binary is even built, let alone uploaded.
+echo ""
 echo "Building release tools (signer + manifest)..."
 snap_cargo build --release --bin photon-signature-signer --bin photon-manifest
 
@@ -294,3 +333,16 @@ echo ""
 echo "Install with:"
 echo "  curl -sSfL https://brobdingnagian.holdmyoscilloscope.com/$R2_PATH/install-release.sh | sh"
 echo "  powershell -ExecutionPolicy Bypass -c \"irm https://brobdingnagian.holdmyoscilloscope.com/$R2_PATH/install-release.ps1 | iex\""
+
+# The ONLY success banner. If a deploy exits before printing this, it did NOT ship — no matter how clean
+# the last line looked (a silent Redox abort read as green all the way to "call your mum", 2026-08-13).
+# Never vouch for a release you didn't watch print this line.
+echo ""
+echo "════════════════════════════════════════════════════════════"
+echo "  ✓ DEPLOY COMPLETE — v${SHIP_VERSION} (${FULL_VERSION}) is PUBLIC"
+if [ "${LINT_COUNT:-0}" -gt 0 ]; then
+    echo "  ⚠ shipped with ${LINT_COUNT} outstanding warning(s) — see the lint check at the top"
+else
+    echo "  ✓ lint-clean"
+fi
+echo "════════════════════════════════════════════════════════════"
