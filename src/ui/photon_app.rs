@@ -1468,7 +1468,7 @@ pub struct PhotonApp {
     /// Android: set when the paperclip asks for the system file picker; drained by nativePollAttachPicker.
     pending_attach_picker: bool,
     /// Per-session client routing: session_id → (client device pubkey, their addr pair, relay list) so the reader-thread drain knows where to send output. Captured at `term_open`.
-    #[cfg(all(unix, not(target_os = "android")))]
+    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     bridge_clients: std::collections::HashMap<[u8; 16], ([u8; 32], (std::net::SocketAddr, Option<std::net::SocketAddr>), Vec<[u8; 32]>)>,
     /// Recovery-page "be a custodian" opt-in — a custom `Checkbox`.
     settings_custodian_check: Option<crate::ui::settings_widgets::Checkbox>,
@@ -1877,7 +1877,7 @@ impl PhotonApp {
             attach_progress: Vec::new(),
             attach_confirmed: std::collections::HashSet::new(),
             pending_attach_picker: false,
-            #[cfg(all(unix, not(target_os = "android")))]
+            #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
             bridge_clients: std::collections::HashMap::new(),
             settings_custodian_check: None,
             settings_chime_check: None,
@@ -15374,13 +15374,13 @@ impl PhotonApp {
     }
 
     /// BRIDGE host opt-in marker (`<config>/remote_terminal`). Presence = this device will SERVE remote shells to fleet siblings. Off by default; a durable file so a resident/headless host honours it with no UI.
-    #[cfg(all(unix, not(target_os = "android")))]
+    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     fn remote_terminal_marker_path() -> Option<std::path::PathBuf> {
         crate::storage::photon_config_dir().ok().map(|d| d.join("remote_terminal"))
     }
 
     /// Whether this device serves remote shells (default OFF).
-    #[cfg(all(unix, not(target_os = "android")))]
+    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     fn remote_terminal_enabled() -> bool {
         Self::remote_terminal_marker_path().map_or(false, |p| p.exists())
     }
@@ -15413,7 +15413,7 @@ impl PhotonApp {
         let line = String::from_utf8_lossy(&payload).to_string();
 
         // HOST role: a `$ ` command runs here (desktop-unix + opt-in). Remember where to reply.
-        #[cfg(all(unix, not(target_os = "android")))]
+        #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
         {
             if Self::remote_terminal_enabled() {
                 if let Some(cmd) = line.strip_prefix("$ ").or_else(|| line.strip_prefix("$\t")) {
@@ -15495,7 +15495,7 @@ impl PhotonApp {
     }
 
     /// BRIDGE (chat-as-shell): run one `$ ` command with the login shell, then reply to the client with the combined stdout+stderr as a term DATA frame (which the client posts as a bubble). Output tail-capped; non-zero exit appended. Runs in the operator's own login environment — the operator shelling into their own box.
-    #[cfg(all(unix, not(target_os = "android")))]
+    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     fn run_bridge_command(&mut self, session_id: [u8; 16], cmd: &str) {
         const MAX_OUT: usize = 12 * 1024; // keep a reply comfortably inside one frame
         crate::logf!("BRIDGE: running command from sibling: {}", cmd);
@@ -15537,7 +15537,7 @@ impl PhotonApp {
     }
 
     /// Send a term DATA frame to the client of `session_id` (host → client reply path).
-    #[cfg(all(unix, not(target_os = "android")))]
+    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     fn send_bridge_frame(&self, session_id: [u8; 16], payload: &[u8]) {
         let Some((device, addr_pair, relay_to)) = self.bridge_clients.get(&session_id).cloned() else { return };
         let Some(fleet_key) = self.fleet_key_cached() else { return };
