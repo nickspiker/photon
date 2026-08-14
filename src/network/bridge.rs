@@ -27,7 +27,7 @@ pub fn open_term(sealed: &[u8], fleet_key: &[u8; 32]) -> Option<Vec<u8>> {
 
 // ─────────────────────────── PTY host (desktop-unix only, future full-interactive path) ───────────────────────────
 
-#[cfg(all(unix, not(target_os = "android")))]
+#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 #[allow(dead_code)]
 mod pty_host {
 use std::collections::HashMap;
@@ -272,7 +272,7 @@ mod pty_tests {
 } // end mod pty_host
 
 /// Re-export the PTY host for the future full-interactive path (desktop-unix only).
-#[cfg(all(unix, not(target_os = "android")))]
+#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 #[allow(unused_imports)]
 pub use pty_host::{pack_winsize, unpack_winsize, BridgeHost, TermOut};
 

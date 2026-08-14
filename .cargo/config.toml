@@ -23,9 +23,14 @@ linker = "clang"
 [target.x86_64-unknown-redox]
 linker = "/mnt/Octopus/Code/redox/prefix/x86_64-unknown-redox/rust-install/bin/x86_64-unknown-redox-gcc"
 
-# Windows x86_64 (MinGW-GCC): put the features.h shim on the C include path so pqcrypto-mlkem's PQClean
-# compat.h can #include <features.h> (glibc-only; MinGW lacks it — see cross-libs/mingw-shim/features.h).
-# cc-rs reads CFLAGS_<target> from the environment; setting it here makes the fix automatic for dev + deploy,
-# not just deploy.sh. Only x86_64-gnu needs it — the aarch64 Windows build uses clang and dodges the include.
+# Non-glibc GCC cross-targets (MinGW Windows-x64, Redox) need a features.h shim on the C include path so
+# pqcrypto-mlkem's PQClean compat.h can #include <features.h> / call __GNUC_PREREQ (glibc-only symbols their
+# GCCs lack — see cross-libs/gcc-noglibc-shim/features.h). cc-rs reads CFLAGS_<target> from the environment;
+# setting it here makes the fix automatic for dev + deploy, not just deploy.sh. The aarch64 Windows build uses
+# clang and takes compat.h's __clang__ branch, so it needs no shim.
 [env]
-CFLAGS_x86_64_pc_windows_gnu = "-I/mnt/Octopus/Code/photon/cross-libs/mingw-shim"
+CFLAGS_x86_64_pc_windows_gnu = "-I/mnt/Octopus/Code/photon/cross-libs/gcc-noglibc-shim"
+# Redox has its OWN (musl-derived) features.h that its system headers need — but it lacks __GNUC_PREREQ,
+# which pqcrypto-mlkem's compat.h requires. So the redox shim #include_next's the real one (dir FIRST on -I)
+# and only ADDS the missing macro; a plain replacement stub (like the mingw one) would break relibc's headers.
+CFLAGS_x86_64_unknown_redox = "-I/mnt/Octopus/Code/photon/cross-libs/redox-features-shim"
