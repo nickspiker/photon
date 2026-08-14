@@ -13853,6 +13853,25 @@ impl PhotonApp {
     /// Sweep the fleet-synced locked set onto sibling contact rows (persisted, so refusal survives a relaunch before settings sync). Monotonic: locks only, never unlocks — an unlock is a deliberate future flow, not a merge artifact.
     fn apply_locked_set(&mut self) {
         let mut locked = self.locked_devices();
+        // SELF-LOCK: if OUR OWN device is in the fleet-locked set, this device has been locked out by the fleet
+        // (an honest owner locking a machine they no longer control). Go dark — tear down the session so presence
+        // stops (it's state-gated to Ready/Conversation) and land on the launch screen. Resume is handle-gated:
+        // the owner can re-attest, a thief without the handle cannot. This is the self-side enforcement the fleet
+        // lockout lacked — it was one-directional (others refuse the device) with nothing making the device itself
+        // go quiet, so a locked machine kept broadcasting presence and rendering peers online.
+        if self.session.is_some() {
+            if let Some(ours) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) {
+                if locked.contains(&ours) {
+                    crate::log("SELF-LOCK: this device is in the fleet-locked set — going dark (session cleared; re-type handle to unlock)");
+                    tohu::clear_session();
+                    self.session = None;
+                    self.private_s = crate::crypto::blind::PrivateS::None;
+                    self.pending_broadcast_signal = -1;
+                    self.state = AppState::Launch(LaunchState::Fresh);
+                    return;
+                }
+            }
+        }
         // Persisted rows count too: at boot the settings cache may not have loaded yet, but a row flagged in a previous session must keep its refusal from the first tick.
         for c in self.contacts.iter().filter(|c| c.is_sibling && c.locked_out) {
             if !locked.contains(c.public_identity.as_bytes()) {
@@ -13873,11 +13892,18 @@ impl PhotonApp {
                 changed_rows.push(i);
             }
         }
-        if let Some(storage) = self.storage.as_ref() {
-            for i in changed_rows {
-                crate::logf!("FLEET: {} is LOCKED OUT — frames refused, key rotating away", crate::fp(&self.contacts[i].public_identity.key));
-                let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
+        if !changed_rows.is_empty() {
+            if let Some(storage) = self.storage.as_ref() {
+                for &i in &changed_rows {
+                    crate::logf!("FLEET: {} is LOCKED OUT — frames refused, key rotating away", crate::fp(&self.contacts[i].public_identity.key));
+                    let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
+                }
             }
+            // Rebuild the answerable ping set so a freshly-locked device's PINGS stop being answered immediately
+            // (answerable_pubkeys now drops locked_out contacts) — not just its chain/ceremony frames, which the
+            // downstream knows_device gates already refused. Without this the flat set kept the device until the
+            // next fold reseed, so it went on exchanging presence.
+            self.reseed_contact_pubkeys();
         }
     }
 

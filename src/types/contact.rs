@@ -695,15 +695,22 @@ impl Contact {
         }
     }
 
-    /// Every device pubkey we'll answer for this contact — feeds the status checker's answerable set. Mirrors `knows_device`: post-fold it's exactly the folded members (public_identity included only if it's still one); pre-fold it's public_identity unioned with any cached members, deduped, first-met leading.
+    /// Every device pubkey we'll answer for this contact — feeds the status checker's answerable set. Mirrors `knows_device`: post-fold it's exactly the folded members (public_identity included only if it's still one); pre-fold it's public_identity unioned with any cached members, deduped, first-met leading. A locked-out (treat-as-stolen) sibling answers NONE of its devices, and refused devices are excluded — so the RAW presence-ping gate refuses a locked/refused device's pings, not just its chain/ceremony frames (those were already gated on `knows_device` downstream; presence leaked because it only checked this flat set). Without this, a device you locked kept exchanging presence and rendering peers online.
     pub fn answerable_pubkeys(&self) -> Vec<[u8; 32]> {
+        // Treat-as-stolen lockout is whole-contact: answer nothing for it.
+        if self.locked_out {
+            return Vec::new();
+        }
+        let keep = |k: &[u8; 32]| !self.refused_devices.contains(k);
         if self.fleet_folded_once {
-            self.fleet_members.clone()
+            self.fleet_members.iter().copied().filter(|k| keep(k)).collect()
         } else {
             let mut v = Vec::with_capacity(self.fleet_members.len() + 1);
-            v.push(self.public_identity.key);
+            if keep(&self.public_identity.key) {
+                v.push(self.public_identity.key);
+            }
             for m in &self.fleet_members {
-                if *m != self.public_identity.key {
+                if *m != self.public_identity.key && keep(m) {
                     v.push(*m);
                 }
             }
