@@ -22,3 +22,10 @@ linker = "clang"
 # Redox cross-compilation (use when: cargo build --target x86_64-unknown-redox)
 [target.x86_64-unknown-redox]
 linker = "/mnt/Octopus/Code/redox/prefix/x86_64-unknown-redox/rust-install/bin/x86_64-unknown-redox-gcc"
+
+# Windows x86_64 (MinGW-GCC): put the features.h shim on the C include path so pqcrypto-mlkem's PQClean
+# compat.h can #include <features.h> (glibc-only; MinGW lacks it — see cross-libs/mingw-shim/features.h).
+# cc-rs reads CFLAGS_<target> from the environment; setting it here makes the fix automatic for dev + deploy,
+# not just deploy.sh. Only x86_64-gnu needs it — the aarch64 Windows build uses clang and dodges the include.
+[env]
+CFLAGS_x86_64_pc_windows_gnu = "-I/mnt/Octopus/Code/photon/cross-libs/mingw-shim"
