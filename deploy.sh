@@ -142,14 +142,38 @@ echo ""
 echo "Signing Linux ARM64 binary..."
 ./target/release/photon-signature-signer target/aarch64-unknown-linux-gnu/release/photon-messenger
 
-# Build Windows
+# Build Windows (x86_64)
 echo ""
-echo "Building Windows release..."
+echo "Building Windows x86_64 release..."
 snap_cargo build --release --target x86_64-pc-windows-gnu
 
 echo ""
-echo "Signing Windows binary..."
+echo "Signing Windows x86_64 binary..."
 ./target/release/photon-signature-signer target/x86_64-pc-windows-gnu/release/photon-messenger.exe
+
+# Build Windows on ARM (aarch64) — native for Snapdragon X / Copilot+ PCs (no x86 emulation).
+# Toolchain: the llvm-mingw prebuilt at $WINARM_MINGW (clang/lld/llvm-rc + a complete aarch64-w64-mingw32 ucrt
+# sysroot). aarch64-pc-windows-gnullvm is the LLVM-MinGW target (NOT msvc — needs no MSVC/xwin). The C deps
+# (ring, pqcrypto, aws-lc-sys) compile against the vendored sysroot; the wrapper is BOTH the C compiler (via
+# the aarch64-w64-mingw32-clang name cc-rs auto-detects on PATH) AND the linker (it knows its own import libs).
+# build.rs uses llvm-rc for the icon on aarch64.
+# ARM64 is a REQUIRED target like every other platform: a missing toolchain aborts the release (no silent
+# skip — a deploy either ships every platform or ships none). Install from github.com/mstorsjo/llvm-mingw.
+WINARM_MINGW="/mnt/Octopus/Code/llvm-mingw"
+if [ ! -x "$WINARM_MINGW/bin/aarch64-w64-mingw32-clang" ]; then
+    echo "ERROR: llvm-mingw toolchain not found at $WINARM_MINGW — required for the Windows ARM64 target."
+    echo "       Install from github.com/mstorsjo/llvm-mingw (ucrt build), or remove the ARM64 target from this script."
+    exit 1
+fi
+echo ""
+echo "Building Windows ARM64 release..."
+PATH="$WINARM_MINGW/bin:$PATH" \
+CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER="$WINARM_MINGW/bin/aarch64-w64-mingw32-clang" \
+snap_cargo build --release --target aarch64-pc-windows-gnullvm
+
+echo ""
+echo "Signing Windows ARM64 binary..."
+./target/release/photon-signature-signer target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe
 
 # Build Redox
 echo ""
@@ -214,15 +238,18 @@ COMMIT=$(git rev-parse HEAD)
     --artefact Linux   x86_64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-linux-x86_64-release"  "$(b3 target/release/photon-messenger)" "$(manifest_size target/release/photon-messenger)" \
     --artefact Linux   arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-linux-arm64-release"   "$(b3 target/aarch64-unknown-linux-gnu/release/photon-messenger)" "$(manifest_size target/aarch64-unknown-linux-gnu/release/photon-messenger)" \
     --artefact Windows x86_64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-windows-release.exe"   "$(b3 target/x86_64-pc-windows-gnu/release/photon-messenger.exe)" "$(manifest_size target/x86_64-pc-windows-gnu/release/photon-messenger.exe)" \
+    --artefact Windows arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-windows-arm64-release.exe" "$(b3 target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe)" "$(manifest_size target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe)" \
     --artefact macOS   x86_64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-macos-intel-release"   "$(b3 target/x86_64-apple-darwin/release/photon-messenger)" "$(manifest_size target/x86_64-apple-darwin/release/photon-messenger)" \
     --artefact macOS   arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-macos-arm64-release"   "$(b3 target/aarch64-apple-darwin/release/photon-messenger)" "$(manifest_size target/aarch64-apple-darwin/release/photon-messenger)" \
     --artefact Android arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-android-release.apk"   "$(b3 android/app/build/outputs/apk/release/app-release.apk)" "$(manifest_size android/app/build/outputs/apk/release/app-release.apk)"
 
-# Patch the Windows installer with the correct hash NOW (a build-phase transform, no upload).
-sed "s/\$expectedHash = \"[A-F0-9]*\"/\$expectedHash = \"$WINDOWS_SHA256\"/" installers/install-release.ps1 > /tmp/install-release.ps1
+# Patch the Windows installer with the correct per-arch hashes NOW (a build-phase transform, no upload).
+sed "s/\$expectedHashX64 = \"[A-F0-9]*\"/\$expectedHashX64 = \"$WINDOWS_SHA256\"/" installers/install-release.ps1 > /tmp/install-release.ps1
+WINARM_SHA256=$(cat target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe.sha256)
+sed -i "s/\$expectedHashArm64 = \"[A-F0-9]*\"/\$expectedHashArm64 = \"$WINARM_SHA256\"/" /tmp/install-release.ps1
 
 echo ""
-echo "BUILD PHASE complete — all 7 platforms + signed manifest built. Nothing public yet."
+echo "BUILD PHASE complete — all 8 platforms + signed manifest built. Nothing public yet."
 
 # ════════════════════════════════════════════════════════════════════════════════════════════════════
 # PUBLISH PHASE — everything below goes OUTWARD. Every artefact already exists locally, so the uploads are
@@ -240,6 +267,8 @@ wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-linux-arm64-release
     --file target/aarch64-unknown-linux-gnu/release/photon-messenger --remote
 wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-windows-release.exe" \
     --file target/x86_64-pc-windows-gnu/release/photon-messenger.exe --remote
+wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-windows-arm64-release.exe" \
+    --file target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe --remote
 wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-redox-release" \
     --file target/x86_64-unknown-redox/release/photon-messenger --remote
 wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-macos-intel-release" \
@@ -266,7 +295,7 @@ wrangler r2 object put "$R2_BUCKET/$R2_PATH/manifest-release.vsf" \
     --file /tmp/manifest-release.vsf --content-type application/octet-stream --remote
 
 echo ""
-echo "Linux ARM64, Linux x86_64, Windows, Redox, macOS Intel, macOS ARM64, Android binaries + manifest deployed to R2"
+echo "Linux ARM64, Linux x86_64, Windows x86_64, Windows ARM64, Redox, macOS Intel, macOS ARM64, Android binaries + manifest deployed to R2"
 echo "  Windows SHA256: $WINDOWS_SHA256"
 
 # Mirror the identical signed artefacts to a GitHub Release `v<n>` (redundant fallback behind R2).
@@ -284,6 +313,7 @@ if ensure_release "$GH_TAG" false; then
     mirror "photon-messenger-linux-x86_64-release"  target/release/photon-messenger
     mirror "photon-messenger-linux-arm64-release"   target/aarch64-unknown-linux-gnu/release/photon-messenger
     mirror "photon-messenger-windows-release.exe"   target/x86_64-pc-windows-gnu/release/photon-messenger.exe
+    mirror "photon-messenger-windows-arm64-release.exe" target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe
     mirror "photon-messenger-redox-release"         target/x86_64-unknown-redox/release/photon-messenger
     mirror "photon-messenger-macos-intel-release"   target/x86_64-apple-darwin/release/photon-messenger
     mirror "photon-messenger-macos-arm64-release"   target/aarch64-apple-darwin/release/photon-messenger
