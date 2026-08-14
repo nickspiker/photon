@@ -13853,12 +13853,10 @@ impl PhotonApp {
     /// Sweep the fleet-synced locked set onto sibling contact rows (persisted, so refusal survives a relaunch before settings sync). Monotonic: locks only, never unlocks — an unlock is a deliberate future flow, not a merge artifact.
     fn apply_locked_set(&mut self) {
         let mut locked = self.locked_devices();
-        // SELF-LOCK: if OUR OWN device is in the fleet-locked set, this device has been locked out by the fleet
-        // (an honest owner locking a machine they no longer control). Go dark — tear down the session so presence
-        // stops (it's state-gated to Ready/Conversation) and land on the launch screen. Resume is handle-gated:
-        // the owner can re-attest, a thief without the handle cannot. This is the self-side enforcement the fleet
-        // lockout lacked — it was one-directional (others refuse the device) with nothing making the device itself
-        // go quiet, so a locked machine kept broadcasting presence and rendering peers online.
+        // SELF-LOCK: if OUR OWN device is in the fleet-locked set, this device has been locked out by the fleet (an honest owner locking a machine they no longer control).
+        // Go dark — tear down the session so presence stops (it's state-gated to Ready/Conversation) and land on the launch screen.
+        // Resume is handle-gated: the owner can re-attest, a thief without the handle cannot.
+        // This is the self-side enforcement the fleet lockout lacked — it was one-directional (others refuse the device) with nothing making the device itself go quiet, so a locked machine kept broadcasting presence and rendering peers online.
         if self.session.is_some() {
             if let Some(ours) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) {
                 if locked.contains(&ours) {
@@ -13899,10 +13897,8 @@ impl PhotonApp {
                     let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
                 }
             }
-            // Rebuild the answerable ping set so a freshly-locked device's PINGS stop being answered immediately
-            // (answerable_pubkeys now drops locked_out contacts) — not just its chain/ceremony frames, which the
-            // downstream knows_device gates already refused. Without this the flat set kept the device until the
-            // next fold reseed, so it went on exchanging presence.
+            // Rebuild the answerable ping set so a freshly-locked device's PINGS stop being answered immediately (answerable_pubkeys now drops locked_out contacts) — not just its chain/ceremony frames, which the downstream knows_device gates already refused.
+            // Without this the flat set kept the device until the next fold reseed, so it went on exchanging presence.
             self.reseed_contact_pubkeys();
         }
     }

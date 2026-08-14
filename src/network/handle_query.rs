@@ -940,18 +940,14 @@ impl HandleQuery {
         handle_proof: [u8; 32],
         peer_store: &Arc<Mutex<PeerStore>>,
     ) -> SearchResult {
-        // The signed fold is the AUTHORITY for which device becomes this contact's public_identity — fetch it
-        // FIRST. The old order let the local peer store answer before the chain, so a self-signed-but-non-member
-        // gossip row (a device that signed under a SCRAPED handle_proof — which a thief who knows the handle can
-        // compute) could seed public_identity with an impostor device before any fold confirmed it. The store is
-        // still consulted below, but only to speed ADDRESS resolution for a fold-confirmed member — never to
-        // choose the identity device. (peers-are-fgtw.md's Phase-A mesh membership gap, tightened here.)
+        // The signed fold is the AUTHORITY for which device becomes this contact's public_identity — fetch it FIRST.
+        // The old order let the local peer store answer before the chain, so a self-signed-but-non-member gossip row (a device that signed under a SCRAPED handle_proof — which a thief who knows the handle can compute) could seed public_identity with an impostor device before any fold confirmed it.
+        // The store is still consulted below, but only to speed ADDRESS resolution for a fold-confirmed member — never to choose the identity device (peers-are-fgtw.md's Phase-A mesh membership gap, tightened here).
         let (members, _tip, _generation, existed) =
             match crate::network::fgtw::fleet::current_members_full(&handle_proof) {
                 Ok(v) => v,
                 Err(e) => {
-                    // Chain fetch failed. Fall back to the store ONLY if it holds a record — but that record is
-                    // unverified against the chain, so it's a last-resort routing hint, not an identity claim.
+                    // Chain fetch failed — fall back to the store ONLY if it holds a record, but that record is unverified against the chain, so it's a last-resort routing hint, not an identity claim.
                     // NEVER log the handle string: it derives the identity seed (the honeypot doctrine).
                     crate::logf!("Network: chain fetch failed ({}) — trying local store as an unverified fallback", e);
                     return Self::lookup_in_store(handle, handle_proof, peer_store)

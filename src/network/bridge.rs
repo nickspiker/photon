@@ -1,16 +1,14 @@
 //! The BRIDGE — a passless remote shell between fleet siblings, carried over Photon Transport instead of SSH.
 //!
-//! A sibling device (the client) opens a real PTY on another of the operator's devices (the host); keystrokes and terminal
-//! output ride `term` frames (see [`crate::network::fgtw::protocol::build_term_vsf`]) sealed under the FLEET key. There is
-//! no password because possession of a fold-verified sibling device IS the credential — the same trust the fleet key already
-//! encodes. It is OFF by default and gated behind a Security toggle on the host; a session opening fires a notification there.
+//! A sibling device (the client) opens a real PTY on another of the operator's devices (the host); keystrokes and terminal output ride `term` frames (see [`crate::network::fgtw::protocol::build_term_vsf`]) sealed under the FLEET key.
+//! There is no password because possession of a fold-verified sibling device IS the credential — the same trust the fleet key already encodes.
+//! It is OFF by default and gated behind a Security toggle on the host; a session opening fires a notification there.
 //!
 //! The seal/open helpers (`seal_term`/`open_term`) are CROSS-PLATFORM — both the client (any platform) and the host need them.
-//! The PTY HOST (live shell sessions via forkpty) is desktop-unix only and gated below. The chat-as-shell bridge (line in / line
-//! out) uses only the seal helpers + the app-side runner; the PTY host is a separate future path for full interactive sessions.
+//! The PTY HOST (live shell sessions via forkpty) is desktop-unix only and gated below.
+//! The chat-as-shell bridge (line in / line out) uses only the seal helpers + the app-side runner; the PTY host is a separate future path for full interactive sessions.
 
-/// The blake3 KDF context binding a `term` payload seal to this feature — folded with the fleet key so a term payload can't be
-/// confused with any other fleet-key-sealed blob.
+/// The blake3 KDF context binding a `term` payload seal to this feature — folded with the fleet key so a term payload can't be confused with any other fleet-key-sealed blob.
 fn term_seal_key(fleet_key: &[u8; 32]) -> [u8; 32] {
     blake3::derive_key("photon.bridge.term.v0", fleet_key)
 }
@@ -51,8 +49,7 @@ pub enum TermOut {
     Exit { session_id: [u8; 16], generation: u64, code: i32 },
 }
 
-/// The host-side registry of live sessions. Lives in the app; every method is cheap and non-blocking (the blocking reads happen
-/// on per-session threads that post `TermOut` back through the channel handed to [`Self::open`]).
+/// The host-side registry of live sessions — lives in the app; every method is cheap and non-blocking (the blocking reads happen on per-session threads that post `TermOut` back through the channel handed to [`Self::open`]).
 #[derive(Default)]
 pub struct BridgeHost {
     sessions: HashMap<[u8; 16], PtySession>,
@@ -73,9 +70,9 @@ impl BridgeHost {
         self.sessions.len()
     }
 
-    /// Open a fresh shell for `session_id` at `cols`×`rows`. Spawns the child via `forkpty` and a reader thread that streams the
-    /// shell's output back through `out_tx` until EOF, then posts `Exit`. Idempotent-ish: an existing session for the same id is
-    /// killed first (a re-OPEN = reconnect intent). Returns the reader-thread's generation, or an error string.
+    /// Open a fresh shell for `session_id` at `cols`×`rows` — spawns the child via `forkpty` and a reader thread that streams the shell's output back through `out_tx` until EOF, then posts `Exit`.
+    /// Idempotent-ish: an existing session for the same id is killed first (a re-OPEN = reconnect intent).
+    /// Returns the reader-thread's generation, or an error string.
     pub fn open(
         &mut self,
         session_id: [u8; 16],
@@ -161,8 +158,8 @@ impl BridgeHost {
         }
     }
 
-    /// The "nuke a hung bash" button: kill the current shell and spawn a fresh one on the SAME session_id, so the client keeps
-    /// its session without re-opening. Returns the new generation.
+    /// The "nuke a hung bash" button: kill the current shell and spawn a fresh one on the SAME session_id, so the client keeps its session without re-opening.
+    /// Returns the new generation.
     pub fn nuke(
         &mut self,
         session_id: [u8; 16],
