@@ -5761,6 +5761,15 @@ impl FluorApp for PhotonApp {
             let attest = AttestBlockLayout::compute(layout.attest_block);
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
 
+            // ONE IDENTITY PER DEVICE (docs/lifecycle.md D2): if the binding marker exists this device already carries an identity, so the launch screen must offer only RESUME (type the bound handle) + WIPE.
+            // Awareness lives at RENDER time here, mirroring the submit-time refusal at attest(): a bound device must never render fresh-attest-as-anyone / join-another-fleet / pairing-words UI, only get bounced after interacting.
+            // Cheap: the party id derives from the device secret without the memory-hard proof.
+            let device_bound = self
+                .device_keypair
+                .as_ref()
+                .and_then(|kp| crate::storage::device_binding::bound_party_id(kp.secret.as_bytes()))
+                .is_some();
+
             // Clear the attest block's footprint in the shared hit_test_map BEFORE re-stamping this frame's widgets. Chrome only wipes the map on its own dirty cycles (`rasterize_chrome` early-returns when chrome is clean), but the launch widgets re-stamp every frame — so when the Attest button stops rendering (handle cleared to empty) on a chrome-clean frame, its old hit-rect would otherwise linger and keep dispatching pointer + hitmask. The attest_block is the only Photon-owned region of the map on this screen, so clearing the whole block each frame is the cheap correct reset; the textbox/button/∞ below re-stamp whatever is actually present.
             restamp_hit_rect(
                 &mut chrome.hit_test_map,
@@ -5785,6 +5794,12 @@ impl FluorApp for PhotonApp {
                         LaunchState::Error(msg) if !msg.is_empty() => {
                             Some((msg.as_str(), (*theme::ERROR_TEXT_COLOUR)))
                         }
+                        // Up-front hint: a bound device in Fresh gets the resume-or-wipe line in the STATUS colour (not error-red) so the restriction is visible before any submit.
+                        // Confirm/KnownHandle fall thru to None and keep their own bands.
+                        LaunchState::Fresh if device_bound => Some((
+                            "this device carries an identity \u{2014} type its handle to resume, or wipe (Settings \u{2192} Security)",
+                            (*theme::STATUS_TEXT_COLOUR),
+                        )),
                         _ => None,
                     }
                 };
@@ -5853,7 +5868,11 @@ impl FluorApp for PhotonApp {
             }
 
             // KnownHandle fork (docs/lifecycle.md D1) — the claimed-name screen, drawn in the same band as the permanence block. Both readings, taken-first (the more common visitor is the collider), then the two pills. Nothing has touched the network yet.
-            if matches!(launch_state, LaunchState::KnownHandle) && !self.launch_add_mode {
+            // Suppressed when device_bound: a bound device can't join another fleet, so the "It's mine — show pairing words" pill and the whole claimed-name fork have no meaning here.
+            if matches!(launch_state, LaunchState::KnownHandle)
+                && !self.launch_add_mode
+                && !device_bound
+            {
                 let tb_h = (attest.textbox.y1 - attest.textbox.y0) as f32;
                 let line_h = (tb_h * 0.45).min(buf_w as f32 / 22.0).max(10.0);
                 let cx = buf_w as f32 * 0.5;
@@ -5912,8 +5931,9 @@ impl FluorApp for PhotonApp {
             }
 
             // Join words phase (new device): the screen becomes display-only — this device's pairing words, drawn in rows for reading onto the other device, flipping to the found-colour when a member matches them. No textbox, no attest button.
+            // Suppressed when device_bound: a bound device must never display its pairing words (it can't be paired into another fleet).
             let join_words_up = self.launch_add_mode && self.add_join_words.is_some();
-            if join_words_up {
+            if join_words_up && !device_bound {
                 if let Some(words) = self.add_join_words.as_ref() {
                     let tokens: Vec<String> = {
                         let mut v = Vec::new();
