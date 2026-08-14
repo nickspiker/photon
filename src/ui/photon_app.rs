@@ -11607,17 +11607,17 @@ impl PhotonApp {
             return;
         };
         // First open with an empty thread: drop a local-only hint so the screen explains itself. Stored as an incoming bubble (not sent) — purely a UI seed.
-        if let Some(c) = self.contacts.get_mut(ci) {
-            if c.messages.is_empty() {
+        if let Some(conv) = self.conv_mut_of(ci) {
+            if conv.messages.is_empty() {
                 let hint = ChatMessage::new_with_timestamp(
                     "Bridge ready. Type a command prefixed with \u{201c}$ \u{201d} (e.g. $ uptime) and this device runs it, replying with the output. Requires the target to have the remote-terminal host enabled.".to_string(),
                     false,
                     vsf::eagle_time_oscillations(),
                 );
-                c.insert_message_sorted(hint);
+                conv.insert_message_sorted(hint);
             }
         }
-        self.active_contact = Some(ci);
+        self.open_conversation_with(ci);
         self.state = AppState::Conversation;
         self.conv_topbar_off = 0.0;
         self.clear_unread(ci);
@@ -14395,15 +14395,13 @@ impl PhotonApp {
             let is_sibling = self.contacts.get(ci).map(|c| c.is_sibling).unwrap_or(false);
             if is_sibling && !suppress_bubble {
                 // Store the outgoing bubble locally so the conversation shows what was asked.
-                if let Some(contact) = self.contacts.get_mut(ci) {
+                if let Some(conv) = self.conv_mut_of(ci) {
                     let mut msg = ChatMessage::new_with_timestamp(text.clone(), true, vsf::eagle_time_oscillations());
                     msg.delivered = true;
-                    contact.insert_message_sorted(msg.clone());
-                    contact.message_scroll_offset = 0.0;
-                    if let Some(storage) = self.storage.as_ref() {
-                        let _ = crate::storage::contacts::save_messages(contact, storage);
-                    }
+                    conv.insert_message_sorted(msg.clone());
+                    conv.scroll_offset = 0.0;
                 }
+                self.persist_messages_async(ci);
                 self.send_bridge_text(ci, &text);
                 return true;
             }
@@ -15434,15 +15432,13 @@ impl PhotonApp {
 
     /// Post a bridge line into a sibling conversation as a stored message (incoming). Persists so it survives restart.
     fn bridge_post_bubble(&mut self, ci: usize, text: &str, outgoing: bool) {
-        if let Some(contact) = self.contacts.get_mut(ci) {
+        if let Some(conv) = self.conv_mut_of(ci) {
             let mut msg = ChatMessage::new_with_timestamp(text.to_string(), outgoing, vsf::eagle_time_oscillations());
             msg.delivered = true;
-            contact.insert_message_sorted(msg);
-            contact.message_scroll_offset = 0.0;
-            if let Some(storage) = self.storage.as_ref() {
-                let _ = crate::storage::contacts::save_messages(contact, storage);
-            }
+            conv.insert_message_sorted(msg);
+            conv.scroll_offset = 0.0;
         }
+        self.persist_messages_async(ci);
     }
 
     /// BRIDGE client SEND: transmit a line typed in a sibling conversation to that device as a `term` DATA frame (the sibling device-to-device transport). The line rides fleet-sealed; the host runs any `$ ` command and replies with a term DATA frame carrying the output, which our client-receive turns back into a chat bubble. `session_id` is derived from the device pair so both sides agree without a handshake.
@@ -20884,6 +20880,7 @@ impl PhotonApp {
                 StatusUpdate::OurLanAddrObserved { .. } => "OurLanAddrObserved",
                 StatusUpdate::ReflexiveLearned { .. } => "ReflexiveLearned",
                 StatusUpdate::PathValidated { .. } => "PathValidated",
+                StatusUpdate::TermReceived { .. } => "TermReceived",
             }
         }
         let mut arm_timer: Option<(&'static str, std::time::Instant)> = None;
