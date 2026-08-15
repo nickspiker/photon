@@ -1175,7 +1175,7 @@ impl FluorApp for PhotonApp {
                                     self.state = AppState::Launch(LaunchState::Error(
                                         format!("Enter your handle to confirm unlocking {name}."),
                                     ));
-                                    self.refocus_handle_select_all();
+                                    self.clear_handle_for_reproof();
                                     crate::logf!("FLEET: unlock of {} armed — de-attested, awaiting handle confirmation", name);
                                 }
                             } else {
@@ -1209,7 +1209,7 @@ impl FluorApp for PhotonApp {
                                     self.state = AppState::Launch(LaunchState::Error(
                                         format!("Enter your handle to confirm locking out {name}.{warn}"),
                                     ));
-                                    self.refocus_handle_select_all();
+                                    self.clear_handle_for_reproof();
                                     crate::logf!("FLEET: lock-out of {} armed — de-attested, awaiting handle confirmation", name);
                                 }
                             } else {
@@ -1278,7 +1278,7 @@ impl FluorApp for PhotonApp {
                         self.private_s = crate::crypto::blind::PrivateS::None;
                         self.pending_broadcast_signal = -1;
                         self.state = AppState::Launch(LaunchState::Fresh);
-                        self.refocus_handle_select_all();
+                        self.clear_handle_for_reproof();
                         crate::log("SECURITY: locked — session cleared, vault kept; re-type handle to unlock");
                     } else if slot == 2 {
                         // "Shred (crypto-wipe)" → full clean (nuke vault + clear session). Two-tap confirm (destructive + irreversible). Arming disarms the other destructive pill so exactly one confirm is ever live.
