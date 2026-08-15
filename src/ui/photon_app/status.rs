@@ -84,15 +84,19 @@ impl PhotonApp {
         // Steady state: every contact already has an avatar → skip the sweep entirely (no timestamp read, no allocation) since this runs every tick. Only do the work when something's missing.
         if self.contacts.iter().any(|c| c.avatar_pixels.is_none()) {
             let now = vsf::eagle_time_oscillations();
+            // Probe cache taken out for the closure (contacts holds the self borrow), restored after. The vault read behind a miss takes the VAULT MUTEX that persist workers hold thru whole table writes — per-tick probing turned every background write into a UI stall (2026-08-15 "status pre-loop" 400-1794ms). One probe per contact per session; avatar installs / pin adoptions clear the map.
+            let mut probe_cache = std::mem::take(&mut self.avatar_probe_cache);
             let plans: Vec<AvatarPlan> = self
                 .contacts
                 .iter()
                 .enumerate()
                 .filter(|(_, c)| c.avatar_pixels.is_none())
                 .map(|(ci, c)| {
-                    // Local vault first — a cheap `read_addr` (encrypted blob, no decode). If we have it, the network never runs. This is what stops the every-launch redundant P2P request: the friend's avatar is already cached, so we don't re-ask them for it.
-                    let cached = self.storage.as_ref().is_some_and(|s| {
-                        crate::ui::avatar::has_cached_avatar_from_seed(&c.handle_hash, s)
+                    // Local vault first — remembered from the one probe. If we have it, the network never runs. This is what stops the every-launch redundant P2P request: the friend's avatar is already cached, so we don't re-ask them for it.
+                    let cached = *probe_cache.entry(c.handle_hash).or_insert_with(|| {
+                        self.storage.as_ref().is_some_and(|s| {
+                            crate::ui::avatar::has_cached_avatar_from_seed(&c.handle_hash, s)
+                        })
                     });
                     if cached {
                         return AvatarPlan::LocalCached { ci };
@@ -132,6 +136,7 @@ impl PhotonApp {
                     },
                 }
             }
+            self.avatar_probe_cache = probe_cache;
         } // end avatar sweep (skipped when every contact already has an avatar)
 
         let checker = match &self.status_checker {
@@ -3776,6 +3781,8 @@ impl PhotonApp {
             for c in self.contacts.iter_mut() {
                 c.avatar_pin_dirty = false;
             }
+            // A fresh pin means a fresh avatar to pull — the sweep's remembered probes are stale.
+            self.avatar_probe_cache.clear();
             if let Some(storage) = self.storage.as_ref() {
                 let index: Vec<crate::storage::contacts::ContactIdentity> = self
                     .contacts

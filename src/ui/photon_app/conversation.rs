@@ -1607,6 +1607,8 @@ impl PhotonApp {
                 contact.avatar_pixels = Some(display);
                 contact.avatar_scaled = None; // force rebuild at the current diameter on next render
                 contact.avatar_scaled_diameter = 0;
+                // An install changes what the vault holds — drop the sweep's remembered probes (one re-probe each, rare edge).
+                self.avatar_probe_cache.clear();
                 crate::logf!(
                     "Avatar: installed peer avatar for {}",
                     crate::fp(&contact.handle_proof)
