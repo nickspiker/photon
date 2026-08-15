@@ -146,7 +146,7 @@ impl FluorApp for PhotonApp {
         let orb_icon = Some(dev_gradient_orb());
         #[cfg(not(feature = "development"))]
         let orb_icon = match fluor::host::icon::Icon::from_vsf_bytes(include_bytes!(
-            "../../assets/photon-orb.vsf"
+            "../../../assets/photon-orb.vsf"
         )) {
             Ok(icon) => Some(icon),
             Err(e) => {
