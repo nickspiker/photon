@@ -89,8 +89,12 @@ fi
 # DEPLOY_WARNINGS accumulates the count across every target for the end-of-deploy summary.
 DEPLOY_WARNINGS=0
 snap_cargo() {
-    local errlog; errlog="$(mktemp)"
-    if ! ( cd "$SNAP_DIR" && cargo "$@" ) 2> >(tee "$errlog" >&2); then
+    local errlog rc; errlog="$(mktemp)"
+    # Foreground tee — a pipeline member the shell WAITS on, so the diagnostic can never be lost. The old `2> >(tee …)` process substitution raced the exiting ERR trap and ate the ENTIRE cargo error plus the marker below (2026-08-14: the v54 orb-include failure printed nothing but a line number).
+    # cargo emits diagnostics and progress on stderr and nothing meaningful on stdout, so merging the streams keeps the live scroll identical; tee's own (always-0) status would mask the failure under plain set -e, so cargo's verdict comes back via PIPESTATUS.
+    ( cd "$SNAP_DIR" && cargo "$@" ) 2>&1 | tee "$errlog" >&2
+    rc=${PIPESTATUS[0]}
+    if [ "$rc" -ne 0 ]; then
         # cargo's real diagnostic (the error[...] block) has already streamed to stderr above — this only
         # names WHICH invocation tore so it isn't lost in the scroll. Read the cargo error above, not this line.
         echo "" >&2
