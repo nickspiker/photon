@@ -22,6 +22,8 @@ impl PhotonApp {
                 __r
             }};
         }
+        // Region attribution (2026-08-15 field log): the OUTER timer showed 400-1794ms while the pass profile (>200ms) stayed SILENT — the cost lives outside the arm loop, in the pre-loop drains or the post-loop deferred section, which nothing named. Two coarse region timers pin the side; the guilty region gets fine-grained timers next round.
+        let preloop_t = std::time::Instant::now();
         // Peer avatars: install any completed downloads, then kick a fetch (once/session/handle) for any contact still without one. Cache-first + dedup'd by avatar_dl_started, so this is cheap to run every tick — it spawns at most one thread per peer per session.
         timed_drain!("avatar", self.drain_avatar_downloads());
         timed_drain!("attach", self.drain_attach_installed());
@@ -229,6 +231,12 @@ impl PhotonApp {
                 StatusUpdate::ReflexiveLearned { .. } => "ReflexiveLearned",
                 StatusUpdate::PathValidated { .. } => "PathValidated",
                 StatusUpdate::TermReceived { .. } => "TermReceived",
+            }
+        }
+        {
+            let ms = preloop_t.elapsed().as_millis();
+            if ms > 100 {
+                crate::logf!("PERF: status pre-loop took {}ms (UI thread)", ms as u64);
             }
         }
         let mut arm_timer: Option<(&'static str, std::time::Instant)> = None;
@@ -3587,6 +3595,8 @@ impl PhotonApp {
                 .join(", ");
             crate::logf!("PERF: status pass {}ms over {} update(s) — top arms: {}", pass_ms as u64, pass_updates, summary);
         }
+        // The post-loop deferred section (ceremony completions, pings, seals, persists, adoptions) — the second untimed region the 2026-08-15 stalls could hide in.
+        let deferred_t = std::time::Instant::now();
 
         // Async-persist every conversation an arm touched (deduped — one snapshot per conversation per drain).
         persist_hashes.dedup();
@@ -3820,6 +3830,12 @@ impl PhotonApp {
 
         // Content marks the scene dirty HERE, not via the caller's return: the Android foreground SERVICE also runs this drain headless (nativeServiceTick → advance_protocol) and drops the returned bool — so a presence flip or name/pin adoption that landed while backgrounded painted nothing on resume (the field "online ring is stale until you click thru", 2026-08-08). scene_dirty is app state, so marking it at the mutation site survives the headless window and the first visible frame repaints.
         self.scene_dirty |= changed;
+        {
+            let ms = deferred_t.elapsed().as_millis();
+            if ms > 100 {
+                crate::logf!("PERF: status deferred took {}ms (UI thread)", ms as u64);
+            }
+        }
         changed
     }
 }
