@@ -17,10 +17,24 @@ impl PhotonApp {
         }
         let _rt = RenderTimer(
             std::time::Instant::now(),
+            // Every state named exactly — a sustained render storm hid behind "other" in a 2026-08-15 field log and the label couldn't say WHICH screen was looping.
             match self.state {
                 AppState::Conversation => "Conversation",
                 AppState::Ready => "Ready",
-                _ => "other",
+                AppState::Launch(_) => "Launch",
+                AppState::Searching => "Searching",
+                AppState::AddDevice => "AddDevice",
+                AppState::Connected { .. } => "Connected",
+                AppState::Settings(SettingsPage::You) => "Settings:You",
+                AppState::Settings(SettingsPage::Fleet) => "Settings:Fleet",
+                AppState::Settings(SettingsPage::Security) => "Settings:Security",
+                AppState::Settings(SettingsPage::Recovery) => "Settings:Recovery",
+                AppState::Settings(SettingsPage::Appearance) => "Settings:Appearance",
+                AppState::Settings(SettingsPage::Notifications) => "Settings:Notifications",
+                AppState::Settings(SettingsPage::Updates) => "Settings:Updates",
+                AppState::Settings(SettingsPage::Diagnostics) => "Settings:Diagnostics",
+                AppState::Settings(SettingsPage::About) => "Settings:About",
+                AppState::ContactPanel(_) => "ContactPanel",
             },
         );
         // Press-hold-release: sync the "held" visual on every clickable WIDGET (attest / + / send Buttons) to the pointer arbiter's currently-pressed hit id. On desktop the host's overlay pass then paints the held tint from each Button's `tint_delta`; the app's own hit-stamped elements (pills, contact rows, nav rows) read `ctx.pressed_hit` directly further down. Must run before the widget tree is walked for overlay deltas (post-render), so a press lights up the same frame.
