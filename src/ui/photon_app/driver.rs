@@ -302,6 +302,8 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.unattended_confirm_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(2); // confirm / cancel
+        self.locked_retry_hit = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(1);
         self.settings_custodian_check = Some(crate::ui::settings_widgets::Checkbox::new(
             &mut self.hit_counter,
             "Be a custodian for others",
@@ -961,6 +963,18 @@ impl FluorApp for PhotonApp {
             return EventResponse::Handled;
         }
 
+        // Retry pill on the Locked dead-end: the user claims a sibling has unlocked this device, so return to the normal bound-resume entry and let the standard attest re-ask the worker. The handle is typed only on that standard screen — the dead-end itself never invites input (a locked device must not prompt for the root secret).
+        if hit_id == self.locked_retry_hit
+            && self.locked_retry_hit != HIT_NONE
+            && matches!(self.state, AppState::Launch(LaunchState::Locked))
+        {
+            crate::log("LOCKED: user claims an unlock — returning to the resume screen for a fresh attest");
+            self.state = AppState::Launch(LaunchState::Fresh);
+            self.refocus_handle_select_all();
+            ctx.window.request_redraw();
+            return EventResponse::Handled;
+        }
+
         // "Start fresh (wipe this device)" on the JOIN words screen — a removed device's self-clean path. Two-tap confirm → full clean (nuke vault + clear session), leaving a blank slate ready to attest fresh or join another fleet.
         if hit_id == self.join_startfresh_hit_id && self.join_startfresh_hit_id != HIT_NONE {
             if self.join_startfresh_armed {
@@ -1137,14 +1151,37 @@ impl FluorApp for PhotonApp {
             }
             if self.settings_btn_base != HIT_NONE
                 && hit_id >= self.settings_btn_base
-                // 40, not 32: the Fleet page's slot map grew a fourth band — 16+ row tap-copy, 24+ Release pills, 32+ Lock-out pills (six rows each). The old cap ate every Lock-out release: the pill painted its press (hit map stamped at draw) but the id fell outside this window, so the action never dispatched.
-                && hit_id < self.settings_btn_base.wrapping_add(40)
+                // 48, not 32: the Fleet page's slot map grew a fourth and fifth band — 16+ row tap-copy, 24+ Release pills, 32+ Lock-out pills, 40+ Unlock pills (six rows each). The old cap ate every Lock-out release: the pill painted its press (hit map stamped at draw) but the id fell outside this window, so the action never dispatched.
+                && hit_id < self.settings_btn_base.wrapping_add(48)
             {
                 let slot = hit_id - self.settings_btn_base;
                 if page == SettingsPage::Fleet {
                     if slot == 0 {
                         // "Add device" pill → the pairing-words flow.
                         self.open_add_device_flow();
+                    } else if slot >= 40 {
+                        // Locked sibling row's "Unlock" pill (two-tap): the owner's deliberate reversal. Same handle-confirmation shape as the lock — the confirm de-attests, the unlock fires only inside the next successful attest (pending_unlock), so it is proof-of-owner, and the handle is typed only on the standard attest screen.
+                        let idx = (slot - 40) as usize;
+                        let devices = self.fleet_device_rows();
+                        if let Some((pk, false, _, false, name, _, _)) = devices.get(idx).cloned() {
+                            if self.fleet_unlock_armed == Some(pk) {
+                                self.fleet_unlock_armed = None;
+                                if let Some(hp) = self.session.as_ref().map(|s| s.handle_proof) {
+                                    self.pending_unlock = Some((pk, hp, name.clone()));
+                                    tohu::clear_session();
+                                    self.session = None;
+                                    self.private_s = crate::crypto::blind::PrivateS::None;
+                                    self.pending_broadcast_signal = -1;
+                                    self.state = AppState::Launch(LaunchState::Error(
+                                        format!("Enter your handle to confirm unlocking {name}."),
+                                    ));
+                                    self.refocus_handle_select_all();
+                                    crate::logf!("FLEET: unlock of {} armed — de-attested, awaiting handle confirmation", name);
+                                }
+                            } else {
+                                self.fleet_unlock_armed = Some(pk);
+                            }
+                        }
                     } else if slot >= 32 {
                         // Live sibling row's "Lock out" pill (two-tap): treat-as-stolen. The chain is untouched — the fleet-synced locked set + key rotation do all the work.
                         let idx = (slot - 32) as usize;
@@ -1154,13 +1191,23 @@ impl FluorApp for PhotonApp {
                                 self.fleet_lock_armed = None;
                                 // The confirm DE-ATTESTS this device; the lock executes only inside the next successful attest (see pending_lock). Owner knows the handle and sails through; a thief just signed themselves out of the one device they held. Same session teardown as Security's "Lock".
                                 if let Some(hp) = self.session.as_ref().map(|s| s.handle_proof) {
+                                    // Locking the LAST other live device leaves this one alone holding the fleet — if it is then lost while the lock stands, no member can ever sign the unlock (custodian supersession is the only exit, and it isn't built). Say so at the confirmation.
+                                    let other_live = devices
+                                        .iter()
+                                        .filter(|(rpk, is_self, _, retired, _, _, _)| !*is_self && !*retired && *rpk != pk && !self.is_locked_device(rpk))
+                                        .count();
+                                    let warn = if other_live == 0 {
+                                        " WARNING: this leaves the device you are holding as the ONLY one able to unlock it."
+                                    } else {
+                                        ""
+                                    };
                                     self.pending_lock = Some((pk, hp, name.clone()));
                                     tohu::clear_session();
                                     self.session = None;
                                     self.private_s = crate::crypto::blind::PrivateS::None;
                                     self.pending_broadcast_signal = -1;
                                     self.state = AppState::Launch(LaunchState::Error(
-                                        format!("Enter your handle to confirm locking out {name}."),
+                                        format!("Enter your handle to confirm locking out {name}.{warn}"),
                                     ));
                                     self.refocus_handle_select_all();
                                     crate::logf!("FLEET: lock-out of {} armed — de-attested, awaiting handle confirmation", name);

@@ -720,6 +720,22 @@ impl PhotonApp {
                             id,
                         );
                     }
+                } else {
+                    // The dead-end's ONE interaction: the user claims a sibling has unlocked this device. The pill returns to the normal resume entry (locked_retry_hit handler) and deliberately does NOT open a handle field here — a locked device never prompts for the root secret.
+                    let r = attest.attest;
+                    let pill = fluor::region::Region::new(
+                        r.x0 as f32,
+                        r.y0 as f32,
+                        (r.x1 - r.x0) as f32,
+                        (r.y1 - r.y0) as f32,
+                    )
+                    .center_h(0.85);
+                    draw_stub_pill_filled(
+                        &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h,
+                        pill, "Unlocked from another device? Tap to retry",
+                        self.locked_retry_hit, ctx.pressed_hit, true,
+                        None, "Open Sans",
+                    );
                 }
                 // The Attest button only exists once there's a handle to attest. An empty, untouched field shows the dormant infinity in its place instead; a focused-but-empty field shows neither (the user is typing). Hiding the button also keeps its hit-rect out of `hit_test_map`, so an empty field can't dispatch a no-op attest click.
                 if handle_entered {
@@ -3742,12 +3758,12 @@ impl PhotonApp {
                                 if armed { Some(*theme::PILL_RED) } else { None }, "Oxanium",
                             );
                         } else if !*is_self {
-                            // Live sibling: the RIGHT column carries Bridge and (unless already locked) the Lock-out pill side by side, so neither draws over the other.
-                            let (bridge_pill, lock_pill) = if row_locked {
-                                (cols[2].center_h(0.8), None)
+                            // Live sibling: the RIGHT column carries Bridge and the row's state pill side by side — Lock out on a trusted row, Unlock on a locked one.
+                            let halves = cols[2].split_h([1.0, 1.0]);
+                            let (bridge_pill, lock_pill, unlock_pill) = if row_locked {
+                                (halves[0].center_h(0.9), None, Some(halves[1].center_h(0.9)))
                             } else {
-                                let halves = cols[2].split_h([1.0, 1.0]);
-                                (halves[0].center_h(0.9), Some(halves[1].center_h(0.9)))
+                                (halves[0].center_h(0.9), Some(halves[1].center_h(0.9)), None)
                             };
                             // Bridge on ANY sibling (not just confirmed-online): the send reports "no address yet" if truly unreachable, which is clearer than a missing button. Green when online, dimmed grey when offline so it still reads as "reachable-ish".
                             let fill = if *online { Some(*theme::PILL_GREEN) } else { Some(*theme::PILL_GREY) };
@@ -3765,6 +3781,17 @@ impl PhotonApp {
                                     &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h,
                                     pill, label,
                                     btn_base.wrapping_add(32 + i as HitId), ctx.pressed_hit, true,
+                                    if armed { Some(*theme::PILL_RED) } else { None }, "Oxanium",
+                                );
+                            }
+                            // Locked rows carry the reversal (two-tap): the confirm routes thru a handle re-proof exactly like the lock, then clears the worker verdict + fleet marker and re-mints the key with the device wrapped back in.
+                            if let Some(pill) = unlock_pill {
+                                let armed = self.fleet_unlock_armed.as_ref() == Some(pk);
+                                let label = if armed { "Unlock \u{2014} sure?" } else { "Unlock" };
+                                draw_stub_pill_filled(
+                                    &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h,
+                                    pill, label,
+                                    btn_base.wrapping_add(40 + i as HitId), ctx.pressed_hit, true,
                                     if armed { Some(*theme::PILL_RED) } else { None }, "Oxanium",
                                 );
                             }

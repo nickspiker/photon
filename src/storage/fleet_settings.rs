@@ -336,6 +336,26 @@ mod tests {
     }
 
     #[test]
+    fn empty_value_unlock_clears_the_lock_syncs_and_loses_to_a_newer_relock() {
+        const STOLEN: [u8; 32] = [0xCC; 32];
+        let key = format!("fleet.locked.{}", hex::encode(STOLEN));
+        let mut a = FleetSettings::new([1; 32]);
+        let mut b = FleetSettings::new([2; 32]);
+        a.set(&key, STOLEN.to_vec(), 100);
+        b.merge_from(a.global.clone(), a.devices.clone());
+        assert!(b.pubkey_set_union("fleet.locked", "fleet.locked.").contains(&STOLEN));
+        // The owner's reversal: an EMPTY value at a newer stamp — the value-level tombstone unlock_fleet_device writes. It drops out of the union locally and syncs the emptiness fleet-wide.
+        a.set(&key, Vec::new(), 200);
+        assert!(a.pubkey_set_union("fleet.locked", "fleet.locked.").is_empty());
+        b.merge_from(a.global.clone(), a.devices.clone());
+        assert!(b.pubkey_set_union("fleet.locked", "fleet.locked.").is_empty(), "the unlock must sync");
+        // A later RE-LOCK wins over the tombstone by LWW — unlock is a reversal, not an immunity.
+        b.set(&key, STOLEN.to_vec(), 300);
+        a.merge_from(b.global.clone(), b.devices.clone());
+        assert!(a.pubkey_set_union("fleet.locked", "fleet.locked.").contains(&STOLEN));
+    }
+
+    #[test]
     fn linked_key_falls_back_to_local_until_global_arrives_and_merge_adopts_remote() {
         let mut fs = FleetSettings::new([7; 32]);
         // A linked key with only a local fallback (e.g. link flipped before any global write).
