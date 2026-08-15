@@ -572,6 +572,11 @@ enum ChainsPostDurable {
         std::sync::mpsc::Sender<crate::network::status::MessageRequest>,
         crate::network::status::MessageRequest,
     ),
+    /// A fresh ceremony's ClutchComplete proof: the peer must never hold a proof whose backing chains we could still lose to a crash, so it fires only once those chains are durable (2026-08-15 — this was the inline save-then-send in the ceremony drain).
+    CeremonyProof(
+        std::sync::mpsc::Sender<crate::network::status::ClutchCompleteRequest>,
+        crate::network::status::ClutchCompleteRequest,
+    ),
 }
 
 impl ChainsPostDurable {
@@ -581,6 +586,9 @@ impl ChainsPostDurable {
                 let _ = tx.send(req);
             }
             ChainsPostDurable::Message(tx, req) => {
+                let _ = tx.send(req);
+            }
+            ChainsPostDurable::CeremonyProof(tx, req) => {
                 let _ = tx.send(req);
             }
         }
@@ -1083,6 +1091,9 @@ pub struct PhotonApp {
     /// Background ceremony-completion results (avalanche-expand → friendship chains + eggs proof). Drained in `tick` → sends complete, marks the contact CLUTCH-complete.
     clutch_ceremony_tx: std::sync::mpsc::Sender<crate::network::ClutchCeremonyResult>,
     clutch_ceremony_rx: std::sync::mpsc::Receiver<crate::network::ClutchCeremonyResult>,
+    /// KEM-decap job channel — the fourth CLUTCH job stage (2026-08-15): opening a peer's KEM response is 8 PQ decapsulations and ran inline in three drain arms, the last non-UI work on the UI thread.
+    clutch_kem_decap_tx: std::sync::mpsc::Sender<crate::network::ClutchKemDecapResult>,
+    clutch_kem_decap_rx: std::sync::mpsc::Receiver<crate::network::ClutchKemDecapResult>,
     /// Peer-avatar background downloads (fetched from FGTW by handle, off the UI thread). The result carries the decoded VSF-RGB pixels (or None if the peer has no avatar / fetch failed); the drain in `check_status_updates` colour-converts and installs them on the matching contact.
     avatar_dl_tx: std::sync::mpsc::Sender<crate::ui::avatar::AvatarDownloadResult>,
     avatar_dl_rx: std::sync::mpsc::Receiver<crate::ui::avatar::AvatarDownloadResult>,
@@ -1683,6 +1694,11 @@ impl PhotonApp {
                 tx
             },
             clutch_ceremony_rx: std::sync::mpsc::channel().1,
+            clutch_kem_decap_tx: {
+                let (tx, _) = std::sync::mpsc::channel();
+                tx
+            },
+            clutch_kem_decap_rx: std::sync::mpsc::channel().1,
             avatar_dl_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
                 tx

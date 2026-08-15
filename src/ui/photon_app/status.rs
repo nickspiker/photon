@@ -158,6 +158,12 @@ impl PhotonApp {
 
         let mut changed = false;
         let mut ceremony_completions: Vec<usize> = Vec::new(); // Contact indices to complete after loop
+        // Deferred KEM decapsulation spawns (spawn_clutch_kem_decap needs &self; the loop holds contact borrows) — same deferral discipline as ceremony_completions.
+        let mut decap_spawns: Vec<(
+            crate::types::ContactId,
+            crate::crypto::clutch::ClutchKemResponsePayload,
+            crate::crypto::clutch::ClutchAllKeypairs,
+        )> = Vec::new();
         // BRIDGE: term frames deferred past the drain (on_bridge_frame needs &mut self; the drain holds an immutable `checker` borrow). Cross-platform.
         let mut term_frames: Vec<([u8; 16], u8, Vec<u8>, [u8; 32], std::net::SocketAddr)> = Vec::new();
         let mut lan_ping_indices: Vec<usize> = Vec::new(); // Contact indices to ping immediately on new LAN discovery
@@ -1193,7 +1199,7 @@ impl PhotonApp {
                     sender_addr: raw_sender_addr,
                 } => {
                     use crate::crypto::clutch::{
-                        derive_conversation_token, ClutchKemSharedSecrets, ClutchOfferPayload,
+                        derive_conversation_token, ClutchOfferPayload,
                     };
                     use crate::network::status::ClutchOfferRequest;
                     use crate::types::ClutchState;
@@ -1479,28 +1485,20 @@ impl PhotonApp {
                                     contact.offer_provenances.len()
                                 );
 
-                                // Process any pending KEM response that arrived before ceremony_id
-                                if let Some(pending_kem) = contact.clutch_pending_kem.take() {
-                                    crate::logf!("CLUTCH: Processing queued KEM response from {} (ceremony_id now available)", crate::fp(&contact.handle_proof));
-                                    // Decapsulate remote KEM (remote encapsulated to local pubkeys)
+                                // A KEM response queued before ceremony_id existed can drain now — to the decap JOB, not inline (8 PQ opens off the UI thread, 2026-08-15). The drain stores the secrets and runs the completion check.
+                                if contact.clutch_pending_kem.is_some()
+                                    && !contact.clutch_kem_decap_in_progress
+                                {
                                     if let Some(ref local_keys) = contact.clutch_our_keypairs {
-                                        let remote_secrets =
-                                            ClutchKemSharedSecrets::decapsulate_from_peer(
-                                                &pending_kem,
-                                                local_keys,
-                                            );
-                                        if remote_secrets.is_none() {
-                                            crate::log("CLUTCH: queued KEM carries malformed material — dropped (version skew?)");
-                                        }
-                                        // Store remote secrets in remote slot
-                                        if let (Some(remote_secrets), Some(remote_slot)) = (
-                                            remote_secrets,
-                                            contact.get_slot_mut(&their_handle_hash),
-                                        ) {
-                                            remote_slot.kem_secrets_from_them =
-                                                Some(remote_secrets);
-                                            crate::logf!("CLUTCH: Decapsulated queued KEM from {} - stored in slot", crate::fp(&contact.handle_proof));
-                                        }
+                                        let pending_kem =
+                                            contact.clutch_pending_kem.take().expect("checked");
+                                        contact.clutch_kem_decap_in_progress = true;
+                                        decap_spawns.push((
+                                            contact.id.clone(),
+                                            pending_kem,
+                                            local_keys.clone(),
+                                        ));
+                                        crate::logf!("CLUTCH: Spawning decap for queued KEM from {} (ceremony_id now available)", crate::fp(&contact.handle_proof));
                                     }
                                 }
                             }
@@ -1860,7 +1858,7 @@ impl PhotonApp {
                     sender_addr: raw_sender_addr,
                 } => {
                     use crate::crypto::clutch::{
-                        derive_conversation_token, ClutchKemSharedSecrets,
+                        derive_conversation_token,
                     };
 
                     // Normalize to port 4383 (TCP source port is ephemeral)
@@ -1939,7 +1937,7 @@ impl PhotonApp {
                     let their_kem = payload;
 
                     // Find contact by handle_hash
-                    for (idx, contact) in self.contacts.iter_mut().enumerate() {
+                    for (_idx, contact) in self.contacts.iter_mut().enumerate() {
                         if contact.handle_hash == their_handle_hash {
                             // A relayed message (RELAY_ADDR sentinel) carries no reachable peer address — skip address-learning (storing the sentinel as contact.ip would poison direct sends) and mark the link relay-only, which lights the presence lime-yellow. A direct message clears the flag: direct always wins. Otherwise inbound DATA elects the sending device ACTIVE (the fleet reply-TX rule) and seeds its endpoint, so contact-level addressing follows the device actually talking to us.
                             if sender_addr == crate::network::status::RELAY_ADDR {
@@ -2013,75 +2011,35 @@ impl PhotonApp {
                                 }
                             }
 
-                            // Decapsulate remote KEM response using local secret keys
-                            if let Some(ref local_keys) = contact.clutch_our_keypairs {
-                                let Some(remote_secrets) = ClutchKemSharedSecrets::decapsulate_from_peer(
-                                    &their_kem, local_keys,
-                                ) else {
-                                    crate::log("CLUTCH: KEM response carries malformed material — dropped (version skew?)");
-                                    break;
-                                };
+                            // Duplicate KEM response (peer retransmit): the slot already holds their secrets — drop before spending anything. Pre-2026-08-15 every duplicate re-ran all 8 decapsulations INLINE, so a retransmit storm compounded the very UI freeze that was stalling our reply.
+                            if contact
+                                .get_slot(&their_handle_hash)
+                                .map(|s| s.kem_secrets_from_them.is_some())
+                                .unwrap_or(false)
+                            {
+                                crate::logf!(
+                                    "CLUTCH: duplicate KEM response from {} — slot already decapped, dropped",
+                                    crate::fp(&contact.handle_proof)
+                                );
+                                break;
+                            }
 
-                                // Store in remote slot (secrets from remote to local)
-                                if let Some(slot) = contact.get_slot_mut(&their_handle_hash) {
-                                    slot.kem_secrets_from_them = Some(remote_secrets);
+                            // Hand the KEM response to the decap job — 8 PQ opens are NOT UI-thread work (2026-08-15). The drain (check_clutch_kem_decaps) stores the secrets, backfills our offer, and fires the completion check. An in-flight decap parks the payload in clutch_pending_kem; the keygen tick re-offers it once the flag clears.
+                            if let Some(ref local_keys) = contact.clutch_our_keypairs {
+                                if contact.clutch_kem_decap_in_progress {
+                                    contact.clutch_pending_kem = Some(their_kem.clone());
                                     crate::logf!(
-                                        "CLUTCH: Decapsulated KEM from {} - stored in slot",
+                                        "CLUTCH: decap already in flight for {} — KEM response parked",
                                         crate::fp(&contact.handle_proof)
                                     );
-                                }
-
-                                // Backfill OUR offer in OUR slot if missing — guarantees all_slots_complete can fire here. Covers the stall where our own offer was never recorded (offer arrived before our keygen, or the offer-received path didn't store it), leaving our slot offer=None forever even though we have keys + KEM secrets.
-                                if contact
-                                    .get_slot(&our_handle_hash)
-                                    .map(|s| s.offer.is_none())
-                                    .unwrap_or(false)
-                                {
-                                    if let Some(ref keypairs) = contact.clutch_our_keypairs {
-                                        let our_offer = crate::crypto::clutch::ClutchOfferPayload::from_keypairs(keypairs);
-                                        if let Some(local_slot) =
-                                            contact.get_slot_mut(&our_handle_hash)
-                                        {
-                                            local_slot.offer = Some(our_offer);
-                                            crate::log("CLUTCH: Backfilled our own offer in local slot (on KEM received)");
-                                        }
-                                    }
-                                }
-
-                                // Persist slot state after receiving KEM
-                                if let Some(storage) = self.storage.as_ref() {
-                                    if let Err(e) = crate::storage::contacts::save_clutch_slots(
-                                        &contact.clutch_slots,
-                                        &contact.offer_provenances,
-                                        contact.ceremony_id,
-                                        &contact.handle_hash,
-                                        storage,
-                                    ) {
-                                        crate::logf!(
-                                            "CLUTCH: Failed to save slots for {}: {}",
-                                            crate::fp(&contact.handle_proof),
-                                            e
-                                        );
-                                    }
-                                }
-                                changed = true;
-
-                                // Check if ceremony is complete (defer to after outer loop)
-                                if contact.all_slots_complete() {
-                                    ceremony_completions.push(idx);
-                                    changed = true;
                                 } else {
-                                    // Debug: why isn't ceremony complete after KEM response?
-                                    crate::logf!("CLUTCH: Slots not complete after KEM response for {} - checking state:", crate::fp(&contact.handle_proof));
-                                    for (i, slot) in contact.clutch_slots.iter().enumerate() {
-                                        crate::logf!(
-                                            "  Slot {}: offer={} from_them={} to_them={}",
-                                            i,
-                                            slot.offer.is_some(),
-                                            slot.kem_secrets_from_them.is_some(),
-                                            slot.kem_secrets_to_them.is_some()
-                                        );
-                                    }
+                                    contact.clutch_kem_decap_in_progress = true;
+                                    decap_spawns.push((
+                                        contact.id.clone(),
+                                        their_kem.clone(),
+                                        local_keys.clone(),
+                                    ));
+                                    changed = true;
                                 }
                             } else {
                                 crate::logf!(
@@ -3655,6 +3613,11 @@ impl PhotonApp {
             crate::logf!("CLUTCH: {} direct path came up while the ceremony is parked — re-firing our offer on it", crate::fp(&self.contacts[idx].handle_proof));
             self.contacts[idx].clutch_offer_sent = false;
             self.resend_clutch_offer(idx);
+        }
+
+        // Spawn deferred KEM decapsulations (after releasing checker borrow)
+        for (contact_id, kem, keypairs) in decap_spawns {
+            self.spawn_clutch_kem_decap(contact_id, kem, keypairs);
         }
 
         // Process deferred ceremony completions (after releasing checker borrow)

@@ -863,6 +863,11 @@ impl StatusChecker {
         let _ = self.complete_proof_sender.send(request);
     }
 
+    /// Clone of the proof channel for a deferred send — the ceremony drain attaches it to the durable chains write so the proof fires post-durability (ChainsPostDurable::CeremonyProof).
+    pub fn complete_proof_sender(&self) -> Sender<ClutchCompleteRequest> {
+        self.complete_proof_sender.clone()
+    }
+
     /// Broadcast presence on LAN for local peer discovery (non-blocking) Solves NAT hairpinning - when peers are on same LAN, they can discover each other's local IPs
     pub fn send_lan_broadcast(&self, our_handle_proof: [u8; 32], our_port: u16) {
         let _ = self.lan_broadcast_sender.send(LanBroadcastRequest {

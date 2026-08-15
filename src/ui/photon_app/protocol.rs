@@ -174,6 +174,9 @@ impl PhotonApp {
         if timed!("check_clutch_kem_encaps", self.check_clutch_kem_encaps()) {
             needs_redraw = true;
         }
+        if timed!("check_clutch_kem_decaps", self.check_clutch_kem_decaps()) {
+            needs_redraw = true;
+        }
         if timed!("check_clutch_ceremonies", self.check_clutch_ceremonies()) {
             needs_redraw = true;
         }

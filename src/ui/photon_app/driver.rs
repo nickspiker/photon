@@ -443,6 +443,9 @@ impl FluorApp for PhotonApp {
             let (ctx_, crx) = std::sync::mpsc::channel();
             self.clutch_ceremony_tx = ctx_;
             self.clutch_ceremony_rx = crx;
+            let (dtx, drx) = std::sync::mpsc::channel();
+            self.clutch_kem_decap_tx = dtx;
+            self.clutch_kem_decap_rx = drx;
             let (atx, arx) = std::sync::mpsc::channel();
             self.avatar_dl_tx = atx;
             self.avatar_dl_rx = arx;
