@@ -131,12 +131,15 @@ pub enum LaunchState {
 
     /// Attestation failed - show error message, no button User can edit textbox to return to Fresh
     Error(String),
+
+    /// The worker refused the announce because this device is fleet-locked (treat-as-stolen). A terminal brick, NOT an editable error: the handle is correct and the identity is real, but the fleet owner marked this hardware stolen, so no handle re-type helps — only the owner unlocking it from another device does. The screen is a dead end (no textbox, no button), and because the worker is the authority this state re-appears on every attest even after a local wipe.
+    Locked,
 }
 
 impl LaunchState {
     /// Check if we're in a state where the user can type in the handle textbox
     pub fn can_edit_handle(&self) -> bool {
-        !matches!(self, LaunchState::Attesting)
+        !matches!(self, LaunchState::Attesting | LaunchState::Locked)
     }
 
     /// Check if we're waiting for a network response

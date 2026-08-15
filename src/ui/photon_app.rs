@@ -5794,6 +5794,11 @@ impl FluorApp for PhotonApp {
                         LaunchState::Error(msg) if !msg.is_empty() => {
                             Some((msg.as_str(), (*theme::ERROR_TEXT_COLOUR)))
                         }
+                        // Terminal brick: the fleet locked this device. Red, dead-end — no handle re-type helps (the identity is real, the fleet owner marked the hardware stolen), only an unlock from another of the owner's devices clears it.
+                        LaunchState::Locked => Some((
+                            "this device has been locked by your fleet \u{2014} unlock it from another of your devices to use it again",
+                            (*theme::ERROR_TEXT_COLOUR),
+                        )),
                         // Up-front hint: a bound device in Fresh gets the resume-or-wipe line in the STATUS colour (not error-red) so the restriction is visible before any submit.
                         // Confirm/KnownHandle fall thru to None and keep their own bands.
                         LaunchState::Fresh if device_bound => Some((
@@ -6125,9 +6130,11 @@ impl FluorApp for PhotonApp {
                     .as_ref()
                     .map(|tb| Some(tb.hit_id()) == self.focused)
                     .unwrap_or(false);
+                // Locked is a terminal brick: suppress the ∞ placeholder AND the handle field entirely, so the screen is just the red "locked by your fleet" line with nothing that invites input (the Attest button is already gated off by handle_entered, which is false on the cleared field).
+                let launch_locked = matches!(launch_state, LaunchState::Locked);
 
                 // Dormant infinity centred IN the handle textbox — it sits where the typed handle will appear, a half-brightness grey placeholder for the resting field, shown only while the field is empty AND unfocused. Painted BEFORE the textbox: fluor's under-blend is "topmost paints first; later opaque dst wins", so the glyph must precede the textbox's empty-pill fill to survive (same ordering the contacts plus-button uses). The instant the user focuses (cursor in) or a character lands, the gate goes false and the textbox owns the slot alone. Anchor and size come straight off the textbox (`center_x/center_y/font_size`), so the glyph lands pixel-identical to where a typed character would — the textbox draws its own glyphs via `draw_text_center_u32` at the same anchor, so matching it here keeps the ∞ from sitting high or scaling differently.
-                if !handle_entered && !textbox_active {
+                if !handle_entered && !textbox_active && !launch_locked {
                     if let Some(tb) = self.textbox.as_ref() {
                         // ∞ ink sits ~1-2px high because `draw_text_center_u32` centres on the line box (ascent+descent), and a math symbol's ink rides the math axis, slightly above where baseline-seated text reads as centred. Nudge the y anchor down by font_size/32 (≈1-2px here, scales with zoom) to seat the glyph at the pill's visual centre.
                         let baseline_nudge = tb.font_size * (1.0 / (1 << 5) as f32);
@@ -6147,18 +6154,20 @@ impl FluorApp for PhotonApp {
                     }
                 }
 
-                if let Some(tb) = self.textbox.as_mut() {
-                    let id = tb.hit_id();
-                    tb.render_content_into(
-                        &mut canvas,
-                        0.,
-                        0.,
-                        ctx.text,
-                        None,
-                        None,
-                        Some(&mut chrome.hit_test_map),
-                        id,
-                    );
+                if !launch_locked {
+                    if let Some(tb) = self.textbox.as_mut() {
+                        let id = tb.hit_id();
+                        tb.render_content_into(
+                            &mut canvas,
+                            0.,
+                            0.,
+                            ctx.text,
+                            None,
+                            None,
+                            Some(&mut chrome.hit_test_map),
+                            id,
+                        );
+                    }
                 }
                 // The Attest button only exists once there's a handle to attest. An empty, untouched field shows the dormant infinity in its place instead; a focused-but-empty field shows neither (the user is typing). Hiding the button also keeps its hit-rect out of `hit_test_map`, so an empty field can't dispatch a no-op attest click.
                 if handle_entered {
@@ -13932,6 +13941,31 @@ impl PhotonApp {
         self.apply_locked_set();
         // Rotation NOW, not at the next sentinel pass: the locked device holds the current fleet key until an epoch it isn't wrapped into exists.
         self.spawn_fleet_key_sync();
+        // Push the lock to the worker so the brick SURVIVES A WIPE: the local fleet.locked set above (and the fleet-key rotation) only bind devices that still hold local state, but a wiped-and-reattested stolen device lost all of that — the worker's device_lock entry is the one authority a wipe can't erase, refusing the device at announce.
+        self.spawn_worker_lock_push(pk);
+    }
+
+    /// Best-effort off-thread push of ONE device lock to the worker (fire-and-log). Idempotent at the worker (a plain put), so re-driving is harmless; the durable reconcile is `reconcile_worker_locks`, called on attest-success, which re-pushes every locally-locked device until the worker agrees.
+    fn spawn_worker_lock_push(&self, pk: [u8; 32]) {
+        let hp = match self.our_handle_proof() {
+            Some(hp) => hp,
+            None => return,
+        };
+        let kp = match self.device_keypair.clone() {
+            Some(kp) => kp,
+            None => return,
+        };
+        std::thread::spawn(move || match crate::network::fgtw::fleet::lock_device(&kp, &hp, &pk) {
+            Ok(()) => crate::logf!("FLEET: worker lock recorded for {} — brick now survives a wipe", crate::fp(&pk)),
+            Err(e) => crate::logf!("FLEET: worker lock push failed for {} ({}) — will re-drive on next attest", crate::fp(&pk), e),
+        });
+    }
+
+    /// Re-push every locally-locked device to the worker (durable reconcile). Called on attest-success — an infrequent, non-spammy edge — so a lock whose initial push failed (offline, stale-chain race) eventually reaches the worker; the puts are idempotent so re-pushing a known lock costs one no-op write.
+    fn reconcile_worker_locks(&self) {
+        for pk in self.locked_devices() {
+            self.spawn_worker_lock_push(pk);
+        }
     }
 
     /// The brands the owner has released (hardware freed for a new identity): same per-key + legacy-blob union as the locked set — the release pill had the identical concurrent-write race, it just cost a reappearing row instead of a trust hole.
@@ -15714,6 +15748,8 @@ impl PhotonApp {
                         crate::logf!("FLEET: armed lock-out of {} DISCARDED — a different identity attested", name);
                     }
                 }
+                // Durable reconcile: re-push every locally-locked device to the worker now we're freshly online, so a lock whose immediate push failed (offline at lock time, stale-chain race) still reaches the worker before the stolen device could be wiped+reattested. Idempotent puts, and usually a no-op empty loop (most fleets lock nothing).
+                self.reconcile_worker_locks();
                 // Bind the device to this identity (docs/lifecycle.md D2): the marker refuses a second identity at the NEXT submit, before its proof is spent. Idempotent on resume; cleared only by a wipe.
                 if let Some(kp) = self.device_keypair.as_ref() {
                     crate::storage::device_binding::bind(
@@ -15891,6 +15927,15 @@ impl PhotonApp {
                 self.session = None;
                 self.state = AppState::Launch(LaunchState::Error(msg));
                 self.refocus_handle_select_all();
+            }
+            QueryResult::Locked => {
+                // The worker refused this device's announce as fleet-locked (treat-as-stolen). Terminal brick: clear the session so nothing auto-resumes, drop to the dead-end Locked screen, and DON'T bind or persist anything — because the worker is the authority, this same verdict returns on every attest even after a local wipe, until the fleet owner unlocks the device.
+                crate::log_at(crate::LogLevel::Error, "attestation refused: this device is fleet-locked");
+                tohu::clear_session();
+                self.session = None;
+                self.private_s = crate::crypto::blind::PrivateS::None;
+                self.pending_broadcast_signal = -1;
+                self.state = AppState::Launch(LaunchState::Locked);
             }
             QueryResult::Error(e) => {
                 crate::log_at(crate::LogLevel::Error, &format!("attestation error: {e}"));

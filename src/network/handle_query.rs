@@ -81,6 +81,8 @@ pub enum QueryResult {
         session: tohu::SessionIdentity,
     },
     Error(String), // Error during attestation
+    /// The worker refused the announce because this device is fleet-locked (treat-as-stolen). A terminal brick: the device drops to a locked screen and cannot reach contacts, and — because the worker is the authority — this verdict survives a local wipe. Cleared only by the fleet owner unlocking the device.
+    Locked,
 }
 
 /// Unified handle query system for all platforms
@@ -561,7 +563,12 @@ impl HandleQuery {
                 // Check result
                 let query_result = if let Some(error) = result.error {
                     crate::logf!("Network: ERROR - {}", error);
-                    QueryResult::Error(error)
+                    // The worker refused the announce because this device is fleet-locked — a terminal brick, not a retryable error (reason_error tags it with a stable `device_locked` prefix).
+                    if error.starts_with("device_locked") {
+                        QueryResult::Locked
+                    } else {
+                        QueryResult::Error(error)
+                    }
                 } else {
                     // Reaching here means the announce did NOT error, and the announce is membership-gated: `ensure_member` already proved this device folds into the fleet chain (bootstrap.rs load_bootstrap_peers_inner). Announce success ⇒ ours.
                     //

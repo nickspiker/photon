@@ -143,6 +143,24 @@ pub fn release_device(
     fgtw::client::device_release(&PhotonTransport, member_key, handle_proof, released)
 }
 
+/// Lock a device out of its fleet at the worker (treat-as-stolen) — the worker-authoritative brick that refuses the device at announce forever, surviving any wipe of its local lock cache. `member_key` must be a current fleet member.
+pub fn lock_device(
+    member_key: &Keypair,
+    handle_proof: &[u8; 32],
+    locked: &[u8; 32],
+) -> Result<(), String> {
+    fgtw::client::device_lock(&PhotonTransport, member_key, handle_proof, locked)
+}
+
+/// Unlock a device the fleet previously locked (the owner's deliberate reversal) — the worker deletes the lock so the device announces normally again. Same member-gated auth.
+pub fn unlock_device(
+    member_key: &Keypair,
+    handle_proof: &[u8; 32],
+    locked: &[u8; 32],
+) -> Result<(), String> {
+    fgtw::client::device_unlock(&PhotonTransport, member_key, handle_proof, locked)
+}
+
 /// NEW device: post (or refresh) its binding request — device-signed + identity-co-signed consent to join. Returns the published `eagle_time` stamp (oscillations) so the caller can derive the proximity beacon from the exact offer the sponsor reads back.
 pub fn bindreq_put(
     device_key: &Keypair,
