@@ -1002,6 +1002,8 @@ impl PhotonApp {
                             if is_sibling { "sibling" } else { "friend" },
                             crate::fp(&their_device)
                         );
+                        // The Fleet page's remembered egged probe is stale the moment a pair mints.
+                        self.egged_cache.remove(&their_device);
                         // A scoped slot's ADDRESS is derived from this secret, so re-minting it moves the reader to an address nothing was ever written to — their avatar silently stops resolving. Re-grant on the mint edge: one ~80 byte slot write against the blob we already published, no re-upload.
                         self.scoped_regrant_pending.push(result.fanout_pair_secret);
                         // A newly egged SIBLING can now be wrapped, so mint the next fan-out epoch that includes it. Idempotent by the worker's monotonic epoch guard; a loser just adopts the winner's key. A friend's secret changes no fleet state, so no rotation.
