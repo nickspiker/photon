@@ -1561,6 +1561,8 @@ pub struct PhotonApp {
     /// The sibling pubkey whose "Lock out" pill is two-tap armed (treat-as-stolen). Cleared on page switch like every destructive arm.
     /// Has-cached-avatar probe results by party id — the avatar sweep's answer, remembered. The sweep runs every tick and its per-contact `read_addr` probe takes the VAULT MUTEX, which background persist workers hold thru whole encrypted-table writes — so the innocent per-tick read turned every writer hold into a UI stall (the 2026-08-15 400-1794ms "status pre-loop" field log). One probe per contact per session; cleared wholesale on any avatar install / pin adoption (rare edges), costing one re-probe each.
     avatar_probe_cache: std::collections::HashMap<[u8; 32], bool>,
+    /// Egged-status probe results by sibling device key — fleet_device_rows' fanout_pairs::load answer, remembered. The Fleet page gathers rows every FRAME, so the per-sibling vault read was a per-frame librarian round trip; a pair secret changes only at ceremony completion, which invalidates its entry there. Same doctrine as avatar_probe_cache: the UI thread's steady state touches the vault zero times.
+    egged_cache: std::collections::HashMap<[u8; 32], bool>,
     fleet_lock_armed: Option<[u8; 32]>,
     /// Two-tap arm state for the Unlock pill (the lock pill's mirror).
     fleet_unlock_armed: Option<[u8; 32]>,
@@ -1941,6 +1943,7 @@ impl PhotonApp {
             fleet_retired: Vec::new(),
             fleet_release_armed: None,
             avatar_probe_cache: std::collections::HashMap::new(),
+            egged_cache: std::collections::HashMap::new(),
             fleet_lock_armed: None,
             fleet_unlock_armed: None,
             pending_unlock: None,

@@ -1182,7 +1182,7 @@ impl PhotonApp {
     /// Rows for the Fleet page: `(pubkey, is_self, online, retired, name, link)`. Current members first (self, then siblings), then the retired inventory — signed out, brand still ours (`fleet_retired`, refreshed on page entry).
     /// `link` is the sibling's LINK STATE in plain words — how far the secure channel to that device has got, plus whether its fan-out pair is egged (Phase A). It is the one place a stuck pairing is visible without reading a log: "securing 5/8" names whose side the ball is on, and "not egged yet" says the device cannot receive the fleet key until its ceremony finishes.
     #[allow(clippy::type_complexity)]
-    pub(super) fn fleet_device_rows(&self) -> Vec<([u8; 32], bool, bool, bool, String, String, Option<u32>)> {
+    pub(super) fn fleet_device_rows(&mut self) -> Vec<([u8; 32], bool, bool, bool, String, String, Option<u32>)> {
         use crate::network::fgtw::fleet::device_name_default;
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return Vec::new();
@@ -1193,11 +1193,15 @@ impl PhotonApp {
             // This device needs no tier — it IS the vantage point.
             rows.push((me, true, true, false, device_name_default(&me, &seed), String::new(), None));
         }
+        // The egged probe remembered (the Fleet page gathers rows per FRAME; a vault read per sibling per frame is a librarian round trip for an answer that only changes at ceremony completion, which clears its entry).
+        let mut egged_cache = std::mem::take(&mut self.egged_cache);
         for c in self.contacts.iter().filter(|c| c.is_sibling) {
             let pk = c.public_identity.key;
             // Egged = a completed CLUTCH minted this pair's fan-out secret; until then the device gets no wrap and holds no fleet key.
-            let egged = matches!((ours, self.storage.as_ref()), (Some(me), Some(st))
-                if crate::storage::fanout_pairs::load(&me, &pk, st).is_some());
+            let egged = *egged_cache.entry(pk).or_insert_with(|| {
+                matches!((ours, self.storage.as_ref()), (Some(me), Some(st))
+                    if crate::storage::fanout_pairs::load(&me, &pk, st).is_some())
+            });
             let link = if !egged {
                 format!("{} \u{00b7} not egged yet", c.clutch_status_detail())
             } else {
@@ -1214,6 +1218,7 @@ impl PhotonApp {
                 path_tier_colour(c, true),
             ));
         }
+        self.egged_cache = egged_cache;
         for pk in &self.fleet_retired {
             rows.push((*pk, false, false, true, device_name_default(pk, &seed), String::new(), None));
         }
