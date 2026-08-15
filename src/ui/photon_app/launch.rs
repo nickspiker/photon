@@ -344,6 +344,8 @@ impl PhotonApp {
                 self.private_s = crate::crypto::blind::PrivateS::None;
                 self.pending_broadcast_signal = -1;
                 self.state = AppState::Launch(LaunchState::Locked);
+                // A locked device must not keep the handle in its field: the retained text would auto-populate the attest screen the retry pill returns to.
+                self.clear_handle_for_reproof();
             }
             QueryResult::Error(e) => {
                 crate::log_at(crate::LogLevel::Error, &format!("attestation error: {e}"));
@@ -365,6 +367,14 @@ impl PhotonApp {
     }
 
     /// On an attestation error, return the user to an editable handle field with the whole handle selected. The submit path dropped focus into the frozen Attesting state; coming back to `Error` (which `can_edit_handle()` allows) we refocus the textbox and select-all so the most common fix — the handle is claimed, retype a different one — is one keystroke: the first character typed replaces the selection. On Android, `change_focus` into a textbox also re-raises the soft keyboard via the pending-keyboard signal.
+    /// Wipe + refocus the handle field — for every teardown whose POINT is re-proving the handle (the lock/unlock arms, the Security self-lock, a Locked verdict, a de-attest). The convenience retention elsewhere (attest errors keep the text selected for a quick retype) is exactly wrong here: a retained handle turns "re-prove the owner" into "press the button" (field report 2026-08-15 — the unlock confirmation auto-populated).
+    pub(super) fn clear_handle_for_reproof(&mut self) {
+        if let Some(tb) = self.textbox.as_mut() {
+            tb.clear();
+        }
+        self.refocus_handle_select_all();
+    }
+
     pub(super) fn refocus_handle_select_all(&mut self) {
         let Some(id) = self.textbox.as_ref().map(|t| t.hit_id()) else {
             return;

@@ -997,7 +997,7 @@ impl PhotonApp {
                 self.private_s = crate::crypto::blind::PrivateS::None; // zeroized on overwrite — no identity, no S
                 self.pending_broadcast_signal = -1; // Android: drop the sticky session broadcast.
                 self.state = AppState::Launch(LaunchState::Fresh);
-                self.refocus_handle_select_all();
+                self.clear_handle_for_reproof();
                 eprintln!("[]u de-attested; session cleared — re-type handle to re-attest");
             }
             'x' => {
