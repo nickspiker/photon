@@ -21,7 +21,9 @@ pub mod updates;
 
 pub use clock_check::spawn_clock_check;
 pub use clock_check::{ClockCheckResult, ClockJumpDetector, ClockWake};
-pub use clutch_jobs::{ClutchCeremonyResult, ClutchKemEncapResult, ClutchKeygenResult};
+pub use clutch_jobs::{
+    ClutchCeremonyResult, ClutchKemDecapResult, ClutchKemEncapResult, ClutchKeygenResult,
+};
 pub use handle_query::{HandleQuery, QueryResult};
 #[cfg(not(target_os = "android"))]
 pub use peer_updates::{PeerUpdate, PeerUpdateClient};

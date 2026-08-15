@@ -312,6 +312,8 @@ pub struct Contact {
     pub clutch_keygen_in_progress: bool,
     /// Flag to prevent multiple concurrent KEM encapsulations
     pub clutch_kem_encap_in_progress: bool,
+    /// Flag to serialize KEM decapsulation jobs — a queued KEM re-arrival mid-flight waits in clutch_pending_kem until the running decap drains.
+    pub clutch_kem_decap_in_progress: bool,
     /// Flag to prevent multiple concurrent ceremony completions (avalanche_expand)
     pub clutch_ceremony_in_progress: bool,
     /// HQC public key prefix from peer's last completed ceremony. Used for stale detection: if received offer has same HQC prefix, it's a PT retransmission (stale), not a legitimate re-key request. Stored at completion time, cleared when accepting new ceremony.
@@ -480,6 +482,7 @@ impl Contact {
             clutch_claim_deferred: None,
             clutch_keygen_in_progress: false, // No keygen running yet
             clutch_kem_encap_in_progress: false, // No KEM encap running yet
+            clutch_kem_decap_in_progress: false,
             clutch_ceremony_in_progress: false, // No ceremony completion running yet
             completed_their_hqc_prefix: None, // Set when CLUTCH completes, persisted
             offer_provenances: Vec::new(),    // Collected offer provenances for ceremony nonce
@@ -764,6 +767,7 @@ impl Contact {
         self.clutch_our_eggs_proof = None;
         self.clutch_their_eggs_proof = None;
         self.clutch_kem_encap_in_progress = false;
+        self.clutch_kem_decap_in_progress = false;
         self.clutch_offer_stall_cycles = 0;
     }
 
