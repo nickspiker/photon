@@ -146,8 +146,18 @@ impl PhotonApp {
                         crate::logf!("FLEET: armed lock-out of {} DISCARDED — a different identity attested", name);
                     }
                 }
+                // The armed UNLOCK fires under the same proof: the handle just re-proved the owner. A different identity attesting discards it identically.
+                if let Some((pk, armer_hp, name)) = self.pending_unlock.take() {
+                    if data.handle_proof == armer_hp {
+                        crate::logf!("FLEET: {} unlock confirmed — clearing the worker verdict + fleet marker", name);
+                        self.unlock_fleet_device(pk, &name);
+                    } else {
+                        crate::logf!("FLEET: armed unlock of {} DISCARDED — a different identity attested", name);
+                    }
+                }
                 // Durable reconcile: re-push every locally-locked device to the worker now we're freshly online, so a lock whose immediate push failed (offline at lock time, stale-chain race) still reaches the worker before the stolen device could be wiped+reattested. Idempotent puts, and usually a no-op empty loop (most fleets lock nothing).
                 self.reconcile_worker_locks();
+                self.reconcile_worker_unlocks();
                 // Bind the device to this identity (docs/lifecycle.md D2): the marker refuses a second identity at the NEXT submit, before its proof is spent. Idempotent on resume; cleared only by a wipe.
                 if let Some(kp) = self.device_keypair.as_ref() {
                     crate::storage::device_binding::bind(

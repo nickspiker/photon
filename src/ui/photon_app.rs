@@ -1560,6 +1560,12 @@ pub struct PhotonApp {
     fleet_release_armed: Option<[u8; 32]>,
     /// The sibling pubkey whose "Lock out" pill is two-tap armed (treat-as-stolen). Cleared on page switch like every destructive arm.
     fleet_lock_armed: Option<[u8; 32]>,
+    /// Two-tap arm state for the Unlock pill (the lock pill's mirror).
+    fleet_unlock_armed: Option<[u8; 32]>,
+    /// An armed UNLOCK awaiting handle confirmation: (device to unlock, armer's handle_proof, display name). Fires in the attest-success path exactly like `pending_lock` — the owner re-proves the handle, then the reversal executes.
+    pending_unlock: Option<([u8; 32], [u8; 32], String)>,
+    /// Hit id for the Locked dead-end screen's retry pill ("unlocked from another device? tap to retry") — returns to the normal bound-resume launch entry; the handle is only ever typed on the standard attest screen, never on the dead-end itself.
+    locked_retry_hit: HitId,
     /// A lock-out confirmed on the pill but NOT yet executed: (target device pk, the arming identity's handle_proof, display name). The confirm de-attests THIS device and the lock fires only inside the next successful attest — so the lock is gated on KNOWING the handle: a thief holding an unlocked device just logs themselves out (Nick's design, 2026-08-05). Runtime-only, deliberately never persisted — a restart discards the armed lock, so a thief can't park one for the owner's next sign-in to trip.
     pending_lock: Option<([u8; 32], [u8; 32], String)>,
     /// Self-update state (docs/updates.md): off-thread check/apply results drain here. tx kept so both channel checks + an apply share ONE receiver.
@@ -1933,6 +1939,9 @@ impl PhotonApp {
             fleet_retired: Vec::new(),
             fleet_release_armed: None,
             fleet_lock_armed: None,
+            fleet_unlock_armed: None,
+            pending_unlock: None,
+            locked_retry_hit: HIT_NONE,
             pending_lock: None,
             update_rx: None,
             update_tx: None,

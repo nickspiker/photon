@@ -641,6 +641,8 @@ impl PhotonApp {
         let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
         let busy = self.fleet_heal_busy.clone();
         let fkc = self.fleet_key_ram.clone();
+        // Snapshot on the UI thread, filter in the closure — same discipline as the heal. Unfiltered members here RE-WRAPPED a locked device at the next new-egg rotation, silently undoing the lock's key rotation (found 2026-08-15 wiring unlock).
+        let locked = self.locked_devices();
         std::thread::spawn(move || {
             // RAII latch: released on EVERY exit, panics included — a manual store(false) here once left a poisoned latch parking key sync for the whole session.
             let Some(_latch) = HealLatch::acquire(&busy) else {
@@ -648,9 +650,15 @@ impl PhotonApp {
             };
             // Genesis-verified fold: never rotate toward a member set a relay could have swapped.
             let members = match fleet::current_members_verified(&hp, &identity_seed) {
-                Ok(m) if !m.is_empty() => m,
+                Ok(m) if !m.is_empty() => m
+                    .into_iter()
+                    .filter(|m| !locked.contains(m))
+                    .collect::<Vec<_>>(),
                 _ => return,
             };
+            if members.is_empty() {
+                return;
+            }
             match fleet::rotate_fleet_key(&hp, &device_key, &members, Some(&storage)) {
                 Ok((epoch, k)) => {
                     if let Err(e) = storage.write_addr(&addr, &k) {
@@ -1216,6 +1224,7 @@ impl PhotonApp {
     pub(super) fn refresh_fleet_retired(&mut self) {
         self.fleet_release_armed = None;
         self.fleet_lock_armed = None;
+        self.fleet_unlock_armed = None;
         self.fleet_retired.clear();
         let Some(hp) = self.our_handle_proof()
         else {
@@ -1236,7 +1245,7 @@ impl PhotonApp {
         }
     }
 
-    /// The devices the fleet has LOCKED OUT (treat-as-stolen): per-key entries `fleet.locked.<hex pubkey>` unioned with the legacy one-blob key (see FleetSettings::pubkey_set_union for why per-key — the B4 race where concurrent locks of DIFFERENT devices dropped one). apply_locked_set only ever sets `locked_out`, never clears it, so the sweep stays monotonic on top.
+    /// The devices the fleet has LOCKED OUT (treat-as-stolen): per-key entries `fleet.locked.<hex pubkey>` unioned with the legacy one-blob key (see FleetSettings::pubkey_set_union for why per-key — the B4 race where concurrent locks of DIFFERENT devices dropped one). The sweep clears `locked_out` only on an AFFIRMATIVE emptied entry (see unlocked_tombstones), never on mere absence.
     pub(super) fn locked_devices(&self) -> Vec<[u8; 32]> {
         self.fleet_settings
             .as_ref()
@@ -1266,6 +1275,26 @@ impl PhotonApp {
                     self.state = AppState::Launch(LaunchState::Fresh);
                     return;
                 }
+            }
+        }
+        // The forgiveness side of the sweep: an EXPLICIT emptied entry (unlock_fleet_device here, or a sibling's synced tombstone) clears the row. Absence alone never clears — at boot the settings cache lags and the persisted rows below are the only truth, so only an affirmative tombstone may forgive.
+        let unlocked = self.unlocked_tombstones();
+        if !unlocked.is_empty() {
+            let mut cleared: Vec<usize> = Vec::new();
+            for (i, c) in self.contacts.iter_mut().enumerate() {
+                if c.is_sibling && c.locked_out && unlocked.contains(c.public_identity.as_bytes()) {
+                    c.locked_out = false;
+                    cleared.push(i);
+                }
+            }
+            if !cleared.is_empty() {
+                if let Some(storage) = self.storage.as_ref() {
+                    for &i in &cleared {
+                        crate::logf!("FLEET: {} is UNLOCKED — the fleet trusts it again", crate::fp(&self.contacts[i].public_identity.key));
+                        let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
+                    }
+                }
+                self.reseed_contact_pubkeys();
             }
         }
         // Persisted rows count too: at boot the settings cache may not have loaded yet, but a row flagged in a previous session must keep its refusal from the first tick.
@@ -1312,6 +1341,67 @@ impl PhotonApp {
         self.spawn_fleet_key_sync();
         // Push the lock to the worker so the brick SURVIVES A WIPE: the local fleet.locked set above (and the fleet-key rotation) only bind devices that still hold local state, but a wiped-and-reattested stolen device lost all of that — the worker's device_lock entry is the one authority a wipe can't erase, refusing the device at announce.
         self.spawn_worker_lock_push(pk);
+    }
+
+    /// The owner's deliberate reversal of `lock_out_device` — fires only inside a handle-confirmed attest (see `pending_unlock`).
+    /// Order is tombstone-first: the fleet-synced marker empties BEFORE the worker push, so every sibling's `reconcile_worker_locks` stops re-asserting the lock and `reconcile_worker_unlocks` re-drives the clear until the worker agrees — there is no strandable state in either direction.
+    /// Re-admission is a GROW: the compliance rotation mints the next epoch including the freshly-eligible device; no shrink semantics involved.
+    pub(super) fn unlock_fleet_device(&mut self, pk: [u8; 32], name: &str) {
+        // Value-level tombstone: an EMPTY per-key value drops out of pubkey_set_union on every build (len != 32 never parses as a pubkey), and LWW carries the emptiness fleet-wide — the "deliberate future flow" the grow-only convention reserved, with no new merge shape.
+        self.settings_set(&format!("fleet.locked.{}", hex::encode(pk)), Vec::new());
+        // A pre-per-key lock may also live in the legacy one-blob key — rewrite it without this device (whole-blob LWW; the concurrent-writer race the per-key split fixed is tolerable on the rare unlock path).
+        let legacy: Vec<u8> = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("fleet.locked").map(|b| b.to_vec()))
+            .unwrap_or_default();
+        if legacy.chunks_exact(32).any(|c| c == pk) {
+            let rewritten: Vec<u8> = legacy.chunks_exact(32).filter(|c| *c != pk).flatten().copied().collect();
+            self.settings_set("fleet.locked", rewritten);
+        }
+        self.apply_locked_set();
+        self.spawn_worker_unlock_push(pk);
+        self.spawn_fleet_key_rotate_for_compliance();
+        self.ready_toast = Some(format!("{name} unlocked \u{2014} it can rejoin the fleet on its next attest."));
+    }
+
+    /// Best-effort off-thread push of ONE device unlock to the worker (fire-and-log). Idempotent (an absent lock is the goal state); the durable re-drive is `reconcile_worker_unlocks` on attest-success.
+    pub(super) fn spawn_worker_unlock_push(&self, pk: [u8; 32]) {
+        let hp = match self.our_handle_proof() {
+            Some(hp) => hp,
+            None => return,
+        };
+        let kp = match self.device_keypair.clone() {
+            Some(kp) => kp,
+            None => return,
+        };
+        std::thread::spawn(move || match crate::network::fgtw::fleet::unlock_device(&kp, &hp, &pk) {
+            Ok(()) => crate::logf!("FLEET: worker lock cleared for {} — the device can announce again", crate::fp(&pk)),
+            Err(e) => crate::logf!("FLEET: worker unlock push failed for {} ({}) — will re-drive on next attest", crate::fp(&pk), e),
+        });
+    }
+
+    /// Emptied per-key lock entries — devices the fleet has UNLOCKED (the value-level tombstones `unlock_fleet_device` writes). The pubkey rides the key's hex suffix since the value is deliberately empty.
+    pub(super) fn unlocked_tombstones(&self) -> Vec<[u8; 32]> {
+        let Some(fs) = self.fleet_settings.as_ref() else {
+            return Vec::new();
+        };
+        fs.global
+            .iter()
+            .filter(|e| !e.tombstone && e.value.len() != 32)
+            .filter_map(|e| e.key.strip_prefix("fleet.locked."))
+            .filter_map(|hexpk| {
+                let bytes = hex::decode(hexpk).ok()?;
+                <[u8; 32]>::try_from(bytes.as_slice()).ok()
+            })
+            .collect()
+    }
+
+    /// Re-push every locally-UNLOCKED device to the worker (durable re-drive, the inverse of `reconcile_worker_locks`): a failed unlock push — or a sibling's stale-lock re-push racing the settings sync — leaves the worker refusing a device the fleet forgave. Same attest-success cadence, idempotent puts.
+    pub(super) fn reconcile_worker_unlocks(&self) {
+        for pk in self.unlocked_tombstones() {
+            self.spawn_worker_unlock_push(pk);
+        }
     }
 
     /// Best-effort off-thread push of ONE device lock to the worker (fire-and-log). Idempotent at the worker (a plain put), so re-driving is harmless; the durable reconcile is `reconcile_worker_locks`, called on attest-success, which re-pushes every locally-locked device until the worker agrees.
