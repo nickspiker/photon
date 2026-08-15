@@ -48,7 +48,8 @@
 //   shard.rs      — KeyShard, ShardId, DecryptedShard, RecoveryRequest, RecoveryApproval, ShardDistribution.
 //
 // ui/
-//   photon_app.rs      — the whole app: PhotonApp state + the winit event/tick loop, all render arms, CLUTCH ceremony machinery, fleet reconcile, device add/remove, S/blind drivers, history recovery, settings pages. (The old app/compositing/drawing/text_* split was retired into fluor.)
+//   photon_app.rs      — the app root: the PhotonApp struct + shared helpers/types, with the method bodies in per-concern child modules under photon_app/ (each a further `impl PhotonApp` glob-importing the root). (The old app/compositing/drawing/text_* split was retired into fluor.)
+//   photon_app/        — driver.rs (FluorApp trait impl: lifecycle/events/tick), render.rs (render_frame, the whole-frame paint), protocol.rs (advance_protocol pump), status.rs (check_status_updates drain), devices.rs (fleet add/join/roster/keys/lockout), ceremony.rs (CLUTCH spawns+checks+completion), conversation.rs (conv/contact state, braid RX, chain syncs, history pages), messaging.rs (send path, chain transmit, probe/seal), sync.rs (pings, retransmits, replication, recovery, blind ops), launch.rs (attest flow), settings.rs (settings/profile/updates), attachments.rs, bridge.rs (remote terminal + unattended), peers.rs (peer records/store), input.rs (send_event, layout, clipboard, textboxes, chords, wipe).
 //   avatar.rs          — avatar encode/upload/download, AVATAR_SIZE.
 //   colour.rs, colour_convert.rs, display_profile.rs, lms2006so.rs — colour + display-profile conversion (VSF RGB → BT.2020, ICC).
 //   chromatic_wave.rs  — the sine-modulated visible-spectrum bar (direct-pixel).
