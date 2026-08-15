@@ -49,6 +49,10 @@ fn format_http_error_from_bytes(step: &str, status: reqwest::StatusCode, body: &
 
 /// Turn a worker `error`-frame `(reason, detail)` into a short user-facing message. The worker now answers every failure this way at HTTP 200; the `detail` string is already plain (no web-stack jargon), so surface it verbatim, keeping the operation `step` for context.
 fn reason_error(step: &str, reason: &str, detail: &str) -> String {
+    // The device-lock refusal keeps its reason LABEL as a stable prefix so the attest path can route it to QueryResult::Locked (a terminal brick) instead of a generic error the user could retry away.
+    if reason == "device_locked" {
+        return format!("device_locked: {detail}");
+    }
     if detail.is_empty() {
         format!("FGTW rejected {step} ({reason})")
     } else {
