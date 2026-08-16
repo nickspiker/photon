@@ -444,17 +444,12 @@ impl PhotonApp {
                 self.pending_zoom_restore = Some(ru);
                 crate::logf!("SETTINGS: restoring device zoom = {} (one-shot)", ru);
             }
-            // Window geometry rides the same one-shot: four SELF-DESCRIBING typed keys (display.window.x/y i5, .w/.h u5 — physical px), device-local like zoom — where a window sits is monitor ergonomics, and each component reads as itself in vsfinfo forever.
+            // Window geometry rides the same one-shot: two typed PAIRS (display.window.pos v_i5[x,y], .size v_u5[w,h] — physical px), device-local like zoom. Pos and size are atomic pairs (a move never changes just an x), so each is one value that reads as itself in the inspector.
             {
-                use crate::storage::fleet_settings::{as_i32, as_u32};
-                let read_i = |k: &str| self.fleet_settings.as_ref().and_then(|fs| fs.device_local(k)).and_then(as_i32);
-                let read_u = |k: &str| self.fleet_settings.as_ref().and_then(|fs| fs.device_local(k)).and_then(as_u32);
-                if let (Some(x), Some(y), Some(w), Some(h)) = (
-                    read_i("display.window.x"),
-                    read_i("display.window.y"),
-                    read_u("display.window.w"),
-                    read_u("display.window.h"),
-                ) {
+                use crate::storage::fleet_settings::{as_i32_pair, as_u32_pair};
+                let pos = self.fleet_settings.as_ref().and_then(|fs| fs.device_local("display.window.pos")).and_then(as_i32_pair);
+                let size = self.fleet_settings.as_ref().and_then(|fs| fs.device_local("display.window.size")).and_then(as_u32_pair);
+                if let (Some((x, y)), Some((w, h))) = (pos, size) {
                     if w > 0 && h > 0 {
                         self.pending_geometry_restore = Some((x, y, w, h));
                         crate::logf!("SETTINGS: restoring window geometry ({} , {}) {}x{} (one-shot)", x, y, w, h);
@@ -466,20 +461,19 @@ impl PhotonApp {
         }
     }
 
-    /// Persist the settled window geometry as this DEVICE's four typed keys — display.window.x/y (i5, outer position) + .w/.h (u5, inner size), physical px. Device-local and UNLINKED like zoom: where a window sits is monitor ergonomics, never fleet-global.
+    /// Persist the settled window geometry as this DEVICE's two typed pairs — display.window.pos (v_i5 [x,y], outer position) + .size (v_u5 [w,h], inner size), physical px. Device-local and UNLINKED like zoom: where a window sits is monitor ergonomics, never fleet-global.
     pub(super) fn save_window_geometry(&mut self, x: i32, y: i32, w: u32, h: u32) {
         if !self.ensure_fleet_settings() {
             return;
         }
+        use vsf::types::tensor::Vector;
         use vsf::VsfType;
         let now = vsf::eagle_time_oscillations();
         let fs = self.fleet_settings.as_mut().unwrap();
         let mut changed = false;
         for (k, v) in [
-            ("display.window.x", VsfType::i5(x)),
-            ("display.window.y", VsfType::i5(y)),
-            ("display.window.w", VsfType::u5(w)),
-            ("display.window.h", VsfType::u5(h)),
+            ("display.window.pos", VsfType::v_i5(Vector { data: vec![x, y] })),
+            ("display.window.size", VsfType::v_u5(Vector { data: vec![w, h] })),
         ] {
             if fs.linked(k) {
                 fs.set_link(k, false, now);
