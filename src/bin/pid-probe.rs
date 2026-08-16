@@ -55,6 +55,50 @@ fn main() {
             photon_messenger::network::fgtw::fleet::keyed_pseudonym(&pid)
         );
     }
+    // Each device's SEED-REGISTRY address record — the ground truth for "what will a peer actually punch at" (a LAN-only record explains a relay-tier ring from any peer off that LAN).
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    for m in &members {
+        match rt.block_on(
+            photon_messenger::network::fgtw::phonebook_client::resolve_device_address(m),
+        ) {
+            Ok(rec) => {
+                use photon_messenger::network::fgtw::phonebook_client::bytes_to_ip;
+                let age_s = (vsf::eagle_time_oscillations() - rec.epoch())
+                    / vsf::OSCILLATIONS_PER_SECOND as i64;
+                println!(
+                    "  {}… registry record: wan {}:{}  lan {}  (published {}s ago)",
+                    hex::encode(&m[..4]),
+                    bytes_to_ip(&rec.ip()),
+                    rec.port(),
+                    bytes_to_ip(&rec.local_ip()),
+                    age_s
+                );
+            }
+            Err(e) => println!("  {}… registry record: {:?}", hex::encode(&m[..4]), e),
+        }
+    }
+    // The pb_devices view — the REGISTRY-FIRST path peers actually resolve thru (per-device pb_get is only the fallback); a stale row HERE is what a peer punches at even when the per-device record above is fresh.
+    match rt.block_on(photon_messenger::network::fgtw::phonebook_client::fetch_devices(&hp)) {
+        Ok((_view, addresses)) => {
+            use photon_messenger::network::fgtw::phonebook_client::bytes_to_ip;
+            for rec in &addresses {
+                let age_s = (vsf::eagle_time_oscillations() - rec.epoch())
+                    / vsf::OSCILLATIONS_PER_SECOND as i64;
+                println!(
+                    "  pb_devices row: dev {}…  wan {}:{}  lan {}  (published {}s ago)",
+                    hex::encode(&rec.device_pubkey()[..4]),
+                    bytes_to_ip(&rec.ip()),
+                    rec.port(),
+                    bytes_to_ip(&rec.local_ip()),
+                    age_s
+                );
+            }
+            if addresses.is_empty() {
+                println!("  pb_devices: no address rows");
+            }
+        }
+        Err(e) => println!("  pb_devices: fetch failed: {}", e),
+    }
     // The fan-out envelope is plaintext structure (epoch + rotator + per-device wraps; the KEYS inside the wraps stay sealed) — the ground truth for "which epoch is live and who minted it" when siblings disagree about the fleet key.
     match photon_messenger::network::fgtw::fleet::fetch_fanout(&hp) {
         Ok(Some((epoch, rotator, wraps))) => {
