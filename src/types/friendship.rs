@@ -1315,7 +1315,18 @@ impl FriendshipChains {
             if self.pending_messages[idx].plaintext_hash != *acked_plaintext_hash {
                 crate::logf!("CHAT: ACK hash mismatch for eagle_time {} — clearing on eagle_time (the pad differs or a re-encrypt raced); the message is delivered either way", acked_eagle_time);
             }
-            self.pending_messages.remove(idx);
+            // IMPLIED ACKs ride the in-order lane: the receiver processes our lane STRICTLY in chain order (Layer 1), so an ACK for this row proves every OLDER pending was already processed — their own ACKs may simply be unmintable (rows the peer stored before ack_hash persistence can never be re-ACKed), and those unACKable stragglers sat in the in-flight window wedging the lane forever ('holding for an ACK slot', flushed 0/3, field 2026-08-16). Content redundancy is anti-entropy's job; the pending list is delivery bookkeeping, and this ACK just testified for everything behind it.
+            let before = self.pending_messages.len();
+            self.pending_messages
+                .retain(|m| m.eagle_time > acked_eagle_time);
+            let implied = before - 1 - self.pending_messages.len();
+            if implied > 0 {
+                crate::logf!(
+                    "CHAT: {} older pending(s) implied-delivered by the ACK for eagle_time {} (in-order lane)",
+                    implied,
+                    acked_eagle_time
+                );
+            }
             return true;
         }
         false
@@ -1798,12 +1809,21 @@ mod tests {
             receiver.update_received_hash(lane, *msg_hp);
         }
 
-        // ACKs arrive in ANY order and only clear pendings — the chains already agree.
+        // ACKs arrive in ANY order and only clear pendings — the chains already agree. The lane is strictly in-order, so the NEWEST ack implies delivery of everything older (one ACK clears the whole burst); a straggler ACK for an already-implied row is a harmless no-op, never an error.
         let lane = sent[0].4;
-        for (_ct, _prev, _msg_hp, ph, _lane, osc, _text) in sent.iter().rev() {
-            assert!(sender.process_ack(*osc, ph));
+        let mut acks = sent.iter().rev();
+        let (_ct, _prev, _msg_hp, ph, _lane, osc, _text) = acks.next().unwrap();
+        assert!(sender.process_ack(*osc, ph));
+        assert!(
+            sender.pending_messages.is_empty(),
+            "the newest ACK must imply-deliver the whole in-order burst"
+        );
+        for (_ct, _prev, _msg_hp, ph, _lane, osc, _text) in acks {
+            assert!(
+                !sender.process_ack(*osc, ph),
+                "an implied-delivered row's straggler ACK is a no-op"
+            );
         }
-        assert!(sender.pending_messages.is_empty());
         assert_eq!(
             sender.current_key(&lane).unwrap(),
             receiver.current_key(&lane).unwrap(),
