@@ -380,3 +380,4 @@ else
     echo "  ✓ lint-clean"
 fi
 echo "════════════════════════════════════════════════════════════"
+echo "completed $(date '+%F %T')"

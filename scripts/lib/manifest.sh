@@ -96,6 +96,7 @@ manifest_end_dev_publish() {
     git add Cargo.toml Cargo.lock
     git commit -q -m "dev: ${MANIFEST_PUBLISH_LABEL:-dev} v${full} published; next line v${major}.${minor}.${next}"
     echo "dev line: v${full} published -> tree now v${major}.${minor}.${next} (the NEXT build's number)"
+    echo "completed $(date '+%F %T')"
 }
 
 # Fetch the current dev manifest, merge THIS platform's fresh artefact section into it, re-sign, re-upload.

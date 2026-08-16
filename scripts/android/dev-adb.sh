@@ -8,3 +8,4 @@ source scripts/lib/android-env.sh
 source scripts/lib/android.sh
 android_build dev
 deploy_adb
+echo "completed $(date '+%F %T')"

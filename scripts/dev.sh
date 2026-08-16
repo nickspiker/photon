@@ -9,3 +9,4 @@ source scripts/lib/desktop.sh
 source scripts/lib/worktree-check.sh
 worktree_check
 build_sign_install dev
+echo "completed $(date '+%F %T')"
