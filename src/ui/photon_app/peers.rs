@@ -109,9 +109,13 @@ impl PhotonApp {
             return; // one in flight — a slow seed must not stack requests
         }
         // Per stalled contact: every device we know for it, fold included — `relay_device_list` alone missed the folded-but-never-contacted case (a device in the membership fold that never pinged us has no endpoint row, so it was never resolved and never punched).
+        // "Stalled" = no USABLE address — a relay-only contact's ip slot holds the RELAY SENTINEL (0.0.0.0), and treating that as "has an address" locked the contact out of the one lookup that could upgrade it: never resolved → never learns the registry's WAN → punches only a foreign LAN → stuck on relay-tier forever, while a same-LAN device shows direct (field, 2026-08-16: friend amber from the desktop, green from the mac sitting on her LAN).
         let mut wanted: Vec<([u8; 32], Vec<[u8; 32]>)> = Vec::new();
         let mut budget = 16usize;
-        for c in self.contacts.iter().filter(|c| c.ip.is_none()) {
+        for c in self.contacts.iter().filter(|c| {
+            c.ip
+                .map_or(true, |a| crate::network::traverse::gather::is_bogus_addr(&a))
+        }) {
             if budget == 0 {
                 break; // bounded per pulse — a large roster must not turn one stalled tick into a burst at the seed; the next pulse takes the rest
             }
