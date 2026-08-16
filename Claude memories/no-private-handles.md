@@ -1,0 +1,15 @@
+---
+name: no-private-handles
+description: "Never put Nick's private handles or family references in code, comments, docs, or commit messages"
+metadata: 
+  node_type: memory
+  type: feedback
+  originSessionId: faa32b1c-4aed-43dc-84b7-06eb9c63c556
+  modified: 2026-08-03T12:28:29.833Z
+---
+
+Never write private handles (a friend's handle, the user's own handle, …) or family references ("a real first name", "David") into the photon codebase — comments, docs, test variable names, or commit messages. The repo is public.
+
+**Why:** Nick, 2026-08-03: "so you're putting private handles in a public codebase???" — field-incident comments had accumulated ~40 handle mentions; all scrubbed in 059b602.
+
+**How to apply:** Attribute field incidents with neutral roles plus the date: "a live pair", "a field device", "a phone on cellular", "(field, 2026-08-03)". Keep the lesson and the date, drop the who. Nick Spiker as author/signer is public identity and fine. Handles in pulled logs are fine to discuss in chat — they just never land in the tree. Related: [[no-wrapped-comments]].
