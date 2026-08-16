@@ -769,6 +769,17 @@ impl PhotonApp {
             }
         }
 
+        // Roster-push completion edge: release the in-flight slot; if any push edge fired mid-flight, run the ONE coalesced follow-up now (it re-snapshots the roster, so it carries everything that landed meanwhile).
+        if matches!(
+            self.roster_push_rx.as_ref().map(|rx| rx.try_recv()),
+            Some(Ok(())) | Some(Err(std::sync::mpsc::TryRecvError::Disconnected))
+        ) {
+            self.roster_push_rx = None;
+            if std::mem::take(&mut self.roster_push_queued) {
+                self.spawn_roster_push();
+            }
+        }
+
         match self.roster_pull_rx.as_ref().map(|rx| rx.try_recv()) {
             Some(Ok(Ok(state))) => {
                 self.roster_pull_rx = None;

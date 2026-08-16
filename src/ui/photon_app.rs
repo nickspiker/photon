@@ -1299,6 +1299,10 @@ pub struct PhotonApp {
     ckpt_last_attempt: Option<Instant>,
     /// In-flight fleet-roster pull; its `Ok` result merges into contacts, its `Err` triggers a retry — both drained in `tick`. `Some` = a pull is running, which also debounces re-spawns.
     roster_pull_rx: Option<std::sync::mpsc::Receiver<Result<fgtw::fstate::FleetState, String>>>,
+    /// In-flight fleet-roster PUSH completion, drained in `tick`. Each push is a whole pull-merge-seal-put round trip, and launch fires many push edges back to back (re-push, weave claims, keepalive stamps, pong adoptions, reconciles) — ungated they ran CONCURRENTLY, racing each other's merge base (the reason live settings must ride along) and each one's fstate event re-pulled every sibling: 19 pushes in the first 21 seconds of a field launch (2026-08-16). `Some` = one push runs; further requests set `roster_push_queued`.
+    roster_push_rx: Option<std::sync::mpsc::Receiver<()>>,
+    /// A push edge fired while one was in flight — the completion drain fires ONE follow-up that snapshots the roster fresh, so every bump that landed meanwhile rides a single push.
+    roster_push_queued: bool,
     /// Message-table persist worker: conversation snapshots go over this channel to ONE background thread that coalesces (latest snapshot per conversation id wins) and writes. `save_messages` is a full encrypted table rewrite — on the UI thread it was the named 600ms–5.7s stall behind every ChatMessage/MessageAck arm; off it, an ack is a field flip.
     persist_tx: Option<
         std::sync::mpsc::Sender<(
@@ -1857,6 +1861,8 @@ impl PhotonApp {
             ckpt_loaded: false,
             ckpt_last_attempt: None,
             roster_pull_rx: None,
+            roster_push_rx: None,
+            roster_push_queued: false,
             fleet_settings: None,
             fleet_key_ram: std::sync::Arc::new(std::sync::Mutex::new(None)),
             needs_initial_roster_pull: false,
