@@ -461,6 +461,17 @@ impl PhotonApp {
         }
     }
 
+    /// Flush the event-tracked geometry if anything changed since the last persist — called at the durability edges (focus-lost, close). Both halves must be known (init seeds them; Wayland/Android never report a position and stay inert).
+    pub(super) fn flush_window_geometry(&mut self) {
+        if !self.window_geometry_dirty {
+            return;
+        }
+        if let (Some((x, y)), Some((w, h))) = (self.window_pos_seen, self.window_size_seen) {
+            self.window_geometry_dirty = false;
+            self.save_window_geometry(x, y, w, h);
+        }
+    }
+
     /// Persist the settled window geometry as this DEVICE's two typed pairs — display.window.pos (v_i5 [x,y], outer position) + .size (v_u5 [w,h], inner size), physical px. Device-local and UNLINKED like zoom: where a window sits is monitor ergonomics, never fleet-global.
     pub(super) fn save_window_geometry(&mut self, x: i32, y: i32, w: u32, h: u32) {
         if !self.ensure_fleet_settings() {

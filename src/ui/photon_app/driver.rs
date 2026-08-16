@@ -16,9 +16,10 @@ impl FluorApp for PhotonApp {
     /// One-shot window-geometry restore, armed with the zoom at settings load; the host guards the position half against unplugged monitors.
     fn take_window_geometry_request(&mut self) -> Option<(i32, i32, u32, u32)> {
         let r = self.pending_geometry_restore.take();
-        if let Some(g) = r {
-            // Seed the settle tracker so the restore itself doesn't read as a user gesture and re-save.
-            self.window_geometry_seen = Some(g);
+        if let Some((x, y, w, h)) = r {
+            // Seed the trackers so the restore's own Moved/Resized echoes don't read as user gestures and re-save.
+            self.window_pos_seen = Some((x, y));
+            self.window_size_seen = Some((w, h));
             self.window_geometry_dirty = false;
         }
         r
@@ -107,14 +108,24 @@ impl FluorApp for PhotonApp {
         self.start_in_background
     }
 
-    fn on_close_requested(&mut self) -> bool {
-        // Flush any un-settled window geometry — the resize-then-close flow's last edge, on BOTH the hide and the exit path.
-        if self.window_geometry_dirty {
-            if let Some((x, y, w, h)) = self.window_geometry_seen {
-                self.window_geometry_dirty = false;
-                self.save_window_geometry(x, y, w, h);
-            }
+    /// The OS moved the window: remember the new outer position (RAM only — durability waits for a lifecycle edge). Pure event, no sampling.
+    fn on_window_moved(&mut self, x: i32, y: i32) {
+        if self.window_pos_seen != Some((x, y)) {
+            self.window_pos_seen = Some((x, y));
+            self.window_geometry_dirty = true;
         }
+    }
+
+    /// Focus left the app — the natural "user looked away" durability edge: flush any moved/resized-but-unsaved geometry.
+    fn on_focus_changed(&mut self, focused: bool) {
+        if !focused {
+            self.flush_window_geometry();
+        }
+    }
+
+    fn on_close_requested(&mut self) -> bool {
+        // The close is the last durability edge — flush on BOTH the hide and the exit path.
+        self.flush_window_geometry();
         // Deliberate-quit overrides: Shift+Escape's one-shot flag, or shift held on the close itself (shift+✕, shift+Alt-F4). Either way the user asked for the REAL exit — decline residency this once and let the host exit.
         if self.exit_requested || self.shift_held {
             crate::log(
@@ -145,6 +156,13 @@ impl FluorApp for PhotonApp {
     }
 
     fn init(&mut self, ctx: &mut Context) {
+        // Seed the geometry trackers from the window as born — one read at the init EVENT, so a later move-only or resize-only session still holds both halves at flush time. Not a restore echo: dirty stays false until a real event differs.
+        if let Some(p) = ctx.window.outer_position() {
+            self.window_pos_seen = Some(p);
+        }
+        if let Some(sz) = ctx.window.inner_size() {
+            self.window_size_seen = Some(sz);
+        }
         // Register Photon's Oxanium font weights with fluor's shared `TextRenderer` so the logo wordmark can resolve `Family::Name("Oxanium")`. ExtraLight/Light/Regular/Medium/SemiBold/Bold/ExtraBold = numeric weights 200/300/400/500/600/700/800. The logo uses weight 800.
         let db = ctx.text.font_system_mut().db_mut();
         db.load_font_data(
@@ -929,6 +947,12 @@ impl FluorApp for PhotonApp {
             chrome.set_full_edge(ctx.is_maximized);
         }
         self.update_widget_layout(ctx);
+        // Remember the inner size on the resize EVENT edge (RAM only; durability waits for focus-lost/close). The restore's own request_inner_size lands here too — the seed in take_window_geometry_request makes that a no-op, and a real user resize differs and marks dirty.
+        let size = (ctx.viewport.width_px, ctx.viewport.height_px);
+        if self.window_size_seen != Some(size) {
+            self.window_size_seen = Some(size);
+            self.window_geometry_dirty = true;
+        }
     }
 
     // A clickable element was ACTIVATED — pointer went DOWN on `hit_id` and released over the SAME `hit_id`, no drag-off (press-hold-release, arbitrated by fluor's PointerArbiter). Every ACTION lives here so a mis-touch dragged off before release fires NOTHING. Press-time concerns (focus, textbox cursor, drag-select, window drag) stay in `on_event`'s Pressed arm; the raw press/release still arrive there.
@@ -2669,25 +2693,6 @@ impl FluorApp for PhotonApp {
         // Frame fence for the deferred send drain: entries queued during THIS tick's input pass wait until the next one, guaranteeing the pending bubble a rendered frame before the wire half runs.
         self.tick_serial = self.tick_serial.wrapping_add(1);
 
-        // Window-geometry settle edge: sample outer position + inner size each tick; a change marks a gesture live, and the first tick whose sample REPEATS after a change is the settle — the signal's own edge, never a timer — persisting once per move/resize gesture. First-ever sample seeds silently (a launch position is the restore or the default, not a user gesture); Wayland/Android report no position and the whole block stays inert.
-        if let (Some(pos), Some(size)) = (ctx.window.outer_position(), ctx.window.inner_size()) {
-            let g = (pos.0, pos.1, size.0, size.1);
-            match self.window_geometry_seen {
-                Some(prev) if prev == g => {
-                    if self.window_geometry_dirty {
-                        self.window_geometry_dirty = false;
-                        self.save_window_geometry(g.0, g.1, g.2, g.3);
-                    }
-                }
-                Some(_) => {
-                    self.window_geometry_seen = Some(g);
-                    self.window_geometry_dirty = true;
-                }
-                None => {
-                    self.window_geometry_seen = Some(g);
-                }
-            }
-        }
 
         // Point the top-left orb at the current subject (peer avatar + their presence ring in a conversation, else the Photon orb + our connectivity). Self-diffing — a no-op unless the contact / avatar / screen changed.
         self.update_orb();

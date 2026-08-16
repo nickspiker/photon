@@ -1578,8 +1578,9 @@ pub struct PhotonApp {
     egged_cache: std::collections::HashMap<[u8; 32], bool>,
     /// One-shot window-geometry restore (outer x, y + inner w, h — physical px), armed with the zoom at settings load; the host applies it with an off-monitor guard on the position half.
     pending_geometry_restore: Option<(i32, i32, u32, u32)>,
-    /// The last geometry tick sampled + whether it changed since the last persist. The save fires on the SETTLE EDGE — the first tick whose sample repeats after a change — the signal's own edge, never a timer; close flushes whatever is still dirty.
-    window_geometry_seen: Option<(i32, i32, u32, u32)>,
+    /// The window geometry as the EVENTS reported it — outer position from on_window_moved, inner size from on_resize, seeded once at init. Durability edges (focus-lost, close) flush when dirty; no sampling exists anywhere.
+    window_pos_seen: Option<(i32, i32)>,
+    window_size_seen: Option<(u32, u32)>,
     window_geometry_dirty: bool,
     fleet_lock_armed: Option<[u8; 32]>,
     /// Two-tap arm state for the Unlock pill (the lock pill's mirror).
@@ -1963,7 +1964,8 @@ impl PhotonApp {
             avatar_probe_cache: std::collections::HashMap::new(),
             egged_cache: std::collections::HashMap::new(),
             pending_geometry_restore: None,
-            window_geometry_seen: None,
+            window_pos_seen: None,
+            window_size_seen: None,
             window_geometry_dirty: false,
             fleet_lock_armed: None,
             fleet_unlock_armed: None,
