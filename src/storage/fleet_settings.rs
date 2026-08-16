@@ -21,13 +21,12 @@ pub fn as_f32(v: &VsfType) -> Option<f32> {
     }
 }
 
-/// u0 bool, or the legacy raw single byte.
+/// u0 bool (or any unsigned width ≠ 0), or the legacy raw single byte.
 pub fn as_bool(v: &VsfType) -> Option<bool> {
     match v {
         VsfType::u0(b) => Some(*b),
-        VsfType::u3(n) => Some(*n != 0),
         VsfType::v(b'r', b) if b.len() == 1 => Some(b[0] != 0),
-        _ => None,
+        _ => v.as_u64().map(|n| n != 0),
     }
 }
 
@@ -57,22 +56,14 @@ pub fn as_key32(v: &VsfType) -> Option<[u8; 32]> {
     }
 }
 
-/// i5 signed 32, or the auto-sized i.
+/// Signed 32 thru the width-agnostic accessor — the key names the semantics, the encoder picks the width; an exact-variant match never fires on parsed data.
 pub fn as_i32(v: &VsfType) -> Option<i32> {
-    match v {
-        VsfType::i5(n) => Some(*n),
-        VsfType::i(n) => i32::try_from(*n).ok(),
-        _ => None,
-    }
+    v.as_i64().and_then(|n| i32::try_from(n).ok())
 }
 
-/// u5 unsigned 32, or the auto-sized u.
+/// Unsigned 32 thru the width-agnostic accessor.
 pub fn as_u32(v: &VsfType) -> Option<u32> {
-    match v {
-        VsfType::u5(n) => Some(*n),
-        VsfType::u(n, _) => u32::try_from(*n).ok(),
-        _ => None,
-    }
+    v.as_u64().and_then(|n| u32::try_from(n).ok())
 }
 
 /// A typed i32 pair (v_i5 of exactly two) — the window-position shape.

@@ -165,11 +165,7 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
         .get_fields("m_refk")
         .iter()
         .filter_map(|f| f.values.first())
-        .filter_map(|v| match v {
-            VsfType::u3(n) => Some(*n),
-            VsfType::u4(n) => Some(*n as u8),
-            _ => None,
-        })
+        .filter_map(|v| v.as_u64().and_then(|n| u8::try_from(n).ok()))
         .collect();
     let ref_targets: Vec<i64> = section
         .get_fields("m_reft")
@@ -204,14 +200,11 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
     })
 }
 
-/// Width-tolerant VSF unsigned → bool (writers may emit u3 or wider).
+/// Width-agnostic VSF unsigned → bool: the key names the semantics, the encoder picks the width — the reader must not care (u0 bool form included).
 fn vsf_bool(v: &VsfType) -> Option<bool> {
     match v {
-        VsfType::u3(n) => Some(*n != 0),
-        VsfType::u4(n) => Some(*n != 0),
-        VsfType::u5(n) => Some(*n != 0),
-        VsfType::u6(n) => Some(*n != 0),
-        _ => None,
+        VsfType::u0(b) => Some(*b),
+        _ => v.as_u64().map(|n| n != 0),
     }
 }
 

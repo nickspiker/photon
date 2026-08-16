@@ -217,8 +217,8 @@ pub fn parse_manifest_stamped(
                 .and_then(|f| f.values.first())
                 .and_then(|v| match v {
                     VsfType::z(n) => Some(*n),
-                    VsfType::u(n, _) => Some(*n),
-                    _ => None,
+                    // Width-agnostic fallback — an exact `u(..)` match never fires on parsed data (auto-sized writes decode as concrete widths).
+                    other => other.as_usize(),
                 })
                 .unwrap_or(0)
         };

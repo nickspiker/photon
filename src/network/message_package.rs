@@ -114,11 +114,7 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
         .get_fields("refk")
         .first()
         .and_then(|f| f.values.first())
-        .and_then(|v| match v {
-            VsfType::u3(k) => Some(*k),
-            VsfType::u4(k) => Some(*k as u8),
-            _ => None,
-        })
+        .and_then(|v| v.as_u64().and_then(|k| u8::try_from(k).ok()))
         .unwrap_or(0);
     let ref_target = section
         .get_fields("reft")
