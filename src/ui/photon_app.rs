@@ -1288,6 +1288,8 @@ pub struct PhotonApp {
     /// The immediately-prior epoch, held one checkpoint crossing so in-flight k−1 frames still open.
     fleet_epoch_prev: Option<(u64, [u8; 32])>,
     /// A rotation (or other epoch-worthy edge) happened — the next sweep mints a checkpoint.
+    /// Rotating start index for the seed-registry resolve walk — the per-pulse device budget used to restart at contact zero every pulse, so head-of-list offline contacts starved everyone behind them of resolution forever.
+    pb_resolve_cursor: usize,
     ckpt_mint_due: bool,
     /// Consecutive spineless-hold sweeps (chain has a Checkpoint, custody unreadable, no local spine). Each hold fires a ckpt_req at the siblings; at the third dry sweep the next tick SUPERSEDES the spine — fresh epoch seed pushed at chain_k+1, custody rewritten under the CURRENT fleet key — because a spine nobody alive can read is dead state, not authority (the 2026-08-16 field wedge: the k=1 minter was wiped, the fleet key rotated past its custody seal, and every device held forever while all fleet-plane traffic sat blocked behind the missing spine).
     ckpt_spineless_holds: u32,
@@ -1859,6 +1861,7 @@ impl PhotonApp {
             pending_fleet_key: None,
             fleet_epoch: None,
             fleet_epoch_prev: None,
+            pb_resolve_cursor: 0,
             ckpt_mint_due: false,
             ckpt_spineless_holds: 0,
             ckpt_rows_base: None,

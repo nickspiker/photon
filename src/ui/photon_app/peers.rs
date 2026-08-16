@@ -110,14 +110,25 @@ impl PhotonApp {
         }
         // Per stalled contact: every device we know for it, fold included — `relay_device_list` alone missed the folded-but-never-contacted case (a device in the membership fold that never pinged us has no endpoint row, so it was never resolved and never punched).
         // "Stalled" = no USABLE address — a relay-only contact's ip slot holds the RELAY SENTINEL (0.0.0.0), and treating that as "has an address" locked the contact out of the one lookup that could upgrade it: never resolved → never learns the registry's WAN → punches only a foreign LAN → stuck on relay-tier forever, while a same-LAN device shows direct (field, 2026-08-16: friend amber from the desktop, green from the mac sitting on her LAN).
+        // ROTATING walk, not a fixed-prefix walk: the budget bounds one pulse, but "the next pulse takes the rest" was a lie — every pulse restarted at contact zero, so a handful of permanently-offline contacts at the head ate the whole budget forever and everyone behind them was NEVER resolved (field, 2026-08-16: 'resolved 3 endpoint(s)' — the same 3 — every 15s all session, while the friend past the cutoff sat relay-tier with a perfect registry record nobody fetched). The cursor advances past what a pulse consumed, so every stalled contact gets its turn.
         let mut wanted: Vec<([u8; 32], Vec<[u8; 32]>)> = Vec::new();
         let mut budget = 16usize;
-        for c in self.contacts.iter().filter(|c| {
-            c.ip
+        let n = self.contacts.len();
+        if n == 0 {
+            return;
+        }
+        let start = self.pb_resolve_cursor % n;
+        let mut consumed = 0usize;
+        for step in 0..n {
+            let c = &self.contacts[(start + step) % n];
+            if !c
+                .ip
                 .map_or(true, |a| crate::network::traverse::gather::is_bogus_addr(&a))
-        }) {
+            {
+                continue;
+            }
             if budget == 0 {
-                break; // bounded per pulse — a large roster must not turn one stalled tick into a burst at the seed; the next pulse takes the rest
+                break; // bounded per pulse — a large roster must not turn one stalled tick into a burst at the seed; the cursor hands the rest to the next pulse
             }
             let mut devs: Vec<[u8; 32]> = Vec::new();
             for dev in c
@@ -133,7 +144,9 @@ impl PhotonApp {
             if !devs.is_empty() {
                 wanted.push((c.handle_proof, devs));
             }
+            consumed = step + 1;
         }
+        self.pb_resolve_cursor = (start + consumed) % n;
         if wanted.is_empty() {
             return;
         }
