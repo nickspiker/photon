@@ -323,7 +323,8 @@ impl PhotonApp {
 
         // Launch-screen widgets paint UNDER the chord hint (so the hint always wins over the textbox) and OVER chrome (so the pill sits on top of the spectrum strip / wordmark). Same target buffer as the chord hint; widgets stamp their hit IDs into chrome's shared `hit_test_map`. Only paint when the launch screen is the active state — Ready/Searching/Conversation get their own widgets later.
         if let AppState::Launch(launch_state) = &self.state {
-            let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru).lifted(ime_lift, buf_h);
+            let layout =
+                LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru).lifted(ime_lift, buf_h);
             let attest = AttestBlockLayout::compute(layout.attest_block);
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
 
@@ -349,11 +350,12 @@ impl PhotonApp {
             );
 
             // Status slot — `attest.error` rect above the textbox. Carries either the red error message (`LaunchState::Error`) or the white "Attesting…" indicator (`LaunchState::Attesting`); empty in Fresh. Same geometry for both so they swap in place; colour differentiates "something's wrong" from "we're working". Wave's 1-cycle/sec phase animation pairs with the "Attesting…" line as the secondary cue.
-            let status: Option<(&str, u32)> =
-                if self.launch_add_mode && !self.add_join_status.is_empty() {
-                    Some((self.add_join_status.as_str(), (*theme::STATUS_TEXT_COLOUR)))
-                } else {
-                    match launch_state {
+            let status: Option<(&str, u32)> = if self.launch_add_mode
+                && !self.add_join_status.is_empty()
+            {
+                Some((self.add_join_status.as_str(), (*theme::STATUS_TEXT_COLOUR)))
+            } else {
+                match launch_state {
                         LaunchState::Attesting => {
                             Some(("Attesting\u{2026}", (*theme::STATUS_TEXT_COLOUR)))
                         }
@@ -373,7 +375,7 @@ impl PhotonApp {
                         )),
                         _ => None,
                     }
-                };
+            };
             if let Some((text, colour)) = status {
                 let error_rect = attest.error;
                 if !error_rect.is_empty() {
@@ -745,10 +747,18 @@ impl PhotonApp {
                     )
                     .center_h(0.85);
                     draw_stub_pill_filled(
-                        &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h,
-                        pill, "Unlocked from another device? Tap to retry",
-                        self.locked_retry_hit, ctx.pressed_hit, true,
-                        None, "Open Sans",
+                        &mut canvas,
+                        ctx.text,
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        pill,
+                        "Unlocked from another device? Tap to retry",
+                        self.locked_retry_hit,
+                        ctx.pressed_hit,
+                        true,
+                        None,
+                        "Open Sans",
                     );
                 }
                 // The Attest button only exists once there's a handle to attest. An empty, untouched field shows the dormant infinity in its place instead; a focused-but-empty field shows neither (the user is typing). Hiding the button also keeps its hit-rect out of `hit_test_map`, so an empty field can't dispatch a no-op attest click.
@@ -1034,7 +1044,8 @@ impl PhotonApp {
                 .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
                 .unwrap_or([0u8; 32]);
             matching.sort_by_key(|&ci| {
-                let conv = dm_conversation(&self.conversations, &our_handle_hash, &self.contacts[ci]);
+                let conv =
+                    dm_conversation(&self.conversations, &our_handle_hash, &self.contacts[ci]);
                 let last_activity = conv
                     .map(|v| v.messages.as_slice())
                     .unwrap_or(&[])
@@ -1644,12 +1655,14 @@ impl PhotonApp {
                                 _ => 0,
                             }
                         };
-                        let history_line =
-                            match conv.and_then(|v| v.history_recovery.as_ref()).map(|r| r.complete) {
-                                Some(true) => "history: complete on this device".to_string(),
-                                Some(false) => "history: still syncing".to_string(),
-                                None => "history: idle (no sweep this session)".to_string(),
-                            };
+                        let history_line = match conv
+                            .and_then(|v| v.history_recovery.as_ref())
+                            .map(|r| r.complete)
+                        {
+                            Some(true) => "history: complete on this device".to_string(),
+                            Some(false) => "history: still syncing".to_string(),
+                            None => "history: idle (no sweep this session)".to_string(),
+                        };
                         let chain_line = if is_self {
                             "no chain \u{2014} delivered by definition".to_string()
                         } else if contact.chain_woven {
@@ -2084,7 +2097,11 @@ impl PhotonApp {
                             - live_compose_h
                             - compose_margin
                             - unit * 0.5
-                            - if compose_strip.is_some() { unit * 0.9 } else { 0.0 };
+                            - if compose_strip.is_some() {
+                                unit * 0.9
+                            } else {
+                                0.0
+                            };
                         // Clamp so a short window (tall header) can never invert the clip (list_top > list_bottom) — that's what made every message vanish on resize. When there's no room, list_bottom collapses to list_top and the list is simply empty rather than drawing with a negative-height (inverted) clip.
                         let list_bottom = list_bottom.max(list_top);
                         let list_clip = fluor::paint::Clip::new(
@@ -2117,9 +2134,7 @@ impl PhotonApp {
                         let react_line = |ts: i64| -> Option<(Option<String>, Option<String>)> {
                             let slots = react_over.get(&ts)?;
                             let pick = |s: &Option<(i64, String)>| {
-                                s.as_ref()
-                                    .map(|(_, g)| g.clone())
-                                    .filter(|g| !g.is_empty())
+                                s.as_ref().map(|(_, g)| g.clone()).filter(|g| !g.is_empty())
                             };
                             let theirs = pick(&slots[0]);
                             let ours = pick(&slots[1]);
@@ -2166,17 +2181,14 @@ impl PhotonApp {
                         let wrap_style = TextStyle::new(msg_size, 0).weight(500);
                         let avail_w = (buf_w as f32 - pad_x * 2.0).max(msg_size);
                         let intra = msg_size * 1.25;
-                        let wrap_key = (ci, n, raw_msgs.len(), avail_w.to_bits(), msg_size.to_bits());
+                        let wrap_key =
+                            (ci, n, raw_msgs.len(), avail_w.to_bits(), msg_size.to_bits());
                         if self.msg_wrap.as_ref().map(|(k, _, _)| *k) != Some(wrap_key) {
                             let mut all_lines: Vec<Vec<String>> = Vec::with_capacity(n);
                             let mut total = 0usize;
                             for m in &visible {
-                                let lines = wrap_text_lines(
-                                    ctx.text,
-                                    &body_of(m),
-                                    &wrap_style,
-                                    avail_w,
-                                );
+                                let lines =
+                                    wrap_text_lines(ctx.text, &body_of(m), &wrap_style, avail_w);
                                 total += lines.len();
                                 // A reply row reserves ONE extra line for its half-alpha reference snippet above the body.
                                 if matches!(m.reference, Some((crate::types::RefKind::Reply, _))) {
@@ -2221,9 +2233,9 @@ impl PhotonApp {
                             static EMPTY_LINES: Vec<String> = Vec::new();
                             let lines: &Vec<String> = wrap_cache.get(vi).unwrap_or(&EMPTY_LINES);
                             // A reply row's reference snippet occupies one extra line ABOVE the body; a reacted row grows one BELOW (both counted into the wrap total). The reaction line sits at the block's bottom baseline, so the body shifts up by react_off.
-                            let reply_target = msg
-                                .reference
-                                .and_then(|(k, t)| (k == crate::types::RefKind::Reply).then_some(t));
+                            let reply_target = msg.reference.and_then(|(k, t)| {
+                                (k == crate::types::RefKind::Reply).then_some(t)
+                            });
                             let reactions = react_line(msg.timestamp);
                             let react_off = if reactions.is_some() { intra } else { 0.0 };
                             let block_extra = (lines.len() as f32 - 1.0) * intra
@@ -2339,10 +2351,14 @@ impl PhotonApp {
                                         .font("Oxanium");
                                 // Reaction attribution joins the meta line — whose glyph is whose lives here, not on the bubble.
                                 if let Some(slots) = react_over.get(&msg.timestamp) {
-                                    if let Some(g) = slots[0].as_ref().map(|(_, g)| g).filter(|g| !g.is_empty()) {
+                                    if let Some(g) =
+                                        slots[0].as_ref().map(|(_, g)| g).filter(|g| !g.is_empty())
+                                    {
                                         detail.push_str(&format!(" \u{00b7} they {}", g));
                                     }
-                                    if let Some(g) = slots[1].as_ref().map(|(_, g)| g).filter(|g| !g.is_empty()) {
+                                    if let Some(g) =
+                                        slots[1].as_ref().map(|(_, g)| g).filter(|g| !g.is_empty())
+                                    {
                                         detail.push_str(&format!(" \u{00b7} you {}", g));
                                     }
                                 }
@@ -2365,7 +2381,8 @@ impl PhotonApp {
                                 let mut pills: Vec<(&str, u32, HitId)> =
                                     vec![("reply", *theme::COPY_PILL_COLOUR, self.msg_action_base)];
                                 if msg.is_outgoing
-                                    && crate::types::parse_attachment_content(&msg.content).is_none()
+                                    && crate::types::parse_attachment_content(&msg.content)
+                                        .is_none()
                                 {
                                     pills.push((
                                         "edit",
@@ -2476,7 +2493,9 @@ impl PhotonApp {
                                     .weight(500);
                                     let w = ctx.text.measure_text(g, &style);
                                     // Fit gate: always leave room for the circled "+" at the row's end.
-                                    if rx_cursor + w + pad_hit + plus_r * 2.0 + pad_hit > buf_w as f32 - pad_x {
+                                    if rx_cursor + w + pad_hit + plus_r * 2.0 + pad_hit
+                                        > buf_w as f32 - pad_x
+                                    {
                                         break;
                                     }
                                     ctx.text.draw_text_left(
@@ -2514,7 +2533,8 @@ impl PhotonApp {
                                     Some(list_clip),
                                 );
                                 let plus_style =
-                                    TextStyle::new(glyph_size, *theme::COPY_PILL_COLOUR).weight(500);
+                                    TextStyle::new(glyph_size, *theme::COPY_PILL_COLOUR)
+                                        .weight(500);
                                 let plus_w = ctx.text.measure_text("+", &plus_style);
                                 ctx.text.draw_text_left(
                                     &mut canvas,
@@ -2571,11 +2591,12 @@ impl PhotonApp {
                                         format!("\u{00bb} {}", s)
                                     })
                                     .unwrap_or("\u{00bb} \u{2026}".to_string());
-                                let ref_colour = theme::half_colour(if msg.is_outgoing || is_self_contact {
-                                    our_colour
-                                } else {
-                                    their_colour
-                                });
+                                let ref_colour =
+                                    theme::half_colour(if msg.is_outgoing || is_self_contact {
+                                        our_colour
+                                    } else {
+                                        their_colour
+                                    });
                                 let ref_style = TextStyle::new(msg_size, ref_colour).weight(500);
                                 let ref_y = y - react_off - lines.len() as f32 * intra;
                                 if msg.is_outgoing || is_self_contact {
@@ -2629,9 +2650,11 @@ impl PhotonApp {
                                 let r_sz = msg_size * 0.8;
                                 let r_gap = r_sz * 0.6;
                                 let their_style =
-                                    TextStyle::new(r_sz, theme::half_colour(their_colour)).weight(500);
+                                    TextStyle::new(r_sz, theme::half_colour(their_colour))
+                                        .weight(500);
                                 let our_style =
-                                    TextStyle::new(r_sz, theme::half_colour(our_colour)).weight(500);
+                                    TextStyle::new(r_sz, theme::half_colour(our_colour))
+                                        .weight(500);
                                 if msg.is_outgoing || is_self_contact {
                                     let mut right_x = buf_w as f32 - pad_x;
                                     if let Some(o) = r_ours {
@@ -2751,7 +2774,10 @@ impl PhotonApp {
                                 x.timestamp == t
                                     && !x.deleted
                                     && !crate::types::is_control_content(&x.content)
-                                    && !matches!(x.reference, Some((crate::types::RefKind::Edit, _)))
+                                    && !matches!(
+                                        x.reference,
+                                        Some((crate::types::RefKind::Edit, _))
+                                    )
                             });
                             let snippet = target
                                 .map(|x| {
@@ -2783,7 +2809,8 @@ impl PhotonApp {
                                 &text,
                                 pad_x,
                                 list_bottom + unit * 0.55,
-                                &TextStyle::new(msg_size * 0.85, theme::half_colour(col)).weight(500),
+                                &TextStyle::new(msg_size * 0.85, theme::half_colour(col))
+                                    .weight(500),
                                 None,
                                 None,
                             );
@@ -3739,7 +3766,12 @@ impl PhotonApp {
                         settings_line(
                             &mut canvas,
                             ctx.text,
-                            fluor::region::Region::new(cols[0].x + hspan2 * 0.9, cols[0].y, cols[0].w - hspan2 * 0.9, cols[0].h),
+                            fluor::region::Region::new(
+                                cols[0].x + hspan2 * 0.9,
+                                cols[0].y,
+                                cols[0].w - hspan2 * 0.9,
+                                cols[0].h,
+                            ),
                             status,
                             hspan2 * 0.85,
                             status_colour,
@@ -3752,24 +3784,54 @@ impl PhotonApp {
                                 link,
                                 cols[0].x + hspan2 * 0.3,
                                 cols[0].center_y() + hspan2 * 0.85,
-                                &TextStyle::new(hspan2 * 0.7, *theme::LABEL_COLOUR)
-                                    .font("Oxanium"),
+                                &TextStyle::new(hspan2 * 0.7, *theme::LABEL_COLOUR).font("Oxanium"),
                                 None,
                                 None,
                             );
                         }
                         // Name centred in the MIDDLE column (tap-to-copy hit stamped over just that column).
-                        ctx.text.draw_text_center(&mut canvas, name, cols[1].center_x(), cols[1].center_y(), &TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium"), None, None);
-                        restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, cols[1].x as isize, cols[1].y as isize, (cols[1].x + cols[1].w) as isize, (cols[1].y + cols[1].h) as isize, btn_base.wrapping_add(16 + i as HitId));
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            name,
+                            cols[1].center_x(),
+                            cols[1].center_y(),
+                            &TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR)
+                                .weight(500)
+                                .font("Oxanium"),
+                            None,
+                            None,
+                        );
+                        restamp_hit_rect(
+                            &mut chrome.hit_test_map,
+                            buf_w,
+                            buf_h,
+                            cols[1].x as isize,
+                            cols[1].y as isize,
+                            (cols[1].x + cols[1].w) as isize,
+                            (cols[1].y + cols[1].h) as isize,
+                            btn_base.wrapping_add(16 + i as HitId),
+                        );
                         // RIGHT column = the per-device action pill(s): Release (retired) or Bridge + Lock out (live sibling). This device gets nothing there.
                         if *retired {
                             let armed = self.fleet_release_armed.as_ref() == Some(pk);
-                            let label = if armed { "Release \u{2014} sure?" } else { "Release" };
+                            let label = if armed {
+                                "Release \u{2014} sure?"
+                            } else {
+                                "Release"
+                            };
                             draw_stub_pill_filled(
-                                &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h,
-                                cols[2].center_h(0.8), label,
-                                btn_base.wrapping_add(24 + i as HitId), ctx.pressed_hit, true,
-                                if armed { Some(*theme::PILL_RED) } else { None }, "Oxanium",
+                                &mut canvas,
+                                ctx.text,
+                                &mut chrome.hit_test_map,
+                                buf_w,
+                                buf_h,
+                                cols[2].center_h(0.8),
+                                label,
+                                btn_base.wrapping_add(24 + i as HitId),
+                                ctx.pressed_hit,
+                                true,
+                                if armed { Some(*theme::PILL_RED) } else { None },
+                                "Oxanium",
                             );
                         } else if !*is_self {
                             // Live sibling: the RIGHT column carries Bridge and the row's state pill side by side — Lock out on a trusted row, Unlock on a locked one.
@@ -3780,33 +3842,69 @@ impl PhotonApp {
                                 (halves[0].center_h(0.9), Some(halves[1].center_h(0.9)), None)
                             };
                             // Bridge on ANY sibling (not just confirmed-online): the send reports "no address yet" if truly unreachable, which is clearer than a missing button. Green when online, dimmed grey when offline so it still reads as "reachable-ish".
-                            let fill = if *online { Some(*theme::PILL_GREEN) } else { Some(*theme::PILL_GREY) };
+                            let fill = if *online {
+                                Some(*theme::PILL_GREEN)
+                            } else {
+                                Some(*theme::PILL_GREY)
+                            };
                             draw_stub_pill_filled(
-                                &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h,
-                                bridge_pill, "Bridge",
-                                btn_base.wrapping_add(8 + i as HitId), ctx.pressed_hit, true,
-                                fill, "Oxanium",
+                                &mut canvas,
+                                ctx.text,
+                                &mut chrome.hit_test_map,
+                                buf_w,
+                                buf_h,
+                                bridge_pill,
+                                "Bridge",
+                                btn_base.wrapping_add(8 + i as HitId),
+                                ctx.pressed_hit,
+                                true,
+                                fill,
+                                "Oxanium",
                             );
                             // Live sibling rows carry the treat-as-stolen pill (two-tap): lock the device out WITHOUT touching the chain — removal is self-signed only, zero exceptions; this is the fleet refusing to listen.
                             if let Some(pill) = lock_pill {
                                 let armed = self.fleet_lock_armed.as_ref() == Some(pk);
-                                let label = if armed { "Lock out \u{2014} sure?" } else { "Lock out" };
+                                let label = if armed {
+                                    "Lock out \u{2014} sure?"
+                                } else {
+                                    "Lock out"
+                                };
                                 draw_stub_pill_filled(
-                                    &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h,
-                                    pill, label,
-                                    btn_base.wrapping_add(32 + i as HitId), ctx.pressed_hit, true,
-                                    if armed { Some(*theme::PILL_RED) } else { None }, "Oxanium",
+                                    &mut canvas,
+                                    ctx.text,
+                                    &mut chrome.hit_test_map,
+                                    buf_w,
+                                    buf_h,
+                                    pill,
+                                    label,
+                                    btn_base.wrapping_add(32 + i as HitId),
+                                    ctx.pressed_hit,
+                                    true,
+                                    if armed { Some(*theme::PILL_RED) } else { None },
+                                    "Oxanium",
                                 );
                             }
                             // Locked rows carry the reversal (two-tap): the confirm routes thru a handle re-proof exactly like the lock, then clears the worker verdict + fleet marker and re-mints the key with the device wrapped back in.
                             if let Some(pill) = unlock_pill {
                                 let armed = self.fleet_unlock_armed.as_ref() == Some(pk);
-                                let label = if armed { "Unlock \u{2014} sure?" } else { "Unlock" };
+                                let label = if armed {
+                                    "Unlock \u{2014} sure?"
+                                } else {
+                                    "Unlock"
+                                };
                                 draw_stub_pill_filled(
-                                    &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h,
-                                    pill, label,
-                                    btn_base.wrapping_add(40 + i as HitId), ctx.pressed_hit, true,
-                                    if armed { Some(*theme::PILL_RED) } else { None }, "Oxanium",
+                                    &mut canvas,
+                                    ctx.text,
+                                    &mut chrome.hit_test_map,
+                                    buf_w,
+                                    buf_h,
+                                    pill,
+                                    label,
+                                    btn_base.wrapping_add(40 + i as HitId),
+                                    ctx.pressed_hit,
+                                    true,
+                                    if armed { Some(*theme::PILL_RED) } else { None },
+                                    "Oxanium",
                                 );
                             }
                         }
@@ -3947,29 +4045,110 @@ impl PhotonApp {
                             500,
                         );
                     }
-                    settings_line(&mut canvas, ctx.text, rows[10], "Security: strong   ·   Recovery: not set up", hspan2, *theme::LABEL_COLOUR, 400);
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[10],
+                        "Security: strong   ·   Recovery: not set up",
+                        hspan2,
+                        *theme::LABEL_COLOUR,
+                        400,
+                    );
                     // ── DANGEROUS: unattended auto-attest-on-reboot. Off by default. Rows 11-14. Two states, both drawn INLINE in this page (no floating overlay — an over-content modal drawn after chrome.flatten_into never composited its glyphs): the normal checkbox+disclaimer, OR (while a flip is pending) a handle-entry confirmation that must re-prove the operator before arming/disarming.
-                    settings_line(&mut canvas, ctx.text, rows[11], "\u{26A0} Auto-attest on reboot (unattended)", hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[11],
+                        "\u{26A0} Auto-attest on reboot (unattended)",
+                        hspan2,
+                        *theme::CONTACT_NAME_COLOUR,
+                        600,
+                    );
                     if let Some(target_on) = self.unattended_confirm {
                         // CONFIRM state: re-type the handle to arm/disarm.
-                        settings_line(&mut canvas, ctx.text, rows[12], if target_on { "Re-type your handle to ARM (this box will reboot as you):" } else { "Re-type your handle to disarm:" }, hspan2, *theme::ERROR_TEXT_COLOUR, 600);
+                        settings_line(
+                            &mut canvas,
+                            ctx.text,
+                            rows[12],
+                            if target_on {
+                                "Re-type your handle to ARM (this box will reboot as you):"
+                            } else {
+                                "Re-type your handle to disarm:"
+                            },
+                            hspan2,
+                            *theme::ERROR_TEXT_COLOUR,
+                            600,
+                        );
                         if let Some(tb) = self.unattended_confirm_tb.as_mut() {
                             let id = tb.hit_id();
-                            tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
+                            tb.render_content_into(
+                                &mut canvas,
+                                0.,
+                                0.,
+                                ctx.text,
+                                None,
+                                None,
+                                Some(&mut chrome.hit_test_map),
+                                id,
+                            );
                         }
                         let pr = rows[14].split_h([1.0, 1.0]);
-                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[0].center_h(pillf(0.6)), if target_on { "Arm" } else { "Disarm" }, self.unattended_confirm_base, ctx.pressed_hit, true, Some(*theme::PILL_RED), "Open Sans");
-                        draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pr[1].center_h(pillf(0.6)), "Cancel", self.unattended_confirm_base.wrapping_add(1), ctx.pressed_hit);
+                        draw_stub_pill_filled(
+                            &mut canvas,
+                            ctx.text,
+                            &mut chrome.hit_test_map,
+                            buf_w,
+                            buf_h,
+                            pr[0].center_h(pillf(0.6)),
+                            if target_on { "Arm" } else { "Disarm" },
+                            self.unattended_confirm_base,
+                            ctx.pressed_hit,
+                            true,
+                            Some(*theme::PILL_RED),
+                            "Open Sans",
+                        );
+                        draw_stub_pill(
+                            &mut canvas,
+                            ctx.text,
+                            &mut chrome.hit_test_map,
+                            buf_w,
+                            buf_h,
+                            pr[1].center_h(pillf(0.6)),
+                            "Cancel",
+                            self.unattended_confirm_base.wrapping_add(1),
+                            ctx.pressed_hit,
+                        );
                         if self.unattended_confirm_failed {
-                            settings_line(&mut canvas, ctx.text, rows[13], "Handle didn't match — try again.", hspan2, *theme::ERROR_TEXT_COLOUR, 600);
+                            settings_line(
+                                &mut canvas,
+                                ctx.text,
+                                rows[13],
+                                "Handle didn't match — try again.",
+                                hspan2,
+                                *theme::ERROR_TEXT_COLOUR,
+                                600,
+                            );
                         }
                     } else {
                         // NORMAL state: checkbox + disclaimer (red + bold once armed).
-                        let armed = self.settings_unattended_check.as_ref().map(|c| c.is_checked()).unwrap_or(false);
+                        let armed = self
+                            .settings_unattended_check
+                            .as_ref()
+                            .map(|c| c.is_checked())
+                            .unwrap_or(false);
                         if let Some(cb) = self.settings_unattended_check.as_mut() {
-                            cb.render_content_into(&mut canvas, ctx.text, None, Some(&mut chrome.hit_test_map));
+                            cb.render_content_into(
+                                &mut canvas,
+                                ctx.text,
+                                None,
+                                Some(&mut chrome.hit_test_map),
+                            );
                         }
-                        let dc = if armed { *theme::ERROR_TEXT_COLOUR } else { *theme::LABEL_COLOUR };
+                        let dc = if armed {
+                            *theme::ERROR_TEXT_COLOUR
+                        } else {
+                            *theme::LABEL_COLOUR
+                        };
                         settings_line(&mut canvas, ctx.text, rows[13], "BAD IDEA on any device you carry. Defeats the whole point of a passless identity:", hspan2, dc, if armed { 600 } else { 400 });
                         settings_line(&mut canvas, ctx.text, rows[14], "after a reboot this box becomes YOU with no handle typed. Only for remote failsafe boxes you physically control.", hspan2, dc, if armed { 600 } else { 400 });
                     }

@@ -65,8 +65,14 @@ fn main() {
                     let marker = dir.join("remote_terminal");
                     if enable {
                         let _ = std::fs::create_dir_all(&dir);
-                        match std::fs::write(&marker, b"operator enabled serving remote shells to fleet siblings\n") {
-                            Ok(()) => println!("remote-terminal host ENABLED ({}). Restart photon to serve.", marker.display()),
+                        match std::fs::write(
+                            &marker,
+                            b"operator enabled serving remote shells to fleet siblings\n",
+                        ) {
+                            Ok(()) => println!(
+                                "remote-terminal host ENABLED ({}). Restart photon to serve.",
+                                marker.display()
+                            ),
                             Err(e) => eprintln!("failed to enable: {e}"),
                         }
                     } else {

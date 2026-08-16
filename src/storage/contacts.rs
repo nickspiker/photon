@@ -1249,7 +1249,7 @@ pub fn save_messages_page(
             Pk::bytes(&message_row_key(msg.timestamp, &msg.content)),
             &rec,
         )
-            .map_err(|e| StorageError::Vault(e.to_string()))?;
+        .map_err(|e| StorageError::Vault(e.to_string()))?;
     }
     Ok(())
 }

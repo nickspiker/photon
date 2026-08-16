@@ -74,7 +74,13 @@ impl PhotonApp {
             tb.set_right_inset(compose_h * 7.0 / 8.0 + compose_h / 16.0);
             // Bottom-anchored growth: the box's bottom edge stays where the single-line bar sat; extra lines grow UPWARD into the list, capped at a third of the screen (the field call: line COUNT varies wildly with zoom, screen fraction doesn't).
             let bottom_y = compose_cy + compose_h * 0.5;
-            tb.set_layout(compose_cx, bottom_y, compose_w, buf_h as f32 / 3.0, ctx.text);
+            tb.set_layout(
+                compose_cx,
+                bottom_y,
+                compose_w,
+                buf_h as f32 / 3.0,
+                ctx.text,
+            );
         }
         if let Some(btn) = self.message_send_btn.as_mut() {
             let send_size = compose_h * 7.0 / 8.0;
@@ -95,7 +101,6 @@ impl PhotonApp {
                 cb.set_font_size(font_size * 0.9);
             }
         }
-
 
         // Settings panel (STUB): position the stateful widgets on the selected page. Content-body rows give each control a slot; a control's rect is a portion of its row so the label can sit beside / above it. Only the active page's widgets are repositioned — the others keep their placeholder geometry off-screen, and `visit` gates them out anyway.
         if let AppState::Settings(page) = self.state {
@@ -131,7 +136,9 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Security => {
-                    let rows = layout.content_scrolled(15, settings_content_scroll).split_v([1.0; 15]);
+                    let rows = layout
+                        .content_scrolled(15, settings_content_scroll)
+                        .split_v([1.0; 15]);
                     // Checkbox on row 12 (normal state); the confirm handle box shares that row (confirm state) — only one is visited/drawn at a time.
                     if let Some(cb) = self.settings_unattended_check.as_mut() {
                         let r = rows[12];
@@ -362,7 +369,11 @@ impl PhotonApp {
 
     /// Clipboard chord handler (desktop only). `op` is the lowercased character — "c" copy, "x" cut, "v" paste — acting on whichever textbox holds focus (launch handle or contacts search). Returns `Handled` when a textbox owned the focus, `Pass` otherwise (so the chord doesn't get eaten on a non-text screen). Copy/cut read `selected_text`; cut only deletes after the OS `set_text` succeeds, so a clipboard failure never silently destroys the selection. Paste inserts the clipboard string at the cursor (replacing any selection via `insert_str`). A launch-textbox edit clears a stale `Error` back to `Fresh`; the cursor blink reset is the caller's job.
     #[cfg(not(any(target_os = "redox", target_os = "android")))]
-    pub(super) fn clipboard_chord(&mut self, op: &str, text: &mut fluor::text::TextRenderer) -> EventResponse {
+    pub(super) fn clipboard_chord(
+        &mut self,
+        op: &str,
+        text: &mut fluor::text::TextRenderer,
+    ) -> EventResponse {
         // Resolve focus thru the ONE textbox registry (`textbox_by_hit_mut`) — the old hand-list covered only the launch + contacts boxes, so Ctrl/Cmd+V silently no-oped in the compose box and every panel field (exactly the per-concern hand-list the registry doctrine forbids). Any focused textbox is a clipboard target; focus elsewhere (button, avatar, nothing) passes thru.
         let Some(focus) = self.focused else {
             return EventResponse::Pass;
@@ -590,7 +601,9 @@ impl PhotonApp {
         let Some(id) = id else {
             return false;
         };
-        self.message_textbox.as_ref().is_some_and(|t| t.hit_id() == id)
+        self.message_textbox
+            .as_ref()
+            .is_some_and(|t| t.hit_id() == id)
             || self.textboxes_mut().any(|(_, t)| t.hit_id() == id)
     }
 
@@ -698,11 +711,7 @@ impl PhotonApp {
             return false;
         }
         // Compose drag = SELECTION (the multi-line box selects like an editor, it doesn't pan).
-        if let Some(tb) = self
-            .message_textbox
-            .as_mut()
-            .filter(|t| t.hit_id() == id)
-        {
+        if let Some(tb) = self.message_textbox.as_mut().filter(|t| t.hit_id() == id) {
             tb.pointer_drag(x, y);
             return true;
         }

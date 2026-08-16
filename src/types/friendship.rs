@@ -500,7 +500,7 @@ impl FriendshipChains {
             last_received_weave,
             last_sent_weave,
             last_incorporated_hp,
-            lane_labels: Vec::new(),  // pre-lane blob: lanes are absent by definition (the loader installs v8 lanes separately)
+            lane_labels: Vec::new(), // pre-lane blob: lanes are absent by definition (the loader installs v8 lanes separately)
             lane_positions: Vec::new(),
             our_label: None,
             gap_buffer: Vec::new(), // Gap buffer is transient, not persisted
@@ -894,8 +894,10 @@ impl FriendshipChains {
                     self.lane_positions.push(other.lane_positions[i]);
                     self.chains.push(other.chains[i].clone());
                     self.last_plaintexts.push(other.last_plaintexts[i].clone());
-                    self.first_message_anchors.push(other.first_message_anchors[i]);
-                    self.last_received_hashes.push(other.last_received_hashes[i]);
+                    self.first_message_anchors
+                        .push(other.first_message_anchors[i]);
+                    self.last_received_hashes
+                        .push(other.last_received_hashes[i]);
                     self.last_received_times.push(other.last_received_times[i]);
                     changed = true;
                 }
@@ -952,9 +954,15 @@ impl FriendshipChains {
             lane_labels: keep.iter().map(|&i| self.lane_labels[i]).collect(),
             lane_positions: keep.iter().map(|&i| self.lane_positions[i]).collect(),
             chains: keep.iter().map(|&i| self.chains[i].clone()).collect(),
-            last_plaintexts: keep.iter().map(|&i| self.last_plaintexts[i].clone()).collect(),
+            last_plaintexts: keep
+                .iter()
+                .map(|&i| self.last_plaintexts[i].clone())
+                .collect(),
             last_received_times: keep.iter().map(|&i| self.last_received_times[i]).collect(),
-            first_message_anchors: keep.iter().map(|&i| self.first_message_anchors[i]).collect(),
+            first_message_anchors: keep
+                .iter()
+                .map(|&i| self.first_message_anchors[i])
+                .collect(),
             last_received_hashes: pick_hashes(&self.last_received_hashes),
             // Device-local — never replicated, never adopted by a sibling.
             our_label: None,
@@ -1009,9 +1017,7 @@ impl FriendshipChains {
         lane_label: &[u8; 32],
         received_prev_msg_hp: &[u8; 32],
     ) -> Result<(), [u8; 32]> {
-        let expected = self
-            .get_expected_prev_hp(lane_label)
-            .ok_or([0u8; 32])?;
+        let expected = self.get_expected_prev_hp(lane_label).ok_or([0u8; 32])?;
 
         if received_prev_msg_hp == &expected {
             Ok(())
@@ -1089,7 +1095,8 @@ impl FriendshipChains {
         let Some(oldest) = self.pending_messages.first() else {
             return false;
         };
-        oldest.attempts >= MAX_SEND_ATTEMPTS && oldest.prev_msg_hp != self.first_message_anchors[idx]
+        oldest.attempts >= MAX_SEND_ATTEMPTS
+            && oldest.prev_msg_hp != self.first_message_anchors[idx]
     }
 
     /// LANE ROTATION — the wedge heal: retire the dead lane, mint a fresh one. The "era-supersede should retire the orphan lane" repair, minus the era: same root, no ceremony, no key material touched. The receiver materializes the new lane from its wire label on first frame (`ensure_lane`) and expects its anchor — a slate it can actually link.
@@ -1298,11 +1305,7 @@ impl FriendshipChains {
     }
 
     /// Process ACK: match the pending by (eagle_time, plaintext_hash), remove it, report the match. Under advance-on-send the chain already ratcheted forward when this message was encrypted, so the ACK is a pure delivery RECEIPT — it MUST NOT advance again (that would double-ratchet past the receiver). The match edge is what the caller hangs delivery, CLUTCH-ephemeral zeroize, and chain-seal on. No mutated_osc stamp: removing a pending is device-local (siblings never adopt our pendings) and the send already pushed the advanced lane, so an ACK needs no fleet replication.
-    pub fn process_ack(
-        &mut self,
-        acked_eagle_time: i64,
-        acked_plaintext_hash: &[u8; 32],
-    ) -> bool {
+    pub fn process_ack(&mut self, acked_eagle_time: i64, acked_plaintext_hash: &[u8; 32]) -> bool {
         // Match on eagle_time ALONE. A device physically cannot emit two messages at the same 704ps tick (braid.md §1.5), so eagle_time uniquely names our outgoing message. The plaintext_hash was a hard co-gate, but it is taken over the FULL payload including the random hR pad, so any re-encryption of the same message yields a different hash — a hash mismatch then leaked the pending and the message retransmitted forever while the peer re-ACKed each copy (field, 2026-08-08: Mary re-ACKing one message every ~2s, Nick never advancing). The ACK is already Ed25519-authenticated over (token, eagle_time, hash); keep the hash as a logged soft-check, never a match gate.
         if let Some(idx) = self
             .pending_messages
@@ -1819,9 +1822,8 @@ mod tests {
         sender.mint_our_lane().unwrap();
 
         // Snapshot-encrypt at the current position (the worker's half).
-        let (_ct, _prev, _hp, _ph, lane, expected_key) = sender
-            .prepare_send_encrypt(b"stale", 1_000)
-            .unwrap();
+        let (_ct, _prev, _hp, _ph, lane, expected_key) =
+            sender.prepare_send_encrypt(b"stale", 1_000).unwrap();
 
         // The lane moves while the worker runs (any advance — here a plain send landing first).
         sender
@@ -1858,7 +1860,12 @@ mod tests {
         let (ct2, prev2, hp2, ph2, lane2, key2) =
             sender.prepare_send_encrypt(b"fresh", 1_002).unwrap();
         assert!(sender.prepare_send_commit(
-            &lane2, &key2, ct2, prev2, hp2, ph2,
+            &lane2,
+            &key2,
+            ct2,
+            prev2,
+            hp2,
+            ph2,
             b"fresh".to_vec(),
             1_002,
             vec![],
@@ -1916,14 +1923,29 @@ mod tests {
 
         // A subset of just lane_a.
         let subset = src.replication_subset(&[lane_a]);
-        assert_eq!(subset.lane_summary().len(), 1, "subset carries only the named lane");
-        assert!(subset.pending_messages.is_empty(), "subset never carries pendings");
+        assert_eq!(
+            subset.lane_summary().len(),
+            1,
+            "subset carries only the named lane"
+        );
+        assert!(
+            subset.pending_messages.is_empty(),
+            "subset never carries pendings"
+        );
 
         // A fresh receiver adopts the subset: it gains lane_a at pos_a and knows nothing of lane_b.
         let mut rx = FriendshipChains::from_clutch(&[bob, alice], &eggs);
         assert!(rx.merge_lanes_from(&subset));
-        assert_eq!(rx.lane_position(&lane_a), Some(pos_a), "adopted lane_a at its real position");
-        assert_eq!(rx.lane_position(&lane_b), None, "lane_b not in the subset, so not adopted");
+        assert_eq!(
+            rx.lane_position(&lane_a),
+            Some(pos_a),
+            "adopted lane_a at its real position"
+        );
+        assert_eq!(
+            rx.lane_position(&lane_b),
+            None,
+            "lane_b not in the subset, so not adopted"
+        );
 
         // Now push lane_b's subset separately — it adopts alongside, lane_a unchanged.
         let subset_b = src.replication_subset(&[lane_b]);
@@ -1978,7 +2000,10 @@ mod tests {
         let eggs_new: Vec<[u8; 32]> = (0..8).map(|i| [i as u8 + 100; 32]).collect();
         let mut old_era = FriendshipChains::from_clutch(&[a, b], &eggs_old);
         let mut new_era = FriendshipChains::from_clutch(&[a, b], &eggs_new);
-        assert!(old_era.differs_in_era_from(&new_era), "distinct eggs must derive distinct roots");
+        assert!(
+            old_era.differs_in_era_from(&new_era),
+            "distinct eggs must derive distinct roots"
+        );
         old_era.genesis_osc = 100;
         new_era.genesis_osc = 200;
         // The dead era's clock keeps ticking (retransmit bookkeeping) — mutated_osc must NOT outvote genesis.
@@ -1986,18 +2011,30 @@ mod tests {
         new_era.mutated_osc = 1;
         let label = new_era.mint_our_lane().expect("new era mints a lane");
         let mut adopter = old_era;
-        assert!(adopter.merge_lanes_from(&new_era), "older era must adopt the newer wholesale");
+        assert!(
+            adopter.merge_lanes_from(&new_era),
+            "older era must adopt the newer wholesale"
+        );
         assert_eq!(adopter.lane_root(), new_era.lane_root(), "root replaced");
         assert_eq!(adopter.genesis_osc, 200);
-        assert!(adopter.lane_index(&label).is_some(), "newer era's lanes came along");
-        assert!(adopter.pending_messages.is_empty(), "device-local state stripped on era adopt");
+        assert!(
+            adopter.lane_index(&label).is_some(),
+            "newer era's lanes came along"
+        );
+        assert!(
+            adopter.pending_messages.is_empty(),
+            "device-local state stripped on era adopt"
+        );
         // The reverse direction: the newer era must refuse the older blob entirely.
         let mut fresh = FriendshipChains::from_clutch(&[a, b], &eggs_new);
         fresh.genesis_osc = 200;
         let mut stale = FriendshipChains::from_clutch(&[a, b], &eggs_old);
         stale.genesis_osc = 100;
         stale.mutated_osc = 9_999_999;
-        assert!(!fresh.merge_lanes_from(&stale), "a superseded era must never merge back in");
+        assert!(
+            !fresh.merge_lanes_from(&stale),
+            "a superseded era must never merge back in"
+        );
         assert_eq!(fresh.genesis_osc, 200);
     }
 
@@ -2199,7 +2236,10 @@ mod tests {
         let scratch = generate_scratch(&chain, &salt);
         let et = vsf::EagleTime::from_oscillations(t0 + one_s);
         let plain = decrypt_layers(&ct, &chain, CURRENT_KEY_INDEX, &scratch, &et);
-        assert_eq!(plain, b"two", "re-served frame must decrypt on the fresh lane");
+        assert_eq!(
+            plain, b"two",
+            "re-served frame must decrypt on the fresh lane"
+        );
         receiver.advance(&lane, &et, b"two", &[]);
         receiver.update_received_hash(&lane, msg_hp);
         assert_eq!(

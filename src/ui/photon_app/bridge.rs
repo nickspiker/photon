@@ -6,7 +6,10 @@ impl PhotonApp {
     /// Enter the add-device (pairing-words) flow. Was the interim Ready-orb action; now reached from the Fleet page's "Add device" pill. Spawns the bindreq watch so the candidate set is live before the first keystroke.
     /// Open a command conversation with a specific sibling DEVICE (the Bridge button). Siblings aren't listed as ordinary conversations, but they ARE contacts — find the one carrying this device pubkey and open it, so the chat-as-shell path (`$ cmd`) has a per-device surface. A seed hint message is inserted the first time so the screen isn't blank.
     pub(super) fn open_bridge_conversation(&mut self, device: [u8; 32]) {
-        let idx = self.contacts.iter().position(|c| c.is_sibling && c.public_identity.key == device);
+        let idx = self
+            .contacts
+            .iter()
+            .position(|c| c.is_sibling && c.public_identity.key == device);
         let Some(ci) = idx else {
             self.ready_toast = Some("That device isn't paired as a sibling yet.".to_string());
             self.ready_toast_screen = None;
@@ -29,18 +32,25 @@ impl PhotonApp {
         self.conv_topbar_off = 0.0;
         self.clear_unread(ci);
         self.change_focus(None);
-        crate::logf!("BRIDGE: opened command conversation with sibling {}", crate::fp(&device));
+        crate::logf!(
+            "BRIDGE: opened command conversation with sibling {}",
+            crate::fp(&device)
+        );
     }
 
     /// Fire an attest with caller-supplied roots (the probe already derived them), skipping the permanence interstitial and the second proof. First-attest persistence semantics.
     /// Path of the unattended reboot capsule (`<config>/reboot_capsule`). None if the config dir can't be resolved.
     pub(super) fn reboot_capsule_path() -> Option<std::path::PathBuf> {
-        crate::storage::photon_config_dir().ok().map(|d| d.join("reboot_capsule"))
+        crate::storage::photon_config_dir()
+            .ok()
+            .map(|d| d.join("reboot_capsule"))
     }
 
     /// Path of the unattended-mode opt-IN marker (`<config>/unattended_reboot`). Presence = the operator turned "Auto-attest on reboot" ON. Read at resume before any UI, so it must be a plain durable file, not vault state.
     pub(super) fn unattended_marker_path() -> Option<std::path::PathBuf> {
-        crate::storage::photon_config_dir().ok().map(|d| d.join("unattended_reboot"))
+        crate::storage::photon_config_dir()
+            .ok()
+            .map(|d| d.join("unattended_reboot"))
     }
 
     /// Whether unattended auto-attest-on-reboot is enabled (default OFF — marker absent).
@@ -51,7 +61,9 @@ impl PhotonApp {
     /// BRIDGE host opt-in marker (`<config>/remote_terminal`). Presence = this device will SERVE remote shells to fleet siblings. Off by default; a durable file so a resident/headless host honours it with no UI.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     pub(super) fn remote_terminal_marker_path() -> Option<std::path::PathBuf> {
-        crate::storage::photon_config_dir().ok().map(|d| d.join("remote_terminal"))
+        crate::storage::photon_config_dir()
+            .ok()
+            .map(|d| d.join("remote_terminal"))
     }
 
     /// Whether this device serves remote shells (default OFF).
@@ -63,10 +75,20 @@ impl PhotonApp {
     /// Handle one received `term` DATA frame — CROSS-PLATFORM, the chat-as-shell model (line in, line out; the PTY host in network/bridge.rs is a separate future path). Gate: fold-verified SIBLING only (our own device), never a friend. Two roles:
     /// - HOST (desktop-unix + opt-in): a `$ `-prefixed line is a command → run it + reply with the output as another DATA frame. A non-command line just posts to the sibling conversation.
     /// - CLIENT (any platform): a DATA frame is a reply (command output or a chat line) → post it into that sibling's conversation as an incoming bubble.
-    pub(super) fn on_bridge_frame(&mut self, session_id: [u8; 16], kind: u8, sealed_payload: Vec<u8>, sender_device: [u8; 32], sender_addr: std::net::SocketAddr) {
+    pub(super) fn on_bridge_frame(
+        &mut self,
+        session_id: [u8; 16],
+        kind: u8,
+        sealed_payload: Vec<u8>,
+        sender_device: [u8; 32],
+        sender_addr: std::net::SocketAddr,
+    ) {
         use crate::network::fgtw::protocol::term_kind;
         // SIBLING gate (both roles). Never a friend.
-        let sib_idx = self.contacts.iter().position(|c| c.is_sibling && c.knows_device(&sender_device));
+        let sib_idx = self
+            .contacts
+            .iter()
+            .position(|c| c.is_sibling && c.knows_device(&sender_device));
         let Some(ci) = sib_idx else {
             crate::log("BRIDGE: frame from a non-sibling — dropped");
             return;
@@ -92,8 +114,14 @@ impl PhotonApp {
         {
             if Self::remote_terminal_enabled() {
                 if let Some(cmd) = line.strip_prefix("$ ").or_else(|| line.strip_prefix("$\t")) {
-                    let relay_to = self.contacts.get(ci).filter(|c| c.validated_path.is_none()).map(|c| c.relay_device_list()).unwrap_or_default();
-                    self.bridge_clients.insert(session_id, (sender_device, (sender_addr, None), relay_to));
+                    let relay_to = self
+                        .contacts
+                        .get(ci)
+                        .filter(|c| c.validated_path.is_none())
+                        .map(|c| c.relay_device_list())
+                        .unwrap_or_default();
+                    self.bridge_clients
+                        .insert(session_id, (sender_device, (sender_addr, None), relay_to));
                     self.run_bridge_command(session_id, cmd);
                     // Also show the incoming command in the host's own conversation history.
                     self.bridge_post_bubble(ci, &line, false);
@@ -108,7 +136,11 @@ impl PhotonApp {
     /// Post a bridge line into a sibling conversation as a stored message (incoming). Persists so it survives restart.
     pub(super) fn bridge_post_bubble(&mut self, ci: usize, text: &str, outgoing: bool) {
         if let Some(conv) = self.conv_mut_of(ci) {
-            let mut msg = ChatMessage::new_with_timestamp(text.to_string(), outgoing, vsf::eagle_time_oscillations());
+            let mut msg = ChatMessage::new_with_timestamp(
+                text.to_string(),
+                outgoing,
+                vsf::eagle_time_oscillations(),
+            );
             msg.delivered = true;
             conv.insert_message_sorted(msg);
             conv.scroll_offset = 0.0;
@@ -120,17 +152,27 @@ impl PhotonApp {
     pub(super) fn send_bridge_text(&mut self, ci: usize, text: &str) {
         let Some((device, addr_pair, relay_to)) = self.contacts.get(ci).map(|c| {
             // Always gather a relay list for a sibling with no proven path — the bridge must reach an idle device even when presence never adopted a direct address.
-            let relay = if c.validated_path.is_none() { c.relay_device_list() } else { Vec::new() };
+            let relay = if c.validated_path.is_none() {
+                c.relay_device_list()
+            } else {
+                Vec::new()
+            };
             (c.public_identity.key, c.race_addrs(), relay)
-        }) else { return };
+        }) else {
+            return;
+        };
         // If there's no direct address, fall back to the RELAY sentinel (0.0.0.0:0) + the relay list — same path chat uses for an unreachable-but-relayable peer. Only truly hopeless (no address AND no relay) bails.
         let (peer_addr, alt_addr) = match addr_pair {
             Some(pair) => pair,
             None if !relay_to.is_empty() => (crate::network::status::RELAY_ADDR, None),
             None => {
-                self.ready_toast = Some("That device has no address or relay yet — can't reach it.".to_string());
+                self.ready_toast =
+                    Some("That device has no address or relay yet — can't reach it.".to_string());
                 self.ready_toast_screen = None;
-                crate::logf!("BRIDGE: send bail — sibling {} has no address and no relay", crate::fp(&device));
+                crate::logf!(
+                    "BRIDGE: send bail — sibling {} has no address and no relay",
+                    crate::fp(&device)
+                );
                 return;
             }
         };
@@ -140,12 +182,24 @@ impl PhotonApp {
         };
         // Session id = blake3(sorted device pair) truncated — stable, handshake-free, per-pair.
         let session_id = self.bridge_session_id(&device);
-        let Ok(sealed) = crate::network::bridge::seal_term(text.as_bytes(), &fleet_key) else { return };
-        let (Some(kp), Some(checker)) = (self.device_keypair.as_ref(), self.status_checker.as_ref()) else {
+        let Ok(sealed) = crate::network::bridge::seal_term(text.as_bytes(), &fleet_key) else {
+            return;
+        };
+        let (Some(kp), Some(checker)) =
+            (self.device_keypair.as_ref(), self.status_checker.as_ref())
+        else {
             crate::log("BRIDGE: send bail — no device key or status checker");
             return;
         };
-        let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_term_vsf(&session_id, crate::network::fgtw::protocol::term_kind::DATA, sealed, kp.public.as_bytes(), kp.secret.as_bytes()) else { return };
+        let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_term_vsf(
+            &session_id,
+            crate::network::fgtw::protocol::term_kind::DATA,
+            sealed,
+            kp.public.as_bytes(),
+            kp.secret.as_bytes(),
+        ) else {
+            return;
+        };
         checker.send_history(crate::network::status::HistorySendRequest {
             peer_addr,
             alt_addr,
@@ -153,13 +207,26 @@ impl PhotonApp {
             vsf_bytes,
             relay_to: relay_to.clone(),
         });
-        crate::logf!("BRIDGE: sent line to sibling {} via {} ({} relay targets)", crate::fp(&device), peer_addr, relay_to.len());
+        crate::logf!(
+            "BRIDGE: sent line to sibling {} via {} ({} relay targets)",
+            crate::fp(&device),
+            peer_addr,
+            relay_to.len()
+        );
     }
 
     /// Stable, handshake-free session id for a device pair: blake3 of the two device pubkeys sorted. Both ends compute the same 16 bytes.
     pub(super) fn bridge_session_id(&self, other_device: &[u8; 32]) -> [u8; 16] {
-        let ours = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()).unwrap_or([0u8; 32]);
-        let (a, b) = if ours <= *other_device { (ours, *other_device) } else { (*other_device, ours) };
+        let ours = self
+            .device_keypair
+            .as_ref()
+            .map(|kp| *kp.public.as_bytes())
+            .unwrap_or([0u8; 32]);
+        let (a, b) = if ours <= *other_device {
+            (ours, *other_device)
+        } else {
+            (*other_device, ours)
+        };
         let mut input = Vec::with_capacity(64);
         input.extend_from_slice(&a);
         input.extend_from_slice(&b);
@@ -194,7 +261,11 @@ impl PhotonApp {
                 }
                 let code = out.status.code().unwrap_or(-1);
                 if body.trim().is_empty() {
-                    body = if code == 0 { "(no output)".to_string() } else { format!("(no output, exit {})", code) };
+                    body = if code == 0 {
+                        "(no output)".to_string()
+                    } else {
+                        format!("(no output, exit {})", code)
+                    };
                 } else if code != 0 {
                     body.push_str(&format!("\n[exit {}]", code));
                 }
@@ -205,7 +276,10 @@ impl PhotonApp {
         // Reply to the client as a term DATA frame; also show it in the host's own conversation.
         self.send_bridge_frame(session_id, reply.as_bytes());
         if let Some(ci) = self.contacts.iter().position(|c| {
-            self.bridge_clients.get(&session_id).map(|(dev, _, _)| c.is_sibling && c.knows_device(dev)).unwrap_or(false)
+            self.bridge_clients
+                .get(&session_id)
+                .map(|(dev, _, _)| c.is_sibling && c.knows_device(dev))
+                .unwrap_or(false)
         }) {
             self.bridge_post_bubble(ci, &reply, true);
         }
@@ -214,11 +288,30 @@ impl PhotonApp {
     /// Send a term DATA frame to the client of `session_id` (host → client reply path).
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     pub(super) fn send_bridge_frame(&self, session_id: [u8; 16], payload: &[u8]) {
-        let Some((device, addr_pair, relay_to)) = self.bridge_clients.get(&session_id).cloned() else { return };
-        let Some(fleet_key) = self.fleet_key_cached() else { return };
-        let Ok(sealed) = crate::network::bridge::seal_term(payload, &fleet_key) else { return };
-        let (Some(kp), Some(checker)) = (self.device_keypair.as_ref(), self.status_checker.as_ref()) else { return };
-        let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_term_vsf(&session_id, crate::network::fgtw::protocol::term_kind::DATA, sealed, kp.public.as_bytes(), kp.secret.as_bytes()) else { return };
+        let Some((device, addr_pair, relay_to)) = self.bridge_clients.get(&session_id).cloned()
+        else {
+            return;
+        };
+        let Some(fleet_key) = self.fleet_key_cached() else {
+            return;
+        };
+        let Ok(sealed) = crate::network::bridge::seal_term(payload, &fleet_key) else {
+            return;
+        };
+        let (Some(kp), Some(checker)) =
+            (self.device_keypair.as_ref(), self.status_checker.as_ref())
+        else {
+            return;
+        };
+        let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_term_vsf(
+            &session_id,
+            crate::network::fgtw::protocol::term_kind::DATA,
+            sealed,
+            kp.public.as_bytes(),
+            kp.secret.as_bytes(),
+        ) else {
+            return;
+        };
         checker.send_history(crate::network::status::HistorySendRequest {
             peer_addr: addr_pair.0,
             alt_addr: addr_pair.1,
@@ -230,9 +323,14 @@ impl PhotonApp {
 
     /// Turn unattended mode on/off. ON writes the marker AND (also requires background/autostart so a reboot actually relaunches photon) refreshes the capsule from the live session. OFF removes the marker and shreds the capsule.
     pub(super) fn set_unattended(&mut self, on: bool) {
-        let Some(marker) = Self::unattended_marker_path() else { return };
+        let Some(marker) = Self::unattended_marker_path() else {
+            return;
+        };
         if on {
-            let _ = std::fs::write(&marker, b"operator enabled unattended auto-attest on reboot\n");
+            let _ = std::fs::write(
+                &marker,
+                b"operator enabled unattended auto-attest on reboot\n",
+            );
             // Unattended only means anything if the box relaunches photon at boot — force background/autostart on.
             #[cfg(not(target_os = "android"))]
             {
@@ -241,7 +339,9 @@ impl PhotonApp {
                 self.resident_mode = true;
             }
             self.refresh_reboot_capsule();
-            crate::log("UNATTENDED: auto-attest-on-reboot ENABLED (also forced background/autostart on)");
+            crate::log(
+                "UNATTENDED: auto-attest-on-reboot ENABLED (also forced background/autostart on)",
+            );
         } else {
             let _ = std::fs::remove_file(&marker);
             if let Some(p) = Self::reboot_capsule_path() {
@@ -253,7 +353,9 @@ impl PhotonApp {
 
     /// Refresh the reboot capsule from the live session IFF unattended mode is on; otherwise ensure no capsule exists. Called on every successful attest and on toggle-on.
     pub(super) fn refresh_reboot_capsule(&self) {
-        let Some(path) = Self::reboot_capsule_path() else { return };
+        let Some(path) = Self::reboot_capsule_path() else {
+            return;
+        };
         if Self::unattended_enabled() {
             if let Some(session) = self.session.as_ref() {
                 match tohu::store_reboot_capsule(session, &path) {

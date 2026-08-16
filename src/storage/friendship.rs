@@ -558,7 +558,11 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
     // Reconstruct chains with full v5 state, then install the optional v6 key
     // A pre-lane blob's pendings were built for the retired per-participant wire — carrying them forward would retransmit frames nobody can decrypt. Undelivered rows re-send thru the held-messages path instead.
     let has_lanes = !lane_labels.is_empty();
-    let pending_messages = if has_lanes { pending_messages } else { Vec::new() };
+    let pending_messages = if has_lanes {
+        pending_messages
+    } else {
+        Vec::new()
+    };
 
     let mut chains = FriendshipChains::from_storage_v5(
         friendship_id,
@@ -603,7 +607,15 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
         lpt.resize(n, Vec::new());
         let mut lrt = last_received_times;
         lrt.resize(n, None);
-        chains.install_lanes(lane_labels, positions, lane_chains, lpt, lrh, lrt, our_label);
+        chains.install_lanes(
+            lane_labels,
+            positions,
+            lane_chains,
+            lpt,
+            lrh,
+            lrt,
+            our_label,
+        );
     }
     chains.mutated_osc = mutated_osc;
     Ok(chains)

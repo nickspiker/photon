@@ -5,9 +5,9 @@ pub mod doorbell;
 pub mod fgtw;
 pub mod handle_query;
 pub mod history_pages;
-pub mod message_package;
 pub mod http;
 pub mod inspect;
+pub mod message_package;
 pub mod pairing_beacon;
 pub mod pairing_nfc;
 #[cfg(not(target_os = "android"))]

@@ -165,14 +165,15 @@ impl PhotonApp {
 
         let mut changed = false;
         let mut ceremony_completions: Vec<usize> = Vec::new(); // Contact indices to complete after loop
-        // Deferred KEM decapsulation spawns (spawn_clutch_kem_decap needs &self; the loop holds contact borrows) — same deferral discipline as ceremony_completions.
+                                                               // Deferred KEM decapsulation spawns (spawn_clutch_kem_decap needs &self; the loop holds contact borrows) — same deferral discipline as ceremony_completions.
         let mut decap_spawns: Vec<(
             crate::types::ContactId,
             crate::crypto::clutch::ClutchKemResponsePayload,
             crate::crypto::clutch::ClutchAllKeypairs,
         )> = Vec::new();
         // BRIDGE: term frames deferred past the drain (on_bridge_frame needs &mut self; the drain holds an immutable `checker` borrow). Cross-platform.
-        let mut term_frames: Vec<([u8; 16], u8, Vec<u8>, [u8; 32], std::net::SocketAddr)> = Vec::new();
+        let mut term_frames: Vec<([u8; 16], u8, Vec<u8>, [u8; 32], std::net::SocketAddr)> =
+            Vec::new();
         let mut lan_ping_indices: Vec<usize> = Vec::new(); // Contact indices to ping immediately on new LAN discovery
                                                            // Collect pending message retransmit requests (friendship_id, ip, handle, device_pubkey, last_received_ef6) to process after loop last_received_ef6 from pong tells us what they already have - only retransmit newer
         let mut retransmit_requests: Vec<(
@@ -354,8 +355,7 @@ impl PhotonApp {
                                     .filter(|&ci| !self.contacts[ci].is_sibling);
                                 // Field-precise conversation lookup — `chains` above holds a borrow of `friendship_chains`, so no &mut self method fits here.
                                 if let Some(ci) = ci {
-                                    let cid =
-                                        self.contacts[ci].conversation(&our_handle_hash).id();
+                                    let cid = self.contacts[ci].conversation(&our_handle_hash).id();
                                     if let Some(conv) =
                                         self.conversations.iter_mut().find(|v| v.id() == cid)
                                     {
@@ -374,7 +374,8 @@ impl PhotonApp {
                                             .map_or(true, |r| r.complete);
                                         if mismatch
                                             && idle
-                                            && now_osc.saturating_sub(self.contacts[ci].digest_kick_osc)
+                                            && now_osc
+                                                .saturating_sub(self.contacts[ci].digest_kick_osc)
                                                 > DIGEST_KICK_COOLDOWN_OSC
                                         {
                                             self.contacts[ci].digest_kick_osc = now_osc;
@@ -398,7 +399,10 @@ impl PhotonApp {
                     rotated_flush.extend(rotated_fids);
                     // LOCKOUT gate: a locked device is still a fold member, so knows_device would happily honour its pong — presence, addresses, relay flags, all of it. Refuse the frame at the door instead; the lockout is precisely "stop listening".
                     if self.is_locked_device(&peer_pubkey.key) {
-                        crate::logf!("Status: frame from LOCKED-OUT device {} — refused", crate::fp(&peer_pubkey.key));
+                        crate::logf!(
+                            "Status: frame from LOCKED-OUT device {} — refused",
+                            crate::fp(&peer_pubkey.key)
+                        );
                         continue;
                     }
                     // §4.2 snapshot: taken per-update so verdicts drained earlier this pass are already reflected.
@@ -420,7 +424,11 @@ impl PhotonApp {
                                     let reporters = contact
                                         .locked_reports_seen
                                         .iter()
-                                        .filter(|(rep, dev)| dev == reported && rep != reported && !contact.refused_devices.contains(rep))
+                                        .filter(|(rep, dev)| {
+                                            dev == reported
+                                                && rep != reported
+                                                && !contact.refused_devices.contains(rep)
+                                        })
                                         .map(|(rep, _)| *rep)
                                         .collect::<std::collections::HashSet<_>>();
                                     if !reporters.is_empty() {
@@ -428,7 +436,9 @@ impl PhotonApp {
                                         changed = true;
                                         crate::logf!("FRIEND-REFUSE: {} device {} refused — reported stolen by {} fleet device(s)", crate::fp(&contact.handle_proof), crate::fp(reported), reporters.len());
                                         if let Some(storage) = self.storage.as_ref() {
-                                            let _ = crate::storage::contacts::save_contact(contact, storage);
+                                            let _ = crate::storage::contacts::save_contact(
+                                                contact, storage,
+                                            );
                                         }
                                     }
                                 }
@@ -818,8 +828,7 @@ impl PhotonApp {
                             } else {
                                 identity_hh
                             };
-                            let derived =
-                                self.contacts[contact_idx].conversation(&conv_our_pid);
+                            let derived = self.contacts[contact_idx].conversation(&conv_our_pid);
                             let chains_id = crate::types::Conversation::new(
                                 chains.participants().iter().copied(),
                             )
@@ -827,7 +836,11 @@ impl PhotonApp {
                             if chains_id != derived.id() {
                                 crate::logf!("CHAT: SHADOW SEAM — chains derive conversation {} but the contact derives {}; rows land in the contact's (the chains carry a stale-era participant set)", hex::encode(&chains_id.as_bytes()[..4]), hex::encode(&derived.id().as_bytes()[..4]));
                             }
-                            match self.conversations.iter().position(|v| v.id() == derived.id()) {
+                            match self
+                                .conversations
+                                .iter()
+                                .position(|v| v.id() == derived.id())
+                            {
                                 Some(p) => p,
                                 None => {
                                     self.conversations.push(derived);
@@ -844,7 +857,8 @@ impl PhotonApp {
                             .iter()
                             .any(|m| !m.is_outgoing && !m.recovered && m.timestamp == timestamp);
                         // TIMESTAMPS ARE NOT THE CHAIN: held messages carry composition-time stamps that can sit DAYS behind the lane's last-received time, and the timestamp verdict skipped them un-decrypted and un-ACKably — while every frame behind them gap-buffered forever (the stuck-grey four + the eternal gap, 2026-08-07). A frame whose prev links to our EXPECTED position is by definition the next message, never a duplicate; a true retransmit of a processed frame carries an older prev and still lands here.
-                        let is_expected_next = chains.verify_chain_link(&lane, &prev_msg_hp).is_ok();
+                        let is_expected_next =
+                            chains.verify_chain_link(&lane, &prev_msg_hp).is_ok();
                         if (chains.is_duplicate(&lane, timestamp) || row_dup) && !is_expected_next {
                             // Re-ACK from the stored message, looked up by its eagle_time. Unlike the old single-slot last_acked (which only remembered the MOST RECENT ack and so dropped any earlier duplicate → permanent sender stall), every received message persists its own ack_hash, so ANY duplicate self-heals a lost ACK.
                             let stored = self.conversations[conv_pos]
@@ -882,9 +896,7 @@ impl PhotonApp {
                         }
 
                         // Strict in-order processing (Layer 1). The receiver decrypts at CURRENT_KEY_INDEX, which is only correct when this message is the immediate successor of the last one we processed. So verify_chain_link is now HARD: on a mismatch the message is "ahead" (its predecessor hasn't arrived yet) — buffer it on the `prev_msg_hp` it awaits and SKIP decrypt. It gets replayed when that predecessor lands (see the gap-buffer drain after a successful advance below). "Behind"/duplicate is already handled by is_duplicate above; an unrelated stale prev_msg_hp simply waits in the buffer (and the retransmit path re-sends).
-                        if let Err(expected) =
-                            chains.verify_chain_link(&lane, &prev_msg_hp)
-                        {
+                        if let Err(expected) = chains.verify_chain_link(&lane, &prev_msg_hp) {
                             crate::logf!("CHAT: Hash chain gap from {} - expected prev {}..., got {}... — buffering (ahead of us)", crate::fp(&from_handle_hash), hex::encode(&expected[..8]), hex::encode(&prev_msg_hp[..8]));
                             // GAPS ARE TRANSPORT, NEVER FORK EVIDENCE: a missing predecessor means a frame is in flight, lost (anti-entropy re-serves it on the next pong edge), or a stale-era straggler — none of which a re-key repairs and all of which a re-key destroys (the ≥8-streak trigger here nuked healthy weaves all week, 2026-08-03→07, and masked the actual salt bug). Fork evidence lives solely in the decrypt-fail streak: a fill that arrives and still produces garbage is the only proof both heads committed differently.
                             {
@@ -935,8 +947,13 @@ impl PhotonApp {
                             let scratch = generate_scratch(&sender_chain, &salt);
                             let et = vsf::EagleTime::from_oscillations(timestamp);
                             crate::logf!("CHAIN DECRYPT: lane={}..., key={}..., salt={}..., eagle_time={}, ciphertext_len={}", hex::encode(&lane[..4]), hex::encode(&sender_chain.current_key()[..4]), hex::encode(&salt[..4]), timestamp, ciphertext.len());
-                            let plaintext =
-                                decrypt_layers(&ciphertext, &sender_chain, CURRENT_KEY_INDEX, &scratch, &et);
+                            let plaintext = decrypt_layers(
+                                &ciphertext,
+                                &sender_chain,
+                                CURRENT_KEY_INDEX,
+                                &scratch,
+                                &et,
+                            );
                             let _ = tx.send(BraidRxDecrypted {
                                 conversation_token,
                                 lane,
@@ -956,7 +973,6 @@ impl PhotonApp {
                             hex::encode(&conversation_token[..8])
                         );
                     }
-
                 }
                 StatusUpdate::MessageAck {
                     conversation_token,
@@ -1049,8 +1065,7 @@ impl PhotonApp {
                             } else {
                                 identity_hh
                             };
-                            let derived =
-                                self.contacts[contact_idx].conversation(&conv_our_pid);
+                            let derived = self.contacts[contact_idx].conversation(&conv_our_pid);
                             let chains_id = crate::types::Conversation::new(
                                 chains.participants().iter().copied(),
                             )
@@ -1058,7 +1073,11 @@ impl PhotonApp {
                             if chains_id != derived.id() {
                                 crate::logf!("CHAT: SHADOW SEAM — chains derive conversation {} but the contact derives {} (ACK path); landing in the contact's", hex::encode(&chains_id.as_bytes()[..4]), hex::encode(&derived.id().as_bytes()[..4]));
                             }
-                            match self.conversations.iter().position(|v| v.id() == derived.id()) {
+                            match self
+                                .conversations
+                                .iter()
+                                .position(|v| v.id() == derived.id())
+                            {
                                 Some(p) => p,
                                 None => {
                                     self.conversations.push(derived);
@@ -1069,7 +1088,10 @@ impl PhotonApp {
 
                         // Process ACK: advance our chain and remove pending message
                         if chains.process_ack(acked_eagle_time, &plaintext_hash) {
-                            crate::logf!("CHAT: Chain advanced for {} (ACK verified)", crate::fp(&from_handle_hash));
+                            crate::logf!(
+                                "CHAT: Chain advanced for {} (ACK verified)",
+                                crate::fp(&from_handle_hash)
+                            );
 
                             // Our TX chain just advanced on a matching ACK — their RX is proven. Record it so the chain-weave can seal (sealing itself happens after the `chains` borrow ends, below). This is the "our TX / their RX" half of woven.
                             if let Some(contact) = self.contacts.get_mut(contact_idx) {
@@ -1211,14 +1233,15 @@ impl PhotonApp {
                     payload,
                     sender_addr: raw_sender_addr,
                 } => {
-                    use crate::crypto::clutch::{
-                        derive_conversation_token, ClutchOfferPayload,
-                    };
+                    use crate::crypto::clutch::{derive_conversation_token, ClutchOfferPayload};
                     use crate::network::status::ClutchOfferRequest;
                     use crate::types::ClutchState;
                     // LOCKOUT gate: a locked-out device must never re-enter through a ceremony — accepting its offer would weave fresh chains with hardware the fleet declared stolen.
                     if self.is_locked_device(&sender_pubkey) {
-                        crate::logf!("CLUTCH: offer from LOCKED-OUT device {} — refused", crate::fp(&sender_pubkey));
+                        crate::logf!(
+                            "CLUTCH: offer from LOCKED-OUT device {} — refused",
+                            crate::fp(&sender_pubkey)
+                        );
                         continue;
                     }
 
@@ -1870,9 +1893,7 @@ impl PhotonApp {
                     payload,
                     sender_addr: raw_sender_addr,
                 } => {
-                    use crate::crypto::clutch::{
-                        derive_conversation_token,
-                    };
+                    use crate::crypto::clutch::derive_conversation_token;
 
                     // Normalize to port 4383 (TCP source port is ephemeral)
                     let sender_addr =
@@ -1896,8 +1917,8 @@ impl PhotonApp {
                     let our_sibling_pid = self.our_sibling_pid();
 
                     // Find contact by conversation_token. Party-id seam: sibling candidates token with the device-derived pid pair; the resolved "our" id shadows the seed for the whole arm.
-                    let (their_handle_hash, our_handle_hash) = match self.contacts.iter().find_map(
-                        |c| {
+                    let (their_handle_hash, our_handle_hash) =
+                        match self.contacts.iter().find_map(|c| {
                             let our = if c.is_sibling {
                                 our_sibling_pid?
                             } else {
@@ -1905,17 +1926,16 @@ impl PhotonApp {
                             };
                             (derive_conversation_token(&[our, c.handle_hash]) == conversation_token)
                                 .then_some((c.handle_hash, our))
-                        },
-                    ) {
-                        Some(pair) => pair,
-                        None => {
-                            crate::logf!(
+                        }) {
+                            Some(pair) => pair,
+                            None => {
+                                crate::logf!(
                                 "CLUTCH: Received KEM response with unknown conversation_token {}",
                                 hex::encode(&conversation_token[..8])
                             );
-                            continue;
-                        }
-                    };
+                                continue;
+                            }
+                        };
 
                     crate::logf!(
                         "CLUTCH: Received KEM response (VSF verified) from {} tok={}...",
@@ -2383,7 +2403,10 @@ impl PhotonApp {
                                 );
                             }
                             Err(e) => {
-                                crate::logf!("Avatar: mutual peer requested avatar — not serving: {}", e)
+                                crate::logf!(
+                                    "Avatar: mutual peer requested avatar — not serving: {}",
+                                    e
+                                )
                             }
                         }
                     }
@@ -2498,10 +2521,9 @@ impl PhotonApp {
                             });
                         // FLEET route (fleet history sync): the requester is one of OUR OWN devices — fold-trusted sibling — asking for any conversation we hold. Serve it sealed under the FLEET key. The token resolves by DERIVATION from party ids (no chain needed), so a conversation the sibling only knows from the roster — or the self notes conversation — still serves.
                         let route = friend_route.or_else(|| {
-                            let sender_is_sibling = self
-                                .contacts
-                                .iter()
-                                .any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key));
+                            let sender_is_sibling = self.contacts.iter().any(|c| {
+                                c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
+                            });
                             if !sender_is_sibling {
                                 return None;
                             }
@@ -2516,7 +2538,8 @@ impl PhotonApp {
                         {
                             // OFF THE RENDER THREAD. Serving a page reads and decrypts up to 50 vault rows and then seals them — measured at 2195ms inline, which is what a peer's backfill felt like from inside our own UI. Everything the work needs is copied here (ids, keys, an Arc of storage, a cloned dispatch sender) and the whole read-seal-send runs on a worker; nothing it produces touches app state, so there is no result to drain back.
                             let their_seed = self.contacts[idx].handle_hash;
-                            let page_limit = (limit as usize).clamp(1, crate::network::history_pages::MAX_PAGE_ROWS);
+                            let page_limit = (limit as usize)
+                                .clamp(1, crate::network::history_pages::MAX_PAGE_ROWS);
                             let storage = Arc::clone(storage);
                             let dispatch = checker.history_dispatch();
                             let kp = self
@@ -2543,16 +2566,16 @@ impl PhotonApp {
                                             rows.first().map(|m| m.timestamp).unwrap_or(before_osc);
                                         let hist_rows: Vec<HistoryRow> = rows
                                             .iter()
-                                            .filter(|m| !crate::types::is_control_content(&m.content))
+                                            .filter(|m| {
+                                                !crate::types::is_control_content(&m.content)
+                                            })
                                             .map(|m| HistoryRow {
                                                 timestamp: m.timestamp,
                                                 content: m.content.clone(),
                                                 sender_outgoing: m.is_outgoing,
                                                 delivered: m.delivered,
                                                 deleted: m.deleted,
-                                                reference: m
-                                                    .reference
-                                                    .map(|(k, t)| (k as u8, t)),
+                                                reference: m.reference.map(|(k, t)| (k as u8, t)),
                                             })
                                             .collect();
                                         let page = HistoryPagePlain {
@@ -2640,23 +2663,25 @@ impl PhotonApp {
                     } else if let (Some(wire_key), Some(seed)) = (wire_key, seed) {
                         // OFF-THREAD: an attachment blob is arbitrary-size, and the AEAD open + blake3-over-the-whole-blob + disk store all ran inline on the render thread. A worker does the three, then posts back so the drain (which holds the keypair + checker) sends the attach_have confirm and clears the compose wrap. A hash mismatch or store failure logs and posts nothing.
                         let tx = self.attach_installed_tx.clone();
-                        queue_job(&self.seal_job_tx, move || match kete::decrypt_bytes(&sealed, &wire_key) {
-                            Ok(plain) if *blake3::hash(&plain).as_bytes() == content_hash => {
-                                match crate::storage::blob_store(&seed, &content_hash, &plain) {
-                                    Ok(()) => {
-                                        let _ = tx.send(AttachInstalled {
-                                            conversation_token,
-                                            content_hash,
-                                            sender_pubkey,
-                                            sender_addr,
-                                            len: plain.len(),
-                                        });
+                        queue_job(&self.seal_job_tx, move || {
+                            match kete::decrypt_bytes(&sealed, &wire_key) {
+                                Ok(plain) if *blake3::hash(&plain).as_bytes() == content_hash => {
+                                    match crate::storage::blob_store(&seed, &content_hash, &plain) {
+                                        Ok(()) => {
+                                            let _ = tx.send(AttachInstalled {
+                                                conversation_token,
+                                                content_hash,
+                                                sender_pubkey,
+                                                sender_addr,
+                                                len: plain.len(),
+                                            });
+                                        }
+                                        Err(e) => crate::logf!("ATTACH: blob store failed: {}", e),
                                     }
-                                    Err(e) => crate::logf!("ATTACH: blob store failed: {}", e),
                                 }
+                                Ok(_) => crate::log("ATTACH: blob hash mismatch — dropped"),
+                                Err(e) => crate::logf!("ATTACH: blob seal open failed: {}", e),
                             }
-                            Ok(_) => crate::log("ATTACH: blob hash mismatch — dropped"),
-                            Err(e) => crate::logf!("ATTACH: blob seal open failed: {}", e),
                         });
                     } else {
                         crate::log("ATTACH: no wire key / no session for the blob's conversation — dropped");
@@ -2726,15 +2751,14 @@ impl PhotonApp {
                             }) {
                                 Ok(vsf_bytes) => {
                                     // A relay-injected request has no routable src addr — the always-carried relay copy answers back thru the pipe.
-                                    let _ = dispatch.send(
-                                        crate::network::status::HistorySendRequest {
+                                    let _ =
+                                        dispatch.send(crate::network::status::HistorySendRequest {
                                             peer_addr: sender_addr,
                                             alt_addr: None,
                                             recipient_pubkey: sender_pubkey.key,
                                             vsf_bytes,
                                             relay_to: vec![sender_pubkey.key], // always the one-device relay copy — see the page-serve site: responses die on one-directional reverse paths
-                                        },
-                                    );
+                                        });
                                     crate::log("ATTACH: served blob request");
                                 }
                                 Err(e) => {
@@ -2752,7 +2776,13 @@ impl PhotonApp {
                     sender_pubkey,
                     sender_addr,
                 } => {
-                    term_frames.push((session_id, kind, sealed_payload, sender_pubkey.key, sender_addr));
+                    term_frames.push((
+                        session_id,
+                        kind,
+                        sealed_payload,
+                        sender_pubkey.key,
+                        sender_addr,
+                    ));
                 }
                 StatusUpdate::ChainSyncReceived {
                     conversation_token,
@@ -2761,11 +2791,9 @@ impl PhotonApp {
                     sender_pubkey,
                 } => {
                     // Trust gate: only a fold-verified sibling device may replace chain state. Re-checked at the drain — lockout can land between dispatch and the worker finishing.
-                    if !self
-                        .contacts
-                        .iter()
-                        .any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key))
-                    {
+                    if !self.contacts.iter().any(|c| {
+                        c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
+                    }) {
                         crate::log(
                             "CHAIN-SYNC: frame from a non-sibling or unknown device — dropped",
                         );
@@ -2781,13 +2809,18 @@ impl PhotonApp {
                         let our_k = self.fleet_epoch.map(|(k, _)| k).unwrap_or(0);
                         crate::logf!("CKPT: chain_sync sealed at k={} but our spine is at k={} — requesting state from {}", epoch_k, our_k, crate::fp(&sender_pubkey.key));
                         if let Some(kp) = self.device_keypair.as_ref() {
-                            if let Ok(frame) = crate::network::fgtw::protocol::build_ckpt_req_vsf(our_k, kp.public.as_bytes(), kp.secret.as_bytes()) {
+                            if let Ok(frame) = crate::network::fgtw::protocol::build_ckpt_req_vsf(
+                                our_k,
+                                kp.public.as_bytes(),
+                                kp.secret.as_bytes(),
+                            ) {
                                 self.dispatch_frame_to_siblings(frame);
                             }
                         }
                         continue;
                     };
-                    let seal_key = crate::crypto::clutch::fleet_epoch_seal_key(&epoch, b"chain_sync");
+                    let seal_key =
+                        crate::crypto::clutch::fleet_epoch_seal_key(&epoch, b"chain_sync");
                     // OFF-THREAD: the kete open + VSF decode ran inline — 17KB+ per lane, and a fresh sibling join repushes EVERY friendship at once (an adopt storm on the render thread). The worker opens and decodes; the adopt (cheap position compares) runs in drain_chain_syncs.
                     let tx = self.chain_sync_opened_tx.clone();
                     let wake = self.event_proxy.clone();
@@ -2796,13 +2829,14 @@ impl PhotonApp {
                             crate::log("CHAIN-SYNC: blob failed to open under the epoch chain_sync key — dropped (stale epoch?)");
                             return;
                         };
-                        let incoming = match crate::storage::friendship::chains_from_vsf_bytes(&plain) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                crate::logf!("CHAIN-SYNC: decode failed: {} — dropped", e);
-                                return;
-                            }
-                        };
+                        let incoming =
+                            match crate::storage::friendship::chains_from_vsf_bytes(&plain) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    crate::logf!("CHAIN-SYNC: decode failed: {} — dropped", e);
+                                    return;
+                                }
+                            };
                         if incoming.conversation_token != conversation_token {
                             crate::log("CHAIN-SYNC: inner token mismatch — dropped");
                             return;
@@ -2825,33 +2859,46 @@ impl PhotonApp {
                     sealed,
                     sender_pubkey,
                 } => {
-                    if !self
-                        .contacts
-                        .iter()
-                        .any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key))
-                    {
-                        crate::log("CKPT: root frame from a non-sibling or unknown device — dropped");
+                    if !self.contacts.iter().any(|c| {
+                        c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
+                    }) {
+                        crate::log(
+                            "CKPT: root frame from a non-sibling or unknown device — dropped",
+                        );
                         continue;
                     }
-                    let (Some((our_k, our_epoch)), Some(fleet_key)) = (self.fleet_epoch, self.fleet_key_cached()) else {
+                    let (Some((our_k, our_epoch)), Some(fleet_key)) =
+                        (self.fleet_epoch, self.fleet_key_cached())
+                    else {
                         continue;
                     };
                     if k != our_k + 1 {
                         if k > our_k + 1 {
                             // More than one checkpoint ahead — sequential root-opening can't bridge it; jump via state serve.
                             if let Some(kp) = self.device_keypair.as_ref() {
-                                if let Ok(frame) = crate::network::fgtw::protocol::build_ckpt_req_vsf(our_k, kp.public.as_bytes(), kp.secret.as_bytes()) {
+                                if let Ok(frame) =
+                                    crate::network::fgtw::protocol::build_ckpt_req_vsf(
+                                        our_k,
+                                        kp.public.as_bytes(),
+                                        kp.secret.as_bytes(),
+                                    )
+                                {
                                     self.dispatch_frame_to_siblings(frame);
                                 }
                             }
                         }
                         continue;
                     }
-                    let open_key = crate::crypto::clutch::fleet_epoch_seal_key(&our_epoch, b"ckpt_root");
+                    let open_key =
+                        crate::crypto::clutch::fleet_epoch_seal_key(&our_epoch, b"ckpt_root");
                     let Ok(root_bytes) = kete::decrypt_bytes(&sealed, &open_key) else {
                         crate::logf!("CKPT: root for k={} failed to open under our k={} key — spines diverged, requesting state", k, our_k);
                         if let Some(kp) = self.device_keypair.as_ref() {
-                            if let Ok(frame) = crate::network::fgtw::protocol::build_ckpt_req_vsf(our_k, kp.public.as_bytes(), kp.secret.as_bytes()) {
+                            if let Ok(frame) = crate::network::fgtw::protocol::build_ckpt_req_vsf(
+                                our_k,
+                                kp.public.as_bytes(),
+                                kp.secret.as_bytes(),
+                            ) {
                                 self.dispatch_frame_to_siblings(frame);
                             }
                         }
@@ -2866,11 +2913,21 @@ impl PhotonApp {
                     if local_root != root {
                         crate::logf!("CKPT DIVERGENCE: minter's settled root for k={} differs from ours — adopting theirs, the history sweep reconciles rows", k);
                     }
-                    let epoch = crate::crypto::clutch::advance_fleet_epoch(&our_epoch, &root, &fleet_key, fanout_epoch, k);
+                    let epoch = crate::crypto::clutch::advance_fleet_epoch(
+                        &our_epoch,
+                        &root,
+                        &fleet_key,
+                        fanout_epoch,
+                        k,
+                    );
                     self.fleet_epoch_prev = Some((our_k, our_epoch));
                     self.fleet_epoch = Some((k, epoch));
                     self.fleet_epoch_store();
-                    crate::logf!("CKPT: advanced to k={} from {}'s root hand-off", k, crate::fp(&sender_pubkey.key));
+                    crate::logf!(
+                        "CKPT: advanced to k={} from {}'s root hand-off",
+                        k,
+                        crate::fp(&sender_pubkey.key)
+                    );
                 }
 
                 // A sibling's catch-up ask: serve our whole spine state fleet-key-sealed if we are ahead — the fgtw-independent jump path.
@@ -2879,11 +2936,9 @@ impl PhotonApp {
                     sender_pubkey,
                     sender_addr,
                 } => {
-                    if !self
-                        .contacts
-                        .iter()
-                        .any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key))
-                    {
+                    if !self.contacts.iter().any(|c| {
+                        c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
+                    }) {
                         continue;
                     }
                     let (Some((our_k, our_epoch)), Some(fleet_key), Some(kp), Some(checker)) = (
@@ -2897,7 +2952,11 @@ impl PhotonApp {
                     if our_k <= have_k {
                         continue;
                     }
-                    let state = crate::network::fgtw::fleet::ckpt_state_bytes(our_k, &our_epoch, self.fleet_epoch_prev);
+                    let state = crate::network::fgtw::fleet::ckpt_state_bytes(
+                        our_k,
+                        &our_epoch,
+                        self.fleet_epoch_prev,
+                    );
                     let custody_sealed = {
                         // The same custody sealing the slot uses — one key derivation, one ciphertext shape, whichever bearer serves it.
                         let mut h = blake3::Hasher::new();
@@ -2908,15 +2967,27 @@ impl PhotonApp {
                     let Ok(sealed) = custody_sealed else {
                         continue;
                     };
-                    if let Ok(frame) = crate::network::fgtw::protocol::build_ckpt_state_vsf(our_k, sealed, kp.public.as_bytes(), kp.secret.as_bytes()) {
-                        let _ = checker.history_dispatch().send(crate::network::status::HistorySendRequest {
-                            peer_addr: sender_addr,
-                            alt_addr: None,
-                            recipient_pubkey: sender_pubkey.key,
-                            relay_to: vec![sender_pubkey.key],
-                            vsf_bytes: frame,
-                        });
-                        crate::logf!("CKPT: served spine state k={} to {} (they were at k={})", our_k, crate::fp(&sender_pubkey.key), have_k);
+                    if let Ok(frame) = crate::network::fgtw::protocol::build_ckpt_state_vsf(
+                        our_k,
+                        sealed,
+                        kp.public.as_bytes(),
+                        kp.secret.as_bytes(),
+                    ) {
+                        let _ = checker.history_dispatch().send(
+                            crate::network::status::HistorySendRequest {
+                                peer_addr: sender_addr,
+                                alt_addr: None,
+                                recipient_pubkey: sender_pubkey.key,
+                                relay_to: vec![sender_pubkey.key],
+                                vsf_bytes: frame,
+                            },
+                        );
+                        crate::logf!(
+                            "CKPT: served spine state k={} to {} (they were at k={})",
+                            our_k,
+                            crate::fp(&sender_pubkey.key),
+                            have_k
+                        );
                     }
                 }
 
@@ -2926,11 +2997,9 @@ impl PhotonApp {
                     sealed,
                     sender_pubkey,
                 } => {
-                    if !self
-                        .contacts
-                        .iter()
-                        .any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key))
-                    {
+                    if !self.contacts.iter().any(|c| {
+                        c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
+                    }) {
                         continue;
                     }
                     let Some(fleet_key) = self.fleet_key_cached() else {
@@ -2947,10 +3016,14 @@ impl PhotonApp {
                         *h.finalize().as_bytes()
                     };
                     let Ok(plain) = kete::decrypt_bytes(&sealed, &custody_key) else {
-                        crate::log("CKPT: state frame failed to open under the custody key — dropped");
+                        crate::log(
+                            "CKPT: state frame failed to open under the custody key — dropped",
+                        );
                         continue;
                     };
-                    let Some((sk, epoch, prev)) = crate::network::fgtw::fleet::ckpt_state_decode(&plain) else {
+                    let Some((sk, epoch, prev)) =
+                        crate::network::fgtw::fleet::ckpt_state_decode(&plain)
+                    else {
                         crate::log("CKPT: state frame malformed — dropped");
                         continue;
                     };
@@ -2960,7 +3033,11 @@ impl PhotonApp {
                     self.fleet_epoch_prev = prev;
                     self.fleet_epoch = Some((sk, epoch));
                     self.fleet_epoch_store();
-                    crate::logf!("CKPT: adopted spine state k={} from {}", sk, crate::fp(&sender_pubkey.key));
+                    crate::logf!(
+                        "CKPT: adopted spine state k={} from {}",
+                        sk,
+                        crate::fp(&sender_pubkey.key)
+                    );
                 }
 
                 StatusUpdate::ChainResetReceived {
@@ -2969,11 +3046,9 @@ impl PhotonApp {
                     sender_pubkey,
                     sender_addr: _,
                 } => {
-                    let Some(idx) = self
-                        .contacts
-                        .iter()
-                        .position(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key))
-                    else {
+                    let Some(idx) = self.contacts.iter().position(|c| {
+                        c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
+                    }) else {
                         crate::log(
                             "CHAIN-RESET: frame from a non-sibling or unknown device — dropped",
                         );
@@ -3020,10 +3095,9 @@ impl PhotonApp {
                     sender_pubkey,
                     sender_addr: _,
                 } => {
-                    let from_sibling = self
-                        .contacts
-                        .iter()
-                        .any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key));
+                    let from_sibling = self.contacts.iter().any(|c| {
+                        c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
+                    });
                     let (key, contact_idx) = if from_sibling {
                         (
                             self.fleet_key_cached(),
@@ -3506,7 +3580,10 @@ impl PhotonApp {
                     // Our own LAN address, from our looped-back beacon's source — the interface the beacon actually left on, not the one that routes to the internet. On change, clear `self_record_published_for` so the same tick edge that handles a reflexive change re-signs and re-publishes the record WITH the LAN entry (same idempotent re-publish path, same reason it isn't done inline here).
                     if self.our_lan_ip != Some(ip) {
                         self.our_lan_ip = Some(ip);
-                        crate::logf!("TRAVERSE: our LAN address = {} (from our own looped-back beacon)", ip);
+                        crate::logf!(
+                            "TRAVERSE: our LAN address = {} (from our own looped-back beacon)",
+                            ip
+                        );
                         self.self_record_published_for = None;
                         // Interface change = our NAT mapping likely changed too — re-arm the reflect-beside-pings bootstrap so the published record re-learns the TRUE mapping.
                         checker.set_reflect_needed(true);
@@ -3598,7 +3675,12 @@ impl PhotonApp {
                 .map(|(label, (n, ms))| format!("{label} {ms}ms x{n}"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            crate::logf!("PERF: status pass {}ms over {} update(s) — top arms: {}", pass_ms as u64, pass_updates, summary);
+            crate::logf!(
+                "PERF: status pass {}ms over {} update(s) — top arms: {}",
+                pass_ms as u64,
+                pass_updates,
+                summary
+            );
         }
         // The post-loop deferred section (ceremony completions, pings, seals, persists, adoptions) — the second untimed region the 2026-08-15 stalls could hide in.
         let deferred_t = std::time::Instant::now();
@@ -3805,8 +3887,8 @@ impl PhotonApp {
                 }
                 // Evict the party-id avatar cache too — the fetch worker is local-first now, and a raw-AV1 cache entry decodes fine under ANY pin, so without this eviction the old face would be re-served forever.
                 if let (Some(c), Some(storage)) = (self.contacts.get(i), self.storage.as_ref()) {
-                    let _ = storage
-                        .delete_addr(&crate::storage::vault_key("avatar", &c.handle_hash));
+                    let _ =
+                        storage.delete_addr(&crate::storage::vault_key("avatar", &c.handle_hash));
                 }
                 self.spawn_avatar_download(i);
             }

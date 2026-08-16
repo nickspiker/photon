@@ -930,11 +930,7 @@ impl HandleQuery {
                     thread::sleep(Duration::from_millis(100));
                 };
 
-                let result = Self::search_with_refresh(
-                    &handle,
-                    handle_proof,
-                    &transport_arc,
-                );
+                let result = Self::search_with_refresh(&handle, handle_proof, &transport_arc);
 
                 let _ = tx.send(result);
             }
@@ -970,9 +966,8 @@ impl HandleQuery {
         let mut local_ip = None;
         let mut device = members[0];
         for dev in &members {
-            let resolved = crate::network::http::runtime().block_on(
-                crate::network::fgtw::phonebook_client::resolve_device_address(dev),
-            );
+            let resolved = crate::network::http::runtime()
+                .block_on(crate::network::fgtw::phonebook_client::resolve_device_address(dev));
             if let Ok(rec) = resolved {
                 if let Some(addr) = crate::network::fgtw::phonebook_client::record_socket_addr(&rec)
                 {

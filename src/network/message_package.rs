@@ -48,10 +48,7 @@ pub fn build_message_package(
         .map_err(|e| e.to_string())?
         .set("ihp", VsfType::hp(incorporated_hp.to_vec()))
         .map_err(|e| e.to_string())?
-        .set(
-            "refk",
-            VsfType::u3(reference.map(|(k, _)| k).unwrap_or(0)),
-        )
+        .set("refk", VsfType::u3(reference.map(|(k, _)| k).unwrap_or(0)))
         .map_err(|e| e.to_string())?
         .set(
             "reft",
@@ -165,8 +162,7 @@ mod tests {
         assert_eq!(parsed.reference, Some((1, 987_654_321)));
 
         // A reaction retract: empty body, no wovens, no pad.
-        let retract =
-            build_message_package("", &[0u8; 32], &[], Some((3, 42)), &[]).unwrap();
+        let retract = build_message_package("", &[0u8; 32], &[], Some((3, 42)), &[]).unwrap();
         let parsed = parse_message_package(&retract).unwrap();
         assert_eq!(parsed.body, "");
         assert_eq!(parsed.reference, Some((3, 42)));

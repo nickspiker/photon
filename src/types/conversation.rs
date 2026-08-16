@@ -209,7 +209,11 @@ mod tests {
     fn id_is_the_participant_set_regardless_of_order() {
         let a = Conversation::new([pid(3), pid(1), pid(2)]);
         let b = Conversation::new([pid(1), pid(2), pid(3)]);
-        assert_eq!(a.id(), b.id(), "order must not change which conversation this is");
+        assert_eq!(
+            a.id(),
+            b.id(),
+            "order must not change which conversation this is"
+        );
         assert_eq!(a.participants(), b.participants());
 
         // Distinct sets are distinct conversations.
@@ -221,7 +225,11 @@ mod tests {
     fn self_notes_is_one_participant_not_a_duplicated_pair() {
         let me = pid(7);
         let notes = Conversation::new([me, me]);
-        assert_eq!(notes.participants(), &[me], "a set does not hold duplicates");
+        assert_eq!(
+            notes.participants(),
+            &[me],
+            "a set does not hold duplicates"
+        );
         assert_eq!(notes.id(), Conversation::new([me]).id());
         assert_eq!(notes.remote_count(&me), 0);
         assert_eq!(notes.remote_participants(&me).count(), 0);
@@ -243,12 +251,8 @@ mod tests {
                 .with_reference(crate::types::RefKind::Edit, 100),
         );
         conv.insert_message_sorted(
-            crate::types::ChatMessage::new_with_timestamp(
-                "original, truly".to_string(),
-                true,
-                300,
-            )
-            .with_reference(crate::types::RefKind::Edit, 100),
+            crate::types::ChatMessage::new_with_timestamp("original, truly".to_string(), true, 300)
+                .with_reference(crate::types::RefKind::Edit, 100),
         );
         assert_eq!(
             conv.latest_edit_for(100),
@@ -290,15 +294,25 @@ mod tests {
             crate::types::ChatMessage::new_with_timestamp("\u{1F44D}".to_string(), true, 200)
                 .with_reference(crate::types::RefKind::React, 100),
         );
-        assert_eq!(conv.current_reaction(100, true), Some("\u{1F44D}".to_string()));
-        assert_eq!(conv.current_reaction(100, false), None, "their slot is theirs");
+        assert_eq!(
+            conv.current_reaction(100, true),
+            Some("\u{1F44D}".to_string())
+        );
+        assert_eq!(
+            conv.current_reaction(100, false),
+            None,
+            "their slot is theirs"
+        );
 
         // Replace, then retract (empty content).
         conv.insert_message_sorted(
             crate::types::ChatMessage::new_with_timestamp("\u{2764}".to_string(), true, 300)
                 .with_reference(crate::types::RefKind::React, 100),
         );
-        assert_eq!(conv.current_reaction(100, true), Some("\u{2764}".to_string()));
+        assert_eq!(
+            conv.current_reaction(100, true),
+            Some("\u{2764}".to_string())
+        );
         conv.insert_message_sorted(
             crate::types::ChatMessage::new_with_timestamp(String::new(), true, 400)
                 .with_reference(crate::types::RefKind::React, 100),
@@ -340,20 +354,40 @@ mod tests {
         c.insert_message_sorted(
             ChatMessage::new_with_timestamp("hi".into(), false, 1000).with_ack_hash([7u8; 32]),
         );
-        assert_eq!(c.messages.len(), 1, "the two routes are one message — must not duplicate");
-        assert_eq!(c.messages[0].ack_hash, Some([7u8; 32]), "the live frame's ack_hash is adopted");
+        assert_eq!(
+            c.messages.len(),
+            1,
+            "the two routes are one message — must not duplicate"
+        );
+        assert_eq!(
+            c.messages[0].ack_hash,
+            Some([7u8; 32]),
+            "the live frame's ack_hash is adopted"
+        );
 
         // A different text at the same tick is a different message (astronomically rare, but not the same row).
         c.insert_message_sorted(ChatMessage::new_with_timestamp("yo".into(), false, 1000));
-        assert_eq!(c.messages.len(), 2, "distinct content at one tick stays distinct");
+        assert_eq!(
+            c.messages.len(),
+            2,
+            "distinct content at one tick stays distinct"
+        );
 
         // A recovered placeholder is superseded by a live row even when the text differs.
         let mut c2 = Conversation::new([pid(1), pid(2)]);
         let mut ph = ChatMessage::new_with_timestamp("placeholder".into(), false, 2000);
         ph.recovered = true;
         c2.insert_message_sorted(ph);
-        c2.insert_message_sorted(ChatMessage::new_with_timestamp("the real text".into(), false, 2000));
-        assert_eq!(c2.messages.len(), 1, "recovered placeholder replaced, not duplicated");
+        c2.insert_message_sorted(ChatMessage::new_with_timestamp(
+            "the real text".into(),
+            false,
+            2000,
+        ));
+        assert_eq!(
+            c2.messages.len(),
+            1,
+            "recovered placeholder replaced, not duplicated"
+        );
         assert_eq!(c2.messages[0].content, "the real text");
         assert!(!c2.messages[0].recovered);
     }
@@ -371,29 +405,49 @@ mod tests {
             a.insert_message_sorted(m(t, s));
             b.insert_message_sorted(m(t, s));
         }
-        assert_eq!(a.anti_entropy_digest(), b.anti_entropy_digest(), "same set + order agree");
+        assert_eq!(
+            a.anti_entropy_digest(),
+            b.anti_entropy_digest(),
+            "same set + order agree"
+        );
 
         // MISSING a message → different digest (the whole point).
         let mut c = Conversation::new([pid(1), pid(2)]);
         c.insert_message_sorted(m(10, "one"));
         c.insert_message_sorted(m(30, "three"));
-        assert_ne!(a.anti_entropy_digest(), c.anti_entropy_digest(), "a missing message must mismatch");
+        assert_ne!(
+            a.anti_entropy_digest(),
+            c.anti_entropy_digest(),
+            "a missing message must mismatch"
+        );
 
         // Same three texts at DIFFERENT eagle_times = a different sequence → different digest (an XOR fold of (ts,content) would also differ here, but the rolling hash also catches a pure reorder that a content-set fold cannot).
         let mut d = Conversation::new([pid(1), pid(2)]);
         for (t, s) in [(11, "one"), (21, "two"), (31, "three")] {
             d.insert_message_sorted(m(t, s));
         }
-        assert_ne!(a.anti_entropy_digest(), d.anti_entropy_digest(), "different sequence must mismatch");
+        assert_ne!(
+            a.anti_entropy_digest(),
+            d.anti_entropy_digest(),
+            "different sequence must mismatch"
+        );
 
         // Count is the non-deleted syncable rows.
         assert_eq!(a.anti_entropy_digest().0, 3);
 
         // Cache: a second call without mutation returns the same value; a new message invalidates it.
         let first = a.anti_entropy_digest();
-        assert_eq!(a.anti_entropy_digest(), first, "cached, stable without mutation");
+        assert_eq!(
+            a.anti_entropy_digest(),
+            first,
+            "cached, stable without mutation"
+        );
         a.insert_message_sorted(m(40, "four"));
-        assert_ne!(a.anti_entropy_digest(), first, "a new message invalidates the cache");
+        assert_ne!(
+            a.anti_entropy_digest(),
+            first,
+            "a new message invalidates the cache"
+        );
         assert_eq!(a.anti_entropy_digest().0, 4);
     }
 }

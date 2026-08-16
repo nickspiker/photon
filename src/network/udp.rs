@@ -231,7 +231,11 @@ mod lan_addr_tests {
         let parsed = super::parse_lan_discovery(&packet, src);
         let (hp, ip, port, dev) = parsed.expect("our own beacon must parse");
         assert_eq!(hp, [7u8; 32]);
-        assert_eq!(ip, Ipv4Addr::new(192, 168, 1, 5), "local ip comes from the observed source");
+        assert_eq!(
+            ip,
+            Ipv4Addr::new(192, 168, 1, 5),
+            "local ip comes from the observed source"
+        );
         assert_eq!(port, 4383);
         assert_eq!(dev, Some([9u8; 32]));
     }

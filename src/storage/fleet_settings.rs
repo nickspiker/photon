@@ -315,8 +315,16 @@ mod tests {
         dev2.our_device = [2; 32];
 
         // The race: both lock a different device at the SAME stamp, before either sees the other's write.
-        dev1.set(&format!("fleet.locked.{}", hex::encode(STOLEN_A)), STOLEN_A.to_vec(), 500);
-        dev2.set(&format!("fleet.locked.{}", hex::encode(STOLEN_B)), STOLEN_B.to_vec(), 500);
+        dev1.set(
+            &format!("fleet.locked.{}", hex::encode(STOLEN_A)),
+            STOLEN_A.to_vec(),
+            500,
+        );
+        dev2.set(
+            &format!("fleet.locked.{}", hex::encode(STOLEN_B)),
+            STOLEN_B.to_vec(),
+            500,
+        );
 
         // Each side pulls the other's state (either order).
         dev1.merge_from(dev2.global.clone(), dev2.devices.clone());
@@ -324,15 +332,26 @@ mod tests {
 
         for fs in [&dev1, &dev2] {
             let locked = fs.pubkey_set_union("fleet.locked", "fleet.locked.");
-            assert!(locked.contains(&STOLEN_A), "device A's lock must survive the race");
-            assert!(locked.contains(&STOLEN_B), "device B's lock must survive the race");
-            assert!(locked.contains(&LEGACY), "a deployed legacy-blob lock reads forever");
+            assert!(
+                locked.contains(&STOLEN_A),
+                "device A's lock must survive the race"
+            );
+            assert!(
+                locked.contains(&STOLEN_B),
+                "device B's lock must survive the race"
+            );
+            assert!(
+                locked.contains(&LEGACY),
+                "a deployed legacy-blob lock reads forever"
+            );
             assert_eq!(locked.len(), 3, "union, no duplicates");
         }
         // A tombstoned per-key entry does NOT count (grow-only by convention — nothing writes tombstones today, but a hostile/buggy one must not read as a lock either way… and a malformed value never parses as a pubkey).
         let mut fs = FleetSettings::new([3; 32]);
         fs.set("fleet.locked.deadbeef", vec![1, 2, 3], 100);
-        assert!(fs.pubkey_set_union("fleet.locked", "fleet.locked.").is_empty());
+        assert!(fs
+            .pubkey_set_union("fleet.locked", "fleet.locked.")
+            .is_empty());
     }
 
     #[test]
@@ -343,16 +362,26 @@ mod tests {
         let mut b = FleetSettings::new([2; 32]);
         a.set(&key, STOLEN.to_vec(), 100);
         b.merge_from(a.global.clone(), a.devices.clone());
-        assert!(b.pubkey_set_union("fleet.locked", "fleet.locked.").contains(&STOLEN));
+        assert!(b
+            .pubkey_set_union("fleet.locked", "fleet.locked.")
+            .contains(&STOLEN));
         // The owner's reversal: an EMPTY value at a newer stamp — the value-level tombstone unlock_fleet_device writes. It drops out of the union locally and syncs the emptiness fleet-wide.
         a.set(&key, Vec::new(), 200);
-        assert!(a.pubkey_set_union("fleet.locked", "fleet.locked.").is_empty());
+        assert!(a
+            .pubkey_set_union("fleet.locked", "fleet.locked.")
+            .is_empty());
         b.merge_from(a.global.clone(), a.devices.clone());
-        assert!(b.pubkey_set_union("fleet.locked", "fleet.locked.").is_empty(), "the unlock must sync");
+        assert!(
+            b.pubkey_set_union("fleet.locked", "fleet.locked.")
+                .is_empty(),
+            "the unlock must sync"
+        );
         // A later RE-LOCK wins over the tombstone by LWW — unlock is a reversal, not an immunity.
         b.set(&key, STOLEN.to_vec(), 300);
         a.merge_from(b.global.clone(), b.devices.clone());
-        assert!(a.pubkey_set_union("fleet.locked", "fleet.locked.").contains(&STOLEN));
+        assert!(a
+            .pubkey_set_union("fleet.locked", "fleet.locked.")
+            .contains(&STOLEN));
     }
 
     #[test]

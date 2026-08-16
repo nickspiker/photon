@@ -29,8 +29,7 @@ impl PhotonApp {
                 .last_fleet_refold
                 .is_none_or(|last| now.duration_since(last) >= FLEET_REFOLD_INTERVAL);
             if due {
-                if let Some(our_hp) = self.our_handle_proof()
-                {
+                if let Some(our_hp) = self.our_handle_proof() {
                     self.last_fleet_refold = Some(now);
                     self.spawn_contact_fleet_refresh(vec![our_hp]);
                     // Roster-pull backstop (B4): an exhausted pull used to wait on "the next fleet event", which never comes with the WebSocket down — no roster until relaunch. This edge re-arms a small budget at the refold cadence; success clears the flag, failure re-exhausts and the next sweep tries again.
@@ -38,14 +37,19 @@ impl PhotonApp {
                         self.roster_pull_exhausted = false;
                         self.needs_initial_roster_pull = true;
                         self.roster_pull_retries_left = 2;
-                        crate::log("FLEET: refold edge re-arming the exhausted roster pull (2 attempts)");
+                        crate::log(
+                            "FLEET: refold edge re-arming the exhausted roster pull (2 attempts)",
+                        );
                     }
                 }
             }
         }
 
         // The checkpoint spine driver rides the same fleet sweep cadence: lazy vault load, outcome drain, and the bootstrap/rotation mint edges.
-        if matches!(self.state, AppState::Ready | AppState::Conversation | AppState::Settings(_)) {
+        if matches!(
+            self.state,
+            AppState::Ready | AppState::Conversation | AppState::Settings(_)
+        ) {
             self.ckpt_tick();
         }
 
@@ -317,8 +321,7 @@ impl PhotonApp {
                     // The confirm rotated the fleet key — recover the new epoch AND re-seal the roster under it in one ordered pass, so the just-joined device's roster pull decrypts instead of failing aead::Error until a relaunch. (Was a bare key-sync that left the roster stale-sealed forever, since the periodic re-push only fires on a non-in-app attest.)
                     self.spawn_roster_republish();
                     // And re-fold our own chain immediately so the freshly-bound device gets its sibling contact (fleet weave kickoff) without waiting for the next fleet event.
-                    if let Some(our_hp) = self.our_handle_proof()
-                    {
+                    if let Some(our_hp) = self.our_handle_proof() {
                         self.spawn_contact_fleet_refresh(vec![our_hp]);
                     }
                 }
@@ -384,7 +387,11 @@ impl PhotonApp {
                 if fs.linked("logs.hard") {
                     fs.set_link("logs.hard", false, now);
                 }
-                let val = if checked { now.to_be_bytes().to_vec() } else { Vec::new() };
+                let val = if checked {
+                    now.to_be_bytes().to_vec()
+                } else {
+                    Vec::new()
+                };
                 if fs.set("logs.hard", val, now) {
                     crate::logf!(
                         "SETTINGS: logs.hard {} (device-local, 24h self-expiry)",
@@ -402,7 +409,8 @@ impl PhotonApp {
             .iter_mut()
             .filter_map(|pf| {
                 let cb = pf.share_cb.as_mut()?;
-                cb.take_toggle().then(|| (pf.field_id.clone(), cb.is_checked()))
+                cb.take_toggle()
+                    .then(|| (pf.field_id.clone(), cb.is_checked()))
             })
             .collect();
         for (fid, checked) in share_writes {
@@ -456,7 +464,11 @@ impl PhotonApp {
 
         // Clear the "handle didn't match" line as soon as the operator edits the confirm box again (event-shown, interaction-cleared — no timers).
         if self.unattended_confirm_failed {
-            let has_text = self.unattended_confirm_tb.as_ref().map(|tb| !tb.chars.is_empty()).unwrap_or(false);
+            let has_text = self
+                .unattended_confirm_tb
+                .as_ref()
+                .map(|tb| !tb.chars.is_empty())
+                .unwrap_or(false);
             if has_text {
                 self.unattended_confirm_failed = false;
                 needs_redraw = true;
@@ -531,13 +543,11 @@ impl PhotonApp {
                             // ~15 min of 2s polls — the sponsor is a human mid-tap, not a batch job; past this the ceremony is abandoned and a relaunch re-joins cleanly.
                             for _ in 0..(15 * 30) {
                                 std::thread::sleep(std::time::Duration::from_secs(2));
-                                if let Ok(Some(k)) =
-                                    crate::network::fgtw::fleet::recover_fleet_key(
-                                        &hp,
-                                        &kp,
-                                        store.as_deref(),
-                                    )
-                                {
+                                if let Ok(Some(k)) = crate::network::fgtw::fleet::recover_fleet_key(
+                                    &hp,
+                                    &kp,
+                                    store.as_deref(),
+                                ) {
                                     if tx.send(JoinUpdate::Joined(Some(k), session)).is_err() {
                                         return; // screen left — nobody waiting
                                     }
