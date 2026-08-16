@@ -340,6 +340,11 @@ impl PhotonApp {
                                     rotated_fids.push(*fid);
                                 }
                             }
+                            // Tip testimony clears BEFORE stall recovery re-arms: pendings at/below the peer's contiguous lane head are received-in-order facts, not in-flight sends — un-re-ACKable pre-fix rows sat there wedging the window shut against the very send whose ACK could have implied them away.
+                            let cleared = chains.clear_pending_up_to(tip);
+                            if cleared > 0 {
+                                crate::logf!("CHAT: {} pending(s) at/below peer lane tip {} — implied-delivered by the sync record", cleared, tip);
+                            }
                             let n = chains.rearm_pending_after(tip, now_osc);
                             if n > 0 {
                                 crate::logf!("CHAT: re-armed {} given-up pending msg(s) past peer lane tip {} (stall recovery)", n, tip);

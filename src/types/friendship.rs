@@ -1064,6 +1064,13 @@ impl FriendshipChains {
         due
     }
 
+    /// Drop every pending AT OR BELOW the peer's contiguous lane tip: their sync record testified "everything up to here, received in order", so these rows are delivered — and holding them can wedge the in-flight window PERMANENTLY when the rows predate ack_hash persistence (the peer can never re-ACK them; the ACK that would imply-clear them needs a fresh send the full window blocks — round-5's chicken-and-egg, 'flushed 0/4', field 2026-08-16). Same testimony `rearm_pending_after` already trusts to pick what to RESEND; this just stops pretending the delivered half is still in flight. Device-local, no mutated_osc stamp (siblings never adopt pendings).
+    pub fn clear_pending_up_to(&mut self, tip_osc: i64) -> usize {
+        let before = self.pending_messages.len();
+        self.pending_messages.retain(|m| m.eagle_time > tip_osc);
+        before - self.pending_messages.len()
+    }
+
     /// Re-arm (reset the retransmit backoff for) pending messages NEWER than the peer's contiguous tip `tip_osc` that have already EXHAUSTED `MAX_SEND_ATTEMPTS`. Drives stall recovery: a receiver stalled on a gap keeps advertising its contiguous tip (its `last_received_osc`) in every ping's sync record; if the gap-filling message was one the sender already gave up on, this revives it so `collect_due_retransmits` will send it again. Without this, a message lost past 8 attempts is permanently undelivered and the receiver stays stuck forever. Non-exhausted pendings are left alone (their normal backoff already covers them). Returns how many were re-armed.
     ///
     /// `tip_osc` is the peer's newest CONTIGUOUS eagle_time ("I have everything up to here, in order"), so anything with `eagle_time > tip_osc` is fair game to resend — it's either the missing message or a successor the peer is buffering behind it.
