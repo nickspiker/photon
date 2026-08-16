@@ -1006,9 +1006,13 @@ impl PhotonApp {
         });
     }
 
-    /// Publish this device's contact roster to the fleet slot (off-thread, best-effort). No-op if we have no contacts to share or lack the key/membership.
-    pub(super) fn spawn_roster_push(&self) {
+    /// Publish this device's contact roster to the fleet slot (off-thread, best-effort). No-op if we have no contacts to share or lack the key/membership. COALESCED: one push in flight at a time — a request landing mid-flight queues exactly one follow-up that re-snapshots the roster on the completion edge, so back-to-back launch edges (re-push, weave claims, keepalive stamps, pong adoptions, reconciles) become one or two round trips instead of a concurrent racer per edge.
+    pub(super) fn spawn_roster_push(&mut self) {
         use crate::network::fgtw::fleet;
+        if self.roster_push_rx.is_some() {
+            self.roster_push_queued = true;
+            return;
+        }
         let entries = self.current_roster();
         if entries.is_empty() {
             return;
@@ -1025,9 +1029,17 @@ impl PhotonApp {
             .fleet_settings
             .as_ref()
             .map(|fs| (fs.global.clone(), fs.devices.clone()));
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        self.roster_push_rx = Some(rx);
+        let wake = self.event_proxy.clone();
         std::thread::spawn(move || {
             if let Err(e) = fleet::push_roster_with_settings(&hp, &kp, &fleet_key, &entries, live) {
                 crate::logf!("FLEET: roster push failed: {}", e);
+            }
+            // Success or failure, the slot is done being written — release it and let a queued follow-up (which re-snapshots) carry anything newer.
+            let _ = tx.send(());
+            if let Some(w) = wake.as_ref() {
+                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
             }
         });
     }
