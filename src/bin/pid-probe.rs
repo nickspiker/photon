@@ -55,4 +55,20 @@ fn main() {
             photon_messenger::network::fgtw::fleet::keyed_pseudonym(&pid)
         );
     }
+    // The fan-out envelope is plaintext structure (epoch + rotator + per-device wraps; the KEYS inside the wraps stay sealed) — the ground truth for "which epoch is live and who minted it" when siblings disagree about the fleet key.
+    match photon_messenger::network::fgtw::fleet::fetch_fanout(&hp) {
+        Ok(Some((epoch, rotator, wraps))) => {
+            println!(
+                "fan-out: epoch {}  rotator {}…  {} wrap(s) for:",
+                epoch,
+                hex::encode(&rotator[..4]),
+                wraps.len()
+            );
+            for w in &wraps {
+                println!("  wrapped device (commit {}…)", hex::encode(&w.commit[..4]));
+            }
+        }
+        Ok(None) => println!("fan-out: none published"),
+        Err(e) => println!("fan-out: fetch failed: {}", e),
+    }
 }

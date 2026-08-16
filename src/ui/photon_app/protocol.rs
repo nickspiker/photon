@@ -836,9 +836,19 @@ impl PhotonApp {
                     self.roster_pull_exhausted = true;
                     crate::log("FLEET: roster pull retries exhausted — the 45s refold edge re-arms it (fleet events help sooner when the socket is up)");
                     // Exhausted against an UNDECRYPTABLE slot is a deadlock, not patience running out: the bytes are sealed under a superseded fleet key, so no number of re-reads will ever open them, and a device that only ever pulls will retry forever with nothing to show (a wiped field device: 27 aead failures, no contacts, no name, no avatar). A push breaks it — `push_roster` re-seals from local state when it finds the slot unreadable — so fire one instead of waiting for an event that cannot help.
+                    // But an aead failure cannot say WHICH side is stale — and a freshly wiped device is the STALE party (its oracle-slot key predates the fleet's current rotation) holding a roster that is empty but for the attest-minted self row. Its "re-seal" overwrote the fleet's one roster copy with that near-emptiness under a key no sibling holds (macbook field incident, 2026-08-16). So the breaker fires only when we hold FRIEND rows to re-seal (non-sibling, non-self — the self row exists on every fresh attest and proves nothing); a friendless device waits — the sibling egg → fresh-epoch mint → wrap path delivers the current key, and the 45s refold edge re-pulls.
                     if _e.contains("aead") || _e.contains("decrypt") {
-                        crate::log("FLEET: the slot cannot be decrypted under the current key — pushing to re-seal it rather than re-reading bytes nobody can open");
-                        self.spawn_roster_push();
+                        let our_proof = self.session.as_ref().map(|s| s.handle_proof);
+                        let have_friend_state = self
+                            .contacts
+                            .iter()
+                            .any(|c| !c.is_sibling && Some(c.handle_proof) != our_proof);
+                        if have_friend_state {
+                            crate::log("FLEET: the slot cannot be decrypted under the current key — pushing to re-seal it rather than re-reading bytes nobody can open");
+                            self.spawn_roster_push();
+                        } else {
+                            crate::log("FLEET: slot undecryptable and no local friend rows to re-seal — we are the stale party (wiped device); holding for the current fleet key via sibling egg + rotation");
+                        }
                     }
                 }
             }
