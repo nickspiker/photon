@@ -1289,6 +1289,8 @@ pub struct PhotonApp {
     fleet_epoch_prev: Option<(u64, [u8; 32])>,
     /// A rotation (or other epoch-worthy edge) happened — the next sweep mints a checkpoint.
     ckpt_mint_due: bool,
+    /// Consecutive spineless-hold sweeps (chain has a Checkpoint, custody unreadable, no local spine). Each hold fires a ckpt_req at the siblings; at the third dry sweep the next tick SUPERSEDES the spine — fresh epoch seed pushed at chain_k+1, custody rewritten under the CURRENT fleet key — because a spine nobody alive can read is dead state, not authority (the 2026-08-16 field wedge: the k=1 minter was wiped, the fleet key rotated past its custody seal, and every device held forever while all fleet-plane traffic sat blocked behind the missing spine).
+    ckpt_spineless_holds: u32,
     /// Total syncable rows at the last row-cadence checkpoint edge. The fleet sweep flags a mint once the total grows past CKPT_ROW_CADENCE — the burn horizon advances with TRAFFIC, not only membership edges. RAM-only: a restart re-seeds on first observation (delays one cadence, never mints spuriously).
     ckpt_rows_base: Option<usize>,
     /// A mint/bootstrap thread is in flight — the single-minter re-entry guard.
@@ -1858,6 +1860,7 @@ impl PhotonApp {
             fleet_epoch: None,
             fleet_epoch_prev: None,
             ckpt_mint_due: false,
+            ckpt_spineless_holds: 0,
             ckpt_rows_base: None,
             ckpt_busy: false,
             ckpt_rx: None,
@@ -2348,6 +2351,8 @@ enum CkptOutcome {
         fanout_epoch: u64,
         minted_here: bool,
     },
+    /// The chain carries a Checkpoint but custody didn't open and we hold no spine — the drain asks siblings for ckpt_state and counts the dry sweeps toward the supersession breaker.
+    SpinelessHold,
     Idle,
 }
 
