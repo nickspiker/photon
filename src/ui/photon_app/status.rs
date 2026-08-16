@@ -2506,7 +2506,7 @@ impl PhotonApp {
                                     .copied()?;
                                 Some((key, other))
                             });
-                        let friend_route: Option<(usize, [u8; 32])> =
+                        let friend_route: Option<(usize, [u8; 32], Option<u64>)> =
                             key_and_other.and_then(|(key, other)| {
                                 self.contacts
                                     .iter()
@@ -2517,9 +2517,9 @@ impl PhotonApp {
                                             && c.knows_device(&sender_pubkey.key)
                                             && c.is_mutual()
                                     })
-                                    .map(|idx| (idx, key))
+                                    .map(|idx| (idx, key, None))
                             });
-                        // FLEET route (fleet history sync): the requester is one of OUR OWN devices — fold-trusted sibling — asking for any conversation we hold. Serve it sealed under the FLEET key. The token resolves by DERIVATION from party ids (no chain needed), so a conversation the sibling only knows from the roster — or the self notes conversation — still serves.
+                        // FLEET route (fleet history sync): the requester is one of OUR OWN devices — fold-trusted sibling — asking for any conversation we hold. Sealed under the EPOCH hist_page key (the B-arc re-seal), with the epoch on the frame; no spine yet = don't serve — the requester re-requests after our 45s-bounded bootstrap lands, exactly the chain_sync hold rule. The token resolves by DERIVATION from party ids (no chain needed), so a conversation the sibling only knows from the roster — or the self notes conversation — still serves.
                         let route = friend_route.or_else(|| {
                             let sender_is_sibling = self.contacts.iter().any(|c| {
                                 c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
@@ -2527,13 +2527,17 @@ impl PhotonApp {
                             if !sender_is_sibling {
                                 return None;
                             }
-                            let fleet_key = self.fleet_key_cached()?;
+                            let (k, epoch) = self.fleet_epoch?;
+                            let key = crate::crypto::clutch::fleet_epoch_seal_key(
+                                &epoch,
+                                b"hist_page",
+                            );
                             let idx =
                                 self.contact_idx_for_conversation_token(&conversation_token)?;
-                            Some((idx, fleet_key))
+                            Some((idx, key, Some(k)))
                         });
 
-                        if let (Some((idx, key)), Some(storage), Some(checker)) =
+                        if let (Some((idx, key, serve_ek)), Some(storage), Some(checker)) =
                             (route, self.storage.as_ref(), self.status_checker.as_ref())
                         {
                             // OFF THE RENDER THREAD. Serving a page reads and decrypts up to 50 vault rows and then seals them — measured at 2195ms inline, which is what a peer's backfill felt like from inside our own UI. Everything the work needs is copied here (ids, keys, an Arc of storage, a cloned dispatch sender) and the whole read-seal-send runs on a worker; nothing it produces touches app state, so there is no result to drain back.
@@ -2587,6 +2591,7 @@ impl PhotonApp {
                                             crate::network::fgtw::protocol::build_history_page_vsf(
                                                 &conversation_token,
                                                 &request_id,
+                                                serve_ek,
                                                 sealed,
                                                 &device_pubkey,
                                                 &device_secret,
@@ -2923,6 +2928,8 @@ impl PhotonApp {
                     self.fleet_epoch_prev = Some((our_k, our_epoch));
                     self.fleet_epoch = Some((k, epoch));
                     self.fleet_epoch_store();
+                    // Pong tails ride the epoch key — flip on the same edge as the spine.
+                    self.reseed_pong_seal_keys();
                     crate::logf!(
                         "CKPT: advanced to k={} from {}'s root hand-off",
                         k,
@@ -3033,6 +3040,8 @@ impl PhotonApp {
                     self.fleet_epoch_prev = prev;
                     self.fleet_epoch = Some((sk, epoch));
                     self.fleet_epoch_store();
+                    // Pong tails ride the epoch key — flip on the same edge as the spine.
+                    self.reseed_pong_seal_keys();
                     crate::logf!(
                         "CKPT: adopted spine state k={} from {}",
                         sk,
@@ -3091,6 +3100,7 @@ impl PhotonApp {
                 StatusUpdate::HistoryPageReceived {
                     conversation_token,
                     request_id,
+                    epoch_k,
                     sealed,
                     sender_pubkey,
                     sender_addr: _,
@@ -3099,8 +3109,43 @@ impl PhotonApp {
                         c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
                     });
                     let (key, contact_idx) = if from_sibling {
+                        // Fleet-route pages seal under the EPOCH hist_page key (the B-arc re-seal): `ek` names the sealing epoch; we open at our k or k−1 across a checkpoint crossing. Behind the sender → request spine state (the chain_sync catch-up move) and drop; the request re-fires and self-heals. `ek` absent from a sibling = a pre-epoch build — flag-day drop, loudly.
+                        let key = match (epoch_k, self.fleet_epoch, self.fleet_epoch_prev) {
+                            (Some(ek), Some((k, e)), _) if ek == k => {
+                                Some(crate::crypto::clutch::fleet_epoch_seal_key(
+                                    &e,
+                                    b"hist_page",
+                                ))
+                            }
+                            (Some(ek), _, Some((pk, pe))) if ek == pk => {
+                                Some(crate::crypto::clutch::fleet_epoch_seal_key(
+                                    &pe,
+                                    b"hist_page",
+                                ))
+                            }
+                            (Some(ek), cur, _) => {
+                                let our_k = cur.map(|(k, _)| k).unwrap_or(0);
+                                crate::logf!("HISTORY: fleet page sealed at k={} but our spine is at k={} — requesting state from the fleet", ek, our_k);
+                                if let Some(kp) = self.device_keypair.as_ref() {
+                                    if let Ok(frame) =
+                                        crate::network::fgtw::protocol::build_ckpt_req_vsf(
+                                            our_k,
+                                            kp.public.as_bytes(),
+                                            kp.secret.as_bytes(),
+                                        )
+                                    {
+                                        self.dispatch_frame_to_siblings(frame);
+                                    }
+                                }
+                                None
+                            }
+                            (None, _, _) => {
+                                crate::logf!("HISTORY: sibling page from {} carries no epoch — pre-epoch build, dropped (flag-day)", crate::fp(&sender_pubkey.key));
+                                None
+                            }
+                        };
                         (
-                            self.fleet_key_cached(),
+                            key,
                             self.contact_idx_for_conversation_token(&conversation_token),
                         )
                     } else {

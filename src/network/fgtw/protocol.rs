@@ -2281,10 +2281,11 @@ pub fn parse_history_request_vsf(
     ))
 }
 
-/// Build a signed `hist_page` frame carrying the sealed page blob (typically 3–8KB; PT shards larger).
+/// Build a signed `hist_page` frame carrying the sealed page blob (typically 3–8KB; PT shards larger). `epoch_k` distinguishes the two seal families: `None` = friend-route page (sealed under the friendship history key, no epoch concept); `Some(k)` = fleet-route page sealed under the EPOCH hist_page key (`fleet_epoch_seal_key(epoch_k, b"hist_page")` — the B-arc re-seal), with `k` on the frame so the receiver picks the right epoch (it accepts its k and k−1 across a checkpoint crossing).
 pub fn build_history_page_vsf(
     conversation_token: &[u8; 32],
     request_id: &[u8; 32],
+    epoch_k: Option<u64>,
     sealed_blob: Vec<u8>,
     device_pubkey: &[u8; 32],
     device_secret: &[u8; 32],
@@ -2295,6 +2296,9 @@ pub fn build_history_page_vsf(
     let mut section = VsfSection::new("hist_page");
     section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
     section.add_field("rid", VsfType::hb(request_id.to_vec()));
+    if let Some(k) = epoch_k {
+        section.add_field("ek", VsfType::u(k as usize, false));
+    }
     let blob_len = sealed_blob.len();
     section.add_field(
         "data",
@@ -2311,10 +2315,10 @@ pub fn build_history_page_vsf(
     vsf::verification::sign_file(unsigned, device_secret)
 }
 
-/// Parse + verify a `hist_page` frame. Returns ((conversation_token, request_id, sealed_blob), sender_pubkey). The blob is opaque here; the requester opens it with the friendship history key (AEAD failure = drop).
+/// Parse + verify a `hist_page` frame. Returns ((conversation_token, request_id, epoch_k, sealed_blob), sender_pubkey). The blob is opaque here; the requester opens it with the friendship history key (`ek` absent) or the epoch hist_page key (`ek` present — fleet route). A SIBLING page without `ek` is a pre-epoch build's — the receive arm drops it loudly, no tolerant branch.
 pub fn parse_history_page_vsf(
     vsf_bytes: &[u8],
-) -> Result<(([u8; 32], [u8; 32], Vec<u8>), [u8; 32]), String> {
+) -> Result<(([u8; 32], [u8; 32], Option<u64>, Vec<u8>), [u8; 32]), String> {
     let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
         .map_err(|e| format!("hist_page verification failed: {}", e))?;
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
@@ -2332,6 +2336,7 @@ pub fn parse_history_page_vsf(
         .ok_or("hist_page missing tok")?;
     let request_id = field_hash32(fields, "rid", |v| matches!(v, VsfType::hb(_)))
         .ok_or("hist_page missing rid")?;
+    let epoch_k = field_u64(fields, "ek");
     let sealed = fields
         .iter()
         .find(|f| f.name == "data")
@@ -2342,7 +2347,7 @@ pub fn parse_history_page_vsf(
         })
         .ok_or("hist_page missing data")?;
 
-    Ok(((conversation_token, request_id, sealed), sender_pubkey))
+    Ok(((conversation_token, request_id, epoch_k, sealed), sender_pubkey))
 }
 
 /// Build a `chain_sync` frame — fleet chain-state replication ("if another device is ahead, I just catch up"). `sealed_chains` = the friendship's canonical chains VSF bytes (storage::friendship::chains_to_vsf_bytes) AEAD-sealed under the EPOCH chain_sync key (`fleet_epoch_seal_key(epoch_k, b"chain_sync")` — the B3 re-seal, 2026-08-12); `epoch_k` rides beside the blob so the receiver picks the right epoch (it accepts k and k−1 across a checkpoint crossing). The outer frame is device-signed like every sibling frame. Receiver: open, decode, adopt iff the embedded mutated_osc is NEWER than the local copy's.
@@ -2408,16 +2413,13 @@ pub fn parse_chain_sync_vsf(
     Ok(((conversation_token, epoch_k, sealed), sender_pubkey))
 }
 
-/// Read a plain unsigned-integer field.
+/// Read a plain unsigned-integer field. MUST go thru `as_u64`, never a `VsfType::u(..)` match: the builder's auto-sized `u(n, false)` DECODES as the smallest concrete width (`u3`/`u4`/…), so a variant match never fires on a parsed frame — the exact-variant version of this helper silently rejected every wire `ek` (caught by the hist_page round-trip test, 2026-08-16).
 fn field_u64(fields: &[vsf::file_format::VsfField], name: &str) -> Option<u64> {
     fields
         .iter()
         .find(|f| f.name == name)
         .and_then(|f| f.values.first())
-        .and_then(|v| match v {
-            VsfType::u(n, false) => Some(*n as u64),
-            _ => None,
-        })
+        .and_then(|v| v.as_u64())
 }
 
 /// Build a `ckpt_root` frame — the checkpoint minter handing siblings the SECRET settled root for epoch `k`. `sealed_root` = the 32-byte root kete-sealed under `fleet_epoch_seal_key(epoch_{k-1}, b"ckpt_root")`: openable exactly by siblings current at the prior epoch, who then verify it against the chain op's public commitment and derive epoch_k themselves. Fleet-scoped (no conversation token); device-signed like every sibling frame.
@@ -3171,12 +3173,51 @@ mod history_frame_tests {
         let tok = [0xC3u8; 32];
         let rid = [0xD4u8; 32];
         let blob = vec![0x5Au8; 4096];
-        let bytes = build_history_page_vsf(&tok, &rid, blob.clone(), &pubkey, &secret).unwrap();
-        let ((ptok, prid, psealed), signer) = parse_history_page_vsf(&bytes).unwrap();
+        let bytes =
+            build_history_page_vsf(&tok, &rid, None, blob.clone(), &pubkey, &secret).unwrap();
+        let ((ptok, prid, pek, psealed), signer) = parse_history_page_vsf(&bytes).unwrap();
         assert_eq!(signer, pubkey);
         assert_eq!(ptok, tok);
         assert_eq!(prid, rid);
+        assert_eq!(pek, None);
         assert_eq!(psealed, blob);
+        // Fleet-route form: ek rides the frame and round-trips.
+        let bytes =
+            build_history_page_vsf(&tok, &rid, Some(7), blob.clone(), &pubkey, &secret).unwrap();
+        let ((_, _, pek, _), _) = parse_history_page_vsf(&bytes).unwrap();
+        assert_eq!(pek, Some(7));
+    }
+
+    // Every sibling frame carrying an integer field round-trips thru a REAL encode+decode. These exist because the exact-variant `field_u64` rejected every wire `ek` (the builder's auto-sized `u` decodes as `u3`/`u4`/…): chain_sync + all three ckpt frames were silently parse-dead in the field until 2026-08-16, and no test walked the decode path.
+    #[test]
+    fn chain_sync_round_trips() {
+        let (pubkey, secret) = keypair(11);
+        let tok = [0xE5u8; 32];
+        let blob = vec![0x3Cu8; 2048];
+        let bytes = build_chain_sync_vsf(&tok, 5, blob.clone(), &pubkey, &secret).unwrap();
+        let ((ptok, pek, psealed), signer) = parse_chain_sync_vsf(&bytes).unwrap();
+        assert_eq!(signer, pubkey);
+        assert_eq!(ptok, tok);
+        assert_eq!(pek, 5);
+        assert_eq!(psealed, blob);
+    }
+
+    #[test]
+    fn ckpt_frames_round_trip() {
+        let (pubkey, secret) = keypair(12);
+        let root_blob = vec![0x77u8; 96];
+        let bytes = build_ckpt_root_vsf(9, 41, root_blob.clone(), &pubkey, &secret).unwrap();
+        let ((k, fe, sealed), signer) = parse_ckpt_root_vsf(&bytes).unwrap();
+        assert_eq!((k, fe, sealed, signer), (9, 41, root_blob, pubkey));
+
+        let bytes = build_ckpt_req_vsf(3, &pubkey, &secret).unwrap();
+        let (k, signer) = parse_ckpt_req_vsf(&bytes).unwrap();
+        assert_eq!((k, signer), (3, pubkey));
+
+        let state_blob = vec![0x19u8; 120];
+        let bytes = build_ckpt_state_vsf(6, state_blob.clone(), &pubkey, &secret).unwrap();
+        let ((k, sealed), signer) = parse_ckpt_state_vsf(&bytes).unwrap();
+        assert_eq!((k, sealed, signer), (6, state_blob, pubkey));
     }
 
     #[test]

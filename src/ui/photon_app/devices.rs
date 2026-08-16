@@ -226,6 +226,8 @@ impl PhotonApp {
             if let Some((k, epoch, prev)) = crate::network::fgtw::fleet::ckpt_state_decode(&bytes) {
                 self.fleet_epoch = Some((k, epoch));
                 self.fleet_epoch_prev = prev;
+                // The vault-loaded spine must reach the pong map too — the boot reseed ran pre-load and derived v0 static keys.
+                self.reseed_pong_seal_keys();
             }
         }
     }
@@ -328,6 +330,8 @@ impl PhotonApp {
                     self.fleet_epoch_prev = prev;
                     self.fleet_epoch = Some((k, epoch));
                     self.fleet_epoch_store();
+                    // Sibling pong tails ride the epoch key — flip ours on the same edge the spine advances so both ends of every pair converge on the k key together.
+                    self.reseed_pong_seal_keys();
                     crate::logf!(
                         "CKPT: epoch spine at k={} ({})",
                         k,
@@ -377,6 +381,25 @@ impl PhotonApp {
         }
         if self.ckpt_busy {
             return;
+        }
+        // The row-cadence dial (braid.md §14.3/§14.4): total syncable rows (cheap — a len() sum, no hashing) against the base at the last cadence edge; growth past CKPT_ROW_CADENCE flags a mint so the burn horizon tracks traffic. First observation seeds the base — a restart never mints spuriously. The base advances when the flag raises, so a lost mint race just rides the adopted spine and the next cadence measures from here.
+        const CKPT_ROW_CADENCE: usize = 128;
+        let rows_now: usize = (0..self.contacts.len())
+            .filter(|&ci| !self.contacts[ci].is_sibling)
+            .filter_map(|ci| self.conv_of(ci))
+            .map(|c| c.messages.len())
+            .sum();
+        match self.ckpt_rows_base {
+            None => self.ckpt_rows_base = Some(rows_now),
+            Some(base) if rows_now >= base + CKPT_ROW_CADENCE => {
+                crate::logf!(
+                    "CKPT: {} fresh row(s) since the last cadence edge — minting",
+                    rows_now - base
+                );
+                self.ckpt_mint_due = true;
+                self.ckpt_rows_base = Some(rows_now);
+            }
+            _ => {}
         }
         let bootstrap = self.fleet_epoch.is_none();
         if !bootstrap && !self.ckpt_mint_due {
@@ -1753,10 +1776,20 @@ impl PhotonApp {
             // A sibling row or a zero-remote conversation answers with OUR OWN devices, so those pongs seal under the sibling key; everyone else gets the friendship secret.
             if c.is_sibling || c.remote_count(&our_party) == 0 {
                 for pk in c.answerable_pubkeys() {
-                    keys.insert(
-                        pk,
-                        crate::network::status::sibling_pong_seal_key(&seed, &our_device, &pk),
-                    );
+                    // Spine present → the epoch-riding key (rotates per checkpoint, the B-arc pong re-seal); pre-spine → the v0 static derivation until bootstrap mints. ckpt_tick reseeds this map on every spine advance, so both ends flip keys on the same edge.
+                    let key = match self.fleet_epoch.as_ref() {
+                        Some((_, epoch)) => crate::network::status::sibling_pong_seal_key_epoch(
+                            epoch,
+                            &our_device,
+                            &pk,
+                        ),
+                        None => crate::network::status::sibling_pong_seal_key(
+                            &seed,
+                            &our_device,
+                            &pk,
+                        ),
+                    };
+                    keys.insert(pk, key);
                 }
             } else if let Some(mut fs) =
                 crate::crypto::clutch::identity_friendship_secret(&seed, &c.handle_hash)
