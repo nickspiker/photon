@@ -1009,14 +1009,16 @@ impl PhotonApp {
         if contact.is_sibling {
             return; // sibling↔sibling chatter stays device-pair-local
         }
-        let (Some(fleet_key), Some(kp), Some(checker), Some(session)) = (
-            self.fleet_key_cached(),
+        // The B-arc re-seal: live fleet pages seal under the EPOCH hist_page key, never the raw fleet key. No spine yet = the bounded bootstrap window — hold the push (the sibling-online history sweep re-covers these rows) rather than fork the seal, exactly the chain_sync rule.
+        let (Some((epoch_k, epoch)), Some(kp), Some(checker), Some(session)) = (
+            self.fleet_epoch,
             self.device_keypair.as_ref(),
             self.status_checker.as_ref(),
             self.session.as_ref(),
         ) else {
             return;
         };
+        let page_key = crate::crypto::clutch::fleet_epoch_seal_key(&epoch, b"hist_page");
         let hist_rows: Vec<HistoryRow> = rows
             .iter()
             .filter(|m| !crate::types::is_control_content(&m.content))
@@ -1092,9 +1094,14 @@ impl PhotonApp {
         let kp_sec = *kp.secret.as_bytes();
         let dispatch = checker.history_dispatch();
         queue_job(&self.seal_job_tx, move || {
-            let vsf_bytes = match seal_history_page(&page, &fleet_key).and_then(|sealed| {
+            let vsf_bytes = match seal_history_page(&page, &page_key).and_then(|sealed| {
                 crate::network::fgtw::protocol::build_history_page_vsf(
-                    &token, &rid, sealed, &kp_pub, &kp_sec,
+                    &token,
+                    &rid,
+                    Some(epoch_k),
+                    sealed,
+                    &kp_pub,
+                    &kp_sec,
                 )
             }) {
                 Ok(b) => b,

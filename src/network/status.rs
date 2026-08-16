@@ -40,6 +40,27 @@ pub fn friend_pong_seal_key(friendship_secret: &[u8; 32]) -> [u8; 32] {
     blake3::derive_key("photon.pong.seal.v0", friendship_secret)
 }
 
+/// Epoch-riding sibling pong-seal key (the B-arc re-seal): binds the CURRENT epoch-spine key to the sorted device pair — same shape as [`sibling_pong_seal_key`], but the material rotates with every checkpoint, so a compromised epoch never opens past (or future) pong tails. A device whose spine lags a checkpoint reads tail-less pongs until its `ckpt_root`/`ckpt_state` catch-up lands (seconds when live; presence itself is unaffected). Pre-spine devices keep the v0 static derivation until their bootstrap mints.
+pub fn sibling_pong_seal_key_epoch(
+    epoch_key: &[u8; 32],
+    our_device: &[u8; 32],
+    their_device: &[u8; 32],
+) -> [u8; 32] {
+    use zeroize::Zeroize;
+    let (lo, hi) = if our_device <= their_device {
+        (our_device, their_device)
+    } else {
+        (their_device, our_device)
+    };
+    let mut material = [0u8; 96];
+    material[..32].copy_from_slice(epoch_key);
+    material[32..64].copy_from_slice(lo);
+    material[64..].copy_from_slice(hi);
+    let key = blake3::derive_key("photon.pong.seal.sib.v1", &material);
+    material.zeroize();
+    key
+}
+
 /// Pairwise pong-seal key for a fleet SIBLING device pair (self-contact devices included — they are our own fleet). Siblings share the identity seed itself (their party ids aren't curve points, so no DH exists), so the key binds the seed to the SORTED device-pubkey pair — symmetric by construction, distinct per pair. The material buffer holds the live identity seed, so it is scrubbed after the derive.
 pub fn sibling_pong_seal_key(
     identity_seed: &[u8; 32],
@@ -403,10 +424,11 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
-    /// History page received (signature verified; blob is AEAD-sealed — the UI opens it with the friendship history key).
+    /// History page received (signature verified; blob is AEAD-sealed — the UI opens it with the friendship history key, or with the epoch hist_page key when `epoch_k` rides the frame: the fleet route).
     HistoryPageReceived {
         conversation_token: [u8; 32],
         request_id: [u8; 32],
+        epoch_k: Option<u64>,
         sealed: Vec<u8>,
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
@@ -1777,7 +1799,7 @@ async fn run_checker(
                                     }
                                     // Try to parse as history page (hist_page)
                                     else if let Ok((
-                                        (conversation_token, request_id, sealed),
+                                        (conversation_token, request_id, epoch_k, sealed),
                                         sender_pubkey,
                                     )) = crate::network::fgtw::protocol::parse_history_page_vsf(
                                         &data,
@@ -1791,6 +1813,7 @@ async fn run_checker(
                                             StatusUpdate::HistoryPageReceived {
                                                 conversation_token,
                                                 request_id,
+                                                epoch_k,
                                                 sealed,
                                                 sender_pubkey: DevicePubkey::from_bytes(
                                                     sender_pubkey,
@@ -2051,7 +2074,10 @@ async fn run_checker(
                                 continue;
                             }
                             // History page (hist_page — small pages ride this path; big ones arrive via the PT-transfer-complete branch). Same mandatory packet-ack.
-                            if let Ok(((conversation_token, request_id, sealed), sender_pubkey)) =
+                            if let Ok((
+                                (conversation_token, request_id, epoch_k, sealed),
+                                sender_pubkey,
+                            )) =
                                 crate::network::fgtw::protocol::parse_history_page_vsf(msg_bytes)
                             {
                                 {
@@ -2066,6 +2092,7 @@ async fn run_checker(
                                     StatusUpdate::HistoryPageReceived {
                                         conversation_token,
                                         request_id,
+                                        epoch_k,
                                         sealed,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                         sender_addr: src_addr,

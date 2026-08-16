@@ -1289,6 +1289,8 @@ pub struct PhotonApp {
     fleet_epoch_prev: Option<(u64, [u8; 32])>,
     /// A rotation (or other epoch-worthy edge) happened — the next sweep mints a checkpoint.
     ckpt_mint_due: bool,
+    /// Total syncable rows at the last row-cadence checkpoint edge. The fleet sweep flags a mint once the total grows past CKPT_ROW_CADENCE — the burn horizon advances with TRAFFIC, not only membership edges. RAM-only: a restart re-seeds on first observation (delays one cadence, never mints spuriously).
+    ckpt_rows_base: Option<usize>,
     /// A mint/bootstrap thread is in flight — the single-minter re-entry guard.
     ckpt_busy: bool,
     /// Outcome channel for the off-thread checkpoint work.
@@ -1856,6 +1858,7 @@ impl PhotonApp {
             fleet_epoch: None,
             fleet_epoch_prev: None,
             ckpt_mint_due: false,
+            ckpt_rows_base: None,
             ckpt_busy: false,
             ckpt_rx: None,
             ckpt_loaded: false,

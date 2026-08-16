@@ -600,6 +600,8 @@ impl PhotonApp {
         // Removal-heal follow-up, winner only (braid.md §14.2): our heal thread won a rotation, so revoke the one fleet-held bearer credential OUTSIDE the fstate slot — the avatar pin. Losers adopted the winner's key off-thread and have nothing to do here.
         if self.fleet_rotated_rx.try_iter().count() > 0 {
             self.rotate_avatar_pin();
+            // A won rotation is the PCS boundary — fold the fresh fleet key into the epoch spine NOW, not up to a full row-cadence later.
+            self.ckpt_mint_due = true;
         }
 
         // Fleet roster pull result: merge into the contact list (re-CLUTCH happens via the serialized keygen kick inside merge_roster_entries). Fleet-event push: a sibling device changed the shared roster (fstate) or the membership chain (fleet) — pull the change NOW instead of at our next attest. This is what makes a friend added on one device appear on the rest of the fleet in about a second.
