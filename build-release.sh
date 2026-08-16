@@ -61,3 +61,4 @@ echo
 echo "Upload to brobdingnagian as:"
 echo "  photon-messenger-linux-x86_64-release"
 echo "  photon-messenger-linux-arm64-release"
+echo "completed $(date '+%F %T')"
