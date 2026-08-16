@@ -218,7 +218,12 @@ fn decode_contact_rows<'a>(
                     avatar_pin = b.as_slice().try_into().ok();
                 }
                 VsfType::x(s) => published_name = s.clone(),
-                VsfType::u3(t) => trust_level = *t,
+                // Width-agnostic: the only unsigned in this record is the trust level, whatever width the encoder chose.
+                v if v.as_u64().is_some() => {
+                    if let Some(t) = v.as_u64().and_then(|n| u8::try_from(n).ok()) {
+                        trust_level = t;
+                    }
+                }
                 VsfType::e(vsf::types::EtType::e6(osc)) => added = *osc,
                 _ => {}
             }

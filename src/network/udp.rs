@@ -168,11 +168,16 @@ pub fn parse_lan_discovery(
         return None;
     }
 
-    // Extract port (u4 = u16)
+    // Extract port — width-agnostic: a writer may auto-size, and a port under 256 legitimately encodes as u3.
     let port = match section.get_field("port") {
-        Some(field) => match field.values.first() {
-            Some(VsfType::u4(p)) => *p,
-            _ => return None,
+        Some(field) => match field
+            .values
+            .first()
+            .and_then(|v| v.as_u64())
+            .and_then(|n| u16::try_from(n).ok())
+        {
+            Some(p) => p,
+            None => return None,
         },
         None => return None,
     };

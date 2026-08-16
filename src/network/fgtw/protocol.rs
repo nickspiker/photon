@@ -1095,7 +1095,12 @@ fn extract_sync_records(section: &vsf::VsfSection) -> Result<Vec<SyncRecord>, St
             match v {
                 VsfType::hb(h) if h.len() == 32 => token = h.as_slice().try_into().ok(),
                 VsfType::e(vsf::types::EtType::e6(t)) => osc = Some(*t),
-                VsfType::u5(c) => count = *c,
+                // The only unsigned in this record — width-agnostic, whatever the encoder chose.
+                v if v.as_u64().is_some() => {
+                    if let Some(c) = v.as_u64().and_then(|n| u32::try_from(n).ok()) {
+                        count = c;
+                    }
+                }
                 VsfType::hg(d) if d.len() == 32 => digest.copy_from_slice(d),
                 _ => {}
             }
@@ -2258,13 +2263,7 @@ pub fn parse_history_request_vsf(
         .iter()
         .find(|f| f.name == "limit")
         .and_then(|f| f.values.first())
-        .and_then(|v| match v {
-            VsfType::u3(n) => Some(*n as u32),
-            VsfType::u4(n) => Some(*n as u32),
-            VsfType::u5(n) => Some(*n),
-            VsfType::u6(n) => Some(*n as u32),
-            _ => None,
-        })
+        .and_then(|v| v.as_u64().and_then(|n| u32::try_from(n).ok()))
         .ok_or("hist_req missing limit")?;
     let request_id = field_hash32(fields, "rid", |v| matches!(v, VsfType::hb(_)))
         .ok_or("hist_req missing rid")?;
@@ -2805,10 +2804,7 @@ pub fn parse_term_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 16], u8, Vec<u8>), [u8;
         .iter()
         .find(|f| f.name == "kind")
         .and_then(|f| f.values.first())
-        .and_then(|v| match v {
-            VsfType::u3(k) => Some(*k),
-            _ => None,
-        })
+        .and_then(|v| v.as_u64().and_then(|n| u8::try_from(n).ok()))
         .ok_or("term missing kind")?;
     let sealed = fields
         .iter()
@@ -2939,11 +2935,8 @@ pub fn parse_any_blind_frame(
         .iter()
         .find(|f| f.name == "found")
         .and_then(|f| f.values.first())
-        .map(|v| match v {
-            VsfType::u3(n) => *n != 0,
-            VsfType::u4(n) => *n != 0,
-            _ => true,
-        })
+        .and_then(|v| v.as_u64())
+        .map(|n| n != 0)
         .unwrap_or(true);
     let blob = fields
         .iter()

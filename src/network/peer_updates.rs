@@ -255,15 +255,8 @@ impl PeerUpdateClient {
                     }
                 }
                 "port" => {
-                    let p = match value {
-                        VsfType::u(v, _) => Some(*v),
-                        VsfType::u3(v) => Some(*v as usize),
-                        VsfType::u4(v) => Some(*v as usize),
-                        VsfType::u5(v) => Some(*v as usize),
-                        VsfType::u6(v) => Some(*v as usize),
-                        VsfType::n(v) => Some(*v), // Was `m` pre-rename; now `n` for number/count
-                        _ => None,
-                    };
+                    // as_usize covers every unsigned width plus n (the pre-rename `m` count form) — the key names the semantics, the encoder picks the width.
+                    let p = value.as_usize();
                     if let Some(v) = p {
                         port = Some(v as u16);
                     }

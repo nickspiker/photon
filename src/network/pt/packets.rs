@@ -93,44 +93,22 @@ impl PTSpec {
         let stream_id = fields
             .iter()
             .find(|(k, _)| k == "sid")
-            .and_then(|(_, v)| match v {
-                VsfType::u3(n) => Some(*n),
-                VsfType::u(n, _) => Some(*n as u8),
-                _ => None,
-            })?;
+            .and_then(|(_, v)| v.as_u64().and_then(|n| u8::try_from(n).ok()))?;
 
-        let total_packets =
-            fields
-                .iter()
-                .find(|(k, _)| k == "count")
-                .and_then(|(_, v)| match v {
-                    VsfType::u(n, _) => Some(*n as u32),
-                    VsfType::u3(n) => Some(*n as u32),
-                    VsfType::u4(n) => Some(*n as u32),
-                    VsfType::u5(n) => Some(*n as u32),
-                    _ => None,
-                })?;
+        let total_packets = fields
+            .iter()
+            .find(|(k, _)| k == "count")
+            .and_then(|(_, v)| v.as_u64().and_then(|n| u32::try_from(n).ok()))?;
 
         let packet_size = fields
             .iter()
             .find(|(k, _)| k == "psize")
-            .and_then(|(_, v)| match v {
-                VsfType::u(n, _) => Some(*n as u16),
-                VsfType::u3(n) => Some(*n as u16),
-                VsfType::u4(n) => Some(*n as u16),
-                _ => None,
-            })?;
+            .and_then(|(_, v)| v.as_u64().and_then(|n| u16::try_from(n).ok()))?;
 
         let total_size = fields
             .iter()
             .find(|(k, _)| k == "total")
-            .and_then(|(_, v)| match v {
-                VsfType::u(n, _) => Some(*n as u32),
-                VsfType::u3(n) => Some(*n as u32),
-                VsfType::u4(n) => Some(*n as u32),
-                VsfType::u5(n) => Some(*n as u32),
-                _ => None,
-            })?;
+            .and_then(|(_, v)| v.as_u64().and_then(|n| u32::try_from(n).ok()))?;
 
         let data_hash = fields
             .iter()
@@ -283,20 +261,15 @@ impl PTAck {
             return None;
         }
 
-        let stream_id = match field_values.first()? {
-            VsfType::u3(n) => *n,
-            VsfType::u(n, _) => *n as u8,
-            _ => return None,
-        };
+        let stream_id = field_values
+            .first()?
+            .as_u64()
+            .and_then(|n| u8::try_from(n).ok())?;
 
-        let sequence = match field_values.get(1)? {
-            VsfType::u(n, _) => *n as u32,
-            VsfType::u3(n) => *n as u32,
-            VsfType::u4(n) => *n as u32,
-            VsfType::u5(n) => *n as u32,
-            VsfType::u6(n) => *n as u32,
-            _ => return None,
-        };
+        let sequence = field_values
+            .get(1)?
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())?;
 
         Some(Self {
             stream_id,
@@ -349,14 +322,7 @@ impl PTNak {
 
         let missing_sequences: Vec<u32> = field_values
             .iter()
-            .filter_map(|v| match v {
-                VsfType::u(n, _) => Some(*n as u32),
-                VsfType::u3(n) => Some(*n as u32),
-                VsfType::u4(n) => Some(*n as u32),
-                VsfType::u5(n) => Some(*n as u32),
-                VsfType::u6(n) => Some(*n as u32),
-                _ => None,
-            })
+            .filter_map(|v| v.as_u64().and_then(|n| u32::try_from(n).ok()))
             .collect();
 
         if missing_sequences.is_empty() {
@@ -432,11 +398,11 @@ impl PTControl {
     pub fn from_vsf_header(field_values: &[vsf::VsfType]) -> Option<Self> {
         use vsf::VsfType;
 
-        let cmd = field_values.first().and_then(|v| match v {
-            VsfType::u3(n) => ControlCommand::from_u8(*n),
-            VsfType::u(n, _) => ControlCommand::from_u8(*n as u8),
-            _ => None,
-        })?;
+        let cmd = field_values
+            .first()
+            .and_then(|v| v.as_u64())
+            .and_then(|n| u8::try_from(n).ok())
+            .and_then(ControlCommand::from_u8)?;
 
         Some(Self { command: cmd })
     }
@@ -493,11 +459,8 @@ impl PTComplete {
 
         let success = field_values
             .first()
-            .map(|v| match v {
-                VsfType::u3(n) => *n != 0,
-                VsfType::u(n, _) => *n != 0,
-                _ => false,
-            })
+            .and_then(|v| v.as_u64())
+            .map(|n| n != 0)
             .unwrap_or(false);
 
         Some(Self {

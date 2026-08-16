@@ -158,14 +158,12 @@ fn relay_reached(body: &[u8]) -> bool {
     let schema = vsf::schema::SectionSchema::new("relay_ack")
         .field("reach", vsf::schema::TypeConstraint::Any);
     match vsf::schema::SectionBuilder::parse_document(schema, body, None) {
-        Ok(sec) => match sec
+        Ok(sec) => sec
             .get_fields("reach")
             .first()
             .and_then(|f| f.values.first())
-        {
-            Some(vsf::VsfType::u3(n)) => *n != 0,
-            _ => true,
-        },
+            .and_then(|v| v.as_u64())
+            .map_or(true, |n| n != 0),
         Err(_) => true,
     }
 }
