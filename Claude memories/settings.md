@@ -1,1 +1,0 @@
-Converted naieve fixed width unlabeled user settings to proper VSF
