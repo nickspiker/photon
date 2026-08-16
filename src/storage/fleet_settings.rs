@@ -75,6 +75,22 @@ pub fn as_u32(v: &VsfType) -> Option<u32> {
     }
 }
 
+/// A typed i32 pair (v_i5 of exactly two) — the window-position shape.
+pub fn as_i32_pair(v: &VsfType) -> Option<(i32, i32)> {
+    match v {
+        VsfType::v_i5(p) if p.data.len() == 2 => Some((p.data[0], p.data[1])),
+        _ => None,
+    }
+}
+
+/// A typed u32 pair (v_u5 of exactly two) — the window-size shape.
+pub fn as_u32_pair(v: &VsfType) -> Option<(u32, u32)> {
+    match v {
+        VsfType::v_u5(p) if p.data.len() == 2 => Some((p.data[0], p.data[1])),
+        _ => None,
+    }
+}
+
 /// Opaque application bytes (hR), or the legacy raw wrapper.
 pub fn as_bytes(v: &VsfType) -> Option<Vec<u8>> {
     match v {
