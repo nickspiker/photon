@@ -1823,7 +1823,7 @@ impl PhotonApp {
                 crate::log(
                     "join: DEVICE BUSY — bound to another identity; refusing before the words",
                 );
-                self.add_join_status = "this device already carries an identity \u{2014} wipe it first (Settings \u{2192} Security)".to_string();
+                self.add_join_status = "this device already carries an identity \u{2014} put it on another device first, then Remove & shred (Settings \u{2192} Security)".to_string();
                 return;
             }
         }

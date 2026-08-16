@@ -2081,6 +2081,14 @@ impl FluorApp for PhotonApp {
             } => {
                 // Any click dismisses the standing hints (event-driven — never hover or time).
                 self.clear_hints();
+                // Resize edges OUTRANK widget hits — the CSD rule. The edge check used to run only on HIT_NONE, so a contact row reaching the window edge swallowed the press and the bottom edge was ungrabbable wherever content touched it (field report, 2026-08-16). The band is a thin perimeter strip (strip_height/4), so widget interiors are untouched; cursor_for gives the same band the resize cursor, so the grab matches the cue.
+                if !ctx.is_maximized {
+                    let edge =
+                        chrome::get_resize_edge(ctx.viewport, ctx.cursor_x, ctx.cursor_y);
+                    if edge != ResizeEdge::None {
+                        return EventResponse::StartResize(edge);
+                    }
+                }
                 let hit_id = self
                     .chrome
                     .as_ref()
@@ -2115,7 +2123,7 @@ impl FluorApp for PhotonApp {
                                     {
                                         crate::log("KnownHandle: DEVICE BUSY — bound to another identity; refusing the join");
                                         self.state = AppState::Launch(LaunchState::Error(
-                                            "this device already carries an identity \u{2014} wipe it first (Settings \u{2192} Security)".to_string(),
+                                            "this device already carries an identity \u{2014} put it on another device first, then Remove & shred (Settings \u{2192} Security)".to_string(),
                                         ));
                                         self.refocus_handle_select_all();
                                         ctx.window.request_redraw();
@@ -2193,13 +2201,9 @@ impl FluorApp for PhotonApp {
                 }
 
                 if hit_id == HIT_NONE {
-                    // No widget under the cursor — clear focus, then fall back to resize-edge / title-bar drag. Resize edge takes precedence; clicks anywhere else inside the visible window start a move-drag (which the host promotes to an actual drag once the cursor passes the dead-zone threshold).
+                    // No widget under the cursor — clear focus, then start a move-drag (the host promotes it to an actual drag once the cursor moves). Resize edges were already claimed at the top of this arm, before ANY hit dispatch.
                     if self.change_focus(None) {
                         ctx.window.request_redraw();
-                    }
-                    let edge = chrome::get_resize_edge(ctx.viewport, ctx.cursor_x, ctx.cursor_y);
-                    if edge != ResizeEdge::None {
-                        return EventResponse::StartResize(edge);
                     }
                     return EventResponse::StartWindowDrag;
                 }
@@ -3162,6 +3166,16 @@ impl FluorApp for PhotonApp {
     }
 
     fn cursor_for(&self, x: Coord, y: Coord, ctx: &Context) -> CursorIcon {
+        // Resize edges OUTRANK every widget cue — the CSD rule, and the same priority the press arm gives them. Checked first: a contact row (or any widget) reaching the window edge used to win the cursor here, so the bottom band showed Pointer and the edge read as ungrabbable wherever content touched it (field report, 2026-08-16). The band is a thin perimeter strip (strip_height/4); widget interiors are untouched.
+        if !ctx.is_maximized {
+            match chrome::get_resize_edge(ctx.viewport, x, y) {
+                ResizeEdge::None => {}
+                ResizeEdge::Top | ResizeEdge::Bottom => return CursorIcon::NsResize,
+                ResizeEdge::Left | ResizeEdge::Right => return CursorIcon::EwResize,
+                ResizeEdge::TopLeft | ResizeEdge::BottomRight => return CursorIcon::NwseResize,
+                ResizeEdge::TopRight | ResizeEdge::BottomLeft => return CursorIcon::NeswResize,
+            }
+        }
         let hit = self
             .chrome
             .as_ref()
