@@ -327,6 +327,7 @@ impl PhotonApp {
                 }) => {
                     self.ckpt_busy = false;
                     self.ckpt_rx = None;
+                    self.ckpt_spineless_holds = 0;
                     self.fleet_epoch_prev = prev;
                     self.fleet_epoch = Some((k, epoch));
                     self.fleet_epoch_store();
@@ -365,6 +366,30 @@ impl PhotonApp {
                                     self.dispatch_frame_to_siblings(frame);
                                 }
                             }
+                        }
+                    }
+                }
+                Ok(CkptOutcome::SpinelessHold) => {
+                    self.ckpt_busy = false;
+                    self.ckpt_rx = None;
+                    self.ckpt_spineless_holds = self.ckpt_spineless_holds.saturating_add(1);
+                    // Ask every sibling for its spine state — the intended jump path when SOMEONE holds it. The counter is what breaks the mutual-spineless case (all holders wiped/rotated-past): three dry sweeps arm the supersession in the next tick's spawn.
+                    crate::logf!(
+                        "CKPT: spineless hold #{} — requesting ckpt_state from siblings{}",
+                        self.ckpt_spineless_holds,
+                        if self.ckpt_spineless_holds >= 3 {
+                            " (supersession armed: nobody alive can read the old spine)"
+                        } else {
+                            ""
+                        }
+                    );
+                    if let Some(kp) = self.device_keypair.as_ref() {
+                        if let Ok(frame) = crate::network::fgtw::protocol::build_ckpt_req_vsf(
+                            0,
+                            kp.public.as_bytes(),
+                            kp.secret.as_bytes(),
+                        ) {
+                            self.dispatch_frame_to_siblings(frame);
                         }
                     }
                 }
@@ -425,6 +450,8 @@ impl PhotonApp {
         self.ckpt_busy = true;
         let root = self.settled_root_now();
         let cur = self.fleet_epoch;
+        // Third dry spineless sweep arms the breaker: this spawn may supersede the unreadable spine.
+        let supersede = self.ckpt_spineless_holds >= 3;
         let (tx, rx) = std::sync::mpsc::channel();
         self.ckpt_rx = Some(rx);
         std::thread::spawn(move || {
@@ -495,15 +522,21 @@ impl PhotonApp {
                     return;
                 }
             }
-            let genesis_hash = match fleet::fetch(&hp) {
+            let (genesis_hash, chain_k) = match fleet::fetch(&hp) {
                 Ok(Some(blob)) => {
-                    if blob.latest_checkpoint().is_some() {
-                        // The chain has a spine but custody didn't open (rotation gap, or the winner is mid-write) — wait for ckpt_state/custody on a later sweep.
-                        crate::log("CKPT: chain has a spine but custody is unreadable yet — holding for ckpt_state");
-                        send(CkptOutcome::Idle);
-                        return;
+                    if let Some((ck, _, _)) = blob.latest_checkpoint() {
+                        if !supersede {
+                            // The chain has a spine but custody didn't open (rotation gap, or the winner is mid-write) — the drain fires a ckpt_req and counts this sweep toward the supersession breaker.
+                            crate::log("CKPT: chain has a spine but custody is unreadable yet — holding for ckpt_state");
+                            send(CkptOutcome::SpinelessHold);
+                            return;
+                        }
+                        // SUPERSESSION: the chain names a spine NOBODY ALIVE can read — its minter was wiped and the fleet key rotated past its custody seal, so waiting is a permanent wedge with all fleet-plane traffic (chain_sync, fleet hist_pages) held behind the missing spine (field, 2026-08-16). A spine is derivable state, not data: mint a fresh epoch seed and push chain_k+1; the chain's monotonic guard picks exactly one winner, whose custody write (under the CURRENT fleet key) unwedges every sibling on its next sweep. A returning device that still holds the old spine adopts the newer k via ckpt_state like any lagger.
+                        crate::logf!("CKPT: superseding the unreadable spine at chain k={} — re-minting at k={}", ck, ck + 1);
+                        (blob.genesis_hash().unwrap_or([0u8; 32]), ck)
+                    } else {
+                        (blob.genesis_hash().unwrap_or([0u8; 32]), 0)
                     }
-                    blob.genesis_hash().unwrap_or([0u8; 32])
                 }
                 _ => {
                     send(CkptOutcome::Idle);
@@ -516,25 +549,26 @@ impl PhotonApp {
                 &fk,
             );
             let commit = crate::crypto::clutch::ckpt_commit(&root);
-            match fleet::push_checkpoint(&hp, &kp, 1, commit, fanout_epoch) {
+            let new_k = chain_k + 1;
+            match fleet::push_checkpoint(&hp, &kp, new_k, commit, fanout_epoch) {
                 Ok(None) => {
                     let epoch = crate::crypto::clutch::advance_fleet_epoch(
                         &epoch_zero,
                         &root,
                         &fk,
                         fanout_epoch,
-                        1,
+                        new_k,
                     );
-                    let state = fleet::ckpt_state_bytes(1, &epoch, Some((0, epoch_zero)));
+                    let state = fleet::ckpt_state_bytes(new_k, &epoch, Some((chain_k, epoch_zero)));
                     if let Err(e) = fleet::ckpt_custody_write(&fk, &state, &kp, &hp) {
                         crate::logf!("CKPT: bootstrap custody write failed (siblings jump via ckpt_state): {}", e);
                     }
-                    crate::log("CKPT: fleet epoch spine born — reservoir minted, k=1 on the chain");
-                    // No root broadcast at k=1: nobody else holds epoch 0, so siblings jump via ckpt_state/custody.
+                    crate::logf!("CKPT: fleet epoch spine {} — reservoir minted, k={} on the chain", if chain_k == 0 { "born" } else { "SUPERSEDED" }, new_k);
+                    // No root broadcast: nobody else holds the fresh epoch seed, so siblings jump via ckpt_state/custody.
                     send(CkptOutcome::Advanced {
-                        k: 1,
+                        k: new_k,
                         epoch,
-                        prev: Some((0, epoch_zero)),
+                        prev: Some((chain_k, epoch_zero)),
                         root: None,
                         fanout_epoch,
                         minted_here: true,

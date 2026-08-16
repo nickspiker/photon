@@ -412,7 +412,7 @@ impl PhotonApp {
                     for contact in &mut self.contacts {
                         if contact.knows_device(&peer_pubkey.key) {
                             // REPORTED-STOLEN intake (device-trust-and-recovery.md): the pong's sealed tail names the peer fleet's locked devices, and ONE report from a trusted fold member suffices. The authorization lives at lock CREATION, not here: writing fleet.locked demands the handle at a fresh attest, so a stock-client thief can't mint a false report — and a locked device's stale fleet key can't even read current fstate, so its reportable set is frozen at empty. The key-extraction tier defeats any threshold anyway (it can plant a fresh fold member as a second voucher — the trust doc's own observation), so requiring two only stranded the commonest fleet: two devices, one stolen, one survivor. A reporter still never counts toward refusing itself. Monotonic and persisted.
-                            if !contact.is_sibling && !locked_reports.is_empty() {
+                            if !contact.is_sibling {
                                 for reported in &locked_reports {
                                     let pair = (peer_pubkey.key, *reported);
                                     if !contact.locked_reports_seen.contains(&pair) {
@@ -435,6 +435,42 @@ impl PhotonApp {
                                         contact.refused_devices.push(*reported);
                                         changed = true;
                                         crate::logf!("FRIEND-REFUSE: {} device {} refused — reported stolen by {} fleet device(s)", crate::fp(&contact.handle_proof), crate::fp(reported), reporters.len());
+                                        if let Some(storage) = self.storage.as_ref() {
+                                            let _ = crate::storage::contacts::save_contact(
+                                                contact, storage,
+                                            );
+                                        }
+                                    }
+                                }
+                                // UN-REFUSE — the reversal half the intake never had: an UNLOCK (handle-confirmed at a fresh attest, worker-authoritative) clears the peer fleet's fleet.locked, but a friend who ingested the report kept refusing FOREVER — the 2026-08-16 field wedge: a lock-test on one device left it permanently deaf at every friend (pings silently dropped, contact stuck offline) with no path back. This pong is the SAME trusted testimony channel the refusal arrived on, so its locked set is authoritative for THIS reporter now: any (this-reporter, device) report absent from the current set is retracted, and a refused device with zero remaining reporters is un-refused. Thief-safe: a locked/refused device's own pongs are dropped at the door, so it can never retract its own report — only surviving trusted fold members can, which is exactly who an unlock speaks thru.
+                                let before = contact.locked_reports_seen.len();
+                                contact.locked_reports_seen.retain(|(rep, dev)| {
+                                    *rep != peer_pubkey.key || locked_reports.contains(dev)
+                                });
+                                if contact.locked_reports_seen.len() != before {
+                                    let still_reported: Vec<[u8; 32]> = contact
+                                        .refused_devices
+                                        .iter()
+                                        .copied()
+                                        .filter(|dev| {
+                                            contact
+                                                .locked_reports_seen
+                                                .iter()
+                                                .any(|(rep, d)| d == dev && rep != dev)
+                                        })
+                                        .collect();
+                                    let dropped: Vec<[u8; 32]> = contact
+                                        .refused_devices
+                                        .iter()
+                                        .copied()
+                                        .filter(|d| !still_reported.contains(d))
+                                        .collect();
+                                    if !dropped.is_empty() {
+                                        contact.refused_devices = still_reported;
+                                        changed = true;
+                                        for dev in &dropped {
+                                            crate::logf!("FRIEND-UNREFUSE: {} device {} restored — its last reporter's current locked set no longer names it (unlock propagated)", crate::fp(&contact.handle_proof), crate::fp(dev));
+                                        }
                                         if let Some(storage) = self.storage.as_ref() {
                                             let _ = crate::storage::contacts::save_contact(
                                                 contact, storage,
