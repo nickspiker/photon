@@ -235,6 +235,14 @@ impl PhotonApp {
                 {
                     ep.lan = Some(l);
                 }
+                // Named adoption, not just a count: five field rounds of "the record is perfect but the punch never probes it" (2026-08-16) came down to guessing WHICH device/address pair actually landed on WHICH contact — this line answers it.
+                crate::logf!(
+                    "PHONEBOOK: adopted {} → contact {} (dev {}, lan {})",
+                    pubaddr,
+                    crate::fp(&contact.handle_proof),
+                    crate::fp(&dev),
+                    lan.map(|l| l.to_string()).unwrap_or_else(|| "-".into())
+                );
                 learned += 1;
             }
         }
