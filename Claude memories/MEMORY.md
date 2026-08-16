@@ -4,7 +4,7 @@
 
 - [project_render_storm_lag.md](project_render_storm_lag.md) — ROOT-CAUSED 2026-08-15: lag = VAULT MUTEX contention (UI-tick avatar probe read vs background persist writers); photon fix @c6f65e8 (probe cached, ticks vault-free); LIBRARIAN SHIPPED kete@931fd90 (vault-owner thread, mutex deleted, reads-first mailbox); residual: UI read_addr site audit
 
-- [project_settings_typed_values.md](project_settings_typed_values.md) — fstate v7 SHIPPED 2026-08-16: every settings value natively typed VSF + v6 compat window; window geometry = 4 typed device-local keys, settle-edge save
+- [project_settings_typed_values.md](project_settings_typed_values.md) — fstate v7 SHIPPED 2026-08-16: every settings value natively typed VSF + v6 compat window; window geometry = 2 typed device-local pairs, gesture-settle save
 - [project_fgtw_key_desync.md](project_fgtw_key_desync.md) — CLOSED 2026-08-14: rollback un-bricked, guard SHIPPED bcb830d, canonical key RECOVERED (MacBook deploy copy) → keys/fgtw-seed-key.rs + brick worker redeployed a51c9194; residue: Chiton mirror stalled Jul 26, MacBook key.rs needs 4-const refresh
 
 - [project_lifecycle_flows.md](project_lifecycle_flows.md) — identity/device lifecycle DESIGNED (docs/lifecycle.md): D1 collision=KnownHandle, D2 double-attest=binding marker; D3 LastRites SUPERSEDED
@@ -120,7 +120,7 @@
 - [reference_windows_arm64_toolchain.md](reference_windows_arm64_toolchain.md) — Windows-on-ARM: aarch64-pc-windows-gnullvm via llvm-mingw at /mnt/Octopus/Code/llvm-mingw; build.rs uses llvm-rc; deploy.sh + installer wired; PE valid, real-hardware install UNVERIFIED
 - [reference_mingw_features_shim.md](reference_mingw_features_shim.md) — x86_64-windows breaks on pqcrypto-mlkem #include <features.h> (MinGW lacks it); FIXED @4809917 via vendored shim + .cargo/config.toml [env]; also: cc-rs hides C-compile fatals as cargo:warning=
 - [project_lockout_enforcement.md](project_lockout_enforcement.md) — lock @b75cc0e + UNLOCK @0f76044/fa9e765: handle-confirmed reversal, typed tombstone, locked-signer refusal + monotonic guard at worker, locked-rewrap hole fixed; E2E DONE 2026-08-16
-- [project_window_geometry_parked.md](project_window_geometry_parked.md) — window pos/size persistence PARKED @e047a53 (raw-winit restore vs fluor window model = vanish + dead clicks); redesign = fluor-owned thru window_rect; zoom restore unaffected
+- [project_window_geometry_shipped.md](project_window_geometry_shipped.md) — window geometry SHIPPED 2026-08-16 thru fluor's model: apply_window_rect one placement path + once-per-gesture settle hook, save-immediately (no flush edges); field verify pending
 - [project_humanitys_code.md](project_humanitys_code.md) — openness doctrine: secrecy surface = handles + keys ONLY; everything else public — "this is humanity's code"
 - [settings.md](settings.md) — Nick's note: naive fixed-width unlabeled settings converted to proper VSF (the fstate v7 arc)
 - [memories-live-in-repo](push-after-landing.md) — memories LIVE HERE ('Claude memories/' in the PUBLIC photon repo, 2026-08-16): commit+push with photon; scrub names/handles ALWAYS (handles are secrets)

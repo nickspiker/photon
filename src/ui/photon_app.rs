@@ -1576,12 +1576,8 @@ pub struct PhotonApp {
     avatar_probe_cache: std::collections::HashMap<[u8; 32], bool>,
     /// Egged-status probe results by sibling device key — fleet_device_rows' fanout_pairs::load answer, remembered. The Fleet page gathers rows every FRAME, so the per-sibling vault read was a per-frame librarian round trip; a pair secret changes only at ceremony completion, which invalidates its entry there. Same doctrine as avatar_probe_cache: the UI thread's steady state touches the vault zero times.
     egged_cache: std::collections::HashMap<[u8; 32], bool>,
-    /// One-shot window-geometry restore (outer x, y + inner w, h — physical px), armed with the zoom at settings load; the host applies it with an off-monitor guard on the position half.
+    /// One-shot window-geometry restore — a fluor `window_rect` (x, y, w, h in GLOBAL desktop units), armed with the zoom at settings load; the host applies it thru its maximize machinery, clamped into live surfaces.
     pending_geometry_restore: Option<(i32, i32, u32, u32)>,
-    /// The window geometry as the EVENTS reported it — outer position from on_window_moved, inner size from on_resize, seeded once at init. Durability edges (focus-lost, close) flush when dirty; no sampling exists anywhere.
-    window_pos_seen: Option<(i32, i32)>,
-    window_size_seen: Option<(u32, u32)>,
-    window_geometry_dirty: bool,
     fleet_lock_armed: Option<[u8; 32]>,
     /// Two-tap arm state for the Unlock pill (the lock pill's mirror).
     fleet_unlock_armed: Option<[u8; 32]>,
@@ -1964,9 +1960,6 @@ impl PhotonApp {
             avatar_probe_cache: std::collections::HashMap::new(),
             egged_cache: std::collections::HashMap::new(),
             pending_geometry_restore: None,
-            window_pos_seen: None,
-            window_size_seen: None,
-            window_geometry_dirty: false,
             fleet_lock_armed: None,
             fleet_unlock_armed: None,
             pending_unlock: None,
