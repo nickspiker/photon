@@ -442,40 +442,38 @@ impl PhotonApp {
                                         }
                                     }
                                 }
-                                // UN-REFUSE — the reversal half the intake never had: an UNLOCK (handle-confirmed at a fresh attest, worker-authoritative) clears the peer fleet's fleet.locked, but a friend who ingested the report kept refusing FOREVER — the 2026-08-16 field wedge: a lock-test on one device left it permanently deaf at every friend (pings silently dropped, contact stuck offline) with no path back. This pong is the SAME trusted testimony channel the refusal arrived on, so its locked set is authoritative for THIS reporter now: any (this-reporter, device) report absent from the current set is retracted, and a refused device with zero remaining reporters is un-refused. Thief-safe: a locked/refused device's own pongs are dropped at the door, so it can never retract its own report — only surviving trusted fold members can, which is exactly who an unlock speaks thru.
-                                let before = contact.locked_reports_seen.len();
+                                // UN-REFUSE — the reversal half the intake never had: an UNLOCK (handle-confirmed at a fresh attest, worker-authoritative) clears the peer fleet's fleet.locked, but a friend who ingested the report kept refusing FOREVER — the 2026-08-16 field wedge: a lock-test on one device left it permanently deaf at every friend (pings silently dropped, contact stuck offline) with no path back. This pong is the SAME trusted testimony channel the refusal arrived on, so its locked set is authoritative for THIS reporter now: its stale (reporter, device) pairs retract, and a refused device is kept only while a standing reporter remains. Crucially the report ledger is RAM-ONLY while refused_devices persists — a restart ORPHANS every refusal (zero recorded reporters; the first un-refuse shipped gated on pair-removal and never fired in the field, round-2 soak) — so an orphaned refusal yields to this pong's live word directly: trusted fold member, current locked set, device absent → restored. Thief-safe: a locked/refused device's own pongs are dropped at the door (knows_device is false for it), so retraction testimony can only come from ANOTHER trusted device of that fleet — exactly who an unlock speaks thru; and a still-locked device re-refuses on the next report-carrying pong.
                                 contact.locked_reports_seen.retain(|(rep, dev)| {
                                     *rep != peer_pubkey.key || locked_reports.contains(dev)
                                 });
-                                if contact.locked_reports_seen.len() != before {
-                                    let still_reported: Vec<[u8; 32]> = contact
-                                        .refused_devices
-                                        .iter()
-                                        .copied()
-                                        .filter(|dev| {
-                                            contact
-                                                .locked_reports_seen
-                                                .iter()
-                                                .any(|(rep, d)| d == dev && rep != dev)
-                                        })
-                                        .collect();
+                                let keep: Vec<[u8; 32]> = contact
+                                    .refused_devices
+                                    .iter()
+                                    .copied()
+                                    .filter(|dev| {
+                                        let actively_reported = contact
+                                            .locked_reports_seen
+                                            .iter()
+                                            .any(|(rep, d)| d == dev && rep != dev);
+                                        actively_reported || locked_reports.contains(dev)
+                                    })
+                                    .collect();
+                                if keep.len() != contact.refused_devices.len() {
                                     let dropped: Vec<[u8; 32]> = contact
                                         .refused_devices
                                         .iter()
                                         .copied()
-                                        .filter(|d| !still_reported.contains(d))
+                                        .filter(|d| !keep.contains(d))
                                         .collect();
-                                    if !dropped.is_empty() {
-                                        contact.refused_devices = still_reported;
-                                        changed = true;
-                                        for dev in &dropped {
-                                            crate::logf!("FRIEND-UNREFUSE: {} device {} restored — its last reporter's current locked set no longer names it (unlock propagated)", crate::fp(&contact.handle_proof), crate::fp(dev));
-                                        }
-                                        if let Some(storage) = self.storage.as_ref() {
-                                            let _ = crate::storage::contacts::save_contact(
-                                                contact, storage,
-                                            );
-                                        }
+                                    contact.refused_devices = keep;
+                                    changed = true;
+                                    for dev in &dropped {
+                                        crate::logf!("FRIEND-UNREFUSE: {} device {} restored — no standing reporter and {}'s current locked set doesn't name it (unlock propagated)", crate::fp(&contact.handle_proof), crate::fp(dev), crate::fp(&peer_pubkey.key));
+                                    }
+                                    if let Some(storage) = self.storage.as_ref() {
+                                        let _ = crate::storage::contacts::save_contact(
+                                            contact, storage,
+                                        );
                                     }
                                 }
                             }
