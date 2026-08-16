@@ -33,7 +33,7 @@ impl PhotonApp {
                 if typed_pid != bound {
                     crate::log("attest: DEVICE BUSY — this device is bound to another identity; refusing before the proof");
                     self.state = AppState::Launch(LaunchState::Error(
-                        "this device already carries an identity \u{2014} type its handle to resume, or wipe first (Settings \u{2192} Security)".to_string(),
+                        "this device already carries an identity \u{2014} type its handle to resume. To hand the device to someone else: put that identity on another device first, then Remove & shred (Settings \u{2192} Security)".to_string(),
                     ));
                     self.refocus_handle_select_all();
                     return;

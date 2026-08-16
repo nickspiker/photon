@@ -4029,7 +4029,7 @@ impl PhotonApp {
                             &mut canvas,
                             ctx.text,
                             rows[9],
-                            "Wipes the vault AND identity on this device — irreversible.",
+                            "Wipes the vault AND identity on this device — irreversible. It stays signed in to your fleet; to pass the device on, use Remove & shred.",
                             hspan2,
                             *theme::ERROR_TEXT_COLOUR,
                             500,
