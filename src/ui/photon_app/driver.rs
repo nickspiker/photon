@@ -13,16 +13,10 @@ impl FluorApp for PhotonApp {
         r
     }
 
-    /// One-shot window-geometry restore, armed with the zoom at settings load; the host guards the position half against unplugged monitors.
+    /// PARKED 2026-08-16: the raw set_outer_position/request_inner_size restore fights fluor's surface model (oversized surface + its own input-region math) — the field build flashed 2-3 frames then vanished with a dead click region. The restore must go THRU the host's window_rect machinery (the toggle_maximized path), not naked winit calls; until that lands, never restore.
     fn take_window_geometry_request(&mut self) -> Option<(i32, i32, u32, u32)> {
-        let r = self.pending_geometry_restore.take();
-        if let Some((x, y, w, h)) = r {
-            // Seed the trackers so the restore's own Moved/Resized echoes don't read as user gestures and re-save.
-            self.window_pos_seen = Some((x, y));
-            self.window_size_seen = Some((w, h));
-            self.window_geometry_dirty = false;
-        }
-        r
+        let _ = self.pending_geometry_restore.take();
+        None
     }
 
     type UserEvent = PhotonEvent;

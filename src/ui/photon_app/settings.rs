@@ -463,6 +463,10 @@ impl PhotonApp {
 
     /// Flush the event-tracked geometry if anything changed since the last persist — called at the durability edges (focus-lost, close). Both halves must be known (init seeds them; Wayland/Android never report a position and stay inert).
     pub(super) fn flush_window_geometry(&mut self) {
+        // PARKED with the restore (see take_window_geometry_request): values saved under the wrong window model poisoned the next launch, so neither save until the host-model redesign.
+        if true {
+            return;
+        }
         if !self.window_geometry_dirty {
             return;
         }
