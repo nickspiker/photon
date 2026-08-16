@@ -1461,7 +1461,7 @@ impl PhotonApp {
     pub(super) fn lock_out_device(&mut self, pk: [u8; 32]) {
         // PER-KEY write, never read-union-write on one blob: two devices locking DIFFERENT pubkeys concurrently each unioned old+own into the same LWW key and one lock was DROPPED — a stolen device stayed trusted on part of the fleet until someone re-locked. Distinct keys commute under merge_global_settings, so a lock can no longer lose a race. The legacy blob stays readable (locked_devices unions it) and is never written again.
         if !self.is_locked_device(&pk) {
-            self.settings_set(&format!("fleet.locked.{}", hex::encode(pk)), pk.to_vec());
+            self.settings_set(&format!("fleet.locked.{}", hex::encode(pk)), vsf::VsfType::ke(pk.to_vec()));
         }
         self.apply_locked_set();
         // Rotation NOW, not at the next sentinel pass: the locked device holds the current fleet key until an epoch it isn't wrapped into exists.
@@ -1474,13 +1474,17 @@ impl PhotonApp {
     /// Order is tombstone-first: the fleet-synced marker empties BEFORE the worker push, so every sibling's `reconcile_worker_locks` stops re-asserting the lock and `reconcile_worker_unlocks` re-drives the clear until the worker agrees — there is no strandable state in either direction.
     /// Re-admission is a GROW: the compliance rotation mints the next epoch including the freshly-eligible device; no shrink semantics involved.
     pub(super) fn unlock_fleet_device(&mut self, pk: [u8; 32], name: &str) {
-        // Value-level tombstone: an EMPTY per-key value drops out of pubkey_set_union on every build (len != 32 never parses as a pubkey), and LWW carries the emptiness fleet-wide — the "deliberate future flow" the grow-only convention reserved, with no new merge shape.
-        self.settings_set(&format!("fleet.locked.{}", hex::encode(pk)), Vec::new());
+        // Value-level tombstone, now honestly typed: u0(false) = "not locked". It never parses as a key on either read path (typed ke or legacy raw 32), so it drops out of pubkey_set_union on every build, and LWW carries the reversal fleet-wide.
+        self.settings_set(&format!("fleet.locked.{}", hex::encode(pk)), vsf::VsfType::u0(false));
         // A pre-per-key lock may also live in the legacy one-blob key — rewrite it without this device (whole-blob LWW; the concurrent-writer race the per-key split fixed is tolerable on the rare unlock path).
         let legacy: Vec<u8> = self
             .fleet_settings
             .as_ref()
-            .and_then(|fs| fs.effective("fleet.locked").map(|b| b.to_vec()))
+            .and_then(|fs| fs.effective("fleet.locked"))
+            .and_then(|v| match v {
+                vsf::VsfType::v(b'r', b) => Some(b.clone()),
+                _ => None,
+            })
             .unwrap_or_default();
         if legacy.chunks_exact(32).any(|c| c == pk) {
             let rewritten: Vec<u8> = legacy
@@ -1489,7 +1493,8 @@ impl PhotonApp {
                 .flatten()
                 .copied()
                 .collect();
-            self.settings_set("fleet.locked", rewritten);
+            // The legacy blob keeps its legacy shape on rewrite — it is the one deliberately-raw survivor (deployed concatenated pubkeys, read forever, never re-typed).
+            self.settings_set("fleet.locked", vsf::VsfType::v(b'r', rewritten));
         }
         self.apply_locked_set();
         self.spawn_worker_unlock_push(pk);
@@ -1531,7 +1536,7 @@ impl PhotonApp {
         };
         fs.global
             .iter()
-            .filter(|e| !e.tombstone && e.value.len() != 32)
+            .filter(|e| !e.tombstone && crate::storage::fleet_settings::as_key32(&e.value).is_none())
             .filter_map(|e| e.key.strip_prefix("fleet.locked."))
             .filter_map(|hexpk| {
                 let bytes = hex::decode(hexpk).ok()?;

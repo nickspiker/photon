@@ -368,7 +368,7 @@ impl PhotonApp {
             .as_mut()
             .map(|cb| (cb.take_toggle(), cb.is_checked()));
         if let Some((true, checked)) = autoupdate_toggle {
-            if self.settings_set("updates.auto", vec![checked as u8]) {
+            if self.settings_set("updates.auto", vsf::VsfType::u0(checked)) {
                 crate::logf!("SETTINGS: updates.auto = {} (linked write)", checked);
             }
             needs_redraw = true;
@@ -387,10 +387,11 @@ impl PhotonApp {
                 if fs.linked("logs.hard") {
                     fs.set_link("logs.hard", false, now);
                 }
+                // Armed = the arm TIME (a timestamp is an e); disarmed = an honest u0(false).
                 let val = if checked {
-                    now.to_be_bytes().to_vec()
+                    vsf::VsfType::e(vsf::types::EtType::e6(now))
                 } else {
-                    Vec::new()
+                    vsf::VsfType::u0(false)
                 };
                 if fs.set("logs.hard", val, now) {
                     crate::logf!(
@@ -414,7 +415,7 @@ impl PhotonApp {
             })
             .collect();
         for (fid, checked) in share_writes {
-            if self.settings_set(&format!("share.{fid}"), vec![checked as u8]) {
+            if self.settings_set(&format!("share.{fid}"), vsf::VsfType::u0(checked)) {
                 crate::logf!("SETTINGS: share.{} = {} (default-share)", fid, checked);
             }
             needs_redraw = true;

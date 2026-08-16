@@ -789,7 +789,7 @@ mod tests {
         assert_eq!(e2, 2);
         let marker = SettingEntry {
             key: "test.heal_marker".into(),
-            value: b"survives".to_vec(),
+            value: vsf::VsfType::hR(b"survives".to_vec()),
             updated: 700,
             tombstone: false,
         };
@@ -841,7 +841,7 @@ mod tests {
             healed
                 .global_settings
                 .iter()
-                .any(|s| s.key == "test.heal_marker" && s.value == b"survives"),
+                .any(|s| s.key == "test.heal_marker" && s.value == vsf::VsfType::hR(b"survives".to_vec())),
             "settings must survive the re-seal"
         );
         assert_eq!(healed.roster.len(), 1, "roster must survive the re-seal");
@@ -951,7 +951,7 @@ mod pin_live_tests {
         let fleet_key: [u8; 32] = rand::random();
         let mk = |key: &str, val: Vec<u8>, at: i64| SettingEntry {
             key: key.into(),
-            value: val,
+            value: vsf::VsfType::hR(val),
             updated: at,
             tombstone: false,
         };
@@ -983,6 +983,6 @@ mod pin_live_tests {
             .iter()
             .find(|e| e.key == "profile.avatar_pin")
             .expect("pin entry");
-        assert_eq!(pin.value, vec![0xEE; 64]);
+        assert_eq!(pin.value, vsf::VsfType::hR(vec![0xEE; 64]));
     }
 }

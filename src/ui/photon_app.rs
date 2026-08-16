@@ -1576,6 +1576,11 @@ pub struct PhotonApp {
     avatar_probe_cache: std::collections::HashMap<[u8; 32], bool>,
     /// Egged-status probe results by sibling device key — fleet_device_rows' fanout_pairs::load answer, remembered. The Fleet page gathers rows every FRAME, so the per-sibling vault read was a per-frame librarian round trip; a pair secret changes only at ceremony completion, which invalidates its entry there. Same doctrine as avatar_probe_cache: the UI thread's steady state touches the vault zero times.
     egged_cache: std::collections::HashMap<[u8; 32], bool>,
+    /// One-shot window-geometry restore (outer x, y + inner w, h — physical px), armed with the zoom at settings load; the host applies it with an off-monitor guard on the position half.
+    pending_geometry_restore: Option<(i32, i32, u32, u32)>,
+    /// The last geometry tick sampled + whether it changed since the last persist. The save fires on the SETTLE EDGE — the first tick whose sample repeats after a change — the signal's own edge, never a timer; close flushes whatever is still dirty.
+    window_geometry_seen: Option<(i32, i32, u32, u32)>,
+    window_geometry_dirty: bool,
     fleet_lock_armed: Option<[u8; 32]>,
     /// Two-tap arm state for the Unlock pill (the lock pill's mirror).
     fleet_unlock_armed: Option<[u8; 32]>,
@@ -1957,6 +1962,9 @@ impl PhotonApp {
             fleet_release_armed: None,
             avatar_probe_cache: std::collections::HashMap::new(),
             egged_cache: std::collections::HashMap::new(),
+            pending_geometry_restore: None,
+            window_geometry_seen: None,
+            window_geometry_dirty: false,
             fleet_lock_armed: None,
             fleet_unlock_armed: None,
             pending_unlock: None,
@@ -2046,10 +2054,11 @@ impl PhotonApp {
             .fleet_settings
             .as_ref()
             .and_then(|fs| fs.effective("profile.avatar_pin"))
+            .and_then(crate::storage::fleet_settings::as_bytes)
             .filter(|v| v.len() == 64)
             .map(|v| {
                 let mut p = [0u8; 64];
-                p.copy_from_slice(v);
+                p.copy_from_slice(&v);
                 p
             });
         let mut new_pin = [0u8; 64];
@@ -2057,13 +2066,13 @@ impl PhotonApp {
             use rand::RngCore;
             rand::thread_rng().fill_bytes(&mut new_pin);
         }
-        self.settings_set("profile.avatar_pin", new_pin.to_vec());
+        self.settings_set("profile.avatar_pin", vsf::VsfType::hR(new_pin.to_vec()));
         self.publish_avatar_pin();
         let avatar_pin = Some(new_pin);
         // Sibling ding: bump the fleet-synced avatar stamp so the fstate event wakes the fleet and their next avatar sync pulls the fresh copy. Bumped at SET time — a sibling racing the upload just gets the old copy once and heals on the next sync (newest-wins).
         self.settings_set(
             "profile.avatar_ts",
-            vsf::eagle_time_oscillations().to_le_bytes().to_vec(),
+            vsf::VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations())),
         );
         let kp = self.device_keypair.clone();
         // The scoped-blob reader set (docs/scoped-blobs.md), gathered here because it needs `&self`: our own fleet key so every sibling can read, plus the CLUTCH pair secret for each friend. A friend with no pair secret yet is simply not a reader this round — their slot appears the next time we publish after their ceremony completes.
