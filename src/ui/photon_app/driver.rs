@@ -13,6 +13,17 @@ impl FluorApp for PhotonApp {
         r
     }
 
+    /// One-shot window-geometry restore, armed with the zoom at settings load; the host guards the position half against unplugged monitors.
+    fn take_window_geometry_request(&mut self) -> Option<(i32, i32, u32, u32)> {
+        let r = self.pending_geometry_restore.take();
+        if let Some(g) = r {
+            // Seed the settle tracker so the restore itself doesn't read as a user gesture and re-save.
+            self.window_geometry_seen = Some(g);
+            self.window_geometry_dirty = false;
+        }
+        r
+    }
+
     type UserEvent = PhotonEvent;
 
     fn title(&self) -> &str {
@@ -97,6 +108,13 @@ impl FluorApp for PhotonApp {
     }
 
     fn on_close_requested(&mut self) -> bool {
+        // Flush any un-settled window geometry — the resize-then-close flow's last edge, on BOTH the hide and the exit path.
+        if self.window_geometry_dirty {
+            if let Some((x, y, w, h)) = self.window_geometry_seen {
+                self.window_geometry_dirty = false;
+                self.save_window_geometry(x, y, w, h);
+            }
+        }
         // Deliberate-quit overrides: Shift+Escape's one-shot flag, or shift held on the close itself (shift+✕, shift+Alt-F4). Either way the user asked for the REAL exit — decline residency this once and let the host exit.
         if self.exit_requested || self.shift_held {
             crate::log(
@@ -1273,7 +1291,7 @@ impl FluorApp for PhotonApp {
                                             // Per-key entry, same shape as the locked set: concurrent releases of different brands commute instead of racing one LWW blob.
                                             self.settings_set(
                                                 &format!("fleet.released.{}", hex::encode(pk)),
-                                                pk.to_vec(),
+                                                vsf::VsfType::ke(pk.to_vec()),
                                             );
                                             self.fleet_retired.retain(|d| d != &pk);
                                             self.ready_toast = Some(format!("{name} released \u{2014} it can join a new identity now."));
@@ -2650,6 +2668,26 @@ impl FluorApp for PhotonApp {
         let mut needs_redraw = false;
         // Frame fence for the deferred send drain: entries queued during THIS tick's input pass wait until the next one, guaranteeing the pending bubble a rendered frame before the wire half runs.
         self.tick_serial = self.tick_serial.wrapping_add(1);
+
+        // Window-geometry settle edge: sample outer position + inner size each tick; a change marks a gesture live, and the first tick whose sample REPEATS after a change is the settle — the signal's own edge, never a timer — persisting once per move/resize gesture. First-ever sample seeds silently (a launch position is the restore or the default, not a user gesture); Wayland/Android report no position and the whole block stays inert.
+        if let (Some(pos), Some(size)) = (ctx.window.outer_position(), ctx.window.inner_size()) {
+            let g = (pos.0, pos.1, size.0, size.1);
+            match self.window_geometry_seen {
+                Some(prev) if prev == g => {
+                    if self.window_geometry_dirty {
+                        self.window_geometry_dirty = false;
+                        self.save_window_geometry(g.0, g.1, g.2, g.3);
+                    }
+                }
+                Some(_) => {
+                    self.window_geometry_seen = Some(g);
+                    self.window_geometry_dirty = true;
+                }
+                None => {
+                    self.window_geometry_seen = Some(g);
+                }
+            }
+        }
 
         // Point the top-left orb at the current subject (peer avatar + their presence ring in a conversation, else the Photon orb + our connectivity). Self-diffing — a no-op unless the contact / avatar / screen changed.
         self.update_orb();

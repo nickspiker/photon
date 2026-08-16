@@ -7,6 +7,81 @@ use fgtw::fstate::{
     merge_device_settings, merge_global_settings, settings_from_bytes, settings_to_bytes,
     DeviceSetting, DeviceSettings, SettingEntry,
 };
+use vsf::VsfType;
+
+// ============================================================================ Typed-value readers =======================================================
+// v7 values are natively typed; a value that arrived from a v6 document is still the legacy v(b'r') raw wrapper until its next write re-types it, so every reader carries that one fallback. Writers only ever emit typed values.
+
+/// f5 float, or the legacy raw 4 LE bytes.
+pub fn as_f32(v: &VsfType) -> Option<f32> {
+    match v {
+        VsfType::f5(f) => Some(*f),
+        VsfType::v(b'r', b) if b.len() == 4 => Some(f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+        _ => None,
+    }
+}
+
+/// u0 bool, or the legacy raw single byte.
+pub fn as_bool(v: &VsfType) -> Option<bool> {
+    match v {
+        VsfType::u0(b) => Some(*b),
+        VsfType::u3(n) => Some(*n != 0),
+        VsfType::v(b'r', b) if b.len() == 1 => Some(b[0] != 0),
+        _ => None,
+    }
+}
+
+/// Eagle-time oscillations (e6), or the legacy raw 8 BE bytes (logs.hard's old shape).
+pub fn as_osc(v: &VsfType) -> Option<i64> {
+    match v {
+        VsfType::e(vsf::types::EtType::e6(o)) => Some(*o),
+        VsfType::v(b'r', b) => <[u8; 8]>::try_from(b.as_slice()).ok().map(i64::from_be_bytes),
+        _ => None,
+    }
+}
+
+/// UTF-8 text (x, or ascii a), or the legacy raw bytes read as UTF-8.
+pub fn as_text(v: &VsfType) -> Option<String> {
+    match v {
+        VsfType::x(s) | VsfType::a(s) => Some(s.clone()),
+        VsfType::v(b'r', b) => String::from_utf8(b.clone()).ok(),
+        _ => None,
+    }
+}
+
+/// A 32-byte key (ke), or the legacy naked 32 raw bytes.
+pub fn as_key32(v: &VsfType) -> Option<[u8; 32]> {
+    match v {
+        VsfType::ke(b) | VsfType::v(b'r', b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
+        _ => None,
+    }
+}
+
+/// i5 signed 32, or the auto-sized i.
+pub fn as_i32(v: &VsfType) -> Option<i32> {
+    match v {
+        VsfType::i5(n) => Some(*n),
+        VsfType::i(n) => i32::try_from(*n).ok(),
+        _ => None,
+    }
+}
+
+/// u5 unsigned 32, or the auto-sized u.
+pub fn as_u32(v: &VsfType) -> Option<u32> {
+    match v {
+        VsfType::u5(n) => Some(*n),
+        VsfType::u(n, _) => u32::try_from(*n).ok(),
+        _ => None,
+    }
+}
+
+/// Opaque application bytes (hR), or the legacy raw wrapper.
+pub fn as_bytes(v: &VsfType) -> Option<Vec<u8>> {
+    match v {
+        VsfType::hR(b) | VsfType::v(b'r', b) => Some(b.clone()),
+        _ => None,
+    }
+}
 
 /// The cached settings state for this identity, plus which device WE are (the single-writer key for our own map).
 #[derive(Debug, Clone)]
@@ -42,25 +117,25 @@ impl FleetSettings {
     }
 
     /// The value this device should act on: an UNLINKED local entry wins; otherwise the fleet-global; otherwise the local entry as a fallback (a linked key whose global hasn't arrived yet).
-    pub fn effective(&self, key: &str) -> Option<&[u8]> {
+    pub fn effective(&self, key: &str) -> Option<&VsfType> {
         match self.our_entry(key) {
             Some(e) if !e.linked => Some(&e.value),
             own => self
                 .global_entry(key)
-                .map(|g| g.value.as_slice())
-                .or(own.map(|e| e.value.as_slice())),
+                .map(|g| &g.value)
+                .or(own.map(|e| &e.value)),
         }
     }
 
     /// This DEVICE's own value for a key, ignoring the fleet global entirely — `None` if this device has never set one.
     /// For settings that are ergonomics rather than preferences: zoom is tied to the physical monitor in front of you, so inheriting another device's value is always wrong. `effective` deliberately falls back to the global for a born-linked key, which is right for "how do my devices behave" and wrong for "how big is this screen". Reading zoom through `effective` is what let a fresh device adopt a 4K desktop's zoom seconds after launch.
-    pub fn device_local(&self, key: &str) -> Option<&[u8]> {
-        self.our_entry(key).map(|e| e.value.as_slice())
+    pub fn device_local(&self, key: &str) -> Option<&VsfType> {
+        self.our_entry(key).map(|e| &e.value)
     }
 
     /// Set a key's value: writes the GLOBAL when linked (propagates to every linked device), our own map when unlinked. Returns true if anything changed (caller persists + pushes).
-    pub fn set(&mut self, key: &str, value: Vec<u8>, now: i64) -> bool {
-        if self.effective(key) == Some(value.as_slice()) {
+    pub fn set(&mut self, key: &str, value: VsfType, now: i64) -> bool {
+        if self.effective(key) == Some(&value) {
             return false;
         }
         if self.linked(key) {
@@ -93,7 +168,10 @@ impl FleetSettings {
         if self.linked(key) == linked {
             return false;
         }
-        let snapshot = self.effective(key).map(|v| v.to_vec()).unwrap_or_default();
+        let snapshot = self
+            .effective(key)
+            .cloned()
+            .unwrap_or(VsfType::v(b'r', Vec::new()));
         self.upsert_own(
             key,
             |e| e.linked = linked,
@@ -156,7 +234,8 @@ impl FleetSettings {
                 }
             }
         };
-        if let Some(bytes) = self.effective(legacy_key) {
+        // The legacy one-blob key: raw concatenated pubkeys inside the old raw wrapper — deployed data, read forever.
+        if let Some(VsfType::v(b'r', bytes)) = self.effective(legacy_key) {
             for c in bytes.chunks_exact(32) {
                 push(c);
             }
@@ -166,7 +245,10 @@ impl FleetSettings {
             .iter()
             .filter(|e| !e.tombstone && e.key.starts_with(prefix))
         {
-            push(&e.value);
+            // Typed ke (v7) or the naked legacy raw 32 (v6); an unlock tombstone (u0(false) typed, empty raw legacy) never parses as a key on either path.
+            if let Some(k) = as_key32(&e.value) {
+                push(&k);
+            }
         }
         out
     }
@@ -231,7 +313,7 @@ mod tests {
         );
 
         // A sibling (a phone) pushes ITS zoom. This arrives through the normal fleet pull.
-        let sibling_zoom = 0.5f32.to_le_bytes().to_vec();
+        let sibling_zoom = VsfType::f5(0.5);
         let remote = vec![DeviceSettings {
             device_pubkey: SIBLING,
             updated: 500,
@@ -258,10 +340,9 @@ mod tests {
 
         // Our own zoom, once set, is the only thing device_local returns.
         fs.set_link("display.zoom", false, 600);
-        fs.set("display.zoom", 1.0f32.to_le_bytes().to_vec(), 600);
+        fs.set("display.zoom", VsfType::f5(1.0), 600);
         assert_eq!(
-            fs.device_local("display.zoom")
-                .map(|v| f32::from_le_bytes([v[0], v[1], v[2], v[3]])),
+            fs.device_local("display.zoom").and_then(as_f32),
             Some(1.0),
             "our own zoom wins for us"
         );
@@ -284,21 +365,21 @@ mod tests {
         assert!(fs.linked("updates.auto"));
         assert_eq!(fs.effective("updates.auto"), None);
         // A linked set writes the GLOBAL layer.
-        assert!(fs.set("updates.auto", vec![1], 100));
-        assert_eq!(fs.effective("updates.auto"), Some(&[1u8][..]));
+        assert!(fs.set("updates.auto", VsfType::u0(true), 100));
+        assert_eq!(fs.effective("updates.auto"), Some(&VsfType::u0(true)));
         assert_eq!(fs.global.len(), 1);
         assert!(fs.devices.is_empty());
         // Unlink: snapshots the effective value locally, global stops applying.
         assert!(fs.set_link("updates.auto", false, 200));
         assert!(!fs.linked("updates.auto"));
-        assert!(fs.set("updates.auto", vec![0], 300));
-        assert_eq!(fs.effective("updates.auto"), Some(&[0u8][..]));
-        assert_eq!(fs.global[0].value, vec![1]); // global untouched by the local set
+        assert!(fs.set("updates.auto", VsfType::u0(false), 300));
+        assert_eq!(fs.effective("updates.auto"), Some(&VsfType::u0(false)));
+        assert_eq!(fs.global[0].value, VsfType::u0(true)); // global untouched by the local set
                                                  // Re-link: follows the global again, local kept only as fallback.
         assert!(fs.set_link("updates.auto", true, 400));
-        assert_eq!(fs.effective("updates.auto"), Some(&[1u8][..]));
+        assert_eq!(fs.effective("updates.auto"), Some(&VsfType::u0(true)));
         // No-op set returns false (nothing to persist or push).
-        assert!(!fs.set("updates.auto", vec![1], 500));
+        assert!(!fs.set("updates.auto", VsfType::u0(true), 500));
     }
 
     /// THE B4 LOCKOUT RACE, closed: two devices locking DIFFERENT pubkeys at the SAME instant each write their own per-key entry, and the merge unions distinct keys — no write order can drop a lock. The old one-blob shape lost exactly this race (each side wrote old+own into one LWW key; one lock vanished and a stolen device stayed trusted on part of the fleet). The legacy blob still unions in read-only, so deployed locks survive the format change.
@@ -310,19 +391,20 @@ mod tests {
 
         // Device 1 and device 2 share a base state carrying one legacy-blob lock.
         let mut dev1 = FleetSettings::new([1; 32]);
-        dev1.set("fleet.locked", LEGACY.to_vec(), 100);
+        dev1.set("fleet.locked", VsfType::v(b'r', LEGACY.to_vec()), 100);
         let mut dev2 = dev1.clone();
         dev2.our_device = [2; 32];
 
         // The race: both lock a different device at the SAME stamp, before either sees the other's write.
         dev1.set(
             &format!("fleet.locked.{}", hex::encode(STOLEN_A)),
-            STOLEN_A.to_vec(),
+            VsfType::ke(STOLEN_A.to_vec()),
             500,
         );
+        // dev2's lock stays the LEGACY naked-raw shape on purpose: a v6-era entry must union beside a typed one.
         dev2.set(
             &format!("fleet.locked.{}", hex::encode(STOLEN_B)),
-            STOLEN_B.to_vec(),
+            VsfType::v(b'r', STOLEN_B.to_vec()),
             500,
         );
 
@@ -348,7 +430,7 @@ mod tests {
         }
         // A tombstoned per-key entry does NOT count (grow-only by convention — nothing writes tombstones today, but a hostile/buggy one must not read as a lock either way… and a malformed value never parses as a pubkey).
         let mut fs = FleetSettings::new([3; 32]);
-        fs.set("fleet.locked.deadbeef", vec![1, 2, 3], 100);
+        fs.set("fleet.locked.deadbeef", VsfType::v(b'r', vec![1, 2, 3]), 100);
         assert!(fs
             .pubkey_set_union("fleet.locked", "fleet.locked.")
             .is_empty());
@@ -360,13 +442,13 @@ mod tests {
         let key = format!("fleet.locked.{}", hex::encode(STOLEN));
         let mut a = FleetSettings::new([1; 32]);
         let mut b = FleetSettings::new([2; 32]);
-        a.set(&key, STOLEN.to_vec(), 100);
+        a.set(&key, VsfType::ke(STOLEN.to_vec()), 100);
         b.merge_from(a.global.clone(), a.devices.clone());
         assert!(b
             .pubkey_set_union("fleet.locked", "fleet.locked.")
             .contains(&STOLEN));
-        // The owner's reversal: an EMPTY value at a newer stamp — the value-level tombstone unlock_fleet_device writes. It drops out of the union locally and syncs the emptiness fleet-wide.
-        a.set(&key, Vec::new(), 200);
+        // The owner's reversal: the typed u0(false) tombstone unlock_fleet_device writes. It never parses as a key, so it drops out of the union locally and syncs the reversal fleet-wide.
+        a.set(&key, VsfType::u0(false), 200);
         assert!(a
             .pubkey_set_union("fleet.locked", "fleet.locked.")
             .is_empty());
@@ -377,7 +459,7 @@ mod tests {
             "the unlock must sync"
         );
         // A later RE-LOCK wins over the tombstone by LWW — unlock is a reversal, not an immunity.
-        b.set(&key, STOLEN.to_vec(), 300);
+        b.set(&key, VsfType::ke(STOLEN.to_vec()), 300);
         a.merge_from(b.global.clone(), b.devices.clone());
         assert!(a
             .pubkey_set_union("fleet.locked", "fleet.locked.")
@@ -389,18 +471,18 @@ mod tests {
         let mut fs = FleetSettings::new([7; 32]);
         // A linked key with only a local fallback (e.g. link flipped before any global write).
         fs.set_link("theme", false, 100);
-        fs.set("theme", b"amber".to_vec(), 100);
+        fs.set("theme", VsfType::x("amber".into()), 100);
         fs.set_link("theme", true, 150);
-        assert_eq!(fs.effective("theme"), Some(&b"amber"[..])); // fallback: no global yet
+        assert_eq!(fs.effective("theme"), Some(&VsfType::x("amber".into()))); // fallback: no global yet
                                                                 // A remote global arrives via merge — the linked key follows it.
         let remote = vec![SettingEntry {
             key: "theme".into(),
-            value: b"green".to_vec(),
+            value: VsfType::x("green".into()),
             updated: 200,
             tombstone: false,
         }];
         assert!(fs.merge_from(remote, Vec::new()));
-        assert_eq!(fs.effective("theme"), Some(&b"green"[..]));
+        assert_eq!(fs.effective("theme"), Some(&VsfType::x("green".into())));
         // Idempotent: merging the same state again changes nothing.
         assert!(!fs.merge_from(fs.global.clone(), fs.devices.clone()));
     }

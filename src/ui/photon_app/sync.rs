@@ -119,7 +119,7 @@ impl PhotonApp {
             self.fleet_settings
                 .as_ref()
                 .and_then(|fs| fs.effective("profile.name"))
-                .map(|v| String::from_utf8_lossy(&v).into_owned()),
+                .and_then(crate::storage::fleet_settings::as_text),
         ) else {
             return;
         };

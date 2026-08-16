@@ -19,7 +19,8 @@ impl PhotonApp {
     pub(super) fn auto_updates_enabled(&self) -> bool {
         self.fleet_settings
             .as_ref()
-            .and_then(|fs| fs.effective("updates.auto").map(|v| v != [0]))
+            .and_then(|fs| fs.effective("updates.auto"))
+            .and_then(crate::storage::fleet_settings::as_bool)
             .unwrap_or(true)
     }
 
@@ -317,7 +318,8 @@ impl PhotonApp {
         let v = self
             .fleet_settings
             .as_ref()
-            .and_then(|fs| fs.effective("profile.avatar_pin"))?;
+            .and_then(|fs| fs.effective("profile.avatar_pin"))
+            .and_then(crate::storage::fleet_settings::as_bytes)?;
         (v.len() == 64).then(|| {
             let mut p = [0u8; 64];
             p.copy_from_slice(&v);
@@ -349,6 +351,7 @@ impl PhotonApp {
             .fleet_settings
             .as_ref()
             .and_then(|fs| fs.effective("profile.avatar_pin"))
+            .and_then(crate::storage::fleet_settings::as_bytes)
             .filter(|v| v.len() == 64)
             .map(|v| {
                 let mut p = [0u8; 64];
@@ -371,11 +374,11 @@ impl PhotonApp {
             use rand::RngCore;
             rand::thread_rng().fill_bytes(&mut new_pin);
         }
-        self.settings_set("profile.avatar_pin", new_pin.to_vec());
+        self.settings_set("profile.avatar_pin", vsf::VsfType::hR(new_pin.to_vec()));
         self.publish_avatar_pin();
         self.settings_set(
             "profile.avatar_ts",
-            vsf::eagle_time_oscillations().to_le_bytes().to_vec(),
+            vsf::VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations())),
         );
         std::thread::spawn(move || {
             #[cfg(not(target_os = "redox"))]
@@ -401,7 +404,7 @@ impl PhotonApp {
             .fleet_settings
             .as_ref()
             .and_then(|fs| fs.effective("profile.name"))
-            .map(|v| String::from_utf8_lossy(&v).into_owned())
+            .and_then(crate::storage::fleet_settings::as_text)
             .unwrap_or_default();
         crate::network::status::set_profile_name(&name);
     }
@@ -411,7 +414,8 @@ impl PhotonApp {
         let auto = self
             .fleet_settings
             .as_ref()
-            .and_then(|fs| fs.effective("updates.auto").map(|v| v != [0]))
+            .and_then(|fs| fs.effective("updates.auto"))
+            .and_then(crate::storage::fleet_settings::as_bool)
             .unwrap_or(true);
         if let Some(cb) = self.settings_autoupdate_check.as_mut() {
             cb.set_checked(auto);
@@ -421,8 +425,7 @@ impl PhotonApp {
             .fleet_settings
             .as_ref()
             .and_then(|fs| fs.device_local("logs.hard"))
-            .and_then(|v| <[u8; 8]>::try_from(v).ok())
-            .map(i64::from_be_bytes)
+            .and_then(crate::storage::fleet_settings::as_osc)
             .filter(|t| *t > 0);
         crate::set_hard_logs(armed_at);
         if let Some(cb) = self.settings_hardlogs_check.as_mut() {
@@ -435,15 +438,57 @@ impl PhotonApp {
                 .fleet_settings
                 .as_ref()
                 .and_then(|fs| fs.device_local("display.zoom"))
-                .filter(|v| v.len() == 4)
-                .map(|v| f32::from_le_bytes([v[0], v[1], v[2], v[3]]))
+                .and_then(crate::storage::fleet_settings::as_f32)
                 .filter(|ru| ru.is_finite() && *ru > 0.0)
             {
                 self.pending_zoom_restore = Some(ru);
                 crate::logf!("SETTINGS: restoring device zoom = {} (one-shot)", ru);
             }
+            // Window geometry rides the same one-shot: four SELF-DESCRIBING typed keys (display.window.x/y i5, .w/.h u5 — physical px), device-local like zoom — where a window sits is monitor ergonomics, and each component reads as itself in vsfinfo forever.
+            {
+                use crate::storage::fleet_settings::{as_i32, as_u32};
+                let read_i = |k: &str| self.fleet_settings.as_ref().and_then(|fs| fs.device_local(k)).and_then(as_i32);
+                let read_u = |k: &str| self.fleet_settings.as_ref().and_then(|fs| fs.device_local(k)).and_then(as_u32);
+                if let (Some(x), Some(y), Some(w), Some(h)) = (
+                    read_i("display.window.x"),
+                    read_i("display.window.y"),
+                    read_u("display.window.w"),
+                    read_u("display.window.h"),
+                ) {
+                    if w > 0 && h > 0 {
+                        self.pending_geometry_restore = Some((x, y, w, h));
+                        crate::logf!("SETTINGS: restoring window geometry ({} , {}) {}x{} (one-shot)", x, y, w, h);
+                    }
+                }
+            }
             // Armed even when nothing was stored: a device with no saved zoom must not have a LATER fleet merge start restoring one mid-session either.
             self.zoom_restored = true;
+        }
+    }
+
+    /// Persist the settled window geometry as this DEVICE's four typed keys — display.window.x/y (i5, outer position) + .w/.h (u5, inner size), physical px. Device-local and UNLINKED like zoom: where a window sits is monitor ergonomics, never fleet-global.
+    pub(super) fn save_window_geometry(&mut self, x: i32, y: i32, w: u32, h: u32) {
+        if !self.ensure_fleet_settings() {
+            return;
+        }
+        use vsf::VsfType;
+        let now = vsf::eagle_time_oscillations();
+        let fs = self.fleet_settings.as_mut().unwrap();
+        let mut changed = false;
+        for (k, v) in [
+            ("display.window.x", VsfType::i5(x)),
+            ("display.window.y", VsfType::i5(y)),
+            ("display.window.w", VsfType::u5(w)),
+            ("display.window.h", VsfType::u5(h)),
+        ] {
+            if fs.linked(k) {
+                fs.set_link(k, false, now);
+            }
+            changed |= fs.set(k, v, now);
+        }
+        if changed {
+            crate::logf!("SETTINGS: display.window = ({x},{y}) {w}x{h} (device-local)");
+            self.persist_and_push_settings();
         }
     }
 
@@ -457,14 +502,14 @@ impl PhotonApp {
         if fs.linked("display.zoom") {
             fs.set_link("display.zoom", false, now);
         }
-        if fs.set("display.zoom", ru.to_le_bytes().to_vec(), now) {
+        if fs.set("display.zoom", vsf::VsfType::f5(ru), now) {
             crate::logf!("SETTINGS: display.zoom = {} (device-local)", ru);
             self.persist_and_push_settings();
         }
     }
 
     /// Set a setting from UI: writes the global (linked, the default) or our device map (unlinked), persists, and pushes to the fleet slot. Returns true if the value actually changed.
-    pub(super) fn settings_set(&mut self, key: &str, value: Vec<u8>) -> bool {
+    pub(super) fn settings_set(&mut self, key: &str, value: vsf::VsfType) -> bool {
         if !self.ensure_fleet_settings() {
             return false;
         }
@@ -523,7 +568,10 @@ impl PhotonApp {
             .iter()
             .filter(|e| !e.tombstone && e.key.starts_with("react.recent."))
         {
-            for (g, t) in Self::decode_react_recent(&e.value) {
+            let Some(bytes) = crate::storage::fleet_settings::as_bytes(&e.value) else {
+                continue;
+            };
+            for (g, t) in Self::decode_react_recent(&bytes) {
                 let e = out.entry(g).or_insert(t);
                 *e = (*e).max(t);
             }
@@ -541,7 +589,8 @@ impl PhotonApp {
             .fleet_settings
             .as_ref()
             .and_then(|fs| fs.effective(&key))
-            .map(Self::decode_react_recent)
+            .and_then(crate::storage::fleet_settings::as_bytes)
+            .map(|b| Self::decode_react_recent(&b))
             .unwrap_or_default();
         let now = vsf::eagle_time_oscillations();
         match stamps.iter_mut().find(|(g, _)| g == glyph) {
@@ -551,7 +600,7 @@ impl PhotonApp {
         stamps.sort_by_key(|(_, t)| std::cmp::Reverse(*t));
         stamps.truncate(24);
         let blob = Self::encode_react_recent(&stamps);
-        self.settings_set(&key, blob);
+        self.settings_set(&key, vsf::VsfType::hR(blob));
     }
 
     /// The reaction strip, most-recent-first: defaults seeded at stamp zero (so unused ones hold the tail in default order — the sort is stable), every used glyph floats by its fleet-wide newest stamp, custom glyphs join the pool in sorted order for determinism.
@@ -607,7 +656,7 @@ impl PhotonApp {
             .fleet_settings
             .as_ref()
             .and_then(|fs| fs.effective("profile._custom"))
-            .map(|v| String::from_utf8_lossy(&v).into_owned())
+            .and_then(crate::storage::fleet_settings::as_text)
             .unwrap_or_default();
         for line in custom.lines() {
             let line = line.trim();
@@ -643,7 +692,8 @@ impl PhotonApp {
                 .fleet_settings
                 .as_ref()
                 .and_then(|fs| fs.effective(&format!("share.{}", pf.field_id)))
-                .is_some_and(|v| v.first() == Some(&1));
+                .and_then(crate::storage::fleet_settings::as_bool)
+                .unwrap_or(false);
             pf.share_cb = Some(crate::ui::settings_widgets::Checkbox::new(
                 &mut self.hit_counter,
                 "",
@@ -731,6 +781,7 @@ impl PhotonApp {
                     self.fleet_settings
                         .as_ref()
                         .and_then(|fs| fs.effective(&format!("profile.{base}{n}")))
+                        .and_then(crate::storage::fleet_settings::as_text)
                         .is_some_and(|v| !v.is_empty())
                 })
                 .max()
@@ -774,7 +825,7 @@ impl PhotonApp {
                     self.fleet_settings
                         .as_ref()
                         .and_then(|fs| fs.effective(key))
-                        .map(|v| String::from_utf8_lossy(&v).into_owned())
+                        .and_then(crate::storage::fleet_settings::as_text)
                         .unwrap_or_default()
                 };
                 (
@@ -811,18 +862,18 @@ impl PhotonApp {
         }
         let now = vsf::eagle_time_oscillations();
         // Snapshot (key, value) first so we don't hold a you_fields borrow across the fleet_settings mutation.
-        let mut pairs: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut pairs: Vec<(String, vsf::VsfType)> = Vec::new();
         for f in &self.you_fields {
             let v: String = f.tb.chars.iter().collect();
             pairs.push((
                 format!("profile.{}", f.field_id),
-                v.trim().as_bytes().to_vec(),
+                vsf::VsfType::x(v.trim().to_string()),
             ));
             if let Some(tag_tb) = &f.tag_tb {
                 let t: String = tag_tb.chars.iter().collect();
                 pairs.push((
                     format!("profile.{}_label", f.field_id),
-                    t.trim().as_bytes().to_vec(),
+                    vsf::VsfType::x(t.trim().to_string()),
                 ));
             }
         }
@@ -830,8 +881,12 @@ impl PhotonApp {
         let mut changed = false;
         for (key, val) in pairs {
             // Don't create an empty entry for a field that was never filled and is still blank — only write blanks that CLEAR an existing value.
-            let absent = fs.effective(&key).map_or(true, |c| c.is_empty());
-            if val.is_empty() && absent {
+            let absent = fs
+                .effective(&key)
+                .and_then(crate::storage::fleet_settings::as_text)
+                .map_or(true, |c| c.is_empty());
+            let val_empty = matches!(&val, vsf::VsfType::x(s) if s.is_empty());
+            if val_empty && absent {
                 continue;
             }
             if fs.set(&key, val, now) {
@@ -901,7 +956,7 @@ impl PhotonApp {
             .map(|f| format!("{}\t{}", f.field_id, f.label))
             .collect::<Vec<_>>()
             .join("\n");
-        self.settings_set("profile._custom", reg.into_bytes());
+        self.settings_set("profile._custom", vsf::VsfType::x(reg));
         if let Some(tb) = self.you_add_textbox.as_mut() {
             tb.clear();
         }

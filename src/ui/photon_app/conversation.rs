@@ -481,6 +481,7 @@ impl PhotonApp {
             .fleet_settings
             .as_ref()
             .and_then(|fs| fs.effective("profile.avatar_pin"))
+            .and_then(crate::storage::fleet_settings::as_bytes)
         {
             Some(v) if v.len() == 64 => {
                 let mut p = [0u8; 64];
