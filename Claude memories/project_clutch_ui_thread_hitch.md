@@ -9,7 +9,7 @@ metadata:
 
 The chain-weave can look stuck on "weaving the chain" for many seconds even though the protocol is grinding forward — two pre-existing perf issues in the CLUTCH path (NOT a regression; surfaced 2026-07-08 watching a fresh Samsung↔Nick weave closely).
 
-Evidence from the on-device VSF log (the test phone, SM-N976V):
+Evidence from the on-device VSF log (starfish, SM-N976V):
 - `PERF: check_clutch_ceremonies took 1205ms (UI thread)` — the ceremony blocks the render thread ~1.2s, so the UI hard-freezes on "weaving the chain" with no redraw.
 - ClutchComplete received **8 times** over ~6s (Nick retransmitting) before the proof finally verified — the ~6s stall before `Early proof verified` is where the "forever" went. Once it started, weave→woven was only 1.5s.
 

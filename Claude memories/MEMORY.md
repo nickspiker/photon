@@ -30,7 +30,7 @@
 - [project_clutch_offer_deadlock.md](project_clutch_offer_deadlock.md) — CLUTCH offer-loss deadlock generations; FIXED @7d5e356 (retries=no-progress, path-up/stall offer re-fire, pong-drop torches); OPEN: one peer's pongs never arrive
 - [project_clutch_ui_thread_hitch.md](project_clutch_ui_thread_hitch.md) — FIXED @c48b0e1 2026-08-15: KEM decap = 4th job stage (HQC-prefix CAS drain), duplicate-KEM short-circuit, proof rides durable chains writer; phone E2E pending
 - [project_nat_traversal_relay_gap.md](project_nat_traversal_relay_gap.md) — punch tiers + LIVE relay pipe shipped 2026-07-22: per-recipient Cloudflare DO (PipeHub); pipe frames ride the recv select! as RELAY_ADDR — whole data plane on real dispatch
-- [project_windows_dark_theme_bug.md](project_windows_dark_theme_bug.md) — PINNED: photon install corrupted friend-J's Windows dark-theme search text (theme-cache signature, light/dark toggle fixed); audit DWM attr + layered path + installer when picked up; wipe/uninstall feature queued for Security screen
+- [project_windows_dark_theme_bug.md](project_windows_dark_theme_bug.md) — PINNED: photon install corrupted Jennifer's Windows dark-theme search text (theme-cache signature, light/dark toggle fixed); audit DWM attr + layered path + installer when picked up; wipe/uninstall feature queued for Security screen
 - [project_contacts_glow_damage.md](project_contacts_glow_damage.md) — contacts search-box focus glow not repainted on deselect (stale glow lingers/clips, looks un-deselectable); bg pass dirty-gating skips the glow_bbox; pre-existing, parked
 - [project_history_recovery.md](project_history_recovery.md) — history sync: friend backfill + FLEET sync shipped; BOTH is_online gates that silently killed fleet delivery removed 2026-07-25 (push d73c223, pull 648791b); see project_fleet_unification_v1
 - [project_rekey_attack_surface.md](project_rekey_attack_surface.md) — re-key/history-injection threat model (docs/rekey-threat-model.md); first-met device un-revocable + revocation unwired; fix bundles with device-remove (fold-respecting trust + fleet-list freshness); MAC-in-ACK un-mooted by S; building re-key notification
@@ -108,7 +108,7 @@
 - [Edges, not timers](edges-not-timers.md) — react on event edges (release/ACK/push), never timers or debounces
 - [Commit trailer](commit-trailer-built-with.md) — never "Co-Authored-By: Claude"; end commits with "Built with Claude Fable 5"
 - [Nick publishes](nick-publishes.md) — never run publish scripts; commit/push only, check only when warranted
-- [No private handles](no-private-handles.md) — public repo: field incidents in comments/commits use neutral roles + dates, never handles or "friend-S"
+- [No private handles](no-private-handles.md) — public repo: field incidents in comments/commits use neutral roles + dates, never handles or "Sarah"
 - [Self-only removal](self-only-removal.md) — a device removes only itself, zero exceptions; stolen = lockout, never removal
 - [Re-clutch, never store](re-clutch-never-store.md) — recovery = fresh ceremony; secrets at rest only when absolutely required
 - [Messaging solidity Phase A](messaging-solidity-phase-a.md) — A + B4 done (2026-08-09, locks commute per-key); flag-day APPROVED for B2's chain op; next: B1→B3 fleet chain+eggs arc
