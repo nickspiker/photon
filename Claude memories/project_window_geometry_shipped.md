@@ -14,4 +14,4 @@ metadata:
 - Storage unchanged: display.window.pos v_i5[x,y] + .size v_u5[w,h], device-local unlinked, fleet-mirrored like zoom ([[project-settings-typed-values]]). Poisoned old pairs are clamped at apply and overwritten by the first real drag.
 - `WindowHandle::outer_position/inner_size` REMOVED from fluor — they read the fullscreen surface, not the visible window; the trap is fenced at the API layer.
 
-Field verify pending: restore-on-launch + move/resize round trip on Nick's desktop.
+Field-verified 2026-08-16 (restore works), which surfaced a LAUNCH FLASH: frame one painted at the default placement because both restores (zoom + geometry) drained in about_to_wait — AFTER the event batch that presented frame one. Fixed @ fluor 257fb46: `consume_app_placement_requests` runs at the top of home `RedrawRequested` before render_frame (about_to_wait keeps a copy for requests armed outside a redraw). Launch ordering doctrine (Nick): binary hash self-check → vault → window specifics + contacts → render → avatars/heavy work. main.rs + init already honor it; the consume-after-paint was the one inversion.
