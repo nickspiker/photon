@@ -120,6 +120,7 @@
 - [reference_windows_arm64_toolchain.md](reference_windows_arm64_toolchain.md) — Windows-on-ARM: aarch64-pc-windows-gnullvm via llvm-mingw at /mnt/Octopus/Code/llvm-mingw; build.rs uses llvm-rc; deploy.sh + installer wired; PE valid, real-hardware install UNVERIFIED
 - [reference_mingw_features_shim.md](reference_mingw_features_shim.md) — x86_64-windows breaks on pqcrypto-mlkem #include <features.h> (MinGW lacks it); FIXED @4809917 via vendored shim + .cargo/config.toml [env]; also: cc-rs hides C-compile fatals as cargo:warning=
 - [project_lockout_enforcement.md](project_lockout_enforcement.md) — lock @b75cc0e + UNLOCK @0f76044/fa9e765: handle-confirmed reversal, typed tombstone, locked-signer refusal + monotonic guard at worker, locked-rewrap hole fixed; E2E DONE 2026-08-16
+- [project_window_geometry_parked.md](project_window_geometry_parked.md) — window pos/size persistence PARKED @e047a53 (raw-winit restore vs fluor window model = vanish + dead clicks); redesign = fluor-owned thru window_rect; zoom restore unaffected
 - [project_humanitys_code.md](project_humanitys_code.md) — openness doctrine: secrecy surface = handles + keys ONLY; everything else public — "this is humanity's code"
 - [settings.md](settings.md) — Nick's note: naive fixed-width unlabeled settings converted to proper VSF (the fstate v7 arc)
 - [memories-live-in-repo](push-after-landing.md) — memories LIVE HERE ('Claude memories/' in the PUBLIC photon repo, 2026-08-16): commit+push with photon; scrub names/handles ALWAYS (handles are secrets)
