@@ -171,9 +171,14 @@ mod dozenal_serialization_tests {
     #[test]
     fn dozenal_bytes_round_trip_and_arabic_rejected() {
         for n in [0i64, 1, 11, 12, 143, 1_000_000, i64::MAX / 2] {
-            assert_eq!(super::parse_dozenal_bytes(&super::dozenal_bytes(n)), Some(n));
+            assert_eq!(
+                super::parse_dozenal_bytes(&super::dozenal_bytes(n)),
+                Some(n)
+            );
         }
-        assert!(super::dozenal_bytes(7).chars().all(|c| (c as u32) >= 0x10 && (c as u32) <= 0x1B));
+        assert!(super::dozenal_bytes(7)
+            .chars()
+            .all(|c| (c as u32) >= 0x10 && (c as u32) <= 0x1B));
         assert_eq!(super::parse_dozenal_bytes("1234"), None);
         assert_eq!(super::parse_dozenal_bytes(""), None);
         assert_eq!(super::dozenal_bytes(-5), super::dozenal_bytes(0));
@@ -499,7 +504,9 @@ pub fn report_prior_crash() {
 
 pub fn flush_log_buffer() {
     use std::io::Write;
-    let Ok(mut guard) = LOG_FILE.lock() else { return };
+    let Ok(mut guard) = LOG_FILE.lock() else {
+        return;
+    };
     ensure_log_open(&mut guard);
     let mut drained = 0usize;
     if let Some(f) = guard.as_mut() {

@@ -100,7 +100,11 @@ impl PhotonApp {
                 return;
             };
             // Nobody to push a blob to: our own notes have zero remote participants, and a sibling is our own fleet (it reads the blob from the fleet store, not from us).
-            if self.our_party_id(c).is_none_or(|us| c.remote_count(&us) == 0) || c.is_sibling {
+            if self
+                .our_party_id(c)
+                .is_none_or(|us| c.remote_count(&us) == 0)
+                || c.is_sibling
+            {
                 return;
             }
             let Some(token) = self

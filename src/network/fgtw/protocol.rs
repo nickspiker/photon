@@ -1220,7 +1220,13 @@ pub fn seal_pong_sensitive(
     key: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
     let mut inner = vsf::VsfSection::new("pongsec");
-    add_pong_sensitive_fields(&mut inner, sync_records, display_name, avatar_pin, locked_devices);
+    add_pong_sensitive_fields(
+        &mut inner,
+        sync_records,
+        display_name,
+        avatar_pin,
+        locked_devices,
+    );
     kete::encrypt_bytes(&inner.encode_encrypted(), key)
 }
 
@@ -1228,7 +1234,15 @@ pub fn seal_pong_sensitive(
 pub fn open_pong_sensitive(
     sealed: &[u8],
     key: &[u8; 32],
-) -> Result<(Vec<SyncRecord>, Option<String>, Option<[u8; 64]>, Vec<[u8; 32]>), String> {
+) -> Result<
+    (
+        Vec<SyncRecord>,
+        Option<String>,
+        Option<[u8; 64]>,
+        Vec<[u8; 32]>,
+    ),
+    String,
+> {
     let plain = kete::decrypt_bytes(sealed, key)?;
     let mut ptr = 0;
     let section =
@@ -1442,12 +1456,8 @@ fn decode_offer_pubkeys(
     }
     let key_bytes = |name: &str| -> Result<Vec<u8>, String> {
         match labeled.get(name) {
-            Some(VsfType::kx(b))
-            | Some(VsfType::kp(b))
-            | Some(VsfType::kk(b))
-            | Some(VsfType::kf(b))
-            | Some(VsfType::kn(b))
-            | Some(VsfType::kl(b))
+            Some(VsfType::kx(b)) | Some(VsfType::kp(b)) | Some(VsfType::kk(b))
+            | Some(VsfType::kf(b)) | Some(VsfType::kn(b)) | Some(VsfType::kl(b))
             | Some(VsfType::kh(b)) => Ok(b.clone()),
             _ => Err(format!("ClutchOffer missing pubkey '{name}'")),
         }
@@ -2366,7 +2376,9 @@ pub fn build_chain_sync_vsf(
 }
 
 /// Parse + verify a `chain_sync` frame. Returns ((conversation_token, epoch_k, sealed_chains), sender_pubkey). The blob is opaque here; the receiver opens it with the epoch's chain_sync key (AEAD failure = drop). A frame without `ek` is a pre-epoch build's — the flag-day rejects it here, loudly, no tolerant branch.
-pub fn parse_chain_sync_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], u64, Vec<u8>), [u8; 32]), String> {
+pub fn parse_chain_sync_vsf(
+    vsf_bytes: &[u8],
+) -> Result<(([u8; 32], u64, Vec<u8>), [u8; 32]), String> {
     let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
         .map_err(|e| format!("chain_sync verification failed: {}", e))?;
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
@@ -2398,10 +2410,14 @@ pub fn parse_chain_sync_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], u64, Vec<u8>
 
 /// Read a plain unsigned-integer field.
 fn field_u64(fields: &[vsf::file_format::VsfField], name: &str) -> Option<u64> {
-    fields.iter().find(|f| f.name == name).and_then(|f| f.values.first()).and_then(|v| match v {
-        VsfType::u(n, false) => Some(*n as u64),
-        _ => None,
-    })
+    fields
+        .iter()
+        .find(|f| f.name == name)
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::u(n, false) => Some(*n as u64),
+            _ => None,
+        })
 }
 
 /// Build a `ckpt_root` frame — the checkpoint minter handing siblings the SECRET settled root for epoch `k`. `sealed_root` = the 32-byte root kete-sealed under `fleet_epoch_seal_key(epoch_{k-1}, b"ckpt_root")`: openable exactly by siblings current at the prior epoch, who then verify it against the chain op's public commitment and derive epoch_k themselves. Fleet-scoped (no conversation token); device-signed like every sibling frame.
@@ -2441,7 +2457,10 @@ pub fn parse_ckpt_root_vsf(vsf_bytes: &[u8]) -> Result<((u64, u64, Vec<u8>), [u8
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
     let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
     if section_name != "ckpt_root" {
-        return Err(format!("Expected 'ckpt_root' section, got '{}'", section_name));
+        return Err(format!(
+            "Expected 'ckpt_root' section, got '{}'",
+            section_name
+        ));
     }
     let fields = &section.fields;
     let k = field_u64(fields, "ek").ok_or("ckpt_root missing ek")?;
@@ -2487,7 +2506,10 @@ pub fn parse_ckpt_req_vsf(vsf_bytes: &[u8]) -> Result<(u64, [u8; 32]), String> {
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
     let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
     if section_name != "ckpt_req" {
-        return Err(format!("Expected 'ckpt_req' section, got '{}'", section_name));
+        return Err(format!(
+            "Expected 'ckpt_req' section, got '{}'",
+            section_name
+        ));
     }
     let k = field_u64(&section.fields, "ek").ok_or("ckpt_req missing ek")?;
     Ok((k, sender_pubkey))
@@ -2528,7 +2550,10 @@ pub fn parse_ckpt_state_vsf(vsf_bytes: &[u8]) -> Result<((u64, Vec<u8>), [u8; 32
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
     let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
     if section_name != "ckpt_state" {
-        return Err(format!("Expected 'ckpt_state' section, got '{}'", section_name));
+        return Err(format!(
+            "Expected 'ckpt_state' section, got '{}'",
+            section_name
+        ));
     }
     let fields = &section.fields;
     let k = field_u64(fields, "ek").ok_or("ckpt_state missing ek")?;
@@ -2734,7 +2759,10 @@ pub fn build_term_vsf(
     section.add_field("sid", VsfType::hb(session_id.to_vec()));
     section.add_field("kind", VsfType::u3(kind));
     let n = sealed_payload.len();
-    section.add_field("data", VsfType::t_u3(vsf::Tensor::new(vec![n], sealed_payload)));
+    section.add_field(
+        "data",
+        VsfType::t_u3(vsf::Tensor::new(vec![n], sealed_payload)),
+    );
 
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
@@ -2747,9 +2775,7 @@ pub fn build_term_vsf(
 }
 
 /// Parse + verify a `term` frame. Returns ((session_id, kind, sealed_payload), sender_pubkey). Authorization (known sibling + remote-terminal enabled) is the caller's job — signature validity alone is NOT authorization.
-pub fn parse_term_vsf(
-    vsf_bytes: &[u8],
-) -> Result<(([u8; 16], u8, Vec<u8>), [u8; 32]), String> {
+pub fn parse_term_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 16], u8, Vec<u8>), [u8; 32]), String> {
     let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
         .map_err(|e| format!("term verification failed: {}", e))?;
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;

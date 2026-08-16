@@ -479,20 +479,36 @@ impl StatusUpdate {
         match self {
             StatusUpdate::Online { peer_pubkey, .. } => Some(peer_pubkey.as_bytes()),
             StatusUpdate::ChatMessage { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
-            StatusUpdate::ChainResetReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::ChainResetReceived { sender_pubkey, .. } => {
+                Some(sender_pubkey.as_bytes())
+            }
             StatusUpdate::PongSealMissing { device } => Some(device.as_bytes()),
             StatusUpdate::ChainSyncReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::CkptRootReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::CkptReqReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::CkptStateReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
-            StatusUpdate::AttachBlobReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
-            StatusUpdate::AttachHaveReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::AttachBlobReceived { sender_pubkey, .. } => {
+                Some(sender_pubkey.as_bytes())
+            }
+            StatusUpdate::AttachHaveReceived { sender_pubkey, .. } => {
+                Some(sender_pubkey.as_bytes())
+            }
             StatusUpdate::AttachReqReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
-            StatusUpdate::AvatarRequestReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
-            StatusUpdate::AvatarReceived { responder_pubkey, .. } => Some(responder_pubkey.as_bytes()),
-            StatusUpdate::HistoryRequestReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
-            StatusUpdate::HistoryPageReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
-            StatusUpdate::BlindFrameReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::AvatarRequestReceived { sender_pubkey, .. } => {
+                Some(sender_pubkey.as_bytes())
+            }
+            StatusUpdate::AvatarReceived {
+                responder_pubkey, ..
+            } => Some(responder_pubkey.as_bytes()),
+            StatusUpdate::HistoryRequestReceived { sender_pubkey, .. } => {
+                Some(sender_pubkey.as_bytes())
+            }
+            StatusUpdate::HistoryPageReceived { sender_pubkey, .. } => {
+                Some(sender_pubkey.as_bytes())
+            }
+            StatusUpdate::BlindFrameReceived { sender_pubkey, .. } => {
+                Some(sender_pubkey.as_bytes())
+            }
             StatusUpdate::ClutchOfferReceived { sender_pubkey, .. } => Some(sender_pubkey),
             StatusUpdate::ClutchKemResponseReceived { sender_pubkey, .. } => Some(sender_pubkey),
             StatusUpdate::ClutchCompleteReceived { sender_pubkey, .. } => Some(sender_pubkey),
@@ -1458,7 +1474,8 @@ async fn run_checker(
                         // KEEPALIVE, because a dead pipe is SILENT: dropping the write half meant no client ping ever went out, so a NAT idle-drop or a sleep/wake killed the TCP underneath and `read.next()` blocked forever — one desktop sat 52 minutes "relay: recipient offline" to every peer while believing it was connected (live fleet, 2026-08-05). A ping every 45s keeps carrier NAT mappings warm (cellular drops idle TCP in minutes); 120s of total silence (pongs count) declares the socket dead and reconnects.
                         let (mut write, mut read) = ws_stream.split();
                         let mut last_inbound = tokio::time::Instant::now();
-                        let mut ping_tick = tokio::time::interval(std::time::Duration::from_secs(45));
+                        let mut ping_tick =
+                            tokio::time::interval(std::time::Duration::from_secs(45));
                         ping_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                         loop {
                             let msg = tokio::select! {
@@ -1511,7 +1528,6 @@ async fn run_checker(
                     Err(e) => {
                         crate::logf!("PIPE: connect failed: {} — retrying", e);
                     }
-
                 }
                 // Reconnect: hold the pipe open for the life of the session so a relay-only peer stays reachable.
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -2504,8 +2520,8 @@ async fn run_checker(
                                                         sync_records: Vec::new(),
                                                         display_name: None,
                                                         avatar_pin: None,
-                                            locked_reports: Vec::new(),
-                                        },
+                                                        locked_reports: Vec::new(),
+                                                    },
                                                     &event_proxy_recv,
                                                 );
                                             } else {
@@ -2540,8 +2556,8 @@ async fn run_checker(
                                                     sync_records: Vec::new(),
                                                     display_name: None,
                                                     avatar_pin: None,
-                                            locked_reports: Vec::new(),
-                                        },
+                                                    locked_reports: Vec::new(),
+                                                },
                                                 &event_proxy_recv,
                                             );
                                         }
@@ -2584,48 +2600,52 @@ async fn run_checker(
                                     }
 
                                     // Sensitive tail: an updated peer sends it ONLY sealed — open with the RESPONDING device's pairwise key (the signer, verified just above). A failed open (key not seeded yet, or a stale key across their re-attest) degrades to a tail-less pong: presence still lands, name/pin/sync simply wait for keys — and it logs once per device, not per pong. A legacy peer still sends the plaintext fields; keep honouring them until it updates.
-                                    let (sync_records, display_name, avatar_pin, locked_reports) = match sealed {
-                                        Some(blob) => {
-                                            let key = {
-                                                let keys = pong_seal_keys_recv.lock().unwrap();
-                                                keys.get(responder_pubkey.as_bytes()).copied()
-                                            };
-                                            let opened = key.and_then(|k| {
+                                    let (sync_records, display_name, avatar_pin, locked_reports) =
+                                        match sealed {
+                                            Some(blob) => {
+                                                let key = {
+                                                    let keys = pong_seal_keys_recv.lock().unwrap();
+                                                    keys.get(responder_pubkey.as_bytes()).copied()
+                                                };
+                                                let opened = key.and_then(|k| {
                                                 crate::network::fgtw::protocol::open_pong_sensitive(
                                                     &blob, &k,
                                                 )
                                                 .ok()
                                             });
-                                            match opened {
-                                                Some(tail) => {
-                                                    pong_open_failed.retain(|d| {
-                                                        d != responder_pubkey.as_bytes()
-                                                    });
-                                                    tail
-                                                }
-                                                None => {
-                                                    if !pong_open_failed
-                                                        .contains(responder_pubkey.as_bytes())
-                                                    {
-                                                        pong_open_failed
-                                                            .push(*responder_pubkey.as_bytes());
-                                                        crate::logf!("Status: sealed pong tail from {} unopenable ({}) — treating as tail-less until keys agree", crate::fp(responder_pubkey.as_bytes()), if key.is_some() { "key mismatch" } else { "no pairwise key seeded yet" });
-                                                        // Ask the UI thread to reseed the seal map — self-heal for the fresh-device ordering race (the map fills in fold order; a pong racing ahead stayed tail-less forever).
-                                                        send_status_update(
-                                                            &status_tx_recv,
-                                                            StatusUpdate::PongSealMissing {
-                                                                device: responder_pubkey.clone(),
-                                                            },
-                                                            &event_proxy_recv,
-                                                        );
+                                                match opened {
+                                                    Some(tail) => {
+                                                        pong_open_failed.retain(|d| {
+                                                            d != responder_pubkey.as_bytes()
+                                                        });
+                                                        tail
                                                     }
-                                                    (Vec::new(), None, None, Vec::new())
+                                                    None => {
+                                                        if !pong_open_failed
+                                                            .contains(responder_pubkey.as_bytes())
+                                                        {
+                                                            pong_open_failed
+                                                                .push(*responder_pubkey.as_bytes());
+                                                            crate::logf!("Status: sealed pong tail from {} unopenable ({}) — treating as tail-less until keys agree", crate::fp(responder_pubkey.as_bytes()), if key.is_some() { "key mismatch" } else { "no pairwise key seeded yet" });
+                                                            // Ask the UI thread to reseed the seal map — self-heal for the fresh-device ordering race (the map fills in fold order; a pong racing ahead stayed tail-less forever).
+                                                            send_status_update(
+                                                                &status_tx_recv,
+                                                                StatusUpdate::PongSealMissing {
+                                                                    device: responder_pubkey
+                                                                        .clone(),
+                                                                },
+                                                                &event_proxy_recv,
+                                                            );
+                                                        }
+                                                        (Vec::new(), None, None, Vec::new())
+                                                    }
                                                 }
                                             }
-                                        }
-                                        // Legacy plaintext pong: no sealed tail, so no reported-stolen signal either — the report is trusted only under the pairwise seal.
-                                        None => (sync_records, display_name, avatar_pin, Vec::new()),
-                                    };
+                                            // Legacy plaintext pong: no sealed tail, so no reported-stolen signal either — the report is trusted only under the pairwise seal.
+                                            None => {
+                                                (sync_records, display_name, avatar_pin, Vec::new())
+                                            }
+                                        };
 
                                     // Send status update with sync_records for retransmit handling
                                     send_status_update(
@@ -3200,11 +3220,7 @@ async fn run_checker(
                         if let Err(e) =
                             crate::network::fgtw::relay::send_via_relay(&kp, &dev, &bytes).await
                         {
-                            crate::logf!(
-                                "RELAY: ping to {} failed: {}",
-                                hex::encode(&dev[..4]),
-                                e
-                            );
+                            crate::logf!("RELAY: ping to {} failed: {}", hex::encode(&dev[..4]), e);
                         }
                     });
                 }
@@ -3304,8 +3320,8 @@ async fn run_checker(
                             sync_records: vec![], // No sync for offline
                             display_name: None,
                             avatar_pin: None,
-                                            locked_reports: Vec::new(),
-                                        },
+                            locked_reports: Vec::new(),
+                        },
                         &event_proxy,
                     );
                     // Reset counter after marking offline (so we can detect coming back online)
@@ -3655,7 +3671,11 @@ async fn run_checker(
                         relayed += 1;
                         crate::logf!("RELAY: ClutchOffer delivered to {}", hex::encode(&dev[..4]))
                     }
-                    Err(e) => crate::logf!("RELAY: ClutchOffer to {} did not land: {}", hex::encode(&dev[..4]), e),
+                    Err(e) => crate::logf!(
+                        "RELAY: ClutchOffer to {} did not land: {}",
+                        hex::encode(&dev[..4]),
+                        e
+                    ),
                 }
             }
             // Nothing landed anywhere: no direct path took it and every device's pipe was closed, so this ~570KB offer was discarded in full (the pipe has no mailbox). Say so plainly — the old code logged "stored" for exactly this case and the ceremony then stalled with nothing in either log to explain it. The re-fire rides the existing edges: the doorbell wakes a dozing peer, and the offer re-sends when they come back.

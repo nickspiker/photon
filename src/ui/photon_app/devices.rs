@@ -232,7 +232,11 @@ impl PhotonApp {
 
     /// Persist the epoch spine to the vault (same bytes the custody slot and ckpt_state frames carry).
     pub(super) fn fleet_epoch_store(&self) {
-        let (Some(storage), Some(session), Some((k, epoch))) = (self.storage.as_ref(), self.session.as_ref(), self.fleet_epoch) else {
+        let (Some(storage), Some(session), Some((k, epoch))) = (
+            self.storage.as_ref(),
+            self.session.as_ref(),
+            self.fleet_epoch,
+        ) else {
             return;
         };
         let addr = crate::storage::vault_key("fleet_epoch", &session.vault_seed);
@@ -260,7 +264,10 @@ impl PhotonApp {
                 .map(|m| (m.timestamp, ckpt_leaf(m.timestamp, &m.content)))
                 .collect();
             leaves.sort();
-            convs.push((*conv.id().as_bytes(), ckpt_conv_root(leaves.into_iter().map(|(_, l)| l).collect())));
+            convs.push((
+                *conv.id().as_bytes(),
+                ckpt_conv_root(leaves.into_iter().map(|(_, l)| l).collect()),
+            ));
         }
         convs.sort();
         ckpt_settled_root(&convs)
@@ -273,9 +280,17 @@ impl PhotonApp {
         };
         let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
         let dispatch = checker.history_dispatch();
-        for sib in self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out) {
+        for sib in self
+            .contacts
+            .iter()
+            .filter(|c| c.is_sibling && !c.locked_out)
+        {
             let (primary, alt, relay_to) = match sib.race_addrs() {
-                Some((p, a)) => (p, a, relay_unless_direct_trusted(&sib, crate::network::udp::get_local_ip())),
+                Some((p, a)) => (
+                    p,
+                    a,
+                    relay_unless_direct_trusted(&sib, crate::network::udp::get_local_ip()),
+                ),
                 None => {
                     let relays = sib.relay_device_list();
                     if relays.is_empty() {
@@ -300,19 +315,49 @@ impl PhotonApp {
         // Drain the off-thread outcome first — a landed advance clears busy and may satisfy the pending edge.
         if let Some(rx) = self.ckpt_rx.as_ref() {
             match rx.try_recv() {
-                Ok(CkptOutcome::Advanced { k, epoch, prev, root, fanout_epoch, minted_here }) => {
+                Ok(CkptOutcome::Advanced {
+                    k,
+                    epoch,
+                    prev,
+                    root,
+                    fanout_epoch,
+                    minted_here,
+                }) => {
                     self.ckpt_busy = false;
                     self.ckpt_rx = None;
                     self.fleet_epoch_prev = prev;
                     self.fleet_epoch = Some((k, epoch));
                     self.fleet_epoch_store();
-                    crate::logf!("CKPT: epoch spine at k={} ({})", k, if minted_here { "minted here" } else { "adopted" });
+                    crate::logf!(
+                        "CKPT: epoch spine at k={} ({})",
+                        k,
+                        if minted_here {
+                            "minted here"
+                        } else {
+                            "adopted"
+                        }
+                    );
                     // The winner hands the SECRET root to siblings current at k−1; they verify by open-success and derive. k=1 has no prior epoch anywhere — siblings jump via ckpt_state instead.
                     if minted_here {
-                        if let (Some((root, fe)), Some((_, prev_epoch)), Some(kp)) = (root.map(|r| (r, fanout_epoch)), prev, self.device_keypair.as_ref()) {
-                            let seal_key = crate::crypto::clutch::fleet_epoch_seal_key(&prev_epoch, b"ckpt_root");
+                        if let (Some((root, fe)), Some((_, prev_epoch)), Some(kp)) = (
+                            root.map(|r| (r, fanout_epoch)),
+                            prev,
+                            self.device_keypair.as_ref(),
+                        ) {
+                            let seal_key = crate::crypto::clutch::fleet_epoch_seal_key(
+                                &prev_epoch,
+                                b"ckpt_root",
+                            );
                             if let Ok(sealed) = kete::encrypt_bytes(&root, &seal_key) {
-                                if let Ok(frame) = crate::network::fgtw::protocol::build_ckpt_root_vsf(k, fe, sealed, kp.public.as_bytes(), kp.secret.as_bytes()) {
+                                if let Ok(frame) =
+                                    crate::network::fgtw::protocol::build_ckpt_root_vsf(
+                                        k,
+                                        fe,
+                                        sealed,
+                                        kp.public.as_bytes(),
+                                        kp.secret.as_bytes(),
+                                    )
+                                {
                                     self.dispatch_frame_to_siblings(frame);
                                 }
                             }
@@ -338,7 +383,10 @@ impl PhotonApp {
             return;
         }
         // Sweep-cadence bound: a wedged bootstrap (custody unreadable, fgtw down) must not become a per-frame fetch storm.
-        if self.ckpt_last_attempt.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(45)) {
+        if self
+            .ckpt_last_attempt
+            .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(45))
+        {
             return;
         }
         self.ckpt_last_attempt = Some(Instant::now());
@@ -362,28 +410,49 @@ impl PhotonApp {
                 let _ = tx.send(o);
             };
             // The fan-out epoch names WHICH fleet key folds into the derivation — recover the pair together so they can't skew.
-            let (fanout_epoch, fk) = match fleet::recover_fleet_key_with_epoch(&hp, &kp, Some(&storage)) {
-                Ok(Some((e, k))) => (e, k),
-                _ => (0, fleet_key),
-            };
+            let (fanout_epoch, fk) =
+                match fleet::recover_fleet_key_with_epoch(&hp, &kp, Some(&storage)) {
+                    Ok(Some((e, k))) => (e, k),
+                    _ => (0, fleet_key),
+                };
             if let Some((have_k, have_epoch)) = cur {
                 // Steady-state advance (rotation edge): push k+1 folding the fresh key; a loss means a sibling minted — its ckpt_root frame carries the root home.
                 let commit = crate::crypto::clutch::ckpt_commit(&root);
                 match fleet::push_checkpoint(&hp, &kp, have_k + 1, commit, fanout_epoch) {
                     Ok(None) => {
-                        let epoch = crate::crypto::clutch::advance_fleet_epoch(&have_epoch, &root, &fk, fanout_epoch, have_k + 1);
-                        let state = fleet::ckpt_state_bytes(have_k + 1, &epoch, Some((have_k, have_epoch)));
+                        let epoch = crate::crypto::clutch::advance_fleet_epoch(
+                            &have_epoch,
+                            &root,
+                            &fk,
+                            fanout_epoch,
+                            have_k + 1,
+                        );
+                        let state =
+                            fleet::ckpt_state_bytes(have_k + 1, &epoch, Some((have_k, have_epoch)));
                         if let Err(e) = fleet::ckpt_custody_write(&fk, &state, &kp, &hp) {
-                            crate::logf!("CKPT: custody write failed (spine still advanced): {}", e);
+                            crate::logf!(
+                                "CKPT: custody write failed (spine still advanced): {}",
+                                e
+                            );
                         }
-                        send(CkptOutcome::Advanced { k: have_k + 1, epoch, prev: Some((have_k, have_epoch)), root: Some(root), fanout_epoch, minted_here: true });
+                        send(CkptOutcome::Advanced {
+                            k: have_k + 1,
+                            epoch,
+                            prev: Some((have_k, have_epoch)),
+                            root: Some(root),
+                            fanout_epoch,
+                            minted_here: true,
+                        });
                     }
                     Ok(Some((wk, _, _))) => {
                         crate::logf!("CKPT: lost the k={} race to a sibling (chain holds k={}) — adopting via its root hand-off", have_k + 1, wk);
                         send(CkptOutcome::Idle);
                     }
                     Err(e) => {
-                        crate::logf!("CKPT: checkpoint push failed (re-arms on the next edge): {}", e);
+                        crate::logf!(
+                            "CKPT: checkpoint push failed (re-arms on the next edge): {}",
+                            e
+                        );
                         send(CkptOutcome::Idle);
                     }
                 }
@@ -392,7 +461,14 @@ impl PhotonApp {
             // Bootstrap: no spine here. Custody first (a sibling may have minted), else mint epoch 0 (the 2MB reservoir collapse — the one-time fleet birth cost) and race k=1 on the chain.
             if let Some(bytes) = fleet::ckpt_custody_read(&fk) {
                 if let Some((k, epoch, prev)) = fleet::ckpt_state_decode(&bytes) {
-                    send(CkptOutcome::Advanced { k, epoch, prev, root: None, fanout_epoch, minted_here: false });
+                    send(CkptOutcome::Advanced {
+                        k,
+                        epoch,
+                        prev,
+                        root: None,
+                        fanout_epoch,
+                        minted_here: false,
+                    });
                     return;
                 }
             }
@@ -411,18 +487,35 @@ impl PhotonApp {
                     return;
                 }
             };
-            let epoch_zero = crate::crypto::clutch::mint_fleet_epoch_seed(&kp.public.to_bytes(), &genesis_hash, &fk);
+            let epoch_zero = crate::crypto::clutch::mint_fleet_epoch_seed(
+                &kp.public.to_bytes(),
+                &genesis_hash,
+                &fk,
+            );
             let commit = crate::crypto::clutch::ckpt_commit(&root);
             match fleet::push_checkpoint(&hp, &kp, 1, commit, fanout_epoch) {
                 Ok(None) => {
-                    let epoch = crate::crypto::clutch::advance_fleet_epoch(&epoch_zero, &root, &fk, fanout_epoch, 1);
+                    let epoch = crate::crypto::clutch::advance_fleet_epoch(
+                        &epoch_zero,
+                        &root,
+                        &fk,
+                        fanout_epoch,
+                        1,
+                    );
                     let state = fleet::ckpt_state_bytes(1, &epoch, Some((0, epoch_zero)));
                     if let Err(e) = fleet::ckpt_custody_write(&fk, &state, &kp, &hp) {
                         crate::logf!("CKPT: bootstrap custody write failed (siblings jump via ckpt_state): {}", e);
                     }
                     crate::log("CKPT: fleet epoch spine born — reservoir minted, k=1 on the chain");
                     // No root broadcast at k=1: nobody else holds epoch 0, so siblings jump via ckpt_state/custody.
-                    send(CkptOutcome::Advanced { k: 1, epoch, prev: Some((0, epoch_zero)), root: None, fanout_epoch, minted_here: true });
+                    send(CkptOutcome::Advanced {
+                        k: 1,
+                        epoch,
+                        prev: Some((0, epoch_zero)),
+                        root: None,
+                        fanout_epoch,
+                        minted_here: true,
+                    });
                 }
                 Ok(Some((wk, _, _))) => {
                     crate::logf!("CKPT: bootstrap race lost (chain holds k={}) — adopting the winner's custody next sweep", wk);
@@ -442,8 +535,7 @@ impl PhotonApp {
         if self.fleet_evt_rx.is_some() {
             return;
         }
-        let Some(hp) = self.our_handle_proof()
-        else {
+        let Some(hp) = self.our_handle_proof() else {
             return;
         };
         let (tx, rx) = std::sync::mpsc::channel::<(&'static str, [u8; 32])>();
@@ -540,8 +632,7 @@ impl PhotonApp {
         let Some(our_device) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else {
             return;
         };
-        let Some(our_hp) = self.our_handle_proof()
-        else {
+        let Some(our_hp) = self.our_handle_proof() else {
             return;
         };
         let mut changed = false;
@@ -669,7 +760,10 @@ impl PhotonApp {
                     }
                     // Every key edge refreshes OUR wipe-proof recovery slot — the path a wiped, sibling-less device gets its contacts back thru.
                     fleet::publish_recovery_slot(&k, &identity_seed, &device_key, &hp);
-                    crate::logf!("FANOUT: rotated to epoch {} — egged siblings wrapped", epoch);
+                    crate::logf!(
+                        "FANOUT: rotated to epoch {} — egged siblings wrapped",
+                        epoch
+                    );
                 }
                 Err(e) => crate::logf!("FANOUT: compliance rotation failed: {}", e),
             }
@@ -811,8 +905,8 @@ impl PhotonApp {
             .as_ref()
             .map(|fs| (fs.global.clone(), fs.devices.clone()));
         let fkc = self.fleet_key_ram.clone();
-        std::thread::spawn(
-            move || match fleet::recover_or_establish_fleet_key(&hp, &kp, Some(&storage)) {
+        std::thread::spawn(move || {
+            match fleet::recover_or_establish_fleet_key(&hp, &kp, Some(&storage)) {
                 Ok(Some(k)) => {
                     if let Err(e) = storage.write_addr(&addr, &k) {
                         crate::logf!("FLEET: fleet key cache failed: {}", e);
@@ -836,8 +930,8 @@ impl PhotonApp {
                 }
                 Ok(None) => {}
                 Err(e) => crate::logf!("FLEET: post-bind key sync failed: {}", e),
-            },
-        );
+            }
+        });
     }
 
     /// Persist a fleet key received over pairing (new device), overwriting any local placeholder so this device converges on the founder's key.
@@ -851,10 +945,7 @@ impl PhotonApp {
                 *g = Some(*key);
             }
             // Key edge → refresh the wipe-proof recovery slot (off-thread: it is a blocking upload).
-            if let (Some(kp), Some(hp)) = (
-                self.device_keypair.clone(),
-                self.our_handle_proof(),
-            ) {
+            if let (Some(kp), Some(hp)) = (self.device_keypair.clone(), self.our_handle_proof()) {
                 let (k, seed) = (*key, session.identity_seed);
                 std::thread::spawn(move || {
                     crate::network::fgtw::fleet::publish_recovery_slot(&k, &seed, &kp, &hp);
@@ -888,7 +979,10 @@ impl PhotonApp {
     }
 
     /// Merge pulled roster entries into the live contact list — the local half of the roster CRDT. New entries add as Pending stubs (then ONE serialized keygen re-CLUTCHes them; the tick loop does the rest one McEliece at a time so a multi-contact join doesn't starve the UI). For contacts we already hold, a strictly NEWER entry wins last-writer: its published_name/avatar_pin overwrite ours, and a newer tombstone removes the contact (state + index row; conversation content stays in rārangi — ostracism not erasure). Ties keep ours — the slot-side merge_rosters resolves exact ties deterministically, so pushing our copy converges.
-    pub(super) fn merge_roster_entries(&mut self, entries: Vec<crate::network::fgtw::fleet::RosterEntry>) {
+    pub(super) fn merge_roster_entries(
+        &mut self,
+        entries: Vec<crate::network::fgtw::fleet::RosterEntry>,
+    ) {
         let mut added = 0usize;
         let mut adopted = 0usize;
         let mut removed = 0usize;
@@ -992,8 +1086,10 @@ impl PhotonApp {
                 continue; // removal of a contact we never held — nothing to do locally
             }
             // SELF-GUARD: never mint a NEW row bearing OUR handle_proof under a foreign key — that is the self-contact stub (an empty duplicate whose keygen queue CLUTCHes at our own fleet; the census caught two of them beside the legit self row, 2026-08-11). The true notes-to-self row keys on our identity pid and merges thru the position() match above; anything else claiming our proof is stale roster debris.
-            if let Some((our_proof, our_seed)) =
-                self.session.as_ref().map(|s| (s.handle_proof, s.identity_seed))
+            if let Some((our_proof, our_seed)) = self
+                .session
+                .as_ref()
+                .map(|s| (s.handle_proof, s.identity_seed))
             {
                 if e.handle_proof == our_proof
                     && e.handle_hash != crate::crypto::clutch::identity_party_id(&our_seed)
@@ -1086,10 +1182,7 @@ impl PhotonApp {
         if self.roster_pull_rx.is_some() {
             return;
         }
-        let (Some(hp), Some(fleet_key)) = (
-            self.our_handle_proof(),
-            self.fleet_key_cached(),
-        ) else {
+        let (Some(hp), Some(fleet_key)) = (self.our_handle_proof(), self.fleet_key_cached()) else {
             return;
         };
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1182,7 +1275,9 @@ impl PhotonApp {
     /// Rows for the Fleet page: `(pubkey, is_self, online, retired, name, link)`. Current members first (self, then siblings), then the retired inventory — signed out, brand still ours (`fleet_retired`, refreshed on page entry).
     /// `link` is the sibling's LINK STATE in plain words — how far the secure channel to that device has got, plus whether its fan-out pair is egged (Phase A). It is the one place a stuck pairing is visible without reading a log: "securing 5/8" names whose side the ball is on, and "not egged yet" says the device cannot receive the fleet key until its ceremony finishes.
     #[allow(clippy::type_complexity)]
-    pub(super) fn fleet_device_rows(&mut self) -> Vec<([u8; 32], bool, bool, bool, String, String, Option<u32>)> {
+    pub(super) fn fleet_device_rows(
+        &mut self,
+    ) -> Vec<([u8; 32], bool, bool, bool, String, String, Option<u32>)> {
         use crate::network::fgtw::fleet::device_name_default;
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return Vec::new();
@@ -1191,7 +1286,15 @@ impl PhotonApp {
         let ours = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
         if let Some(me) = ours {
             // This device needs no tier — it IS the vantage point.
-            rows.push((me, true, true, false, device_name_default(&me, &seed), String::new(), None));
+            rows.push((
+                me,
+                true,
+                true,
+                false,
+                device_name_default(&me, &seed),
+                String::new(),
+                None,
+            ));
         }
         // The egged probe remembered (the Fleet page gathers rows per FRAME; a vault read per sibling per frame is a librarian round trip for an answer that only changes at ceremony completion, which clears its entry).
         let mut egged_cache = std::mem::take(&mut self.egged_cache);
@@ -1220,7 +1323,15 @@ impl PhotonApp {
         }
         self.egged_cache = egged_cache;
         for pk in &self.fleet_retired {
-            rows.push((*pk, false, false, true, device_name_default(pk, &seed), String::new(), None));
+            rows.push((
+                *pk,
+                false,
+                false,
+                true,
+                device_name_default(pk, &seed),
+                String::new(),
+                None,
+            ));
         }
         rows
     }
@@ -1231,8 +1342,7 @@ impl PhotonApp {
         self.fleet_lock_armed = None;
         self.fleet_unlock_armed = None;
         self.fleet_retired.clear();
-        let Some(hp) = self.our_handle_proof()
-        else {
+        let Some(hp) = self.our_handle_proof() else {
             return;
         };
         match crate::network::fgtw::fleet::retired_devices(&hp) {
@@ -1297,7 +1407,10 @@ impl PhotonApp {
             if !cleared.is_empty() {
                 if let Some(storage) = self.storage.as_ref() {
                     for &i in &cleared {
-                        crate::logf!("FLEET: {} is UNLOCKED — the fleet trusts it again", crate::fp(&self.contacts[i].public_identity.key));
+                        crate::logf!(
+                            "FLEET: {} is UNLOCKED — the fleet trusts it again",
+                            crate::fp(&self.contacts[i].public_identity.key)
+                        );
                         let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
                     }
                 }
@@ -1305,7 +1418,11 @@ impl PhotonApp {
             }
         }
         // Persisted rows count too: at boot the settings cache may not have loaded yet, but a row flagged in a previous session must keep its refusal from the first tick.
-        for c in self.contacts.iter().filter(|c| c.is_sibling && c.locked_out) {
+        for c in self
+            .contacts
+            .iter()
+            .filter(|c| c.is_sibling && c.locked_out)
+        {
             if !locked.contains(c.public_identity.as_bytes()) {
                 locked.push(*c.public_identity.as_bytes());
             }
@@ -1327,7 +1444,10 @@ impl PhotonApp {
         if !changed_rows.is_empty() {
             if let Some(storage) = self.storage.as_ref() {
                 for &i in &changed_rows {
-                    crate::logf!("FLEET: {} is LOCKED OUT — frames refused, key rotating away", crate::fp(&self.contacts[i].public_identity.key));
+                    crate::logf!(
+                        "FLEET: {} is LOCKED OUT — frames refused, key rotating away",
+                        crate::fp(&self.contacts[i].public_identity.key)
+                    );
                     let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
                 }
             }
@@ -1363,13 +1483,20 @@ impl PhotonApp {
             .and_then(|fs| fs.effective("fleet.locked").map(|b| b.to_vec()))
             .unwrap_or_default();
         if legacy.chunks_exact(32).any(|c| c == pk) {
-            let rewritten: Vec<u8> = legacy.chunks_exact(32).filter(|c| *c != pk).flatten().copied().collect();
+            let rewritten: Vec<u8> = legacy
+                .chunks_exact(32)
+                .filter(|c| *c != pk)
+                .flatten()
+                .copied()
+                .collect();
             self.settings_set("fleet.locked", rewritten);
         }
         self.apply_locked_set();
         self.spawn_worker_unlock_push(pk);
         self.spawn_fleet_key_rotate_for_compliance();
-        self.ready_toast = Some(format!("{name} unlocked \u{2014} it can rejoin the fleet on its next attest."));
+        self.ready_toast = Some(format!(
+            "{name} unlocked \u{2014} it can rejoin the fleet on its next attest."
+        ));
     }
 
     /// Best-effort off-thread push of ONE device unlock to the worker (fire-and-log). Idempotent (an absent lock is the goal state); the durable re-drive is `reconcile_worker_unlocks` on attest-success.
@@ -1382,9 +1509,18 @@ impl PhotonApp {
             Some(kp) => kp,
             None => return,
         };
-        std::thread::spawn(move || match crate::network::fgtw::fleet::unlock_device(&kp, &hp, &pk) {
-            Ok(()) => crate::logf!("FLEET: worker lock cleared for {} — the device can announce again", crate::fp(&pk)),
-            Err(e) => crate::logf!("FLEET: worker unlock push failed for {} ({}) — will re-drive on next attest", crate::fp(&pk), e),
+        std::thread::spawn(move || {
+            match crate::network::fgtw::fleet::unlock_device(&kp, &hp, &pk) {
+                Ok(()) => crate::logf!(
+                    "FLEET: worker lock cleared for {} — the device can announce again",
+                    crate::fp(&pk)
+                ),
+                Err(e) => crate::logf!(
+                    "FLEET: worker unlock push failed for {} ({}) — will re-drive on next attest",
+                    crate::fp(&pk),
+                    e
+                ),
+            }
         });
     }
 
@@ -1421,10 +1557,19 @@ impl PhotonApp {
             Some(kp) => kp,
             None => return,
         };
-        std::thread::spawn(move || match crate::network::fgtw::fleet::lock_device(&kp, &hp, &pk) {
-            Ok(()) => crate::logf!("FLEET: worker lock recorded for {} — brick now survives a wipe", crate::fp(&pk)),
-            Err(e) => crate::logf!("FLEET: worker lock push failed for {} ({}) — will re-drive on next attest", crate::fp(&pk), e),
-        });
+        std::thread::spawn(
+            move || match crate::network::fgtw::fleet::lock_device(&kp, &hp, &pk) {
+                Ok(()) => crate::logf!(
+                    "FLEET: worker lock recorded for {} — brick now survives a wipe",
+                    crate::fp(&pk)
+                ),
+                Err(e) => crate::logf!(
+                    "FLEET: worker lock push failed for {} ({}) — will re-drive on next attest",
+                    crate::fp(&pk),
+                    e
+                ),
+            },
+        );
     }
 
     /// Re-push every locally-locked device to the worker (durable reconcile). Called on attest-success — an infrequent, non-spammy edge — so a lock whose initial push failed (offline, stale-chain race) eventually reaches the worker; the puts are idempotent so re-pushing a known lock costs one no-op write.

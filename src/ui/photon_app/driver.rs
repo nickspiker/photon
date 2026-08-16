@@ -129,7 +129,9 @@ impl FluorApp for PhotonApp {
     fn init(&mut self, ctx: &mut Context) {
         // Register Photon's Oxanium font weights with fluor's shared `TextRenderer` so the logo wordmark can resolve `Family::Name("Oxanium")`. ExtraLight/Light/Regular/Medium/SemiBold/Bold/ExtraBold = numeric weights 200/300/400/500/600/700/800. The logo uses weight 800.
         let db = ctx.text.font_system_mut().db_mut();
-        db.load_font_data(include_bytes!("../../../assets/Oxanium/Oxanium-ExtraLight.ttf").to_vec());
+        db.load_font_data(
+            include_bytes!("../../../assets/Oxanium/Oxanium-ExtraLight.ttf").to_vec(),
+        );
         db.load_font_data(include_bytes!("../../../assets/Oxanium/Oxanium-Light.ttf").to_vec());
         // Regular weight uses the `+glyphs` superset: identical to plain Oxanium-Regular for 0x20-0x7e (normal text) but adds the dozenal digit glyphs in the reserved control-code block 0x10-0x1b (DLE..ESC = digits 0..11, Zil..Stelor). Rendering a dozenal number is then a plain draw_text of those bytes at weight 400 — no runtime SVG, no separate font family. Other weights stay on the plain faces (the dozenal glyphs only need to exist at one weight, and the version string renders at 400).
         db.load_font_data(
@@ -524,7 +526,9 @@ impl FluorApp for PhotonApp {
 
         // UNATTENDED MODE (off by default, Security → "Auto-attest on reboot"): the boot-locked tohu session dies on reboot BY DESIGN, so a normal reboot lands on the typed-attest screen. When the operator has explicitly opted a failsafe box into unattended mode, a device-bound reboot capsule (sealed under the hardware fingerprint, not the wairua) survives the reboot — adopt it into tohu's live session here so the identical resume path below runs with no handle typed. The capsule opens ONLY on the same hardware; a copy elsewhere fails. If tohu already has a live session (warm restart, same boot) this is a no-op.
         if tohu::session().is_none() {
-            if let Some(cap) = Self::reboot_capsule_path().and_then(|p| tohu::load_reboot_capsule(&p)) {
+            if let Some(cap) =
+                Self::reboot_capsule_path().and_then(|p| tohu::load_reboot_capsule(&p))
+            {
                 crate::log("RESUME: unattended reboot capsule opened — auto-attesting with no handle (Security toggle is ON)");
                 let _ = tohu::set_session(&cap); // re-arm the normal (boot-locked) session so the rest of this boot behaves like a warm restart
             }
@@ -580,8 +584,10 @@ impl FluorApp for PhotonApp {
                         let ms_contacts = t_phase.elapsed().as_millis();
                         let t_phase = std::time::Instant::now();
                         // One-time re-home onto the participant-set table key (the local key used to mix our raw seed with their party id). Self-terminating: it copies only when the legacy table has rows and the new one does not, so every launch after the first is a no-op and the MIGRATION line stops appearing. Runs BEFORE messages load, or the first read would find an empty table and the conversation would look wiped.
-                        match crate::storage::contacts::migrate_conversation_tables(&self.contacts, &s)
-                        {
+                        match crate::storage::contacts::migrate_conversation_tables(
+                            &self.contacts,
+                            &s,
+                        ) {
                             Ok(n) if n > 0 => crate::logf!(
                                 "MIGRATION: {} conversation(s) re-homed onto participant-set keys",
                                 n
@@ -643,8 +649,10 @@ impl FluorApp for PhotonApp {
                         // Load each contact's conversation too — load_all_contacts only loads per-peer contact STATE from the vault, not the messages (those live in the rārangi DB, loaded separately). Without this the resume frame paints contacts with empty message lists, and the later query_resume result can't fix it: on_query_result merges by handle_proof and SKIPS already-loaded contacts as duplicates, so the message-bearing copy is discarded → history looks wiped until the next app launch. Loading here makes resume show full history at once.
                         let t_phase = std::time::Instant::now();
                         for ci in 0..self.contacts.len() {
-                            let (proof, key) =
-                                (self.contacts[ci].handle_proof, self.contacts[ci].handle_hash);
+                            let (proof, key) = (
+                                self.contacts[ci].handle_proof,
+                                self.contacts[ci].handle_hash,
+                            );
                             let Some(conv) = self.conv_mut_of(ci) else {
                                 continue;
                             };
@@ -680,7 +688,12 @@ impl FluorApp for PhotonApp {
                                 let Some(conv) = self.conv_of(ci) else {
                                     continue;
                                 };
-                                census.push((fp, *conv.id().as_bytes(), conv.messages.len(), detail));
+                                census.push((
+                                    fp,
+                                    *conv.id().as_bytes(),
+                                    conv.messages.len(),
+                                    detail,
+                                ));
                             }
                             for (fp, table, rows, detail) in &census {
                                 crate::logf!("STORAGE: census — {} table {} holds {} row(s) in RAM after load{}", fp, hex::encode(&table[..4]), rows, detail);
@@ -702,16 +715,20 @@ impl FluorApp for PhotonApp {
                                 for j in (i + 1)..self.contacts.len() {
                                     if !self.contacts[i].is_sibling
                                         && !self.contacts[j].is_sibling
-                                        && self.contacts[i].handle_proof == self.contacts[j].handle_proof
-                                        && self.contacts[i].handle_hash != self.contacts[j].handle_hash
+                                        && self.contacts[i].handle_proof
+                                            == self.contacts[j].handle_proof
+                                        && self.contacts[i].handle_hash
+                                            != self.contacts[j].handle_hash
                                     {
                                         crate::logf!("STORAGE: census — DUPLICATE CONTACT for {}: two rows with different conversation keys ({}… vs {}…) — conversations are SPLIT across them", crate::fp(&self.contacts[i].handle_proof), hex::encode(&self.contacts[i].handle_hash[..4]), hex::encode(&self.contacts[j].handle_hash[..4]));
                                     }
                                 }
                             }
                             // SELF-STUB PURGE: a non-sibling row carrying OUR handle_proof under a handle_hash that is NOT our identity pid is a corrupt self-contact stub — the source of the "CLUTCH offers toward its OWN identity" storm (ticketed 2026-08-07; the census caught THREE self rows on one desktop, 2026-08-11, two of them empty stubs spraying 573KB offers at the fleet's own contacts). Empty-conversation stubs only: a row that somehow holds messages is somebody's data and stays for a deliberate repair, never a boot-time sweep.
-                            if let Some((our_proof, our_seed)) =
-                                self.session.as_ref().map(|s| (s.handle_proof, s.identity_seed))
+                            if let Some((our_proof, our_seed)) = self
+                                .session
+                                .as_ref()
+                                .map(|s| (s.handle_proof, s.identity_seed))
                             {
                                 let our_pid = crate::crypto::clutch::identity_party_id(&our_seed);
                                 let stub_hashes: Vec<[u8; 32]> = self
@@ -722,7 +739,9 @@ impl FluorApp for PhotonApp {
                                         !c.is_sibling
                                             && c.handle_proof == our_proof
                                             && c.handle_hash != our_pid
-                                            && self.conv_of(*ci).map_or(true, |v| v.messages.is_empty())
+                                            && self
+                                                .conv_of(*ci)
+                                                .map_or(true, |v| v.messages.is_empty())
                                     })
                                     .map(|(_, c)| c.handle_hash)
                                     .collect();
@@ -731,22 +750,26 @@ impl FluorApp for PhotonApp {
                                         crate::logf!("STORAGE: census — PURGING empty self-contact stub (key {}…) — its ceremony queue dies with it", hex::encode(&hh[..4]));
                                         let _ = crate::storage::contacts::delete_contact(hh, &s);
                                     }
-                                    self.contacts.retain(|c| !stub_hashes.contains(&c.handle_hash));
+                                    self.contacts
+                                        .retain(|c| !stub_hashes.contains(&c.handle_hash));
                                     // Rewrite the index too, or the next launch resurrects the stubs from the list (same rule as the ostracism path).
-                                    let index: Vec<crate::storage::contacts::ContactIdentity> = self
-                                        .contacts
-                                        .iter()
-                                        .filter(|c| !c.is_sibling)
-                                        .map(|c| crate::storage::contacts::ContactIdentity {
-                                            handle_proof: c.handle_proof,
-                                            party_id: c.handle_hash,
-                                            avatar_pin: c.avatar_pin,
-                                        })
-                                        .collect();
+                                    let index: Vec<crate::storage::contacts::ContactIdentity> =
+                                        self.contacts
+                                            .iter()
+                                            .filter(|c| !c.is_sibling)
+                                            .map(|c| crate::storage::contacts::ContactIdentity {
+                                                handle_proof: c.handle_proof,
+                                                party_id: c.handle_hash,
+                                                avatar_pin: c.avatar_pin,
+                                            })
+                                            .collect();
                                     if let Err(e) =
                                         crate::storage::contacts::save_contact_list(&index, &s)
                                     {
-                                        crate::logf!("STORAGE: census — stub-purge index rewrite failed: {}", e);
+                                        crate::logf!(
+                                            "STORAGE: census — stub-purge index rewrite failed: {}",
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -828,10 +851,11 @@ impl FluorApp for PhotonApp {
                                 let seed = remembered.identity_seed;
                                 let tx = self.avatar_dl_tx.clone();
                                 std::thread::spawn(move || {
-                                    let pixels = crate::ui::avatar::load_avatar_from_bytes_from_seed(
-                                        &bytes, &seed,
-                                    )
-                                    .map(|(_, px)| px);
+                                    let pixels =
+                                        crate::ui::avatar::load_avatar_from_bytes_from_seed(
+                                            &bytes, &seed,
+                                        )
+                                        .map(|(_, px)| px);
                                     let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
                                         owner: None,
                                         pixels,
@@ -901,7 +925,11 @@ impl FluorApp for PhotonApp {
         // Unattended-confirm (Security page) ARM/DISARM/cancel — dispatched HERE, at the top of on_activate, BEFORE any state gate. (These pills previously sat inside the `AppState::Conversation` block and so never fired on the Settings page — the arm click reached on_activate but was skipped.)
         if self.unattended_confirm.is_some() {
             if self.unattended_confirm_base != HIT_NONE && hit_id == self.unattended_confirm_base {
-                let typed: String = self.unattended_confirm_tb.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
+                let typed: String = self
+                    .unattended_confirm_tb
+                    .as_ref()
+                    .map(|tb| tb.chars.iter().collect())
+                    .unwrap_or_default();
                 let typed_seed = crate::types::Handle::to_identity_seed(&typed);
                 let live_seed = self.session.as_ref().map(|s| s.identity_seed);
                 if Some(typed_seed) == live_seed {
@@ -911,7 +939,11 @@ impl FluorApp for PhotonApp {
                         cb.set_checked(target_on);
                     }
                     self.change_focus(None);
-                    self.ready_toast = Some(if target_on { "Unattended auto-attest ARMED — this box reboots as you".to_string() } else { "Unattended auto-attest disarmed".to_string() });
+                    self.ready_toast = Some(if target_on {
+                        "Unattended auto-attest ARMED — this box reboots as you".to_string()
+                    } else {
+                        "Unattended auto-attest disarmed".to_string()
+                    });
                     self.ready_toast_screen = None;
                 } else {
                     self.unattended_confirm_failed = true;
@@ -920,7 +952,9 @@ impl FluorApp for PhotonApp {
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
-            if self.unattended_confirm_base != HIT_NONE && hit_id == self.unattended_confirm_base.wrapping_add(1) {
+            if self.unattended_confirm_base != HIT_NONE
+                && hit_id == self.unattended_confirm_base.wrapping_add(1)
+            {
                 self.unattended_confirm = None;
                 self.unattended_confirm_failed = false;
                 self.change_focus(None);
@@ -968,7 +1002,9 @@ impl FluorApp for PhotonApp {
             && self.locked_retry_hit != HIT_NONE
             && matches!(self.state, AppState::Launch(LaunchState::Locked))
         {
-            crate::log("LOCKED: user claims an unlock — returning to the resume screen for a fresh attest");
+            crate::log(
+                "LOCKED: user claims an unlock — returning to the resume screen for a fresh attest",
+            );
             self.state = AppState::Launch(LaunchState::Fresh);
             self.refocus_handle_select_all();
             ctx.window.request_redraw();
@@ -1172,9 +1208,9 @@ impl FluorApp for PhotonApp {
                                     self.session = None;
                                     self.private_s = crate::crypto::blind::PrivateS::None;
                                     self.pending_broadcast_signal = -1;
-                                    self.state = AppState::Launch(LaunchState::Error(
-                                        format!("Enter your handle to confirm unlocking {name}."),
-                                    ));
+                                    self.state = AppState::Launch(LaunchState::Error(format!(
+                                        "Enter your handle to confirm unlocking {name}."
+                                    )));
                                     self.clear_handle_for_reproof();
                                     crate::logf!("FLEET: unlock of {} armed — de-attested, awaiting handle confirmation", name);
                                 }
@@ -1194,7 +1230,12 @@ impl FluorApp for PhotonApp {
                                     // Locking the LAST other live device leaves this one alone holding the fleet — if it is then lost while the lock stands, no member can ever sign the unlock (custodian supersession is the only exit, and it isn't built). Say so at the confirmation.
                                     let other_live = devices
                                         .iter()
-                                        .filter(|(rpk, is_self, _, retired, _, _, _)| !*is_self && !*retired && *rpk != pk && !self.is_locked_device(rpk))
+                                        .filter(|(rpk, is_self, _, retired, _, _, _)| {
+                                            !*is_self
+                                                && !*retired
+                                                && *rpk != pk
+                                                && !self.is_locked_device(rpk)
+                                        })
                                         .count();
                                     let warn = if other_live == 0 {
                                         " WARNING: this leaves the device you are holding as the ONLY one able to unlock it."
@@ -1206,9 +1247,9 @@ impl FluorApp for PhotonApp {
                                     self.session = None;
                                     self.private_s = crate::crypto::blind::PrivateS::None;
                                     self.pending_broadcast_signal = -1;
-                                    self.state = AppState::Launch(LaunchState::Error(
-                                        format!("Enter your handle to confirm locking out {name}.{warn}"),
-                                    ));
+                                    self.state = AppState::Launch(LaunchState::Error(format!(
+                                        "Enter your handle to confirm locking out {name}.{warn}"
+                                    )));
                                     self.clear_handle_for_reproof();
                                     crate::logf!("FLEET: lock-out of {} armed — de-attested, awaiting handle confirmation", name);
                                 }
@@ -1230,7 +1271,10 @@ impl FluorApp for PhotonApp {
                                         Ok(()) => {
                                             crate::logf!("FLEET: released the brand on {} — hardware free for a new identity", name);
                                             // Per-key entry, same shape as the locked set: concurrent releases of different brands commute instead of racing one LWW blob.
-                                            self.settings_set(&format!("fleet.released.{}", hex::encode(pk)), pk.to_vec());
+                                            self.settings_set(
+                                                &format!("fleet.released.{}", hex::encode(pk)),
+                                                pk.to_vec(),
+                                            );
                                             self.fleet_retired.retain(|d| d != &pk);
                                             self.ready_toast = Some(format!("{name} released \u{2014} it can join a new identity now."));
                                         }
@@ -1251,7 +1295,9 @@ impl FluorApp for PhotonApp {
                         // Device-row tap → copy that device's name to the clipboard.
                         let idx = (slot - 16) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((_pk, _is_self, _online, _retired, name, _link, _tier)) = devices.get(idx) {
+                        if let Some((_pk, _is_self, _online, _retired, name, _link, _tier)) =
+                            devices.get(idx)
+                        {
                             let name = name.clone();
                             if self.copy_to_clipboard(&name) {
                                 self.ready_toast = Some(format!("Copied {name}"));
@@ -1543,11 +1589,14 @@ impl FluorApp for PhotonApp {
                         self.selected_msg = None;
                         self.scene_dirty = true;
                     } else if let Some(glyph) = self.react_strip_glyphs.get(slot).cloned() {
-                        let ours: Option<String> = self
-                            .conv_of(sci)
-                            .and_then(|v| v.current_reaction(ts, true));
+                        let ours: Option<String> =
+                            self.conv_of(sci).and_then(|v| v.current_reaction(ts, true));
                         let toggled_off = ours.as_deref() == Some(glyph.as_str());
-                        let body = if toggled_off { String::new() } else { glyph.clone() };
+                        let body = if toggled_off {
+                            String::new()
+                        } else {
+                            glyph.clone()
+                        };
                         if self.send_chain_message(
                             sci,
                             &body,
@@ -2281,7 +2330,7 @@ impl FluorApp for PhotonApp {
                         if matches!(self.state, AppState::ContactPanel(_)) {
                             self.contact_boot_armed = false;
                             self.state = AppState::Conversation;
-                self.reset_contact_ping_backoff();
+                            self.reset_contact_ping_backoff();
                             // Same re-entry clear as the Back button — the conversation is front-of-eyes again.
                             if let Some(ci) = self.active_contact() {
                                 self.clear_unread(ci);
@@ -2711,15 +2760,13 @@ impl FluorApp for PhotonApp {
         // Fleet chain replication push: any friendship chain that mutated since its last push ships to the siblings. Constant-time no-op when nothing changed.
         self.drive_chain_replication();
 
-
         // SETTINGS ARE LOCAL-FIRST. A launch pushes NOTHING: settings live in this device's vault, and the fleet slot is consulted only when the vault has no value for a key. They travel outward exactly when the user adjusts one (`save_*_setting` → `persist_and_push_settings`) — never on a timer, never "just to be safe".
         // The old unconditional re-push here treated every launch as an edit. That is what made a launch able to damage the fleet: the push is pull-merge-push, so a pull that failed for ANY reason (network blip, AEAD failure across a key rotation, a roster tag the reader didn't know) rebased the whole slot on empty and the push overwrote everyone's settings with this device's view. Observed on the PRST2→PRST3 bump — "state pulled — 8 roster entries, 0 global settings, 0 device maps". A device that never edits anything must never be able to do that.
         // The ROSTER still re-pushes: it is a CRDT of contacts this device genuinely holds, its merge is union-by-handle_proof with per-entry LWW, and a fleet formed before roster-sync existed needs a seed. Settings have no such need — a value nobody changed is not news.
         if !self.settings_repushed
             && self.session.is_some()
             && self.fleet_key_cached().is_some()
-            && self.our_handle_proof()
-                .is_some()
+            && self.our_handle_proof().is_some()
             && self.device_keypair.is_some()
         {
             self.settings_repushed = true;

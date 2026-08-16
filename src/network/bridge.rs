@@ -28,244 +28,270 @@ pub fn open_term(sealed: &[u8], fleet_key: &[u8; 32]) -> Option<Vec<u8>> {
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 #[allow(dead_code)]
 mod pty_host {
-use std::collections::HashMap;
-use std::os::unix::io::RawFd;
-use std::sync::mpsc::Sender;
+    use std::collections::HashMap;
+    use std::os::unix::io::RawFd;
+    use std::sync::mpsc::Sender;
 
-/// One live PTY session on the host: the master fd (we read shell output from it and write keystrokes to it) and the child pid
-/// (killed on close / nuke). The output-reader thread owns a dup of the master fd and streams `TermOut` events until EOF.
-struct PtySession {
-    master_fd: RawFd,
-    child_pid: libc::pid_t,
-    /// Bumped on NUKE so the stale reader thread's events are dropped once a fresh shell takes the slot.
-    generation: u64,
-}
-
-/// An event from a host PTY reader thread back to the app (which seals + sends it as a `term` DATA/EXIT frame to the client).
-pub enum TermOut {
-    /// Shell produced output for `session_id`.
-    Data { session_id: [u8; 16], generation: u64, bytes: Vec<u8> },
-    /// Shell for `session_id` exited with `code`.
-    Exit { session_id: [u8; 16], generation: u64, code: i32 },
-}
-
-/// The host-side registry of live sessions — lives in the app; every method is cheap and non-blocking (the blocking reads happen on per-session threads that post `TermOut` back through the channel handed to [`Self::open`]).
-#[derive(Default)]
-pub struct BridgeHost {
-    sessions: HashMap<[u8; 16], PtySession>,
-    next_generation: u64,
-}
-
-impl BridgeHost {
-    pub fn new() -> Self {
-        Self::default()
+    /// One live PTY session on the host: the master fd (we read shell output from it and write keystrokes to it) and the child pid
+    /// (killed on close / nuke). The output-reader thread owns a dup of the master fd and streams `TermOut` events until EOF.
+    struct PtySession {
+        master_fd: RawFd,
+        child_pid: libc::pid_t,
+        /// Bumped on NUKE so the stale reader thread's events are dropped once a fresh shell takes the slot.
+        generation: u64,
     }
 
-    /// Whether a session is live.
-    pub fn has(&self, session_id: &[u8; 16]) -> bool {
-        self.sessions.contains_key(session_id)
+    /// An event from a host PTY reader thread back to the app (which seals + sends it as a `term` DATA/EXIT frame to the client).
+    pub enum TermOut {
+        /// Shell produced output for `session_id`.
+        Data {
+            session_id: [u8; 16],
+            generation: u64,
+            bytes: Vec<u8>,
+        },
+        /// Shell for `session_id` exited with `code`.
+        Exit {
+            session_id: [u8; 16],
+            generation: u64,
+            code: i32,
+        },
     }
 
-    pub fn session_count(&self) -> usize {
-        self.sessions.len()
+    /// The host-side registry of live sessions — lives in the app; every method is cheap and non-blocking (the blocking reads happen on per-session threads that post `TermOut` back through the channel handed to [`Self::open`]).
+    #[derive(Default)]
+    pub struct BridgeHost {
+        sessions: HashMap<[u8; 16], PtySession>,
+        next_generation: u64,
     }
 
-    /// Open a fresh shell for `session_id` at `cols`×`rows` — spawns the child via `forkpty` and a reader thread that streams the shell's output back through `out_tx` until EOF, then posts `Exit`.
-    /// Idempotent-ish: an existing session for the same id is killed first (a re-OPEN = reconnect intent).
-    /// Returns the reader-thread's generation, or an error string.
-    pub fn open(
-        &mut self,
-        session_id: [u8; 16],
-        cols: u16,
-        rows: u16,
-        out_tx: Sender<TermOut>,
-    ) -> Result<u64, String> {
-        if self.sessions.contains_key(&session_id) {
-            self.close(&session_id);
+    impl BridgeHost {
+        pub fn new() -> Self {
+            Self::default()
         }
-        let generation = self.next_generation;
-        self.next_generation = self.next_generation.wrapping_add(1);
 
-        let (master_fd, child_pid) = spawn_pty_shell(cols, rows)?;
-        self.sessions.insert(session_id, PtySession { master_fd, child_pid, generation });
-
-        // Reader thread: dup the master so the thread owns its own fd lifetime, then blocking-read until EOF.
-        let read_fd = unsafe { libc::dup(master_fd) };
-        if read_fd < 0 {
-            self.close(&session_id);
-            return Err("dup(master) failed".to_string());
+        /// Whether a session is live.
+        pub fn has(&self, session_id: &[u8; 16]) -> bool {
+            self.sessions.contains_key(session_id)
         }
-        let pid = child_pid;
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 8192];
-            loop {
-                let n = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-                if n > 0 {
-                    let _ = out_tx.send(TermOut::Data {
-                        session_id,
-                        generation,
-                        bytes: buf[..n as usize].to_vec(),
-                    });
+
+        pub fn session_count(&self) -> usize {
+            self.sessions.len()
+        }
+
+        /// Open a fresh shell for `session_id` at `cols`×`rows` — spawns the child via `forkpty` and a reader thread that streams the shell's output back through `out_tx` until EOF, then posts `Exit`.
+        /// Idempotent-ish: an existing session for the same id is killed first (a re-OPEN = reconnect intent).
+        /// Returns the reader-thread's generation, or an error string.
+        pub fn open(
+            &mut self,
+            session_id: [u8; 16],
+            cols: u16,
+            rows: u16,
+            out_tx: Sender<TermOut>,
+        ) -> Result<u64, String> {
+            if self.sessions.contains_key(&session_id) {
+                self.close(&session_id);
+            }
+            let generation = self.next_generation;
+            self.next_generation = self.next_generation.wrapping_add(1);
+
+            let (master_fd, child_pid) = spawn_pty_shell(cols, rows)?;
+            self.sessions.insert(
+                session_id,
+                PtySession {
+                    master_fd,
+                    child_pid,
+                    generation,
+                },
+            );
+
+            // Reader thread: dup the master so the thread owns its own fd lifetime, then blocking-read until EOF.
+            let read_fd = unsafe { libc::dup(master_fd) };
+            if read_fd < 0 {
+                self.close(&session_id);
+                return Err("dup(master) failed".to_string());
+            }
+            let pid = child_pid;
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 8192];
+                loop {
+                    let n = unsafe {
+                        libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
+                    };
+                    if n > 0 {
+                        let _ = out_tx.send(TermOut::Data {
+                            session_id,
+                            generation,
+                            bytes: buf[..n as usize].to_vec(),
+                        });
+                    } else {
+                        // n == 0 (EOF: shell exited, PTY closed) or n < 0 (error). Reap the child for its exit code.
+                        break;
+                    }
+                }
+                let mut status: libc::c_int = 0;
+                unsafe { libc::waitpid(pid, &mut status, 0) };
+                let code = if libc::WIFEXITED(status) {
+                    libc::WEXITSTATUS(status)
                 } else {
-                    // n == 0 (EOF: shell exited, PTY closed) or n < 0 (error). Reap the child for its exit code.
-                    break;
-                }
-            }
-            let mut status: libc::c_int = 0;
-            unsafe { libc::waitpid(pid, &mut status, 0) };
-            let code = if libc::WIFEXITED(status) { libc::WEXITSTATUS(status) } else { -1 };
-            unsafe { libc::close(read_fd) };
-            let _ = out_tx.send(TermOut::Exit { session_id, generation, code });
-        });
-
-        Ok(generation)
-    }
-
-    /// Feed keystrokes to the shell.
-    pub fn write_input(&mut self, session_id: &[u8; 16], bytes: &[u8]) {
-        if let Some(s) = self.sessions.get(session_id) {
-            let mut off = 0;
-            while off < bytes.len() {
-                let n = unsafe {
-                    libc::write(
-                        s.master_fd,
-                        bytes[off..].as_ptr() as *const libc::c_void,
-                        bytes.len() - off,
-                    )
+                    -1
                 };
-                if n <= 0 {
-                    break;
+                unsafe { libc::close(read_fd) };
+                let _ = out_tx.send(TermOut::Exit {
+                    session_id,
+                    generation,
+                    code,
+                });
+            });
+
+            Ok(generation)
+        }
+
+        /// Feed keystrokes to the shell.
+        pub fn write_input(&mut self, session_id: &[u8; 16], bytes: &[u8]) {
+            if let Some(s) = self.sessions.get(session_id) {
+                let mut off = 0;
+                while off < bytes.len() {
+                    let n = unsafe {
+                        libc::write(
+                            s.master_fd,
+                            bytes[off..].as_ptr() as *const libc::c_void,
+                            bytes.len() - off,
+                        )
+                    };
+                    if n <= 0 {
+                        break;
+                    }
+                    off += n as usize;
                 }
-                off += n as usize;
+            }
+        }
+
+        /// Resize the shell's window.
+        pub fn resize(&mut self, session_id: &[u8; 16], cols: u16, rows: u16) {
+            if let Some(s) = self.sessions.get(session_id) {
+                set_winsize(s.master_fd, cols, rows);
+            }
+        }
+
+        /// Kill + close a session (client CLOSE, or making room for a re-OPEN). Best-effort SIGKILL then fd close.
+        pub fn close(&mut self, session_id: &[u8; 16]) {
+            if let Some(s) = self.sessions.remove(session_id) {
+                unsafe {
+                    libc::kill(s.child_pid, libc::SIGKILL);
+                    libc::close(s.master_fd);
+                }
+            }
+        }
+
+        /// The "nuke a hung bash" button: kill the current shell and spawn a fresh one on the SAME session_id, so the client keeps its session without re-opening.
+        /// Returns the new generation.
+        pub fn nuke(
+            &mut self,
+            session_id: [u8; 16],
+            cols: u16,
+            rows: u16,
+            out_tx: Sender<TermOut>,
+        ) -> Result<u64, String> {
+            self.close(&session_id);
+            self.open(session_id, cols, rows, out_tx)
+        }
+
+        /// The generation currently owning `session_id` (an event tagged with a stale generation after a nuke is dropped).
+        pub fn generation(&self, session_id: &[u8; 16]) -> Option<u64> {
+            self.sessions.get(session_id).map(|s| s.generation)
+        }
+
+        /// Tear down every session (app shutdown / toggle-off).
+        pub fn close_all(&mut self) {
+            let ids: Vec<[u8; 16]> = self.sessions.keys().copied().collect();
+            for id in ids {
+                self.close(&id);
             }
         }
     }
 
-    /// Resize the shell's window.
-    pub fn resize(&mut self, session_id: &[u8; 16], cols: u16, rows: u16) {
-        if let Some(s) = self.sessions.get(session_id) {
-            set_winsize(s.master_fd, cols, rows);
+    impl Drop for BridgeHost {
+        fn drop(&mut self) {
+            self.close_all();
         }
     }
 
-    /// Kill + close a session (client CLOSE, or making room for a re-OPEN). Best-effort SIGKILL then fd close.
-    pub fn close(&mut self, session_id: &[u8; 16]) {
-        if let Some(s) = self.sessions.remove(session_id) {
+    /// `cols<<16 | rows` packing used in OPEN/RESIZE payloads (4 bytes BE).
+    pub fn pack_winsize(cols: u16, rows: u16) -> [u8; 4] {
+        let v = ((cols as u32) << 16) | rows as u32;
+        v.to_be_bytes()
+    }
+
+    /// Unpack a 4-byte BE winsize payload → (cols, rows). Defaults 80×24 on a short/absent payload.
+    pub fn unpack_winsize(payload: &[u8]) -> (u16, u16) {
+        if payload.len() >= 4 {
+            let v = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+            (((v >> 16) & 0xFFFF) as u16, (v & 0xFFFF) as u16)
+        } else {
+            (80, 24)
+        }
+    }
+
+    /// `forkpty` + exec the user's login shell in the child. Returns (master_fd, child_pid). The child never returns (it execs or
+    /// _exits); only the parent path returns Ok.
+    fn spawn_pty_shell(cols: u16, rows: u16) -> Result<(RawFd, libc::pid_t), String> {
+        let mut master: libc::c_int = 0;
+        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+        ws.ws_col = cols;
+        ws.ws_row = rows;
+
+        let pid = unsafe {
+            libc::forkpty(
+                &mut master,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut ws,
+            )
+        };
+        if pid < 0 {
+            return Err("forkpty failed".to_string());
+        }
+        if pid == 0 {
+            // CHILD: exec the login shell. Set TERM so full-screen apps (vim, htop) work; inherit the rest of the environment.
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+            let shell_c = std::ffi::CString::new(shell)
+                .unwrap_or_else(|_| std::ffi::CString::new("/bin/bash").unwrap());
             unsafe {
-                libc::kill(s.child_pid, libc::SIGKILL);
-                libc::close(s.master_fd);
+                // A fresh session so the shell is a real controlling-terminal leader.
+                libc::setsid();
+                let term = std::ffi::CString::new("TERM=xterm-256color").unwrap();
+                libc::putenv(term.into_raw());
+                let argv = [shell_c.as_ptr(), std::ptr::null()];
+                libc::execv(shell_c.as_ptr(), argv.as_ptr());
+                // execv only returns on failure.
+                libc::_exit(127);
             }
         }
+        // PARENT.
+        Ok((master, pid))
     }
 
-    /// The "nuke a hung bash" button: kill the current shell and spawn a fresh one on the SAME session_id, so the client keeps its session without re-opening.
-    /// Returns the new generation.
-    pub fn nuke(
-        &mut self,
-        session_id: [u8; 16],
-        cols: u16,
-        rows: u16,
-        out_tx: Sender<TermOut>,
-    ) -> Result<u64, String> {
-        self.close(&session_id);
-        self.open(session_id, cols, rows, out_tx)
-    }
-
-    /// The generation currently owning `session_id` (an event tagged with a stale generation after a nuke is dropped).
-    pub fn generation(&self, session_id: &[u8; 16]) -> Option<u64> {
-        self.sessions.get(session_id).map(|s| s.generation)
-    }
-
-    /// Tear down every session (app shutdown / toggle-off).
-    pub fn close_all(&mut self) {
-        let ids: Vec<[u8; 16]> = self.sessions.keys().copied().collect();
-        for id in ids {
-            self.close(&id);
-        }
-    }
-}
-
-impl Drop for BridgeHost {
-    fn drop(&mut self) {
-        self.close_all();
-    }
-}
-
-/// `cols<<16 | rows` packing used in OPEN/RESIZE payloads (4 bytes BE).
-pub fn pack_winsize(cols: u16, rows: u16) -> [u8; 4] {
-    let v = ((cols as u32) << 16) | rows as u32;
-    v.to_be_bytes()
-}
-
-/// Unpack a 4-byte BE winsize payload → (cols, rows). Defaults 80×24 on a short/absent payload.
-pub fn unpack_winsize(payload: &[u8]) -> (u16, u16) {
-    if payload.len() >= 4 {
-        let v = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
-        (((v >> 16) & 0xFFFF) as u16, (v & 0xFFFF) as u16)
-    } else {
-        (80, 24)
-    }
-}
-
-/// `forkpty` + exec the user's login shell in the child. Returns (master_fd, child_pid). The child never returns (it execs or
-/// _exits); only the parent path returns Ok.
-fn spawn_pty_shell(cols: u16, rows: u16) -> Result<(RawFd, libc::pid_t), String> {
-    let mut master: libc::c_int = 0;
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    ws.ws_col = cols;
-    ws.ws_row = rows;
-
-    let pid = unsafe {
-        libc::forkpty(
-            &mut master,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &mut ws,
-        )
-    };
-    if pid < 0 {
-        return Err("forkpty failed".to_string());
-    }
-    if pid == 0 {
-        // CHILD: exec the login shell. Set TERM so full-screen apps (vim, htop) work; inherit the rest of the environment.
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        let shell_c = std::ffi::CString::new(shell).unwrap_or_else(|_| std::ffi::CString::new("/bin/bash").unwrap());
+    /// TIOCSWINSZ on the master so the child sees a resize (SIGWINCH).
+    fn set_winsize(master_fd: RawFd, cols: u16, rows: u16) {
+        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+        ws.ws_col = cols;
+        ws.ws_row = rows;
         unsafe {
-            // A fresh session so the shell is a real controlling-terminal leader.
-            libc::setsid();
-            let term = std::ffi::CString::new("TERM=xterm-256color").unwrap();
-            libc::putenv(term.into_raw());
-            let argv = [shell_c.as_ptr(), std::ptr::null()];
-            libc::execv(shell_c.as_ptr(), argv.as_ptr());
-            // execv only returns on failure.
-            libc::_exit(127);
+            libc::ioctl(master_fd, libc::TIOCSWINSZ, &ws);
         }
     }
-    // PARENT.
-    Ok((master, pid))
-}
 
-/// TIOCSWINSZ on the master so the child sees a resize (SIGWINCH).
-fn set_winsize(master_fd: RawFd, cols: u16, rows: u16) {
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    ws.ws_col = cols;
-    ws.ws_row = rows;
-    unsafe {
-        libc::ioctl(master_fd, libc::TIOCSWINSZ, &ws);
+    #[cfg(test)]
+    mod pty_tests {
+        use super::*;
+
+        #[test]
+        fn winsize_pack_round_trips() {
+            assert_eq!(unpack_winsize(&pack_winsize(120, 40)), (120, 40));
+            assert_eq!(unpack_winsize(&pack_winsize(80, 24)), (80, 24));
+            assert_eq!(unpack_winsize(&[]), (80, 24)); // default on empty
+        }
     }
-}
-
-#[cfg(test)]
-mod pty_tests {
-    use super::*;
-
-    #[test]
-    fn winsize_pack_round_trips() {
-        assert_eq!(unpack_winsize(&pack_winsize(120, 40)), (120, 40));
-        assert_eq!(unpack_winsize(&pack_winsize(80, 24)), (80, 24));
-        assert_eq!(unpack_winsize(&[]), (80, 24)); // default on empty
-    }
-}
 } // end mod pty_host
 
 /// Re-export the PTY host for the future full-interactive path (desktop-unix only).

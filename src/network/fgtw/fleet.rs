@@ -323,7 +323,10 @@ fn ckpt_custody_key(fleet_key: &[u8; 32]) -> [u8; 32] {
 
 fn ckpt_custody_addr(fleet_key: &[u8; 32]) -> String {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-    URL_SAFE_NO_PAD.encode(fgtw::scoped_blob::slot_address(fleet_key, CKPT_CUSTODY_PURPOSE))
+    URL_SAFE_NO_PAD.encode(fgtw::scoped_blob::slot_address(
+        fleet_key,
+        CKPT_CUSTODY_PURPOSE,
+    ))
 }
 
 /// Encode the epoch spine state for custody/serve: `k ‖ epoch ‖ prev_k ‖ prev` (prev zeroed when absent).
@@ -349,7 +352,11 @@ pub fn ckpt_state_decode(bytes: &[u8]) -> Option<(u64, [u8; 32], Option<(u64, [u
     }
     let pk = u64::from_le_bytes(bytes[40..48].try_into().ok()?);
     let pe: [u8; 32] = bytes[48..80].try_into().ok()?;
-    let prev = if pk == 0 || pe == [0u8; 32] { None } else { Some((pk, pe)) };
+    let prev = if pk == 0 || pe == [0u8; 32] {
+        None
+    } else {
+        Some((pk, pe))
+    };
     Some((k, epoch, prev))
 }
 
@@ -361,13 +368,20 @@ pub fn ckpt_custody_write(
     handle_proof: &[u8; 32],
 ) -> Result<(), String> {
     let sealed = kete::encrypt_bytes(state, &ckpt_custody_key(fleet_key))?;
-    crate::network::fgtw::blob::put_blob_blocking(&ckpt_custody_addr(fleet_key), &sealed, device_keypair, handle_proof)
-        .map_err(|e| format!("epoch custody put: {e:?}"))
+    crate::network::fgtw::blob::put_blob_blocking(
+        &ckpt_custody_addr(fleet_key),
+        &sealed,
+        device_keypair,
+        handle_proof,
+    )
+    .map_err(|e| format!("epoch custody put: {e:?}"))
 }
 
 /// Read + open the custody slot (blocking). `None` = absent or sealed under a different fleet-key epoch.
 pub fn ckpt_custody_read(fleet_key: &[u8; 32]) -> Option<Vec<u8>> {
-    let sealed = crate::network::fgtw::blob::get_blob_blocking(&ckpt_custody_addr(fleet_key)).ok().flatten()?;
+    let sealed = crate::network::fgtw::blob::get_blob_blocking(&ckpt_custody_addr(fleet_key))
+        .ok()
+        .flatten()?;
     kete::decrypt_bytes(&sealed, &ckpt_custody_key(fleet_key)).ok()
 }
 
@@ -379,7 +393,14 @@ pub fn push_checkpoint(
     commit: [u8; 32],
     fanout_epoch: u64,
 ) -> Result<Option<(u64, [u8; 32], u64)>, String> {
-    fgtw::client::push_checkpoint(&PhotonTransport, handle_proof, device_key, k, commit, fanout_epoch)
+    fgtw::client::push_checkpoint(
+        &PhotonTransport,
+        handle_proof,
+        device_key,
+        k,
+        commit,
+        fanout_epoch,
+    )
 }
 
 /// Recover the current fleet key WITH its fan-out epoch — derivation callers need the pair (the epoch spine folds the key and names the epoch).
@@ -729,7 +750,8 @@ mod tests {
         // A stale rotation (epoch ≤ stored) is rejected by the worker's monotonic guard.
         let stale_members: Vec<([u8; 32], [u8; 32])> =
             members3.iter().map(|m| (*m, [0u8; 32])).collect();
-        let stale = fanout_seal(&handle_proof, 3, &new_fleet_key(), &pk(&a), &stale_members).unwrap();
+        let stale =
+            fanout_seal(&handle_proof, 3, &new_fleet_key(), &pk(&a), &stale_members).unwrap();
         assert!(post_fanout(&handle_proof, &a, 3, &stale).is_err());
     }
 
@@ -757,14 +779,13 @@ mod tests {
             .find(|r| r.device_pubkey == pk(&b))
             .expect("B's request");
         bind_device(&a, &handle_proof, req_b).expect("bind B");
-        let (e2, k2) =
-            rotate_fleet_key(
-                &handle_proof,
-                &a,
-                &current_members(&handle_proof).unwrap(),
-                Some(&a_vault),
-            )
-                .expect("rotate to A,B");
+        let (e2, k2) = rotate_fleet_key(
+            &handle_proof,
+            &a,
+            &current_members(&handle_proof).unwrap(),
+            Some(&a_vault),
+        )
+        .expect("rotate to A,B");
         assert_eq!(e2, 2);
         let marker = SettingEntry {
             key: "test.heal_marker".into(),
@@ -795,8 +816,8 @@ mod tests {
         let preserved = pull_fstate(&handle_proof, &k2)
             .expect("pull")
             .expect("slot readable under the old key");
-        let (e3, k3) = rotate_fleet_key(&handle_proof, &a, &members, Some(&a_vault))
-            .expect("heal rotation");
+        let (e3, k3) =
+            rotate_fleet_key(&handle_proof, &a, &members, Some(&a_vault)).expect("heal rotation");
         assert_eq!(e3, 3);
         push_fstate(
             &handle_proof,
@@ -952,7 +973,10 @@ mod pin_live_tests {
             back.global_settings.len(),
             4,
             "slot dropped entries: {:?}",
-            back.global_settings.iter().map(|e| &e.key).collect::<Vec<_>>()
+            back.global_settings
+                .iter()
+                .map(|e| &e.key)
+                .collect::<Vec<_>>()
         );
         let pin = back
             .global_settings

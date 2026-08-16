@@ -1327,7 +1327,13 @@ pub struct PhotonApp {
     /// Monotonic tick counter — the frame-gap fence for `pending_chain_sends` (see `drain_pending_chain_sends`).
     tick_serial: u64,
     /// Outgoing sends whose WIRE half is deferred: (contact idx, text, eagle_time, tick_serial at enqueue). The pending-grey bubble is inserted synchronously in `send_chain_message`; chain_transmit (weave selection, braid advance, chains persist, PT dispatch) runs from this queue AFTER the frame presents — running it inline meant the bubble, though inserted first, couldn't render until the whole wire half finished (the "message goes into the void" report).
-    pending_chain_sends: Vec<(usize, String, i64, Option<(crate::types::RefKind, i64)>, u64)>,
+    pending_chain_sends: Vec<(
+        usize,
+        String,
+        i64,
+        Option<(crate::types::RefKind, i64)>,
+        u64,
+    )>,
     /// Unique identities the seed knows (including us), off the latest signed announce ack. The Ready-screen count reads this as a floor: the peer STORE only fills by gossip now, so on a fresh session it holds nothing but our own record and would show "0 peers" to a user who can see nine friends in the contact list.
     seed_identity_count: u32,
     /// In-flight phonebook resolution: `(handle_proof, device_pubkey, public, lan)` for devices we could not otherwise address. The handle_proof binds each record to the identity it was resolved FOR, so a friend can adopt a registry-vouched device it has never met. Drained in `tick` into `device_endpoints`, which is what candidate gathering reads. `Some` = a resolve is running, which debounces re-spawns so a stalled seed can't stack requests.
@@ -1498,7 +1504,14 @@ pub struct PhotonApp {
     pending_attach_picker: bool,
     /// Per-session client routing: session_id → (client device pubkey, their addr pair, relay list) so the reader-thread drain knows where to send output. Captured at `term_open`.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-    bridge_clients: std::collections::HashMap<[u8; 16], ([u8; 32], (std::net::SocketAddr, Option<std::net::SocketAddr>), Vec<[u8; 32]>)>,
+    bridge_clients: std::collections::HashMap<
+        [u8; 16],
+        (
+            [u8; 32],
+            (std::net::SocketAddr, Option<std::net::SocketAddr>),
+            Vec<[u8; 32]>,
+        ),
+    >,
     /// Recovery-page "be a custodian" opt-in — a custom `Checkbox`.
     settings_custodian_check: Option<crate::ui::settings_widgets::Checkbox>,
     /// Notifications-page global chime on/off — a custom `Checkbox`.
@@ -2138,9 +2151,7 @@ impl PhotonApp {
                                     // Remember the blob id and its key: a friend whose pair secret is re-minted later needs a slot at their NEW address, and re-uploading the image to give it to them would be absurd.
                                     Ok((_, contents)) => {
                                         crate::ui::avatar_scoped::remember_published(
-                                            &purpose,
-                                            &contents,
-                                            &storage,
+                                            &purpose, &contents, &storage,
                                         )
                                     }
                                     Err(e) => crate::logf!("SCOPED: avatar publish failed: {}", e),
@@ -2316,7 +2327,14 @@ enum AddDeviceUpdate {
 /// Off-thread results for the new-device JOIN flow (binding-request post + membership poll), drained in `tick`.
 /// Off-thread checkpoint work reporting home: a spine advance (minted here or adopted from custody), or "nothing landed, re-arm on the next edge".
 enum CkptOutcome {
-    Advanced { k: u64, epoch: [u8; 32], prev: Option<(u64, [u8; 32])>, root: Option<[u8; 32]>, fanout_epoch: u64, minted_here: bool },
+    Advanced {
+        k: u64,
+        epoch: [u8; 32],
+        prev: Option<(u64, [u8; 32])>,
+        root: Option<[u8; 32]>,
+        fanout_epoch: u64,
+        minted_here: bool,
+    },
     Idle,
 }
 
@@ -2622,10 +2640,11 @@ fn sibling_presence_snapshot(contacts: &[crate::types::Contact]) -> Vec<SiblingP
 impl PhotonApp {
     /// OUR identity handle proof, session-first: a sticky-broadcast resume can reach Ready with HandleQuery's worker-populated `last_handle_proof` still unset, and every fleet-plane gate that read only the cache sat silently dead for the whole session — no fstate pull, no roster push, no fleet-key sync, so §4.2 ownership never converged between siblings (a resumed phone, 36 minutes, 2026-08-04). Signed in ⇒ session ⇒ handle_proof; the cache covers the pre-session attest window.
     fn our_handle_proof(&self) -> Option<[u8; 32]> {
-        self.session
-            .as_ref()
-            .map(|s| s.handle_proof)
-            .or_else(|| self.handle_query.as_ref().and_then(|hq| hq.get_handle_proof()))
+        self.session.as_ref().map(|s| s.handle_proof).or_else(|| {
+            self.handle_query
+                .as_ref()
+                .and_then(|hq| hq.get_handle_proof())
+        })
     }
 }
 

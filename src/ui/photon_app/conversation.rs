@@ -199,12 +199,14 @@ impl PhotonApp {
 
     /// Does this contact's conversation reach anyone besides us? THE question every keygen, presence, probe and offer gate actually asks — a zero-remote conversation has nothing to exchange, nobody to ping, and no offline state to show. `false` when the session isn't up, which every gate treats as "not yet".
     pub(super) fn has_remote(&self, c: &crate::types::Contact) -> bool {
-        self.our_party_id(c).is_some_and(|us| c.remote_count(&us) > 0)
+        self.our_party_id(c)
+            .is_some_and(|us| c.remote_count(&us) > 0)
     }
 
     /// Zero remote participants — the conversation lives entirely on this device (notes-to-self). NOT the complement of [`Self::has_remote`]: with no session both are `false`, so gates stay closed and display falls back to the peer rendering.
     pub(super) fn is_zero_remote(&self, c: &crate::types::Contact) -> bool {
-        self.our_party_id(c).is_some_and(|us| c.remote_count(&us) == 0)
+        self.our_party_id(c)
+            .is_some_and(|us| c.remote_count(&us) == 0)
     }
 
     /// The conversation `self.contacts[ci]` stands for, if it has materialized. `None` before the session is up or before anything touched it.
@@ -350,8 +352,7 @@ impl PhotonApp {
                     .as_ref()
                     .is_some_and(|kp| kp.public.as_bytes() < &c.public_identity.key)
             } else {
-                self.our_party_id(c)
-                    .is_some_and(|us| us < c.handle_hash)
+                self.our_party_id(c).is_some_and(|us| us < c.handle_hash)
             };
             let c = &mut self.contacts[ci];
             crate::logf!(
@@ -472,8 +473,7 @@ impl PhotonApp {
         ) else {
             return;
         };
-        let Some(handle_proof) = self.our_handle_proof()
-        else {
+        let Some(handle_proof) = self.our_handle_proof() else {
             return;
         };
         // Read the fleet-synced avatar pin (random key ‖ lookup) immutably; absent = no avatar set for this identity yet, so nothing to sync.
@@ -558,14 +558,14 @@ impl PhotonApp {
             return;
         };
         let raw: &[crate::types::ChatMessage] = &conv.messages;
-        let visible: Vec<&crate::types::ChatMessage> = raw
-            .iter()
-            .filter(|m| chat_row_visible(raw, m))
-            .collect();
+        let visible: Vec<&crate::types::ChatMessage> =
+            raw.iter().filter(|m| chat_row_visible(raw, m)).collect();
         let Some((_, wrap_lines, _)) = self.msg_wrap.as_ref() else {
             return;
         };
-        if wrap_lines.len() != visible.len() || self.msg_wrap.as_ref().is_some_and(|(k, _, _)| k.0 != ci) {
+        if wrap_lines.len() != visible.len()
+            || self.msg_wrap.as_ref().is_some_and(|(k, _, _)| k.0 != ci)
+        {
             return; // cache is for another conversation/row set — a jump from stale math lands wrong, so don't
         }
         let react_over = build_react_over(raw);
@@ -781,10 +781,7 @@ impl PhotonApp {
                 };
                 let normal = us.and_then(|us| {
                     let them = *chains.other_participant(&us)?;
-                    let idx = self
-                        .contacts
-                        .iter()
-                        .position(|c| c.handle_hash == them)?;
+                    let idx = self.contacts.iter().position(|c| c.handle_hash == them)?;
                     Some((us, them, idx))
                 });
                 match normal {
@@ -842,7 +839,11 @@ impl PhotonApp {
                 if chains_id != derived.id() {
                     crate::logf!("CHAT: SHADOW SEAM — chains derive conversation {} but the contact derives {}; rows land in the contact's (the chains carry a stale-era participant set)", hex::encode(&chains_id.as_bytes()[..4]), hex::encode(&derived.id().as_bytes()[..4]));
                 }
-                match self.conversations.iter().position(|v| v.id() == derived.id()) {
+                match self
+                    .conversations
+                    .iter()
+                    .position(|v| v.id() == derived.id())
+                {
                     Some(p) => p,
                     None => {
                         self.conversations.push(derived);
@@ -862,8 +863,7 @@ impl PhotonApp {
                         && vsf::eagle_time_oscillations().saturating_sub(chains.genesis_osc)
                             < 120 * vsf::OSCILLATIONS_PER_SECOND as i64;
                     if let Some(contact) = self.contacts.get_mut(contact_idx) {
-                        contact.chain_fail_streak =
-                            contact.chain_fail_streak.saturating_add(1);
+                        contact.chain_fail_streak = contact.chain_fail_streak.saturating_add(1);
                         // CONVERGE BEFORE RE-KEY: collapse the presence backoff on every garbage hit so the next sweep pings immediately — the pong carries heads and the fleet chain-sync rides the same edge, letting a stale-era holder adopt the peer's current era instead of destroying it with a re-key.
                         contact.ping_backoff = 0;
                         contact.last_pinged = None;
@@ -884,8 +884,7 @@ impl PhotonApp {
                             // Mirror of the gap-streak rule: a non-owner's garbage streak is stale-era evidence about ITSELF, not the friendship — only the ceremony owner may re-key (§4.2), everyone else waits for the owner's chain-sync.
                             crate::logf!("CHAIN FORK: garbage streak but this device does not own the ceremony — stale era suspected, awaiting sibling chain-sync");
                             contact.chain_fail_streak = 0;
-                        } else if contact.chain_fail_streak >= 3 && !contact.is_sibling
-                        {
+                        } else if contact.chain_fail_streak >= 3 && !contact.is_sibling {
                             crate::logf!("CHAIN FORK SUSPECTED: {} — {} consecutive garbage decrypts past chain-link verify — initiating friend re-key", crate::fp(&contact.handle_proof), contact.chain_fail_streak);
                             fork_friend_rekey = Some(contact_idx);
                         }
@@ -910,7 +909,10 @@ impl PhotonApp {
             // An EDIT or REACTION row lands as an ordinary message (row, ACK, sync) but must not ALERT — the target bubble repaints; a chime/unread/scroll-jump for it would read as a new message that isn't there. (Whether a reaction should ding is a one-gate flip if the field wants it.)
             let is_edit_row = matches!(
                 wire_reference,
-                Some((crate::types::RefKind::Edit | crate::types::RefKind::React, _))
+                Some((
+                    crate::types::RefKind::Edit | crate::types::RefKind::React,
+                    _
+                ))
             );
 
             crate::logf!(
@@ -973,15 +975,11 @@ impl PhotonApp {
                 }
                 break 'commit;
             }
-            let strand_refs: Vec<&[u8]> =
-                woven_strands.iter().map(|s| s.as_slice()).collect();
+            let strand_refs: Vec<&[u8]> = woven_strands.iter().map(|s| s.as_slice()).collect();
 
             // Update the lane's last_plaintext for the next message's salt — the x-text ONLY (must match what the sender stored: salt source is text, never the full payload/pad).
             // Keyed by LANE LABEL: the pre-lane call here passed the party id, which no lane label ever equals, so the write no-opped and the salt stayed empty while the sender's moved — every second message on a lane garbage-decrypted (field, 2026-08-07).
-            chains.set_last_plaintext(
-                &lane,
-                message_text.clone().into_bytes(),
-            );
+            chains.set_last_plaintext(&lane, message_text.clone().into_bytes());
 
             // Update bidirectional entropy state (derive weave hash from full message context)
             chains.update_received_for_mixing(timestamp, msg_hp, &plaintext);
@@ -989,7 +987,12 @@ impl PhotonApp {
             // Advance their chain with the braid strands. our_plaintext = the decrypted x-text ONLY (must match the sender's process_ack, which advances with the stored salt-text — never the full payload/pad).
             let message_text_bytes = message_text.clone().into_bytes();
             let eagle_time_for_advance = vsf::EagleTime::from_oscillations(timestamp);
-            chains.advance(&lane, &eagle_time_for_advance, &message_text_bytes, &strand_refs);
+            chains.advance(
+                &lane,
+                &eagle_time_for_advance,
+                &message_text_bytes,
+                &strand_refs,
+            );
 
             // Mark as received for deduplication (protects against UDP duplicates)
             chains.mark_received(&lane, timestamp);
@@ -1005,7 +1008,11 @@ impl PhotonApp {
             // Layer 1 gap-buffer drain: this message's msg_hp is now our last_received_hash, so any buffered message that was waiting on THIS as its predecessor is now contiguous. Replay them (front of the queue) so they're processed in order immediately — and each can cascade to fill the next gap when IT advances.
             let ready = chains.take_buffered_for(&msg_hp);
             if !ready.is_empty() {
-                crate::logf!("CHAT: gap filled — replaying {} buffered message(s) after msg_hp={}...", ready.len(), hex::encode(&msg_hp[..8]));
+                crate::logf!(
+                    "CHAT: gap filled — replaying {} buffered message(s) after msg_hp={}...",
+                    ready.len(),
+                    hex::encode(&msg_hp[..8])
+                );
                 // A fill proves the pipeline is healthy — the no-fill counter starts over.
                 self.contacts[contact_idx].gap_streak = (0, 0);
                 for buf in ready {
@@ -1017,9 +1024,7 @@ impl PhotonApp {
                         timestamp: buf.eagle_time,
                         sender_addr: buf.sender_addr,
                         // (buf.sender_addr is SocketAddr; matches the variant field)
-                        sender_pubkey: crate::types::DevicePubkey::from_bytes(
-                            buf.sender_pubkey,
-                        ),
+                        sender_pubkey: crate::types::DevicePubkey::from_bytes(buf.sender_pubkey),
                     });
                 }
             }
@@ -1031,16 +1036,13 @@ impl PhotonApp {
 
             // Add message to contact's message list and persist — UNLESS this is the hidden chain-weave probe, which advances/ACKs the chain but must never surface a bubble or chime. For the probe we flip `their_probe_seen` (their TX / our RX proven), PERSIST a hidden row, and try to seal the chain.
             // Hidden DELETE marker: the friend tombstoned a message — apply it here (either direction, matched by timestamp), persist a HIDDEN marker row for re-ACK durability (the probe pattern), and gossip the tombstoned row to our siblings. No bubble, no chime, no notify.
-            if let Some(ts_str) =
-                message_text.strip_prefix(crate::types::DELETE_MARKER_PREFIX)
-            {
+            if let Some(ts_str) = message_text.strip_prefix(crate::types::DELETE_MARKER_PREFIX) {
                 let target_ts: i64 = ts_str.trim().parse().unwrap_or(0);
                 {
                     let conv = &mut self.conversations[conv_pos];
                     let mut tombstoned: Option<ChatMessage> = None;
                     if let Some(m) = conv.messages.iter_mut().find(|m| {
-                        m.timestamp == target_ts
-                            && !crate::types::is_control_content(&m.content)
+                        m.timestamp == target_ts && !crate::types::is_control_content(&m.content)
                     }) {
                         if !m.deleted {
                             m.deleted = true;
@@ -1048,12 +1050,9 @@ impl PhotonApp {
                         }
                     }
                     // The marker row itself (hidden, ack_hash-bearing) — a lost ACK re-ACKs from it.
-                    let marker_row = ChatMessage::new_with_timestamp(
-                        message_text.clone(),
-                        false,
-                        timestamp,
-                    )
-                    .with_ack_hash(plaintext_hash);
+                    let marker_row =
+                        ChatMessage::new_with_timestamp(message_text.clone(), false, timestamp)
+                            .with_ack_hash(plaintext_hash);
                     conv.insert_message_sorted(marker_row);
                     persist_ci = Some(contact_idx);
                     if let Some(row) = tombstoned {
@@ -1062,7 +1061,10 @@ impl PhotonApp {
                         {
                             crate::storage::blob_delete(&hash);
                         }
-                        crate::logf!("CHAT: friend deleted a message (ts {}) — tombstone applied + gossiped", target_ts);
+                        crate::logf!(
+                            "CHAT: friend deleted a message (ts {}) — tombstone applied + gossiped",
+                            target_ts
+                        );
                         sibling_push = Some((contact_idx, row));
                     } else {
                         crate::logf!("CHAT: friend delete marker for ts {} — no matching live row (already tombstoned or never held)", target_ts);
@@ -1085,9 +1087,7 @@ impl PhotonApp {
                 .with_ack_hash(plaintext_hash);
                 self.conversations[conv_pos].insert_message_sorted(probe_row);
                 persist_ci = Some(contact_idx);
-                crate::log(
-                    "CHAIN-PROBE: received peer's chain-weave probe — RX chain proven",
-                );
+                crate::log("CHAIN-PROBE: received peer's chain-weave probe — RX chain proven");
                 recv_seal_idx = Some(contact_idx);
             } else if let Some(contact) = self.contacts.get_mut(contact_idx) {
                 // Any real received message means the chain is demonstrably working end-to-end in at least the RX direction — belt-and-suspenders toward woven.
@@ -1125,12 +1125,12 @@ impl PhotonApp {
                     AppState::Conversation | AppState::ContactPanel(_)
                 ) && self.active_conversation == Some(conv.id());
                 #[cfg(not(target_os = "android"))]
-                let looking = conversation_open
-                    && crate::platform::desktop_notify::window_attended();
+                let looking =
+                    conversation_open && crate::platform::desktop_notify::window_attended();
                 // Android: conversation-open AND the Activity actually on screen (the onResume/onPause JNI mirror). Either alone is not "looking": app foregrounded on ANOTHER screen must still alert (the silent-message hole), and app backgrounded while parked ON this conversation must too.
                 #[cfg(target_os = "android")]
-                let looking = conversation_open
-                    && crate::platform::jni_android::app_in_foreground();
+                let looking =
+                    conversation_open && crate::platform::jni_android::app_in_foreground();
                 if !contact.is_sibling && !looking && !is_edit_row {
                     // A real friend message landed while nobody was looking — bump the persistent unread counter (contacts-list inner ring + float-to-top; cleared at conversation-open). Written after the loop via the coalescing conv-state writer.
                     conv.unread_count += 1;
@@ -1171,8 +1171,7 @@ impl PhotonApp {
                     && !self.contacts[contact_idx].is_sibling
                     && !looking
                 {
-                    let digest =
-                        relationship_digest(&from_handle_hash, &our_handle_hash);
+                    let digest = relationship_digest(&from_handle_hash, &our_handle_hash);
                     std::thread::spawn(move || {
                         chirp::Chirp::from_hash(digest)
                             .play_blocking()
@@ -1263,7 +1262,9 @@ impl PhotonApp {
                 .iter()
                 .any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key))
             {
-                crate::log("CHAIN-SYNC: opened frame's sender lost fold trust mid-flight — dropped");
+                crate::log(
+                    "CHAIN-SYNC: opened frame's sender lost fold trust mid-flight — dropped",
+                );
                 continue;
             }
             let fid = incoming.friendship_id;
@@ -1276,11 +1277,7 @@ impl PhotonApp {
                 .unwrap_or_default();
             // LANE-WISE adopt (docs/lanes.md): a lane merges iff its position is strictly greater — replacing whole-blob newest-wins, whose fork window was two devices clobbering each other's live lanes and pendings. A fresh device takes the whole copy SANITIZED (the sender's minted label, pendings and send tip stripped — adopting those would make this device write on the sender's lane). Echo dies naturally: a sibling merging our pushed union finds no greater positions and stays silent.
             let mut incoming = incoming;
-            let adopted = match self
-                .friendship_chains
-                .iter_mut()
-                .find(|(id, _)| *id == fid)
-            {
+            let adopted = match self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) {
                 // ERA SUPERSEDE before any lane math: a re-key mints a NEW lane_root, and the lane-wise merge below adopts a root only where one is absent — so a sibling holding the old era would keep dead chains forever, deriving garbage lanes for every new-era label it meets. Two blobs under one friendship with DIFFERENT roots are different eras, and eras replace wholesale: the newer mutated_osc wins (the dead era's clock goes quiet the moment the friend stops sending on it), sanitized like any replicated copy. Losing the race one round just means our next push carries the newer era back.
                 Some((_, local)) if local.differs_in_era_from(&incoming) => {
                     if local.era_superseded_by(&incoming) {
@@ -1312,9 +1309,7 @@ impl PhotonApp {
                     .friendship_chains
                     .iter()
                     .find(|(id, _)| *id == fid)
-                    .and_then(|(_, c)| {
-                        c.participants().iter().find(|p| **p != our_pid).copied()
-                    });
+                    .and_then(|(_, c)| c.participants().iter().find(|p| **p != our_pid).copied());
                 if let Some(other) = other {
                     if let Some(c) = self
                         .contacts
@@ -1359,12 +1354,12 @@ impl PhotonApp {
                     contact.clutch_state = crate::types::ClutchState::Complete;
                     contact.chain_woven = true;
                     if let Some(storage) = self.storage.as_ref() {
-                        let _ = crate::storage::contacts::save_contact(
-                            &self.contacts[ci],
-                            storage,
-                        );
+                        let _ = crate::storage::contacts::save_contact(&self.contacts[ci], storage);
                     }
-                    crate::logf!("CHAIN-SYNC: adopted chain for {} — this device can now transmit directly", crate::fp(&self.contacts[ci].handle_proof));
+                    crate::logf!(
+                        "CHAIN-SYNC: adopted chain for {} — this device can now transmit directly",
+                        crate::fp(&self.contacts[ci].handle_proof)
+                    );
                 } else {
                     crate::logf!(
                         "CHAIN-SYNC: caught up chain for {} (sibling was ahead)",
@@ -1433,7 +1428,11 @@ impl PhotonApp {
             }
             let conv_pos = {
                 let derived = self.contacts[idx].conversation(&our_pid);
-                match self.conversations.iter().position(|v| v.id() == derived.id()) {
+                match self
+                    .conversations
+                    .iter()
+                    .position(|v| v.id() == derived.id())
+                {
                     Some(p) => p,
                     None => {
                         self.conversations.push(derived);
@@ -1480,8 +1479,7 @@ impl PhotonApp {
                         // Delivered AND deleted are monotonic (true wins): a copy that saw the ACK — or the tombstone — upgrades ours. Upgraded rows ride `fresh` (persist + gossip) but are NOT re-inserted.
                         let existing = &mut conv.messages[i];
                         let mut upgraded = false;
-                        if delivered && !existing.delivered && existing.is_outgoing == is_outgoing
-                        {
+                        if delivered && !existing.delivered && existing.is_outgoing == is_outgoing {
                             existing.delivered = true;
                             upgraded = true;
                         }
@@ -1497,10 +1495,9 @@ impl PhotonApp {
                         }
                         // Reference is origin-written row identity — a copy that arrived thru a pre-feature route regains it here (monotonic, never un-set).
                         if existing.reference.is_none() {
-                            if let Some(r) = row
-                                .reference
-                                .and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t)))
-                            {
+                            if let Some(r) = row.reference.and_then(|(k, t)| {
+                                crate::types::RefKind::from_wire(k).map(|k| (k, t))
+                            }) {
                                 existing.reference = Some(r);
                                 upgraded = true;
                             }
@@ -1552,7 +1549,6 @@ impl PhotonApp {
                     page.more,
                     conv.history_recovery.as_ref().is_some_and(|r| r.complete)
                 );
-
             }
             // Persist the cursor off-thread (coalesced 13-byte record; the rows ride the coalescing message writer below).
             self.persist_conv_state_async(conv_pos);

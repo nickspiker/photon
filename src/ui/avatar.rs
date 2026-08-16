@@ -993,7 +993,10 @@ pub fn recover_own_avatar_from_wall(
     );
     let get_vsf = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .add_section("avatar_get", vec![("key".to_string(), VsfType::d(storage_key))])
+        .add_section(
+            "avatar_get",
+            vec![("key".to_string(), VsfType::d(storage_key))],
+        )
         .build()
         .ok()?;
     let response = crate::network::http::blocking()

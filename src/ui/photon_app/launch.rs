@@ -140,10 +140,18 @@ impl PhotonApp {
                 if let Some((pk, armer_hp, name)) = self.pending_lock.take() {
                     if data.handle_proof == armer_hp {
                         self.lock_out_device(pk);
-                        crate::logf!("FLEET: {} locked out — handle confirmed, key rotating away", name);
-                        self.ready_toast = Some(format!("{name} locked out \u{2014} it can no longer act in this fleet."));
+                        crate::logf!(
+                            "FLEET: {} locked out — handle confirmed, key rotating away",
+                            name
+                        );
+                        self.ready_toast = Some(format!(
+                            "{name} locked out \u{2014} it can no longer act in this fleet."
+                        ));
                     } else {
-                        crate::logf!("FLEET: armed lock-out of {} DISCARDED — a different identity attested", name);
+                        crate::logf!(
+                            "FLEET: armed lock-out of {} DISCARDED — a different identity attested",
+                            name
+                        );
                     }
                 }
                 // The armed UNLOCK fires under the same proof: the handle just re-proved the owner. A different identity attesting discards it identically.
@@ -152,7 +160,10 @@ impl PhotonApp {
                         crate::logf!("FLEET: {} unlock confirmed — clearing the worker verdict + fleet marker", name);
                         self.unlock_fleet_device(pk, &name);
                     } else {
-                        crate::logf!("FLEET: armed unlock of {} DISCARDED — a different identity attested", name);
+                        crate::logf!(
+                            "FLEET: armed unlock of {} DISCARDED — a different identity attested",
+                            name
+                        );
                     }
                 }
                 // Durable reconcile: re-push every locally-locked device to the worker now we're freshly online, so a lock whose immediate push failed (offline at lock time, stale-chain race) still reaches the worker before the stolen device could be wiped+reattested. Idempotent puts, and usually a no-op empty loop (most fleets lock nothing).
@@ -338,7 +349,10 @@ impl PhotonApp {
             }
             QueryResult::Locked => {
                 // The worker refused this device's announce as fleet-locked (treat-as-stolen). Terminal brick: clear the session so nothing auto-resumes, drop to the dead-end Locked screen, and DON'T bind or persist anything — because the worker is the authority, this same verdict returns on every attest even after a local wipe, until the fleet owner unlocks the device.
-                crate::log_at(crate::LogLevel::Error, "attestation refused: this device is fleet-locked");
+                crate::log_at(
+                    crate::LogLevel::Error,
+                    "attestation refused: this device is fleet-locked",
+                );
                 tohu::clear_session();
                 self.session = None;
                 self.private_s = crate::crypto::blind::PrivateS::None;

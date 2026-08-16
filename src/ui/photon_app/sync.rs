@@ -149,16 +149,23 @@ impl PhotonApp {
     ///
     /// This used to ALSO force `is_online = true` and `clutch_state = Complete` on every load, merge and attest — and the row still showed OFFLINE whenever a settle site was missed. Reachability and keyedness are now DERIVED from the participant set (`is_reachable` / `is_zero_remote`), so there is nothing to force and nothing to miss.
     pub(super) fn migrate_stale_self_row(&mut self) {
-        let Some((our_pid, our_hp)) = self
-            .session
-            .as_ref()
-            .map(|s| (crate::crypto::clutch::identity_party_id(&s.identity_seed), s.handle_proof))
-        else {
+        let Some((our_pid, our_hp)) = self.session.as_ref().map(|s| {
+            (
+                crate::crypto::clutch::identity_party_id(&s.identity_seed),
+                s.handle_proof,
+            )
+        }) else {
             return;
         };
         for contact in self.contacts.iter_mut() {
-            if !contact.is_sibling && contact.handle_proof == our_hp && contact.handle_hash != our_pid {
-                crate::logf!("SELF: migrating stale self-contact key {} -> current party id", crate::fp(&contact.handle_hash));
+            if !contact.is_sibling
+                && contact.handle_proof == our_hp
+                && contact.handle_hash != our_pid
+            {
+                crate::logf!(
+                    "SELF: migrating stale self-contact key {} -> current party id",
+                    crate::fp(&contact.handle_hash)
+                );
                 contact.handle_hash = our_pid;
                 if let Some(storage) = self.storage.as_ref() {
                     let _ = crate::storage::contacts::save_contact(contact, storage);
@@ -371,7 +378,8 @@ impl PhotonApp {
             }
             let mut sent = false;
             // No direct path proven → also ping over the relay pipe so PRESENCE works for a relay-only peer. Taken once per cycle so we don't relay the same ping three times (once per candidate address). A validated path means direct pings suffice — no relay ping needed.
-            let mut relay_ping = relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip());
+            let mut relay_ping =
+                relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip());
             // The punch-validated path is the one address PROVEN reachable — when it matches neither stored record (a reflexive-learned mapping can differ from both the registry ip and the LAN row), ping it too, or presence sits TIMEOUT on two dead addresses while the keepalive acks flow.
             if let Some((vpath, _)) = contact.validated_path {
                 if Some(vpath) != lan_addr && Some(vpath) != contact.ip {
@@ -901,7 +909,11 @@ impl PhotonApp {
             [u8; 32],
             Vec<[u8; 32]>,
         )> = Vec::new();
-        for sib in self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out) {
+        for sib in self
+            .contacts
+            .iter()
+            .filter(|c| c.is_sibling && !c.locked_out)
+        {
             let (primary, alt, relay_to) = match sib.race_addrs() {
                 Some((p, a)) => (
                     p,
@@ -921,7 +933,8 @@ impl PhotonApp {
         let kp_pub = *kp.public.as_bytes();
         let kp_sec = *kp.secret.as_bytes();
         let dispatch = checker.history_dispatch();
-        let mut work: Vec<([u8; 32], crate::types::friendship::FriendshipChains, usize)> = Vec::new();
+        let mut work: Vec<([u8; 32], crate::types::friendship::FriendshipChains, usize)> =
+            Vec::new();
         for (fid_bytes, osc, changed, subset) in frames {
             // A subset-less entry is the "stamp moved but no lane did" case: record the coarse stamp and move on, no transmit.
             let Some(subset) = subset else {
@@ -1038,7 +1051,11 @@ impl PhotonApp {
         )> = Vec::new();
         let mut skipped = 0usize;
         // EVERY sibling, not just is_online ones: sibling presence has proven unreliable (pong-provenance drops kept siblings "offline" for whole sessions), and gating delivery on it turned the entire fleet plane into a silent no-op — zero FLEET-HIST lines in a full day's desktop log while messages flowed. Direct legs race as before; a sibling with no validated path (or no address at all) rides the relay, which delivers whenever that device next drains its pipe.
-        for sib in self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out) {
+        for sib in self
+            .contacts
+            .iter()
+            .filter(|c| c.is_sibling && !c.locked_out)
+        {
             if exclude_device.is_some_and(|d| *sib.public_identity.as_bytes() == d) {
                 continue;
             }
@@ -1077,11 +1094,7 @@ impl PhotonApp {
         queue_job(&self.seal_job_tx, move || {
             let vsf_bytes = match seal_history_page(&page, &fleet_key).and_then(|sealed| {
                 crate::network::fgtw::protocol::build_history_page_vsf(
-                    &token,
-                    &rid,
-                    sealed,
-                    &kp_pub,
-                    &kp_sec,
+                    &token, &rid, sealed, &kp_pub, &kp_sec,
                 )
             }) {
                 Ok(b) => b,
@@ -1391,7 +1404,10 @@ impl PhotonApp {
                             if chains.history_key().is_some() {
                                 if let Some((primary, alt)) = c.race_addrs() {
                                     // No validated direct path → the request ALSO rides the relay immediately (chat's relay_to rule); PT's own ladder-then-relay takes longer than the requester's expiry, so relay-only friends starved on it forever.
-                                    let relay_to = relay_unless_direct_trusted(&c, crate::network::udp::get_local_ip());
+                                    let relay_to = relay_unless_direct_trusted(
+                                        &c,
+                                        crate::network::udp::get_local_ip(),
+                                    );
                                     return Some((
                                         idx,
                                         chains.conversation_token,
@@ -1467,8 +1483,9 @@ impl PhotonApp {
                     rec.next_request_osc = now_osc + HIST_TRICKLE_OSC;
                     rec.urgent = false;
                     // Authoritative rid registry (see hist_rid_map): sweep stale entries, then register this request so its page merges even if another contact resolving the same peer re-arms this conversation's in_flight before the answer lands.
-                    self.hist_rid_map
-                        .retain(|_, (_, sent)| now_osc.saturating_sub(*sent) <= HIST_INFLIGHT_TIMEOUT_OSC);
+                    self.hist_rid_map.retain(|_, (_, sent)| {
+                        now_osc.saturating_sub(*sent) <= HIST_INFLIGHT_TIMEOUT_OSC
+                    });
                     self.hist_rid_map.insert(rid, (cid, now_osc));
                     crate::logf!(
                         "HISTORY: requesting page before {} from {}",
@@ -1659,7 +1676,8 @@ impl PhotonApp {
                     .map(|c| c.addr)
                     .collect(),
             };
-            let relay_to = relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip());
+            let relay_to =
+                relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip());
             checker.ping(ip, contact.public_identity.clone(), punch, relay_to);
         }
     }

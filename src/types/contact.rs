@@ -334,10 +334,10 @@ pub struct Contact {
     /// True when the ONLY working path to this contact is the FGTW relay (no direct socket — the asymmetric-reachability case). Drives the lime-yellow presence (theme::RING_RELAY_COLOUR) instead of the direct-connection green, so a relayed link is never mistaken for a direct one. Set when a message arrives via relay / a direct path is proven unreachable; cleared the moment a direct path validates. Not persisted (a session-scoped reachability fact).
     pub reached_via_relay: bool,
     pub prev_is_online: bool, // For differential rendering (not persisted)
-    pub indicator_x: usize,         // Cached indicator dot X position (set during draw)
-    pub indicator_y: usize,         // Cached indicator dot Y position (set during draw)
-    pub text_x: f32,                // Cached text X position (set during draw)
-    pub text_y: f32,                // Cached text Y position (set during draw)
+    pub indicator_x: usize,   // Cached indicator dot X position (set during draw)
+    pub indicator_y: usize,   // Cached indicator dot Y position (set during draw)
+    pub text_x: f32,          // Cached text X position (set during draw)
+    pub text_y: f32,          // Cached text Y position (set during draw)
     // Avatar cache - fetched from FGTW by handle Storage key is deterministic: BLAKE3(BLAKE3(handle) || "avatar")
     pub avatar_pixels: Option<Vec<u8>>, // Full 256x256 VSF RGB pixels (cached)
     pub avatar_scaled: Option<Vec<u8>>, // Pre-scaled to current display size
@@ -484,38 +484,38 @@ impl Contact {
             clutch_kem_encap_in_progress: false, // No KEM encap running yet
             clutch_kem_decap_in_progress: false,
             clutch_ceremony_in_progress: false, // No ceremony completion running yet
-            completed_their_hqc_prefix: None, // Set when CLUTCH completes, persisted
-            offer_provenances: Vec::new(),    // Collected offer provenances for ceremony nonce
+            completed_their_hqc_prefix: None,   // Set when CLUTCH completes, persisted
+            offer_provenances: Vec::new(),      // Collected offer provenances for ceremony nonce
             trust_level: TrustLevel::Stranger,
             added: vsf::eagle_time_oscillations(),
             roster_updated: vsf::eagle_time_oscillations(),
             ceremony_owner: None,
             owner_woven: false,
             last_seen: None,
-            is_online: false,           // Starts offline until we confirm comms
-            reached_via_relay: false,   // Direct until proven relay-only
-            prev_is_online: false, // Match initial state
-            indicator_x: 0,             // Set during first draw
-            indicator_y: 0,             // Set during first draw
-            text_x: 0.0,                // Set during first draw
-            text_y: 0.0,                // Set during first draw
-            avatar_pixels: None,        // Fetched from FGTW by handle when online
-            avatar_scaled: None,        // Scaled on demand for display
+            is_online: false,         // Starts offline until we confirm comms
+            reached_via_relay: false, // Direct until proven relay-only
+            prev_is_online: false,    // Match initial state
+            indicator_x: 0,           // Set during first draw
+            indicator_y: 0,           // Set during first draw
+            text_x: 0.0,              // Set during first draw
+            text_y: 0.0,              // Set during first draw
+            avatar_pixels: None,      // Fetched from FGTW by handle when online
+            avatar_scaled: None,      // Scaled on demand for display
             avatar_scaled_diameter: 0,
             chain_woven: false, // Chain not yet proven end-to-end (probe pending)
             probe_sent: false,
-            probe_resends_left: 3,  // Chain-weave probe not sent yet
-            their_probe_seen: false, // Haven't seen their chain-weave probe yet
-            their_probe_ceremony: None, // …and so no ceremony to attribute one to
+            probe_resends_left: 3,        // Chain-weave probe not sent yet
+            their_probe_seen: false,      // Haven't seen their chain-weave probe yet
+            their_probe_ceremony: None,   // …and so no ceremony to attribute one to
             chain_advanced_by_ack: false, // Our TX chain not yet ACK-advanced
-            validated_path: None, // No punch-validated direct path yet
-            punch_unvalidated_cycles: 0, // No failed punch cycles yet
+            validated_path: None,         // No punch-validated direct path yet
+            punch_unvalidated_cycles: 0,  // No failed punch cycles yet
             clutch_offer_stall_cycles: 0, // No stalled-offer cycles yet
-            last_heard: None,   // No signed traffic from them yet this session
-            presence_probed: false, // No presence verdict yet this session
+            last_heard: None,             // No signed traffic from them yet this session
+            presence_probed: false,       // No presence verdict yet this session
             last_ring: None,
             ping_backoff: 0,
-            last_pinged: None,    // Doorbell never rung this session
+            last_pinged: None, // Doorbell never rung this session
             chain_fail_streak: 0,
             gap_streak: (0, 0),
             last_chain_reset_nonce: None,
@@ -706,7 +706,11 @@ impl Contact {
         }
         let keep = |k: &[u8; 32]| !self.refused_devices.contains(k);
         if self.fleet_folded_once {
-            self.fleet_members.iter().copied().filter(|k| keep(k)).collect()
+            self.fleet_members
+                .iter()
+                .copied()
+                .filter(|k| keep(k))
+                .collect()
         } else {
             let mut v = Vec::with_capacity(self.fleet_members.len() + 1);
             if keep(&self.public_identity.key) {
@@ -851,7 +855,6 @@ impl Contact {
             }
         }
     }
-
 }
 
 #[cfg(test)]

@@ -128,7 +128,9 @@ pub async fn fetch_devices(
     let mut view = fgtw::phonebook::RegistryView::default();
     let mut addresses = Vec::new();
     for field in section.get_fields("rec") {
-        let Some(VsfType::v(_, b)) = field.values.first() else { continue };
+        let Some(VsfType::v(_, b)) = field.values.first() else {
+            continue;
+        };
         if b.len() != STRIDE {
             continue;
         }
@@ -148,7 +150,11 @@ pub async fn fetch_devices(
         return Err(PhonebookError::Unverified);
     }
     let pointed: Vec<[u8; 32]> = view.devices();
-    addresses.retain(|a| a.verify_address() && a.handle_proof() == *handle_proof && pointed.contains(&a.device_pubkey()));
+    addresses.retain(|a| {
+        a.verify_address()
+            && a.handle_proof() == *handle_proof
+            && pointed.contains(&a.device_pubkey())
+    });
     Ok((view, addresses))
 }
 
@@ -181,10 +187,14 @@ pub async fn resolve_device_address(device_pubkey: &[u8; 32]) -> Result<Record, 
 
 /// Pull the raw 256-byte record out of a `pb_rec` response frame. Verified read: header + provenance self-consistency before any field is trusted; the record's own signature is checked by the caller on top.
 fn parse_pb_rec(bytes: &[u8]) -> Option<Record> {
-    let schema = vsf::schema::SectionSchema::new("pb_rec")
-        .field("rec", vsf::schema::TypeConstraint::Any);
+    let schema =
+        vsf::schema::SectionSchema::new("pb_rec").field("rec", vsf::schema::TypeConstraint::Any);
     let section = vsf::schema::SectionBuilder::parse_document(schema, bytes, None).ok()?;
-    match section.get_fields("rec").first().and_then(|f| f.values.first()) {
+    match section
+        .get_fields("rec")
+        .first()
+        .and_then(|f| f.values.first())
+    {
         Some(VsfType::v(_, b)) if b.len() == STRIDE => {
             let mut a = [0u8; STRIDE];
             a.copy_from_slice(b);

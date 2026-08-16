@@ -74,8 +74,7 @@ impl PhotonApp {
         self.self_record_published_for = Some(addr);
         // Same edge, second registry: a fresh reflexive publish is also the moment to re-check the primary registry against the last-adopted fold (empty plan when in sync — one cheap GET).
         if !self.registry_converged_fold.is_empty() {
-            if let Some(our_hp) = self.our_handle_proof()
-            {
+            if let Some(our_hp) = self.our_handle_proof() {
                 self.spawn_registry_converge(our_hp, self.registry_converged_fold.clone());
             }
         }

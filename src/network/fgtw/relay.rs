@@ -78,7 +78,11 @@ pub fn set_locked_relay_targets(locked: Vec<[u8; 32]>) {
 }
 
 fn relay_target_locked(recipient: &[u8; 32]) -> bool {
-    LOCKED_RELAY_TARGETS.lock().unwrap().iter().any(|d| d == recipient)
+    LOCKED_RELAY_TARGETS
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|d| d == recipient)
 }
 
 pub async fn send_via_relay(
@@ -154,7 +158,11 @@ fn relay_reached(body: &[u8]) -> bool {
     let schema = vsf::schema::SectionSchema::new("relay_ack")
         .field("reach", vsf::schema::TypeConstraint::Any);
     match vsf::schema::SectionBuilder::parse_document(schema, body, None) {
-        Ok(sec) => match sec.get_fields("reach").first().and_then(|f| f.values.first()) {
+        Ok(sec) => match sec
+            .get_fields("reach")
+            .first()
+            .and_then(|f| f.values.first())
+        {
             Some(vsf::VsfType::u3(n)) => *n != 0,
             _ => true,
         },

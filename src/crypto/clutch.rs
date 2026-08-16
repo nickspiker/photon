@@ -159,8 +159,14 @@ pub fn mint_fleet_epoch_seed(
     let mut eggs = ClutchEggs::new();
     // Eight independent CSPRNG draws stand in for the ceremony's exchanged secrets; the labels keep the egg-hash domain separation the expander expects.
     let labels = [
-        "fleet_rng_a", "fleet_rng_b", "fleet_rng_c", "fleet_rng_d",
-        "fleet_rng_e", "fleet_rng_f", "fleet_rng_g", "fleet_rng_h",
+        "fleet_rng_a",
+        "fleet_rng_b",
+        "fleet_rng_c",
+        "fleet_rng_d",
+        "fleet_rng_e",
+        "fleet_rng_f",
+        "fleet_rng_g",
+        "fleet_rng_h",
     ];
     for label in labels {
         let mut draw = [0u8; 32];
@@ -553,11 +559,8 @@ pub fn frodo976_encapsulate(their_public_key: &[u8]) -> Option<(Vec<u8>, Vec<u8>
     use rand_core::OsRng;
 
     let alg = Algorithm::FrodoKem976Shake;
-    let ek =
-        EncryptionKey::from_bytes(alg, their_public_key).ok()?;
-    let (ct, ss) = alg
-        .try_encapsulate_with_rng(&ek, OsRng)
-        .ok()?;
+    let ek = EncryptionKey::from_bytes(alg, their_public_key).ok()?;
+    let (ct, ss) = alg.try_encapsulate_with_rng(&ek, OsRng).ok()?;
 
     Some((ct.value().to_vec(), ss.value().to_vec()))
 }
@@ -569,9 +572,7 @@ pub fn frodo976_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Option<
     let alg = Algorithm::FrodoKem976Shake;
     let dk = DecryptionKey::from_bytes(alg, our_secret_key).ok()?;
     let ct = Ciphertext::from_bytes(alg, ciphertext).ok()?;
-    let (ss, _msg) = alg
-        .decapsulate(&dk, &ct)
-        .ok()?;
+    let (ss, _msg) = alg.decapsulate(&dk, &ct).ok()?;
 
     Some(ss.value().to_vec())
 }
@@ -595,8 +596,7 @@ pub fn ntru701_encapsulate(their_public_key: &[u8]) -> Option<(Vec<u8>, Vec<u8>)
     use pqcrypto_ntru::ntruhrss701;
     use pqcrypto_traits::kem::{Ciphertext, PublicKey, SharedSecret};
 
-    let pk = <ntruhrss701::PublicKey as PublicKey>::from_bytes(their_public_key)
-        .ok()?;
+    let pk = <ntruhrss701::PublicKey as PublicKey>::from_bytes(their_public_key).ok()?;
 
     // NTRU uses its own internal RNG for encapsulation
     let (ss, ct) = ntruhrss701::encapsulate(&pk);
@@ -612,10 +612,8 @@ pub fn ntru701_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Option<V
     use pqcrypto_ntru::ntruhrss701;
     use pqcrypto_traits::kem::{Ciphertext, SecretKey, SharedSecret};
 
-    let sk = <ntruhrss701::SecretKey as SecretKey>::from_bytes(our_secret_key)
-        .ok()?;
-    let ct = <ntruhrss701::Ciphertext as Ciphertext>::from_bytes(ciphertext)
-        .ok()?;
+    let sk = <ntruhrss701::SecretKey as SecretKey>::from_bytes(our_secret_key).ok()?;
+    let ct = <ntruhrss701::Ciphertext as Ciphertext>::from_bytes(ciphertext).ok()?;
 
     let ss = ntruhrss701::decapsulate(&ct, &sk);
 
@@ -641,11 +639,8 @@ pub fn frodo1344_encapsulate(their_public_key: &[u8]) -> Option<(Vec<u8>, Vec<u8
     use rand_core::OsRng;
 
     let alg = Algorithm::FrodoKem1344Shake;
-    let ek = EncryptionKey::from_bytes(alg, their_public_key)
-        .ok()?;
-    let (ct, ss) = alg
-        .try_encapsulate_with_rng(&ek, OsRng)
-        .ok()?;
+    let ek = EncryptionKey::from_bytes(alg, their_public_key).ok()?;
+    let (ct, ss) = alg.try_encapsulate_with_rng(&ek, OsRng).ok()?;
 
     Some((ct.value().to_vec(), ss.value().to_vec()))
 }
@@ -655,13 +650,9 @@ pub fn frodo1344_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Option
     use frodo_kem_rs::{Algorithm, Ciphertext, DecryptionKey};
 
     let alg = Algorithm::FrodoKem1344Shake;
-    let dk =
-        DecryptionKey::from_bytes(alg, our_secret_key).ok()?;
-    let ct =
-        Ciphertext::from_bytes(alg, ciphertext).ok()?;
-    let (ss, _msg) = alg
-        .decapsulate(&dk, &ct)
-        .ok()?;
+    let dk = DecryptionKey::from_bytes(alg, our_secret_key).ok()?;
+    let ct = Ciphertext::from_bytes(alg, ciphertext).ok()?;
+    let (ss, _msg) = alg.decapsulate(&dk, &ct).ok()?;
 
     Some(ss.value().to_vec())
 }
@@ -684,8 +675,7 @@ pub fn mlkem1024_encapsulate(their_public_key: &[u8]) -> Option<(Vec<u8>, Vec<u8
     use pqcrypto_mlkem::mlkem1024;
     use pqcrypto_traits::kem::{Ciphertext, PublicKey, SharedSecret};
 
-    let pk = <mlkem1024::PublicKey as PublicKey>::from_bytes(their_public_key)
-        .ok()?;
+    let pk = <mlkem1024::PublicKey as PublicKey>::from_bytes(their_public_key).ok()?;
     let (ss, ct) = mlkem1024::encapsulate(&pk);
 
     Some((
@@ -699,10 +689,8 @@ pub fn mlkem1024_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Option
     use pqcrypto_mlkem::mlkem1024;
     use pqcrypto_traits::kem::{Ciphertext, SecretKey, SharedSecret};
 
-    let sk = <mlkem1024::SecretKey as SecretKey>::from_bytes(our_secret_key)
-        .ok()?;
-    let ct = <mlkem1024::Ciphertext as Ciphertext>::from_bytes(ciphertext)
-        .ok()?;
+    let sk = <mlkem1024::SecretKey as SecretKey>::from_bytes(our_secret_key).ok()?;
+    let ct = <mlkem1024::Ciphertext as Ciphertext>::from_bytes(ciphertext).ok()?;
     let ss = mlkem1024::decapsulate(&ct, &sk);
 
     Some(SharedSecret::as_bytes(&ss).to_vec())
@@ -726,8 +714,7 @@ pub fn sntrup761_encapsulate(their_public_key: &[u8]) -> Option<(Vec<u8>, Vec<u8
     use pqcrypto_ntruprime::ntrulpr761;
     use pqcrypto_traits::kem::{Ciphertext, PublicKey, SharedSecret};
 
-    let pk = <ntrulpr761::PublicKey as PublicKey>::from_bytes(their_public_key)
-        .ok()?;
+    let pk = <ntrulpr761::PublicKey as PublicKey>::from_bytes(their_public_key).ok()?;
     let (ss, ct) = ntrulpr761::encapsulate(&pk);
 
     Some((
@@ -741,10 +728,8 @@ pub fn sntrup761_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Option
     use pqcrypto_ntruprime::ntrulpr761;
     use pqcrypto_traits::kem::{Ciphertext, SecretKey, SharedSecret};
 
-    let sk = <ntrulpr761::SecretKey as SecretKey>::from_bytes(our_secret_key)
-        .ok()?;
-    let ct = <ntrulpr761::Ciphertext as Ciphertext>::from_bytes(ciphertext)
-        .ok()?;
+    let sk = <ntrulpr761::SecretKey as SecretKey>::from_bytes(our_secret_key).ok()?;
+    let ct = <ntrulpr761::Ciphertext as Ciphertext>::from_bytes(ciphertext).ok()?;
     let ss = ntrulpr761::decapsulate(&ct, &sk);
 
     Some(SharedSecret::as_bytes(&ss).to_vec())
@@ -770,8 +755,7 @@ pub fn mceliece460896_encapsulate(their_public_key: &[u8]) -> Option<(Vec<u8>, V
     // Copy to Box for PublicKey::from
     let mut pk_box = vec![0u8; CRYPTO_PUBLICKEYBYTES].into_boxed_slice();
     pk_box.copy_from_slice(their_public_key);
-    let pk_array: Box<[u8; CRYPTO_PUBLICKEYBYTES]> =
-        pk_box.try_into().ok()?;
+    let pk_array: Box<[u8; CRYPTO_PUBLICKEYBYTES]> = pk_box.try_into().ok()?;
     let pk = PublicKey::from(pk_array);
 
     // Use rng for McEliece encapsulation (another diverse RNG source)
@@ -790,14 +774,11 @@ pub fn mceliece460896_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> O
     // Copy to Box for SecretKey::from
     let mut sk_box = vec![0u8; CRYPTO_SECRETKEYBYTES].into_boxed_slice();
     sk_box.copy_from_slice(our_secret_key);
-    let sk_array: Box<[u8; CRYPTO_SECRETKEYBYTES]> =
-        sk_box.try_into().ok()?;
+    let sk_array: Box<[u8; CRYPTO_SECRETKEYBYTES]> = sk_box.try_into().ok()?;
     let sk = SecretKey::from(sk_array);
 
     // Copy to array for Ciphertext::from
-    let ct_array: [u8; CRYPTO_CIPHERTEXTBYTES] = ciphertext
-        .try_into()
-        .ok()?;
+    let ct_array: [u8; CRYPTO_CIPHERTEXTBYTES] = ciphertext.try_into().ok()?;
     let ct = Ciphertext::from(ct_array);
 
     let ss = decapsulate_boxed(&ct, &sk);
@@ -824,8 +805,7 @@ pub fn hqc256_encapsulate(their_public_key: &[u8]) -> Option<(Vec<u8>, Vec<u8>)>
     use pqcrypto_hqc::hqc256;
     use pqcrypto_traits::kem::{Ciphertext, PublicKey, SharedSecret};
 
-    let pk = <hqc256::PublicKey as PublicKey>::from_bytes(their_public_key)
-        .ok()?;
+    let pk = <hqc256::PublicKey as PublicKey>::from_bytes(their_public_key).ok()?;
 
     // HQC uses its own internal RNG for encapsulation
     let (ss, ct) = hqc256::encapsulate(&pk);
@@ -841,10 +821,8 @@ pub fn hqc256_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Option<Ve
     use pqcrypto_hqc::hqc256;
     use pqcrypto_traits::kem::{Ciphertext, SecretKey, SharedSecret};
 
-    let sk = <hqc256::SecretKey as SecretKey>::from_bytes(our_secret_key)
-        .ok()?;
-    let ct =
-        <hqc256::Ciphertext as Ciphertext>::from_bytes(ciphertext).ok()?;
+    let sk = <hqc256::SecretKey as SecretKey>::from_bytes(our_secret_key).ok()?;
+    let ct = <hqc256::Ciphertext as Ciphertext>::from_bytes(ciphertext).ok()?;
 
     let ss = hqc256::decapsulate(&ct, &sk);
 
@@ -1052,12 +1030,12 @@ pub struct ClutchAllKeypairs {
     pub p521_public: Vec<u8>,      // 133B (uncompressed SEC1)
 
     // Class 1: Post-quantum lattice KEMs
-    pub frodo976_secret: Vec<u8>, // 31296B
-    pub frodo976_public: Vec<u8>, // 15632B
+    pub frodo976_secret: Vec<u8>,  // 31296B
+    pub frodo976_public: Vec<u8>,  // 15632B
     pub frodo1344_secret: Vec<u8>, // 43088B
     pub frodo1344_public: Vec<u8>, // 21520B
-    pub ntru701_secret: Vec<u8>,  // 1450B (HRSS-701)
-    pub ntru701_public: Vec<u8>,  // 1138B
+    pub ntru701_secret: Vec<u8>,   // 1450B (HRSS-701)
+    pub ntru701_public: Vec<u8>,   // 1138B
     pub sntrup761_secret: Vec<u8>, // 1294B (NTRU Prime)
     pub sntrup761_public: Vec<u8>, // 1039B
     pub mlkem1024_secret: Vec<u8>, // 3168B
@@ -1197,7 +1175,9 @@ impl ClutchKemResponsePayload {
     ///
     /// For EC algorithms, we generate fresh ephemeral keypairs and compute ECDH with the peer's offer pubkeys. This gives truly distinct secrets per direction.
     /// `None` = malformed key material in the peer's offer — the caller DROPS the offer, it must never panic: an old-build or hostile offer with wrong-length keys was crashing the whole app (a field device on v0.51.87, 2026-08-02).
-    pub fn encapsulate_to_peer(their_offer: &ClutchOfferPayload) -> Option<(Self, ClutchKemSharedSecrets)> {
+    pub fn encapsulate_to_peer(
+        their_offer: &ClutchOfferPayload,
+    ) -> Option<(Self, ClutchKemSharedSecrets)> {
         #[cfg(feature = "development")]
         #[cfg(feature = "development")]
         #[cfg(feature = "development")]
@@ -2668,16 +2648,20 @@ mod tests {
             frodo976_encapsulate(&bob_keys.frodo976_public).unwrap();
         let (frodo_ct_to_alice, frodo_ss_bob_encap) =
             frodo976_encapsulate(&alice_keys.frodo976_public).unwrap();
-        let frodo_ss_bob_decap = frodo976_decapsulate(&bob_keys.frodo976_secret, &frodo_ct_to_bob).unwrap();
+        let frodo_ss_bob_decap =
+            frodo976_decapsulate(&bob_keys.frodo976_secret, &frodo_ct_to_bob).unwrap();
         let frodo_ss_alice_decap =
             frodo976_decapsulate(&alice_keys.frodo976_secret, &frodo_ct_to_alice).unwrap();
         assert_eq!(frodo_ss_alice_encap, frodo_ss_bob_decap); // Alice→Bob direction
         assert_eq!(frodo_ss_bob_encap, frodo_ss_alice_decap); // Bob→Alice direction
 
         // NTRU-701
-        let (ntru_ct_to_bob, ntru_ss_alice_encap) = ntru701_encapsulate(&bob_keys.ntru701_public).unwrap();
-        let (ntru_ct_to_alice, ntru_ss_bob_encap) = ntru701_encapsulate(&alice_keys.ntru701_public).unwrap();
-        let ntru_ss_bob_decap = ntru701_decapsulate(&bob_keys.ntru701_secret, &ntru_ct_to_bob).unwrap();
+        let (ntru_ct_to_bob, ntru_ss_alice_encap) =
+            ntru701_encapsulate(&bob_keys.ntru701_public).unwrap();
+        let (ntru_ct_to_alice, ntru_ss_bob_encap) =
+            ntru701_encapsulate(&alice_keys.ntru701_public).unwrap();
+        let ntru_ss_bob_decap =
+            ntru701_decapsulate(&bob_keys.ntru701_secret, &ntru_ct_to_bob).unwrap();
         let ntru_ss_alice_decap =
             ntru701_decapsulate(&alice_keys.ntru701_secret, &ntru_ct_to_alice).unwrap();
         assert_eq!(ntru_ss_alice_encap, ntru_ss_bob_decap);
@@ -2696,34 +2680,49 @@ mod tests {
         assert_eq!(mce_ss_bob_encap, mce_ss_alice_decap);
 
         // HQC-256
-        let (hqc_ct_to_bob, hqc_ss_alice_encap) = hqc256_encapsulate(&bob_keys.hqc256_public).unwrap();
-        let (hqc_ct_to_alice, hqc_ss_bob_encap) = hqc256_encapsulate(&alice_keys.hqc256_public).unwrap();
+        let (hqc_ct_to_bob, hqc_ss_alice_encap) =
+            hqc256_encapsulate(&bob_keys.hqc256_public).unwrap();
+        let (hqc_ct_to_alice, hqc_ss_bob_encap) =
+            hqc256_encapsulate(&alice_keys.hqc256_public).unwrap();
         let hqc_ss_bob_decap = hqc256_decapsulate(&bob_keys.hqc256_secret, &hqc_ct_to_bob).unwrap();
-        let hqc_ss_alice_decap = hqc256_decapsulate(&alice_keys.hqc256_secret, &hqc_ct_to_alice).unwrap();
+        let hqc_ss_alice_decap =
+            hqc256_decapsulate(&alice_keys.hqc256_secret, &hqc_ct_to_alice).unwrap();
         assert_eq!(hqc_ss_alice_encap, hqc_ss_bob_decap);
         assert_eq!(hqc_ss_bob_encap, hqc_ss_alice_decap);
 
         // FrodoKEM-1344
-        let (f13_ct_to_bob, f13_alice_encap) = frodo1344_encapsulate(&bob_keys.frodo1344_public).unwrap();
-        let (f13_ct_to_alice, f13_bob_encap) = frodo1344_encapsulate(&alice_keys.frodo1344_public).unwrap();
-        let f13_bob_decap = frodo1344_decapsulate(&bob_keys.frodo1344_secret, &f13_ct_to_bob).unwrap();
-        let f13_alice_decap = frodo1344_decapsulate(&alice_keys.frodo1344_secret, &f13_ct_to_alice).unwrap();
+        let (f13_ct_to_bob, f13_alice_encap) =
+            frodo1344_encapsulate(&bob_keys.frodo1344_public).unwrap();
+        let (f13_ct_to_alice, f13_bob_encap) =
+            frodo1344_encapsulate(&alice_keys.frodo1344_public).unwrap();
+        let f13_bob_decap =
+            frodo1344_decapsulate(&bob_keys.frodo1344_secret, &f13_ct_to_bob).unwrap();
+        let f13_alice_decap =
+            frodo1344_decapsulate(&alice_keys.frodo1344_secret, &f13_ct_to_alice).unwrap();
         assert_eq!(f13_alice_encap, f13_bob_decap);
         assert_eq!(f13_bob_encap, f13_alice_decap);
 
         // NTRU Prime 761
-        let (sn_ct_to_bob, sn_alice_encap) = sntrup761_encapsulate(&bob_keys.sntrup761_public).unwrap();
-        let (sn_ct_to_alice, sn_bob_encap) = sntrup761_encapsulate(&alice_keys.sntrup761_public).unwrap();
-        let sn_bob_decap = sntrup761_decapsulate(&bob_keys.sntrup761_secret, &sn_ct_to_bob).unwrap();
-        let sn_alice_decap = sntrup761_decapsulate(&alice_keys.sntrup761_secret, &sn_ct_to_alice).unwrap();
+        let (sn_ct_to_bob, sn_alice_encap) =
+            sntrup761_encapsulate(&bob_keys.sntrup761_public).unwrap();
+        let (sn_ct_to_alice, sn_bob_encap) =
+            sntrup761_encapsulate(&alice_keys.sntrup761_public).unwrap();
+        let sn_bob_decap =
+            sntrup761_decapsulate(&bob_keys.sntrup761_secret, &sn_ct_to_bob).unwrap();
+        let sn_alice_decap =
+            sntrup761_decapsulate(&alice_keys.sntrup761_secret, &sn_ct_to_alice).unwrap();
         assert_eq!(sn_alice_encap, sn_bob_decap);
         assert_eq!(sn_bob_encap, sn_alice_decap);
 
         // ML-KEM-1024
-        let (ml_ct_to_bob, ml_alice_encap) = mlkem1024_encapsulate(&bob_keys.mlkem1024_public).unwrap();
-        let (ml_ct_to_alice, ml_bob_encap) = mlkem1024_encapsulate(&alice_keys.mlkem1024_public).unwrap();
-        let ml_bob_decap = mlkem1024_decapsulate(&bob_keys.mlkem1024_secret, &ml_ct_to_bob).unwrap();
-        let ml_alice_decap = mlkem1024_decapsulate(&alice_keys.mlkem1024_secret, &ml_ct_to_alice).unwrap();
+        let (ml_ct_to_bob, ml_alice_encap) =
+            mlkem1024_encapsulate(&bob_keys.mlkem1024_public).unwrap();
+        let (ml_ct_to_alice, ml_bob_encap) =
+            mlkem1024_encapsulate(&alice_keys.mlkem1024_public).unwrap();
+        let ml_bob_decap =
+            mlkem1024_decapsulate(&bob_keys.mlkem1024_secret, &ml_ct_to_bob).unwrap();
+        let ml_alice_decap =
+            mlkem1024_decapsulate(&alice_keys.mlkem1024_secret, &ml_ct_to_alice).unwrap();
         assert_eq!(ml_alice_encap, ml_bob_decap);
         assert_eq!(ml_bob_encap, ml_alice_decap);
 

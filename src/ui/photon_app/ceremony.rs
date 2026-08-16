@@ -77,7 +77,9 @@ impl PhotonApp {
                 ClutchKemResponsePayload::encapsulate_to_peer(&their_offer)
             else {
                 // Malformed key material (old-build or hostile offer) — DROP, never panic: this exact shape was crashing a field peer's app on every received offer (2026-08-02).
-                crate::log("CLUTCH: offer carries malformed key material (version skew?) — dropped");
+                crate::log(
+                    "CLUTCH: offer carries malformed key material (version skew?) — dropped",
+                );
                 return;
             };
             #[cfg(feature = "development")]
@@ -196,11 +198,7 @@ impl PhotonApp {
         let mut ceremony_completions: Vec<usize> = Vec::new();
 
         while let Ok(result) = self.clutch_kem_decap_rx.try_recv() {
-            let Some(idx) = self
-                .contacts
-                .iter()
-                .position(|c| c.id == result.contact_id)
-            else {
+            let Some(idx) = self.contacts.iter().position(|c| c.id == result.contact_id) else {
                 crate::log("CLUTCH: decap result for a contact that no longer exists — dropped");
                 continue;
             };
@@ -208,10 +206,11 @@ impl PhotonApp {
             contact.clutch_kem_decap_in_progress = false;
 
             // CAS: only install into the keypair generation that decapped. A torch mid-flight minted new keypairs; these secrets belong to a dead round.
-            let current_prefix: Option<[u8; 8]> = contact
-                .clutch_our_keypairs
-                .as_ref()
-                .map(|k| k.hqc256_public[..8].try_into().expect("hqc public >= 8 bytes"));
+            let current_prefix: Option<[u8; 8]> = contact.clutch_our_keypairs.as_ref().map(|k| {
+                k.hqc256_public[..8]
+                    .try_into()
+                    .expect("hqc public >= 8 bytes")
+            });
             if current_prefix != Some(result.keypair_hqc_prefix) {
                 crate::logf!(
                     "CLUTCH: decap result is for a superseded keypair generation of {} — dropped",
@@ -220,7 +219,9 @@ impl PhotonApp {
                 continue;
             }
             let Some(remote_secrets) = result.remote_secrets else {
-                crate::log("CLUTCH: KEM response carries malformed material — dropped (version skew?)");
+                crate::log(
+                    "CLUTCH: KEM response carries malformed material — dropped (version skew?)",
+                );
                 continue;
             };
 
@@ -278,8 +279,13 @@ impl PhotonApp {
                         .and_then(|s| s.offer.clone());
                     if let Some(remote_offer) = remote_offer {
                         contact.clutch_kem_encap_in_progress = true;
-                        kem_encap_spawn =
-                            Some((contact.id.clone(), remote_offer, ceremony_id, conv_token, ip));
+                        kem_encap_spawn = Some((
+                            contact.id.clone(),
+                            remote_offer,
+                            ceremony_id,
+                            conv_token,
+                            ip,
+                        ));
                         crate::logf!(
                             "CLUTCH: Spawning KEM encap for {} after decap",
                             crate::fp(&contact.handle_proof)
@@ -407,9 +413,7 @@ impl PhotonApp {
     ///
     /// Slot-based design: keypairs stored once, slots filled as messages arrive. Ceremony completes when all slots have offer + both KEM secret directions.
     pub fn check_clutch_keygens(&mut self) -> bool {
-        use crate::crypto::clutch::{
-            derive_conversation_token, ClutchOfferPayload,
-        };
+        use crate::crypto::clutch::{derive_conversation_token, ClutchOfferPayload};
         use crate::network::status::ClutchOfferRequest;
         use crate::types::CeremonyId;
 
@@ -497,12 +501,15 @@ impl PhotonApp {
                         if their_offer_waiting && owner_stale {
                             // FAN-OUT TIE-BREAK, no sync channel required: the offer that "chose this device" also chose every sibling — it fanned out over the relay — and with the roster clock stale on BOTH siblings (mid-session, no fstate edge between them), each read "owner silent", claimed, and minted competing rounds that adoption-cooldowns then locked in place on all three parties (live pair, 2026-08-05). Same doctrine as the sibling initiator rule: the lowest ONLINE fleet device claims at the TTL; a higher device defers, time-boxed to one more TTL so a winner that dies mid-round still gets rescued.
                             // Defer unless the lower device is PROBED-OFFLINE: requiring online-and-probed meant a boot or one flapped probe read as "no lower device" and both siblings claimed — the presence-luck dual-claim this tie-break exists to end (live pair, 2026-08-06). Unknown presence defers; only a confirmed-dead winner forfeits its turn (and the one-TTL deference cap still rescues a silently dead one).
-                            let lower_sibling_online = siblings
-                                .iter()
-                                .any(|(k, online, probed)| (*online || !*probed) && k < &device_pubkey);
-                            let deference_expired = contact
-                                .clutch_claim_deferred
-                                .map_or(false, |t| t.elapsed().as_secs() as i64 > CLUTCH_ROUND_TTL_OSC / vsf::OSCILLATIONS_PER_SECOND as i64);
+                            let lower_sibling_online =
+                                siblings.iter().any(|(k, online, probed)| {
+                                    (*online || !*probed) && k < &device_pubkey
+                                });
+                            let deference_expired =
+                                contact.clutch_claim_deferred.map_or(false, |t| {
+                                    t.elapsed().as_secs() as i64
+                                        > CLUTCH_ROUND_TTL_OSC / vsf::OSCILLATIONS_PER_SECOND as i64
+                                });
                             if lower_sibling_online && !deference_expired {
                                 if contact.clutch_claim_deferred.is_none() {
                                     contact.clutch_claim_deferred = Some(std::time::Instant::now());
@@ -747,7 +754,11 @@ impl PhotonApp {
                         if let Some(ref local_keys) = contact.clutch_our_keypairs {
                             let pending_kem = contact.clutch_pending_kem.take().expect("checked");
                             contact.clutch_kem_decap_in_progress = true;
-                            decap_spawns.push((contact.id.clone(), pending_kem, local_keys.clone()));
+                            decap_spawns.push((
+                                contact.id.clone(),
+                                pending_kem,
+                                local_keys.clone(),
+                            ));
                             crate::logf!(
                                 "CLUTCH: Spawning decap for queued KEM from {}",
                                 crate::fp(&contact.handle_proof)
@@ -833,7 +844,10 @@ impl PhotonApp {
             // Same round scoping as the ceremony drain below: a KEM encapsulated under a discarded round must not send, and must not park its secrets in the slot the successor round is now using.
             if let Some(idx) = self.contacts.iter().position(|c| c.id == result.contact_id) {
                 if self.contacts[idx].ceremony_id != Some(result.ceremony_id) {
-                    let cur = self.contacts[idx].ceremony_id.map(|c| hex::encode(&c[..4])).unwrap_or_else(|| "none".into());
+                    let cur = self.contacts[idx]
+                        .ceremony_id
+                        .map(|c| hex::encode(&c[..4]))
+                        .unwrap_or_else(|| "none".into());
                     crate::logf!("CLUTCH: KEM encap result is for round {}… but the slot is on {} — stale round, dropped", hex::encode(&result.ceremony_id[..4]), cur);
                     self.contacts[idx].clutch_kem_encap_in_progress = false;
                     continue;
@@ -965,7 +979,10 @@ impl PhotonApp {
             // ROUND SCOPING for the LOCAL pipeline — the mirror of the wire-side cross-round drop: this completion was spawned under the round it carries, and a discard-and-adopt can land while the job is still in flight. Installing the late result resurrects a round no other device holds, and the proof it just minted gets defended with retransmits for the rest of the session (the 35-minute cross-round wedge, live pair 2026-08-04). Compared against the slot's CURRENT round, not spawn order: the id is deterministic over both provenances, so a re-derived identical round still installs.
             if let Some(idx) = self.contacts.iter().position(|c| c.id == result.contact_id) {
                 if self.contacts[idx].ceremony_id != Some(result.ceremony_id) {
-                    let cur = self.contacts[idx].ceremony_id.map(|c| hex::encode(&c[..4])).unwrap_or_else(|| "none".into());
+                    let cur = self.contacts[idx]
+                        .ceremony_id
+                        .map(|c| hex::encode(&c[..4]))
+                        .unwrap_or_else(|| "none".into());
                     crate::logf!("CLUTCH: ceremony result is for round {}… but the slot is on {} — stale round, dropped", hex::encode(&result.ceremony_id[..4]), cur);
                     self.contacts[idx].clutch_ceremony_in_progress = false;
                     let mut stale = result;

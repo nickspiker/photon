@@ -80,7 +80,11 @@ impl PhotonApp {
             if is_sibling && !suppress_bubble {
                 // Store the outgoing bubble locally so the conversation shows what was asked.
                 if let Some(conv) = self.conv_mut_of(ci) {
-                    let mut msg = ChatMessage::new_with_timestamp(text.clone(), true, vsf::eagle_time_oscillations());
+                    let mut msg = ChatMessage::new_with_timestamp(
+                        text.clone(),
+                        true,
+                        vsf::eagle_time_oscillations(),
+                    );
                     msg.delivered = true;
                     conv.insert_message_sorted(msg.clone());
                     conv.scroll_offset = 0.0;
@@ -103,7 +107,10 @@ impl PhotonApp {
         // A reaction/edit targets an EXISTING row — inserting its referencing row must not yank the view to the bottom (the target the user is looking at may be far up the stream).
         let is_quiet_row = matches!(
             reference,
-            Some((crate::types::RefKind::Edit | crate::types::RefKind::React, _))
+            Some((
+                crate::types::RefKind::Edit | crate::types::RefKind::React,
+                _
+            ))
         );
         if remotes == 0 {
             let mut msg =
@@ -183,11 +190,7 @@ impl PhotonApp {
 
     /// Persist a friendship's chains OFF the UI thread with no gated signal — the safe-to-delay saves (ACK pending-removal, chain-sync adopt), where a lost write just re-converges idempotently.
     pub(super) fn persist_chains_async(&mut self, fid: &crate::types::friendship::FriendshipId) {
-        let Some((_, chains)) = self
-            .friendship_chains
-            .iter()
-            .find(|(id, _)| id == fid)
-        else {
+        let Some((_, chains)) = self.friendship_chains.iter().find(|(id, _)| id == fid) else {
             return;
         };
         let chains = chains.clone();
@@ -403,21 +406,21 @@ impl PhotonApp {
 
     /// Send every outgoing row this contact still holds as undelivered — the rows `drain_pending_chain_sends` HELD because no chain existed yet (typically a re-key in flight). Original timestamps are preserved, so the row identity is unchanged and the friend dedups anything it already has; a row that still can't go out simply stays held for the next attempt.
     pub(super) fn resend_held_messages(&mut self, ci: usize) {
-        let held: Vec<(String, i64, Option<(crate::types::RefKind, i64)>)> =
-            match self.conv_of(ci) {
-                Some(v) => v
-                    .messages
-                    .iter()
-                    // A reaction RETRACT is a legal empty-content row — its reference makes it sendable; a plain empty row stays filtered (the liveness-probe artifact class).
-                    .filter(|m| {
-                        m.is_outgoing
-                            && !m.delivered
-                            && (!m.content.is_empty() || m.reference.is_some())
-                    })
-                    .map(|m| (m.content.clone(), m.timestamp, m.reference))
-                    .collect(),
-                None => return,
-            };
+        let held: Vec<(String, i64, Option<(crate::types::RefKind, i64)>)> = match self.conv_of(ci)
+        {
+            Some(v) => v
+                .messages
+                .iter()
+                // A reaction RETRACT is a legal empty-content row — its reference makes it sendable; a plain empty row stays filtered (the liveness-probe artifact class).
+                .filter(|m| {
+                    m.is_outgoing
+                        && !m.delivered
+                        && (!m.content.is_empty() || m.reference.is_some())
+                })
+                .map(|m| (m.content.clone(), m.timestamp, m.reference))
+                .collect(),
+            None => return,
+        };
         if held.is_empty() {
             return;
         }
@@ -484,7 +487,10 @@ impl PhotonApp {
                 c.pending_messages.len() >= crate::types::friendship::IN_FLIGHT_WINDOW
             })
         {
-            crate::logf!("CHAT: lane at the in-flight window ({}) — holding this message for an ACK slot", crate::types::friendship::IN_FLIGHT_WINDOW);
+            crate::logf!(
+                "CHAT: lane at the in-flight window ({}) — holding this message for an ACK slot",
+                crate::types::friendship::IN_FLIGHT_WINDOW
+            );
             return false;
         }
 
@@ -494,7 +500,9 @@ impl PhotonApp {
             .iter()
             .find(|(id, _)| *id == friendship_id)
             .map_or(false, |(_, c)| {
-                c.pending_messages.iter().any(|m| m.eagle_time == eagle_time)
+                c.pending_messages
+                    .iter()
+                    .any(|m| m.eagle_time == eagle_time)
             })
         {
             crate::logf!("CHAT: message at eagle_time {} already in flight — leaving it to the retransmit sweep, not re-encrypting", eagle_time);
@@ -600,20 +608,18 @@ impl PhotonApp {
         let wake = self.event_proxy.clone();
         let text_len = text.len();
         queue_job(&self.braid_job_tx, move || {
-            let result = snapshot
-                .prepare_send_encrypt(&payload, eagle_time)
-                .map(
-                    |(ciphertext, prev_msg_hp, msg_hp, plaintext_hash, lane, expected_key)| {
-                        BraidTxWire {
-                            ciphertext,
-                            prev_msg_hp,
-                            msg_hp,
-                            plaintext_hash,
-                            lane,
-                            expected_key,
-                        }
-                    },
-                );
+            let result = snapshot.prepare_send_encrypt(&payload, eagle_time).map(
+                |(ciphertext, prev_msg_hp, msg_hp, plaintext_hash, lane, expected_key)| {
+                    BraidTxWire {
+                        ciphertext,
+                        prev_msg_hp,
+                        msg_hp,
+                        plaintext_hash,
+                        lane,
+                        expected_key,
+                    }
+                },
+            );
             let _ = tx.send(BraidTxEncrypted {
                 friendship_id,
                 conversation_token,
@@ -679,7 +685,11 @@ impl PhotonApp {
         }
         if !(c.their_probe_seen && c.chain_advanced_by_ack) {
             // Not sealed yet. If OUR half is the missing one, our probe may simply have been lost — one best-effort frame, and losing it deadlocks the pair forever (each side ends up holding a different half). This runs on the EDGE of a proof arriving, never on a timer, and is bounded so an unreachable peer doesn't re-probe endlessly.
-            if c.their_probe_seen && !c.chain_advanced_by_ack && c.probe_sent && c.probe_resends_left > 0 {
+            if c.their_probe_seen
+                && !c.chain_advanced_by_ack
+                && c.probe_sent
+                && c.probe_resends_left > 0
+            {
                 c.probe_resends_left -= 1;
                 c.probe_sent = false;
                 let left = c.probe_resends_left;
