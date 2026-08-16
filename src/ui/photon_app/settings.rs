@@ -444,7 +444,7 @@ impl PhotonApp {
                 self.pending_zoom_restore = Some(ru);
                 crate::logf!("SETTINGS: restoring device zoom = {} (one-shot)", ru);
             }
-            // Window geometry rides the same one-shot: two typed PAIRS (display.window.pos v_i5[x,y], .size v_u5[w,h] — physical px), device-local like zoom. Pos and size are atomic pairs (a move never changes just an x), so each is one value that reads as itself in the inspector.
+            // Window geometry rides the same one-shot: two typed PAIRS (display.window.pos v_i5[x,y], .size v_u5[w,h] — fluor window_rect desktop units), device-local like zoom. Pos and size are atomic pairs (a move never changes just an x), so each is one value that reads as itself in the inspector. The host clamps into live surfaces at apply, so a rect from an unplugged monitor snaps back on-screen.
             {
                 use crate::storage::fleet_settings::{as_i32_pair, as_u32_pair};
                 let pos = self.fleet_settings.as_ref().and_then(|fs| fs.device_local("display.window.pos")).and_then(as_i32_pair);
@@ -461,22 +461,7 @@ impl PhotonApp {
         }
     }
 
-    /// Flush the event-tracked geometry if anything changed since the last persist — called at the durability edges (focus-lost, close). Both halves must be known (init seeds them; Wayland/Android never report a position and stay inert).
-    pub(super) fn flush_window_geometry(&mut self) {
-        // PARKED with the restore (see take_window_geometry_request): values saved under the wrong window model poisoned the next launch, so neither save until the host-model redesign.
-        if true {
-            return;
-        }
-        if !self.window_geometry_dirty {
-            return;
-        }
-        if let (Some((x, y)), Some((w, h))) = (self.window_pos_seen, self.window_size_seen) {
-            self.window_geometry_dirty = false;
-            self.save_window_geometry(x, y, w, h);
-        }
-    }
-
-    /// Persist the settled window geometry as this DEVICE's two typed pairs — display.window.pos (v_i5 [x,y], outer position) + .size (v_u5 [w,h], inner size), physical px. Device-local and UNLINKED like zoom: where a window sits is monitor ergonomics, never fleet-global.
+    /// Persist the settled window geometry as this DEVICE's two typed pairs — display.window.pos (v_i5 [x,y]) + .size (v_u5 [w,h]), fluor `window_rect` GLOBAL desktop units. Fed by the host's once-per-gesture settle hook (drag-move release / resize-drag end), so no dirty tracking exists. Device-local and UNLINKED like zoom: where a window sits is monitor ergonomics, never fleet-global — but still mirrored thru the fleet's device maps like every device setting.
     pub(super) fn save_window_geometry(&mut self, x: i32, y: i32, w: u32, h: u32) {
         if !self.ensure_fleet_settings() {
             return;

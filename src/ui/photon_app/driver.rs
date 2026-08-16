@@ -13,10 +13,9 @@ impl FluorApp for PhotonApp {
         r
     }
 
-    /// PARKED 2026-08-16: the raw set_outer_position/request_inner_size restore fights fluor's surface model (oversized surface + its own input-region math) — the field build flashed 2-3 frames then vanished with a dead click region. The restore must go THRU the host's window_rect machinery (the toggle_maximized path), not naked winit calls; until that lands, never restore.
+    /// One-shot window-geometry restore: a fluor `window_rect` in GLOBAL desktop units, applied by the host thru its own maximize machinery (clamped into live surfaces). Never raw winit calls — the parked 2026-08-16 version moved the fullscreen OS surface itself and the window vanished with a dead click region.
     fn take_window_geometry_request(&mut self) -> Option<(i32, i32, u32, u32)> {
-        let _ = self.pending_geometry_restore.take();
-        None
+        self.pending_geometry_restore.take()
     }
 
     type UserEvent = PhotonEvent;
@@ -102,24 +101,12 @@ impl FluorApp for PhotonApp {
         self.start_in_background
     }
 
-    /// The OS moved the window: remember the new outer position (RAM only — durability waits for a lifecycle edge). Pure event, no sampling.
-    fn on_window_moved(&mut self, x: i32, y: i32) {
-        if self.window_pos_seen != Some((x, y)) {
-            self.window_pos_seen = Some((x, y));
-            self.window_geometry_dirty = true;
-        }
-    }
-
-    /// Focus left the app — the natural "user looked away" durability edge: flush any moved/resized-but-unsaved geometry.
-    fn on_focus_changed(&mut self, focused: bool) {
-        if !focused {
-            self.flush_window_geometry();
-        }
+    /// The host settled the visible `window_rect` after a user gesture (drag-move release / resize-drag end) — fires once per gesture, so the gesture IS the durability edge: persist immediately, no dirty tracking, no flush edges.
+    fn on_window_rect_changed(&mut self, x: i32, y: i32, w: u32, h: u32) {
+        self.save_window_geometry(x, y, w, h);
     }
 
     fn on_close_requested(&mut self) -> bool {
-        // The close is the last durability edge — flush on BOTH the hide and the exit path.
-        self.flush_window_geometry();
         // Deliberate-quit overrides: Shift+Escape's one-shot flag, or shift held on the close itself (shift+✕, shift+Alt-F4). Either way the user asked for the REAL exit — decline residency this once and let the host exit.
         if self.exit_requested || self.shift_held {
             crate::log(
@@ -150,13 +137,6 @@ impl FluorApp for PhotonApp {
     }
 
     fn init(&mut self, ctx: &mut Context) {
-        // Seed the geometry trackers from the window as born — one read at the init EVENT, so a later move-only or resize-only session still holds both halves at flush time. Not a restore echo: dirty stays false until a real event differs.
-        if let Some(p) = ctx.window.outer_position() {
-            self.window_pos_seen = Some(p);
-        }
-        if let Some(sz) = ctx.window.inner_size() {
-            self.window_size_seen = Some(sz);
-        }
         // Register Photon's Oxanium font weights with fluor's shared `TextRenderer` so the logo wordmark can resolve `Family::Name("Oxanium")`. ExtraLight/Light/Regular/Medium/SemiBold/Bold/ExtraBold = numeric weights 200/300/400/500/600/700/800. The logo uses weight 800.
         let db = ctx.text.font_system_mut().db_mut();
         db.load_font_data(
@@ -941,12 +921,6 @@ impl FluorApp for PhotonApp {
             chrome.set_full_edge(ctx.is_maximized);
         }
         self.update_widget_layout(ctx);
-        // Remember the inner size on the resize EVENT edge (RAM only; durability waits for focus-lost/close). The restore's own request_inner_size lands here too — the seed in take_window_geometry_request makes that a no-op, and a real user resize differs and marks dirty.
-        let size = (ctx.viewport.width_px, ctx.viewport.height_px);
-        if self.window_size_seen != Some(size) {
-            self.window_size_seen = Some(size);
-            self.window_geometry_dirty = true;
-        }
     }
 
     // A clickable element was ACTIVATED — pointer went DOWN on `hit_id` and released over the SAME `hit_id`, no drag-off (press-hold-release, arbitrated by fluor's PointerArbiter). Every ACTION lives here so a mis-touch dragged off before release fires NOTHING. Press-time concerns (focus, textbox cursor, drag-select, window drag) stay in `on_event`'s Pressed arm; the raw press/release still arrive there.
