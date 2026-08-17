@@ -348,6 +348,26 @@ impl PhotonApp {
                             let n = chains.rearm_pending_after(tip, now_osc);
                             if n > 0 {
                                 crate::logf!("CHAT: re-armed {} given-up pending msg(s) past peer lane tip {} (stall recovery)", n, tip);
+                                // STUCK-TIP WEDGE — the anchor wedge in disguise (round-9 field, 2026-08-17): the peer's head for our lane is NONZERO but never moves (its lane stalled exactly where ours wedged; the rows above it reached the fleet as forwards nobody can re-ACK), so exhaust → re-arm → exhaust loops forever below the tip-0 detector. Two FULL retry ladders re-armed at the very same advertised head = the peer provably cannot advance past it; rotate, and the re-serve converges rows by identity exactly like the anchor heal.
+                                let ladders = {
+                                    let e = self
+                                        .lane_rearm_cycles
+                                        .entry(*fid)
+                                        .or_insert((tip, 0));
+                                    if e.0 == tip {
+                                        e.1 = e.1.saturating_add(1);
+                                    } else {
+                                        *e = (tip, 1);
+                                    }
+                                    e.1
+                                };
+                                if ladders >= 2 {
+                                    if let Some((dead, fresh, retired)) = chains.rotate_our_lane() {
+                                        crate::logf!("LANE: peer's head for our lane STUCK at {} thru {} exhaust→re-arm ladders ({} pending(s)) — rotated {}... to {}..., re-serving on the fresh lane", tip, ladders, retired, hex::encode(&dead[..4]), hex::encode(&fresh[..4]));
+                                        rotated_fids.push(*fid);
+                                        self.lane_rearm_cycles.remove(fid);
+                                    }
+                                }
                             }
                             // ANTI-ENTROPY: the pong carries the peer's (row_count, XOR-fold) for this conversation. A digest mismatch means the two sides provably hold DIFFERENT message sets — the heuristic cursor walk left a hole (the greyed sends a peer never got, 2026-07-25) — so force a FULL recovery walk (early-stop disabled). Zero count+digest = legacy peer, no comparison. Cooldown per contact so a persistent mismatch (peer can't serve) re-fires at a polite cadence instead of every pong.
                             if record.row_count != 0 || record.row_digest != [0u8; 32] {
