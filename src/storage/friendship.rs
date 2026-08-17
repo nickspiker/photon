@@ -37,6 +37,7 @@ fn chains_schema() -> SectionSchema {
         .field("pending_prev_msg_hp", TypeConstraint::AnyHash) // hp
         .field("pending_msg_hp", TypeConstraint::AnyHash) // hp
         .field("pending_ciphertext", TypeConstraint::Wrapped(b'X')) // vX: ciphertext bytes
+        .field("pending_attempts", TypeConstraint::AnyUnsigned) // send attempts SURVIVE restarts: exhaustion is cumulative evidence about the LANE (the anchor-wedge detector's arming gate), and short sessions resetting it to zero meant a dead lane could never be diagnosed (round-7 field, 2026-08-17)
         // Bidirectional entropy state (v3)
         .field("last_received_weave", TypeConstraint::AnyHash) // hp: derived weave hash (32 bytes)
         .field("last_sent_weave", TypeConstraint::AnyHash) // hp: what we sent (what they received)
@@ -165,6 +166,11 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
             .append_multi(
                 "pending_ciphertext",
                 vec![VsfType::v(b'X', pending.ciphertext.clone())],
+            )
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi(
+                "pending_attempts",
+                vec![VsfType::u(pending.attempts as usize, false)],
             )
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
@@ -473,6 +479,14 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
         })
         .collect();
 
+    // Persisted attempt counts — width-agnostic read (never variant-match a parsed integer). Absent (pre-field vaults) = the old restart behavior via the .get() fallback below; NOT folded into pending_count, or an old vault would zero the whole pending set.
+    let attempts_persisted: Vec<u8> = section
+        .get_fields("pending_attempts")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| v.as_u64().and_then(|n| u8::try_from(n).ok()))
+        .collect();
+
     // Reconstruct pending messages (all arrays must have same length)
     let pending_count = eagle_times
         .len()
@@ -492,8 +506,8 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
             ciphertext: ciphertexts[i].clone(),
             // Not persisted (runtime-only braid-strand snapshot). A pending message reloaded after restart weaves no strands; in practice pending messages are short-lived (cleared on ACK) so this edge only matters if the app restarts mid-flight with an unacked message AND its braid strands were non-empty — a known minor gap, not the steady-state desync this fix addresses.
             woven_strands: Vec::new(),
-            // Reliability state is runtime-only. A pending message reloaded after restart is eligible to resend immediately (attempts reset to 1, deadline = its eagle_time so it's already due).
-            attempts: 1,
+            // Attempts SURVIVE the restart (floor 1): exhaustion is cumulative lane evidence — resetting it every launch meant the anchor-wedge detector could never arm inside a short session and a dead lane stayed undiagnosed forever. The deadline is still immediate: a reloaded pending resends right away (or, if already exhausted, sits as the standing evidence the next sync record reads).
+            attempts: attempts_persisted.get(i).copied().unwrap_or(1).max(1),
             next_retry_osc: eagle_times[i],
         })
         .collect();
@@ -681,6 +695,31 @@ mod tests {
 
         let back = chains_from_vsf_bytes(&bytes).expect("decode");
         assert_eq!(back.participants(), chains.participants());
+    }
+
+    /// Pending attempts SURVIVE the round trip: exhaustion is cumulative lane evidence (the anchor-wedge arming gate), and a restart resetting it meant a dead lane could never be diagnosed inside short sessions. Real encode→decode, so the width-agnostic read is exercised too.
+    #[test]
+    fn pending_attempts_survive_the_round_trip() {
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        chains
+            .prepare_send(b"hold".to_vec(), b"hold".to_vec(), 1_000_000, vec![])
+            .expect("send");
+        // Drive some attempts onto the pending, then round-trip.
+        for k in 1..5 {
+            let _ = chains.collect_due_retransmits(1_000_000 + k * 60 * vsf::OSCILLATIONS_PER_SECOND as i64);
+        }
+        let attempts_before = chains.pending_messages().first().expect("pending").attempts;
+        assert!(attempts_before > 1, "retransmits must have counted");
+        let bytes = chains_to_vsf_bytes(&chains).expect("encode");
+        let back = chains_from_vsf_bytes(&bytes).expect("decode");
+        assert_eq!(
+            back.pending_messages().first().expect("pending").attempts,
+            attempts_before,
+            "a restart must not amnesty a dying lane"
+        );
     }
 
     /// The SHARED decoder — the one the fleet chain-replication adopt path uses — must be strict. A headerless blob arriving from another device must never be parsed into live ratchet state; that is what the document wrapper exists to prevent.
