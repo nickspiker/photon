@@ -66,3 +66,5 @@ ios/**/.generated/
 /rust_out
 android log.txt
 *.vsf
+
+node_modules/
