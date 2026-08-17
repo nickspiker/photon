@@ -13,14 +13,14 @@ source scripts/lib/manifest.sh
 manifest_begin_dev_publish "macos-arm64"
 
 echo "Building macOS ARM64 development binary..."
-# ON a Mac this target is NATIVE — no osxcross, no wrappers. .cargo/config.toml already defaults the linker to plain `clang` for exactly this case, so build with the env CLEAN; pointing at /mnt/Octopus paths that don't exist here is what breaks it.
+# ON a Mac this target is NATIVE — no osxcross, no wrappers. .cargo/config.toml already defaults the linker to plain `clang` for exactly this case, so build with the env CLEAN; pointing at /mnt/Harbor paths that don't exist here is what breaks it.
 # From Linux it stays the cross-build: the osxcross clang-wrapper env below mirrors deploy.sh's release recipe.
 if [ "$(uname -s)" = "Darwin" ]; then
     cargo build --features development --target aarch64-apple-darwin
 else
-    CC_aarch64_apple_darwin=/mnt/Octopus/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
-    CXX_aarch64_apple_darwin=/mnt/Octopus/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
-    CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/mnt/Octopus/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
+    CC_aarch64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
+    CXX_aarch64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
+    CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
         cargo build --features development --target aarch64-apple-darwin
 fi
 sign_binary debug aarch64-apple-darwin

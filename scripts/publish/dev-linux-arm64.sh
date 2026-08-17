@@ -16,8 +16,8 @@ echo "Building Linux ARM64 development binary..."
 CFLAGS_aarch64_unknown_linux_gnu="--sysroot=/usr/aarch64-redhat-linux/sys-root/fc42" \
 CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
 PKG_CONFIG_ALLOW_CROSS=1 \
-PKG_CONFIG_PATH_aarch64_unknown_linux_gnu=/mnt/Octopus/Code/photon/cross-libs/aarch64/pkgconfig \
-PKG_CONFIG_LIBDIR_aarch64_unknown_linux_gnu=/mnt/Octopus/Code/photon/cross-libs/aarch64/pkgconfig \
+PKG_CONFIG_PATH_aarch64_unknown_linux_gnu=/mnt/Harbor/Code/photon/cross-libs/aarch64/pkgconfig \
+PKG_CONFIG_LIBDIR_aarch64_unknown_linux_gnu=/mnt/Harbor/Code/photon/cross-libs/aarch64/pkgconfig \
 PKG_CONFIG_SYSROOT_DIR_aarch64_unknown_linux_gnu=/ \
     cargo build --features development --target aarch64-unknown-linux-gnu
 sign_binary debug aarch64-unknown-linux-gnu

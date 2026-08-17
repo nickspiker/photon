@@ -142,7 +142,7 @@ WHAT IT CANNOT DO WITHOUT SECRETS
     - the Ed25519 photon signing key   (PHOTON_SIGNING_KEY, or the keys dir)
     - the TOKEN APK keystore + password (TOKEN_KEYSTORE_PATH / _PASSWORD)
     - google-services.json              (Firebase; android.sh copies it from the keys dir)
-  scripts/lib/keystore.sh resolves these from /mnt/Octopus/Code/keys,
+  scripts/lib/keystore.sh resolves these from /mnt/Harbor/Code/keys,
   /mnt/Chiton/MEGA/Code/keys, or ~/MEGA/code/keys, and reads the password from the
   GNOME keyring via secret-tool.
 

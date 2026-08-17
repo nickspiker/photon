@@ -37,7 +37,7 @@ sign_binary() {
         *apple-darwin*)
             # Resolve the keys dir the same way keystore.sh does rather than hardcoding the desktop's mount — the MacBook keeps it at ~/Code/keys, and a missing cert here silently downgrades to an ad-hoc signature (TCC then re-prompts for Local Network on every update).
             local cert=""
-            for d in /mnt/Octopus/Code/keys /mnt/Chiton/MEGA/Code/keys "$HOME/MEGA/code/keys" "$HOME/Code/keys"; do
+            for d in /mnt/Harbor/Code/keys /mnt/Chiton/MEGA/Code/keys "$HOME/MEGA/code/keys" "$HOME/Code/keys"; do
                 if [ -f "$d/photon-macos-codesign.crt" ]; then
                     cert="$d/photon-macos-codesign"
                     break

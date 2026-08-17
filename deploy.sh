@@ -163,7 +163,7 @@ echo "Signing Windows x86_64 binary..."
 # build.rs uses llvm-rc for the icon on aarch64.
 # ARM64 is a REQUIRED target like every other platform: a missing toolchain aborts the release (no silent
 # skip — a deploy either ships every platform or ships none). Install from github.com/mstorsjo/llvm-mingw.
-WINARM_MINGW="/mnt/Octopus/Code/llvm-mingw"
+WINARM_MINGW="/mnt/Harbor/Code/llvm-mingw"
 if [ ! -x "$WINARM_MINGW/bin/aarch64-w64-mingw32-clang" ]; then
     echo "ERROR: llvm-mingw toolchain not found at $WINARM_MINGW — required for the Windows ARM64 target."
     echo "       Install from github.com/mstorsjo/llvm-mingw (ucrt build), or remove the ARM64 target from this script."
@@ -189,7 +189,7 @@ echo "Signing Redox binary..."
 ./target/release/photon-signature-signer target/x86_64-unknown-redox/release/photon-messenger
 
 # Apple code signature with a STABLE identity (self-signed 10-yr cert in the keys dir, identifier org.fgtw.photon): macOS TCC keys privacy grants (Local Network etc.) on this identity, so an updated binary keeps its permissions instead of re-prompting every release (the linker's ad-hoc signature had no identity and a per-build identifier). MUST run BEFORE photon-signature-signer — rcodesign rewrites the Mach-O, which would strip an already-appended Ed25519 tail. Gatekeeper is unaffected either way: the curl installer never sets the quarantine xattr.
-MACOS_CODESIGN_CERT="/mnt/Octopus/Code/keys/photon-macos-codesign"
+MACOS_CODESIGN_CERT="/mnt/Harbor/Code/keys/photon-macos-codesign"
 apple_sign() {
     rcodesign sign \
         --pem-file "$MACOS_CODESIGN_CERT.crt" \
@@ -201,8 +201,8 @@ apple_sign() {
 # Build macOS Intel
 echo ""
 echo "Building macOS Intel release..."
-CC_x86_64_apple_darwin=/mnt/Octopus/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
-CXX_x86_64_apple_darwin=/mnt/Octopus/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
+CC_x86_64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
+CXX_x86_64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
 snap_cargo build --release --target x86_64-apple-darwin
 
 echo ""
@@ -213,9 +213,9 @@ apple_sign target/x86_64-apple-darwin/release/photon-messenger
 # Build macOS Apple Silicon
 echo ""
 echo "Building macOS ARM64 release..."
-CC_aarch64_apple_darwin=/mnt/Octopus/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
-CXX_aarch64_apple_darwin=/mnt/Octopus/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
-CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/mnt/Octopus/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
+CC_aarch64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
+CXX_aarch64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
+CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
 snap_cargo build --release --target aarch64-apple-darwin
 
 echo ""

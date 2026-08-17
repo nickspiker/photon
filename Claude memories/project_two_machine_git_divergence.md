@@ -7,7 +7,7 @@ metadata:
   originSessionId: b192f764-fe07-4644-91fb-09156e2e7e05
 ---
 
-Photon is developed on at least TWO machines: the **Leviathan desktop** (Linux, /mnt/Octopus/Code/photon) and a **MacBook**. Their git histories DIVERGED and neither box knew — this cost the user "the first week of my development in Europe as I thought that stuff was done" (2026-08-14).
+Photon is developed on at least TWO machines: the **Leviathan desktop** (Linux, /mnt/Harbor/Code/photon) and a **MacBook**. Their git histories DIVERGED and neither box knew — this cost the user "the first week of my development in Europe as I thought that stuff was done" (2026-08-14).
 
 **What happened (root-caused 2026-08-14):** Leviathan's local `main` forked from `origin/main` at commit 42615e0 (2026-07-17) and never reconciled. The MacBook kept pushing its line (per-device-lanes, up to 0.51.202); Leviathan kept committing the **bridge** feature + unattended-reboot locally and NEVER pushing them. Result: 275 local-only commits vs 674 remote-only commits. Of the 275, ~26 were REDUNDANT (the MacBook had done the same clutch/relay/history/attachments/chat work, often same commit subjects/hashes) — only **bridge + unattended-reboot (13 commits)** were genuinely stranded on the desktop.
 
@@ -16,7 +16,7 @@ Photon is developed on at least TWO machines: the **Leviathan desktop** (Linux, 
 **How to apply — the standing discipline:**
 - After ANY commit, verify `git rev-parse HEAD` == `git ls-remote origin main` (check the WIRE, not just `git status`). "Committed" != "pushed" != "on the machine that builds releases".
 - Before assuming past work shipped, confirm the feature's FILES exist on origin/main (`git cat-file -e origin/main:path`), not just that a commit with that subject exists locally.
-- The sibling crates (fgtw, fluor, tohu, vsf, spirix, manifestus) live in adjacent /mnt/Octopus/Code/ dirs and can independently fall behind their remotes — a photon that won't compile with "missing symbol in fgtw/fluor" usually means a stale sibling, not a code bug. Fast-forward the siblings first.
+- The sibling crates (fgtw, fluor, tohu, vsf, spirix, manifestus) live in adjacent /mnt/Harbor/Code/ dirs and can independently fall behind their remotes — a photon that won't compile with "missing symbol in fgtw/fluor" usually means a stale sibling, not a code bug. Fast-forward the siblings first.
 - deploy.sh silently failing (the Redox/set-e trap, fixed same day) MASKED this — a green-looking deploy that never pushed reinforced "it's done" when it wasn't. See the deploy.sh warning/failure-surfacing fix (commit e49b39b).
 
 Relates to [[project_bridge]] (the stranded feature), [[per-device-lanes.md]] (the MacBook line that superseded the redundant desktop commits), [[push-after-landing.md]] (push discipline the memory repo already had but code didn't).
