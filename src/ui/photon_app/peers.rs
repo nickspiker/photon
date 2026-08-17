@@ -121,10 +121,14 @@ impl PhotonApp {
         let mut consumed = 0usize;
         for step in 0..n {
             let c = &self.contacts[(start + step) % n];
-            if !c
+            // Stalled = no usable address OR direct-unreachable despite one: a contact whose punches keep dying (online, PUNCH_UNREACHABLE_THRESHOLD cycles unvalidated) needs FRESH registry addresses no matter what its ip slot holds — the 2026-08-17 field flap: a cross-subnet LAN path (multicast leaked between segments) validated and died in a loop, the flapping address kept re-seeding the contact, and the friend's rock-solid WAN v6 sat unresolved in the registry the whole time because "has an address" read as "doesn't need one".
+            let has_usable_ip = c
                 .ip
-                .map_or(true, |a| crate::network::traverse::gather::is_bogus_addr(&a))
-            {
+                .is_some_and(|a| !crate::network::traverse::gather::is_bogus_addr(&a));
+            let direct_dead = c.is_online
+                && c.punch_unvalidated_cycles
+                    >= crate::types::contact::PUNCH_UNREACHABLE_THRESHOLD;
+            if has_usable_ip && !direct_dead {
                 continue;
             }
             if budget == 0 {

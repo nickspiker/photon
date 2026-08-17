@@ -235,6 +235,9 @@ pub struct DeviceEndpoint {
     pub online: bool,
 }
 
+/// Cycles an online contact may go punched-but-unvalidated before it's treated as direct-unreachable — read by the relay tiering AND the seed-registry resolve (a contact stuck here needs FRESH addresses, whatever stale `ip` it carries: the 2026-08-17 flap — a cross-subnet LAN path validating and dying over and over — kept a perfectly-reachable WAN v6 from ever being resolved, because the resolve gated on "has an address").
+pub const PUNCH_UNREACHABLE_THRESHOLD: u8 = 3;
+
 #[derive(Clone, Debug)]
 pub struct Contact {
     pub id: ContactId,
@@ -358,7 +361,7 @@ pub struct Contact {
     pub chain_advanced_by_ack: bool,
     /// Runtime-only: a punch-validated direct path to this contact `(remote_addr, last_confirmed)`, set when a hole-punch round-trips (see [`crate::network::traverse`]). `race_addrs` prefers it as the primary send address, keeping the public/LAN as the alternate so PT still races if the NAT mapping went stale. Each keepalive ack refreshes `last_confirmed`; once it exceeds the traversal TTL with no ack the path is cleared and re-punched. `Instant` (not eagle-time) because it's never persisted — a resumed session re-punches.
     pub validated_path: Option<(SocketAddr, std::time::Instant)>,
-    /// Runtime-only graceful-failure counter: consecutive ping cycles where an ONLINE contact was punched but never validated a direct path (the symmetric↔symmetric case). Past a small threshold the peer is treated as direct-unreachable — the hook the relay milestone (M2) reads. Reset to 0 on any validation.
+    /// Runtime-only graceful-failure counter: consecutive ping cycles where an ONLINE contact was punched but never validated a direct path (the symmetric↔symmetric case). Past [`PUNCH_UNREACHABLE_THRESHOLD`] the peer is treated as direct-unreachable — the hook the relay milestone (M2) reads, and the seed-registry resolve's "this contact needs fresh addresses" signal. Reset to 0 on any validation.
     pub punch_unvalidated_cycles: u8,
     /// Runtime-only reachability clock (docs/reachability-doorbell.md): the last time ANY signed traffic from this contact's devices reached us — pong, punch ack, chat frame. "The guard's eyes are open." `None` since boot = never heard. Drives the dozed classification: silence past the dozed threshold plus undeliverable traffic = ring the doorbell.
     pub last_heard: Option<std::time::Instant>,
