@@ -4,8 +4,8 @@
 #
 # Callers cd to their repo root before sourcing. On failure this `return`s non-zero (it does NOT `exit`) so a sourcing script can decide how to handle it; check the return value.
 
-if [ -d "/mnt/Octopus/Code/keys" ]; then
-    KEYS_DIR="/mnt/Octopus/Code/keys"
+if [ -d "/mnt/Harbor/Code/keys" ]; then
+    KEYS_DIR="/mnt/Harbor/Code/keys"
 elif [ -d "/mnt/Chiton/MEGA/Code/keys" ]; then
     KEYS_DIR="/mnt/Chiton/MEGA/Code/keys"
 elif [ -d "$HOME/MEGA/code/keys" ]; then
@@ -14,7 +14,7 @@ elif [ -d "$HOME/Code/keys" ]; then
     # The MacBook's MEGA sync lands here (2026-07-27) — same contents, no /mnt mounts on macOS.
     KEYS_DIR="$HOME/Code/keys"
 else
-    echo "ERROR: Cannot find keys directory (looked in /mnt/Octopus/Code/keys, /mnt/Chiton/MEGA/Code/keys, $HOME/MEGA/code/keys, $HOME/Code/keys)"
+    echo "ERROR: Cannot find keys directory (looked in /mnt/Harbor/Code/keys, /mnt/Chiton/MEGA/Code/keys, $HOME/MEGA/code/keys, $HOME/Code/keys)"
     return 1 2>/dev/null || exit 1
 fi
 

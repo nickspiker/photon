@@ -10,7 +10,7 @@ The `x86_64-pc-windows-gnu` build fails at `pqcrypto-mlkem 0.1.1`: its vendored 
 **The fix:** a minimal `features.h` (defines only `__GNUC_PREREQ`) vendored at `cross-libs/mingw-shim/features.h`, put on the C include path via a `[env]` table in `.cargo/config.toml`:
 ```
 [env]
-CFLAGS_x86_64_pc_windows_gnu = "-I/mnt/Octopus/Code/photon/cross-libs/mingw-shim"
+CFLAGS_x86_64_pc_windows_gnu = "-I/mnt/Harbor/Code/photon/cross-libs/mingw-shim"
 ```
 Automatic for dev AND deploy (not deploy-only). The aarch64-windows build uses clang (llvm-mingw), which takes compat.h's `__clang__` branch and never includes `features.h` — so ONLY x86_64-gnu needs the shim.
 

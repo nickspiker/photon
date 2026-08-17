@@ -35,7 +35,7 @@ Side effect: the brick/device-lock worker features (1a2afdd) are UN-DEPLOYED unt
 Tested: refuses on the desktop (stale key), live check green post-rollback.
 Desktop worker deploys are BLOCKED BY DESIGN until the canonical key.rs lands here.
 
-**Key custody (Nick's doctrine: a key not in /mnt/Octopus/Code/keys → Chiton → MEGA does not exist):**
+**Key custody (Nick's doctrine: a key not in /mnt/Harbor/Code/keys → Chiton → MEGA does not exist):**
 - Verified IN keys/ + mirrored on Chiton: photon-signing-key (byte-identical to AUTHOR_PUBKEY — the update/self-verify trust root), macos codesign, TOKEN.p12, google-services.json, ferros/spirix/ssh/tokens.
 - NOT in keys/ ANYWHERE reachable: the canonical FGTW cluster secret (021C…/D60B…). Not on Octopus, not on Chiton, not in Chiton's MEGA Code tree. The rotation saved it to MacBook ~/Code/keys — which keystore.sh says is that machine's MEGA sync dir, yet it never propagated. Chiton keys/ mtime is Jul 26 (pre-rotation): the mirror chain may be stalled or one-way — CHECK MEGA CLOUD (web) for Code/keys/fgtw-seed-key.rs before any drive; also MEGA trash/versions (a one-way Chiton push could have deleted the MacBook's upload).
 - Stale pre-rotation pair archived as keys/fgtw-seed-key-STALE-pre-2026-07-30-rotation.rs (clearly labeled, header warning inside).
@@ -46,7 +46,7 @@ Desktop worker deploys are BLOCKED BY DESIGN until the canonical key.rs lands he
 ## CLOSED 2026-08-14 night — canonical key recovered, brick worker back live
 
 The canonical pair survived in the MacBook's DEPLOY COPY (~/Code/fgtw-bootstrap/src/key.rs, gitignored so no sync touched it); the MacBook's ~/Code/keys/fgtw-seed-key.rs canonical file was GONE — the stalled/one-way MEGA sync ate it.
-Recovered via paste, verified all four ways (each secret derives its public, both publics == client pins), installed at /mnt/Octopus/Code/keys/fgtw-seed-key.rs (0600, canonical home) + desktop fgtw-bootstrap/src/key.rs.
+Recovered via paste, verified all four ways (each secret derives its public, both publics == client pins), installed at /mnt/Harbor/Code/keys/fgtw-seed-key.rs (0600, canonical home) + desktop fgtw-bootstrap/src/key.rs.
 Worker redeployed from the desktop (version a51c9194): guard green, brick/device-lock features live again, live challenge signature-verifies against the client pin.
 
 **Residue:**

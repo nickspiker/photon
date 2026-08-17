@@ -7,7 +7,7 @@ metadata:
   originSessionId: c2e42b61-550d-4281-b408-7ec369680f6f
 ---
 
-The keyring is Photon's multi-device identity layer (ADD/REMOVE devices). **The TOKEN patent already specifies it** — `/mnt/Octopus/Code/TOKEN/patent/patent.typ` is the authority; docs/keyring.md records Photon's implementation notes.
+The keyring is Photon's multi-device identity layer (ADD/REMOVE devices). **The TOKEN patent already specifies it** — `/mnt/Harbor/Code/TOKEN/patent/patent.typ` is the authority; docs/keyring.md records Photon's implementation notes.
 
 **v1 FLEET MEMBERSHIP CHAIN SHIPPED + DEPLOYED 2026-06-30** (supersedes the v0 Merkle-root keyring described below; v0 client `keyring.rs` DELETED, worker root model removed). The confirmed signed-list model is now the live implementation:
 - `photon/src/network/fgtw/fleet.rs` — `MembershipBlob` = ordered `FleetOp` chain {handle_proof, prev_hash, kind(Genesis/Add/Remove), device_pubkey, eagle_time, signer_pubkey, sigs}. Sigs are an **egg-list** (`[(scheme,sig)]`, "every egg must verify", Ed25519=scheme 0, PQ additive). `fold()` IS the auth rule: valid sig + hash-chain link + signer-was-a-member-before-this-op (genesis self-signs into empty set); handle_proof bound into every op (anti chain-transplant). Builders genesis/add/remove; VSF wire = section "fleet", repeated positional "op" multi-value field [hP,hb,u,ke,e6,ke, then (u,ge) egg pairs]. Client oracle (stateless, fetch-then-sign): `fetch()`/`publish()`/`ensure_member()` (first-come genesis when none). 10 tests (incl. known-answer parity vector).

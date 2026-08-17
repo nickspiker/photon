@@ -7,7 +7,7 @@ metadata:
   originSessionId: a24c64ab-95e4-4edf-8dc3-366eec9b6268
 ---
 
-Architecture direction set 2026-06-28 (design only, not implemented). Full doc: [docs/peers-are-fgtw.md](/mnt/Octopus/Code/photon/docs/peers-are-fgtw.md).
+Architecture direction set 2026-06-28 (design only, not implemented). Full doc: [docs/peers-are-fgtw.md](/mnt/Harbor/Code/photon/docs/peers-are-fgtw.md).
 
 **The vision:** `fgtw.org` (central bootstrap SERVER) retires; FGTW the NETWORK stays — the peers themselves ARE the FGTW. Gossip mesh now, full Kademlia DHT ("kamadilla") eventually. Two openness levels, deliberately different:
 1. **Phonebook is OPEN** — ask any peer "give me everyone who's ever attested", they hand it over. Ungated enumeration. ("I'll send you the phonebook.")
