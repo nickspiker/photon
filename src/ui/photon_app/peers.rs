@@ -121,14 +121,8 @@ impl PhotonApp {
         let mut consumed = 0usize;
         for step in 0..n {
             let c = &self.contacts[(start + step) % n];
-            // Stalled = no usable address OR direct-unreachable despite one: a contact whose punches keep dying (online, PUNCH_UNREACHABLE_THRESHOLD cycles unvalidated) needs FRESH registry addresses no matter what its ip slot holds — the 2026-08-17 field flap: a cross-subnet LAN path (multicast leaked between segments) validated and died in a loop, the flapping address kept re-seeding the contact, and the friend's rock-solid WAN v6 sat unresolved in the registry the whole time because "has an address" read as "doesn't need one".
-            let has_usable_ip = c
-                .ip
-                .is_some_and(|a| !crate::network::traverse::gather::is_bogus_addr(&a));
-            let direct_dead = c.is_online
-                && c.punch_unvalidated_cycles
-                    >= crate::types::contact::PUNCH_UNREACHABLE_THRESHOLD;
-            if has_usable_ip && !direct_dead {
+            // Stalled = no VALIDATED path right now. Every softer predicate lost to the field: "has an address" starved the friend whose slot held a flapping cross-subnet LAN address, and "direct-dead for N cycles" never armed because each flap's validation reset the counter before N (round-7, 2026-08-17). A validated path is the one state that genuinely needs nothing; everyone else gets fresh registry candidates — more candidates are strictly better (best_pair ranks them; a v6 host outranks a flaky foreign LAN), and the rotating cursor already bounds seed load.
+            if c.validated_path.is_some() {
                 continue;
             }
             if budget == 0 {
