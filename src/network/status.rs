@@ -2537,14 +2537,29 @@ async fn run_checker(
                                                         k != responder_pubkey.as_bytes()
                                                     });
                                                 }
-                                                crate::logf!("Status: unmatched pong from {} ({}) — liveness only (late/twin; no addr adoption)", crate::fp(responder_pubkey.as_bytes()), src_addr);
+                                                // SYNC RECORDS RIDE THE SALVAGE: the sealed tail is device-authenticated by the pairwise AEAD independent of ping-nonce freshness, and lane tips / row digests are replay-safe testimony (a replayed OLD tip clears strictly less; a stale digest at worst re-arms one recovery walk). Dropping them here starved receivers whose pongs consistently race to the wrong provenance — 127 salvaged pongs in one session, ZERO records processed, so the tip-clear/anchor-heal never saw the peer's heads (round-8 field, 2026-08-17). Name/pin/locked stay matched-pong-only: those mutate identity/trust state and lean on the nonce for replay protection.
+                                                let salvaged = sealed
+                                                    .as_ref()
+                                                    .and_then(|blob| {
+                                                        let key = pong_seal_keys_recv
+                                                            .lock()
+                                                            .unwrap()
+                                                            .get(responder_pubkey.as_bytes())
+                                                            .copied();
+                                                        key.and_then(|k| {
+                                                            crate::network::fgtw::protocol::open_pong_sensitive(blob, &k).ok()
+                                                        })
+                                                    })
+                                                    .map(|(recs, _, _, _)| recs)
+                                                    .unwrap_or_default();
+                                                crate::logf!("Status: unmatched pong from {} ({}) — liveness + {} sync record(s) (late/twin; no addr adoption)", crate::fp(responder_pubkey.as_bytes()), src_addr, salvaged.len());
                                                 send_status_update(
                                                     &status_tx_recv,
                                                     StatusUpdate::Online {
                                                         peer_pubkey: responder_pubkey,
                                                         is_online: true,
                                                         peer_addr: None,
-                                                        sync_records: Vec::new(),
+                                                        sync_records: salvaged,
                                                         display_name: None,
                                                         avatar_pin: None,
                                                         locked_reports: Vec::new(),
@@ -2561,7 +2576,6 @@ async fn run_checker(
                                     // Verify responder matches who we pinged
                                     if responder_pubkey != pending_ping.recipient_pubkey {
                                         // Another device answered this provenance (a fleet sibling heard the fan-out, or a stale contact record routed the ping). The RESPONDER is provably alive if its signature holds — salvage that as presence-only, same terms as the unmatched arm. And the consumed pending entry still belongs to its intended recipient: put it back so their answer (or honest timeout) isn't silently voided.
-                                        crate::logf!("Status: pong answered by {} but we pinged {} — responder counted alive (liveness only), ping re-armed for its recipient", crate::fp(responder_pubkey.as_bytes()), crate::fp(pending_ping.recipient_pubkey.as_bytes()));
                                         if verify_provenance_signature(
                                             &provenance_hash,
                                             &responder_pubkey,
@@ -2574,19 +2588,37 @@ async fn run_checker(
                                                     k != responder_pubkey.as_bytes()
                                                 });
                                             }
+                                            // Same salvage as the unmatched arm: the RESPONDER's sealed tail is its own authenticated testimony — a fleet answering fan-out pings from devices we didn't name was the ONLY pong source some sessions ever saw, and 'liveness only' meant zero sync records all session (round-8 field, 2026-08-17). Tips/digests only; name/pin/locked wait for a matched pong.
+                                            let salvaged = sealed
+                                                .as_ref()
+                                                .and_then(|blob| {
+                                                    let key = pong_seal_keys_recv
+                                                        .lock()
+                                                        .unwrap()
+                                                        .get(responder_pubkey.as_bytes())
+                                                        .copied();
+                                                    key.and_then(|k| {
+                                                        crate::network::fgtw::protocol::open_pong_sensitive(blob, &k).ok()
+                                                    })
+                                                })
+                                                .map(|(recs, _, _, _)| recs)
+                                                .unwrap_or_default();
+                                            crate::logf!("Status: pong answered by {} but we pinged {} — responder counted alive + {} sync record(s), ping re-armed for its recipient", crate::fp(responder_pubkey.as_bytes()), crate::fp(pending_ping.recipient_pubkey.as_bytes()), salvaged.len());
                                             send_status_update(
                                                 &status_tx_recv,
                                                 StatusUpdate::Online {
                                                     peer_pubkey: responder_pubkey,
                                                     is_online: true,
                                                     peer_addr: None,
-                                                    sync_records: Vec::new(),
+                                                    sync_records: salvaged,
                                                     display_name: None,
                                                     avatar_pin: None,
                                                     locked_reports: Vec::new(),
                                                 },
                                                 &event_proxy_recv,
                                             );
+                                        } else {
+                                            crate::logf!("Status: pong answered by {} but we pinged {} — signature unverifiable, dropped", crate::fp(responder_pubkey.as_bytes()), crate::fp(pending_ping.recipient_pubkey.as_bytes()));
                                         }
                                         pending_recv.lock().unwrap().push(pending_ping);
                                         continue;
