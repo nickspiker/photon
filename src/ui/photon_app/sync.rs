@@ -238,8 +238,7 @@ impl PhotonApp {
     /// Ping all contacts that have IP addresses (call periodically)
     pub(super) fn ping_contacts(&mut self) {
         use crate::network::traverse::session::PATH_TTL;
-        // Cycles an online contact may go punched-but-unvalidated before we treat it as direct-unreachable.
-        const PUNCH_UNREACHABLE_THRESHOLD: u8 = 3;
+        use crate::types::contact::PUNCH_UNREACHABLE_THRESHOLD;
 
         // Cycles a Pending ceremony may sit offer-sent with a validated path up and no peer offer before we re-fire ours (see Contact::clutch_offer_stall_cycles).
         const OFFER_STALL_CYCLES: u8 = 6;

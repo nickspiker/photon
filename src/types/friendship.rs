@@ -1086,24 +1086,21 @@ impl FriendshipChains {
         rearmed
     }
 
-    /// True when OUR lane is provably DEAD to the peer: they advertise the ANCHOR (zero receipts, tip 0) while our oldest exhausted pending does not link there — the frame they need next is one we no longer hold, so nothing in `pending_messages` can EVER be accepted (hash-unlinkable, and position-N ciphertext against their position-0 key besides).
+    /// True when OUR lane is empirically DEAD to the peer: they are ALIVE and advertising the ANCHOR (zero receipts, tip 0) while our oldest pending has exhausted its full retry ladder — direct, TCP, relay — without one ACK.
     /// This is the field wedge of 2026-08-09 (receiver lost/never-held the lane state, sender mid-chain): 2,913 retransmit lines in one overnight log, every frame gap-buffered by the peer as "ahead of us", give-up → stall-recovery re-arm → give-up, forever.
-    /// Exhaustion is the gate that keeps a healthy first burst (pendings genuinely in flight toward a fresh lane) from reading as a wedge: give-up means the full retry ladder ran — direct, TCP, relay — and nobody of the peer's fleet linked it. A nonzero STUCK tip can wedge the same way (mid-chain regression) but is indistinguishable from a healthy gap-stall by osc alone — that case waits on head HASHES in the sync records (TICKETS).
+    /// Exhaustion is the gate that keeps a healthy first burst (pendings genuinely in flight toward a fresh lane) from reading as a wedge: a live peer ACKs a linkable frame well inside MAX_SEND_ATTEMPTS.
+    /// The old anchor-link discriminator (`prev_msg_hp != anchor` — "if they can link our resend, let the retransmit carry it") is GONE: an anchor-linkable frame the peer holds from the pre-ack_hash era gets dedup-skipped WITHOUT a re-ACK, so its resends exhaust forever while the detector insisted the lane was fine — wedged in the gap between three mechanisms (round-6 field, 2026-08-17: four pendings, window shut, tip honestly 0, no rotation). Exhausted-at-a-live-anchor is a dead lane whatever the hashes say; rotation re-serves the rows at their original stamps and the peer's content dedup makes that lossless.
     pub fn our_lane_wedged_at_peer_anchor(&self, tip_osc: i64) -> bool {
         if tip_osc != 0 {
             return false;
         }
-        let Some(label) = self.our_label else {
+        if self.our_label.is_none() {
             return false;
-        };
-        let Some(idx) = self.lane_index(&label) else {
-            return false;
-        };
+        }
         let Some(oldest) = self.pending_messages.first() else {
             return false;
         };
         oldest.attempts >= MAX_SEND_ATTEMPTS
-            && oldest.prev_msg_hp != self.first_message_anchors[idx]
     }
 
     /// LANE ROTATION — the wedge heal: retire the dead lane, mint a fresh one. The "era-supersede should retire the orphan lane" repair, minus the era: same root, no ceremony, no key material touched. The receiver materializes the new lane from its wire label on first frame (`ensure_lane`) and expects its anchor — a slate it can actually link.
@@ -2202,13 +2199,13 @@ mod tests {
         // Fresh + un-exhausted: never a wedge, at any tip.
         assert!(!sender.our_lane_wedged_at_peer_anchor(0));
 
-        // Exhaust the whole ladder. Peer at the anchor with our oldest pending LINKING at the anchor is still healthy — the retransmit sweep can deliver the first frame and cascade.
+        // Exhaust the whole ladder. A LIVE peer still advertising the anchor after the full retry ladder ran without one ACK is a dead lane — even for an anchor-LINKABLE oldest pending (the old "the retransmit can cascade" exemption starved the round-6 field wedge: the peer held the row from the pre-ack_hash era, dedup-skipped every resend without re-ACKing, and the detector insisted the lane was fine forever).
         for k in 1..20 {
             let _ = sender.collect_due_retransmits(t0 + one_s * 60 * k);
         }
-        assert!(!sender.our_lane_wedged_at_peer_anchor(0));
+        assert!(sender.our_lane_wedged_at_peer_anchor(0));
 
-        // The first message gets ACKed (the peer held the lane once), then the peer loses the lane state and advertises the anchor again. Our oldest pending now builds on msg one's hash — unlinkable at their anchor, exhausted: WEDGED.
+        // ACKing the first message clears it AND implies nothing newer (msg two remains); the peer then losing the lane state back to the anchor with our exhausted second pending is the classic 2026-08-09 wedge — still detected.
         assert!(sender.process_ack(t0, &ph1));
         assert!(sender.our_lane_wedged_at_peer_anchor(0));
         // A nonzero tip is never this wedge (gap-stall vs regression is undecidable by osc alone — head-hash territory).
