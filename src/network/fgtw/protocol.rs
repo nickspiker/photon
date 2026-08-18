@@ -2478,6 +2478,57 @@ pub fn parse_ckpt_root_vsf(vsf_bytes: &[u8]) -> Result<((u64, u64, Vec<u8>), [u8
     Ok(((k, fanout_epoch, sealed), sender_pubkey))
 }
 
+/// Build a `focus` frame — the fleet-wide active-clearer claim (notification design 2026-07-23): "MY screen shows conversation `tok` as of `osc`" (`act=1`) or the retraction of that claim (`act=0`). Fleet-scoped sibling frame, device-signed like the ckpt family; newest `osc` wins at every sibling, so a new device's claim displaces the old holder without coordination. The token is already relay-visible on chat/hist frames, so the claim adds only coarse viewed-now timing to the existing metadata surface.
+pub fn build_focus_vsf(
+    conversation_token: &[u8; 32],
+    osc: i64,
+    active: bool,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+
+    let mut section = VsfSection::new("focus");
+    section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    section.add_field("osc", VsfType::e(vsf::types::EtType::e6(osc)));
+    section.add_field("act", VsfType::u(active as usize, false));
+
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build focus VSF: {}", e))?;
+
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse + verify a `focus` frame. Returns ((conversation_token, osc, active), sender_pubkey).
+pub fn parse_focus_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], i64, bool), [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("focus verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "focus" {
+        return Err(format!("Expected 'focus' section, got '{}'", section_name));
+    }
+    let fields = &section.fields;
+    let conversation_token = field_hash32(fields, "tok", |v| matches!(v, VsfType::hg(_)))
+        .ok_or("focus missing tok")?;
+    let osc = fields
+        .iter()
+        .find(|f| f.name == "osc")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::e(vsf::types::EtType::e6(t)) => Some(*t),
+            _ => None,
+        })
+        .ok_or("focus missing osc")?;
+    let active = field_u64(fields, "act").ok_or("focus missing act")? != 0;
+    Ok(((conversation_token, osc, active), sender_pubkey))
+}
+
 /// Build a `ckpt_req` frame — "my epoch spine ends at `have_k`; serve me forward". Fired on any epoch-sealed frame we can't open because its k is ahead of ours. A sibling ahead answers with `ckpt_state`.
 pub fn build_ckpt_req_vsf(
     have_k: u64,
@@ -3193,6 +3244,18 @@ mod history_frame_tests {
         assert_eq!(ptok, tok);
         assert_eq!(pek, 5);
         assert_eq!(psealed, blob);
+    }
+
+    #[test]
+    fn focus_frame_round_trips() {
+        let (pubkey, secret) = keypair(13);
+        let tok = [0xABu8; 32];
+        let bytes = build_focus_vsf(&tok, 123_456_789, true, &pubkey, &secret).unwrap();
+        let ((ptok, posc, pact), signer) = parse_focus_vsf(&bytes).unwrap();
+        assert_eq!((ptok, posc, pact, signer), (tok, 123_456_789, true, pubkey));
+        let bytes = build_focus_vsf(&tok, 5, false, &pubkey, &secret).unwrap();
+        let ((_, _, pact), _) = parse_focus_vsf(&bytes).unwrap();
+        assert!(!pact);
     }
 
     #[test]

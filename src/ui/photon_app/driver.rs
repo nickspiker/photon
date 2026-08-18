@@ -106,6 +106,18 @@ impl FluorApp for PhotonApp {
         self.save_window_geometry(x, y, w, h);
     }
 
+    /// The app's folded OS focus flipped. The fleet notification claim follows it: looking away retracts our active-clearer role (a sibling can ding for this conversation again), looking back re-claims it — the design's focus-gain/focus-loss edges (2026-07-23), no timers.
+    fn on_focus_changed(&mut self, focused: bool) {
+        if self.active_conversation.is_some()
+            && matches!(
+                self.state,
+                AppState::Conversation | AppState::ContactPanel(_)
+            )
+        {
+            self.broadcast_focus_claim(focused);
+        }
+    }
+
     fn on_close_requested(&mut self) -> bool {
         // Deliberate-quit overrides: Shift+Escape's one-shot flag, or shift held on the close itself (shift+✕, shift+Alt-F4). Either way the user asked for the REAL exit — decline residency this once and let the host exit.
         if self.exit_requested || self.shift_held {
@@ -1084,6 +1096,7 @@ impl FluorApp for PhotonApp {
                 return EventResponse::Handled;
             }
             if matches!(self.state, AppState::Conversation) {
+                self.broadcast_focus_claim(false);
                 self.state = AppState::Ready;
                 self.active_conversation = None;
                 ctx.window.request_redraw();
@@ -2369,6 +2382,7 @@ impl FluorApp for PhotonApp {
                                 ctx.window.request_redraw();
                                 return EventResponse::Handled;
                             }
+                            self.broadcast_focus_claim(false);
                             self.state = AppState::Ready;
                             self.active_conversation = None;
                             ctx.window.request_redraw();

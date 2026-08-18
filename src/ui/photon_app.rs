@@ -1288,6 +1288,8 @@ pub struct PhotonApp {
     /// The immediately-prior epoch, held one checkpoint crossing so in-flight k−1 frames still open.
     fleet_epoch_prev: Option<(u64, [u8; 32])>,
     /// A rotation (or other epoch-worthy edge) happened — the next sweep mints a checkpoint.
+    /// Fleet-wide ACTIVE-CLEARER claim (notification design 2026-07-23): the newest (conversation_token, device, osc) claim known — ours or a sibling's, LWW by osc so a new device's claim displaces the old holder without coordination. `None` = nobody claims a screen. A live claim by ANOTHER sibling on a conversation suppresses our ding for its messages (that device is watching); voided when the holder's presence drops (the existing 3-strike offline verdict — crash/sleep coverage without timers).
+    fleet_focus_claim: Option<([u8; 32], [u8; 32], i64)>,
     /// Runtime-only stuck-tip ledger per friendship: (the peer's advertised head for OUR lane, exhaust→re-arm ladders seen at exactly that head). The anchor-wedge detector needs tip 0; a NONZERO head that never moves while our exhausted pendings re-arm and exhaust again is the same dead lane in disguise (the peer holds those rows as forwards it can never re-ACK) — two full ladders at one head trips the rotation.
     lane_rearm_cycles: std::collections::HashMap<crate::types::friendship::FriendshipId, (i64, u8)>,
     /// Rotating start index for the seed-registry resolve walk — the per-pulse device budget used to restart at contact zero every pulse, so head-of-list offline contacts starved everyone behind them of resolution forever.
@@ -1863,6 +1865,7 @@ impl PhotonApp {
             pending_fleet_key: None,
             fleet_epoch: None,
             fleet_epoch_prev: None,
+            fleet_focus_claim: None,
             lane_rearm_cycles: std::collections::HashMap::new(),
             pb_resolve_cursor: 0,
             ckpt_mint_due: false,

@@ -32,6 +32,13 @@ fn main() {
     }
     let seed = photon_messenger::storage::contacts::derive_identity_seed(&handle);
     println!("identity_seed        = {}…", hex::encode(&seed[..8]));
+    // Which on-disk vault file this identity owns ON THIS MACHINE (filename = tohu::vault_path_name(app, vault_seed, device_secret) — mixes the device secret, so it only answers for the machine you run this on). The four-mystery-files question, 2026-08-18.
+    if let Ok(dev) = tohu::device::device_secret() {
+        println!(
+            "vault file (here)    = {}.vsf",
+            tohu::vault_path_name("photon", &seed, &dev)
+        );
+    }
     let hp = Handle::username_to_handle_proof(&handle);
     println!(
         "handle_proof         = {}…  (what ceremony/punch logs print for SIBLING contacts)",

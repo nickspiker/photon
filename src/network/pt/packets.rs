@@ -88,7 +88,6 @@ impl PTSpec {
 
     /// Parse from VSF bytes
     pub fn from_vsf_fields(fields: &[(String, vsf::VsfType)]) -> Option<Self> {
-        use vsf::VsfType;
 
         let stream_id = fields
             .iter()
@@ -114,7 +113,7 @@ impl PTSpec {
             .iter()
             .find(|(k, _)| k == "hash")
             .and_then(|(_, v)| match v {
-                VsfType::hb(bytes) if bytes.len() == 32 => {
+                vsf::VsfType::hb(bytes) if bytes.len() == 32 => {
                     let mut arr = [0u8; 32];
                     arr.copy_from_slice(bytes);
                     Some(arr)
@@ -254,7 +253,6 @@ impl PTAck {
         provenance_hash: [u8; 32],
         field_values: &[vsf::VsfType],
     ) -> Option<Self> {
-        use vsf::VsfType;
 
         // Requires 2 values: stream_id, sequence
         if field_values.len() < 2 {
@@ -318,7 +316,6 @@ impl PTNak {
     ///
     /// Expects header with provenance_hash and inline field: (pt_nak:u#{seq1},u#{seq2},...)
     pub fn from_vsf_header(field_values: &[vsf::VsfType]) -> Option<Self> {
-        use vsf::VsfType;
 
         let missing_sequences: Vec<u32> = field_values
             .iter()
@@ -396,7 +393,6 @@ impl PTControl {
     ///
     /// Expects header with provenance_hash and inline field: (pt_ctrl:u#{cmd})
     pub fn from_vsf_header(field_values: &[vsf::VsfType]) -> Option<Self> {
-        use vsf::VsfType;
 
         let cmd = field_values
             .first()
@@ -455,7 +451,6 @@ impl PTComplete {
         provenance_hash: [u8; 32],
         field_values: &[vsf::VsfType],
     ) -> Option<Self> {
-        use vsf::VsfType;
 
         let success = field_values
             .first()

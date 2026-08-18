@@ -21,6 +21,8 @@ pub struct HistoryRow {
     pub deleted: bool,
     /// Typed reference (raw wire kind, target eagle_time) — reply/edit/react metadata as page COLUMNS, never string-encoded into content. Absent on pre-feature pages ⇒ None (the m_tomb additive idiom).
     pub reference: Option<(u8, i64)>,
+    /// The fleet's alert duty for this row is DISCHARGED (notification design 2026-07-23). Sibling pages carry it so a forwarded row never re-dings; absent on pre-feature pages ⇒ true (history is silent). FRIEND-route pages carry the FRIEND's flag, which the merge overrides to true — their alert state is not ours.
+    pub notified: bool,
 }
 
 /// A decoded (pre-seal / post-open) history page.
@@ -47,6 +49,7 @@ fn page_schema() -> SectionSchema {
         .field("m_out", TypeConstraint::AnyUnsigned) // bool, one per row (sender's is_outgoing)
         .field("m_del", TypeConstraint::AnyUnsigned) // bool, one per row
         .field("m_tomb", TypeConstraint::AnyUnsigned) // bool, one per row: the deleted-for-everyone tombstone (absent on pre-feature pages → all false)
+        .field("m_ntf", TypeConstraint::AnyUnsigned) // notified flag, one per row (absent column on pre-feature pages = all true)
         .field("m_refk", TypeConstraint::AnyUnsigned) // reference kind, one per row: 0 = none, else RefKind wire value (absent on pre-feature pages → all none)
         .field("m_reft", TypeConstraint::Any) // e6 reference target, one per row: 0 when kind is none
 }
@@ -76,6 +79,8 @@ pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<
             .append_multi("m_del", vec![VsfType::u3(row.delivered as u8)])
             .map_err(|e| e.to_string())?
             .append_multi("m_tomb", vec![VsfType::u3(row.deleted as u8)])
+            .map_err(|e| e.to_string())?
+            .append_multi("m_ntf", vec![VsfType::u3(row.notified as u8)])
             .map_err(|e| e.to_string())?
             .append_multi(
                 "m_refk",
@@ -160,6 +165,13 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
         .filter_map(|f| f.values.first())
         .filter_map(vsf_bool)
         .collect();
+    // Notified flags (optional — absent on pre-feature pages ⇒ all TRUE: history never re-dings).
+    let ntfs: Vec<bool> = section
+        .get_fields("m_ntf")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(vsf_bool)
+        .collect();
     // Typed references (optional parallel columns — absent on pre-feature pages ⇒ all none).
     let ref_kinds: Vec<u8> = section
         .get_fields("m_refk")
@@ -187,6 +199,7 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
             sender_outgoing: outs[i],
             delivered: dels[i],
             deleted: tombs.get(i).copied().unwrap_or(false),
+            notified: ntfs.get(i).copied().unwrap_or(true),
             reference: match ref_kinds.get(i).copied().unwrap_or(0) {
                 0 => None,
                 k => Some((k, ref_targets.get(i).copied().unwrap_or(0))),
@@ -222,6 +235,7 @@ mod tests {
                     delivered: true,
                     deleted: false,
                     reference: None,
+                    notified: true,
                 },
                 HistoryRow {
                     timestamp: 2_000,
@@ -230,6 +244,7 @@ mod tests {
                     delivered: false,
                     deleted: false,
                     reference: Some((1, 1_000)), // a reply column rides the page
+                    notified: true,
                 },
                 HistoryRow {
                     timestamp: 3_000,
@@ -238,6 +253,7 @@ mod tests {
                     delivered: false,
                     deleted: false,
                     reference: None,
+                    notified: true,
                 },
             ],
             oldest_osc: 1_000,
@@ -286,6 +302,7 @@ mod tests {
                 delivered: false,
                 deleted: false,
                 reference: None,
+                notified: true,
             }],
             oldest_osc: 7,
             more: false,

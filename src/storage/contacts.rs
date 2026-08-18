@@ -1017,6 +1017,10 @@ pub fn save_messages(
         if let Some(ah) = msg.ack_hash {
             rec = rec.set("ack_hash", ah.to_vec());
         }
+        // notified: the fleet's alert duty discharged — stored INVERTED (written only when false, absent = true) on purpose: pre-feature rows must read as notified (history never re-dings), and steady-state rows are notified so the field is usually absent.
+        if !msg.notified {
+            rec = rec.set("unnotified", 1u64);
+        }
         // recovered: friend-attested provenance flag — written only when true (absent = false), matching the contact-state optional-field idiom.
         if msg.recovered {
             rec = rec.set("recovered", 1u64);
@@ -1108,6 +1112,7 @@ pub fn load_messages(
             recovered: rec.uint("recovered").unwrap_or(0) != 0,
             deleted: rec.uint("deleted").unwrap_or(0) != 0,
             reference: record_reference(&rec),
+            notified: rec.uint("unnotified").unwrap_or(0) == 0,
         });
     }
 
@@ -1320,6 +1325,7 @@ pub fn load_message_page_before(
             recovered: rec.uint("recovered").unwrap_or(0) != 0,
             deleted: rec.uint("deleted").unwrap_or(0) != 0,
             reference: record_reference(&rec),
+            notified: rec.uint("unnotified").unwrap_or(0) == 0,
         });
         taken += 1;
     }
@@ -1399,6 +1405,7 @@ mod tests {
                 recovered: false,
                 deleted: false,
                 reference: None,
+                notified: true,
             },
             ChatMessage {
                 content: "hey".to_string(),
@@ -1409,6 +1416,7 @@ mod tests {
                 recovered: false,
                 deleted: false,
                 reference: None,
+                notified: true,
             },
             ChatMessage {
                 content: "👋 unicode".to_string(),
@@ -1419,6 +1427,7 @@ mod tests {
                 recovered: true, // friend-attested provenance must survive the round-trip,
                 deleted: false,
                 reference: None,
+                notified: true,
             },
         ];
 
@@ -1640,6 +1649,7 @@ mod tests {
             recovered: t <= 60, // the "older, recovered" half
             deleted: false,
             reference: None,
+            notified: true,
         };
         let newer: Vec<ChatMessage> = (61..=120).map(make).collect();
         let older: Vec<ChatMessage> = (1..=60).map(make).collect();

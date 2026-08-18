@@ -159,6 +159,8 @@ impl Conversation {
         {
             existing.delivered |= msg.delivered;
             existing.deleted |= msg.deleted;
+            // Alert duty is fleet-monotone: once ANY device discharged (or suppressed-as-clearer), every copy stays discharged.
+            existing.notified |= msg.notified;
             if existing.ack_hash.is_none() {
                 existing.ack_hash = msg.ack_hash;
             }

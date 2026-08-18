@@ -277,59 +277,10 @@ pub fn load_friendship_chains(
     #[cfg(feature = "development")]
     crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "friendship/chains");
 
-    match chains_from_vsf_bytes(&vsf_bytes) {
-        Ok(chains) => Ok(chains),
-        // Only a DISK read gets a second chance, and only via the quarantined migration below.
-        Err(strict_err) => match migrate_pre_document_chains(&vsf_bytes, storage) {
-            Some(chains) => Ok(chains),
-            None => Err(strict_err),
-        },
-    }
+    chains_from_vsf_bytes(&vsf_bytes)
 }
 
-// ════════════════════════════════════════════════════════════════════════════════════════════════ MIGRATION — DELETE THIS WHOLE BLOCK (the fn + its one call site above). Added 2026-07-29, v52.
-//
-// MIGRATION-EXPIRES: v56 — pre-document chains vault blobs; safe to delete once every device has loaded once (each load rewrites the blob as a document).
-//
-// The gate deletes this, not a memory. At v56 the build FAILS pointing at that marker, and the only ways past it are to remove the block or to move the number on purpose. `MIGRATION: rewrote a pre-document chains blob` in a submitted log is the evidence for that call: still appearing means devices are still arriving with old vaults; absent across the fleet means it is already dead code.
-//
-// It lives here, isolated and named, rather than inside `chains_from_vsf_bytes`, for two reasons.
-// One: that decoder is shared with the fleet chain-replication ADOPT path, so a fallback there would silently let a headerless blob from the network be parsed into live ratchet state — the exact thing the document wrapper was added to prevent. Two: deleting a self-contained function and one `match` arm is a two-line edit with no risk to the read path, whereas unpicking a branch threaded through the decoder is surgery.
-// ════════════════════════════════════════════════════════════════════════════════════════════════
-
-/// Read a pre-document (bare section) chains blob from the VAULT and immediately rewrite it as a document. Returns `None` if the bytes are not a readable legacy blob either — then the caller surfaces the original strict error, so genuine corruption still fails loudly.
-///
-/// Why this exists at all: `chains_to_vsf_bytes` is the on-disk format as well as the wire format, and `load_all_friendships` DROPS a friendship whose chains fail to load. A hard cutover would therefore have deleted every existing conversation's braid state on every device and forced a re-CLUTCH with every contact. Chain state is not a resyncable cache; it is the conversation.
-fn migrate_pre_document_chains(
-    vsf_bytes: &[u8],
-    storage: &FlatStorage,
-) -> Option<FriendshipChains> {
-    // Confirm the bytes really are a well-formed bare section of OUR schema before treating them as legacy — otherwise genuine corruption would be laundered into a rewrite.
-    vsf::schema::SectionBuilder::parse(chains_schema(), vsf_bytes).ok()?;
-
-    // Wrap the section verbatim in the document envelope the current writer produces, then decode it through the STRICT path. No duplicate decode logic, and the migration cannot produce anything `chains_from_vsf_bytes` would reject — if the wrap is wrong, this returns None and the caller reports the original error.
-    let doc = vsf::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .provenance_only()
-        .add_unboxed(CHAINS_SECTION, vsf_bytes.to_vec())
-        .build()
-        .ok()?;
-    let chains = chains_from_vsf_bytes(&doc).ok()?;
-
-    // Rewrite on sight — this is what makes the migration self-terminating.
-    match save_friendship_chains(&chains, storage) {
-        Ok(()) => crate::logf!(
-            "MIGRATION: rewrote a pre-document chains blob as a document ({})",
-            hex::encode(&chains.id().as_bytes()[..8])
-        ),
-        // The chains are usable in memory regardless; a failed rewrite just means we migrate again next load.
-        Err(e) => crate::logf!(
-            "MIGRATION: chains rewrite failed (will retry next load): {}",
-            e
-        ),
-    }
-    Some(chains)
-}
+// MIGRATION COMPLETE (v52→v56, deleted 2026-08-18 at v0.56.1): the pre-document chains fallback is gone — zero "MIGRATION: rewrote" lines across the fleet's recent submitted logs, exactly the evidence bar the block set for itself.
 
 /// Decode FriendshipChains from their canonical VSF bytes — the inverse of chains_to_vsf_bytes, shared by the vault loader and the fleet chain-replication adopt path.
 pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, StorageError> {
@@ -741,9 +692,9 @@ mod tests {
         );
     }
 
-    /// A pre-document VAULT file still loads — via the quarantined migration, which rewrites it as a document on sight so the next load takes the strict path. Without this, `load_all_friendships` (which DROPS what it cannot parse) would have deleted every existing conversation's braid state.
+    /// The pre-document migration is DELETED (expired v56, removed at v0.56.1 with zero field evidence of remaining legacy blobs) — the vault load is strict now, same as the network decoder. A bare-section blob fails loudly instead of being laundered into live ratchet state.
     #[test]
-    fn pre_document_vault_blob_migrates_on_load() {
+    fn pre_document_vault_blob_now_fails_strict() {
         // A distinct seed from the other tests in this module so the two vaults can't collide.
         let storage =
             FlatStorage::new(crate::storage::APP, [0xC1; 32], [0xC2; 32]).expect("storage");
@@ -754,7 +705,7 @@ mod tests {
         let chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
         let fid = chains.id();
 
-        // Plant a PRE-DOCUMENT blob at the chains address, exactly as an old build left it.
+        // Plant a PRE-DOCUMENT blob at the chains address, exactly as a v51-era build left it.
         let doc = chains_to_vsf_bytes(&chains).expect("encode");
         let section = vsf::schema::SectionBuilder::parse_document(chains_schema(), &doc, None)
             .expect("parse");
@@ -763,18 +714,9 @@ mod tests {
             .write_addr(&chains_key(&fid), &bare)
             .expect("plant legacy blob");
 
-        // Loads (via the migration) and returns the right chains.
-        let loaded = load_friendship_chains(&fid, &storage).expect("legacy blob must still load");
-        assert_eq!(loaded.participants(), chains.participants());
-
-        // And the blob on disk is now a document, so the migration is self-terminating: the strict decoder alone can read it, with no fallback involved.
-        let on_disk = storage
-            .read_addr(&chains_key(&fid))
-            .unwrap()
-            .expect("still there");
         assert!(
-            chains_from_vsf_bytes(&on_disk).is_ok(),
-            "the migration must leave behind something the STRICT decoder accepts"
+            load_friendship_chains(&fid, &storage).is_err(),
+            "post-migration, a headerless vault blob must fail the strict read — no silent fallback"
         );
     }
 
