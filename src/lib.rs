@@ -1177,6 +1177,7 @@ pub fn install_log_bridge() {
 #[cfg(not(feature = "logging"))]
 pub fn install_log_bridge() {}
 
+pub mod call;
 pub mod crypto;
 pub mod network;
 pub mod platform;
