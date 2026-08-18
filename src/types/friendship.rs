@@ -1276,12 +1276,8 @@ impl FriendshipChains {
         eagle_time: i64,
         woven_strands: Vec<Vec<u8>>,
     ) -> bool {
-        // WRITER DISCIPLINE, enforced (docs/lanes.md §invariant): a device advances ONLY the lane whose label it minted — every other lane is receive-only replay here. This is the property that makes single-writer forks impossible instead of healed; a commit on a foreign label is a BUG upstream, never a recoverable state. Panic in debug, loud refusal in release.
+        // WRITER DISCIPLINE, enforced (docs/lanes.md §invariant): a device advances ONLY the lane whose label it minted — every other lane is receive-only replay here. This is the property that makes single-writer forks impossible instead of healed; a commit on a foreign label is a BUG upstream, never a recoverable state. Loud refusal, zero mutation (the repo builds with debug-assertions off everywhere, so a refusal IS the enforcement — a panic would be dead code).
         if Some(our_label) != self.our_label.as_ref() {
-            debug_assert!(
-                false,
-                "WRITER DISCIPLINE: send-commit on a lane this device did not mint"
-            );
             crate::logf!(
                 "LANE VIOLATION: send-commit on non-minted lane {} (ours: {}) — refused, single-writer rule",
                 hex::encode(&our_label[..4]),
@@ -2091,11 +2087,9 @@ mod tests {
         assert_eq!(fresh.genesis_osc, 200);
     }
 
-    /// Writer discipline is ENFORCED, not documented: committing a send on a lane this device did not mint is a debug panic (release: loud refusal, no mutation). This is the invariant that makes single-writer forks impossible instead of healed.
+    /// Writer discipline is ENFORCED, not documented: committing a send on a lane this device did not mint is refused with zero mutation. This is the invariant that makes single-writer forks impossible instead of healed.
     #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "WRITER DISCIPLINE")]
-    fn send_commit_on_foreign_lane_panics() {
+    fn send_commit_on_foreign_lane_is_refused() {
         let a = [1u8; 32];
         let b = [2u8; 32];
         let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
@@ -2103,7 +2097,8 @@ mod tests {
         chains.mint_our_lane().unwrap();
         let foreign = [0xEEu8; 32];
         chains.ensure_lane(&foreign);
-        chains.prepare_send_commit(
+        let pos_before = chains.lane_position(&foreign).unwrap();
+        let committed = chains.prepare_send_commit(
             &foreign,
             &[0u8; 32],
             vec![],
@@ -2114,6 +2109,13 @@ mod tests {
             1,
             vec![],
         );
+        assert!(!committed, "a foreign-lane commit must be refused");
+        assert_eq!(
+            chains.lane_position(&foreign).unwrap(),
+            pos_before,
+            "and must mutate nothing"
+        );
+        assert!(chains.pending_messages.is_empty());
     }
 
     #[test]
