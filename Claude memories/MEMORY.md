@@ -10,6 +10,7 @@
 - [project_lifecycle_flows.md](project_lifecycle_flows.md) — identity/device lifecycle DESIGNED (docs/lifecycle.md): D1 collision=KnownHandle, D2 double-attest=binding marker; D3 LastRites SUPERSEDED
 - [project_identity_never_dies.md](project_identity_never_dies.md) — IDENTITY NEVER DIES SHIPPED 2026-07-17: no terminal op (worker refuses zero-member folds, LastRites cut), brands survive departure, two-signature retire, fleet page "retired — still yours" + Release; retirement = obscure handle + puck
 
+- [feedback_handles_byte_precise.md](feedback_handles_byte_precise.md) — HARD RULE, repeatedly violated before: handles are BYTE-PRECISE full-Unicode (Nick ≠ Nick, whitespace-only valid, Zoë/李伟/김민준 first-class); ONLY validation = non-empty; NFC-at-encoder is the sole (keyboard-encoding) normalization; NEVER trim/fold/collapse
 - [feedback_fgtw_deploy_freely.md](feedback_fgtw_deploy_freely.md) — deploy fgtw.org (wrangler) + toka.wasm freely, no per-deploy confirmation
 - [project_avatar_encryption_wall.md](project_avatar_encryption_wall.md) — avatars are v'e'-encrypted per-handle; admin can't decrypt; browser AV1 decode infra (rav1d-in-wasm) built + deployed, belongs in photon
 
