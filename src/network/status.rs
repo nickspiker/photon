@@ -1492,6 +1492,19 @@ async fn run_checker(
 
     // The RELAY PIPE inject channel. Frames that arrive over the live WebSocket pipe are pushed here and the receiver task's select! pulls them out AS IF they'd arrived on the UDP socket, tagged RELAY_ADDR.
     // That means the ENTIRE existing dispatch — PT DATA, ping/pong presence, chat, acks, CLUTCH — runs on relayed bytes with zero bespoke per-message-type handling. A generous bound so a burst (a 548 KB CLUTCH offer arrives as one frame) never blocks the WS reader.
+    // VOICE MEDIA egress (docs/calls.md): the engine's packets must leave from THIS socket — the port the peer's NAT already knows — so a dedicated awaited forwarder lives here (the polled request queues would add tens of ms; media gets its own task like the relay pipe).
+    {
+        let (media_tx, mut media_rx) =
+            tokio::sync::mpsc::unbounded_channel::<(Vec<u8>, SocketAddr)>();
+        crate::call::install_media_tx(media_tx);
+        let media_socket = socket_recv.clone();
+        tokio::spawn(async move {
+            while let Some((bytes, addr)) = media_rx.recv().await {
+                udp::send(&media_socket, &bytes, addr).await;
+            }
+        });
+    }
+
     let (inject_tx, mut inject_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
 
     // Spawn RELAY PIPE task — the live bridge for peers with NO direct path (asymmetric reachability: one end IPv6-only, the other IPv4-only). fgtw.org is dual-stack, so both reach it. We hold ONE WebSocket open to our own device's PipeHub (keyed by our device key); a sender's signed `relay` request is forwarded straight down it by the worker — no polling, no store-and-forward, no R2. Every frame received is fed into the inject channel, so it rides the receiver task's real dispatch tagged RELAY_ADDR (the app skips address-learning + marks reached_via_relay). Trust is applied downstream exactly as for a UDP packet (each parser verifies the signature; CLUTCH handlers gate on fold-respecting knows_device). This carries the WHOLE data plane, not just the ceremony — presence and chat ride it too.

@@ -4,6 +4,7 @@
 //!
 //! No timers anywhere: ringing stops on answer/decline/hangup edges, the caller's patience is the timeout, and the intra-call key ratchet steps on packet COUNT, not clocks.
 
+pub mod engine;
 pub mod keys;
 pub mod packet;
 pub mod signal;
@@ -27,6 +28,23 @@ pub fn deliver_media(bytes: &[u8], src: SocketAddr) {
     let sink = MEDIA_SINK.lock().unwrap();
     if let Some(tx) = sink.as_ref() {
         let _ = tx.send((bytes.to_vec(), src));
+    }
+}
+
+/// Media EGRESS: packets must leave from the MAIN UDP socket (the port the peer's NAT knows), so the engine hands them to a dedicated tokio forwarder inside the network runtime — installed once at checker startup.
+static MEDIA_TX: Mutex<Option<tokio::sync::mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>>> =
+    Mutex::new(None);
+
+pub fn install_media_tx(tx: tokio::sync::mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>) {
+    *MEDIA_TX.lock().unwrap() = Some(tx);
+}
+
+/// Engine-side send. False when the network runtime is gone (shutdown) — the engine treats that as a stop edge.
+pub fn send_media(bytes: Vec<u8>, addr: SocketAddr) -> bool {
+    let tx = MEDIA_TX.lock().unwrap();
+    match tx.as_ref() {
+        Some(t) => t.send((bytes, addr)).is_ok(),
+        None => false,
     }
 }
 
@@ -58,4 +76,6 @@ pub struct ActiveCall {
     pub offer_lane_key: Option<[u8; 32]>,
     /// The basket-derived call secret, once both nonces exist. The media engine builds its StepChains from this; teardown drops it (RAM only, never persisted).
     pub secret: Option<[u8; 32]>,
+    /// The running media engine (Active phase). Teardown = explicit `stop()` — the thread zeroizes its chains and releases audio on exit.
+    pub engine: Option<engine::EngineHandle>,
 }
