@@ -19,19 +19,19 @@ impl Handle {
         Self::username_to_handle_proof(&self.text)
     }
 
-    /// Generate handle proof from a username string via [`ihi::handle_to_proof`], after [`Self::canonical`] normalization. Memory-hard PoW (24MB scratch, 17 rounds, ~1s on 2025 hardware) — anti-squatting + ASIC-resistant. Returns the 32-byte proof.
+    /// Generate handle proof from a username string via [`ihi::handle_to_proof`] — the RAW typed string, byte-precise (Nick's rule, restored 2026-08-18: `Nick` ≠ `Nick`, whitespace is a literal handle, the ONLY validation is non-empty; the old case/space folding silently aliased identities and deleted the human's entropy). Memory-hard PoW (24MB scratch, 17 rounds, ~1s on 2025 hardware) — anti-squatting + ASIC-resistant. Returns the 32-byte proof.
     pub fn username_to_handle_proof(username: &str) -> [u8; 32] {
-        *ihi::handle_to_proof(&Self::canonical(username)).as_bytes()
+        *ihi::handle_to_proof(username).as_bytes()
     }
 
-    /// Identity seed from a handle string, [`Self::canonical`]-normalized — the ONE "handle string → identity_seed" entry point. Every call site (attest, contacts, avatars) must come thru here; a raw `ihi::handle_to_hash(typed_string)` derives a different identity for every typo-variant of the same handle.
+    /// Identity seed from a handle string — the RAW bytes, same doctrine as the proof above. The ONE "handle string → identity_seed" entry point; every call site (attest, contacts, avatars) must come thru here.
     pub fn to_identity_seed(handle: &str) -> [u8; 32] {
-        *ihi::handle_to_hash(&Self::canonical(handle)).as_bytes()
+        *ihi::handle_to_hash(handle).as_bytes()
     }
 
-    /// The ONE canonical spelling of a handle, applied before EVERY derivation (proof + identity seed). Now lives in `fgtw::keys::canonical_handle` so every TOKEN app folds case/spacing/camelCase identically — a second app hashing the raw typed string would derive a different identity per typo-variant (the "double handle proof" fork). Thin delegate kept for unchanged call sites.
+    /// The handle exactly as typed. This function exists purely as the place the doctrine is stated: NO normalization, EVER — no trim, no case fold, no whitespace collapse. A mistyped handle surfaces as a FRESH identity behind the permanence interstitial, which is the human's loud decidable moment; rewriting their input was the bug (removed 2026-08-18).
     pub fn canonical(handle: &str) -> String {
-        fgtw::keys::canonical_handle(handle)
+        handle.to_string()
     }
 }
 
@@ -60,18 +60,41 @@ mod tests {
     }
 
     #[test]
-    fn canonical_folds_case_spacing_and_camel() {
-        assert_eq!(Handle::canonical("FractalDecoder"), "fractal decoder");
-        assert_eq!(Handle::canonical(" Fractal  Decoder "), "fractal decoder");
-        assert_eq!(Handle::canonical("fractal decoder"), "fractal decoder");
-        assert_eq!(Handle::canonical("nem"), "nem");
-        // ALL-CAPS is a single word (no lower→Upper boundary), not per-letter splits.
-        assert_eq!(Handle::canonical("NASA"), "nasa");
-        // Same canonical string → same proof, whatever the typist did.
-        assert_eq!(
-            Handle::username_to_handle_proof("FractalDecoder"),
-            Handle::username_to_handle_proof("  fractal   Decoder ")
+    fn handles_are_byte_precise() {
+        // Every byte the human typed is identity — case, spacing, tabs, all of it.
+        assert_eq!(Handle::canonical("FractalDecoder"), "FractalDecoder");
+        assert_eq!(Handle::canonical(" Nick "), " Nick ");
+        assert_eq!(Handle::canonical("   "), "   ");
+        assert_ne!(
+            Handle::username_to_handle_proof("Nick"),
+            Handle::username_to_handle_proof("Nick"),
+            "case is identity"
         );
+        assert_ne!(
+            Handle::username_to_handle_proof("Nick"),
+            Handle::username_to_handle_proof("Nick "),
+            "a trailing space is identity"
+        );
+        assert_ne!(
+            Handle::to_identity_seed("Nelson"),
+            Handle::to_identity_seed("Nelson"),
+            "the folding is gone from the seed path too"
+        );
+    }
+
+    /// Handles are FULL Unicode — every assigned codepoint is a first-class handle character (ihi's Huffman codebook covers all 1,112,064). The one normalization that exists anywhere is NFC at the VSF `x` encoder: composed vs decomposed forms of the SAME glyphs (a mac and an android keyboard emitting different byte orders for one visible name) agree, while every HUMAN-VISIBLE distinction — case, spacing, script — stays identity.
+    #[test]
+    fn handles_are_full_unicode() {
+        // Nick's examples, verbatim (2026-08-18).
+        let zoe = Handle::username_to_handle_proof("Zoë");
+        let li = Handle::username_to_handle_proof("李伟");
+        let kim = Handle::username_to_handle_proof("김민준");
+        assert_ne!(zoe, li);
+        assert_ne!(li, kim);
+        // NFC: precomposed "Zoë" == decomposed "Zoe\u{0308}" — same visible name, same identity, whatever the keyboard emitted.
+        assert_eq!(zoe, Handle::username_to_handle_proof("Zoe\u{0308}"));
+        // NFC does NOT case-fold: visible distinctions stay identity.
+        assert_ne!(zoe, Handle::username_to_handle_proof("zoë"));
     }
 
     #[test]
