@@ -642,6 +642,8 @@ Memory-hard operations (Layers 1, 3) happen at setup; the fast path keeps tx/rx 
 ## 14. The Fleet Plane — Multi-Writer Replication (v2)
 
 > **Status:** design, pre-implementation. Today's code has a single static fleet key (`fleet.rs`), the roster CRDT (§`fstate`), and the pairing hand-off — none of §14 is built yet. Two items below are also *live* gaps to fix, flagged inline. This section was written after three adversarial red-team passes; the fixes those passes forced are folded in, not bolted on.
+>
+> **2026-08-18 disposition — how the cutover actually landed.** The epoch spine (§14.2–14.4) is BUILT (checkpoints, custody, supersession). §14.5's message slot was NOT built and is **superseded**: `docs/durability.md` decides fleet-holds-history and re-derives §14.7–14.8 over it. §14.6's linearizer is **retired** — per-device lanes (`docs/lanes.md`) make forks impossible by construction instead of rebased. Those two companion docs override this section where they disagree.
 
 ### 14.0 What the fleet is, and what a device keeps
 
