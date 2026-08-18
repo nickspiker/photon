@@ -196,6 +196,13 @@ impl PhotonApp {
         let ime_lift = self.ime_lift();
         // Same hoist for the Fleet page's locked set (treat-as-stolen rows): the row loop can't re-borrow self.
         let fleet_locked_set = self.locked_devices();
+        // Hoisted for the call overlay at the tail (the chrome borrow below outlives it): can the open conversation be called right now?
+        let call_pill_callable = self
+            .active_contact()
+            .and_then(|ci| self.contacts.get(ci))
+            .map_or(false, |c| {
+                !c.is_sibling && c.is_online && (c.chain_woven || c.friendship_id.is_some())
+            });
 
         let Some(chrome) = self.chrome.as_mut() else {
             return;
@@ -4969,6 +4976,112 @@ impl PhotonApp {
                 None,
                 None,
             );
+        }
+
+        // CALL OVERLAY (docs/calls.md), topmost content: while a call exists, one strip carries the truth + the edges (Answer/Decline when ringing, Hang up otherwise) on EVERY screen — a ring must be answerable from wherever the user is. With no call, a conversation on a woven+online friend gets the small ☎ start pill instead.
+        let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+        if let Some(call) = &self.active_call {
+            let phase = call.phase;
+            let peer = call.peer_handle_hash;
+            let name = self
+                .contacts
+                .iter()
+                .find(|c| c.handle_hash == peer)
+                .map(|c| c.display_name())
+                .unwrap_or_else(|| "?".into());
+            let bar_h = (buf_h as f32 * 0.085).clamp(34.0, 64.0);
+            let bar_w = (buf_w as f32 * 0.76).min(680.0);
+            let x0 = (buf_w as f32 - bar_w) * 0.5;
+            let y0 = buf_h as f32 * 0.015;
+            let gap = bar_h * 0.18;
+            let status = match phase {
+                crate::call::CallPhase::Outgoing => format!("\u{260E} calling {}\u{2026}", name),
+                crate::call::CallPhase::Ringing => format!("\u{260E} {} calling", name),
+                crate::call::CallPhase::Active => format!("\u{260E} in call \u{2014} {}", name),
+            };
+            let two_actions = phase == crate::call::CallPhase::Ringing;
+            let status_w = if two_actions { bar_w * 0.5 } else { bar_w * 0.66 };
+            let action_w = if two_actions {
+                (bar_w - status_w - gap * 2.0) * 0.5
+            } else {
+                bar_w - status_w - gap
+            };
+            let status_rect = fluor::region::Region::new(x0, y0, status_w, bar_h);
+            draw_stub_pill_filled(
+                &mut canvas,
+                ctx.text,
+                &mut chrome.hit_test_map,
+                buf_w,
+                buf_h,
+                status_rect,
+                &status,
+                HIT_NONE,
+                ctx.pressed_hit,
+                false,
+                None,
+                "Open Sans",
+            );
+            let a_rect = fluor::region::Region::new(x0 + status_w + gap, y0, action_w, bar_h);
+            draw_stub_pill_filled(
+                &mut canvas,
+                ctx.text,
+                &mut chrome.hit_test_map,
+                buf_w,
+                buf_h,
+                a_rect,
+                if two_actions { "Answer" } else { "Hang up" },
+                self.call_ui_base.wrapping_add(1),
+                ctx.pressed_hit,
+                true,
+                None,
+                "Open Sans",
+            );
+            if two_actions {
+                let d_rect = fluor::region::Region::new(
+                    x0 + status_w + gap * 2.0 + action_w,
+                    y0,
+                    action_w,
+                    bar_h,
+                );
+                draw_stub_pill_filled(
+                    &mut canvas,
+                    ctx.text,
+                    &mut chrome.hit_test_map,
+                    buf_w,
+                    buf_h,
+                    d_rect,
+                    "Decline",
+                    self.call_ui_base.wrapping_add(2),
+                    ctx.pressed_hit,
+                    true,
+                    None,
+                    "Open Sans",
+                );
+            }
+        } else if matches!(self.state, AppState::Conversation) {
+            if call_pill_callable {
+                let d = (buf_h as f32 * 0.075).clamp(30.0, 52.0);
+                let pill = fluor::region::Region::new(
+                    buf_w as f32 - d * 2.2,
+                    buf_h as f32 * 0.015,
+                    d * 1.8,
+                    d,
+                );
+                draw_stub_pill_filled(
+                    &mut canvas,
+                    ctx.text,
+                    &mut chrome.hit_test_map,
+                    buf_w,
+                    buf_h,
+                    pill,
+                    "\u{260E}",
+                    self.call_ui_base,
+                    ctx.pressed_hit,
+                    true,
+                    None,
+                    "Open Sans",
+                );
+            }
         }
 
         chrome.flatten_into(target, buf_w, buf_h, None);

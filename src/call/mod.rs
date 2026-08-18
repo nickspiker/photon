@@ -48,10 +48,14 @@ pub struct ActiveCall {
     pub peer_handle_hash: [u8; 32],
     pub we_are_caller: bool,
     pub phase: CallPhase,
-    /// Eagle osc at offer (Outgoing/Ringing) and re-stamped at answer (Active) — the duration base for the summary row.
+    /// Eagle osc at the current phase's start (answer re-stamps it — the duration base).
     pub phase_osc: i64,
+    /// The offer row's eagle stamp — identical on BOTH fleets (it's the row's wire timestamp), so summary rows minted independently at offer_osc+1 dedup across every device.
+    pub offer_osc: i64,
     pub caller_nonce: [u8; 32],
     pub callee_nonce: Option<[u8; 32]>,
-    /// The lane key the offer row was sealed under — the doomed egg (keys.rs). Captured at send (caller) or decrypt (callee).
-    pub offer_lane_key: [u8; 32],
+    /// The lane key the offer row was sealed under — the doomed egg (keys.rs). Captured at the send COMMIT (caller, via drain_braid_tx matching the offer content) or at decrypt (callee, pre-advance).
+    pub offer_lane_key: Option<[u8; 32]>,
+    /// The basket-derived call secret, once both nonces exist. The media engine builds its StepChains from this; teardown drops it (RAM only, never persisted).
+    pub secret: Option<[u8; 32]>,
 }

@@ -901,6 +901,8 @@ impl PhotonApp {
         let mut fork_sibling_reset: Option<usize> = None;
         let mut fork_friend_rekey: Option<usize> = None;
         let mut sibling_push: Option<(usize, ChatMessage)> = None;
+        // Call signal deferred past the `chains` borrow — the state machine takes &mut self (docs/calls.md).
+        let mut call_signal_evt: Option<(usize, crate::call::signal::CallSignal, Option<[u8; 32]>, i64)> = None;
         let mut recv_seal_idx: Option<usize> = None;
         let mut persist_ci: Option<usize> = None;
         let mut conv_state_pos: Option<usize> = None;
@@ -1140,6 +1142,9 @@ impl PhotonApp {
             // Update bidirectional entropy state (derive weave hash from full message context)
             chains.update_received_for_mixing(timestamp, msg_hp, &plaintext);
 
+            // CALL BASKET CAPTURE (docs/calls.md): the lane key THIS frame decrypted under, taken pre-advance — for a call-offer row it is the doomed egg of the call-key basket (the advance below destroys it, which is exactly why it's forward-secret). A cheap copy on every frame; only the call-signal arm reads it.
+            let rx_lane_key_pre_advance = chains.current_key(&lane).copied();
+
             // Advance their chain with the braid strands. our_plaintext = the decrypted x-text ONLY (must match the sender's process_ack, which advances with the stored salt-text — never the full payload/pad).
             let message_text_bytes = message_text.clone().into_bytes();
             let eagle_time_for_advance = vsf::EagleTime::from_oscillations(timestamp);
@@ -1191,6 +1196,17 @@ impl PhotonApp {
             need_sync = true;
 
             // Add message to contact's message list and persist — UNLESS this is the hidden chain-weave probe, which advances/ACKs the chain but must never surface a bubble or chime. For the probe we flip `their_probe_seen` (their TX / our RX proven), PERSIST a hidden row, and try to seal the chain.
+            // CALL SIGNALING (docs/calls.md): an offer/answer/hangup rides the lane as a hidden control row — persist it (re-ACK durable, the probe pattern), push it to our siblings (ring/stop fan-out), and hand it to the state machine WITH the pre-advance lane key (the basket's doomed egg, meaningful for offers).
+            if let Some(sig) = crate::call::signal::CallSignal::parse(&message_text) {
+                let sig_row =
+                    ChatMessage::new_with_timestamp(message_text.clone(), false, timestamp)
+                        .with_ack_hash(plaintext_hash);
+                self.conversations[conv_pos].insert_message_sorted(sig_row.clone());
+                persist_ci = Some(contact_idx);
+                sibling_push = Some((contact_idx, sig_row));
+                recv_seal_idx = Some(contact_idx);
+                call_signal_evt = Some((contact_idx, sig, rx_lane_key_pre_advance, timestamp));
+            } else
             // Hidden DELETE marker: the friend tombstoned a message — apply it here (either direction, matched by timestamp), persist a HIDDEN marker row for re-ACK durability (the probe pattern), and gossip the tombstoned row to our siblings. No bubble, no chime, no notify.
             if let Some(ts_str) = message_text.strip_prefix(crate::types::DELETE_MARKER_PREFIX) {
                 let target_ts: i64 = ts_str.trim().parse().unwrap_or(0);
@@ -1414,6 +1430,9 @@ impl PhotonApp {
             );
         }
         // The tail — everything the arm ran after the `chains` borrow ended or after the loop, direct calls now.
+        if let Some((ci, sig, rx_key, ts)) = call_signal_evt {
+            self.on_call_signal(ci, sig, rx_key, ts, false, false);
+        }
         if let Some((snapshot, req)) = ack_enqueue {
             let dispatch = self.status_checker.as_ref().map(|c| c.ack_dispatch());
             let actions = match dispatch {
@@ -1763,6 +1782,19 @@ impl PhotonApp {
                     .map(|m| m.timestamp)
                     .collect();
                 self.summary_chirp_and_flag(idx, conv_pos, &undischarged);
+            }
+            // CALL signals via sibling merge are STOP edges ONLY (docs/calls.md): our sibling's answer/decline row stops this device's ring; replayed catch-up signals correctly ring nothing (a ring requires the DIRECT offer decrypt — which is also what kills the stale-offer-rings-days-later class).
+            if from_sibling {
+                let sigs: Vec<(crate::call::signal::CallSignal, i64, bool)> = fresh
+                    .iter()
+                    .filter_map(|m| {
+                        crate::call::signal::CallSignal::parse(&m.content)
+                            .map(|s| (s, m.timestamp, m.is_outgoing))
+                    })
+                    .collect();
+                for (sig, ts, out) in sigs {
+                    self.on_call_signal(idx, sig, None, ts, true, out);
+                }
             }
             // Persist the cursor off-thread (coalesced 13-byte record; the rows ride the coalescing message writer below).
             self.persist_conv_state_async(conv_pos);

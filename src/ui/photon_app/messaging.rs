@@ -323,6 +323,19 @@ impl PhotonApp {
                 }
                 continue;
             }
+            // CALL basket capture (docs/calls.md): the offer's send COMMIT is where the CALLER sees the lane key its offer sealed under — the basket's doomed egg (the callee captures the same value at decrypt, pre-advance). Matched by content: salt_text IS the row text.
+            if let Ok(text) = std::str::from_utf8(&done.salt_text) {
+                if let Some(crate::call::signal::CallSignal::Offer { call_id, .. }) =
+                    crate::call::signal::CallSignal::parse(text)
+                {
+                    if let Some(call) = self.active_call.as_mut() {
+                        if call.call_id == call_id && call.offer_lane_key.is_none() {
+                            call.offer_lane_key = Some(wire.expected_key);
+                            crate::log("CALL: offer lane key captured at commit — basket egg secured");
+                        }
+                    }
+                }
+            }
             // Durable-then-transmit: snapshot now WITH the pending recorded; the transmit fires from the writer after the write lands.
             let snapshot = self
                 .friendship_chains
