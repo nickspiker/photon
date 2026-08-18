@@ -346,6 +346,8 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(2); // confirm / cancel
         self.locked_retry_hit = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.call_ui_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(3); // ☎ start / answer-or-hangup / decline
         self.settings_custodian_check = Some(crate::ui::settings_widgets::Checkbox::new(
             &mut self.hit_counter,
             "Be a custodian for others",
@@ -962,6 +964,36 @@ impl FluorApp for PhotonApp {
         mods: fluor::event::ModifiersState,
         ctx: &mut Context,
     ) -> EventResponse {
+        // CALL overlay pills — top of on_activate, before any state gate: a ring must be answerable from every screen (docs/calls.md).
+        if self.call_ui_base != HIT_NONE {
+            let ringing = self
+                .active_call
+                .as_ref()
+                .map(|c| c.phase == crate::call::CallPhase::Ringing)
+                .unwrap_or(false);
+            if hit_id == self.call_ui_base.wrapping_add(1) && self.active_call.is_some() {
+                if ringing {
+                    self.answer_call();
+                } else {
+                    self.hangup_call();
+                }
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+            if hit_id == self.call_ui_base.wrapping_add(2) && ringing {
+                self.decline_call();
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+            if hit_id == self.call_ui_base && self.active_call.is_none() {
+                if let Some(ci) = self.active_contact() {
+                    self.start_call(ci);
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
+            }
+        }
+
         // Unattended-confirm (Security page) ARM/DISARM/cancel — dispatched HERE, at the top of on_activate, BEFORE any state gate. (These pills previously sat inside the `AppState::Conversation` block and so never fired on the Settings page — the arm click reached on_activate but was skipped.)
         if self.unattended_confirm.is_some() {
             if self.unattended_confirm_base != HIT_NONE && hit_id == self.unattended_confirm_base {

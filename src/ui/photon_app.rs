@@ -40,6 +40,7 @@ use fluor::host::WakeSender;
 mod attachments;
 mod bridge;
 mod ceremony;
+mod call_ui;
 mod conversation;
 mod devices;
 mod driver;
@@ -1292,6 +1293,10 @@ pub struct PhotonApp {
     fleet_focus_claim: Option<([u8; 32], [u8; 32], i64)>,
     /// Fleet ATTENTION holder (2026-08-18): the device with the human's newest input, (device_pubkey, osc), LWW by osc with device-byte tie-break, Lamport-bumped at the sender so local input supersedes any clock skew. `None` = bootstrap/single-device — every gate defaults to legacy behavior. Frames flow only on the transition edge (a NON-holder receives qualifying input), so the fleet is silent while the human stays put. Both ding-suppression gates require holding attention: a parked-but-focused screen must not silently discharge alert duty while the human is demonstrably at another device. RAM-only; dies with the session. Mutate ONLY through set_fleet_attention (it mirrors the desktop banner-gate atomic).
     fleet_attention: Option<([u8; 32], i64)>,
+    /// The one live call (docs/calls.md) — None = no call. Singular by design (v1); a second inbound offer gets an automatic Busy.
+    active_call: Option<crate::call::ActiveCall>,
+    /// Call overlay hit ids: base+0 = the ☎ start pill (conversation, no call), base+1 = Answer/Hang up, base+2 = Decline.
+    call_ui_base: HitId,
     /// Runtime-only stuck-tip ledger per friendship: (the peer's advertised head for OUR lane, exhaust→re-arm ladders seen at exactly that head). The anchor-wedge detector needs tip 0; a NONZERO head that never moves while our exhausted pendings re-arm and exhaust again is the same dead lane in disguise (the peer holds those rows as forwards it can never re-ACK) — two full ladders at one head trips the rotation.
     lane_rearm_cycles: std::collections::HashMap<crate::types::friendship::FriendshipId, (i64, u8)>,
     /// Rotating start index for the seed-registry resolve walk — the per-pulse device budget used to restart at contact zero every pulse, so head-of-list offline contacts starved everyone behind them of resolution forever.
@@ -1869,6 +1874,8 @@ impl PhotonApp {
             fleet_epoch_prev: None,
             fleet_focus_claim: None,
             fleet_attention: None,
+            active_call: None,
+            call_ui_base: HIT_NONE,
             lane_rearm_cycles: std::collections::HashMap::new(),
             pb_resolve_cursor: 0,
             ckpt_mint_due: false,
