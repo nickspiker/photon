@@ -1276,6 +1276,21 @@ impl FriendshipChains {
         eagle_time: i64,
         woven_strands: Vec<Vec<u8>>,
     ) -> bool {
+        // WRITER DISCIPLINE, enforced (docs/lanes.md §invariant): a device advances ONLY the lane whose label it minted — every other lane is receive-only replay here. This is the property that makes single-writer forks impossible instead of healed; a commit on a foreign label is a BUG upstream, never a recoverable state. Panic in debug, loud refusal in release.
+        if Some(our_label) != self.our_label.as_ref() {
+            debug_assert!(
+                false,
+                "WRITER DISCIPLINE: send-commit on a lane this device did not mint"
+            );
+            crate::logf!(
+                "LANE VIOLATION: send-commit on non-minted lane {} (ours: {}) — refused, single-writer rule",
+                hex::encode(&our_label[..4]),
+                self.our_label
+                    .map(|l| hex::encode(&l[..4]))
+                    .unwrap_or_else(|| "none".into())
+            );
+            return false;
+        }
         let Some(our_idx) = self.lane_index(our_label) else {
             return false;
         };
@@ -2035,6 +2050,8 @@ mod tests {
         new_era.mutated_osc = 1;
         let label = new_era.mint_our_lane().expect("new era mints a lane");
         let mut adopter = old_era;
+        // LABEL ROTATION AT THE RE-KEY EPOCH (lanes.md §labels): the adopter minted a label under the OLD root — it must die with the era, and the fresh mint must differ, so labels never outlive the key material under them.
+        let old_label = adopter.mint_our_lane().expect("old era mints a lane");
         assert!(
             adopter.merge_lanes_from(&new_era),
             "older era must adopt the newer wholesale"
@@ -2049,6 +2066,18 @@ mod tests {
             adopter.pending_messages.is_empty(),
             "device-local state stripped on era adopt"
         );
+        assert_eq!(
+            adopter.our_label(),
+            None,
+            "the old era's minted label must NOT survive the supersede"
+        );
+        let reminted = adopter
+            .mint_our_lane()
+            .expect("adopter re-mints under the new root");
+        assert_ne!(
+            reminted, old_label,
+            "the fresh label rotates — a label never outlives its era"
+        );
         // The reverse direction: the newer era must refuse the older blob entirely.
         let mut fresh = FriendshipChains::from_clutch(&[a, b], &eggs_new);
         fresh.genesis_osc = 200;
@@ -2060,6 +2089,31 @@ mod tests {
             "a superseded era must never merge back in"
         );
         assert_eq!(fresh.genesis_osc, 200);
+    }
+
+    /// Writer discipline is ENFORCED, not documented: committing a send on a lane this device did not mint is a debug panic (release: loud refusal, no mutation). This is the invariant that makes single-writer forks impossible instead of healed.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "WRITER DISCIPLINE")]
+    fn send_commit_on_foreign_lane_panics() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut chains = FriendshipChains::from_clutch(&[a, b], &eggs);
+        chains.mint_our_lane().unwrap();
+        let foreign = [0xEEu8; 32];
+        chains.ensure_lane(&foreign);
+        chains.prepare_send_commit(
+            &foreign,
+            &[0u8; 32],
+            vec![],
+            [0u8; 32],
+            [0u8; 32],
+            [0u8; 32],
+            vec![],
+            1,
+            vec![],
+        );
     }
 
     #[test]

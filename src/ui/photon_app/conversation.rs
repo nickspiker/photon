@@ -1005,6 +1005,13 @@ impl PhotonApp {
                 Ok(p) => p,
                 Err(e) => {
                     crate::logf!("CHAT: message package parse error: {}", e);
+                    // SINGLE-WRITER LANE FORK — the loud error lanes.md promised: this lane has exactly ONE writer by enforced discipline, so garbage past chain-link verify means one writer's history decrypts two ways — an invariant break (key divergence under one label), never normal operation. Era stragglers are the one honest cause, and the convergence ladder below absorbs those; anything that escalates PAST it deserves this line in both fleets' logs, naming the lane.
+                    crate::logf!(
+                        "LANE FORK (single-writer!): lane {} pos {} era-genesis {} — garbage decrypt past verify; convergence gets first crack, escalation follows the streak",
+                        hex::encode(&lane[..4]),
+                        chains.lane_position(&lane).unwrap_or(0),
+                        chains.genesis_osc
+                    );
                     // FORK DETECTOR — now the SOLE fork evidence (gaps became pure transport; strand-miss holds instead of forking). A frame that passed signature + chain-link verify but decrypted to garbage means the two sides hold different key material at this position. Every non-fork cause is handled upstream, so re-key is the escalation, but CONVERGENCE GETS FIRST CRACK: the commonest real cause is a stale era (the peer re-keyed, we still hold old chains) — collapsing the ping backoff below forces a prompt head exchange, so the owner's chain-sync / era-supersede can adopt the new era before the streak escalates. A genuine fork keeps failing past that; era stragglers and stale-era holders converge and never reach re-key.
                     // Siblings repair via the fleet-key chain_reset at 2; FRIENDS re-key at 3 (no shared key to rebuild from, but a fresh ceremony is always legal: our new-keys offer hits their Complete-rekey path, history rows survive, recovery backfills after the re-weave). A re-key resets chain_woven, so the UI already surfaces it as "establishing the secure channel". Observed live: a woven pair forked mid-conversation — one side decrypted one message as garbage and every later one buffered "ahead" forever, greying every send (2026-07-25).
                     // Fresh-weave grace: LATE relay copies of a superseded era's frames straggle in for a minute after a re-key, and three of them re-keyed a 16-second-old weave (live pair, 2026-08-07). A just-woven chain cannot have forked — one writer per lane — so garbage inside the grace is stragglers, not evidence; a real fork keeps failing past it.
