@@ -3928,7 +3928,15 @@ impl PhotonApp {
                         }
                     }
                     // No Remove pill: expulsion is not a verb (sovereign records) — a device leaves by its own signed departure. And leaving never frees the hardware: the brand outlives the membership until the owner releases it above.
-                    settings_line(&mut canvas, ctx.text, rows[6], "A device can only sign itself out \u{2014} and its hardware stays yours until you release it.", hspan2, *theme::LABEL_COLOUR, 400);
+                    // SINGLE-COPY WARNING (docs/durability.md §1): fleet-holds-history means a one-device fleet holds the ONLY copy. The honest-surface line takes the hint row whenever no live sibling exists; the sign-out hint returns once history is replicated.
+                    let single_copy = !devices
+                        .iter()
+                        .any(|(_, is_self, _, retired, ..)| !*is_self && !*retired);
+                    if single_copy {
+                        settings_line(&mut canvas, ctx.text, rows[6], "Your message history lives only on this device \u{2014} add a device to replicate it.", hspan2, theme::PILL_RED.1, 500);
+                    } else {
+                        settings_line(&mut canvas, ctx.text, rows[6], "A device can only sign itself out \u{2014} and its hardware stays yours until you release it.", hspan2, *theme::LABEL_COLOUR, 400);
+                    }
                     let pr = rows[7].split_h([1.0, 1.0]);
                     draw_stub_pill(
                         &mut canvas,
