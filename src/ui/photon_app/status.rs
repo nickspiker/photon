@@ -197,6 +197,11 @@ impl PhotonApp {
         let mut offer_refire_indices: Vec<usize> = Vec::new();
         // Fleet history sweep deferral: a sibling coming online means it may hold conversation rows we don't — arm the per-conversation walk after the loop (the sweep needs &mut contacts).
         let mut fleet_sweep_due = false;
+        // Fleet-attention moves + claim drop-sweeps, deferred past the checker borrow (the drain can't take &mut self). attn_adopt keeps only the LWW winner across a multi-frame drain; attn_void records the offline-verdict holder (applied before adopt, so a live frame in the same drain still wins); heal_due fires the stored-osc re-announce at a sibling's online edge.
+        let mut attn_adopt: Option<([u8; 32], i64)> = None;
+        let mut attn_void: Option<[u8; 32]> = None;
+        let mut claim_sweeps: Vec<([u8; 32], i64)> = Vec::new();
+        let mut heal_due = false;
         // Conversations whose message table changed in an arm below — persisted AFTER the loop via the async writer (the arms hold a &mut contact borrow; the inline save_messages here was the named 600ms-5.7s UI stall).
         let mut persist_hashes: Vec<[u8; 32]> = Vec::new();
         // Friendships whose chains changed in a SAFE-to-delay way (ACK pending-removal, chain-sync adopt) — persisted AFTER the loop via the coalescing chains writer. The `checker` borrow spans the loop, so a &mut self method can't run inside it (the same deferral every arm here uses).
@@ -217,6 +222,7 @@ impl PhotonApp {
                 StatusUpdate::CkptRootReceived { .. } => "CkptRootReceived",
                 StatusUpdate::CkptReqReceived { .. } => "CkptReqReceived",
                 StatusUpdate::FocusClaimReceived { .. } => "FocusClaimReceived",
+                StatusUpdate::AttentionReceived { .. } => "AttentionReceived",
                 StatusUpdate::CkptStateReceived { .. } => "CkptStateReceived",
                 StatusUpdate::AttachBlobReceived { .. } => "AttachBlobReceived",
                 StatusUpdate::AttachProgress { .. } => "AttachProgress",
@@ -618,21 +624,30 @@ impl PhotonApp {
                                     if is_online { "up" } else { "down" }
                                 );
                             }
-                            // A sibling coming online is the fleet-history catch-up trigger: it may hold conversation rows written while we were apart. Deferred — the sweep needs &mut contacts.
+                            // A sibling coming online is the fleet-history catch-up trigger: it may hold conversation rows written while we were apart. Deferred — the sweep needs &mut contacts. Also the heal edge: re-announce our STORED attention/claim so the reconnecting sibling sheds any stale holder beliefs.
                             if came_online && contact.is_sibling {
                                 fleet_sweep_due = true;
+                                heal_due = true;
                             }
-                            // Presence VOIDS a dead holder's clearer claim (the design's crash/sleep coverage, no timers): the 3-strike offline verdict for the claim-holding device clears the claim, so the next friend message dings somewhere instead of being suppressed by a ghost.
-                            if !is_online
-                                && self
-                                    .fleet_focus_claim
-                                    .map_or(false, |(_, d, _)| d == peer_pubkey.key)
-                            {
-                                self.fleet_focus_claim = None;
-                                crate::logf!(
-                                    "FOCUS: clearer {} went offline — claim voided",
-                                    crate::fp(&peer_pubkey.key)
-                                );
+                            // Presence VOIDS a dead holder's clearer claim (the design's crash/sleep coverage, no timers): the 3-strike offline verdict for the claim-holding device clears the claim, so the next friend message dings somewhere instead of being suppressed by a ghost. DROP-SWEEP (b): rows we suppressed under the now-dead claim are orphaned — chirp them (deferred).
+                            if !is_online {
+                                if let Some((tok, d, cosc)) = self.fleet_focus_claim {
+                                    if d == peer_pubkey.key {
+                                        self.fleet_focus_claim = None;
+                                        crate::logf!(
+                                            "FOCUS: clearer {} went offline — claim voided",
+                                            crate::fp(&peer_pubkey.key)
+                                        );
+                                        claim_sweeps.push((tok, cosc));
+                                    }
+                                }
+                                // The dead device can't hold the ball either — back to bootstrap until the human's next input somewhere.
+                                if self
+                                    .fleet_attention
+                                    .map_or(false, |(d, _)| d == peer_pubkey.key)
+                                {
+                                    attn_void = Some(peer_pubkey.key);
+                                }
                             }
                             // Bootstrap un-deadlock (docs/lifecycle.md aftermath, observed): a roster-merged contact starts with ONE bootstrap device (public_identity) as its ping target — if THAT device is asleep, pings chase a corpse forever while the friend's live devices sit in the fold. On the offline edge, rotate the ACTIVE device to the next fleet member with a known endpoint and retarget the contact-level address; the sweep pings it next cycle (round-robin until one answers — a pong or inbound DATA re-elects the real active device).
                             if !identity_online && !is_online {
@@ -3032,16 +3047,53 @@ impl PhotonApp {
                                 crate::fp(&sender_pubkey.key),
                                 hex::encode(&conversation_token[..4])
                             );
-                        } else if !active
-                            && self.fleet_focus_claim.map_or(false, |(t, d, cur)| {
-                                t == conversation_token && d == sender_pubkey.key && osc >= cur
-                            })
-                        {
-                            self.fleet_focus_claim = None;
-                            crate::logf!(
-                                "FOCUS: sibling {} retracted its clearer claim",
-                                crate::fp(&sender_pubkey.key)
+                            // A claim IS attention (the open was human input THERE) — one frame moves both slots, mirroring the sender's local adopt.
+                            let a_newer = attn_adopt.or(self.fleet_attention).map_or(
+                                true,
+                                |(d, cur)| osc > cur || (osc == cur && sender_pubkey.key > d),
                             );
+                            if a_newer {
+                                attn_adopt = Some((sender_pubkey.key, osc));
+                            }
+                        } else if !active {
+                            if let Some((t, d, cur)) = self.fleet_focus_claim {
+                                if t == conversation_token && d == sender_pubkey.key && osc >= cur {
+                                    self.fleet_focus_claim = None;
+                                    crate::logf!(
+                                        "FOCUS: sibling {} retracted its clearer claim",
+                                        crate::fp(&sender_pubkey.key)
+                                    );
+                                    // DROP-SWEEP (a): the retraction is the ball-drop edge — anything THIS device suppressed while honoring that claim is still undischarged; one summary chirp covers the crossing window (message in flight vs retraction in flight). Bounded below by the claim's own osc — suppression can only have happened while it stood.
+                                    claim_sweeps.push((conversation_token, cur));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // A sibling announcing the human's newest input is THERE — fleet attention moves (2026-08-18). LWW by osc with device-byte tie-break, same fold-trust gate as the focus arm. If the move displaces a device that holds the active-clearer claim, the claim goes dishonored at the ding gate the same instant — sweep the rows we suppressed while it stood.
+                StatusUpdate::AttentionReceived { osc, sender_pubkey } => {
+                    let is_sib = self.contacts.iter().any(|c| {
+                        c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
+                    });
+                    if is_sib {
+                        let effective = attn_adopt.or(self.fleet_attention);
+                        let newer = effective.map_or(true, |(d, cur)| {
+                            osc > cur || (osc == cur && sender_pubkey.key > d)
+                        });
+                        if newer {
+                            crate::logf!(
+                                "ATTN: sibling {} holds the ball (osc {})",
+                                crate::fp(&sender_pubkey.key),
+                                osc
+                            );
+                            // DROP-SWEEP (c): the claim holder just lost attention — its claim no longer suppresses anyone; rows we muted while it stood are orphaned.
+                            if let Some((tok, cd, cosc)) = self.fleet_focus_claim {
+                                if cd != sender_pubkey.key {
+                                    claim_sweeps.push((tok, cosc));
+                                }
+                            }
+                            attn_adopt = Some((sender_pubkey.key, osc));
                         }
                     }
                 }
@@ -3900,6 +3952,22 @@ impl PhotonApp {
         }
         if fleet_sweep_due {
             self.kick_fleet_history_sweep("sibling online");
+        }
+        // Fleet-attention state changes (deferred past the checker borrow): void the dead holder first, then adopt the drain's LWW winner, then run the sweeps against the settled slots, then heal.
+        if let Some(dead) = attn_void {
+            if self.fleet_attention.map_or(false, |(d, _)| d == dead) {
+                self.set_fleet_attention(None);
+                crate::logf!("ATTN: holder {} went offline — ball voided", crate::fp(&dead));
+            }
+        }
+        if let Some(v) = attn_adopt {
+            self.set_fleet_attention(Some(v));
+        }
+        for (tok, min_osc) in claim_sweeps {
+            self.sweep_undischarged(tok, min_osc);
+        }
+        if heal_due {
+            self.reannounce_attention_state();
         }
         // BRIDGE: process deferred term frames now the drain's borrow is released. Cross-platform — the CLIENT role (post a reply bubble) runs everywhere; the HOST role (run a `$ ` command) is unix-gated inside on_bridge_frame.
         for (session_id, kind, sealed_payload, sender_device, sender_addr) in term_frames {

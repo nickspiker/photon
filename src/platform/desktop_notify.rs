@@ -23,12 +23,19 @@ pub fn window_attended() -> bool {
     WINDOW_VISIBLE.load(Ordering::Relaxed) && WINDOW_FOCUSED.load(Ordering::Relaxed)
 }
 
+/// Fleet-attention mirror (2026-08-18): true when THIS device holds the fleet's newest human input — or nobody does (bootstrap default, matching the fail-visible discipline above). The UI thread owns `fleet_attention` and mirrors every mutation here so the notify gate can read it from any thread. A focused-but-abandoned window (human demonstrably at another device) must still banner.
+static ATTENTION_OURS: AtomicBool = AtomicBool::new(true);
+
+pub fn set_attention_ours(ours: bool) {
+    ATTENTION_OURS.store(ours, Ordering::Relaxed);
+}
+
 /// The last message identity we notified for, mirroring the Android dedupe: a dozing peer's retransmits redeliver the SAME logical message many times, and each would otherwise re-ding. Keyed on the message's chain-derived hash pointer, unique per logical message.
 static LAST_NOTIFIED: std::sync::Mutex<[u8; 32]> = std::sync::Mutex::new([0u8; 32]);
 
 /// Fire the platform notification for a decrypted message — title = the sender's display name, body = the message text — if anyone could actually be missing it (window hidden or unfocused) and this message hasn't already dinged. Callable from any thread.
 pub fn notify_new_message(msg_hp: &[u8; 32], sender: &str, text: &str) {
-    if window_attended() {
+    if window_attended() && ATTENTION_OURS.load(Ordering::Relaxed) {
         return;
     }
     {

@@ -106,15 +106,33 @@ impl FluorApp for PhotonApp {
         self.save_window_geometry(x, y, w, h);
     }
 
-    /// The app's folded OS focus flipped. The fleet notification claim follows it: looking away retracts our active-clearer role (a sibling can ding for this conversation again), looking back re-claims it — the design's focus-gain/focus-loss edges (2026-07-23), no timers.
+    /// The app's folded OS focus flipped. GAIN counts as fleet-attention input (2026-08-18): alt-tab and titlebar clicks deliver no press to on_event, yet the human is demonstrably here — take the ball (which internally re-claims the open conversation and clears its away-unread). LOSS keeps the 2026-07-23 edge: retract our active-clearer role so a sibling can ding for this conversation again. No timers.
     fn on_focus_changed(&mut self, focused: bool) {
-        if self.active_conversation.is_some()
+        if focused {
+            // Fluor fires this BEFORE dispatching the Focused event that normally stamps the attended atomic — stamp it now (idempotent with that arm) so the re-claim inside take_fleet_attention sees attended=true. And the gain IS input: stamp the recency clock, or a message arriving right after the alt-tab reads us stale.
+            #[cfg(not(target_os = "android"))]
+            crate::platform::desktop_notify::set_window_focused(true);
+            self.last_interaction = Some(Instant::now());
+            // If the ball never left us (alt-tab away and back — no input elsewhere), take() no-ops but the blur edge below already RETRACTED our claim: re-claim explicitly, the 2026-07-23 behavior.
+            if !self.take_fleet_attention()
+                && self.active_conversation.is_some()
+                && matches!(
+                    self.state,
+                    AppState::Conversation | AppState::ContactPanel(_)
+                )
+            {
+                self.broadcast_focus_claim(true);
+                if let Some(ci) = self.active_contact() {
+                    self.clear_unread(ci);
+                }
+            }
+        } else if self.active_conversation.is_some()
             && matches!(
                 self.state,
                 AppState::Conversation | AppState::ContactPanel(_)
             )
         {
-            self.broadcast_focus_claim(focused);
+            self.broadcast_focus_claim(false);
         }
     }
 
@@ -1808,6 +1826,18 @@ impl FluorApp for PhotonApp {
     fn on_event(&mut self, event: &Event, ctx: &mut Context) -> EventResponse {
         // Any event is user engagement — reset the presence-sweep idle clock so the cadence returns to the active (5s) tier. Cheap (just a timestamp); the immediate-sweep-on-focus is handled in the Focused arm below.
         self.last_interaction = Some(Instant::now());
+        // FLEET ATTENTION transition edge (2026-08-18): qualifying human input on a NON-holder takes the ball — one frame, only when the human actually moves between devices (take_fleet_attention early-outs while we hold it, so typing here is free). Presses/wheel/keys/IME only: CursorMoved is bump-and-jitter-prone and Focused has its own edge in on_focus_changed. Android touches arrive as these same variants via fluor's shell.
+        if matches!(
+            event,
+            Event::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } | Event::MouseWheel { .. }
+                | Event::KeyboardInput { .. }
+                | Event::Ime(Ime::Commit(_))
+        ) {
+            self.take_fleet_attention();
+        }
         // Live shift mirror for `on_close_requested` (which has no Context): a shift-held close — the chrome ✕, Alt-F4, anything — means the REAL exit, not the resident hide. Refreshed on every event so the click that lands on the close button has already stamped it.
         self.shift_held = ctx.modifiers.shift_key();
         // Every event except cursor movement may move immediate-mode content, so it claims a full-viewport frame. CursorMoved's effects are all narrow-tracked: hover tints live in the host overlay pass, drag-select is the textbox's own damage, and the one content-flavoured hover (the Ready avatar hint) sets `scene_dirty` at its flip site.
@@ -2678,6 +2708,16 @@ impl FluorApp for PhotonApp {
         let mut needs_redraw = false;
         // Frame fence for the deferred send drain: entries queued during THIS tick's input pass wait until the next one, guaranteeing the pending bubble a rendered frame before the wire half runs.
         self.tick_serial = self.tick_serial.wrapping_add(1);
+
+        // Android foreground edges, latched by nativeSetForeground on the Activity main thread and drained here where &mut self lives (2026-08-18). Pause retracts the clearer claim (siblings may ding again — the drop-sweep at their end covers anything that crossed in flight); resume is the same human-is-here edge as a desktop focus gain. When both latched since the last tick (fast pause→resume), apply them in the order that ends at the CURRENT truth.
+        #[cfg(target_os = "android")]
+        {
+            let (lost, gained) = crate::platform::jni_android::take_foreground_edges();
+            if lost || gained {
+                // Intermediate flapping collapses to the current truth: a pause→resume that both landed since the last tick is just "still here" (claim never retracted — continuity), and a resume→pause is just "gone".
+                self.on_focus_changed(crate::platform::jni_android::app_in_foreground());
+            }
+        }
 
 
         // Point the top-left orb at the current subject (peer avatar + their presence ring in a conversation, else the Photon orb + our connectivity). Self-diffing — a no-op unless the contact / avatar / screen changed.

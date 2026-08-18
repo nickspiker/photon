@@ -372,6 +372,23 @@ pub fn app_in_foreground() -> bool {
     APP_FOREGROUND.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Foreground TRANSITION edges, latched for the app's tick thread (2026-08-18): nativeSetForeground runs on the Android main thread with no route to &mut PhotonApp, but the fleet-notification claim must retract on pause (or siblings stay suppressed while only the pocket phone dings) and re-take attention on resume. The tick drains these; laziness is safe because the wrongly-suppressed friend message is itself the inbound traffic that wakes the service tick, and the retraction-receipt drop-sweep at siblings chirps what crossed in flight.
+#[cfg(target_os = "android")]
+static FOREGROUND_EDGE_LOST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "android")]
+static FOREGROUND_EDGE_GAINED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// One-shot read of the latched (lost, gained) foreground edges since the last drain.
+#[cfg(target_os = "android")]
+pub fn take_foreground_edges() -> (bool, bool) {
+    (
+        FOREGROUND_EDGE_LOST.swap(false, std::sync::atomic::Ordering::Relaxed),
+        FOREGROUND_EDGE_GAINED.swap(false, std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
 /// Kotlin onResume/onPause → the foreground mirror. Ptr-less: it writes a process-global, valid before/after the native context exists.
 #[cfg(target_os = "android")]
 #[no_mangle]
@@ -380,9 +397,17 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetForeground(
     _class: JClass<'_>,
     foreground: jni::sys::jboolean,
 ) {
-    APP_FOREGROUND.store(foreground != 0, std::sync::atomic::Ordering::Relaxed);
+    let fg = foreground != 0;
+    let prev = APP_FOREGROUND.swap(fg, std::sync::atomic::Ordering::Relaxed);
+    if prev != fg {
+        if fg {
+            FOREGROUND_EDGE_GAINED.store(true, std::sync::atomic::Ordering::Relaxed);
+        } else {
+            FOREGROUND_EDGE_LOST.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
     // Backgrounding is a flush edge: Android usually pauses an app before killing it, so draining the soft-mode log batch here is what keeps a later OOM/Doze kill from eating the tail.
-    if foreground == 0 {
+    if !fg {
         crate::flush_log_buffer();
     }
 }
