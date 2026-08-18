@@ -538,4 +538,112 @@ class PhotonConnectionService : Service() {
             PhotonLog.w(TAG, "vibrateChirp failed", e)
         }
     }
+
+    // ------------------------------------------------------------------
+    // Voice-call audio (docs/calls.md): Kotlin owns the device loops, Rust owns the queues.
+    // AudioRecord uses VOICE_COMMUNICATION — that source selection is what engages the vendor
+    // acoustic echo canceller (echo layer 1); AudioTrack mirrors it with USAGE_VOICE_COMMUNICATION.
+    // 48kHz mono PCM16 in 480-sample (10ms) frames both directions, matching Rust's FRAME_SAMPLES.
+    // ------------------------------------------------------------------
+
+    private external fun nativeAudioCaptured(samples: ShortArray)
+    private external fun nativeAudioNextFrame(): ShortArray
+
+    @Volatile private var callAudioRunning = false
+    private var captureThread: Thread? = null
+    private var renderThread: Thread? = null
+
+    /** Called from Rust (call_service_void) when a call goes active. Mic permission must already be
+     *  granted (the Activity prompts at call initiation); without it we log and stay listen-only —
+     *  the call still connects rather than failing. */
+    fun startCallAudio() {
+        if (callAudioRunning) return
+        callAudioRunning = true
+        val sampleRate = 48000
+        val frameSamples = 480
+
+        val hasMic = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (hasMic) {
+            captureThread = Thread({
+                try {
+                    val minBuf = android.media.AudioRecord.getMinBufferSize(
+                        sampleRate,
+                        AudioFormat.CHANNEL_IN_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT
+                    ).coerceAtLeast(frameSamples * 4)
+                    val rec = android.media.AudioRecord(
+                        android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                        sampleRate,
+                        AudioFormat.CHANNEL_IN_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT,
+                        minBuf
+                    )
+                    rec.startRecording()
+                    PhotonLog.i(TAG, "callAudio: capture up (VOICE_COMMUNICATION, buf=$minBuf)")
+                    val buf = ShortArray(frameSamples)
+                    while (callAudioRunning) {
+                        var off = 0
+                        while (off < frameSamples && callAudioRunning) {
+                            val n = rec.read(buf, off, frameSamples - off)
+                            if (n <= 0) break
+                            off += n
+                        }
+                        if (off == frameSamples) nativeAudioCaptured(buf.copyOf())
+                    }
+                    rec.stop(); rec.release()
+                } catch (e: Exception) {
+                    PhotonLog.w(TAG, "callAudio capture failed", e)
+                }
+            }, "call-capture").also { it.start() }
+        } else {
+            PhotonLog.w(TAG, "callAudio: RECORD_AUDIO not granted — listen-only")
+        }
+
+        renderThread = Thread({
+            try {
+                val minBuf = AudioTrack.getMinBufferSize(
+                    sampleRate,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT
+                ).coerceAtLeast(frameSamples * 4)
+                val track = AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(sampleRate)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(minBuf * 2)
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .build()
+                track.play()
+                PhotonLog.i(TAG, "callAudio: render up (VOICE_COMMUNICATION, buf=$minBuf)")
+                while (callAudioRunning) {
+                    // Rust hands back 10ms of decoded far-end (silence when the jitter buffer is dry) —
+                    // the blocking write paces this loop at the device's real drain rate.
+                    val frame = nativeAudioNextFrame()
+                    if (frame.isNotEmpty()) track.write(frame, 0, frame.size)
+                }
+                track.stop(); track.release()
+            } catch (e: Exception) {
+                PhotonLog.w(TAG, "callAudio render failed", e)
+            }
+        }, "call-render").also { it.start() }
+    }
+
+    /** Called from Rust at hangup — loops observe the flag and tear their devices down. */
+    fun stopCallAudio() {
+        callAudioRunning = false
+        captureThread = null
+        renderThread = null
+        PhotonLog.i(TAG, "callAudio: stopped")
+    }
 }
