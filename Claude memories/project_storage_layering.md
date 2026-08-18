@@ -23,6 +23,8 @@ The three storage layers in photon, and the migration in flight (started 2026-06
 - per-peer: scope = their_seed — e.g. their avatar, state, keypairs, slots
 - per-conversation: scope = friendship_id (already `blake3("PHOTON_FRIENDSHIP_v1", sorted_participant_seeds)`, works for 1/2/N) — e.g. chains (state, in kete), messages (content, in rārangi)
 
-**Migration pieces (ordered):** (1) kete `*_addr(&[u8;32])` twins alongside string API — DONE, enc key now address-bound. (2) photon `vault_key(domain,scope)` helper. (3) avatar→vault. (4) de-string contacts keys. (5) de-string chain-state key. (6) wire rārangi for messages (rows keyed by conversation). Attachments/recordings via rārangi blobs = LATER. No data migration needed — photon is nuked on all machines (clean slate).
+**COMPLETE as of 2026-08-18 audit:** all 15 vault domains ride vault_key(domain,scope) (zero tree-path/hex keys in live code), rārangi is wired for message rows (contacts.rs, rows keyed by eagle_time — supersedes the u64-counter design in [[project_rarangi_messages_fleet]]; row identity = (timestamp, content) per the dedup doctrine), and attachments are content-addressed sealed files OUTSIDE the vault BY DESIGN (storage/mod.rs: dual-ring doubles vault writes and multi-MB values trigger vault-grow fsyncs that froze the UI; out-of-vault blobs can truly shred) — superseding the 'rārangi blobs later' note.
+
+**Original migration pieces (ordered):** (1) kete `*_addr(&[u8;32])` twins alongside string API — DONE, enc key now address-bound. (2) photon `vault_key(domain,scope)` helper. (3) avatar→vault. (4) de-string contacts keys. (5) de-string chain-state key. (6) wire rārangi for messages (rows keyed by conversation). Attachments/recordings via rārangi blobs = LATER. No data migration needed — photon is nuked on all machines (clean slate).
 
 Relates to [[project_session_registers.md]] (vault/network roots separate), [[project_vault_roadmap.md]], [[project_identity_storage_model.md]].
