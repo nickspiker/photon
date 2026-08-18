@@ -414,8 +414,10 @@ pub fn route() -> AudioRoute {
 mod tests {
     use super::*;
 
+    /// ONE test on purpose: the queues are process-global statics, so parallel test threads racing clear_queues corrupt each other — everything that touches them serializes here.
     #[test]
-    fn queues_are_bounded_drop_oldest() {
+    fn queue_core_bounds_silence_and_reference() {
+        // Bounded drop-oldest capture.
         clear_queues();
         for i in 0..(CAPTURE_Q_MAX + 10) {
             push_captured(vec![i as i16; FRAME_SAMPLES]);
@@ -424,10 +426,8 @@ mod tests {
         assert_eq!(drained.len(), CAPTURE_Q_MAX);
         // Oldest were dropped: the first surviving frame is #10.
         assert_eq!(drained[0][0], 10);
-    }
 
-    #[test]
-    fn render_runs_silent_when_dry_and_feeds_the_reference() {
+        // Dry render = silence (never PLC guesswork), and every rendered frame feeds the AEC reference.
         clear_queues();
         queue_playback(vec![100i16; FRAME_SAMPLES]);
         let a = next_render_frame();
