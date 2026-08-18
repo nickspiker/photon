@@ -3449,57 +3449,50 @@ impl PhotonApp {
                                     c.deposited_blinds
                                         .push((sender_pubkey.key, blob.clone(), now));
                                 }
-                                // DISK COMMIT BEFORE THE ACK — the ack is the depositor's Provisional→Live edge, so it must attest durable storage, not RAM.
-                                let committed = match self.storage.as_ref() {
-                                    Some(storage) => {
-                                        match crate::storage::contacts::save_contact_state(
-                                            &self.contacts[idx],
-                                            storage,
-                                        ) {
-                                            Ok(()) => true,
-                                            Err(e) => {
-                                                crate::logf!(
-                                                    "BLIND: deposit persist failed: {}",
-                                                    e
-                                                );
-                                                false
-                                            }
-                                        }
-                                    }
-                                    None => false,
+                                // DISK COMMIT BEFORE THE ACK — the ack is the depositor's Provisional→Live edge, so it must attest durable storage, not RAM — but OFF the UI thread: this save is a dual-ring fsync that clocked 400-625ms per deposit in the field (2026-08-18 'massive lag', each friend-fleet deposit = one render-thread stall). Durable-then-signal, the chains-writer pattern: snapshot the contact, a worker persists it, and ONLY the worker sends the ack after the write lands. A crash between RAM-upsert and the worker write loses nothing — no ack left, the depositor retries, the upsert is idempotent.
+                                let (Some(storage), Some(kp), Some(checker)) = (
+                                    self.storage.as_ref().cloned(),
+                                    self.device_keypair.clone(),
+                                    self.status_checker.as_ref(),
+                                ) else {
+                                    continue;
                                 };
-                                if committed {
-                                    if let (Some(kp), Some(checker)) =
-                                        (self.device_keypair.as_ref(), self.status_checker.as_ref())
-                                    {
-                                        match crate::network::fgtw::protocol::build_blind_ack_vsf(
-                                            &conversation_token,
-                                            &request_id,
-                                            kp.public.as_bytes(),
-                                            kp.secret.as_bytes(),
-                                        ) {
-                                            Ok(vsf_bytes) => {
-                                                let (primary, alt) = self.contacts[idx]
-                                                    .race_addrs()
-                                                    .unwrap_or((sender_addr, None));
-                                                checker.send_history(
-                                                    crate::network::status::HistorySendRequest {
-                                                        peer_addr: primary,
-                                                        alt_addr: alt,
-                                                        recipient_pubkey: sender_pubkey.key,
-                                                        relay_to: self.contacts[idx]
-                                                            .relay_device_list(), // BLIND frames always ride the relay — a validated path can be one-directional, and a lost answer stalls S-recovery silently (see drive_blind_ops)
-                                                        vsf_bytes,
-                                                    },
-                                                );
-                                                crate::logf!("BLIND: stored deposit from {} device {} — acked (disk-committed)", crate::fp(&self.contacts[idx].handle_proof), hex::encode(&sender_pubkey.key[..4]));
-                                            }
-                                            Err(e) => {
-                                                crate::logf!("BLIND: ack build failed: {}", e)
-                                            }
+                                let snapshot = self.contacts[idx].clone();
+                                let (primary, alt) = self.contacts[idx]
+                                    .race_addrs()
+                                    .unwrap_or((sender_addr, None));
+                                let relay_to = self.contacts[idx].relay_device_list(); // BLIND frames always ride the relay — a validated path can be one-directional, and a lost answer stalls S-recovery silently (see drive_blind_ops)
+                                let dispatch = checker.history_dispatch();
+                                queue_job(&self.seal_job_tx, move || {
+                                    if let Err(e) = crate::storage::contacts::save_contact_state(
+                                        &snapshot, &storage,
+                                    ) {
+                                        crate::logf!("BLIND: deposit persist failed: {}", e);
+                                        return;
+                                    }
+                                    match crate::network::fgtw::protocol::build_blind_ack_vsf(
+                                        &conversation_token,
+                                        &request_id,
+                                        kp.public.as_bytes(),
+                                        kp.secret.as_bytes(),
+                                    ) {
+                                        Ok(vsf_bytes) => {
+                                            let _ = dispatch.send(
+                                                crate::network::status::HistorySendRequest {
+                                                    peer_addr: primary,
+                                                    alt_addr: alt,
+                                                    recipient_pubkey: sender_pubkey.key,
+                                                    relay_to,
+                                                    vsf_bytes,
+                                                },
+                                            );
+                                            crate::logf!("BLIND: stored deposit from {} device {} — acked (disk-committed, off-thread)", crate::fp(&snapshot.handle_proof), hex::encode(&sender_pubkey.key[..4]));
+                                        }
+                                        Err(e) => {
+                                            crate::logf!("BLIND: ack build failed: {}", e)
                                         }
                                     }
-                                }
+                                });
                             } else {
                                 // Get: serve THE SIGNER's deposit back (or an explicit miss — the probe-before-generate signal).
                                 let blob_opt = self.contacts[idx]
