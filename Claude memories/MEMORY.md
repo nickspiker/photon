@@ -128,3 +128,4 @@
 - [project_humanitys_code.md](project_humanitys_code.md) — openness doctrine: secrecy surface = handles + keys ONLY; everything else public — "this is humanity's code"
 - [settings.md](settings.md) — Nick's note: naive fixed-width unlabeled settings converted to proper VSF (the fstate v7 arc)
 - [memories-live-in-repo](push-after-landing.md) — memories LIVE HERE ('Claude memories/' in the PUBLIC photon repo, 2026-08-16): commit+push with photon; scrub names/handles ALWAYS (handles are secrets)
+- [project_voice_calls.md](project_voice_calls.md) — voice calls v1 BUILT 2026-08-18 (audio, 1:1): signaling on lanes, dozen-egg basket keys (no lone ECDH), Opus restricted-lowdelay over RaptorQ, ring=inverted-attention (no timer), recording-by-default (endpoint memory, keep/delete crypto-shred); docs/calls.md; field-verify pending publish
