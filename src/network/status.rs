@@ -351,6 +351,13 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
     },
     /// A sibling's "my spine ends at have_k, serve me forward" — the UI thread answers with a fleet-key-sealed ckpt_state if it is ahead.
+    /// A sibling's active-clearer claim (or its retraction) for a conversation — the fleet-wide notification suppressor. Newest osc wins in the drain.
+    FocusClaimReceived {
+        conversation_token: [u8; 32],
+        osc: i64,
+        active: bool,
+        sender_pubkey: DevicePubkey,
+    },
     CkptReqReceived {
         have_k: u64,
         sender_pubkey: DevicePubkey,
@@ -508,6 +515,9 @@ impl StatusUpdate {
             StatusUpdate::ChainSyncReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::CkptRootReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::CkptReqReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::FocusClaimReceived { sender_pubkey, .. } => {
+                Some(sender_pubkey.as_bytes())
+            }
             StatusUpdate::CkptStateReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::AttachBlobReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
@@ -2141,6 +2151,28 @@ async fn run_checker(
                                         k,
                                         fanout_epoch,
                                         sealed,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            if let Ok(((conversation_token, osc, active), sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_focus_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::FocusClaimReceived {
+                                        conversation_token,
+                                        osc,
+                                        active,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                     },
                                     &event_proxy_recv,

@@ -1028,6 +1028,7 @@ impl PhotonApp {
                 delivered: m.delivered,
                 deleted: m.deleted,
                 reference: m.reference.map(|(k, t)| (k as u8, t)),
+                notified: m.notified,
             })
             .collect();
         if hist_rows.is_empty() {

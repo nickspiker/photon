@@ -1065,6 +1065,7 @@ impl PhotonApp {
                         .our_party_id(&gone)
                         .map(|us| gone.conversation(&us).id());
                     if gone_id.is_some() && self.active_conversation == gone_id {
+                        self.broadcast_focus_claim(false);
                         self.active_conversation = None;
                         self.contact_boot_armed = false;
                         if matches!(

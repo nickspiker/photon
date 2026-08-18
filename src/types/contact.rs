@@ -77,6 +77,8 @@ pub struct ChatMessage {
     pub deleted: bool,
     /// TYPED reference metadata: this row points at another row (by eagle_time) — a reply to it, an edit superseding it, or a reaction on it. `content` then carries ONLY the body (reply text / corrected text / reaction glyph — empty glyph = retract). A field, never a string encoding: metadata smuggled thru content is what put marker droppings on old builds' screens (field, 2026-08-09). Rides its own wire field, row-record fields, and history-page columns; the braid is untouched (strands weave content, which stays byte-identical both sides). Persisted; absent on pre-feature rows.
     pub reference: Option<(RefKind, i64)>,
+    /// The fleet has DISCHARGED its alert duty for this row exactly once (docs design 2026-07-23): true the moment any device dings for it OR displays it live (the active-clearer). Explicitly NOT "read" — never records whether the human looked. Synced fleet-internally like `delivered` (true wins, monotone; rides the sibling row pushes + history pages, sealed under fleet keys — friends never see it). Absent on pre-feature rows/pages = TRUE, so history can never re-ding. Outgoing rows are born true (your own sends never alert you).
+    pub notified: bool,
 }
 
 impl ChatMessage {
@@ -90,6 +92,7 @@ impl ChatMessage {
             recovered: false,
             deleted: false,
             reference: None,
+            notified: is_outgoing,
         }
     }
 
@@ -104,6 +107,7 @@ impl ChatMessage {
             recovered: false,
             deleted: false,
             reference: None,
+            notified: is_outgoing,
         }
     }
 

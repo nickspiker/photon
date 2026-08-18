@@ -216,6 +216,7 @@ impl PhotonApp {
                 StatusUpdate::ChainSyncReceived { .. } => "ChainSyncReceived",
                 StatusUpdate::CkptRootReceived { .. } => "CkptRootReceived",
                 StatusUpdate::CkptReqReceived { .. } => "CkptReqReceived",
+                StatusUpdate::FocusClaimReceived { .. } => "FocusClaimReceived",
                 StatusUpdate::CkptStateReceived { .. } => "CkptStateReceived",
                 StatusUpdate::AttachBlobReceived { .. } => "AttachBlobReceived",
                 StatusUpdate::AttachProgress { .. } => "AttachProgress",
@@ -620,6 +621,18 @@ impl PhotonApp {
                             // A sibling coming online is the fleet-history catch-up trigger: it may hold conversation rows written while we were apart. Deferred — the sweep needs &mut contacts.
                             if came_online && contact.is_sibling {
                                 fleet_sweep_due = true;
+                            }
+                            // Presence VOIDS a dead holder's clearer claim (the design's crash/sleep coverage, no timers): the 3-strike offline verdict for the claim-holding device clears the claim, so the next friend message dings somewhere instead of being suppressed by a ghost.
+                            if !is_online
+                                && self
+                                    .fleet_focus_claim
+                                    .map_or(false, |(_, d, _)| d == peer_pubkey.key)
+                            {
+                                self.fleet_focus_claim = None;
+                                crate::logf!(
+                                    "FOCUS: clearer {} went offline — claim voided",
+                                    crate::fp(&peer_pubkey.key)
+                                );
                             }
                             // Bootstrap un-deadlock (docs/lifecycle.md aftermath, observed): a roster-merged contact starts with ONE bootstrap device (public_identity) as its ping target — if THAT device is asleep, pings chase a corpse forever while the friend's live devices sit in the fold. On the offline edge, rotate the ACTIVE device to the next fleet member with a known endpoint and retarget the contact-level address; the sweep pings it next cycle (round-robin until one answers — a pong or inbound DATA re-elects the real active device).
                             if !identity_online && !is_online {
@@ -2639,6 +2652,7 @@ impl PhotonApp {
                                                 delivered: m.delivered,
                                                 deleted: m.deleted,
                                                 reference: m.reference.map(|(k, t)| (k as u8, t)),
+                                                notified: m.notified,
                                             })
                                             .collect();
                                         let page = HistoryPagePlain {
@@ -2994,6 +3008,42 @@ impl PhotonApp {
                         k,
                         crate::fp(&sender_pubkey.key)
                     );
+                }
+
+                // A sibling's active-clearer claim/retraction (notification design 2026-07-23): newest osc wins, so a device the user just sat down at displaces the old holder; a retraction only clears the claim it matches. Fold-trust gated like every sibling frame.
+                StatusUpdate::FocusClaimReceived {
+                    conversation_token,
+                    osc,
+                    active,
+                    sender_pubkey,
+                } => {
+                    let is_sib = self.contacts.iter().any(|c| {
+                        c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
+                    });
+                    if is_sib {
+                        let newer = self
+                            .fleet_focus_claim
+                            .map_or(true, |(_, _, cur)| osc > cur);
+                        if active && newer {
+                            self.fleet_focus_claim =
+                                Some((conversation_token, sender_pubkey.key, osc));
+                            crate::logf!(
+                                "FOCUS: sibling {} claims the clearer role for tok {}…",
+                                crate::fp(&sender_pubkey.key),
+                                hex::encode(&conversation_token[..4])
+                            );
+                        } else if !active
+                            && self.fleet_focus_claim.map_or(false, |(t, d, cur)| {
+                                t == conversation_token && d == sender_pubkey.key && osc >= cur
+                            })
+                        {
+                            self.fleet_focus_claim = None;
+                            crate::logf!(
+                                "FOCUS: sibling {} retracted its clearer claim",
+                                crate::fp(&sender_pubkey.key)
+                            );
+                        }
+                    }
                 }
 
                 // A sibling's catch-up ask: serve our whole spine state fleet-key-sealed if we are ahead — the fgtw-independent jump path.

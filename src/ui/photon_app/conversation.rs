@@ -236,6 +236,51 @@ impl PhotonApp {
         self.compose_reply_to = None;
         self.compose_edit_of = None;
         self.compose_react_to = None;
+        // The open IS the fleet-wide claim edge: this device is now the conversation's active clearer, and every sibling learns it before the next friend message can ding them.
+        self.broadcast_focus_claim(true);
+    }
+
+    /// Broadcast our ACTIVE-CLEARER claim (`active = true`) or its retraction for the OPEN conversation (notification design 2026-07-23). One frame to every sibling on the edge — open/focus-gain claims, close/focus-loss retracts — plus local adoption first, so our own ding gate agrees with what the fleet is about to hear. Newest osc wins everywhere: a claim from a device the user just sat down at displaces the old holder even if that window still sits OS-focused. Sibling/self screens never claim (their rows never ding). No-op pre-attest or with no conversation open.
+    pub(super) fn broadcast_focus_claim(&mut self, active: bool) {
+        let Some(kp) = self.device_keypair.clone() else {
+            return;
+        };
+        let token = (|| {
+            let id = self.active_conversation?;
+            let c = self.contacts.iter().find(|c| {
+                self.our_party_id(c)
+                    .map(|us| c.conversation(&us).id() == id)
+                    .unwrap_or(false)
+            })?;
+            if c.is_sibling {
+                return None;
+            }
+            let us = self.our_party_id(c)?;
+            Some(crate::crypto::clutch::derive_conversation_token(&[
+                us,
+                c.handle_hash,
+            ]))
+        })();
+        let Some(token) = token else { return };
+        let osc = vsf::eagle_time_oscillations();
+        let our_dev = *kp.public.as_bytes();
+        if active {
+            self.fleet_focus_claim = Some((token, our_dev, osc));
+        } else if self
+            .fleet_focus_claim
+            .map_or(false, |(t, d, _)| t == token && d == our_dev)
+        {
+            self.fleet_focus_claim = None;
+        }
+        if let Ok(frame) = crate::network::fgtw::protocol::build_focus_vsf(
+            &token,
+            osc,
+            active,
+            kp.public.as_bytes(),
+            kp.secret.as_bytes(),
+        ) {
+            self.dispatch_frame_to_siblings(frame);
+        }
     }
 
     /// The open conversation itself, if it has materialized.
@@ -1100,6 +1145,10 @@ impl PhotonApp {
                 {
                     contact.chain_advanced_by_ack = true;
                 }
+                // Snapshot the facts the gates below need, so the &mut contact borrow ends here (the claim check walks self.contacts).
+                let contact_is_sibling = contact.is_sibling;
+                let sender_name = contact.display_name();
+                let contact_handle_hash = contact.handle_hash;
                 // Use actual eagle_time and sorted insert for correct chronological order
                 let mut msg = ChatMessage::new_with_timestamp(
                     message_text,
@@ -1110,6 +1159,37 @@ impl PhotonApp {
                 .with_ack_hash(plaintext_hash);
                 // The wire's typed reference lands ON THE ROW — without this the sender saw its own reply hint (the send path stamps its row) while the receiver's copy arrived bare (field, 2026-08-09: "responses don't show the hinted message on the receive side").
                 msg.reference = wire_reference;
+
+                // Unread gate: is the user plausibly looking at THIS conversation right now? "Looking" = this contact's conversation (or its contact-scoped panel) is the active view AND, on desktop, the window is visible + focused. Event-shown, interaction-cleared doctrine: the counter only ever moves on a message landing or the user opening the conversation — no timers anywhere. Computed BEFORE the insert so the fleet alert-duty flag can ride the row into the sibling push.
+                let conversation_open = matches!(
+                    self.state,
+                    AppState::Conversation | AppState::ContactPanel(_)
+                ) && self.active_conversation
+                    == Some(self.conversations[conv_pos].id());
+                #[cfg(not(target_os = "android"))]
+                let looking =
+                    conversation_open && crate::platform::desktop_notify::window_attended();
+                // Android: conversation-open AND the Activity actually on screen (the onResume/onPause JNI mirror). Either alone is not "looking": app foregrounded on ANOTHER screen must still alert (the silent-message hole), and app backgrounded while parked ON this conversation must too.
+                #[cfg(target_os = "android")]
+                let looking =
+                    conversation_open && crate::platform::jni_android::app_in_foreground();
+                // FLEET layer (notification design 2026-07-23): a LIVE sibling claim on this conversation means THAT device is watching — it discharges the duty; we stay silent. The claim must be another device's (ours is implied by `looking`) and its holder must still be present (the offline verdict voids ghosts).
+                let claimed_elsewhere = self.fleet_focus_claim.map_or(false, |(tok, dev, _)| {
+                    tok == conversation_token
+                        && self
+                            .device_keypair
+                            .as_ref()
+                            .map_or(false, |kp| *kp.public.as_bytes() != dev)
+                        && self.contacts.iter().any(|c| {
+                            c.is_sibling && !c.locked_out && c.knows_device(&dev) && c.is_online
+                        })
+                });
+                // Exactly-once duty: `looking` = we are the clearer (discharge silently); a fresh live ding also discharges. Either way the flag is set BEFORE the insert + sibling push, so every forwarded copy arrives pre-discharged and no other device re-dings.
+                let will_ding =
+                    !contact_is_sibling && !looking && !claimed_elsewhere && !is_edit_row;
+                if looking || will_ding {
+                    msg.notified = true;
+                }
                 let conv = &mut self.conversations[conv_pos];
                 conv.insert_message_sorted(msg.clone());
                 if !is_edit_row {
@@ -1120,32 +1200,19 @@ impl PhotonApp {
                 // Persist (async — see persist_hashes)
                 persist_ci = Some(contact_idx);
 
-                // Unread gate: is the user plausibly looking at THIS conversation right now? "Looking" = this contact's conversation (or its contact-scoped panel) is the active view AND, on desktop, the window is visible + focused. Event-shown, interaction-cleared doctrine: the counter only ever moves on a message landing or the user opening the conversation — no timers anywhere.
-                let conversation_open = matches!(
-                    self.state,
-                    AppState::Conversation | AppState::ContactPanel(_)
-                ) && self.active_conversation == Some(conv.id());
-                #[cfg(not(target_os = "android"))]
-                let looking =
-                    conversation_open && crate::platform::desktop_notify::window_attended();
-                // Android: conversation-open AND the Activity actually on screen (the onResume/onPause JNI mirror). Either alone is not "looking": app foregrounded on ANOTHER screen must still alert (the silent-message hole), and app backgrounded while parked ON this conversation must too.
-                #[cfg(target_os = "android")]
-                let looking =
-                    conversation_open && crate::platform::jni_android::app_in_foreground();
-                if !contact.is_sibling && !looking && !is_edit_row {
+                if !contact_is_sibling && !looking && !is_edit_row {
                     // A real friend message landed while nobody was looking — bump the persistent unread counter (contacts-list inner ring + float-to-top; cleared at conversation-open). Written after the loop via the coalescing conv-state writer.
                     conv.unread_count += 1;
                     conv_state_pos = Some(conv_pos);
                 }
 
-                // System notification, POST-DECRYPT: real sender display name + message text BY DESIGN — hiding content on the lock screen is the OS's job, and the pre-decrypt RX worker no longer notifies at all (it over-dinged on probes and sibling fleet-sync frames it couldn't tell apart). RUST is the one suppression decision now: `looking` (this conversation active + app/window attended) gates the call — Kotlin's old blanket Activity-foreground bail is gone, so a message from anyone whose conversation ISN'T open dings even with the app on screen. Desktop's notify keeps its own visual gate (no toast while attended) + both dedup on msg_hp.
-                if !contact.is_sibling && !looking && !is_edit_row {
-                    let sender_name = contact.display_name();
+                // System notification, POST-DECRYPT: real sender display name + message text BY DESIGN — hiding content on the lock screen is the OS's job, and the pre-decrypt RX worker no longer notifies at all (it over-dinged on probes and sibling fleet-sync frames it couldn't tell apart). RUST is the one suppression decision now: `will_ding` (not looking, no live sibling clearer, real friend row) gates the call — the fleet-wide half of the 2026-07-23 design on top of the local `looking` gate. Desktop's notify keeps its own visual gate (no toast while attended) + both dedup on msg_hp.
+                if will_ding {
                     // The notification chirp seeds from the RELATIONSHIP DIGEST — the same value the desktop in-app chirp and the contact's colours use — so one sender sounds the same on EVERY device. It seeded from the pinned device key before, which differs per device (each pins its own first-met device) and per platform: "messages from one sender sound different on each device".
                     #[cfg(target_os = "android")]
                     {
                         let chirp_seed =
-                            relationship_digest(&contact.handle_hash, &our_handle_hash);
+                            relationship_digest(&contact_handle_hash, &our_handle_hash);
                         crate::platform::jni_android::notify_new_message(
                             &msg_hp,
                             &chirp_seed,
@@ -1167,11 +1234,7 @@ impl PhotonApp {
                 // Per-contact notification chime: the sender's relationship digest → deterministic modal bell (chirp crate) — the SAME digest that colours their handle and messages, so ears and eyes agree. The handle TEXT never touches the session store by design; the pre-PoW hashes are the canonical identity material. Synthesis (~a second of f64 modal math) + playback run on a detached thread so the receive loop never blocks; desktop-only (Android gets platform notifications).
                 // Only ding for a real human message from a friend: a chain-weave probe (hidden ceremony frame) and a sibling/fleet-sync frame (our own devices propagating a conversation) both arrive as ChatMessages, and neither is something a person sent us — so neither should ring. And only when NOT looking at this conversation (`!looking`): watching the message land IS the alert; the chirp is for everyone else's messages (the user ask: "ding when I get a message from anyone and I'm not in a conversation with them"). The old unconditional chirp over-dinged in-conversation.
                 #[cfg(not(any(target_os = "redox", target_os = "android")))]
-                if !is_chain_probe
-                    && !is_edit_row
-                    && !self.contacts[contact_idx].is_sibling
-                    && !looking
-                {
+                if !is_chain_probe && will_ding {
                     let digest = relationship_digest(&from_handle_hash, &our_handle_hash);
                     std::thread::spawn(move || {
                         chirp::Chirp::from_hash(digest)
@@ -1515,6 +1578,8 @@ impl PhotonApp {
                         delivered,
                         ack_hash: None,
                         recovered,
+                        // Sibling pages carry OUR fleet's discharged-alert flag; a FRIEND page's flag is THEIR fleet's state — recovered history is always silent here (the catch-up summary in the sibling drain is the one place an unnotified batch may ding once).
+                        notified: if from_sibling { row.notified } else { true },
                         deleted: row.deleted,
                         reference: row
                             .reference
@@ -1550,6 +1615,59 @@ impl PhotonApp {
                     page.more,
                     conv.history_recovery.as_ref().is_some_and(|r| r.complete)
                 );
+            }
+            // CATCH-UP SUMMARY (2026-07-23 design): a sibling batch carrying rows NOBODY flagged means the whole fleet was offline when they landed — alert duty was never discharged. ONE summary chirp for the batch (never a per-row storm — this is exactly the wake-from-doze ding-storm killer), then flag every one. Rows arriving pre-flagged (the origin dinged or its clearer watched) stay silent, which is the steady-state forward path.
+            if from_sibling && !self.contacts[idx].is_sibling {
+                let undischarged: Vec<i64> = fresh
+                    .iter()
+                    .filter(|m| {
+                        !m.notified && !m.is_outgoing && !crate::types::is_control_content(&m.content)
+                    })
+                    .map(|m| m.timestamp)
+                    .collect();
+                if !undischarged.is_empty() {
+                    let sender_name = self.contacts[idx].display_name();
+                    crate::logf!(
+                        "NOTIFY: catch-up batch of {} undischarged row(s) from {} — one summary alert",
+                        undischarged.len(),
+                        sender_name
+                    );
+                    let summary = format!("{} new message(s)", undischarged.len());
+                    let batch_hp = *blake3::hash(&undischarged[0].to_le_bytes()).as_bytes();
+                    #[cfg(target_os = "android")]
+                    {
+                        let chirp_seed = relationship_digest(
+                            &self.contacts[idx].handle_hash,
+                            &self
+                                .session
+                                .as_ref()
+                                .map(|s| {
+                                    crate::crypto::clutch::identity_party_id(&s.identity_seed)
+                                })
+                                .unwrap_or([0u8; 32]),
+                        );
+                        crate::platform::jni_android::notify_new_message(
+                            &batch_hp,
+                            &chirp_seed,
+                            &sender_name,
+                            &summary,
+                        );
+                    }
+                    #[cfg(not(target_os = "android"))]
+                    crate::platform::desktop_notify::notify_new_message(
+                        &batch_hp,
+                        &sender_name,
+                        &summary,
+                    );
+                    // Flag the batch discharged on the live rows (just inserted; the digest excludes flags, so no invalidation needed).
+                    if let Some(conv) = self.conversations.get_mut(conv_pos) {
+                        for m in conv.messages.iter_mut() {
+                            if undischarged.contains(&m.timestamp) {
+                                m.notified = true;
+                            }
+                        }
+                    }
+                }
             }
             // Persist the cursor off-thread (coalesced 13-byte record; the rows ride the coalescing message writer below).
             self.persist_conv_state_async(conv_pos);
