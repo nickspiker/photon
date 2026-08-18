@@ -6,7 +6,7 @@
 //!
 //! A KEPT call is fleet-internal: the blob + an attachment-style row that is inserted locally and pushed to OUR siblings only — never chain-transmitted. The friend's fleet keeps (or deletes) its own recording; neither side is the other's archive.
 
-use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
+use chacha20poly1305::{aead::Aead, KeyInit, XChaCha20Poly1305};
 use std::io::Write;
 use zeroize::Zeroize;
 
@@ -38,14 +38,14 @@ pub fn mint(call_id8: &[u8; 8]) -> Option<([u8; 32], std::path::PathBuf, SpoolTi
 
 /// The engine-side writer. Appends sealed records; closing is just dropping (the ticket owns the fate).
 pub struct SpoolWriter {
-    cipher: ChaCha20Poly1305,
+    cipher: XChaCha20Poly1305,
     file: std::fs::File,
     counter: u64,
 }
 
 impl SpoolWriter {
     pub fn create(key: &[u8; 32], path: &std::path::Path) -> Option<SpoolWriter> {
-        let cipher = ChaCha20Poly1305::new_from_slice(key).ok()?;
+        let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
         let file = std::fs::File::create(path).ok()?;
         Some(SpoolWriter {
             cipher,
@@ -60,7 +60,7 @@ impl SpoolWriter {
         plain.push(dir);
         plain.extend_from_slice(&osc.to_le_bytes());
         plain.extend_from_slice(opus);
-        let mut nonce = [0u8; 12];
+        let mut nonce = [0u8; 24];
         nonce[..8].copy_from_slice(&self.counter.to_le_bytes());
         self.counter += 1;
         let Ok(sealed) = self.cipher.encrypt(&nonce.into(), plain.as_slice()) else {
@@ -73,7 +73,7 @@ impl SpoolWriter {
 
 /// KEEP: decrypt the spool into the container and store it as a content-addressed blob (sealed at rest under the device blob key like any attachment). Returns (content_hash, size). Consumes the ticket; the spool file is removed after a successful store. A truncated tail record (engine mid-write at the stop edge) ends the read — one lost frame, never an error.
 pub fn finalize(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Option<([u8; 32], u64)> {
-    let cipher = ChaCha20Poly1305::new_from_slice(&ticket.key).ok()?;
+    let cipher = XChaCha20Poly1305::new_from_slice(&ticket.key).ok()?;
     let bytes = std::fs::read(&ticket.path).ok()?;
     let mut container = Vec::with_capacity(bytes.len() + 8);
     container.extend_from_slice(CONTAINER_MAGIC);
@@ -85,7 +85,7 @@ pub fn finalize(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Option<([u8; 3
         if off + len > bytes.len() {
             break; // truncated tail — the stop-edge race, at most one frame
         }
-        let mut nonce = [0u8; 12];
+        let mut nonce = [0u8; 24];
         nonce[..8].copy_from_slice(&counter.to_le_bytes());
         counter += 1;
         let Ok(plain) = cipher.decrypt(&nonce.into(), &bytes[off..off + len]) else {
@@ -136,17 +136,16 @@ mod tests {
             key,
             path: path.clone(),
         };
-        let cipher = ChaCha20Poly1305::new_from_slice(&ticket.key).unwrap();
+        let cipher = XChaCha20Poly1305::new_from_slice(&ticket.key).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let len = u16::from_le_bytes(bytes[..2].try_into().unwrap()) as usize;
-        let mut nonce = [0u8; 12];
+        let nonce = [0u8; 24];
         let plain = cipher.decrypt(&nonce.into(), &bytes[2..2 + len]).unwrap();
         assert_eq!(plain[0], 0);
         assert_eq!(i64::from_le_bytes(plain[1..9].try_into().unwrap()), 1000);
         assert_eq!(&plain[9..], &[0xAA; 40]);
         // Wrong key = garbage (the shred story): a fresh key cannot open record 0.
-        let other = ChaCha20Poly1305::new_from_slice(&[8u8; 32]).unwrap();
-        nonce = [0u8; 12];
+        let other = XChaCha20Poly1305::new_from_slice(&[8u8; 32]).unwrap();
         assert!(other.decrypt(&nonce.into(), &bytes[2..2 + len]).is_err());
         shred(ticket);
         assert!(!path.exists());

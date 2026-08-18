@@ -129,3 +129,4 @@
 - [settings.md](settings.md) — Nick's note: naive fixed-width unlabeled settings converted to proper VSF (the fstate v7 arc)
 - [memories-live-in-repo](push-after-landing.md) — memories LIVE HERE ('Claude memories/' in the PUBLIC photon repo, 2026-08-16): commit+push with photon; scrub names/handles ALWAYS (handles are secrets)
 - [project_voice_calls.md](project_voice_calls.md) — voice calls v1 BUILT 2026-08-18 (audio, 1:1): signaling on lanes, dozen-egg basket keys (no lone ECDH), Opus restricted-lowdelay over RaptorQ, ring=inverted-attention (no timer), recording-by-default (endpoint memory, keep/delete crypto-shred); docs/calls.md; field-verify pending publish
+- [project_xchacha_migration.md](project_xchacha_migration.md) — 2026-08-18 stack-wide ChaCha20→XChaCha20-Poly1305 (96→192-bit nonce) EVERYWHERE incl. chain stream layer; read-both compat (tag/parse/magic disambiguation) for a few versions; kete+tohu+fgtw+vsf+photon; MIGRATION-EXPIRES marked

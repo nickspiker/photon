@@ -63,7 +63,7 @@ Message encryption is fast, limited primarily by memory bandwidth for scratch ge
 ### 1.3 Defense in Depth
 
 Multiple independent security layers:
-- ChaCha20 stream cipher (proven, fast)
+- XChaCha20 stream cipher (proven, fast; 192-bit nonce since the 2026-08-18 stack XChaCha migration — the receiver read-boths legacy ChaCha20 frames)
 - XOR with memory-hard scratch pad
 - Smear hash authentication (BLAKE3 ⊕ SHA3 ⊕ SHA512)
 - Device key encryption at rest
@@ -244,7 +244,7 @@ fn generate_scratch(chain: &[[u8; 32]; 512], salt: &[u8; 32]) -> Vec<u8> {
 Message (text)
     ↓ Layer 1:  Build VSF field (message: x{text}, hp{inc_hp}, e6{woven}…, hR{pad})
     ↓ Layer 1b: Shuffle field values (enforces type-marker parsing)
-    ↓ Layer 2:  Encrypt field.flatten() with ChaCha20
+    ↓ Layer 2:  Encrypt field.flatten() with XChaCha20 (legacy: ChaCha20)
     ↓ Layer 3:  XOR with scratch pad
 Inner ciphertext (opaque blob)
     ↓ Layer 4:  Standard VSF Ed25519 signature (outer integrity)
@@ -285,7 +285,7 @@ if pad_len > 0 { values.push(VsfType::hR((0..pad_len).map(|_| rand::random()).co
 values.shuffle(&mut rand::thread_rng());
 let plaintext = FieldValue::new("message", values).flatten();
 
-// Layer 2: ChaCha20 (key from current link [511]), nonce from eagle_time
+// Layer 2: XChaCha20 (key from current link [511]), 24-byte nonce from eagle_time (legacy: ChaCha20, 12-byte)
 // Layer 3: XOR with scratch pad
 // Layer 4: standard VSF Ed25519 signature over the body section
 ```
@@ -586,7 +586,7 @@ Layer 0:  CLUTCH ceremony (eggs from 8 algorithms)
 Layer 1:  Avalanche expansion (2MB memory-hard)
 Layer 2:  Truncate-and-append chain derivation (smear_hash)
 Layer 3:  L1 scratch pad (memory-hard, data-dependent)
-Layer 4:  ChaCha20 stream cipher
+Layer 4:  XChaCha20 stream cipher
 Layer 5:  XOR with scratch pad
 Layer 6:  Standard VSF Ed25519 signature (outer integrity)
 Layer 7:  Domain-separated ACK proof (fast smear)

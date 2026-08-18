@@ -4,10 +4,10 @@
 //!
 //! The magic collides with nothing in the recv trial-parse ladder: VSF frames open with "RÅ<" (0x52...), PT DATA with a lowercase-ASCII stream id (0x61-0x7A). The recv worker checks these two bytes FIRST and routes matches raw to the call engine — no PT ack, no StatusUpdate, no parse ladder — or silently drops them when no call is active.
 //!
-//! Seal: ChaCha20-Poly1305 (the house AEAD) under the direction's CURRENT step key ([`keys::StepChain`]); nonce = the global sequence number (unique per key by construction — a step spans exactly [`keys::PACKETS_PER_STEP`] seqs, and seq never repeats within a call). `call_id8` is the first 8 bytes of the call id — a wire demux hint, not a secret; the AEAD under the basket-derived key is what authenticates membership.
+//! Seal: XChaCha20-Poly1305 (the house AEAD) under the direction's CURRENT step key ([`keys::StepChain`]); nonce = the global sequence number in a 24-byte field (unique per key by construction — a step spans exactly [`keys::PACKETS_PER_STEP`] seqs, and seq never repeats within a call). `call_id8` is the first 8 bytes of the call id — a wire demux hint, not a secret; the AEAD under the basket-derived key is what authenticates membership.
 
 use super::keys::{Direction, StepChain};
-use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
+use chacha20poly1305::{aead::Aead, KeyInit, XChaCha20Poly1305};
 
 pub const MEDIA_MAGIC: [u8; 2] = [0xC7, 0x11];
 pub const HEADER_LEN: usize = 2 + 8 + 1 + 2 + 4;
@@ -36,8 +36,8 @@ pub fn seal(
 ) -> Option<Vec<u8>> {
     let step = StepChain::step_for_seq(seq);
     debug_assert_eq!(step, chain.step(), "seal called with a chain off the seq's step");
-    let cipher = ChaCha20Poly1305::new_from_slice(chain.key()).ok()?;
-    let mut nonce = [0u8; 12];
+    let cipher = XChaCha20Poly1305::new_from_slice(chain.key()).ok()?;
+    let mut nonce = [0u8; 24];
     nonce[..4].copy_from_slice(&seq.to_le_bytes());
     let sealed = cipher.encrypt(&nonce.into(), payload).ok()?;
 
@@ -80,8 +80,8 @@ pub fn open(chain: &mut StepChain, header: &MediaHeader, sealed: &[u8]) -> Optio
     if !chain.advance_to(expected_step) {
         return None; // behind the chain — that step's key no longer exists anywhere
     }
-    let cipher = ChaCha20Poly1305::new_from_slice(chain.key()).ok()?;
-    let mut nonce = [0u8; 12];
+    let cipher = XChaCha20Poly1305::new_from_slice(chain.key()).ok()?;
+    let mut nonce = [0u8; 24];
     nonce[..4].copy_from_slice(&header.seq.to_le_bytes());
     cipher.decrypt(&nonce.into(), sealed).ok()
 }

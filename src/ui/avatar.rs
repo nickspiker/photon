@@ -1395,19 +1395,19 @@ pub fn encrypt_av1_data_from_seed(
     )
 }
 
-/// Encrypt AV1 data under an EXPLICIT key — the avatar-pin's key half — with ChaCha20-Poly1305, the SAME AEAD the rest of Photon's at-rest layer uses (kete vault, sealed log, blind blobs): constant-time in software, no AES-NI dependence on mobile. The friend-gated upload path: neither this key nor the FGTW lookup is derivable from the handle, so possession of the handle no longer decrypts the avatar (docs/identity-profile.md). Format: `[nonce:12][ciphertext+tag]`.
+/// Encrypt AV1 data under an EXPLICIT key — the avatar-pin's key half — with XChaCha20-Poly1305, the SAME AEAD the rest of Photon's at-rest layer uses (kete vault, sealed log, blind blobs): constant-time in software, no AES-NI dependence on mobile. The friend-gated upload path: neither this key nor the FGTW lookup is derivable from the handle, so possession of the handle no longer decrypts the avatar (docs/identity-profile.md). Format: `[nonce:24][ciphertext+tag]` (24-byte XChaCha nonce since the 2026-08-18 migration; the decrypt read-boths the legacy 12-byte form).
 pub fn encrypt_av1_data_with_key(av1_data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
+    use chacha20poly1305::{aead::Aead, KeyInit, XChaCha20Poly1305};
     use rand::RngCore;
 
     // Build v'a' wrapped AV1 data
     let va_wrapped = encode_va_wrapper(av1_data);
 
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
+    let cipher = XChaCha20Poly1305::new_from_slice(key)
         .map_err(|e| format!("Failed to create cipher: {}", e))?;
 
-    // Generate random nonce
-    let mut nonce_bytes = [0u8; 12];
+    // Generate random 24-byte nonce
+    let mut nonce_bytes = [0u8; 24];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
 
     // Encrypt
@@ -1415,8 +1415,8 @@ pub fn encrypt_av1_data_with_key(av1_data: &[u8], key: &[u8; 32]) -> Result<Vec<
         .encrypt(&nonce_bytes.into(), va_wrapped.as_ref())
         .map_err(|e| format!("Encryption failed: {}", e))?;
 
-    // Format: [nonce:12][ciphertext+tag]
-    let mut result = Vec::with_capacity(12 + ciphertext.len());
+    // Format: [nonce:24][ciphertext+tag]
+    let mut result = Vec::with_capacity(24 + ciphertext.len());
     result.extend_from_slice(&nonce_bytes);
     result.extend_from_slice(&ciphertext);
 
@@ -1447,9 +1447,9 @@ pub fn decrypt_av1_data_from_seed(
     )
 }
 
-/// `decrypt_av1_data` with an explicit avatar key (ChaCha20-Poly1305) — the pin's first half; how a contact's avatar decrypts from the pin alone, no handle/seed.
+/// `decrypt_av1_data` with an explicit avatar key — the pin's first half; how a contact's avatar decrypts from the pin alone, no handle/seed. Reads the current XChaCha20-Poly1305 (24-byte nonce) format first, then the legacy ChaCha20-Poly1305 (12-byte nonce) for avatars uploaded before the 2026-08-18 migration — the Poly1305 tag disambiguates, and a friend's next avatar upload rewrites to the new format. MIGRATION: drop the legacy branch a few versions out.
 pub fn decrypt_av1_data_with_key(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
+    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit, Nonce, XChaCha20Poly1305, XNonce};
 
     if encrypted.len() < 12 + 16 {
         return Err(format!(
@@ -1458,21 +1458,24 @@ pub fn decrypt_av1_data_with_key(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec
         ));
     }
 
-    // Extract nonce and ciphertext
-    let nonce_bytes: [u8; 12] = encrypted[0..12]
-        .try_into()
-        .map_err(|_| "Failed to extract nonce")?;
-    let ciphertext = &encrypted[12..];
-
+    // Current: XChaCha20-Poly1305, [nonce:24][ct+tag].
+    if encrypted.len() >= 24 + 16 {
+        if let (Ok(cipher), Ok(nonce)) = (
+            XChaCha20Poly1305::new_from_slice(key),
+            XNonce::try_from(&encrypted[..24]),
+        ) {
+            if let Ok(va_wrapped) = cipher.decrypt(&nonce, &encrypted[24..]) {
+                return decode_va_wrapper(&va_wrapped);
+            }
+        }
+    }
+    // Legacy: ChaCha20-Poly1305, [nonce:12][ct+tag].
     let cipher = ChaCha20Poly1305::new_from_slice(key)
         .map_err(|e| format!("Failed to create cipher: {}", e))?;
-
-    // Decrypt
+    let nonce = Nonce::try_from(&encrypted[..12]).map_err(|_| "bad nonce")?;
     let va_wrapped = cipher
-        .decrypt(&nonce_bytes.into(), ciphertext)
-        .map_err(|e| format!("Decryption failed: {}", e))?;
-
-    // Unwrap v'a' to get raw AV1 data
+        .decrypt(&nonce, &encrypted[12..])
+        .map_err(|e| format!("Decryption failed (both XChaCha and legacy): {}", e))?;
     decode_va_wrapper(&va_wrapped)
 }
 
@@ -2205,4 +2208,35 @@ pub fn scale_avatar(src: &[u8], diameter: usize) -> Option<Vec<u8>> {
 
     resizer.resize(src_rgb, dst_rgb).ok()?;
     Some(dst)
+}
+
+#[cfg(test)]
+mod xchacha_migration_tests {
+    use super::*;
+
+    /// XChaCha round-trip + legacy 12-byte-nonce read-both for the avatar seal (2026-08-18 migration).
+    #[test]
+    fn avatar_seal_round_trips_and_reads_legacy() {
+        let key = [0x5au8; 32];
+        let av1 = b"pretend-this-is-an-av1-obu-bitstream".to_vec();
+
+        // Current format: encrypt writes XChaCha (24-byte nonce), decrypt reads it.
+        let sealed = encrypt_av1_data_with_key(&av1, &key).unwrap();
+        assert_eq!(sealed.len(), 24 + encode_va_wrapper(&av1).len() + 16);
+        assert_eq!(decrypt_av1_data_with_key(&sealed, &key).unwrap(), av1);
+        // Wrong key fails both branches.
+        assert!(decrypt_av1_data_with_key(&sealed, &[0u8; 32]).is_err());
+
+        // Legacy: synthesize a [nonce:12][ct] blob under ChaCha20-Poly1305 and confirm read-both opens it.
+        use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit, Nonce};
+        let wrapped = encode_va_wrapper(&av1);
+        let nonce = [0x33u8; 12];
+        let ct = ChaCha20Poly1305::new_from_slice(&key)
+            .unwrap()
+            .encrypt(&Nonce::from(nonce), wrapped.as_slice())
+            .unwrap();
+        let mut legacy = nonce.to_vec();
+        legacy.extend_from_slice(&ct);
+        assert_eq!(decrypt_av1_data_with_key(&legacy, &key).unwrap(), av1);
+    }
 }
