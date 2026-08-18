@@ -438,6 +438,24 @@ impl PhotonApp {
                     );
                     y += line_h * 1.35;
                 }
+                // MIGRATION-EXPIRES: v58 — handles went byte-precise 2026-08-18 (v0.56.x); identities attested earlier live under the OLD auto-folded spelling (case/spacing lowered and collapsed). If the typed handle would have folded differently, say so HERE — the fresh-forever screen is exactly where an old identity's owner lands after typing their remembered capitalization. Purely informational: nothing rewrites their input.
+                if let Some(typed) = self.textbox.as_ref().map(|tb| tb.chars.iter().collect::<String>()) {
+                    let folded = fgtw::keys::legacy_folded_handle(&typed);
+                    if folded != typed && !folded.is_empty() {
+                        y += line_h * 0.4;
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            &format!("Resuming a pre-v56 identity? It lives under \"{}\" — type that exactly.", folded),
+                            cx,
+                            y,
+                            &TextStyle::new(line_h * 0.85, *theme::LABEL_COLOUR)
+                                .weight(500)
+                                .font("Oxanium"),
+                            None,
+                            None,
+                        );
+                    }
+                }
             }
 
             // KnownHandle fork (docs/lifecycle.md D1) — the claimed-name screen, drawn in the same band as the permanence block. Both readings, taken-first (the more common visitor is the collider), then the two pills. Nothing has touched the network yet.
