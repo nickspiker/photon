@@ -15,6 +15,8 @@ manifest_begin_dev_publish "macos-x86_64"
 echo "Building macOS Intel development binary..."
 CC_x86_64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
 CXX_x86_64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
+OSXCROSS_TRIPLE=x86_64-apple-darwin \
+CMAKE_TOOLCHAIN_FILE_x86_64_apple_darwin="$(pwd)/scripts/lib/osxcross-cmake.toolchain" \
     cargo build --features development --target x86_64-apple-darwin
 sign_binary debug x86_64-apple-darwin
 

@@ -203,6 +203,8 @@ echo ""
 echo "Building macOS Intel release..."
 CC_x86_64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
 CXX_x86_64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
+OSXCROSS_TRIPLE=x86_64-apple-darwin \
+CMAKE_TOOLCHAIN_FILE_x86_64_apple_darwin="$(pwd)/scripts/lib/osxcross-cmake.toolchain" \
 snap_cargo build --release --target x86_64-apple-darwin
 
 echo ""
@@ -216,6 +218,8 @@ echo "Building macOS ARM64 release..."
 CC_aarch64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
 CXX_aarch64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
 CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
+OSXCROSS_TRIPLE=aarch64-apple-darwin \
+CMAKE_TOOLCHAIN_FILE_aarch64_apple_darwin="$(pwd)/scripts/lib/osxcross-cmake.toolchain" \
 snap_cargo build --release --target aarch64-apple-darwin
 
 echo ""

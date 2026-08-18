@@ -1,0 +1,44 @@
+# CMake toolchain for cross-compiling C -sys crates (audiopus_sys → vendored libopus for voice calls)
+# to Apple targets via osxcross FROM Linux. Pointed at by CMAKE_TOOLCHAIN_FILE_<target> in the build
+# scripts (deploy.sh, scripts/publish/dev-macos-*.sh).
+#
+# WHY THIS EXISTS: the `cmake` crate (0.1.58) never sets CMAKE_AR, so CMake auto-detects the archiver
+# and picks the HOST GNU `ar` (/usr/bin/ar). That wraps the (correct Mach-O) object files in a GNU-format
+# `!<arch>\n/` archive whose symbol table osxcross's ld64 cannot read — it ignores libopus.a entirely and
+# every _opus_* symbol comes up undefined at the final link (2026-08-18, first C-cmake dep on the macOS
+# cross path). The fix: force CMAKE_AR/CMAKE_RANLIB to osxcross's cctools ar/ranlib, which write the
+# BSD `#1/` extended-name symbol table ld64 accepts. The compiler stays the working custom clang-wrapper
+# (it exports LD_LIBRARY_PATH for the cctools RUNPATH that still points at the old Octopus disk — the
+# plain osxcross clang symlink does not, so the toolchain file must NOT use it).
+#
+# Parameterized by OSXCROSS_TRIPLE (aarch64-apple-darwin / x86_64-apple-darwin) so one file serves both
+# arches; OSXCROSS_BIN defaults to this box's install. The ar/ranlib are version-suffixed
+# (…-darwin23.5-ar) so a GLOB keeps this working across SDK bumps.
+
+set(CMAKE_SYSTEM_NAME Darwin)
+
+if(NOT DEFINED ENV{OSXCROSS_BIN})
+  set(ENV{OSXCROSS_BIN} "/mnt/Harbor/Code/osxcross/target/bin")
+endif()
+set(_bin "$ENV{OSXCROSS_BIN}")
+set(_triple "$ENV{OSXCROSS_TRIPLE}")
+if(_triple STREQUAL "")
+  message(FATAL_ERROR "osxcross-cmake.toolchain: OSXCROSS_TRIPLE not set (expected e.g. aarch64-apple-darwin)")
+endif()
+
+string(REGEX REPLACE "-.*" "" CMAKE_SYSTEM_PROCESSOR "${_triple}")
+
+set(CMAKE_C_COMPILER "${_bin}/${_triple}-clang-wrapper")
+set(CMAKE_CXX_COMPILER "${_bin}/${_triple}-clang-wrapper")
+
+# cctools ar/ranlib — version-suffixed; glob so an SDK bump doesn't strand this. First match wins
+# (aarch64 and arm64 are aliased to one set).
+file(GLOB _ars "${_bin}/${_triple}*-ar")
+file(GLOB _ranlibs "${_bin}/${_triple}*-ranlib")
+if(_ars STREQUAL "" OR _ranlibs STREQUAL "")
+  message(FATAL_ERROR "osxcross-cmake.toolchain: no cctools ar/ranlib for ${_triple} under ${_bin}")
+endif()
+list(GET _ars 0 _ar)
+list(GET _ranlibs 0 _ranlib)
+set(CMAKE_AR "${_ar}" CACHE FILEPATH "ar")
+set(CMAKE_RANLIB "${_ranlib}" CACHE FILEPATH "ranlib")
