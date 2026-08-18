@@ -173,9 +173,14 @@ pub const CHAIN_PROBE_MARKER: &str = "\u{1}\u{2}photon-chain-probe\u{2}\u{1}";
 /// Prefix for the hidden DELETE marker message: `{prefix}{timestamp}` — a normal chain message (ACKed, retransmitted, re-ACK-durable via its stored hidden row, exactly the probe pattern) instructing the peer to tombstone the row with that eagle timestamp. Control bytes make user-content collision effectively impossible.
 pub const DELETE_MARKER_PREFIX: &str = "\u{1}\u{2}photon-delete\u{2}\u{1}";
 
-/// True for any CONTROL message content (chain probe, delete marker) — machinery rows that no UI, digest, weave window, or history page may surface.
+/// Prefix for call-signaling rows (docs/calls.md): offer/answer/decline/busy/hangup/taken ride the lanes as ordinary encrypted messages — a call is indistinguishable from a text on the wire. Grammar + parsing live in `crate::call::signal`; the type layer only owns the marker so `is_control_content` can hide them.
+pub const CALL_PREFIX: &str = "\u{1}\u{2}photon-call\u{2}\u{1}";
+
+/// True for any CONTROL message content (chain probe, delete marker, call signaling) — machinery rows that no UI, digest, weave window, or history page may surface.
 pub fn is_control_content(content: &str) -> bool {
-    content == CHAIN_PROBE_MARKER || content.starts_with(DELETE_MARKER_PREFIX)
+    content == CHAIN_PROBE_MARKER
+        || content.starts_with(DELETE_MARKER_PREFIX)
+        || content.starts_with(CALL_PREFIX)
 }
 
 /// Attachment row marker. NOT control content — attachment rows are VISIBLE messages (bubble = pill), they ACK, sync fleet-wide, tombstone, and weave like any row; only their DISPLAY differs. The content string is the whole record: `PREFIX + blake3_hex(64) + \u{2} + filename + \u{2} + size_bytes` — riding the ordinary content field means zero codec changes anywhere (vault, history pages, fleet sync all carry it as text). The blob itself travels separately over PT (attach_blob frames) and lives as a sealed file beside the vault, NEVER in a row.
