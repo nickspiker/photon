@@ -20,8 +20,21 @@ impl PeerStore {
     ///
     /// Unsigned rows are DROPPED. Everything from FGTW arrives unsigned (`serialize_peer_list` emits no signature field), and `merge_peer` refuses anything failing `verify()` — so an unsigned row can never be gossiped or trusted by a peer, and persisting it would only grow the file.
     pub fn to_vsf_bytes(&self, device_key: &super::Keypair) -> Result<Vec<u8>, String> {
+        Self::encode_snapshot(&self.peers, device_key)
+    }
+
+    /// A cheap clone of the row set for off-thread encoding. The verify+encode in [`Self::encode_snapshot`] is O(n) curve ops (seconds on a debug mobile build with a few hundred rows), so the UI thread takes this snapshot under a brief lock and hands it to a background writer — it must NEVER hold the store lock across the encode, or every tick's `get_all_peers` harvest blocks behind it.
+    pub fn snapshot(&self) -> Vec<PeerRecord> {
+        self.peers.clone()
+    }
+
+    /// Encode an owned snapshot to vault bytes — the body of [`Self::to_vsf_bytes`] lifted out so a worker thread can run it on a cloned `Vec` with no shared lock held.
+    pub fn encode_snapshot(
+        peers: &[PeerRecord],
+        device_key: &super::Keypair,
+    ) -> Result<Vec<u8>, String> {
         use super::protocol::FgtwMessage;
-        let signed: Vec<PeerRecord> = self.peers.iter().filter(|p| p.verify()).cloned().collect();
+        let signed: Vec<PeerRecord> = peers.iter().filter(|p| p.verify()).cloned().collect();
 
         // Sign our own snapshot, the same way a gossip responder signs the list it serves.
         let provenance_hash = *blake3::hash(b"PHOTON_PEERSTORE_SNAPSHOT_v1").as_bytes();

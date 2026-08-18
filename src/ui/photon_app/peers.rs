@@ -255,15 +255,22 @@ impl PhotonApp {
         false
     }
 
-    /// Write the phonebook to the vault so it survives a restart.
+    /// Mark the phonebook dirty; the tick's debounce gate does the actual write at most once per `PEER_PERSIST_DEBOUNCE`. Both edges that used to call `persist_peer_store` directly (the own-address publish, the gossip-growth harvest) route through here — the store is a cache, so coalescing a burst of merges into one delayed write loses nothing a re-exchange won't restore, and it stops the every-beacon write storm.
+    pub(super) fn request_peer_persist(&mut self) {
+        self.peer_persist_dirty = true;
+    }
+
+    /// Write the phonebook to the vault so it survives a restart — OFF the UI thread.
     ///
-    /// Write the peer store to the vault so "peers first, seed last" survives a relaunch. Fires on the own-address edge (the reflexive publish site) and on the observed-growth edge in the stalled-contact harvest — gossip merges land on the checker thread, so a UI tick observes and persists them.
+    /// Fires on the own-address edge (the reflexive publish site) and on the observed-growth edge in the stalled-contact harvest — gossip merges land on the checker thread, so a UI tick observes and persists them. Both now go through `request_peer_persist` + the debounce gate, which calls this.
     ///
-    /// Only self-signed rows persist (see `to_vsf_bytes`) — an unsigned FGTW row can never be gossiped or trusted by a peer, so carrying it across a restart would just grow the file.
-    pub(super) fn persist_peer_store(&self) {
+    /// The UI thread only takes a cheap snapshot (clone the row Vec under a brief lock) and hands it to one background writer; the O(n) per-row `verify()` + encode + vault write all run on the worker. Holding the store lock across that encode would block every tick's `get_all_peers` harvest for the encode's whole duration — seconds on a debug mobile build — so the lock is released before the snapshot leaves this function.
+    ///
+    /// Only self-signed rows persist (see `encode_snapshot`) — an unsigned FGTW row can never be gossiped or trusted by a peer, so carrying it across a restart would just grow the file.
+    pub(super) fn persist_peer_store(&mut self) {
         let (Some(store), Some(storage), Some(session)) = (
             self.peer_store.as_ref(),
-            self.storage.as_ref(),
+            self.storage.as_ref().cloned(),
             self.session.as_ref(),
         ) else {
             return;
@@ -271,18 +278,43 @@ impl PhotonApp {
         let Some(kp) = self.device_keypair.as_ref() else {
             return;
         };
-        let bytes = match store.lock().unwrap().to_vsf_bytes(kp) {
-            Ok(b) => b,
-            Err(e) => {
-                crate::logf!("PHONEBOOK: encode failed, not persisting: {}", e);
-                return;
-            }
-        };
+        // Cheap: clone the row Vec (tens of KB memcpy), release the lock. The expensive verify/encode happens on the worker.
+        let snapshot = store.lock().unwrap().snapshot();
+        let kp = kp.clone();
         let addr = crate::storage::vault_key("peers", &session.vault_seed);
-        match storage.write_addr(&addr, &bytes) {
-            Ok(()) => crate::logf!("PHONEBOOK: persisted ({} bytes)", bytes.len()),
-            Err(e) => crate::logf!("PHONEBOOK: persist failed: {}", e),
-        }
+
+        type PeerPersistItem = (
+            Vec<crate::network::fgtw::PeerRecord>,
+            crate::network::fgtw::Keypair,
+            std::sync::Arc<crate::storage::FlatStorage>,
+            [u8; 32],
+        );
+        let tx = self.peer_persist_tx.get_or_insert_with(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<PeerPersistItem>();
+            std::thread::spawn(move || {
+                while let Ok(first) = rx.recv() {
+                    // Coalesce the burst: one store, so the newest snapshot supersedes every queued one — drain and keep only the last.
+                    let mut latest = first;
+                    while let Ok(next) = rx.try_recv() {
+                        latest = next;
+                    }
+                    let (peers, kp, st, addr) = latest;
+                    let bytes = match crate::network::fgtw::PeerStore::encode_snapshot(&peers, &kp) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            crate::logf!("PHONEBOOK: encode failed, not persisting: {}", e);
+                            continue;
+                        }
+                    };
+                    match st.write_addr(&addr, &bytes) {
+                        Ok(()) => crate::logf!("PHONEBOOK: persisted ({} bytes)", bytes.len()),
+                        Err(e) => crate::logf!("PHONEBOOK: persist failed: {}", e),
+                    }
+                }
+            });
+            tx
+        });
+        let _ = tx.send((snapshot, kp, storage, addr));
     }
 
     /// Load the persisted phonebook into the live store, merging rather than replacing — a record learned this session (fresher `last_seen`) must win over a stale one off disk, which is what `add_peer`'s per-device upsert already does.
