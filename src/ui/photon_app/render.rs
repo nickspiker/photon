@@ -4998,8 +4998,12 @@ impl PhotonApp {
                 crate::call::CallPhase::Outgoing => format!("\u{260E} calling {}\u{2026}", name),
                 crate::call::CallPhase::Ringing => format!("\u{260E} {} calling", name),
                 crate::call::CallPhase::Active => format!("\u{260E} in call \u{2014} {}", name),
+                crate::call::CallPhase::Ended => format!("\u{260E} keep the recording of {}?", name),
             };
-            let two_actions = phase == crate::call::CallPhase::Ringing;
+            let two_actions = matches!(
+                phase,
+                crate::call::CallPhase::Ringing | crate::call::CallPhase::Ended
+            );
             let status_w = if two_actions { bar_w * 0.5 } else { bar_w * 0.66 };
             let action_w = if two_actions {
                 (bar_w - status_w - gap * 2.0) * 0.5
@@ -5029,7 +5033,11 @@ impl PhotonApp {
                 buf_w,
                 buf_h,
                 a_rect,
-                if two_actions { "Answer" } else { "Hang up" },
+                match phase {
+                    crate::call::CallPhase::Ringing => "Answer",
+                    crate::call::CallPhase::Ended => "Keep",
+                    _ => "Hang up",
+                },
                 self.call_ui_base.wrapping_add(1),
                 ctx.pressed_hit,
                 true,
@@ -5050,7 +5058,7 @@ impl PhotonApp {
                     buf_w,
                     buf_h,
                     d_rect,
-                    "Decline",
+                    if phase == crate::call::CallPhase::Ended { "Delete" } else { "Decline" },
                     self.call_ui_base.wrapping_add(2),
                     ctx.pressed_hit,
                     true,

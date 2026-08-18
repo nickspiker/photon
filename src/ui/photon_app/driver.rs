@@ -966,24 +966,30 @@ impl FluorApp for PhotonApp {
     ) -> EventResponse {
         // CALL overlay pills — top of on_activate, before any state gate: a ring must be answerable from every screen (docs/calls.md).
         if self.call_ui_base != HIT_NONE {
-            let ringing = self
-                .active_call
-                .as_ref()
-                .map(|c| c.phase == crate::call::CallPhase::Ringing)
-                .unwrap_or(false);
-            if hit_id == self.call_ui_base.wrapping_add(1) && self.active_call.is_some() {
-                if ringing {
-                    self.answer_call();
-                } else {
-                    self.hangup_call();
+            let phase = self.active_call.as_ref().map(|c| c.phase);
+            if hit_id == self.call_ui_base.wrapping_add(1) && phase.is_some() {
+                match phase {
+                    Some(crate::call::CallPhase::Ringing) => self.answer_call(),
+                    Some(crate::call::CallPhase::Ended) => self.keep_recording(),
+                    _ => self.hangup_call(),
                 }
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
-            if hit_id == self.call_ui_base.wrapping_add(2) && ringing {
-                self.decline_call();
-                ctx.window.request_redraw();
-                return EventResponse::Handled;
+            if hit_id == self.call_ui_base.wrapping_add(2) {
+                match phase {
+                    Some(crate::call::CallPhase::Ringing) => {
+                        self.decline_call();
+                        ctx.window.request_redraw();
+                        return EventResponse::Handled;
+                    }
+                    Some(crate::call::CallPhase::Ended) => {
+                        self.delete_recording();
+                        ctx.window.request_redraw();
+                        return EventResponse::Handled;
+                    }
+                    _ => {}
+                }
             }
             if hit_id == self.call_ui_base && self.active_call.is_none() {
                 if let Some(ci) = self.active_contact() {

@@ -51,6 +51,7 @@ impl PhotonApp {
             offer_lane_key: None, // filled by the drain_braid_tx capture when the offer commits
             secret: None,
             engine: None,
+            spool: None,
         });
         crate::logf!("CALL: dialing {} (id {})", crate::fp(&peer), hex::encode(&call_id[..4]));
         self.scene_dirty = true;
@@ -85,13 +86,14 @@ impl PhotonApp {
             return;
         }
         let secret = self.derive_secret_for(ci, &offer_key, &call_id, &caller_nonce, &callee_nonce);
-        let engine = self.spawn_call_engine(ci, &call_id, secret, false);
+        let (engine, spool) = self.spawn_call_engine(ci, &call_id, secret, false);
         if let Some(call) = self.active_call.as_mut() {
             call.callee_nonce = Some(callee_nonce);
             call.secret = secret;
             call.phase = CallPhase::Active;
             call.phase_osc = vsf::eagle_time_oscillations();
             call.engine = engine;
+            call.spool = spool;
         }
         crate::logf!("CALL: answered (id {})", hex::encode(&call_id[..4]));
         self.scene_dirty = true;
@@ -183,6 +185,7 @@ impl PhotonApp {
                             offer_lane_key: Some(offer_key),
                             secret: None,
                             engine: None,
+                            spool: None,
                         });
                         self.ring_alert(ci);
                         crate::logf!(
@@ -235,10 +238,11 @@ impl PhotonApp {
                             &caller_nonce,
                             &nonce,
                         );
-                        let engine = self.spawn_call_engine(ci, &call_id, secret, true);
+                        let (engine, spool) = self.spawn_call_engine(ci, &call_id, secret, true);
                         if let Some(call) = self.active_call.as_mut() {
                             call.secret = secret;
                             call.engine = engine;
+                            call.spool = spool;
                         }
                         crate::logf!("CALL: answered by {} — active", crate::fp(&peer));
                         self.scene_dirty = true;
@@ -249,7 +253,8 @@ impl PhotonApp {
                             let _ = self.send_call_signal(ci, CallSignal::Taken { call_id });
                         }
                     }
-                    CallPhase::Ringing => {}
+                    // Ringing/Ended: an answer arriving after we've already left the live window is stale — ignore it.
+                    CallPhase::Ringing | CallPhase::Ended => {}
                 }
             }
             CallSignal::Decline { call_id } | CallSignal::Busy { call_id } => {
@@ -299,6 +304,8 @@ impl PhotonApp {
                         // Friend-side auto-hangup (e.g. answer hit their dead call) — treat as declined-ish end.
                         self.end_call("\u{260E} call", offer_osc);
                     }
+                    // Already in the keep/delete window — a late peer hangup changes nothing here.
+                    CallPhase::Ended => {}
                 }
             }
             CallSignal::Taken { call_id } => {
@@ -361,7 +368,7 @@ impl PhotonApp {
         ))
     }
 
-    /// Mint the visible summary row (offer_osc+1 — the shared stamp both fleets agree on, +1 clear of the hidden offer row), stop audio, clear the call.
+    /// Mint the visible summary row (offer_osc+1 — the shared stamp both fleets agree on, +1 clear of the hidden offer row), stop the engine, and either clear the call or park it in Ended for the keep/delete decision (recording by default — an Active call with a spool always gets the choice).
     fn end_call(&mut self, summary: &str, offer_osc: i64) {
         if let Some(call) = &self.active_call {
             if let Some(e) = &call.engine {
@@ -371,7 +378,20 @@ impl PhotonApp {
         crate::platform::audio::stop();
         let peer = self.active_call.as_ref().map(|c| c.peer_handle_hash);
         let was_caller = self.active_call.as_ref().map(|c| c.we_are_caller).unwrap_or(false);
-        self.active_call = None;
+        let keep_pending = self
+            .active_call
+            .as_ref()
+            .map(|c| c.phase == CallPhase::Active && c.spool.is_some())
+            .unwrap_or(false);
+        if keep_pending {
+            if let Some(call) = self.active_call.as_mut() {
+                call.phase = CallPhase::Ended;
+                call.engine = None;
+                call.secret = None;
+            }
+        } else {
+            self.active_call = None;
+        }
         if let Some(peer) = peer {
             if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
                 let mut row =
@@ -422,6 +442,66 @@ impl PhotonApp {
         }
     }
 
+    /// KEEP the recording: finalize the spool into the call container, store it as a content-addressed blob, and mint a FLEET-INTERNAL attachment row (local insert + sibling push — never chain-transmitted; the friend's fleet keeps its own recording). v1 gap, tracked in docs/calls.md: the blob itself lives on THIS device until sibling blob-fetch lands.
+    pub(super) fn keep_recording(&mut self) {
+        let Some(call) = self.active_call.as_mut() else {
+            return;
+        };
+        if call.phase != CallPhase::Ended {
+            return;
+        }
+        let Some(ticket) = call.spool.take() else {
+            self.active_call = None;
+            return;
+        };
+        let (peer, offer_osc) = (call.peer_handle_hash, call.offer_osc);
+        let seed = self
+            .session
+            .as_ref()
+            .map(|s| s.identity_seed)
+            .unwrap_or([0u8; 32]);
+        self.active_call = None;
+        match crate::call::spool::finalize(ticket, &seed) {
+            Some((hash, size)) => {
+                if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
+                    let content =
+                        crate::types::attachment_content(&hash, "call.phcall", size);
+                    let mut row = ChatMessage::new_with_timestamp(content, true, offer_osc + 2);
+                    row.notified = true;
+                    row.delivered = true;
+                    if let Some(conv) = self.conv_mut_of(ci) {
+                        conv.insert_message_sorted(row.clone());
+                    }
+                    self.persist_messages_async(ci);
+                    self.push_rows_to_siblings(ci, std::slice::from_ref(&row), None);
+                    crate::logf!(
+                        "CALL: recording kept — {} bytes as blob {}…",
+                        size,
+                        hex::encode(&hash[..4])
+                    );
+                }
+            }
+            None => crate::log("CALL: recording was empty — nothing kept"),
+        }
+        self.scene_dirty = true;
+    }
+
+    /// DELETE the recording: the ticket drops, the key zeroizes, the spool file is ciphertext-garbage — true crypto-shred, instant.
+    pub(super) fn delete_recording(&mut self) {
+        let Some(call) = self.active_call.as_mut() else {
+            return;
+        };
+        if call.phase != CallPhase::Ended {
+            return;
+        }
+        if let Some(ticket) = call.spool.take() {
+            crate::call::spool::shred(ticket);
+        }
+        self.active_call = None;
+        crate::log("CALL: recording shredded");
+        self.scene_dirty = true;
+    }
+
     /// Spin up the media engine for an Active call. None (call stays signaling-only + silent) when the basket never completed or the contact has no direct address — media-over-the-relay-pipe is explicitly deferred (docs/calls.md), and the transport dot already tells the human they're on relay.
     fn spawn_call_engine(
         &self,
@@ -429,22 +509,32 @@ impl PhotonApp {
         call_id: &[u8; 16],
         secret: Option<[u8; 32]>,
         we_are_caller: bool,
-    ) -> Option<crate::call::engine::EngineHandle> {
+    ) -> (
+        Option<crate::call::engine::EngineHandle>,
+        Option<crate::call::spool::SpoolTicket>,
+    ) {
         let Some(secret) = secret else {
             crate::log("CALL: no secret — media engine not started");
-            return None;
+            return (None, None);
         };
         let Some(addr) = self.contacts.get(ci).and_then(|c| c.race_addrs()).map(|(a, _)| a) else {
             crate::log("CALL: no direct address — media unavailable (relay media is deferred)");
-            return None;
+            return (None, None);
         };
         let call_id8: [u8; 8] = call_id[..8].try_into().unwrap();
-        Some(crate::call::engine::start(crate::call::engine::EngineParams {
+        // Recording by default (docs/calls.md): the spool key lives ONLY in this ticket; the engine writes sealed records; keep/delete decides at hangup.
+        let (spool_param, ticket) = match crate::call::spool::mint(&call_id8) {
+            Some((key, path, ticket)) => (Some((key, path)), Some(ticket)),
+            None => (None, None),
+        };
+        let handle = crate::call::engine::start(crate::call::engine::EngineParams {
             secret,
             call_id8,
             we_are_caller,
             peer_addr: addr,
-        }))
+            spool: spool_param,
+        });
+        (Some(handle), ticket)
     }
 
     pub(super) fn contact_index_by_handle_hash(&self, hh: &[u8; 32]) -> Option<usize> {

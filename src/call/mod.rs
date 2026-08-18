@@ -5,6 +5,7 @@
 //! No timers anywhere: ringing stops on answer/decline/hangup edges, the caller's patience is the timeout, and the intra-call key ratchet steps on packet COUNT, not clocks.
 
 pub mod engine;
+pub mod spool;
 pub mod keys;
 pub mod packet;
 pub mod signal;
@@ -57,6 +58,8 @@ pub enum CallPhase {
     Ringing,
     /// Media flowing.
     Active,
+    /// Hung up, recording decision pending: the bar shows Keep / Delete (docs/calls.md — recording by default, endpoint memory).
+    Ended,
 }
 
 /// The one live call (v1: singular — a second inbound offer during any phase gets an automatic `Busy`).
@@ -78,4 +81,6 @@ pub struct ActiveCall {
     pub secret: Option<[u8; 32]>,
     /// The running media engine (Active phase). Teardown = explicit `stop()` — the thread zeroizes its chains and releases audio on exit.
     pub engine: Option<engine::EngineHandle>,
+    /// The recording's keep/delete material (Active → Ended). Dropping it undecided IS the shred — the key lives nowhere else.
+    pub spool: Option<spool::SpoolTicket>,
 }

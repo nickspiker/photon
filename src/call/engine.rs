@@ -28,6 +28,8 @@ pub struct EngineParams {
     pub call_id8: [u8; 8],
     pub we_are_caller: bool,
     pub peer_addr: SocketAddr,
+    /// Recording spool (key, path) — recording by default; None only when the spool couldn't be minted (disk trouble; the call proceeds unrecorded, logged).
+    pub spool: Option<([u8; 32], std::path::PathBuf)>,
 }
 
 /// Handle held by the UI's ActiveCall. Dropping it does NOT stop the engine — call `stop()` (teardown is an explicit edge).
@@ -104,6 +106,13 @@ fn run(
         }
     };
 
+    let mut spool = params
+        .spool
+        .as_ref()
+        .and_then(|(k, p)| super::spool::SpoolWriter::create(k, p));
+    if spool.is_none() {
+        crate::log("CALL: no spool — this call is not being recorded");
+    }
     let mut peer = params.peer_addr;
     let mut seq: u32 = 0;
     let mut window_id: u32 = 0;
@@ -140,6 +149,9 @@ fn run(
                     continue;
                 }
             };
+            if let Some(w) = spool.as_mut() {
+                w.append(0, vsf::eagle_time_oscillations(), &enc[..n]);
+            }
             window_buf.extend_from_slice(&(n as u16).to_le_bytes());
             window_buf.extend_from_slice(&enc[..n]);
             window_buf.resize((frames_in_window + 1) * FRAME_SLOT, 0);
@@ -206,6 +218,9 @@ fn run(
                     let n = u16::from_le_bytes(data[base..base + 2].try_into().unwrap()) as usize;
                     if n == 0 || n > FRAME_SLOT - 2 {
                         continue;
+                    }
+                    if let Some(w) = spool.as_mut() {
+                        w.append(1, vsf::eagle_time_oscillations(), &data[base + 2..base + 2 + n]);
                     }
                     let mut pcm = vec![0i16; FRAME_SAMPLES];
                     match decoder.decode(&data[base + 2..base + 2 + n], &mut pcm, false) {
