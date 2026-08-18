@@ -141,6 +141,68 @@ pub fn notify_new_message(msg_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str
     }
 }
 
+/// Call a zero-arg void method on the foreground service (the MESSAGE_NOTIFIER global ref) — the generic form of the notification-post pattern, used by call audio start/stop. Returns false when the service ref isn't registered or the call throws. Callable from any thread.
+#[cfg(target_os = "android")]
+pub fn call_service_void(method: &str) -> bool {
+    let Some((vm, svc)) = MESSAGE_NOTIFIER.get() else {
+        return false;
+    };
+    match vm.attach_current_thread() {
+        Ok(mut env) => {
+            if env.call_method(svc.as_obj(), method, "()V", &[]).is_err() {
+                let _ = env.exception_clear();
+                error!("call_service_void: {} failed", method);
+                false
+            } else {
+                true
+            }
+        }
+        Err(e) => {
+            error!("call_service_void: JVM attach failed: {:?}", e);
+            false
+        }
+    }
+}
+
+/// One mic frame from Kotlin's AudioRecord loop (VOICE_COMMUNICATION source — the vendor AEC path). 480 samples of 48kHz mono PCM16 per call; anything else is queued as-is and the engine's chunker copes.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeAudioCaptured(
+    env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    samples: jni::objects::JShortArray<'_>,
+) {
+    let mut env = env;
+    let len = env.get_array_length(&samples).unwrap_or(0) as usize;
+    if len == 0 {
+        return;
+    }
+    let mut buf = vec![0i16; len];
+    if env.get_short_array_region(&samples, 0, &mut buf).is_ok() {
+        crate::platform::audio::on_captured(buf);
+    }
+}
+
+/// Next render frame for Kotlin's AudioTrack loop — 480 samples of 48kHz mono PCM16, silence when the jitter buffer runs dry (no PLC guesswork). Every frame handed out lands in the AEC reference ring on the Rust side first.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeAudioNextFrame<'a>(
+    env: JNIEnv<'a>,
+    _class: JClass<'a>,
+) -> jni::objects::JShortArray<'a> {
+    let mut env = env;
+    let frame = crate::platform::audio::pull_render();
+    match env.new_short_array(frame.len() as i32) {
+        Ok(arr) => {
+            let _ = env.set_short_array_region(&arr, 0, &frame);
+            arr
+        }
+        Err(_) => env
+            .new_short_array(0)
+            .unwrap_or_else(|_| panic!("JNI short array alloc failed twice")),
+    }
+}
+
 /// Poke the foreground service to run a headless protocol tick. Called from the status RX worker (`send_status_update`) whenever ANY inbound `StatusUpdate` lands, so a CLUTCH offer/KEM/complete or a chat/ACK advances the ceremony + chain even while the Activity is backgrounded and its Choreographer (and thus `tick`) has stopped. Reuses the `MESSAGE_NOTIFIER` service global-ref: calls Kotlin `requestServiceTick()`, which grabs a brief wakelock and calls `nativeServiceTick(activityPtr)`. The wakelock lives on the Kotlin side because it needs the service `Context`/`PowerManager`. No-op if the service never registered or the Activity context ptr isn't set (Kotlin guards that). Callable from any thread — attaches to the JVM as needed. See docs/background-tick.md.
 #[cfg(target_os = "android")]
 pub fn request_service_tick() {

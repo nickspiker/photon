@@ -145,6 +145,10 @@ rgb = "0.8.52"
 base64 = "0.22.1"
 bitvec = "1.0.1"
 libc = "0.2.178"
+# Voice calls (docs/calls.md): fountain-coded loss repair over the media window — pure Rust RFC 6330. Redundancy is the loss dial; Opus in-band FEC/PLC stays OFF (restricted-lowdelay), raptor owns repair.
+raptorq = "2.0.1"
+# Opus via vendored libopus (audiopus_sys builds it with CMake — the NDK env exports in scripts/lib/android-env.sh exist for exactly this). RESTRICTED_LOWDELAY only: CELT, 2.5ms lookahead, no SILK prediction, no voip-mode weirdness.
+opus = "0.3.1"
 # thread-priority doesn't support Redox yet
 [target.'cfg(not(target_os = "redox"))'.dependencies]
 thread-priority = "1.2"
@@ -213,6 +217,8 @@ arboard = "3.4"
 fluor = { path = "../fluor", default-features = false, features = ["host-winit"] }
 # Per-contact notification chime: deterministic modal bell from spaghettify(their_handle_hash + our_identity_seed). Desktop-only - rodio's playback stack does not belong in the Android/Redox dep graphs (Android will use platform notifications).
 chirp = { path = "../chirp" }
+# Voice-call mic capture + playback (rodio already carries cpal transitively; the explicit dep pins the same version for the call audio thread pair). Android does NOT use cpal — capture/playback cross JNI to Kotlin AudioRecord/AudioTrack with the VOICE_COMMUNICATION source, which is what engages the vendor echo canceller (docs/calls.md echo layer 1).
+cpal = "0.17"
 
 [dev-dependencies]
 criterion = "0.7.0"

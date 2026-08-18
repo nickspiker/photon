@@ -28,6 +28,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
+    <!-- Voice calls (docs/calls.md): mic capture via VOICE_COMMUNICATION (the source that engages the
+         vendor echo canceller). RECORD_AUDIO is a runtime prompt at first call; the microphone
+         foreground-service type is required to capture while backgrounded (Android 14+). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
     <!-- Sticky session broadcast — only apps signed with the same key may receive it -->
     <uses-permission android:name="android.permission.BROADCAST_STICKY" />
     <!-- Self-update (docs/updates.md): fire the system installer on a downloaded, hash-verified APK. -->
@@ -76,10 +83,11 @@
             </intent-filter>
         </service>
 
-        <!-- Foreground service for persistent P2P connection -->
+        <!-- Foreground service for persistent P2P connection; microphone type joins dataSync so call
+             capture keeps running when the Activity backgrounds mid-call. -->
         <service
             android:name=".PhotonConnectionService"
-            android:foregroundServiceType="dataSync"
+            android:foregroundServiceType="dataSync|microphone"
             android:exported="false" />
 
         <!-- NFC instant device add: the joiner's HCE service serving the pairing secret under photon's private AID (res/xml/apduservice.xml). -->
