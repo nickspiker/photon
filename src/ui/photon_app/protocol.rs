@@ -7,6 +7,19 @@ impl PhotonApp {
     pub fn advance_protocol(&mut self, now: Instant) -> bool {
         let mut needs_redraw = false;
 
+        // Log any tick phase that blocks the UI thread > 50ms so a stall shows up in the trace rather than being guessed at. Hoisted to the top of the tick so the phonebook-harvest/persist block below is covered too (the persist freeze lived in exactly the uninstrumented gap before this).
+        macro_rules! timed {
+            ($label:literal, $body:expr) => {{
+                let __t = Instant::now();
+                let __r = $body;
+                let __ms = __t.elapsed().as_millis();
+                if __ms > 50 {
+                    crate::logf!("PERF: {} took {}ms (UI thread)", $label, __ms);
+                }
+                __r
+            }};
+        }
+
         // Recurring background presence sweep — re-ping every contact so online/offline rings stay live. The interval tapers with idle time (5s active → 1min idle → 15min deep-idle) so an untouched window isn't hammering the network. Runs on Ready AND in a Conversation — CRITICAL: presence is symmetric only if both sides keep pinging, and the person you most need a live status for is the one you're actively chatting with. Gating this to Ready meant opening a conversation stopped your pings, so your view of that contact went stale — and if both people opened the chat with each other, NEITHER pinged and both showed offline (observed: the peer on Ready saw the other online, while the one in the conversation saw the first offline). `wake_at()` schedules the next sweep so this fires even while otherwise idle.
         if matches!(self.state, AppState::Ready | AppState::Conversation) {
             let interval = self.presence_ping_interval(now);
@@ -70,7 +83,7 @@ impl PhotonApp {
                 .is_none_or(|last| now.duration_since(last) >= STALLED_ADDR_REFETCH);
             // Harvest every tick while blocked: a record for a stalled contact may have landed in the shared peer store — from our own fgtw fetch OR from a phonebook-gossip response.
             // Adopt it as the contact's address so the offer can send; fire-on-learn does the rest.
-            if blocked {
+            timed!("phonebook-harvest", if blocked {
                 let recs = self
                     .peer_store
                     .as_ref()
@@ -100,12 +113,12 @@ impl PhotonApp {
                         self.ping_contacts();
                     }
                 }
-                // Persist on the growth edge, observed here where the store is already in hand.
+                // Persist on the growth edge, observed here where the store is already in hand. Marks dirty; the tick's debounce gate does the off-thread write, coalescing a burst of gossip merges into one.
                 if recs.len() != self.peer_store_persisted_len {
                     self.peer_store_persisted_len = recs.len();
-                    self.persist_peer_store();
+                    self.request_peer_persist();
                 }
-            }
+            });
             // Every 15s while blocked: ask every reachable peer for its phonebook AND resolve the stalled devices from the seed registry — peers first, seed last. This used to also fire `query_resume`, which replays the ENTIRE attest (contacts load, cloud sync, roster pull, fleet key sync — 749 full replays in one logged session, and the roster-pull storm rode it via needs_initial_roster_pull). The resume's only job here was the announce echo that learned addresses, and the per-record registry resolve below does that properly now.
             if blocked && due {
                 self.last_stalled_refetch = Some(now);
@@ -133,18 +146,7 @@ impl PhotonApp {
             }
         }
 
-        // Drain per-contact presence + CLUTCH ceremony updates (pongs → is_online/ip; offers/KEM/complete → ceremony progress), plus the three background-job result channels (keygen / KEM-encap / ceremony-expand). TEMP instrumentation: log any tick phase that blocks the UI thread > 50ms so the launch hang is pinpointed in the trace rather than guessed at. Remove once the hang source is fixed.
-        macro_rules! timed {
-            ($label:literal, $body:expr) => {{
-                let __t = Instant::now();
-                let __r = $body;
-                let __ms = __t.elapsed().as_millis();
-                if __ms > 50 {
-                    crate::logf!("PERF: {} took {}ms (UI thread)", $label, __ms);
-                }
-                __r
-            }};
-        }
+        // Drain per-contact presence + CLUTCH ceremony updates (pongs → is_online/ip; offers/KEM/complete → ceremony progress), plus the three background-job result channels (keygen / KEM-encap / ceremony-expand). The `timed!` macro (hoisted to the top of this fn) logs any arm blocking the UI thread > 50ms.
         if timed!("check_status_updates", self.check_status_updates()) {
             needs_redraw = true;
         }

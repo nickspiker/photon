@@ -196,12 +196,26 @@ impl PhotonApp {
         let ime_lift = self.ime_lift();
         // Same hoist for the Fleet page's locked set (treat-as-stolen rows): the row loop can't re-borrow self.
         let fleet_locked_set = self.locked_devices();
-        // Hoisted for the call overlay at the tail (the chrome borrow below outlives it): can the open conversation be called right now?
-        let call_pill_callable = self
+        // Hoisted for the call overlay (the chrome borrow below outlives it): SHOW the ☎ pill for any real friend conversation (discoverable, dimmed when it can't connect); ENABLE it only when the friend is online with a usable chain. Also whether a call is live (phase + peer name for the bar). All read before the chrome `as_mut` since the overlay draws early, under-blend-topmost, on every screen.
+        let call_pill_show = self
+            .active_contact()
+            .and_then(|ci| self.contacts.get(ci))
+            .map_or(false, |c| !c.is_sibling && c.friendship_id.is_some());
+        let call_pill_enabled = self
             .active_contact()
             .and_then(|ci| self.contacts.get(ci))
             .map_or(false, |c| {
                 !c.is_sibling && c.is_online && (c.chain_woven || c.friendship_id.is_some())
+            });
+        let call_overlay: Option<(crate::call::CallPhase, String)> =
+            self.active_call.as_ref().map(|c| {
+                let name = self
+                    .contacts
+                    .iter()
+                    .find(|k| k.handle_hash == c.peer_handle_hash)
+                    .map(|k| k.display_name())
+                    .unwrap_or_else(|| "?".into());
+                (c.phase, name)
             });
 
         let Some(chrome) = self.chrome.as_mut() else {
@@ -326,6 +340,111 @@ impl PhotonApp {
             let span = ctx.viewport.effective_span();
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             paint::draw_chord_hint(&mut canvas, ctx.text, CHORD_HINTS, span);
+        }
+
+        // CALL OVERLAY (docs/calls.md) — painted HERE, EARLY, so under-blend keeps it above every screen's body (the whole point: a ring must be visible + answerable from wherever the user is). A live call shows the status + action bar; an open callable conversation with no call shows the ☎ start pill. Hit rects are RE-STAMPED at the very end (screens re-stamp their own hit_test_map regions each frame and would otherwise wipe this); pixels only need to land first. y sits just below the chrome title-bar band.
+        let mut call_hit_rects: Vec<(f32, f32, f32, f32, HitId)> = Vec::new();
+        {
+            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+            let y0 = buf_h as f32 * 0.055;
+            if let Some((phase, name)) = &call_overlay {
+                let phase = *phase;
+                let bar_h = (buf_h as f32 * 0.075).clamp(30.0, 56.0);
+                let bar_w = (buf_w as f32 * 0.82).min(560.0);
+                let x0 = (buf_w as f32 - bar_w) * 0.5;
+                let gap = bar_h * 0.18;
+                let status = match phase {
+                    crate::call::CallPhase::Outgoing => format!("\u{260E} calling {}\u{2026}", name),
+                    crate::call::CallPhase::Ringing => format!("\u{260E} {} calling", name),
+                    crate::call::CallPhase::Active => format!("\u{260E} in call \u{2014} {}", name),
+                    crate::call::CallPhase::Ended => "\u{260E} keep this recording?".to_string(),
+                };
+                let two_actions = matches!(
+                    phase,
+                    crate::call::CallPhase::Ringing | crate::call::CallPhase::Ended
+                );
+                let status_w = if two_actions { bar_w * 0.44 } else { bar_w * 0.62 };
+                let action_w = if two_actions {
+                    (bar_w - status_w - gap * 2.0) * 0.5
+                } else {
+                    bar_w - status_w - gap
+                };
+                draw_stub_pill_filled(
+                    &mut canvas,
+                    ctx.text,
+                    &mut chrome.hit_test_map,
+                    buf_w,
+                    buf_h,
+                    fluor::region::Region::new(x0, y0, status_w, bar_h),
+                    &status,
+                    HIT_NONE,
+                    ctx.pressed_hit,
+                    false,
+                    None,
+                    "Open Sans",
+                );
+                let ax = x0 + status_w + gap;
+                let a_label = match phase {
+                    crate::call::CallPhase::Ringing => "Answer",
+                    crate::call::CallPhase::Ended => "Keep",
+                    _ => "Hang up",
+                };
+                draw_stub_pill_filled(
+                    &mut canvas,
+                    ctx.text,
+                    &mut chrome.hit_test_map,
+                    buf_w,
+                    buf_h,
+                    fluor::region::Region::new(ax, y0, action_w, bar_h),
+                    a_label,
+                    self.call_ui_base.wrapping_add(1),
+                    ctx.pressed_hit,
+                    true,
+                    None,
+                    "Open Sans",
+                );
+                call_hit_rects.push((ax, y0, ax + action_w, y0 + bar_h, self.call_ui_base.wrapping_add(1)));
+                if two_actions {
+                    let dx = x0 + status_w + gap * 2.0 + action_w;
+                    draw_stub_pill_filled(
+                        &mut canvas,
+                        ctx.text,
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        fluor::region::Region::new(dx, y0, action_w, bar_h),
+                        if phase == crate::call::CallPhase::Ended { "Delete" } else { "Decline" },
+                        self.call_ui_base.wrapping_add(2),
+                        ctx.pressed_hit,
+                        true,
+                        None,
+                        "Open Sans",
+                    );
+                    call_hit_rects.push((dx, y0, dx + action_w, y0 + bar_h, self.call_ui_base.wrapping_add(2)));
+                }
+            } else if matches!(self.state, AppState::Conversation) && call_pill_show {
+                // The ☎ start pill — top-right of the conversation, mirroring the "‹ Contacts" back arrow on the left. Shown for any friend convo (discoverable), dimmed until the friend is reachable.
+                let d = (buf_h as f32 * 0.06).clamp(28.0, 46.0);
+                let px = buf_w as f32 - d * 2.4;
+                draw_stub_pill_filled(
+                    &mut canvas,
+                    ctx.text,
+                    &mut chrome.hit_test_map,
+                    buf_w,
+                    buf_h,
+                    fluor::region::Region::new(px, y0, d * 2.0, d),
+                    "\u{260E} Call",
+                    self.call_ui_base,
+                    ctx.pressed_hit,
+                    call_pill_enabled,
+                    None,
+                    "Open Sans",
+                );
+                // Stamp the hit only when enabled — a dimmed pill must not dispatch a dead tap.
+                if call_pill_enabled {
+                    call_hit_rects.push((px, y0, px + d * 2.0, y0 + d, self.call_ui_base));
+                }
+            }
         }
 
         // Launch-screen widgets paint UNDER the chord hint (so the hint always wins over the textbox) and OVER chrome (so the pill sits on top of the spectrum strip / wordmark). Same target buffer as the chord hint; widgets stamp their hit IDs into chrome's shared `hit_test_map`. Only paint when the launch screen is the active state — Ready/Searching/Conversation get their own widgets later.
@@ -4978,118 +5097,18 @@ impl PhotonApp {
             );
         }
 
-        // CALL OVERLAY (docs/calls.md), topmost content: while a call exists, one strip carries the truth + the edges (Answer/Decline when ringing, Hang up otherwise) on EVERY screen — a ring must be answerable from wherever the user is. With no call, a conversation on a woven+online friend gets the small ☎ start pill instead.
-        let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
-        if let Some(call) = &self.active_call {
-            let phase = call.phase;
-            let peer = call.peer_handle_hash;
-            let name = self
-                .contacts
-                .iter()
-                .find(|c| c.handle_hash == peer)
-                .map(|c| c.display_name())
-                .unwrap_or_else(|| "?".into());
-            let bar_h = (buf_h as f32 * 0.085).clamp(34.0, 64.0);
-            let bar_w = (buf_w as f32 * 0.76).min(680.0);
-            let x0 = (buf_w as f32 - bar_w) * 0.5;
-            let y0 = buf_h as f32 * 0.015;
-            let gap = bar_h * 0.18;
-            let status = match phase {
-                crate::call::CallPhase::Outgoing => format!("\u{260E} calling {}\u{2026}", name),
-                crate::call::CallPhase::Ringing => format!("\u{260E} {} calling", name),
-                crate::call::CallPhase::Active => format!("\u{260E} in call \u{2014} {}", name),
-                crate::call::CallPhase::Ended => format!("\u{260E} keep the recording of {}?", name),
-            };
-            let two_actions = matches!(
-                phase,
-                crate::call::CallPhase::Ringing | crate::call::CallPhase::Ended
-            );
-            let status_w = if two_actions { bar_w * 0.5 } else { bar_w * 0.66 };
-            let action_w = if two_actions {
-                (bar_w - status_w - gap * 2.0) * 0.5
-            } else {
-                bar_w - status_w - gap
-            };
-            let status_rect = fluor::region::Region::new(x0, y0, status_w, bar_h);
-            draw_stub_pill_filled(
-                &mut canvas,
-                ctx.text,
+        // Re-stamp the call overlay's hit rects LAST: screens re-stamp their own regions of the shared hit_test_map every frame, which would otherwise wipe the top-of-screen call bar's clickable area. Pixels were painted early (under-blend keeps them on top); only the hit rects need re-asserting after every screen has stamped.
+        for (x0, y0, x1, y1, hit) in &call_hit_rects {
+            restamp_hit_rect(
                 &mut chrome.hit_test_map,
                 buf_w,
                 buf_h,
-                status_rect,
-                &status,
-                HIT_NONE,
-                ctx.pressed_hit,
-                false,
-                None,
-                "Open Sans",
+                *x0 as isize,
+                *y0 as isize,
+                *x1 as isize,
+                *y1 as isize,
+                *hit,
             );
-            let a_rect = fluor::region::Region::new(x0 + status_w + gap, y0, action_w, bar_h);
-            draw_stub_pill_filled(
-                &mut canvas,
-                ctx.text,
-                &mut chrome.hit_test_map,
-                buf_w,
-                buf_h,
-                a_rect,
-                match phase {
-                    crate::call::CallPhase::Ringing => "Answer",
-                    crate::call::CallPhase::Ended => "Keep",
-                    _ => "Hang up",
-                },
-                self.call_ui_base.wrapping_add(1),
-                ctx.pressed_hit,
-                true,
-                None,
-                "Open Sans",
-            );
-            if two_actions {
-                let d_rect = fluor::region::Region::new(
-                    x0 + status_w + gap * 2.0 + action_w,
-                    y0,
-                    action_w,
-                    bar_h,
-                );
-                draw_stub_pill_filled(
-                    &mut canvas,
-                    ctx.text,
-                    &mut chrome.hit_test_map,
-                    buf_w,
-                    buf_h,
-                    d_rect,
-                    if phase == crate::call::CallPhase::Ended { "Delete" } else { "Decline" },
-                    self.call_ui_base.wrapping_add(2),
-                    ctx.pressed_hit,
-                    true,
-                    None,
-                    "Open Sans",
-                );
-            }
-        } else if matches!(self.state, AppState::Conversation) {
-            if call_pill_callable {
-                let d = (buf_h as f32 * 0.075).clamp(30.0, 52.0);
-                let pill = fluor::region::Region::new(
-                    buf_w as f32 - d * 2.2,
-                    buf_h as f32 * 0.015,
-                    d * 1.8,
-                    d,
-                );
-                draw_stub_pill_filled(
-                    &mut canvas,
-                    ctx.text,
-                    &mut chrome.hit_test_map,
-                    buf_w,
-                    buf_h,
-                    pill,
-                    "\u{260E}",
-                    self.call_ui_base,
-                    ctx.pressed_hit,
-                    true,
-                    None,
-                    "Open Sans",
-                );
-            }
         }
 
         chrome.flatten_into(target, buf_w, buf_h, None);

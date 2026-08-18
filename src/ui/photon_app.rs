@@ -1343,6 +1343,21 @@ pub struct PhotonApp {
             std::sync::Arc<crate::storage::FlatStorage>,
         )>,
     >,
+    /// Peer-store (phonebook) persist worker: a cloned row snapshot + keypair + storage + vault addr go to ONE background thread that verifies every row, encodes, and writes. The per-row ed25519 `verify()` over a few-hundred-row store was a measured 0.5–4.4s UI-thread freeze on debug mobile (every persist, and the LAN-flap edge fired it every beacon round). Coalesced newest-wins — one store, so a queued snapshot is always superseded.
+    peer_persist_tx: Option<
+        std::sync::mpsc::Sender<(
+            Vec<crate::network::fgtw::PeerRecord>,
+            crate::network::fgtw::Keypair,
+            std::sync::Arc<crate::storage::FlatStorage>,
+            [u8; 32],
+        )>,
+    >,
+    /// The phonebook has unpersisted changes. Set by `request_peer_persist`, cleared by the tick's debounce gate (`PEER_PERSIST_DEBOUNCE`) which fires the off-thread write. Coalesces a burst of gossip merges / address re-publishes into at most one write per interval — the store is a cache, so a delayed write loses nothing a re-exchange won't restore.
+    peer_persist_dirty: bool,
+    /// When the phonebook was last flushed to the worker — the debounce clock for `peer_persist_dirty`.
+    last_peer_persist: Option<std::time::Instant>,
+    /// Recently observed OWN LAN addresses (from our looped-back discovery beacons) with last-seen times. A multi-homed device loops a beacon back on EVERY interface each round, so `our_lan_ip` used to flip between them every round — and each flip cleared `self_record_published_for`, re-signing + re-publishing + persisting the record on a loop. This set makes the published choice sticky: keep the current address while it's still observed, only switch when it ages out. See `OurLanAddrObserved`.
+    our_lan_ips: std::collections::HashMap<std::net::Ipv4Addr, std::time::Instant>,
     /// Last zoom value actually persisted. Android saves on the pinch-release edge (onScaleEnd → take_scale_ended); desktop saves on modifier release. This tracker suppresses redundant re-saves of the restored value.
     zoom_saved_ru: f32,
     /// Monotonic tick counter — the frame-gap fence for `pending_chain_sends` (see `drain_pending_chain_sends`).
@@ -1698,6 +1713,10 @@ impl PhotonApp {
             persist_tx: None,
             chains_persist_tx: None,
             conv_state_persist_tx: None,
+            peer_persist_tx: None,
+            peer_persist_dirty: false,
+            last_peer_persist: None,
+            our_lan_ips: std::collections::HashMap::new(),
             tick_serial: 0,
             pending_chain_sends: Vec::new(),
             seed_identity_count: 0,

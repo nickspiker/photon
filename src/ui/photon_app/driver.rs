@@ -2893,11 +2893,32 @@ impl FluorApp for PhotonApp {
             self.load_peer_store();
         }
 
-        // Keep our own signed record current. Cheap no-op once published for the current address; re-fires when the address moves or when attestation finally supplies the handle_proof an earlier reflexive echo had to wait for.
-        if self.our_reflexive.is_some() && self.our_reflexive != self.self_record_published_for {
-            self.publish_self_peer_record();
-            // Our own row changed, so the persisted copy is stale. Writing here (rather than on every merge) keeps it to one write per address change — the phonebook is a cache, and a gossiped row we lose to a crash arrives again on the next exchange.
-            self.persist_peer_store();
+        // Keep our own signed record current. Cheap no-op once published for the current address; re-fires when the address moves or when attestation finally supplies the handle_proof an earlier reflexive echo had to wait for. Timed because this edge USED to trigger the multi-second phonebook freeze (via the every-beacon persist) — if any residue survives the off-thread move, it surfaces as a PERF line here rather than a silent gap.
+        {
+            let t_phase = std::time::Instant::now();
+            if self.our_reflexive.is_some() && self.our_reflexive != self.self_record_published_for {
+                self.publish_self_peer_record();
+                // Our own row changed, so the persisted copy is stale. Mark it dirty — the debounce gate below writes it off-thread, coalescing with any gossip-growth edge. The phonebook is a cache, so a gossiped row we lose to a crash arrives again on the next exchange.
+                self.request_peer_persist();
+            }
+
+            // Debounced phonebook flush: at most one off-thread write per interval, coalescing the own-address and gossip-growth edges. The write itself (verify + encode + vault IO) runs on the peer-persist worker — this only gates how often it's kicked, sparing flash wear and CPU on a store that grows a row at a time.
+            if self.peer_persist_dirty {
+                const PEER_PERSIST_DEBOUNCE: std::time::Duration =
+                    std::time::Duration::from_secs(30);
+                let due = self
+                    .last_peer_persist
+                    .is_none_or(|t| t.elapsed() >= PEER_PERSIST_DEBOUNCE);
+                if due {
+                    self.peer_persist_dirty = false;
+                    self.last_peer_persist = Some(now);
+                    self.persist_peer_store();
+                }
+            }
+            let ms = t_phase.elapsed().as_millis();
+            if ms > 50 {
+                crate::logf!("PERF: phonebook publish+persist edge took {}ms (UI thread)", ms);
+            }
         }
 
         // Periodic fleet-sweep backstop (~5 min, jittered): re-arm history recovery for every conversation so devices converge even when the edge-triggered kicks (roster merge, sibling-online) were missed. Signed-in only; a complete conversation costs one early-stop page.

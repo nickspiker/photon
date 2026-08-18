@@ -3777,12 +3777,31 @@ impl PhotonApp {
 
                 StatusUpdate::OurLanAddrObserved { ip } => {
                     // Our own LAN address, from our looped-back beacon's source — the interface the beacon actually left on, not the one that routes to the internet. On change, clear `self_record_published_for` so the same tick edge that handles a reflexive change re-signs and re-publishes the record WITH the LAN entry (same idempotent re-publish path, same reason it isn't done inline here).
-                    if self.our_lan_ip != Some(ip) {
-                        self.our_lan_ip = Some(ip);
-                        crate::logf!(
-                            "TRAVERSE: our LAN address = {} (from our own looped-back beacon)",
-                            ip
-                        );
+                    //
+                    // STICKY across interfaces: a multi-homed device loops a beacon back on EVERY interface each round, so a naive `our_lan_ip != Some(ip)` flipped the published address between them every beacon — and each flip re-signed, re-published, and re-persisted the record on a loop (a measured 0.5–4.4s phonebook-persist freeze, repeating). Track the observed set with last-seen times, keep the current address while it's still observed, and only re-pick when it ages out. The record's single LAN slot then holds one stable address instead of thrashing.
+                    let now = std::time::Instant::now();
+                    self.our_lan_ips.insert(ip, now);
+                    // Age out an interface that stopped beaconing (unplugged / roamed off). Generous TTL — a couple of missed beacon rounds must not drop a live interface.
+                    const OWN_LAN_TTL: std::time::Duration = std::time::Duration::from_secs(120);
+                    self.our_lan_ips
+                        .retain(|_, seen| now.duration_since(*seen) < OWN_LAN_TTL);
+                    let keep_current = self
+                        .our_lan_ip
+                        .is_some_and(|cur| self.our_lan_ips.contains_key(&cur));
+                    // Deterministic tie-break (lowest address) only when we must actually choose — so two devices, or the same device twice, never disagree on which of several live addresses to publish.
+                    let chosen = if keep_current {
+                        self.our_lan_ip
+                    } else {
+                        self.our_lan_ips.keys().copied().min()
+                    };
+                    if self.our_lan_ip != chosen {
+                        self.our_lan_ip = chosen;
+                        if let Some(chosen_ip) = chosen {
+                            crate::logf!(
+                                "TRAVERSE: our LAN address = {} (from our own looped-back beacon)",
+                                chosen_ip
+                            );
+                        }
                         self.self_record_published_for = None;
                         // Interface change = our NAT mapping likely changed too — re-arm the reflect-beside-pings bootstrap so the published record re-learns the TRUE mapping.
                         checker.set_reflect_needed(true);

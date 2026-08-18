@@ -4014,11 +4014,14 @@ async fn run_checker(
                 udp::send(&socket, &tick.wire_bytes, tick.peer_addr).await;
 
                 // TCP fallback: send the WHOLE VSF payload once (set by PT tick after the UDP SPEC went ~1s unacked). Not the PT shard — TCP is reliable + ordered and the VSF `l` field self-frames the length, so the receiver's tcp::recv reads it whole and the existing CLUTCH dispatch parses it directly.
-                if let Some(tcp_payload) = &tick.tcp_payload {
-                    if let Err(e) = crate::network::tcp::send_tcp(tcp_payload, tick.peer_addr).await
-                    {
-                        crate::logf!("PT: TCP send failed to {}: {}", tick.peer_addr, e);
-                    }
+                // DETACHED, for the same reason the relay leg below is: `send_tcp` carries a 10s connect timeout, and awaiting it inline let one blackholed peer (a dead IPv6 route → "TCP connect timeout" / "No route to host") stall the WHOLE PT tick — every other peer's ladder, the progress push, and the drains behind this loop waited on it (field: multi-second gaps in the tail ending at a TCP-timeout line). Fire-and-forget: the send self-frames and the receiver dispatches it directly, so nothing in this loop depends on its result; a failure just logs. Whether relay is also attempted is decided by `tick.relay` (set by an earlier PT tick), not by this attempt's outcome, so detaching changes no fallback-ladder decision.
+                if let Some(tcp_payload) = tick.tcp_payload {
+                    let peer_addr = tick.peer_addr;
+                    tokio::spawn(async move {
+                        if let Err(e) = crate::network::tcp::send_tcp(&tcp_payload, peer_addr).await {
+                            crate::logf!("PT: TCP send failed to {}: {}", peer_addr, e);
+                        }
+                    });
                 }
 
                 // If both UDP and TCP exhausted, try relay via /conduit
