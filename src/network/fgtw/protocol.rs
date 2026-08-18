@@ -2529,6 +2529,50 @@ pub fn parse_focus_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], i64, bool), [u8; 
     Ok(((conversation_token, osc, active), sender_pubkey))
 }
 
+/// Build an `attn` frame — the fleet ATTENTION-HOLDER announcement (2026-08-18): "the human's newest input is HERE as of `osc`". Broadcast only on the transition edge (a device that isn't the holder receives qualifying input), so frames flow only when the human physically moves between devices — zero frames while typing on the holder. Newest osc wins at every sibling (Lamport-bumped at the sender, so local input supersedes regardless of clock skew); both ding-suppression gates require holding attention.
+pub fn build_attention_vsf(
+    osc: i64,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+
+    let mut section = VsfSection::new("attn");
+    section.add_field("osc", VsfType::e(vsf::types::EtType::e6(osc)));
+
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build attn VSF: {}", e))?;
+
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse + verify an `attn` frame. Returns (osc, sender_pubkey) — the holder is the signer.
+pub fn parse_attention_vsf(vsf_bytes: &[u8]) -> Result<(i64, [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("attn verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "attn" {
+        return Err(format!("Expected 'attn' section, got '{}'", section_name));
+    }
+    let osc = section
+        .fields
+        .iter()
+        .find(|f| f.name == "osc")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::e(vsf::types::EtType::e6(t)) => Some(*t),
+            _ => None,
+        })
+        .ok_or("attn missing osc")?;
+    Ok((osc, sender_pubkey))
+}
+
 /// Build a `ckpt_req` frame — "my epoch spine ends at `have_k`; serve me forward". Fired on any epoch-sealed frame we can't open because its k is ahead of ours. A sibling ahead answers with `ckpt_state`.
 pub fn build_ckpt_req_vsf(
     have_k: u64,
@@ -3256,6 +3300,18 @@ mod history_frame_tests {
         let bytes = build_focus_vsf(&tok, 5, false, &pubkey, &secret).unwrap();
         let ((_, _, pact), _) = parse_focus_vsf(&bytes).unwrap();
         assert!(!pact);
+    }
+
+    #[test]
+    fn attn_frame_round_trips() {
+        let (pubkey, secret) = keypair(14);
+        let bytes = build_attention_vsf(987_654_321, &pubkey, &secret).unwrap();
+        let (posc, signer) = parse_attention_vsf(&bytes).unwrap();
+        assert_eq!((posc, signer), (987_654_321, pubkey));
+        // Negative osc must survive too (e6 is signed; a pre-epoch clock is broken but must not corrupt).
+        let bytes = build_attention_vsf(-42, &pubkey, &secret).unwrap();
+        let (posc, _) = parse_attention_vsf(&bytes).unwrap();
+        assert_eq!(posc, -42);
     }
 
     #[test]

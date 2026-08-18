@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// The recency window behind the walk-away-gap fix (2026-08-18, Nick-approved): silent alert-duty discharge requires human input on this device within this span, checked ONLY at the message-arrival edge (an Instant comparison — never a scheduled timer). The cost side, accepted: passively watching a conversation past this span without touching anything means an arriving message dings the fleet (the watcher's own banner stays suppressed by the attended+attention gate).
+const ATTENTION_RECENCY: std::time::Duration = std::time::Duration::from_secs(120);
+
 impl PhotonApp {
     /// Apply a focus change: update `self.focused`, then walk the widget tree via `apply_focus_change` so the old + new widgets fire `set_focused(false/true)` and mark their caches dirty. Returns `true` if anything changed (caller decides whether to request a redraw — most callers do). Also drops a one-shot Android keyboard-show/hide request when focus enters or leaves a textbox; the Activity reads it via `FluorApp::wants_keyboard` after each touch and raises / dismisses the soft IME accordingly. Dismiss the standing hints (the desktop avatar prompt) and clear the transient search status. Called on any click or keystroke: hints are event-shown and interaction-cleared — never hover- or time-driven. The avatar prompt's dismissal is reset on each `Ready` entry.
     pub(super) fn clear_hints(&mut self) {
@@ -262,10 +265,21 @@ impl PhotonApp {
             ]))
         })();
         let Some(token) = token else { return };
-        let osc = vsf::eagle_time_oscillations();
+        // Lamport bump over BOTH slots: a fresh claim must outrank whatever claim AND attention osc the fleet has seen, or a clock-skewed sibling's stale slot could outrank the human's actual fingers forever (receivers require strictly-newer).
+        let floor = self
+            .fleet_focus_claim
+            .map(|(_, _, c)| c)
+            .into_iter()
+            .chain(self.fleet_attention.map(|(_, c)| c))
+            .max();
+        let osc = floor.map_or(vsf::eagle_time_oscillations(), |f| {
+            vsf::eagle_time_oscillations().max(f + 1)
+        });
         let our_dev = *kp.public.as_bytes();
         if active {
             self.fleet_focus_claim = Some((token, our_dev, osc));
+            // A claim IS attention — opening/refocusing a conversation is human input HERE. One frame moves both slots (siblings adopt the same on receipt), which also kills the attn/claim wire-reorder race.
+            self.set_fleet_attention(Some((our_dev, osc)));
         } else if self
             .fleet_focus_claim
             .map_or(false, |(t, d, _)| t == token && d == our_dev)
@@ -280,6 +294,95 @@ impl PhotonApp {
             kp.secret.as_bytes(),
         ) {
             self.dispatch_frame_to_siblings(frame);
+        }
+    }
+
+    /// The ONE mutation point for the fleet-attention slot — mirrors "is it ours" into the desktop banner-gate atomic so the notify path (callable from any thread) never reads stale attention. Miss a mutation site and a focused-but-abandoned desktop stays silent; route everything here.
+    pub(super) fn set_fleet_attention(&mut self, v: Option<([u8; 32], i64)>) {
+        self.fleet_attention = v;
+        #[cfg(not(target_os = "android"))]
+        crate::platform::desktop_notify::set_attention_ours(self.attention_is_ours());
+    }
+
+    /// Do WE hold fleet attention? `None` (bootstrap/single-device) and pre-attest default TRUE — the legacy behavior: a lone device is always its own human's attention.
+    pub(super) fn attention_is_ours(&self) -> bool {
+        match (self.fleet_attention, self.device_keypair.as_ref()) {
+            (Some((d, _)), Some(kp)) => d == *kp.public.as_bytes(),
+            _ => true,
+        }
+    }
+
+    /// Qualifying human input landed HERE while another device held the ball — take it. Adopt with a Lamport bump (max(now, seen+1)): local input supersedes ANY seen osc, so a clock-skewed sibling can never hold attention against the human's actual fingers. Broadcast one `attn` frame; holders emit nothing on further input (the transition edge is the only frame source). Then the housekeeping the gain implies: if a conversation is open+attended here, deterministically re-claim the clearer role (never trust a stale claim slot to spring back) and clear the away-period unread badge.
+    pub(super) fn take_fleet_attention(&mut self) -> bool {
+        if self.attention_is_ours() && self.fleet_attention.is_some() {
+            return false;
+        }
+        let Some(kp) = self.device_keypair.clone() else {
+            return false;
+        };
+        let our_dev = *kp.public.as_bytes();
+        let osc = self
+            .fleet_attention
+            .map_or(vsf::eagle_time_oscillations(), |(_, seen)| {
+                vsf::eagle_time_oscillations().max(seen + 1)
+            });
+        let stolen_from = self.fleet_attention.map(|(d, _)| d);
+        self.set_fleet_attention(Some((our_dev, osc)));
+        if stolen_from.is_some() {
+            crate::logf!("ATTN: took the ball (osc {})", osc);
+        }
+        if let Ok(frame) = crate::network::fgtw::protocol::build_attention_vsf(
+            osc,
+            kp.public.as_bytes(),
+            kp.secret.as_bytes(),
+        ) {
+            self.dispatch_frame_to_siblings(frame);
+        }
+        // Attention-gain housekeeping: resume the clearer role if we're looking at a conversation right now.
+        if self.active_conversation.is_some()
+            && matches!(
+                self.state,
+                AppState::Conversation | AppState::ContactPanel(_)
+            )
+            && crate::platform::attended_here()
+        {
+            self.broadcast_focus_claim(true);
+            if let Some(ci) = self.active_contact() {
+                self.clear_unread(ci);
+            }
+        }
+        true
+    }
+
+    /// Sibling link-up heal: re-send our attention and active-clearer claim with their STORED oscs — never minted fresh. A reconnecting sibling may believe stale holders; these frames displace that by ordinary LWW. Critically, an *abandoned* device reconnecting must LOSE this exchange (the human's newer state at other devices outranks its stored oscs) — minting fresh here would yank the ball back to an empty chair.
+    pub(super) fn reannounce_attention_state(&mut self) {
+        let Some(kp) = self.device_keypair.clone() else {
+            return;
+        };
+        let our_dev = *kp.public.as_bytes();
+        if let Some((d, osc)) = self.fleet_attention {
+            if d == our_dev {
+                if let Ok(frame) = crate::network::fgtw::protocol::build_attention_vsf(
+                    osc,
+                    kp.public.as_bytes(),
+                    kp.secret.as_bytes(),
+                ) {
+                    self.dispatch_frame_to_siblings(frame);
+                }
+            }
+        }
+        if let Some((tok, d, osc)) = self.fleet_focus_claim {
+            if d == our_dev {
+                if let Ok(frame) = crate::network::fgtw::protocol::build_focus_vsf(
+                    &tok,
+                    osc,
+                    true,
+                    kp.public.as_bytes(),
+                    kp.secret.as_bytes(),
+                ) {
+                    self.dispatch_frame_to_siblings(frame);
+                }
+            }
         }
     }
 
@@ -1166,20 +1269,23 @@ impl PhotonApp {
                     AppState::Conversation | AppState::ContactPanel(_)
                 ) && self.active_conversation
                     == Some(self.conversations[conv_pos].id());
-                #[cfg(not(target_os = "android"))]
-                let looking =
-                    conversation_open && crate::platform::desktop_notify::window_attended();
-                // Android: conversation-open AND the Activity actually on screen (the onResume/onPause JNI mirror). Either alone is not "looking": app foregrounded on ANOTHER screen must still alert (the silent-message hole), and app backgrounded while parked ON this conversation must too.
-                #[cfg(target_os = "android")]
-                let looking =
-                    conversation_open && crate::platform::jni_android::app_in_foreground();
-                // FLEET layer (notification design 2026-07-23): a LIVE sibling claim on this conversation means THAT device is watching — it discharges the duty; we stay silent. The claim must be another device's (ours is implied by `looking`) and its holder must still be present (the offline verdict voids ghosts).
+                // RECENCY GUARD (2026-08-18, Nick-approved): silent discharge additionally requires the human to have TOUCHED this device recently. The walk-away gap — leaving a screen parked on a conversation — produces no input edge anywhere in the fleet, so a parked-but-attended window would otherwise silently swallow every arriving message (monotone notified=true rides the sibling push; unrecoverable). NOT a scheduled timer: an Instant comparison evaluated only at this message-arrival edge — the arriving message is the clock.
+                let fresh = self
+                    .last_interaction
+                    .map_or(false, |t| t.elapsed() <= ATTENTION_RECENCY);
+                // "Looking" = this conversation is the active view, the platform says a human plausibly sees it (desktop: window visible+focused; Android: Activity foregrounded — either alone is not looking), we hold FLEET ATTENTION, and the touch is recent. Attention: the human's newest input is the only trustworthy evidence of which device they're at — a focused-but-abandoned screen must not discharge alert duty while they're demonstrably elsewhere.
+                let looking = conversation_open
+                    && crate::platform::attended_here()
+                    && self.attention_is_ours()
+                    && fresh;
+                // FLEET layer (notification design 2026-07-23): a LIVE sibling claim on this conversation means THAT device is watching — it discharges the duty; we stay silent. The claim must be another device's (ours is implied by `looking`), its holder must still be present (the offline verdict voids ghosts), AND the holder must also hold fleet attention — a claim whose device the human walked away from suppresses nobody.
                 let claimed_elsewhere = self.fleet_focus_claim.map_or(false, |(tok, dev, _)| {
                     tok == conversation_token
                         && self
                             .device_keypair
                             .as_ref()
                             .map_or(false, |kp| *kp.public.as_bytes() != dev)
+                        && self.fleet_attention.map_or(true, |(ad, _)| ad == dev)
                         && self.contacts.iter().any(|c| {
                             c.is_sibling && !c.locked_out && c.knows_device(&dev) && c.is_online
                         })
@@ -1189,6 +1295,30 @@ impl PhotonApp {
                     !contact_is_sibling && !looking && !claimed_elsewhere && !is_edit_row;
                 if looking || will_ding {
                     msg.notified = true;
+                }
+                // STALE-HOLDER BALL DROP: our claim stands on this conversation but we are NOT its live clearer anymore (walked away past the recency window, attention stolen, or a missed blur edge). The arriving message is the edge that discovers it — retract NOW, so every sibling whose independently-received copy sat suppressed under our claim gets the retraction and its drop-sweep chirps. Without this, one lost frame (or the walk itself) leaves our claim muting the fleet with no bound.
+                if !looking && !is_edit_row {
+                    if let (Some(kp), Some((t, d, cur))) =
+                        (self.device_keypair.clone(), self.fleet_focus_claim)
+                    {
+                        if t == conversation_token && d == *kp.public.as_bytes() {
+                            crate::log(
+                                "FOCUS: stale holder — dropping the ball at the message edge",
+                            );
+                            self.fleet_focus_claim = None;
+                            // Built directly for THIS token (not via broadcast_focus_claim, which derives from the OPEN view and would no-op on a lingering claim). Lamport-bumped so the retraction outranks the claim at every sibling regardless of clock skew.
+                            let osc = vsf::eagle_time_oscillations().max(cur + 1);
+                            if let Ok(frame) = crate::network::fgtw::protocol::build_focus_vsf(
+                                &conversation_token,
+                                osc,
+                                false,
+                                kp.public.as_bytes(),
+                                kp.secret.as_bytes(),
+                            ) {
+                                self.dispatch_frame_to_siblings(frame);
+                            }
+                        }
+                    }
                 }
                 let conv = &mut self.conversations[conv_pos];
                 conv.insert_message_sorted(msg.clone());
@@ -1616,7 +1746,7 @@ impl PhotonApp {
                     conv.history_recovery.as_ref().is_some_and(|r| r.complete)
                 );
             }
-            // CATCH-UP SUMMARY (2026-07-23 design): a sibling batch carrying rows NOBODY flagged means the whole fleet was offline when they landed — alert duty was never discharged. ONE summary chirp for the batch (never a per-row storm — this is exactly the wake-from-doze ding-storm killer), then flag every one. Rows arriving pre-flagged (the origin dinged or its clearer watched) stay silent, which is the steady-state forward path.
+            // CATCH-UP SUMMARY (2026-07-23 design): a sibling batch carrying rows NOBODY flagged means the whole fleet was offline when they landed — alert duty was never discharged. ONE summary chirp for the batch (never a per-row storm — this is exactly the wake-from-doze ding-storm killer), then flag every one. Rows arriving pre-flagged (the origin dinged or its clearer watched) stay silent, which is the steady-state forward path. Restricted to the FRESH batch: older stored-but-unflagged rows may be legitimately suppressed by a LIVE claim right now — those belong to the drop-sweep, which fires only when the claim actually drops.
             if from_sibling && !self.contacts[idx].is_sibling {
                 let undischarged: Vec<i64> = fresh
                     .iter()
@@ -1625,49 +1755,7 @@ impl PhotonApp {
                     })
                     .map(|m| m.timestamp)
                     .collect();
-                if !undischarged.is_empty() {
-                    let sender_name = self.contacts[idx].display_name();
-                    crate::logf!(
-                        "NOTIFY: catch-up batch of {} undischarged row(s) from {} — one summary alert",
-                        undischarged.len(),
-                        sender_name
-                    );
-                    let summary = format!("{} new message(s)", undischarged.len());
-                    let batch_hp = *blake3::hash(&undischarged[0].to_le_bytes()).as_bytes();
-                    #[cfg(target_os = "android")]
-                    {
-                        let chirp_seed = relationship_digest(
-                            &self.contacts[idx].handle_hash,
-                            &self
-                                .session
-                                .as_ref()
-                                .map(|s| {
-                                    crate::crypto::clutch::identity_party_id(&s.identity_seed)
-                                })
-                                .unwrap_or([0u8; 32]),
-                        );
-                        crate::platform::jni_android::notify_new_message(
-                            &batch_hp,
-                            &chirp_seed,
-                            &sender_name,
-                            &summary,
-                        );
-                    }
-                    #[cfg(not(target_os = "android"))]
-                    crate::platform::desktop_notify::notify_new_message(
-                        &batch_hp,
-                        &sender_name,
-                        &summary,
-                    );
-                    // Flag the batch discharged on the live rows (just inserted; the digest excludes flags, so no invalidation needed).
-                    if let Some(conv) = self.conversations.get_mut(conv_pos) {
-                        for m in conv.messages.iter_mut() {
-                            if undischarged.contains(&m.timestamp) {
-                                m.notified = true;
-                            }
-                        }
-                    }
-                }
+                self.summary_chirp_and_flag(idx, conv_pos, &undischarged);
             }
             // Persist the cursor off-thread (coalesced 13-byte record; the rows ride the coalescing message writer below).
             self.persist_conv_state_async(conv_pos);
@@ -1691,6 +1779,90 @@ impl PhotonApp {
             }
             self.scene_dirty = true;
         }
+    }
+
+    /// ONE summary chirp for a batch of undischarged rows, then flag them notified. The shared mechanics behind the sibling-merge catch-up and the claim drop-sweep — never a per-row storm. No-ops on an empty batch. (The digest excludes flags, so flagging live rows needs no invalidation.)
+    pub(super) fn summary_chirp_and_flag(
+        &mut self,
+        idx: usize,
+        conv_pos: usize,
+        undischarged: &[i64],
+    ) {
+        if undischarged.is_empty() {
+            return;
+        }
+        let sender_name = self.contacts[idx].display_name();
+        crate::logf!(
+            "NOTIFY: batch of {} undischarged row(s) from {} — one summary alert",
+            undischarged.len(),
+            sender_name
+        );
+        let summary = format!("{} new message(s)", undischarged.len());
+        let batch_hp = *blake3::hash(&undischarged[0].to_le_bytes()).as_bytes();
+        #[cfg(target_os = "android")]
+        {
+            let chirp_seed = relationship_digest(
+                &self.contacts[idx].handle_hash,
+                &self
+                    .session
+                    .as_ref()
+                    .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                    .unwrap_or([0u8; 32]),
+            );
+            crate::platform::jni_android::notify_new_message(
+                &batch_hp,
+                &chirp_seed,
+                &sender_name,
+                &summary,
+            );
+        }
+        #[cfg(not(target_os = "android"))]
+        crate::platform::desktop_notify::notify_new_message(&batch_hp, &sender_name, &summary);
+        if let Some(conv) = self.conversations.get_mut(conv_pos) {
+            for m in conv.messages.iter_mut() {
+                if undischarged.contains(&m.timestamp) {
+                    m.notified = true;
+                }
+            }
+        }
+    }
+
+    /// DROP-SWEEP: when a focus claim drops (retraction received, holder's presence void, or the ball stolen from the claim holder), any rows THIS device suppressed while honoring that claim are still undischarged — chirp them ONCE and flag. The scan is bounded below by the claim's own osc (suppression-by-claim can only have happened while the claim stood; an unbounded scan would summary-ding ancient anomalies). No-ops when nothing was suppressed — the steady state.
+    pub(super) fn sweep_undischarged(&mut self, conversation_token: [u8; 32], min_osc: i64) {
+        let Some((idx, conv_id)) = self.contacts.iter().enumerate().find_map(|(i, c)| {
+            if c.is_sibling {
+                return None;
+            }
+            let us = self.our_party_id(c)?;
+            (crate::crypto::clutch::derive_conversation_token(&[us, c.handle_hash])
+                == conversation_token)
+                .then(|| (i, c.conversation(&us).id()))
+        }) else {
+            return;
+        };
+        let Some(conv_pos) = self.conversations.iter().position(|c| c.id() == conv_id) else {
+            return;
+        };
+        let undischarged: Vec<i64> = self.conversations[conv_pos]
+            .messages
+            .iter()
+            .filter(|m| {
+                !m.notified
+                    && !m.is_outgoing
+                    && m.timestamp >= min_osc
+                    && !crate::types::is_control_content(&m.content)
+            })
+            .map(|m| m.timestamp)
+            .collect();
+        if undischarged.is_empty() {
+            return;
+        }
+        crate::logf!(
+            "NOTIFY: claim dropped with {} suppressed row(s) in the crossing window — sweeping",
+            undischarged.len()
+        );
+        self.summary_chirp_and_flag(idx, conv_pos, &undischarged);
+        self.persist_messages_async(idx);
     }
 
     pub(super) fn drain_avatar_downloads(&mut self) {
