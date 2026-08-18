@@ -1,6 +1,6 @@
 ---
 name: project-notifications-pinned
-description: "notification design FINALIZED by user 2026-07-23 (focus-claim + per-row unnotified flag, zero timers); build PINNED until sibling braid-in + fleet-sync/message-recovery testing clear"
+description: "notification design (focus-claim + per-row unnotified flag, zero timers) BUILT 2026-08-18 @ 17e9459 — gate cleared by the ten-round soak; field verify pending"
 metadata: 
   node_type: memory
   type: project
@@ -15,6 +15,8 @@ USER'S DESIGN (final, 2026-07-23 — supersedes my beacon sketch; do not build u
 - **Accepted quirk (user-stated)**: convo screen left open + screen on + human absent = that friend is silent all night, fleet-wide; other friends' convos still notify. The remedy is social, not a timer.
 - Implementation merge-point: the ding decision moves POST-decrypt (rows exist there; probes/system already filtered) — same relocation that fixes the everything-dings bug (status.rs ~2027 RX-worker pre-decrypt ding becomes the cold-FCM-only fallback). Android: full Rust app lives in the foreground service, so post-decrypt logic is available with the Activity dead.
 - Transport symmetry: friend's fleet already reply-TXes to the last-RX'd device — the notifier/clearer is naturally the device the conversation is concentrated at.
+
+**BUILT IN FULL 2026-08-18 @ 17e9459** (gate cleared by round-10 soak): ChatMessage.notified (monotone, rides rarangi rows inverted-as-'unnotified', m_ntf page column, sibling pushes; friend pages force true), 'focus' sibling frame (claim/retract, newest-osc-wins, offline-verdict void), will_ding = !looking && !claimed_elsewhere computed PRE-insert so the flag rides the push, catch-up summary (one ding per undischarged batch). Field verify: two devices, one watching a convo → other device silent on friend msg; nobody watching → one ding; wake-from-doze backfill → single summary. ALSO deleted the expired v52 pre-document chains migration per its own gate.
 
 INTERIM SHIPPED 2026-07-25 (@165d765, single-device subset of the design): notify + chirp fire exactly when NOT `looking` = (sender's conversation open AND app/window attended); Rust is the one suppression decision (Kotlin's blanket inForeground bail removed, onResume/onPause mirrored to Rust via nativeSetForeground). Post-decrypt relocation from the design is DONE (pre-decrypt RX ding removed earlier). Still missing = the fleet-wide parts: unnotified row flag, one-active-clearer claim, exactly-one-device-dings, catch-up summary.
 
