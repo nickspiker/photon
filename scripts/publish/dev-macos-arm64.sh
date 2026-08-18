@@ -18,9 +18,14 @@ echo "Building macOS ARM64 development binary..."
 if [ "$(uname -s)" = "Darwin" ]; then
     cargo build --features development --target aarch64-apple-darwin
 else
+    # CMAKE_TOOLCHAIN_FILE_* forces osxcross's cctools ar/ranlib for the vendored-libopus (audiopus_sys)
+    # cmake build — without it CMake picks the host GNU ar and ld64 can't read the archive. See the
+    # toolchain file's header for the full story. Native Mac builds (the branch above) need none of this.
     CC_aarch64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
     CXX_aarch64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
     CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
+    OSXCROSS_TRIPLE=aarch64-apple-darwin \
+    CMAKE_TOOLCHAIN_FILE_aarch64_apple_darwin="$(pwd)/scripts/lib/osxcross-cmake.toolchain" \
         cargo build --features development --target aarch64-apple-darwin
 fi
 sign_binary debug aarch64-apple-darwin
