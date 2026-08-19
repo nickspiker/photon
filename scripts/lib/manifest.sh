@@ -64,6 +64,9 @@ manifest_take_publish_lock() {
 # Arg: <platform>-<arch> label, carried to the end-bump's commit message.
 manifest_begin_dev_publish() {
     local label="$1" full patch
+    # Source-level gates FIRST — before the lock, the version bump, or any build — so a comment/parse/migration slip fails in under a second, not after the cross-compile+publish. The single chokepoint every dev-*.sh passes through, so a new platform script can't forget it.
+    source "$(dirname "${BASH_SOURCE[0]}")/preflight.sh"
+    preflight_gates
     manifest_take_publish_lock
     manifest_refuse_dirty
     full=$(manifest_full_version)
