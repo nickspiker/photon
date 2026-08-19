@@ -1038,13 +1038,8 @@ impl PhotonApp {
                             let key_fp = hex::encode(&blake3::hash(&sender_chain.current_key()[..]).as_bytes()[..4]);
                             let salt_fp = hex::encode(&blake3::hash(&salt[..]).as_bytes()[..4]);
                             crate::logf!("CHAIN DECRYPT: lane={}..., key#{}, salt#{}, eagle_time={}, ciphertext_len={}", hex::encode(&lane[..4]), key_fp, salt_fp, timestamp, ciphertext.len());
-                            // CIPHER READ-BOTH (2026-08-18 XChaCha migration): the Layer-2 stream cipher has
-                            // no auth tag, so the message-package parse IS the validator. Try the current
-                            // XChaCha20 first; only if it doesn't parse, peel the memory-hard scratch is
-                            // reused (cipher-independent) and retry the legacy ChaCha20. If NEITHER parses
-                            // it's a genuine fork — hand the current-format bytes downstream so the fork
-                            // detector behaves exactly as before. MIGRATION: drop the legacy arm a few
-                            // versions out.
+                            // CIPHER READ-BOTH (2026-08-18 XChaCha migration): the Layer-2 stream cipher has no auth tag, so the message-package parse IS the validator. Try the current
+                            // XChaCha20 first; only if it doesn't parse, peel the memory-hard scratch is reused (cipher-independent) and retry the legacy ChaCha20. If NEITHER parses it's a genuine fork — hand the current-format bytes downstream so the fork detector behaves exactly as before. MIGRATION: drop the legacy arm a few versions out.
                             let current = decrypt_layers(
                                 &ciphertext,
                                 &sender_chain,
