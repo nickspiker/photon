@@ -1268,6 +1268,11 @@ pub struct PhotonApp {
     /// Sender half of the contact-fleet-refresh channel, kept alive so successive refreshes reuse one channel (the receiver is drained in tick).
     contact_members_tx:
         Option<std::sync::mpsc::Sender<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)>>,
+    /// Off-thread identity-succession results: `(contact handle_proof, Some(new_genesis) | None)`. A `Some` means `SuccessorRecord::verify_for_pin` passed against the contact's pinned genesis — the drain migrates the pin to `new_genesis` and clears `identity_superseded`, so the re-founded chain re-folds. A `None` just clears the in-flight guard (no record yet, or it failed verification — the pin stays, the contact stays a stranger). See docs/identity-succession.md.
+    successor_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Option<[u8; 32]>)>>,
+    successor_tx: Option<std::sync::mpsc::Sender<([u8; 32], Option<[u8; 32]>)>>,
+    /// Contacts with an in-flight successor check, so a superseded fold that re-arrives each refresh spawns at most one network probe at a time (cleared when its result drains). NOT a permanent suppressor: a later refresh re-probes, so a successor record that publishes AFTER the mismatch is still adopted.
+    successor_inflight: std::collections::HashSet<[u8; 32]>,
     /// Launch add-mode (NEW device joining a fleet): orb on Launch toggles it, and a failed attest against an existing fleet auto-enters it. Enter the handle; this device then generates + displays its pairing words and waits for the other device to match and bind.
     launch_add_mode: bool,
     /// Join flow: the handle once entered; `None` while still awaiting it.
@@ -1881,6 +1886,9 @@ impl PhotonApp {
             fleet_evt_stop: None,
             contact_members_rx: None,
             contact_members_tx: None,
+            successor_rx: None,
+            successor_tx: None,
+            successor_inflight: std::collections::HashSet::new(),
             launch_add_mode: false,
             add_join_handle: None,
             probed_session: None,

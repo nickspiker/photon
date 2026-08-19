@@ -37,7 +37,7 @@ pub use fgtw::fanout::{
 };
 pub use fgtw::fleet::{
     bindreq_signing_bytes, et_to_osc, scheme, BindRequest, Egg, FleetOp, FoldError, MembershipBlob,
-    OpKind, BINDREQ_FRESH_OSC, CONSENT_WINDOW_OSC,
+    OpKind, SuccessorRecord, BINDREQ_FRESH_OSC, CONSENT_WINDOW_OSC,
 };
 pub use fgtw::fstate::{merge_rosters, roster_from_bytes, roster_to_bytes, RosterEntry};
 pub use fgtw::pair::{
@@ -93,6 +93,16 @@ pub fn fetch(handle_proof: &[u8; 32]) -> Result<Option<MembershipBlob>, String> 
 /// Publish a new (or extended) chain (`stale` reason → `"fleet: stale"` for the retry loop).
 pub fn publish(blob: &MembershipBlob) -> Result<(), String> {
     fgtw::client::publish(&PhotonTransport, blob)
+}
+
+/// Fetch a contact's published succession record, or `None` if none exists (docs/identity-succession.md). Structural only — the caller runs `SuccessorRecord::verify_for_pin` against its own pin.
+pub fn fetch_successor(handle_proof: &[u8; 32]) -> Result<Option<SuccessorRecord>, String> {
+    fgtw::client::fetch_successor(&PhotonTransport, handle_proof)
+}
+
+/// Publish OUR succession record when we re-found this identity — member-gated (this device must fold as a current member of the chain the worker holds for `handle_proof`).
+pub fn publish_successor(device_key: &Keypair, record: &SuccessorRecord) -> Result<(), String> {
+    fgtw::client::publish_successor(&PhotonTransport, device_key, record)
 }
 
 /// Ensure this device is a current fleet member before an authorised write (genesis-claim if no fleet yet).

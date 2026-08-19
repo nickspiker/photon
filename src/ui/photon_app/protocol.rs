@@ -663,6 +663,7 @@ impl PhotonApp {
             let siblings = sibling_presence_snapshot(&self.contacts);
             let mut changed = false;
             let mut to_persist: Vec<usize> = Vec::new();
+            let mut successor_checks: Vec<([u8; 32], [u8; 32])> = Vec::new();
             for (hp, members, tip_ts, genesis, existed) in member_updates {
                 if Some(hp) == our_hp {
                     self.reconcile_fleet_siblings(&members);
@@ -700,6 +701,8 @@ impl PhotonApp {
                         changed = true;
                         to_persist.push(idx);
                     }
+                    // A different genesis is EITHER an impostor OR a legitimate re-found by the same owner. Probe the succession slot off-thread: only a record with a continuity egg from a PREDECESSOR member verifies against our pin, so an impostor can't force the migration. Collected here, spawned after the loop (can't borrow self while holding `c`); the in-flight guard is applied there so a persisting mismatch probes at most once at a time but re-probes on a later refresh (record may publish late).
+                    successor_checks.push((hp, c.pinned_genesis));
                     continue;
                 }
                 if c.identity_ended {
@@ -771,6 +774,41 @@ impl PhotonApp {
                     }
                 }
             }
+            // Succession probes for the mismatching folds — one network thread per contact, deduped by the in-flight guard (cleared when its result drains below).
+            for (hp, pinned_genesis) in successor_checks {
+                if !self.successor_inflight.contains(&hp) {
+                    self.spawn_successor_check(hp, pinned_genesis);
+                }
+            }
+        }
+
+        // Drain succession probe results: a verified successor migrates the pin to the new genesis and un-supersedes the contact (its re-founded chain then re-folds on the next refresh); a `None` just clears the in-flight guard. Verification already happened off-thread against the pin, so a delivered `Some` is trustworthy here.
+        let successor_results: Vec<([u8; 32], Option<[u8; 32]>)> = self
+            .successor_rx
+            .as_ref()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default();
+        for (hp, outcome) in successor_results {
+            self.successor_inflight.remove(&hp);
+            let Some(new_genesis) = outcome else { continue };
+            let Some(idx) = self.contacts.iter().position(|c| c.handle_proof == hp) else {
+                continue;
+            };
+            crate::logf!(
+                "SUCCESSION: {} re-founded and verified against the pin — migrating the genesis pin, un-superseding",
+                crate::fp(&hp)
+            );
+            self.contacts[idx].pinned_genesis = new_genesis;
+            self.contacts[idx].identity_superseded = false;
+            if let Some(storage) = self.storage.as_ref().cloned() {
+                if let Err(e) = crate::storage::contacts::save_contact(&self.contacts[idx], &storage)
+                {
+                    crate::logf!("SUCCESSION: persist migrated pin failed: {}", e);
+                }
+            }
+            // Re-fold the new chain now that its genesis is the pinned one — the fold that arrives adopts the re-founded member set.
+            self.spawn_contact_fleet_refresh(vec![hp]);
+            needs_redraw = true;
         }
 
         // Roster-push completion edge: release the in-flight slot; if any push edge fired mid-flight, run the ONE coalesced follow-up now (it re-snapshots the roster, so it carries everything that landed meanwhile).

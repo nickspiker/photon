@@ -684,6 +684,48 @@ impl PhotonApp {
         });
     }
 
+    /// Off-thread: a contact's fold arrived with a genesis DIFFERENT from its pinned one — probe for a succession record that traces back to the pin (docs/identity-succession.md). Fetches the (public) successor slot and runs `verify_for_pin` against `pinned_genesis` HERE, off the UI thread — only a record whose continuity egg is signed by a PREDECESSOR-chain member over the exact transition verifies, so a handle-only impostor cannot forge a re-pin. Posts `(hp, Some(new_genesis))` on success (tick migrates the pin), `(hp, None)` otherwise (tick just clears the in-flight guard so a later refresh re-probes). Results land via `successor_rx`.
+    pub(super) fn spawn_successor_check(&mut self, handle_proof: [u8; 32], pinned_genesis: [u8; 32]) {
+        if self.successor_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel::<([u8; 32], Option<[u8; 32]>)>();
+            self.successor_rx = Some(rx);
+            self.successor_tx = Some(tx);
+        }
+        let tx = self.successor_tx.as_ref().unwrap().clone();
+        let wake = self.event_proxy.clone();
+        self.successor_inflight.insert(handle_proof);
+        std::thread::spawn(move || {
+            let outcome = match crate::network::fgtw::fleet::fetch_successor(&handle_proof) {
+                Ok(Some(record)) => match record.verify_for_pin(&pinned_genesis) {
+                    Ok(()) => Some(record.new_genesis_hash),
+                    Err(e) => {
+                        crate::logf!(
+                            "SUCCESSION: {} record did not verify against the pin: {}",
+                            crate::fp(&handle_proof),
+                            e
+                        );
+                        None
+                    }
+                },
+                Ok(None) => None, // no record published (yet)
+                Err(e) => {
+                    crate::logf!(
+                        "SUCCESSION: fetch failed for {}: {}",
+                        crate::fp(&handle_proof),
+                        e
+                    );
+                    None
+                }
+            };
+            if tx.send((handle_proof, outcome)).is_err() {
+                return; // app dropped the receiver
+            }
+            if let Some(w) = wake.as_ref() {
+                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+            }
+        });
+    }
+
     /// Reconcile OUR OWN folded fleet membership into sibling contacts (the fleet weave). For each member device that isn't us and has no sibling contact yet: create one as `ClutchState::Pending` — the serialized keygen queue picks it up and the full CLUTCH ceremony + weave runs against it exactly like a friend. For each sibling contact whose device fell out of the fold: remove it and delete its state + chains (revocation hygiene — an ex-member must not stay ceremony-eligible). Idempotent; triggered from attest/resume, our-hp `fleet` events, and the binder's `AddDeviceUpdate::Bound`.
     pub(super) fn reconcile_fleet_siblings(&mut self, members: &[[u8; 32]]) {
         let Some(our_device) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else {
