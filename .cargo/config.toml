@@ -22,6 +22,12 @@ linker = "clang"
 # Redox cross-compilation (use when: cargo build --target x86_64-unknown-redox)
 [target.x86_64-unknown-redox]
 linker = "/mnt/Harbor/Code/redox/prefix/x86_64-unknown-redox/rust-install/bin/x86_64-unknown-redox-gcc"
+# The vendored Opus (audiopus_sys builds it from source for Redox — there's no cross-lib) calls libm
+# functions (log, etc.), but its static libopus.a is linked AFTER -lc, so the symbols are already
+# discarded by the time the archive is searched → "undefined reference to `log`". Append -lm at the
+# very end of the link so libm is searched after libopus.a. relibc ships libm.a (and log is even in
+# libc.a), so this only fixes link order — no new dependency.
+rustflags = ["-C", "link-arg=-lm"]
 
 # Non-glibc GCC cross-targets (MinGW Windows-x64, Redox) need a features.h shim on the C include path so
 # pqcrypto-mlkem's PQClean compat.h can #include <features.h> / call __GNUC_PREREQ (glibc-only symbols their
