@@ -350,6 +350,15 @@ impl PhotonApp {
             let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
             let y0 = unit; // top margin, one line down — scales with the rest of the top bar
             let pill_h = unit * 2.; // a comfortable tap target, two lines tall
+            // Hover fill for a hit-stamped pill: hand-drawn pills aren't fluor Buttons, so they get no host overlay-pass tint — they read hover_hit themselves and brighten the idle fill (pressed still lands on BUTTON_HELD in the helper). None = the default navy when not hovered.
+            let hover_hit = self.hover_hit;
+            let hover_fill = |hid: HitId| -> Option<(u32, u32)> {
+                if hid != HIT_NONE && hid == hover_hit {
+                    Some((fluor::theme::BUTTON_HOVER, fluor::theme::BUTTON_HELD))
+                } else {
+                    None
+                }
+            };
             if let Some((phase, name)) = &call_overlay {
                 let phase = *phase;
                 let bar_w = buf_w as f32 * 0.9; // window-relative width — a bar spans the window
@@ -402,7 +411,7 @@ impl PhotonApp {
                     self.call_ui_base.wrapping_add(1),
                     ctx.pressed_hit,
                     true,
-                    None,
+                    hover_fill(self.call_ui_base.wrapping_add(1)),
                     "Open Sans",
                 );
                 call_hit_rects.push((ax, y0, ax + action_w, y0 + pill_h, self.call_ui_base.wrapping_add(1)));
@@ -419,7 +428,7 @@ impl PhotonApp {
                         self.call_ui_base.wrapping_add(2),
                         ctx.pressed_hit,
                         true,
-                        None,
+                        hover_fill(self.call_ui_base.wrapping_add(2)),
                         "Open Sans",
                     );
                     call_hit_rects.push((dx, y0, dx + action_w, y0 + pill_h, self.call_ui_base.wrapping_add(2)));
@@ -439,7 +448,7 @@ impl PhotonApp {
                     self.call_ui_base,
                     ctx.pressed_hit,
                     call_pill_enabled,
-                    None,
+                    hover_fill(self.call_ui_base),
                     "Open Sans",
                 );
                 // Stamp the hit only when enabled — a dimmed pill must not dispatch a dead tap.
