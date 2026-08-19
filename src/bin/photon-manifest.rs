@@ -119,7 +119,7 @@ fn main() {
     let key_path = std::env::var("PHOTON_SIGNING_KEY").ok().or_else(|| {
         let home = std::env::var("HOME").unwrap_or_default();
         [
-            "/mnt/Octopus/Code/keys/photon-signing-key".to_string(),
+            "/mnt/Harbor/Code/keys/photon-signing-key".to_string(),
             "/mnt/Chiton/MEGA/Code/keys/photon-signing-key".to_string(),
             "/home/nick/MEGA/code/keys/photon-signing-key".to_string(),
             format!("{home}/MEGA/Code/keys/photon-signing-key"),

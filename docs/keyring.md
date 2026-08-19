@@ -3,7 +3,7 @@
 > Status: **DESIGN ONLY, not implemented.** Agreed shape from the 2026-06-29 design session.
 > Large, foundational, security-critical — build it deliberately.
 >
-> **AUTHORITY: the TOKEN patent already specifies this** (`/mnt/Octopus/Code/TOKEN/patent/patent.typ`).
+> **AUTHORITY: the TOKEN patent already specifies this** (`/mnt/Harbor/Code/TOKEN/patent/patent.typ`).
 > The keyring is the patent's **device-binding** model; this doc records how Photon implements it.
 > Where this doc and the patent differ, the patent wins.
 > The hand-rolled "hash-linked log" sketch in an earlier draft is SUPERSEDED by the patent's registry-of-bindings model (below).
@@ -26,7 +26,7 @@
 The provably-lossy OWF **exists and is used everywhere**: it is `ihi::chaos_amp` (the 32-op data-dependent ALU, `ihi/src/chaos_amp.rs`), wrapped by `ihi::spaghettify` (`ihi/src/spaghettify.rs`).
 It matches the patent `lossy` claim point-for-point: data-dependent op selection from a 32-op menu (`val[4:0]`); 11 lossy + 3 extreme-lossy ops (POPCNT, SAT_ADD/SUB, PCNT_REPLACE) that destroy bits *within* the rounds and compound across them; ~10^482 op-selection paths (> atoms^2); ~700–2500 cumulative bits destroyed per call.
 Crucially the data-dependency governs *op selection*, not memory access — the exact thing the patent distinguishes from memory-hard functions.
-`chaos_amp` is **bit-exact with PIPE silicon** (`/mnt/Octopus/Code/pipe/rtl/chaos_amp_v2.v`).
+`chaos_amp` is **bit-exact with PIPE silicon** (`/mnt/Harbor/Code/pipe/rtl/chaos_amp_v2.v`).
 
 (Earlier in this session I twice mis-identified `ihi::handle_proof` — the **memory-hard PoW**, the *anti-squatting cost* primitive, a different function — as "the lossy OWF, not implemented." Wrong on both counts.
 `handle_proof` is the cost half; `spaghettify`/`chaos_amp` is the lossy half.
