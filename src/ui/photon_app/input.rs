@@ -107,8 +107,8 @@ impl PhotonApp {
             let layout = SettingsLayout::compute(&ctx.viewport);
             let settings_content_scroll = self.settings_content_scroll;
             // Controls ride the same unit as the page text (zoom + shape aware) — these were the "don't change scale" elements.
-            let ctrl_font = (layout.unit * 0.58).max(8.0);
-            let ctrl_h = (layout.unit * 1.00).max(14.0);
+            let ctrl_font = layout.unit * 0.58;
+            let ctrl_h = layout.unit;
             match page {
                 SettingsPage::Appearance => {
                     // Rows: [0]=title [1]=Theme label [2]=Theme dropdown [3]=Party colours [4]=Zoom label [5]=Zoom slider [6]=Calibration.

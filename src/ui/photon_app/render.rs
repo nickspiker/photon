@@ -535,7 +535,7 @@ impl PhotonApp {
             // Permanence warning block (`LaunchState::Confirm`) — drawn in the empty 6-unit band BELOW the attest button, sized with the same ru-scaled math as the join-words rows. The headline takes the error colour for gravity; the detail lines stay in status grey. The button above now reads "Yes — forever"; editing the handle cancels back to Fresh.
             if matches!(launch_state, LaunchState::Confirm) && !self.launch_add_mode {
                 let tb_h = (attest.textbox.y1 - attest.textbox.y0) as f32;
-                let line_h = (tb_h * 0.45).min(buf_w as f32 / 22.0).max(10.0);
+                let line_h = (tb_h * 0.45).min(buf_w as f32 / 22.0);
                 let cx = buf_w as f32 * 0.5;
                 let mut y = attest.attest.y1 as f32 + line_h * 1.6;
                 // What's permanent is the IDENTITY, not the handle: a handle is a mutable label, but attesting mints crypto roots with no password / reset / recovery. Ownership binds to the HUMAN, not the hardware — the first person to attest owns that identity, while devices stay replaceable thru the fleet chain (remove the first device whenever, as long as another is added first). The warning must not mis-teach "this phone owns it" NOR "this name is a life sentence" — it's the identity behind it that can't be undone.
@@ -597,7 +597,7 @@ impl PhotonApp {
                 && !device_bound
             {
                 let tb_h = (attest.textbox.y1 - attest.textbox.y0) as f32;
-                let line_h = (tb_h * 0.45).min(buf_w as f32 / 22.0).max(10.0);
+                let line_h = (tb_h * 0.45).min(buf_w as f32 / 22.0);
                 let cx = buf_w as f32 * 0.5;
                 let mut y = attest.attest.y1 as f32 + line_h * 1.6;
                 let lines: [(&str, u32); 3] = [
@@ -677,7 +677,7 @@ impl PhotonApp {
                     let cx = buf_w as f32 * 0.5;
                     // Size + anchor from the attest-block layout so the words scale with ru/zoom like every other widget and sit BELOW the status slot instead of floating into the wordmark. Width-capped so 4-word lines fit a narrow window.
                     let tb_h = (attest.textbox.y1 - attest.textbox.y0) as f32;
-                    let line_h = (tb_h * 0.45).min(buf_w as f32 / 18.0).max(10.0);
+                    let line_h = (tb_h * 0.45).min(buf_w as f32 / 18.0);
                     let lines: Vec<String> = tokens.chunks(4).map(|c| c.join(" ")).collect();
                     let mut y = attest.error.y1 as f32 + line_h * 1.2;
                     for line in &lines {
@@ -1508,7 +1508,7 @@ impl PhotonApp {
                 // --- Nav rail: pinned Back (returns to the conversation), then the page rows scrolling below — the settings rail verbatim. ---
                 let rail_inset = layout.rail_inset();
                 let nav_h = layout.nav_row_h();
-                let rspan = (layout.unit * 0.58).max(9.0);
+                let rspan = layout.unit * 0.58;
                 {
                     let r =
                         fluor::region::Region::new(rail_inset.x, rail_inset.y, rail_inset.w, nav_h);
@@ -1640,7 +1640,7 @@ impl PhotonApp {
                     inset.right().max(0.0) as usize,
                     inset.bottom().max(0.0) as usize,
                 );
-                let tspan = (layout.unit * 0.72).max(8.0);
+                let tspan = layout.unit * 0.72;
                 let hspan2 = tspan * 0.75;
                 // Display doctrine (matches clutch_status_detail): dozenal is the acclimation surface for VERSION + REPUTATION only — counters stay in current mixed arabic units for now.
                 match cpage {
@@ -3467,7 +3467,7 @@ impl PhotonApp {
 
             // Status toast ("Sending log (N KiB)…", "Log sent √", "Device removed √", ...) — the Ready screen draws `ready_toast` in its hint slot, but settings is a different AppState, so without this the toasts fired FROM settings pages (log submit, device remove) were invisible. Bottom of the content pane, painted early so under-blend keeps it above the page body; event-shown, cleared on the next interaction via clear_hints, never time-based.
             if let Some(msg) = &self.ready_toast {
-                let ts = (layout.unit * 0.72).max(9.0);
+                let ts = layout.unit * 0.72;
                 ctx.text.draw_text_center(
                     &mut canvas,
                     msg,
@@ -3497,7 +3497,7 @@ impl PhotonApp {
             // --- Nav rail: Back is PINNED at the top (never scrolls — you never have to scroll up to go back); the nine page labels scroll BELOW it. Natural row height, no clamp-to-fit. Fills are painted AFTER the label so, under the settings pane's topmost-first (under-blend) compositing, the text sits in FRONT of the fill. ---
             let rail_inset = layout.rail_inset();
             let nav_h = layout.nav_row_h();
-            let rspan = (layout.unit * 0.58).max(9.0);
+            let rspan = layout.unit * 0.58;
             // Pinned Back row at the very top of the rail.
             {
                 let r = fluor::region::Region::new(rail_inset.x, rail_inset.y, rail_inset.w, nav_h);
@@ -3631,7 +3631,7 @@ impl PhotonApp {
 
             // --- Selected page body ---
             // (page body is computed per-arm as a scrolled, natural-height region — see `layout.content_scrolled`) Everything sizes off layout.unit — the ONE span·ru harmonic unit — so text, pills, rows, and controls all scale together with window shape AND zoom. (The old mix — text × ru inside fixed rows, controls off bare region fractions — is what made zoom hit-or-miss.)
-            let tspan = (layout.unit * 0.72).max(8.0);
+            let tspan = layout.unit * 0.72;
             let hspan2 = tspan * 0.75;
             // Stub-pill height as a fraction of its row — the row is already unit-scaled, so no extra ru factor (that would double-scale).
             let pillf = |base: Coord| base.min(1.0);
@@ -3890,7 +3890,7 @@ impl PhotonApp {
                         let row_locked = locked_set.contains(pk);
                         // Transport dot, left of the status word: green LAN, cyan WAN, orange relay. Absent when the device isn't reachable.
                         if let Some(colour) = tier {
-                            let r = (hspan2 * 0.26).max(2.0);
+                            let r = hspan2 * 0.26;
                             paint::circle_filled(
                                 &mut canvas,
                                 (cols[0].x + r * 1.6) as isize,
@@ -4614,7 +4614,7 @@ impl PhotonApp {
                         );
                         // The bar: proportional fill THEN full-width track. fluor is under-blend (FIRST paint wins), so the lime fill MUST be painted before the black track — draw the track first and it wins every pixel, burying the fill (the "permanent grey bar" bug). Fill goes down first over [0..fill_w], then the track over the whole width fills only the un-painted remainder.
                         let bar_y = (r.y + r.h * 0.55) as isize;
-                        let bar_h = (r.h * 0.25).max(3.0) as isize;
+                        let bar_h = (r.h * 0.25) as isize;
                         let bar_w = r.w as isize;
                         if total > 0 {
                             let fill_w = (r.w as f64 * (done as f64 / total as f64)) as isize;
