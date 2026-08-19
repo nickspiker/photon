@@ -346,9 +346,7 @@ impl PhotonApp {
         let mut call_hit_rects: Vec<(f32, f32, f32, f32, HitId)> = Vec::new();
         {
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
-            // The ONE zoom-aware line unit the rest of the UI sizes off (the back arrow, contact rows,
-            // the avatar) — harmonic-mean of span·ru and the height budget, so it tracks Ctrl+/− and
-            // pinch. Every dimension below is a multiple of it: NO fixed pixels, NO clamps (AGENT.md).
+            // The ONE zoom-aware line unit the rest of the UI sizes off (back arrow, contact rows, avatar) — harmonic-mean of span·ru and the height budget, so it tracks Ctrl+/− and pinch; every dimension below is a multiple of it: NO fixed pixels, NO clamps (AGENT.md).
             let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
             let y0 = unit; // top margin, one line down — scales with the rest of the top bar
             let pill_h = unit * 2.; // a comfortable tap target, two lines tall
@@ -427,9 +425,7 @@ impl PhotonApp {
                     call_hit_rects.push((dx, y0, dx + action_w, y0 + pill_h, self.call_ui_base.wrapping_add(2)));
                 }
             } else if matches!(self.state, AppState::Conversation) && call_pill_show {
-                // The ☎ start pill — top-right of the conversation, mirroring the "‹ Contacts" back arrow
-                // on the left. Sized off `unit` so it matches the back arrow at every zoom. Shown for any
-                // friend convo (discoverable), dimmed until the friend is reachable.
+                // The ☎ start pill — top-right of the conversation, mirroring the "‹ Contacts" back arrow on the left; sized off `unit` so it matches the back arrow at every zoom. Shown for any friend convo (discoverable), dimmed until the friend is reachable.
                 let pill_w = unit * 5.; // draw_stub_pill_filled grows to fit "☎ Call" if the label needs more
                 let px = buf_w as f32 - pill_w - unit; // top-right, one unit of margin from the edge
                 draw_stub_pill_filled(
