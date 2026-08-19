@@ -346,13 +346,17 @@ impl PhotonApp {
         let mut call_hit_rects: Vec<(f32, f32, f32, f32, HitId)> = Vec::new();
         {
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
-            let y0 = buf_h as f32 * 0.055;
+            // The ONE zoom-aware line unit the rest of the UI sizes off (the back arrow, contact rows,
+            // the avatar) — harmonic-mean of span·ru and the height budget, so it tracks Ctrl+/− and
+            // pinch. Every dimension below is a multiple of it: NO fixed pixels, NO clamps (AGENT.md).
+            let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
+            let y0 = unit; // top margin, one line down — scales with the rest of the top bar
+            let pill_h = unit * 2.; // a comfortable tap target, two lines tall
             if let Some((phase, name)) = &call_overlay {
                 let phase = *phase;
-                let bar_h = (buf_h as f32 * 0.075).clamp(30.0, 56.0);
-                let bar_w = (buf_w as f32 * 0.82).min(560.0);
+                let bar_w = buf_w as f32 * 0.9; // window-relative width — a bar spans the window
                 let x0 = (buf_w as f32 - bar_w) * 0.5;
-                let gap = bar_h * 0.18;
+                let gap = unit * 0.5;
                 let status = match phase {
                     crate::call::CallPhase::Outgoing => format!("\u{260E} calling {}\u{2026}", name),
                     crate::call::CallPhase::Ringing => format!("\u{260E} {} calling", name),
@@ -365,7 +369,7 @@ impl PhotonApp {
                 );
                 let status_w = if two_actions { bar_w * 0.44 } else { bar_w * 0.62 };
                 let action_w = if two_actions {
-                    (bar_w - status_w - gap * 2.0) * 0.5
+                    (bar_w - status_w - gap * 2.) * 0.5
                 } else {
                     bar_w - status_w - gap
                 };
@@ -375,7 +379,7 @@ impl PhotonApp {
                     &mut chrome.hit_test_map,
                     buf_w,
                     buf_h,
-                    fluor::region::Region::new(x0, y0, status_w, bar_h),
+                    fluor::region::Region::new(x0, y0, status_w, pill_h),
                     &status,
                     HIT_NONE,
                     ctx.pressed_hit,
@@ -395,7 +399,7 @@ impl PhotonApp {
                     &mut chrome.hit_test_map,
                     buf_w,
                     buf_h,
-                    fluor::region::Region::new(ax, y0, action_w, bar_h),
+                    fluor::region::Region::new(ax, y0, action_w, pill_h),
                     a_label,
                     self.call_ui_base.wrapping_add(1),
                     ctx.pressed_hit,
@@ -403,16 +407,16 @@ impl PhotonApp {
                     None,
                     "Open Sans",
                 );
-                call_hit_rects.push((ax, y0, ax + action_w, y0 + bar_h, self.call_ui_base.wrapping_add(1)));
+                call_hit_rects.push((ax, y0, ax + action_w, y0 + pill_h, self.call_ui_base.wrapping_add(1)));
                 if two_actions {
-                    let dx = x0 + status_w + gap * 2.0 + action_w;
+                    let dx = x0 + status_w + gap * 2. + action_w;
                     draw_stub_pill_filled(
                         &mut canvas,
                         ctx.text,
                         &mut chrome.hit_test_map,
                         buf_w,
                         buf_h,
-                        fluor::region::Region::new(dx, y0, action_w, bar_h),
+                        fluor::region::Region::new(dx, y0, action_w, pill_h),
                         if phase == crate::call::CallPhase::Ended { "Delete" } else { "Decline" },
                         self.call_ui_base.wrapping_add(2),
                         ctx.pressed_hit,
@@ -420,19 +424,21 @@ impl PhotonApp {
                         None,
                         "Open Sans",
                     );
-                    call_hit_rects.push((dx, y0, dx + action_w, y0 + bar_h, self.call_ui_base.wrapping_add(2)));
+                    call_hit_rects.push((dx, y0, dx + action_w, y0 + pill_h, self.call_ui_base.wrapping_add(2)));
                 }
             } else if matches!(self.state, AppState::Conversation) && call_pill_show {
-                // The ☎ start pill — top-right of the conversation, mirroring the "‹ Contacts" back arrow on the left. Shown for any friend convo (discoverable), dimmed until the friend is reachable.
-                let d = (buf_h as f32 * 0.06).clamp(28.0, 46.0);
-                let px = buf_w as f32 - d * 2.4;
+                // The ☎ start pill — top-right of the conversation, mirroring the "‹ Contacts" back arrow
+                // on the left. Sized off `unit` so it matches the back arrow at every zoom. Shown for any
+                // friend convo (discoverable), dimmed until the friend is reachable.
+                let pill_w = unit * 5.; // draw_stub_pill_filled grows to fit "☎ Call" if the label needs more
+                let px = buf_w as f32 - pill_w - unit; // top-right, one unit of margin from the edge
                 draw_stub_pill_filled(
                     &mut canvas,
                     ctx.text,
                     &mut chrome.hit_test_map,
                     buf_w,
                     buf_h,
-                    fluor::region::Region::new(px, y0, d * 2.0, d),
+                    fluor::region::Region::new(px, y0, pill_w, pill_h),
                     "\u{260E} Call",
                     self.call_ui_base,
                     ctx.pressed_hit,
@@ -442,7 +448,7 @@ impl PhotonApp {
                 );
                 // Stamp the hit only when enabled — a dimmed pill must not dispatch a dead tap.
                 if call_pill_enabled {
-                    call_hit_rects.push((px, y0, px + d * 2.0, y0 + d, self.call_ui_base));
+                    call_hit_rects.push((px, y0, px + pill_w, y0 + pill_h, self.call_ui_base));
                 }
             }
         }
