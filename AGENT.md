@@ -191,22 +191,6 @@ for v in &values {
 **Why**: If you parse `kl` (McEliece) into a field expecting `kf` (Frodo), you get silent corruption.
 The type marker exists precisely so you never have to guess. Use it.
 
-## Protocol Evolution: No Fork Bullshit
-
-**We control all clients. All 5 of them are on your desk. Break the protocol, update everything, move on.**
-
-### FORBIDDEN: Backwards Compatibility Theater
-- No "v1" vs "v2" protocol forks
-- No feature flags for legacy clients
-- No "if version < X then do broken thing" code paths
-
-### REQUIRED: Atomic Updates
-- Protocol change? Update all clients simultaneously
-- Old clients that can't parse new format should **fail loudly** with version mismatch
-- VSF version fields exist for forensics, not branching logic
-
-**Why**: Backwards compatibility is how good protocols become IEEE-754. You have total control. Use it.
-
 ## Power-of-Two Constants
 
 **Prefer `1 << N` over decimal literals for numeric tuning knobs.** Photon is going to drop Spirix in for its math layer down the road; everywhere we currently write `x * 0.25` IEEE-fudging will become `x >> 2` real bit-shifts. The fewer decimal literals there are to rewrite, the more of the codebase ports for free. For now we eat the `(1 << N) as f32` ceremony; later it disappears.

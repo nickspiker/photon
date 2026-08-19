@@ -462,9 +462,11 @@ impl HandleQuery {
                                 Ok(members) => {
                                     if members.contains(&me) {
                                         ProbeOutcome::Member
-                                    } else if blob.genesis_identity_matches(&identity_seed) {
+                                    } else if blob.genesis_handle_proof() == Some(handle_proof) {
+                                        // The chain sits at the slot we queried → ours to attest/join (actual enrolment still needs a sponsor). Identity is handle-derived, so it cannot be proven owned; the slot match is the honest signal. BEHAVIOR NOTE (docs/fleet-identity-remediation.md): the old `genesis_identity_matches` branded a squatter's NON-canonical-key chain as Taken; that near-vacuous case now reads JoinOurs. A competent squatter used the canonical key and already read JoinOurs, and you are locked out of an occupied slot either way — the security outcome is unchanged.
                                         ProbeOutcome::JoinOurs
                                     } else {
+                                        // Genesis handle_proof ≠ the slot we fetched by — a relay served a chain from a different slot (anomaly), not a normal "someone else holds this handle".
                                         ProbeOutcome::Taken
                                     }
                                 }
@@ -584,10 +586,10 @@ impl HandleQuery {
                             Ok(members) => {
                                 if members.contains(&me) {
                                     Ok(true) // fold-proven member — ours
-                                } else if blob.genesis_identity_matches(&identity_seed) {
-                                    Ok(true) // our identity founded it, this device not yet enrolled — still ours to attest
+                                } else if blob.genesis_handle_proof() == Some(handle_proof) {
+                                    Ok(true) // chain sits at our handle_proof slot, this device not yet enrolled — still ours to attest (identity is handle-derived, so slot match is the honest signal, not ownership; see docs/fleet-identity-remediation.md)
                                 } else {
-                                    Ok(false) // fold-verified chain names a DIFFERENT identity — genuinely taken
+                                    Ok(false) // genesis handle_proof ≠ our slot — a relay served a chain from a different slot (anomaly)
                                 }
                             }
                             // An EMPTY chain (zero ops) is "no one holds this handle", not corruption — same as Ok(None): we were just admitted, ours.
