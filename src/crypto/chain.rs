@@ -379,9 +379,7 @@ pub fn encrypt_layers(
     scratch: &[u8],
     eagle_time: &EagleTime,
 ) -> Vec<u8> {
-    // Layer 2: XChaCha20 keystream (2026-08-18 migration). The `.v1` context binds the key to this
-    // cipher generation so the derived key is disjoint from the legacy `.v0` ChaCha key — a receiver
-    // never confuses the two even at the same chain position.
+    // Layer 2: XChaCha20 keystream (2026-08-18 migration). The `.v1` context binds the key to this cipher generation so the derived key is disjoint from the legacy `.v0` ChaCha key — a receiver never confuses the two even at the same chain position.
     let chacha_key = blake3::derive_key("photon.chain.xchacha.v1", chain.current_key());
     let nonce = derive_xnonce(eagle_time);
     let mut cipher = XChaCha20::new(&chacha_key.into(), &nonce.into());
@@ -422,9 +420,7 @@ pub fn decrypt_layers(
 }
 
 /// LEGACY Layer-2 decrypt: ChaCha20 (12-byte nonce, `.v0` key context) for frames minted before the
-/// 2026-08-18 XChaCha migration. A raw stream cipher has no auth tag, so the caller MUST validate the
-/// result (the message-package parse) before trusting it — the RX worker tries [`decrypt_layers`] first
-/// and falls back here only when the current-format parse fails. MIGRATION: drop a few versions out.
+/// 2026-08-18 XChaCha migration. A raw stream cipher has no auth tag, so the caller MUST validate the result (the message-package parse) before trusting it — the RX worker tries [`decrypt_layers`] first and falls back here only when the current-format parse fails. MIGRATION: drop a few versions out.
 pub fn decrypt_layers_legacy(
     ciphertext: &[u8],
     chain: &Chain,
@@ -714,10 +710,8 @@ mod tests {
         assert_eq!(&decrypted[..], plaintext);
     }
 
-    /// The read-both path for the Layer-2 stream (2026-08-18 XChaCha migration): a ciphertext produced
-    /// under the LEGACY ChaCha20 (`.v0` key, 12-byte nonce) must recover via `decrypt_layers_legacy`
-    /// and must NOT recover via the current XChaCha `decrypt_layers` (proving the two keystreams are
-    /// disjoint, so the RX worker's parse-as-validator picks the right one).
+    /// The read-both path for the Layer-2 stream (2026-08-18 XChaCha migration): a ciphertext produced under the LEGACY ChaCha20 (`.v0` key, 12-byte nonce) must recover via `decrypt_layers_legacy`
+    /// and must NOT recover via the current XChaCha `decrypt_layers` (proving the two keystreams are disjoint, so the RX worker's parse-as-validator picks the right one).
     #[test]
     fn legacy_stream_reads_via_legacy_path_only() {
         use chacha20::cipher::{KeyIvInit, StreamCipher};
