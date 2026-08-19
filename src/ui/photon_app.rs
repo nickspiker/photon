@@ -3043,7 +3043,7 @@ fn draw_stub_pill_filled(
     let h = rect.h as isize;
     let x0 = px as isize;
     let y0 = rect.y as isize;
-    let stroke = ((font_size / 32.0) as isize).max(1); // 1px hairline floor, not an additive pixel
+    let stroke = (font_size / 32.0) as isize; // no floor: the pill's AA silhouette carries the shape below 1px (no fixed-pixel hairline)
     // Disabled label dims to ~half the enabled brightness — same fill and edges, so the pill reads "present but inert" rather than vanished.
     let label_colour = if enabled {
         fluor::theme::TEXTBOX_TEXT
