@@ -54,7 +54,7 @@
 //   colour.rs, colour_convert.rs, display_profile.rs, lms2006so.rs — colour + display-profile conversion (VSF RGB → BT.2020, ICC).
 //   chromatic_wave.rs  — the sine-modulated visible-spectrum bar (direct-pixel).
 //   state.rs           — AppState{Launch,Ready,Searching,Conversation,AddDevice,Settings(SettingsPage),Connected}, SettingsPage{You,Fleet,Security,Recovery,Appearance,Notifications,Updates,Diagnostics,About}.
-//   settings_widgets.rs, settings_layout.rs — Checkbox + SettingsLayout (nav-rail vs content split).
+//   settings_layout.rs — SettingsLayout (nav-rail vs content split). Checkbox is now fluor::widgets::Checkbox (first-class, alongside Button/Slider/Dropdown).
 //   keyboard.rs, mouse.rs — input handling.
 //
 // bin/  — photon-keygen.rs (signing-key gen), photon-signature-signer.rs (binary signing), test-device-key.rs (device-key diagnostic), photonlog.rs (VSF log reader).

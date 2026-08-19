@@ -862,7 +862,7 @@ struct ProfileField {
     /// Companion tag box (phone instances: home / work / custom, free text). Persisted as `profile.<id>_label`. `None` for untagged fields.
     tag_tb: Option<Textbox>,
     /// Default-share checkbox: checked = this field auto-shares with NEW contacts (per-contact toggles live on the contact panel). `None` for the display name, which is public and always shared. Persisted as `share.<id>`, fleet-synced like the value.
-    share_cb: Option<crate::ui::settings_widgets::Checkbox>,
+    share_cb: Option<fluor::widgets::Checkbox>,
 }
 
 /// Multi-instance ("expandable") field bases: filling the LAST instance reveals an empty next one (addr → addr2 → addr3 …), so a second address/email/phone/website is always one keystroke away — and never shown before it's needed. Singletons (SSN, passport, licence, …) are NOT here and never expand. The bool = instances carry a companion tag box (phone: home/work/custom).
@@ -1538,7 +1538,7 @@ pub struct PhotonApp {
     pending_attach_encode: Option<bool>,
     /// Resample overlay controls — created with placeholder geometry at init, positioned each frame while the overlay is up.
     attach_slider: Option<fluor::widgets::Slider>,
-    attach_original_check: Option<crate::ui::settings_widgets::Checkbox>,
+    attach_original_check: Option<fluor::widgets::Checkbox>,
     /// Overlay action pills: base = send, base+1 = cancel. Paperclip compose button = base+2.
     attach_ui_base: HitId,
     /// Live PT transfer progress (peer, done, total, outbound) — throttled push from the status thread; drives the pill progress bar.
@@ -1558,19 +1558,19 @@ pub struct PhotonApp {
         ),
     >,
     /// Recovery-page "be a custodian" opt-in — a custom `Checkbox`.
-    settings_custodian_check: Option<crate::ui::settings_widgets::Checkbox>,
+    settings_custodian_check: Option<fluor::widgets::Checkbox>,
     /// Notifications-page global chime on/off — a custom `Checkbox`.
-    settings_chime_check: Option<crate::ui::settings_widgets::Checkbox>,
+    settings_chime_check: Option<fluor::widgets::Checkbox>,
     /// Notifications-page presence-visibility toggle — a custom `Checkbox`.
-    settings_presence_check: Option<crate::ui::settings_widgets::Checkbox>,
+    settings_presence_check: Option<fluor::widgets::Checkbox>,
     /// Updates-page auto-update on/off — a custom `Checkbox`.
-    settings_autoupdate_check: Option<crate::ui::settings_widgets::Checkbox>,
+    settings_autoupdate_check: Option<fluor::widgets::Checkbox>,
     /// Diagnostics "Hard logs" toggle (`logs.hard`): ON = every record writes thru to disk; OFF (default) = RAM-batched with edge flushes — see lib.rs LOG_HARD.
-    settings_hardlogs_check: Option<crate::ui::settings_widgets::Checkbox>,
+    settings_hardlogs_check: Option<fluor::widgets::Checkbox>,
     /// Desktop "Run in background" toggle (Notifications page): the OS autostart artifact IS the stored state (`platform::autostart` — no vault setting to desync), and `resident_mode` follows it live. Never built on Android (the OS owns app lifecycle there).
-    settings_background_check: Option<crate::ui::settings_widgets::Checkbox>,
+    settings_background_check: Option<fluor::widgets::Checkbox>,
     /// Security-page "Auto-attest on reboot" toggle — DANGEROUS, off by default. Marker file (`unattended_reboot`) + a device-bound reboot capsule; defeats the deliberate reboot-death of the session for remote failsafe boxes. See `set_unattended`.
-    settings_unattended_check: Option<crate::ui::settings_widgets::Checkbox>,
+    settings_unattended_check: Option<fluor::widgets::Checkbox>,
     /// Handle-confirmation modal for the unattended toggle: `Some(target_on)` while the operator must re-type their handle to arm (true) or disarm (false) unattended mode. Arming/disarming this device-becomes-you switch from an already-unlocked session must still prove the operator — not just whoever walked up to the screen. `None` = no modal.
     unattended_confirm: Option<bool>,
     /// The handle-entry box for the unattended-confirm modal (built lazily on first open).

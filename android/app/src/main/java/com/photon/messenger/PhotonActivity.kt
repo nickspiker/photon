@@ -194,6 +194,32 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         }
     }
 
+    // RECORD_AUDIO for voice calls (docs/calls.md). The manifest DECLARES it, and startCallAudio
+    // checks it — but nothing ever REQUESTED it, so checkSelfPermission was always denied and every
+    // Android call ran "listen-only" (the far side heard silence; field 2026-08-19 Emma↔Nick). A
+    // dangerous permission must be requested at runtime. Prompted once at startup (below) so the mic
+    // is ready before the first call; a denied grant leaves calls listen-only rather than crashing.
+    // (A future refinement can defer this to the actual call-initiation tap via a Rust upcall, the
+    // "prompt at first call" note on the manifest permission — but a pre-granted mic is what unblocks
+    // calls now, and one launch-time prompt is the reliable path without Service↔Activity plumbing.)
+    private val micPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (!isGranted) {
+            PhotonLog.w(TAG, "RECORD_AUDIO denied — voice calls will be listen-only until granted")
+        }
+    }
+
+    private fun requestMicPermission() {
+        if (ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.RECORD_AUDIO
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
     // BLE beacon permissions (Android 12+): requested lazily by PhotonBeacon when a start call
     // finds them missing; on grant the pending advertise/scan re-runs so the pairing screen
     // doesn't need re-entering.
@@ -408,6 +434,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
 
         // Request notification permission (Android 13+) and create channel
         requestNotificationPermission()
+        // Request the microphone up front so the first voice call isn't silently listen-only.
+        requestMicPermission()
     }
 
     private fun requestNotificationPermission() {

@@ -28,8 +28,6 @@ pub mod avatar_render;
 
 pub use state::{AppState, FoundPeer, LaunchState, SearchResult, SettingsPage};
 
-// Settings-panel stub: a minimal on/off `Checkbox` widget (fluor has no toggle/checkbox) styled to match the Button/Textbox family.
-pub mod settings_widgets;
 
 // Settings-panel layout calculator — nav-rail-vs-content split and stacked content rows via fluor's `Region`.
 pub mod settings_layout;
