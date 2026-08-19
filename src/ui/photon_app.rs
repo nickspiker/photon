@@ -1301,8 +1301,11 @@ pub struct PhotonApp {
     fleet_attention: Option<([u8; 32], i64)>,
     /// The one live call (docs/calls.md) — None = no call. Singular by design (v1); a second inbound offer gets an automatic Busy.
     active_call: Option<crate::call::ActiveCall>,
-    /// Call overlay hit ids: base+0 = the ☎ start pill (conversation, no call), base+1 = Answer/Hang up, base+2 = Decline.
-    call_ui_base: HitId,
+    /// Call overlay controls — retained fluor Buttons (no hand-rolled pills). Painted front-first on EVERY screen (a ring must be answerable from wherever the user is — docs/calls.md); registered cross-screen in `visit_app_widgets` so hover/press/dispatch ride the same walk as every other Button. `call_status_btn` is a non-interactive label chip (full-brightness, never in the walk, never stamped). `call_start_btn` = ☎ Call (conversation, no live call); `call_action_btn` = Answer / Hang up / Keep (phase decides the verb); `call_decline_btn` = Decline / Delete (ringing/ended only).
+    call_status_btn: Option<Button>,
+    call_start_btn: Option<Button>,
+    call_action_btn: Option<Button>,
+    call_decline_btn: Option<Button>,
     /// Runtime-only stuck-tip ledger per friendship: (the peer's advertised head for OUR lane, exhaust→re-arm ladders seen at exactly that head). The anchor-wedge detector needs tip 0; a NONZERO head that never moves while our exhausted pendings re-arm and exhaust again is the same dead lane in disguise (the peer holds those rows as forwards it can never re-ACK) — two full ladders at one head trips the rotation.
     lane_rearm_cycles: std::collections::HashMap<crate::types::friendship::FriendshipId, (i64, u8)>,
     /// Rotating start index for the seed-registry resolve walk — the per-pulse device budget used to restart at contact zero every pulse, so head-of-list offline contacts starved everyone behind them of resolution forever.
@@ -1903,7 +1906,10 @@ impl PhotonApp {
             fleet_focus_claim: None,
             fleet_attention: None,
             active_call: None,
-            call_ui_base: HIT_NONE,
+            call_status_btn: None,
+            call_start_btn: None,
+            call_action_btn: None,
+            call_decline_btn: None,
             lane_rearm_cycles: std::collections::HashMap::new(),
             pb_resolve_cursor: 0,
             ckpt_mint_due: false,
@@ -2432,6 +2438,35 @@ impl Container for PhotonApp {
 impl PhotonApp {
     /// Every APP widget (NOT chrome) active on the current screen, yielded to `f` — the single per-widget registry (see [`Container::visit`]). Screen-gated: an off-screen widget is neither dispatched to, tab-focusable, hover-lit, nor damage-claimed. An inherent method (not part of `Container`) so hover/damage passes can call it directly.
     fn visit_app_widgets(&mut self, f: &mut dyn FnMut(&mut dyn Widget)) {
+        // Call controls ride EVERY screen (a ring must be answerable from wherever the user is — docs/calls.md), so they're yielded BEFORE the per-state matches — hover/press/dispatch/apply_pressed/overlay-tint all walk this one registry. The status chip is NOT yielded (non-interactive label). Visibility mirrors the render gate exactly: a live call yields the action (+ decline in ringing/ended); an open callable conversation with no call yields the ☎ start pill. A dimmed (not-yet-reachable) start pill is drawn but withheld here so a dead tap can't dispatch.
+        if self.active_call.is_some() {
+            let two_actions = self.active_call.as_ref().map_or(false, |c| {
+                matches!(
+                    c.phase,
+                    crate::call::CallPhase::Ringing | crate::call::CallPhase::Ended
+                )
+            });
+            if let Some(b) = self.call_action_btn.as_mut() {
+                f(b);
+            }
+            if two_actions {
+                if let Some(b) = self.call_decline_btn.as_mut() {
+                    f(b);
+                }
+            }
+        } else if matches!(self.state, AppState::Conversation) {
+            let callable = self
+                .active_contact()
+                .and_then(|ci| self.contacts.get(ci))
+                .map_or(false, |c| {
+                    !c.is_sibling && c.is_online && (c.chain_woven || c.friendship_id.is_some())
+                });
+            if callable {
+                if let Some(b) = self.call_start_btn.as_mut() {
+                    f(b);
+                }
+            }
+        }
         if matches!(self.state, AppState::Launch(_)) {
             // The attest button is only part of the tree when there's a handle to attest — same reveal as the render gate. An empty field yields just the textbox, so Tab can't land focus on a button that isn't drawn and a hit-test can't dispatch to it. Join words phase (new device displaying its pairing words): no input widgets at all — the screen is display-only until bound or cancelled.
             let join_words_up = self.launch_add_mode && self.add_join_words.is_some();

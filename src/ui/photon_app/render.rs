@@ -217,6 +217,13 @@ impl PhotonApp {
                     .unwrap_or_else(|| "?".into());
                 (c.phase, name)
             });
+        // Ringing / Ended show a SECOND action (Decline / Delete) beside the primary — hoisted so the end-of-frame hit re-stamp agrees with the early paint without re-deriving the phase.
+        let call_two_actions = call_overlay.as_ref().map_or(false, |(p, _)| {
+            matches!(
+                p,
+                crate::call::CallPhase::Ringing | crate::call::CallPhase::Ended
+            )
+        });
 
         let Some(chrome) = self.chrome.as_mut() else {
             return;
@@ -342,23 +349,15 @@ impl PhotonApp {
             paint::draw_chord_hint(&mut canvas, ctx.text, CHORD_HINTS, span);
         }
 
-        // CALL OVERLAY (docs/calls.md) — painted HERE, EARLY, so under-blend keeps it above every screen's body (the whole point: a ring must be visible + answerable from wherever the user is). A live call shows the status + action bar; an open callable conversation with no call shows the ☎ start pill. Hit rects are RE-STAMPED at the very end (screens re-stamp their own hit_test_map regions each frame and would otherwise wipe this); pixels only need to land first. y sits just below the chrome title-bar band.
-        let mut call_hit_rects: Vec<(f32, f32, f32, f32, HitId)> = Vec::new();
+        // CALL OVERLAY (docs/calls.md) — retained fluor Buttons (no hand-rolled pills), painted HERE, EARLY, so under-blend keeps them above every screen's body (the whole point: a ring must be visible + answerable from wherever the user is). A live call shows the status chip + action bar; an open callable conversation with no call shows the ☎ start pill. Pixels land now (hit_map = None); the hit rects are RE-STAMPED at the very end via `stamp_hit_into` because each screen re-stamps its own hit_test_map region and would otherwise wipe this. Hover/press/dispatch ride `visit_app_widgets`. y sits just below the chrome title-bar band.
         {
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             // The ONE zoom-aware line unit the rest of the UI sizes off (back arrow, contact rows, avatar) — harmonic-mean of span·ru and the height budget, so it tracks Ctrl+/− and pinch; every dimension below is a multiple of it: NO fixed pixels, NO clamps (AGENT.md).
             let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
             let y0 = unit; // top margin, one line down — scales with the rest of the top bar
             let pill_h = unit * 2.; // a comfortable tap target, two lines tall
-            // Hover fill for a hit-stamped pill: hand-drawn pills aren't fluor Buttons, so they get no host overlay-pass tint — they read hover_hit themselves and brighten the idle fill (pressed still lands on BUTTON_HELD in the helper). None = the default navy when not hovered.
-            let hover_hit = self.hover_hit;
-            let hover_fill = |hid: HitId| -> Option<(u32, u32)> {
-                if hid != HIT_NONE && hid == hover_hit {
-                    Some((fluor::theme::BUTTON_HOVER, fluor::theme::BUTTON_HELD))
-                } else {
-                    None
-                }
-            };
+            let cy = y0 + pill_h * 0.5; // Buttons take a CENTRE; the row is one pill tall
+            let call_font = unit * 0.55; // button-text scale, proportional to the pill so it tracks zoom
             if let Some((phase, name)) = &call_overlay {
                 let phase = *phase;
                 let bar_w = buf_w as f32 * 0.9; // window-relative width — a bar spans the window
@@ -370,90 +369,57 @@ impl PhotonApp {
                     crate::call::CallPhase::Active => format!("\u{260E} in call \u{2014} {}", name),
                     crate::call::CallPhase::Ended => "\u{260E} keep this recording?".to_string(),
                 };
-                let two_actions = matches!(
-                    phase,
-                    crate::call::CallPhase::Ringing | crate::call::CallPhase::Ended
-                );
-                let status_w = if two_actions { bar_w * 0.44 } else { bar_w * 0.62 };
-                let action_w = if two_actions {
+                let status_w = if call_two_actions { bar_w * 0.44 } else { bar_w * 0.62 };
+                let action_w = if call_two_actions {
                     (bar_w - status_w - gap * 2.) * 0.5
                 } else {
                     bar_w - status_w - gap
                 };
-                draw_stub_pill_filled(
-                    &mut canvas,
-                    ctx.text,
-                    &mut chrome.hit_test_map,
-                    buf_w,
-                    buf_h,
-                    fluor::region::Region::new(x0, y0, status_w, pill_h),
-                    &status,
-                    HIT_NONE,
-                    ctx.pressed_hit,
-                    false,
-                    None,
-                    "Open Sans",
-                );
+                // Status chip — a non-interactive label (full brightness, not in the widget walk, never stamped).
+                if let Some(b) = self.call_status_btn.as_mut() {
+                    b.set_rect(x0 + status_w * 0.5, cy, status_w, pill_h);
+                    b.set_font_size(call_font);
+                    b.set_label(status);
+                    b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, HIT_NONE);
+                }
                 let ax = x0 + status_w + gap;
                 let a_label = match phase {
                     crate::call::CallPhase::Ringing => "Answer",
                     crate::call::CallPhase::Ended => "Keep",
                     _ => "Hang up",
                 };
-                draw_stub_pill_filled(
-                    &mut canvas,
-                    ctx.text,
-                    &mut chrome.hit_test_map,
-                    buf_w,
-                    buf_h,
-                    fluor::region::Region::new(ax, y0, action_w, pill_h),
-                    a_label,
-                    self.call_ui_base.wrapping_add(1),
-                    ctx.pressed_hit,
-                    true,
-                    hover_fill(self.call_ui_base.wrapping_add(1)),
-                    "Open Sans",
-                );
-                call_hit_rects.push((ax, y0, ax + action_w, y0 + pill_h, self.call_ui_base.wrapping_add(1)));
-                if two_actions {
+                if let Some(b) = self.call_action_btn.as_mut() {
+                    b.set_rect(ax + action_w * 0.5, cy, action_w, pill_h);
+                    b.set_font_size(call_font);
+                    b.set_label(a_label);
+                    let id = b.hit_id();
+                    b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                }
+                if call_two_actions {
                     let dx = x0 + status_w + gap * 2. + action_w;
-                    draw_stub_pill_filled(
-                        &mut canvas,
-                        ctx.text,
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        fluor::region::Region::new(dx, y0, action_w, pill_h),
-                        if phase == crate::call::CallPhase::Ended { "Delete" } else { "Decline" },
-                        self.call_ui_base.wrapping_add(2),
-                        ctx.pressed_hit,
-                        true,
-                        hover_fill(self.call_ui_base.wrapping_add(2)),
-                        "Open Sans",
-                    );
-                    call_hit_rects.push((dx, y0, dx + action_w, y0 + pill_h, self.call_ui_base.wrapping_add(2)));
+                    let d_label = if phase == crate::call::CallPhase::Ended {
+                        "Delete"
+                    } else {
+                        "Decline"
+                    };
+                    if let Some(b) = self.call_decline_btn.as_mut() {
+                        b.set_rect(dx + action_w * 0.5, cy, action_w, pill_h);
+                        b.set_font_size(call_font);
+                        b.set_label(d_label);
+                        let id = b.hit_id();
+                        b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                    }
                 }
             } else if matches!(self.state, AppState::Conversation) && call_pill_show {
-                // The ☎ start pill — top-right of the conversation, mirroring the "‹ Contacts" back arrow on the left; sized off `unit` so it matches the back arrow at every zoom. Shown for any friend convo (discoverable), dimmed until the friend is reachable.
-                let pill_w = unit * 5.; // draw_stub_pill_filled grows to fit "☎ Call" if the label needs more
+                // The ☎ start pill — top-right of the conversation, mirroring the "‹ Contacts" back arrow on the left; sized off `unit` so it matches the back arrow at every zoom. Shown for any friend convo (discoverable), dimmed (disabled) until the friend is reachable — the disabled label dim reads as "can't call yet".
+                let pill_w = unit * 5.;
                 let px = buf_w as f32 - pill_w - unit; // top-right, one unit of margin from the edge
-                draw_stub_pill_filled(
-                    &mut canvas,
-                    ctx.text,
-                    &mut chrome.hit_test_map,
-                    buf_w,
-                    buf_h,
-                    fluor::region::Region::new(px, y0, pill_w, pill_h),
-                    "\u{260E} Call",
-                    self.call_ui_base,
-                    ctx.pressed_hit,
-                    call_pill_enabled,
-                    hover_fill(self.call_ui_base),
-                    "Open Sans",
-                );
-                // Stamp the hit only when enabled — a dimmed pill must not dispatch a dead tap.
-                if call_pill_enabled {
-                    call_hit_rects.push((px, y0, px + pill_w, y0 + pill_h, self.call_ui_base));
+                if let Some(b) = self.call_start_btn.as_mut() {
+                    b.set_rect(px + pill_w * 0.5, cy, pill_w, pill_h);
+                    b.set_font_size(call_font);
+                    b.set_enabled(call_pill_enabled);
+                    let id = b.hit_id();
+                    b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                 }
             }
         }
@@ -5108,18 +5074,21 @@ impl PhotonApp {
             );
         }
 
-        // Re-stamp the call overlay's hit rects LAST: screens re-stamp their own regions of the shared hit_test_map every frame, which would otherwise wipe the top-of-screen call bar's clickable area. Pixels were painted early (under-blend keeps them on top); only the hit rects need re-asserting after every screen has stamped.
-        for (x0, y0, x1, y1, hit) in &call_hit_rects {
-            restamp_hit_rect(
-                &mut chrome.hit_test_map,
-                buf_w,
-                buf_h,
-                *x0 as isize,
-                *y0 as isize,
-                *x1 as isize,
-                *y1 as isize,
-                *hit,
-            );
+        // Re-stamp the call overlay's hit rects LAST: screens re-stamp their own regions of the shared hit_test_map every frame, which would otherwise wipe the top-of-screen call bar's clickable area. Pixels were painted early (under-blend keeps them on top); only the hit rects need re-asserting after every screen has stamped. Each Button stamps its OWN rect (set in the early paint), so the two passes can never disagree. Visibility mirrors `visit_app_widgets` exactly: action always when a call is live, decline in ringing/ended, start only when a callable convo enables it (a dimmed pill must not dispatch a dead tap). The status chip is a label — never stamped.
+        if call_overlay.is_some() {
+            if let Some(b) = self.call_action_btn.as_ref() {
+                b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
+            }
+            if call_two_actions {
+                if let Some(b) = self.call_decline_btn.as_ref() {
+                    b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
+                }
+            }
+        } else if matches!(self.state, AppState::Conversation) && call_pill_show && call_pill_enabled
+        {
+            if let Some(b) = self.call_start_btn.as_ref() {
+                b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
+            }
         }
 
         chrome.flatten_into(target, buf_w, buf_h, None);
