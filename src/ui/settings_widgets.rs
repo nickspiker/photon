@@ -132,7 +132,7 @@ impl Checkbox {
         let side = self.height;
         let box_x0 = self.center_x - self.width * 0.5;
         let box_y0 = self.center_y - side * 0.5;
-        let stroke = ((self.font_size / 32.0) as isize).max(1); // 1px hairline floor, not an additive pixel
+        let stroke = (self.font_size / 32.0) as isize; // no floor: the AA box silhouette carries it below 1px
 
         // Tick first (topmost) when checked, then the two-tone edge + fill so the fill claims the rest of the box.
         if self.checked {
