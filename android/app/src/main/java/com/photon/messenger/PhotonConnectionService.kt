@@ -646,13 +646,20 @@ class PhotonConnectionService : Service() {
                     .setTransferMode(AudioTrack.MODE_STREAM)
                     .build()
                 track.play()
-                PhotonLog.i(TAG, "callAudio: render up (VOICE_COMMUNICATION, buf=$minBuf)")
+                // MEASURED output latency, not estimated: getBufferSizeInFrames is what the track ACTUALLY granted (LOW_LATENCY can shrink what we asked for, or silently fall back) and getPerformanceMode reports whether the fast-mixer path really engaged.
+                // reqFrames is what we asked for (minBuf bytes / 2 = mono PCM16 frames), so this logs the real device-buffer depth behind playback latency — replacing the earlier ballpark guess.
+                val reqFrames = minBuf / 2
+                val gotFrames = track.bufferSizeInFrames
+                val fast = track.performanceMode == AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
+                PhotonLog.i(TAG, "callAudio: render up (VOICE_COMMUNICATION, req=${reqFrames}fr granted=${gotFrames}fr=${gotFrames * 1000 / sampleRate}ms lowLatency=$fast)")
                 while (callAudioRunning) {
                     // Rust hands back 10ms of decoded far-end (silence when the jitter buffer is dry) —
                     // the blocking write paces this loop at the device's real drain rate.
                     val frame = nativeAudioNextFrame()
                     if (frame.isNotEmpty()) track.write(frame, 0, frame.size)
                 }
+                // Underrun count = how often we starved the device buffer over the whole call: 0 means the shallow buffer + adaptive jitter held, a climbing count says the floor is too low for this path and the jitter buffer should rest deeper.
+                PhotonLog.i(TAG, "callAudio: render down (underruns=${track.underrunCount})")
                 track.stop(); track.release()
             } catch (e: Exception) {
                 PhotonLog.w(TAG, "callAudio render failed", e)
