@@ -68,3 +68,4 @@ android log.txt
 *.vsf
 
 node_modules/
+tools/arch-gate
