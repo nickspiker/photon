@@ -828,7 +828,8 @@ fn chord_hint_bbox(viewport: Viewport, vw: usize, vh: usize) -> PixelRect {
     let pad = font_size * 1.25;
     let line_count = CHORD_HINTS.len() as f32 + 1.5;
     let panel_h = line_count * line_h + pad * 2.0;
-    let panel_w = (span * 0.45).clamp(font_size * 22.0, font_size * 36.0);
+    // In lockstep with fluor's draw_chord_hint (paint.rs). The old `.clamp(font_size*22, font_size*36)` was a dead no-op — span*0.45 always sat inside [0.308span, 0.504span] — so it's just the span fraction, no clamp.
+    let panel_w = span * 0.45;
     let cx = vw as f32 * 0.5;
     let cy = vh as f32 * 0.4;
     let x0 = (cx - panel_w * 0.5).max(0.0) as usize;
@@ -3025,11 +3026,11 @@ fn draw_stub_pill_filled(
     let mut font_size = rect.h * 0.5;
     // Label first (topmost-first): centred in the pill. `label_font` is normally "Open Sans"; the version buttons pass "Oxanium" so the dozenal control-block glyphs resolve to its +glyphs face (Open Sans has no such glyphs → notdef).
     let mut tw = text.measure_text(label, &TextStyle::new(font_size, 0).font(label_font));
-    // Fit order: SHRINK the font toward the slot first (pills sharing a row must not collide with their neighbours), then widen the bg only if the font hit its readability floor — so a long label on a full-width row still gets wrapped rather than truncated.
+    // Fit order: SHRINK the font toward the slot so pills sharing a row don't collide with their neighbours. The shrink is capped at the ORIGINAL size (never grows a label), and floored by nothing — a smaller slot yields smaller text, scaling all the way down like everything else.
     let max_w = rect.w * 0.96;
     if tw + font_size * 1.6 > max_w {
         let scaled = font_size * max_w / (tw + font_size * 1.6);
-        font_size = scaled.max(9.0).min(font_size);
+        font_size = scaled.min(font_size);
         tw = text.measure_text(label, &TextStyle::new(font_size, 0).font(label_font));
     }
     let need_w = tw + font_size * 1.6;

@@ -140,7 +140,7 @@ impl Checkbox {
             // A simple check-mark from two rotated strokes.
             let cx = box_x0 + side * 0.5;
             let cy = self.center_y;
-            let seg_th = (self.font_size / 12.0).max(2.0);
+            let seg_th = (self.font_size / 12.0).max(1.0); // 1px hairline floor — a stroke must not vanish sub-pixel
             paint::draw_rect_rotated(
                 canvas,
                 cx - side * 0.14,
