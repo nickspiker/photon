@@ -1,9 +1,6 @@
 //! arch-gate — Rust replacement for the old `python3 -c` in scripts/lib/arch-gate.sh (no Python in the build path).
 //!
-//! Reads `cargo metadata --format-version 1` JSON on stdin. Args: `<arch_features>` and `<allowlist>`, both
-//! pipe-separated. Prints one `name: feat1, feat2` line per dependency whose RESOLVED feature set contains an
-//! architecture feature and is not allowlisted. Silent (and exit 0) when clean; the shell treats any output as
-//! the failure. The features are matched as EXACT names, case-insensitive — same as the old `^(a|b|..)$` regex.
+//! Reads `cargo metadata --format-version 1` JSON on stdin. Args: `<arch_features>` and `<allowlist>`, both pipe-separated. Prints one `name: feat1, feat2` line per dependency whose RESOLVED feature set contains an architecture feature and is not allowlisted. Silent (and exit 0) when clean; the shell treats any output as the failure. The features are matched as EXACT names, case-insensitive — same as the old `^(a|b|..)$` regex.
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 

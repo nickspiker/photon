@@ -36,9 +36,7 @@ publish_github() {
         echo "ERROR: asset not found for GitHub upload: $file"
         return 1
     fi
-    # The DOWNLOAD asset name is gh's basename of the uploaded path — NOT the `#label` suffix (that's a
-    # display label only). Our on-disk binaries are all named `photon-messenger`, which would collide and
-    # give the wrong URL. So symlink the file under the flat asset name in a temp dir and upload THAT.
+    # The DOWNLOAD asset name is gh's basename of the uploaded path — NOT the `#label` suffix (that's a display label only). Our on-disk binaries are all named `photon-messenger`, which would collide and give the wrong URL. So symlink the file under the flat asset name in a temp dir and upload THAT.
     # (Symlink, not copy — gh dereferences it, so we don't duplicate a ~27 MB binary just to rename it.)
     local staging
     staging=$(mktemp -d)

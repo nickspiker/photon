@@ -61,10 +61,7 @@ R2_URL="https://brobdingnagian.holdmyoscilloscope.com/$R2_PATH"
 
 # ════════════════════════════════════════════════════════════════════════════════════════════════════
 # BUILD PHASE — produce + sign every artefact AND the signed manifest. NOTHING is public yet.
-# A failure anywhere in here aborts (set -e / the ERR trap rolls back the release commit) BEFORE the first
-# wrangler put, so a half-built release can never reach R2 (some platforms new, others stale, manifest
-# pointing at absent binaries). The old order built the manifest tool + manifest AFTER the uploads, so a
-# manifest-build failure stranded already-public binaries with no matching manifest — that's what this fixes.
+# A failure anywhere in here aborts (set -e / the ERR trap rolls back the release commit) BEFORE the first wrangler put, so a half-built release can never reach R2 (some platforms new, others stale, manifest pointing at absent binaries). The old order built the manifest tool + manifest AFTER the uploads, so a manifest-build failure stranded already-public binaries with no matching manifest — that's what this fixes.
 # ════════════════════════════════════════════════════════════════════════════════════════════════════
 
 # SOURCE FREEZE (edit-safe release): reflink-snapshot photon + its whole path-dep closure the instant the build phase starts, then build every target from the FROZEN tree — so editing the live tree while a multi-minute cross-platform deploy runs can't tear a build (the "Read theme.rs (lines 86-89)" corruption a mid-edit deploy hit).
@@ -80,12 +77,8 @@ fi
 # Run a cargo build from the frozen source (falls back to the live tree if the snapshot didn't take).
 # Env vars set inline by the caller (cross sysroots, osxcross wrappers) pass through the subshell unchanged.
 # A bare `( subshell )` that fails at the tail of a function called under `set -e` aborts the script but does
-# NOT trigger the ERR trap (bash swallows it) — that silently killed the whole deploy at the Redox build with
-# no message and the version bump left committed (2026-08-13: forkpty missing on redox). Catch the failure
-# explicitly, name the target that tore, and `return` non-zero so the ERR trap fires and rolls the bump back.
-# Every build's stderr is TEE'd: streamed live to the terminal (nothing hidden) AND captured so warnings can
-# be counted. Cargo only re-emits warnings for crates it recompiles, so a warm-cache deploy would otherwise
-# look pristine while the tree carries lint (2026-08-13: 11 workspace warnings invisible across a 6-target run).
+# NOT trigger the ERR trap (bash swallows it) — that silently killed the whole deploy at the Redox build with no message and the version bump left committed (2026-08-13: forkpty missing on redox). Catch the failure explicitly, name the target that tore, and `return` non-zero so the ERR trap fires and rolls the bump back.
+# Every build's stderr is TEE'd: streamed live to the terminal (nothing hidden) AND captured so warnings can be counted. Cargo only re-emits warnings for crates it recompiles, so a warm-cache deploy would otherwise look pristine while the tree carries lint (2026-08-13: 11 workspace warnings invisible across a 6-target run).
 # DEPLOY_WARNINGS accumulates the count across every target for the end-of-deploy summary.
 DEPLOY_WARNINGS=0
 snap_cargo() {
@@ -95,8 +88,7 @@ snap_cargo() {
     ( cd "$SNAP_DIR" && cargo "$@" ) 2>&1 | tee "$errlog" >&2
     rc=${PIPESTATUS[0]}
     if [ "$rc" -ne 0 ]; then
-        # cargo's real diagnostic (the error[...] block) has already streamed to stderr above — this only
-        # names WHICH invocation tore so it isn't lost in the scroll. Read the cargo error above, not this line.
+        # cargo's real diagnostic (the error[...] block) has already streamed to stderr above — this only names WHICH invocation tore so it isn't lost in the scroll. Read the cargo error above, not this line.
         echo "" >&2
         echo "^^^ BUILD FAILED here: cargo $* (in $SNAP_DIR) — the cargo error is ABOVE this line ^^^" >&2
         rm -f "$errlog"
@@ -108,10 +100,7 @@ snap_cargo() {
     rm -f "$errlog"
 }
 
-# Lint gate: report the TRUE warning state of the tree up front, cache or no cache. The per-build tallies
-# below only catch what each target recompiles; a fully warm cache re-emits nothing, so this cache-fresh
-# check is the one place the deploy always names how much lint the release is shipping. Advisory (never
-# aborts) — surfacing the count is the point, not gating on it.
+# Lint gate: report the TRUE warning state of the tree up front, cache or no cache. The per-build tallies below only catch what each target recompiles; a fully warm cache re-emits nothing, so this cache-fresh check is the one place the deploy always names how much lint the release is shipping. Advisory (never aborts) — surfacing the count is the point, not gating on it.
 echo ""
 echo "Lint check (cache-fresh warning count for the whole workspace)..."
 LINT_WARNINGS="$( ( cd "$SNAP_DIR" && cargo check --workspace --message-format=short 2>&1 ) | grep -E '^warning' | grep -v 'generated .* warning' | sort | uniq)"
@@ -123,8 +112,7 @@ else
     echo "  ✓ workspace is lint-clean"
 fi
 
-# The two release TOOLS first — a failure to build the signer or the manifest tool must abort before any
-# platform binary is even built, let alone uploaded.
+# The two release TOOLS first — a failure to build the signer or the manifest tool must abort before any platform binary is even built, let alone uploaded.
 echo ""
 echo "Building release tools (signer + manifest)..."
 snap_cargo build --release --bin photon-signature-signer --bin photon-manifest
@@ -156,13 +144,10 @@ echo "Signing Windows x86_64 binary..."
 ./target/release/photon-signature-signer target/x86_64-pc-windows-gnu/release/photon-messenger.exe
 
 # Build Windows on ARM (aarch64) — native for Snapdragon X / Copilot+ PCs (no x86 emulation).
-# Toolchain: the llvm-mingw prebuilt at $WINARM_MINGW (clang/lld/llvm-rc + a complete aarch64-w64-mingw32 ucrt
-# sysroot). aarch64-pc-windows-gnullvm is the LLVM-MinGW target (NOT msvc — needs no MSVC/xwin). The C deps
-# (ring, pqcrypto, aws-lc-sys) compile against the vendored sysroot; the wrapper is BOTH the C compiler (via
-# the aarch64-w64-mingw32-clang name cc-rs auto-detects on PATH) AND the linker (it knows its own import libs).
+# Toolchain: the llvm-mingw prebuilt at $WINARM_MINGW (clang/lld/llvm-rc + a complete aarch64-w64-mingw32 ucrt sysroot). aarch64-pc-windows-gnullvm is the LLVM-MinGW target (NOT msvc — needs no MSVC/xwin). The C deps
+# (ring, pqcrypto, aws-lc-sys) compile against the vendored sysroot; the wrapper is BOTH the C compiler (via the aarch64-w64-mingw32-clang name cc-rs auto-detects on PATH) AND the linker (it knows its own import libs).
 # build.rs uses llvm-rc for the icon on aarch64.
-# ARM64 is a REQUIRED target like every other platform: a missing toolchain aborts the release (no silent
-# skip — a deploy either ships every platform or ships none). Install from github.com/mstorsjo/llvm-mingw.
+# ARM64 is a REQUIRED target like every other platform: a missing toolchain aborts the release (no silent skip — a deploy either ships every platform or ships none). Install from github.com/mstorsjo/llvm-mingw.
 WINARM_MINGW="/mnt/Harbor/Code/llvm-mingw"
 if [ ! -x "$WINARM_MINGW/bin/aarch64-w64-mingw32-clang" ]; then
     echo "ERROR: llvm-mingw toolchain not found at $WINARM_MINGW — required for the Windows ARM64 target."
@@ -232,9 +217,7 @@ echo ""
 echo "Building Android release..."
 ./scripts/android/build.sh
 
-# Every binary exists + is signed. Read the Windows hash (for the .ps1 installer) and BUILD the signed
-# manifest now — it only reads local files + hashes them, so it belongs in the build phase. Publishing it is
-# the last upload in the publish phase, so a running client never sees a manifest whose binaries aren't up yet.
+# Every binary exists + is signed. Read the Windows hash (for the .ps1 installer) and BUILD the signed manifest now — it only reads local files + hashes them, so it belongs in the build phase. Publishing it is the last upload in the publish phase, so a running client never sees a manifest whose binaries aren't up yet.
 WINDOWS_SHA256=$(cat target/x86_64-pc-windows-gnu/release/photon-messenger.exe.sha256)
 
 echo ""
@@ -260,9 +243,7 @@ echo ""
 echo "BUILD PHASE complete — all 8 platforms + signed manifest built. Nothing public yet."
 
 # ════════════════════════════════════════════════════════════════════════════════════════════════════
-# PUBLISH PHASE — everything below goes OUTWARD. Every artefact already exists locally, so the uploads are
-# the first irreversible outward step. (The GitHub mirror / website / notice further down are best-effort
-# once R2 is live, as noted at each.)
+# PUBLISH PHASE — everything below goes OUTWARD. Every artefact already exists locally, so the uploads are the first irreversible outward step. (The GitHub mirror / website / notice further down are best-effort once R2 is live, as noted at each.)
 # ════════════════════════════════════════════════════════════════════════════════════════════════════
 
 echo ""
@@ -297,8 +278,7 @@ wrangler r2 object put "$R2_BUCKET/$R2_PATH/app.png" \
 wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-release.ps1" \
     --file /tmp/install-release.ps1 --content-type text/plain --remote
 
-# Manifest LAST: publish it only after every binary it references is live, so a client that polls the fresh
-# manifest never fetches a URL that isn't up yet.
+# Manifest LAST: publish it only after every binary it references is live, so a client that polls the fresh manifest never fetches a URL that isn't up yet.
 wrangler r2 object put "$R2_BUCKET/$R2_PATH/manifest-release.vsf" \
     --file /tmp/manifest-release.vsf --content-type application/octet-stream --remote
 
@@ -308,9 +288,7 @@ echo "  Windows SHA256: $WINDOWS_SHA256"
 
 # Mirror the identical signed artefacts to a GitHub Release `v<n>` (redundant fallback behind R2).
 # Same bytes as R2 — never rebuild per-destination — so the Windows SHA256 patched above holds everywhere.
-# BEST-EFFORT: by this point the release is fully live on R2, so a GitHub hiccup (uploads.github.com 502s
-# are routine; one aborted the whole v39 deploy here, 2026-07-19 — stranding the website update, release
-# notice, and dev-line-open behind an already-shipped release) warns loudly and moves on, never aborts.
+# BEST-EFFORT: by this point the release is fully live on R2, so a GitHub hiccup (uploads.github.com 502s are routine; one aborted the whole v39 deploy here, 2026-07-19 — stranding the website update, release notice, and dev-line-open behind an already-shipped release) warns loudly and moves on, never aborts.
 GH_TAG="v$SHIP_VERSION"
 mirror() {
     publish_github "$GH_TAG" "$1" "$2" || echo "WARNING: GitHub mirror of $1 failed — continuing (R2 is authoritative and live)"
@@ -329,8 +307,7 @@ if ensure_release "$GH_TAG" false; then
 else
     echo "WARNING: GitHub release creation failed — skipping the mirror entirely (R2 is authoritative and live)"
 fi
-# Binaries only — no installer scripts on GitHub. The README carries the GitHub-fallback install
-# commands (they fetch these assets by name from the latest release), so the scripts aren't needed here.
+# Binaries only — no installer scripts on GitHub. The README carries the GitHub-fallback install commands (they fetch these assets by name from the latest release), so the scripts aren't needed here.
 
 # Update website version and date
 WEBSITE_DIR="/mnt/Chiton/MEGA/holdmyoscilloscope/photon"
@@ -343,23 +320,17 @@ echo ""
 echo "Deploying website..."
 (cd /mnt/Chiton/MEGA/holdmyoscilloscope && ./deploy.sh)
 
-# Everything succeeded — release v$SHIP_VERSION ($FULL_VERSION) is public and its commit (made up
-# top, before the builds) is now permanent: disarm the rollback (the Ctrl-C one too — an interrupt past this point must NOT undo a published release's commit).
+# Everything succeeded — release v$SHIP_VERSION ($FULL_VERSION) is public and its commit (made up top, before the builds) is now permanent: disarm the rollback (the Ctrl-C one too — an interrupt past this point must NOT undo a published release's commit).
 trap - ERR INT TERM
 
-# Ring the release notice: the worker broadcasts "release" over the WS hub (every RUNNING client
-# polls the signed manifest now instead of at its 6-8h cadence) and fires the FCM `updates` topic
-# (wakes dozed Android subscribers). Advisory only — what installs is still gated by the manifest
-# signature + stamp window — so best-effort: a failed curl just leaves everyone on the slow cadence.
+# Ring the release notice: the worker broadcasts "release" over the WS hub (every RUNNING client polls the signed manifest now instead of at its 6-8h cadence) and fires the FCM `updates` topic
+# (wakes dozed Android subscribers). Advisory only — what installs is still gated by the manifest signature + stamp window — so best-effort: a failed curl just leaves everyone on the slow cadence.
 echo ""
 echo "Sending release notice (hub + FCM topic)..."
 curl -s "https://fgtw.org/admin/release-notice?auth=f6d46fc44bd35b1b7204640d8cade6b2d01ef5e6ba96261200bcb728003c2724" || echo "release notice failed (non-fatal)"
 
 # OPEN THE DEV LINE (2026-07-17): the tree must never rest at X.Y.0 — patch 0 IS the release marker,
-# so a local dev build compiled from a .0 tree would masquerade as the release ("already on latest
-# release" on a dev build, observed live). The release artifacts above embedded .0; from this commit
-# on, every build is ≥ .1, and the next dev publish SHIPS .1 (publish-current-then-bump — see
-# scripts/lib/manifest.sh).
+# so a local dev build compiled from a .0 tree would masquerade as the release ("already on latest release" on a dev build, observed live). The release artifacts above embedded .0; from this commit on, every build is ≥ .1, and the next dev publish SHIPS .1 (publish-current-then-bump — see scripts/lib/manifest.sh).
 DEV_OPEN="${MAJOR}.${SHIP_VERSION}.1"
 sed_i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${DEV_OPEN}\"/" Cargo.toml
 cargo update --workspace --quiet 2>/dev/null || true
@@ -372,8 +343,7 @@ echo "Install with:"
 echo "  curl -sSfL https://brobdingnagian.holdmyoscilloscope.com/$R2_PATH/install-release.sh | sh"
 echo "  powershell -ExecutionPolicy Bypass -c \"irm https://brobdingnagian.holdmyoscilloscope.com/$R2_PATH/install-release.ps1 | iex\""
 
-# The ONLY success banner. If a deploy exits before printing this, it did NOT ship — no matter how clean
-# the last line looked (a silent Redox abort read as green all the way to "call your mum", 2026-08-13).
+# The ONLY success banner. If a deploy exits before printing this, it did NOT ship — no matter how clean the last line looked (a silent Redox abort read as green all the way to "call your mum", 2026-08-13).
 # Never vouch for a release you didn't watch print this line.
 echo ""
 echo "════════════════════════════════════════════════════════════"

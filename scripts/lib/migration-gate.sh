@@ -6,9 +6,7 @@
 #
 #     // MIGRATION-EXPIRES: v56 — <one line: what it does, and what makes it safe to delete>
 #
-# `v56` is a RELEASE number, matching deploy.sh's counter (the MINOR in 0.<release>.<patch>). While
-# the tree's release is below it the build is silent. The release it lands on, the build FAILS with
-# the file and line, and the only ways forward are to delete the block or to make a deliberate,
+# `v56` is a RELEASE number, matching deploy.sh's counter (the MINOR in 0.<release>.<patch>). While the tree's release is below it the build is silent. The release it lands on, the build FAILS with the file and line, and the only ways forward are to delete the block or to make a deliberate,
 # argued decision to move the number. Both are fine. Forgetting is not on the list.
 #
 # Pick an expiry from how long a device can plausibly stay dark and still matter — a few releases,

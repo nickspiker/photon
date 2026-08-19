@@ -59,12 +59,8 @@ manifest_take_publish_lock() {
 }
 
 # Dev publish preamble — PUBLISH-CURRENT-THEN-BUMP (2026-07-17): the tree ALREADY holds this publish's version.
-# deploy.sh opens the dev line at X.Y.1 the moment a release ships, and every dev publish pre-bumps for the
-# next one on its way out (manifest_end_dev_publish) — so the tree never rests at a version that hasn't been
-# or isn't about to be published, a dev build can NEVER carry patch 0 (patch 0 IS the release marker — the
-# one way to tell the flavours apart), and the first dev publish after a release ships exactly .1.
-# Takes the publish lock, refuses dirty, refuses a .0 tree (a half-finished deploy), and PINS the version+commit
-# for manifest_publish_dev_row so the row claims what this run's build embeds.
+# deploy.sh opens the dev line at X.Y.1 the moment a release ships, and every dev publish pre-bumps for the next one on its way out (manifest_end_dev_publish) — so the tree never rests at a version that hasn't been or isn't about to be published, a dev build can NEVER carry patch 0 (patch 0 IS the release marker — the one way to tell the flavours apart), and the first dev publish after a release ships exactly .1.
+# Takes the publish lock, refuses dirty, refuses a .0 tree (a half-finished deploy), and PINS the version+commit for manifest_publish_dev_row so the row claims what this run's build embeds.
 # Arg: <platform>-<arch> label, carried to the end-bump's commit message.
 manifest_begin_dev_publish() {
     local label="$1" full patch
