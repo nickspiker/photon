@@ -82,12 +82,9 @@ pub fn current_members(handle_proof: &[u8; 32]) -> Result<Vec<[u8; 32]>, String>
     fgtw::client::current_members(&PhotonTransport, handle_proof)
 }
 
-/// The current member set for OUR OWN fleet, refusing a chain whose genesis isn't co-signed by `Ed25519(identity_seed)` — the every-fetch genesis check (docs/pairing-v2.md). Use this wherever the fetch feeds a trust decision about our own fleet; `current_members` stays for contact chains.
-pub fn current_members_verified(
-    handle_proof: &[u8; 32],
-    identity_seed: &[u8; 32],
-) -> Result<Vec<[u8; 32]>, String> {
-    fgtw::client::current_members_verified(&PhotonTransport, handle_proof, identity_seed)
+/// The current member set for OUR OWN fleet, refusing a chain whose genesis `handle_proof` isn't the slot we queried — the every-fetch anti-swap check (docs/fleet-identity-remediation.md). A slot-consistency check, not an ownership proof (identity is handle-derived). Use this wherever the fetch feeds a trust decision about our own fleet; `current_members` stays for contact chains.
+pub fn current_members_verified(handle_proof: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
+    fgtw::client::current_members_verified(&PhotonTransport, handle_proof)
 }
 
 /// The current member set + chain-tip eagle time (monotonic freshness guard for the fold-respecting trust rule).

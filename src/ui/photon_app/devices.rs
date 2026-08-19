@@ -797,7 +797,7 @@ impl PhotonApp {
                 return; // a heal already holds the latch; its rotation covers this too
             };
             // Genesis-verified fold: never rotate toward a member set a relay could have swapped.
-            let members = match fleet::current_members_verified(&hp, &identity_seed) {
+            let members = match fleet::current_members_verified(&hp) {
                 Ok(m) if !m.is_empty() => m
                     .into_iter()
                     .filter(|m| !locked.contains(m))
@@ -867,7 +867,7 @@ impl PhotonApp {
             }
             // Fail toward no-rotate: any fetch/verify miss here just falls thru to the plain recover path.
             let heal_members = (|| {
-                let members = fleet::current_members_verified(&hp, &identity_seed).ok()?;
+                let members = fleet::current_members_verified(&hp).ok()?;
                 let desired: Vec<[u8; 32]> = members
                     .into_iter()
                     .filter(|m| !locked.contains(m))
@@ -2005,7 +2005,7 @@ impl PhotonApp {
                     return;
                 }
                 // Genesis re-checked on EVERY fetch, not just the probe: a relay that served the real chain once must not be able to swap in a structurally-valid foreign chain mid-ceremony and have this loop adopt its members (the probe-time-only TOCTOU — docs/pairing-v2.md).
-                match fleet::current_members_verified(&hp, &identity_seed) {
+                match fleet::current_members_verified(&hp) {
                     Ok(m) if m.contains(&me) => {
                         // In the fleet — this is the green, and LEAVING THIS SCREEN is what the far-side human confirms, so it must happen NOW, not after the key. Withdraw our request (the author's exit act), try the fan-out once in case the sponsor already confirmed, and hand off — the key otherwise arrives via the post-attest fleet-event sync the moment the green-confirm rotation lands (the worker broadcasts "fleet" on fanout_put). Waiting here deadlocks the ceremony: the sponsor waits for our green before releasing the key this wait was for.
                         crate::log("JOIN: bound — this device is in the fleet chain");
