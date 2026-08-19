@@ -492,13 +492,16 @@ impl PhotonApp {
             )
         };
         // IN-FLIGHT WINDOW: advance-on-send gives each message its own position, so pipelining is safe — but keep a bounded window so a burst can't outrun the receiver's gap buffer (and stays well under the count that tripped older receivers' fork detector). While the lane already holds the window's worth of un-ACKed sends, the row stays held and the ACK-advance flush sends the next as a slot frees.
-        if self
-            .friendship_chains
-            .iter()
-            .find(|(id, _)| *id == friendship_id)
-            .map_or(false, |(_, c)| {
-                c.pending_messages.len() >= crate::types::friendship::IN_FLIGHT_WINDOW
-            })
+        // CONTROL FRAMES BYPASS THE WINDOW. Call signals (offer/answer/decline/hangup), chain probes, and delete markers are rare, never bursty, and TIME-CRITICAL — pacing them behind bulk chat wedged a live call's answer the moment the lane hit its cap: "answer send failed" was every time preceded by "lane at the in-flight window", so a congested conversation made an incoming call literally unanswerable (decline worked only because it ignores the send result; field 2026-08-19, Emma↔Nick). The window is UI-level flow control for data, not a crypto invariant — a couple of extra control pendings stay far under the fork threshold and still ride advance-on-send + retransmit + relay like any frame.
+        let is_control = crate::types::is_control_content(text);
+        if !is_control
+            && self
+                .friendship_chains
+                .iter()
+                .find(|(id, _)| *id == friendship_id)
+                .map_or(false, |(_, c)| {
+                    c.pending_messages.len() >= crate::types::friendship::IN_FLIGHT_WINDOW
+                })
         {
             crate::logf!(
                 "CHAT: lane at the in-flight window ({}) — holding this message for an ACK slot",
