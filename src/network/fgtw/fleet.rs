@@ -4,6 +4,33 @@
 //! `fgtw::fleet` (the membership chain), `fgtw::fanout` (fan-out crypto), `fgtw::fstate` (roster codec), `fgtw::pair` (pairing words), and `fgtw::client` (the fetch-then-sign oracle).
 //! What's left here is the *binding*: [`PhotonTransport`] (FGTW's HTTP over photon's warm-TLS pool + short error UX) and [`PhotonSealer`] (roster AEAD over `kete`), plus thin same-signature wrappers that inject them — so the crate stays reqwest-free and photon keeps its own network stack.
 
+// ── Sunset tripwire for the v1 fleet-op verify path (docs/identity-succession.md) ──
+// New fleets found under v2 (no identity_sig); the v1 path in fgtw/src/fleet.rs (verify_identity_binding, the fold genesis arm accepting a present identity_sig, and its encode/parse) stays ONLY to fold chains founded before the cutover. A chain is immutable and append-only, so it becomes v2 only by re-founding via the succession re-pin flow, never on its own — once every peer's chain is v2, the v1 path is dead weight. This const FAILS THE BUILD at the sunset version unless someone confirmed all peers are v2 and deleted it (flip V1_FLEET_VERIFY_PRESENT to false), or consciously bumped the deadline. There is no other way to forget it.
+const fn parse_u(s: &str) -> usize {
+    let (b, mut n, mut i) = (s.as_bytes(), 0usize, 0usize);
+    while i < b.len() {
+        n = n * 10 + (b[i] - b'0') as usize;
+        i += 1;
+    }
+    n
+}
+const CURRENT_VERSION: (usize, usize, usize) = (
+    parse_u(env!("CARGO_PKG_VERSION_MAJOR")),
+    parse_u(env!("CARGO_PKG_VERSION_MINOR")),
+    parse_u(env!("CARGO_PKG_VERSION_PATCH")),
+);
+/// Releases bump the MINOR (deploy.sh), so this is ~twelve releases past 0.58.0. A knob — bump it only after a conscious "the fleet's v2 migration isn't done yet" decision.
+const V1_FLEET_VERIFY_SUNSET: (usize, usize, usize) = (0, 70, 0);
+/// Flip to `false` in the SAME change that deletes the v1 fleet-op verify path from fgtw/src/fleet.rs.
+const V1_FLEET_VERIFY_PRESENT: bool = true;
+const fn ver_ge(a: (usize, usize, usize), b: (usize, usize, usize)) -> bool {
+    a.0 > b.0 || (a.0 == b.0 && (a.1 > b.1 || (a.1 == b.1 && a.2 >= b.2)))
+}
+const _: () = assert!(
+    !(V1_FLEET_VERIFY_PRESENT && ver_ge(CURRENT_VERSION, V1_FLEET_VERIFY_SUNSET)),
+    "v1 fleet-op verify path reached its sunset version: confirm every peer's chain is v2 and delete it from fgtw/src/fleet.rs (set V1_FLEET_VERIFY_PRESENT = false), or consciously bump V1_FLEET_VERIFY_SUNSET."
+);
+
 pub use fgtw::fanout::{
     fanout_from_bytes, fanout_needs_rotation, fanout_open, fanout_seal, fanout_to_bytes,
     new_fleet_key, FanoutWrap,
