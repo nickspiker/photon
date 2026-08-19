@@ -2954,7 +2954,21 @@ fn settings_line(
     );
 }
 
-/// Draw an inert stub action pill filling `rect`: a Button-family squircle (fill + two-tone raised edge) with a centred label, hit-stamped with `hit_id`. STUB only — clicks land in the settings dispatch range and log a line; nothing functional fires. Kept immediate-mode (not a persistent `Button`) because the panel has many one-off action pills and a stub doesn't need each to carry click-counter state.
+thread_local! {
+    /// The hovered hit id for the CURRENT frame's immediate-mode action pills. Set once per render from `self.hover_hit` (see [`set_stub_hover`]) so [`draw_stub_pill_filled`] can tell fluor's pill renderer which pill is hovered WITHOUT threading `hover_hit` through every wrapper and all ~30 call sites. UI thread only; a stale value between frames is harmless (the next render overwrites it before any pill draws).
+    static STUB_HOVER_HIT: std::cell::Cell<HitId> = const { std::cell::Cell::new(HIT_NONE) };
+}
+
+/// Publish the frame's hovered hit id for the immediate-mode pills. Call once at the top of render, before any `draw_stub_pill*`.
+pub(super) fn set_stub_hover(hit: HitId) {
+    STUB_HOVER_HIT.with(|c| c.set(hit));
+}
+
+fn stub_hover() -> HitId {
+    STUB_HOVER_HIT.with(|c| c.get())
+}
+
+/// Draw an inert stub action pill filling `rect`: a Button-family squircle (fill + two-tone raised edge) with a centred label, hit-stamped with `hit_id`. STUB only — clicks land in the settings dispatch range and log a line; nothing functional fires. Kept immediate-mode (not a persistent `Button`) because the panel has many one-off action pills and a stub doesn't need each to carry click-counter state. Rendering is delegated to [`fluor::widgets::Button::draw_pill_immediate`] — the SAME code a retained Button paints with, so pills and buttons are visually identical and hover/press come from fluor, not a hand-rolled tint.
 fn draw_stub_pill(
     canvas: &mut Canvas,
     text: &mut fluor::text::TextRenderer,
@@ -3049,81 +3063,26 @@ fn draw_stub_pill_filled(
     pressed_hit: HitId,
     enabled: bool,
     fill: Option<(u32, u32)>,
-    label_font: &str,
+    label_font: &'static str,
 ) {
-    if rect.w <= 0.0 || rect.h <= 0.0 {
-        return;
-    }
-    // Held: a pointer is down on this pill and a release here will fire it (press-hold-release). Only an enabled pill can be held; a drag-off clears `pressed_hit` so the fill drops back to BUTTON_FILL.
-    let held = enabled && hit_id != HIT_NONE && hit_id == pressed_hit;
-    let (fill_idle, fill_held) =
-        fill.unwrap_or((fluor::theme::BUTTON_FILL, fluor::theme::BUTTON_HELD));
-    let mut font_size = rect.h * 0.5;
-    // Label first (topmost-first): centred in the pill. `label_font` is normally "Open Sans"; the version buttons pass "Oxanium" so the dozenal control-block glyphs resolve to its +glyphs face (Open Sans has no such glyphs → notdef).
-    let mut tw = text.measure_text(label, &TextStyle::new(font_size, 0).font(label_font));
-    // Fit order: SHRINK the font toward the slot so pills sharing a row don't collide with their neighbours. The shrink is capped at the ORIGINAL size (never grows a label), and floored by nothing — a smaller slot yields smaller text, scaling all the way down like everything else.
-    let max_w = rect.w * 0.96;
-    if tw + font_size * 1.6 > max_w {
-        let scaled = font_size * max_w / (tw + font_size * 1.6);
-        font_size = scaled.min(font_size);
-        tw = text.measure_text(label, &TextStyle::new(font_size, 0).font(label_font));
-    }
-    let need_w = tw + font_size * 1.6;
-    let (px, pw) = if need_w > rect.w {
-        (rect.center_x() - need_w * 0.5, need_w)
-    } else {
-        (rect.x, rect.w)
-    };
-    let w = pw as isize;
-    let h = rect.h as isize;
-    let x0 = px as isize;
-    let y0 = rect.y as isize;
-    let stroke = (font_size / 32.0) as isize; // no floor: the pill's AA silhouette carries the shape below 1px (no fixed-pixel hairline)
-    // Disabled label dims to ~half the enabled brightness — same fill and edges, so the pill reads "present but inert" rather than vanished.
-    let label_colour = if enabled {
-        fluor::theme::TEXTBOX_TEXT
-    } else {
-        fluor::theme::dark(fluor::theme::fmt(crate::ui::theme::DISABLED_LABEL_RGB))
-    };
-    text.draw_text_left(
+    // Rendering + fit-to-slot + hit stamp all live in fluor now (ONE pill renderer, shared with retained Buttons). Hover comes from the frame's `set_stub_hover` publish; press from `pressed_hit`; a disabled pill passes `None` for the hit map so it stamps nowhere (a dead tap dispatches to HIT_NONE). `label_font` is normally "Open Sans"; the version buttons pass "Oxanium" so the dozenal control-block glyphs resolve to its +glyphs face.
+    let hovered = hit_id != HIT_NONE && stub_hover() == hit_id;
+    let pressed = hit_id != HIT_NONE && hit_id == pressed_hit;
+    fluor::widgets::Button::draw_pill_immediate(
         canvas,
+        text,
+        if enabled { Some(hit_map) } else { None },
+        buf_w,
+        buf_h,
+        rect,
         label,
-        rect.center_x() - tw * 0.5,
-        rect.center_y(),
-        &TextStyle::new(font_size, label_colour).font(label_font),
-        None,
-        None,
+        label_font,
+        hit_id,
+        hovered,
+        pressed,
+        enabled,
+        fill,
     );
-    let inner_w = (w - 2 * stroke).max(0);
-    let inner_h = (h - 2 * stroke).max(0);
-    if inner_w > 0 && inner_h > 0 {
-        paint::draw_squircle_pill_f(
-            canvas,
-            x0 + stroke,
-            y0 + stroke,
-            inner_w,
-            inner_h,
-            if held { fill_held } else { fill_idle },
-            1.75,
-        );
-    }
-    // Two-tone raised edge.
-    paint::draw_squircle_pill_two_tone_f(
-        canvas,
-        x0,
-        y0,
-        w,
-        h,
-        fluor::theme::TEXTBOX_SHADOW_EDGE,
-        fluor::theme::TEXTBOX_LIGHT_EDGE,
-        1.75,
-        None,
-        0,
-    );
-    // Stamp the whole pill bbox so the entire pill is clickable (the two-tone pass only stamps the edge band). A disabled pill stamps nothing — the region stays HIT_NONE from the settings restamp pass.
-    if enabled {
-        restamp_hit_rect(hit_map, buf_w, buf_h, x0, y0, x0 + w, y0 + h, hit_id);
-    }
 }
 
 /// Stamp `hit_id` over every pixel in `[x0, x1) × [y0, y1)` of `hit_map`. Used to reclaim hit-test coverage for a widget that paints visually on top of another but whose hit stamps were overwritten by the under-blend partner's later stamping pass (the contacts-page plus button overlaid inside the textbox). Bbox over-stamp — corners outside the pill silhouette claim a few extra pixels, which dispatches those clicks to the button. Acceptable UX since the area is tiny and inside the pill anyway.

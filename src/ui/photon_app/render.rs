@@ -40,6 +40,8 @@ impl PhotonApp {
         // Press-hold-release: sync the "held" visual on every clickable WIDGET (attest / + / send Buttons) to the pointer arbiter's currently-pressed hit id. On desktop the host's overlay pass then paints the held tint from each Button's `tint_delta`; the app's own hit-stamped elements (pills, contact rows, nav rows) read `ctx.pressed_hit` directly further down. Must run before the widget tree is walked for overlay deltas (post-render), so a press lights up the same frame.
         let pressed_hit = ctx.pressed_hit;
         widget::apply_pressed(self, pressed_hit);
+        // Publish the frame's hovered hit id for every immediate-mode action pill (settings/launch/contact-panel) so fluor's shared pill renderer can light the hovered one — the hover the hand-rolled pills never had. One set, read by draw_stub_pill* below; retained Buttons get hover via the overlay-delta pass instead.
+        super::set_stub_hover(self.hover_hit);
         // Compute chord-held state BEFORE taking the mutable `chrome` borrow — `brackets_held` reads `&self` and the chrome borrow lives thru the entire render. Update `last_chord_held` here too so the next frame's `damage_rect` knows whether to include the hint bbox for the one-frame clear.
         let held_now = self.brackets_held(Instant::now());
         self.last_chord_held = held_now;
