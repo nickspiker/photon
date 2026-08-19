@@ -398,13 +398,14 @@ Breaking one message doesn't reveal others (forward secrecy via BLAKE3 preimage 
 
 **Encryption layer:**
 
-The chain state XOR is not the only encryption. Final messages use **ChaCha20-Poly1305 AEAD**:
+The chain state XOR is not the only encryption. The braid's message layer is **XChaCha20** (the 192-bit-nonce variant), and the at-rest + control planes (vault, capsules, avatars, fleet-key wraps, call media) all use **XChaCha20-Poly1305 AEAD**:
 
 ```rust
-encryption_key = BLAKE3_KDF(chain_state, "photon.encryption.v1")
-encrypted_message = ChaCha20Poly1305::encrypt(key, nonce, plaintext)
+encryption_key = BLAKE3_KDF(chain_state, "photon.chain.xchacha.v1")
+encrypted_message = XChaCha20::apply_keystream(key, xnonce_24, plaintext)  // braid Layer 2
+sealed_at_rest    = XChaCha20Poly1305::encrypt(key, xnonce_24, plaintext)  // vault / blobs / etc.
 ```
-Rolling-chain provides immutability and ordering; ChaCha20-Poly1305 provides standard cryptographic security.
+Rolling-chain provides immutability and ordering; XChaCha20-Poly1305 provides standard cryptographic security. The 192-bit (24-byte) nonce — migrated from ChaCha20's 96-bit nonce in 2026-08 — removes the birthday bound on random nonces entirely; readers still accept the legacy 12-byte-nonce format during the migration window.
 
 **Latency characteristics:**
 
@@ -543,7 +544,7 @@ src/
 
 **Crypto:**
 - `blake3` - Cryptographic hashing (chain state, KDF)
-- `chacha20poly1305` - AEAD encryption
+- `chacha20poly1305` - XChaCha20-Poly1305 AEAD (192-bit nonce); `chacha20` - XChaCha20 stream (braid Layer 2)
 - `x25519-dalek` - Elliptic curve Diffie-Hellman
 - `zeroize` - Secure memory wiping
 
@@ -709,7 +710,7 @@ Photon is in early development. Contributions welcome—please read architecture
 1. Message persistence (VSF storage layer)
 2. Social recovery (shard distribution, threshold reconstruction)
 3. Android testing (real-device validation)
-4. ChaCha20-Poly1305 integration (complete rolling-chain implementation)
+4. XChaCha20 / XChaCha20-Poly1305 integration (complete rolling-chain implementation)
 
 **Testing:**
 ```bash
