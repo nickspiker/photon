@@ -29,8 +29,9 @@ arch_gate() {
     fi
 
     # arch-gate bin (Rust, src/bin/arch-gate.rs) — no Python. Built on demand; metadata pipes in on stdin, arch features + allowlist as args.
+    # Force a clean HOST linker for THIS build: android-env.sh sets the host to clang + `-fuse-ld=mold`, but inside the Android env `clang` is the NDK's clang-14 which rejects mold — so building the gate would fail and silently no-op the check on the ONE platform it matters most. `cc` with no extra flags links everywhere; the gate is host-only, so this never touches a cross target.
     local offenders
-    offenders="$(printf '%s' "$meta" | cargo run -q --manifest-path "$manifest" --bin arch-gate -- "$arch_features" "$allow")"
+    offenders="$(printf '%s' "$meta" | env CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=cc CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS= cargo run -q --manifest-path "$manifest" --bin arch-gate -- "$arch_features" "$allow")"
 
     if [ -n "$offenders" ]; then
         echo "ARCH GATE: a dependency compiles CPU-specific code by default —"
