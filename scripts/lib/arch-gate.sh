@@ -28,22 +28,9 @@ arch_gate() {
         return 1
     fi
 
+    # arch-gate bin (Rust, src/bin/arch-gate.rs) — no Python. Built on demand; metadata pipes in on stdin, arch features + allowlist as args.
     local offenders
-    offenders="$(printf '%s' "$meta" | ARCH_FEATURES="$arch_features" ARCH_ALLOW="$allow" python3 -c '
-import json, os, re, sys
-
-data = json.load(sys.stdin)
-arch = re.compile("^(" + os.environ["ARCH_FEATURES"] + ")$", re.I)
-allow = set(f for f in os.environ["ARCH_ALLOW"].split("|") if f)
-names = {p["id"]: p["name"] for p in data.get("packages", [])}
-for node in data.get("resolve", {}).get("nodes", []):
-    name = names.get(node["id"], "?")
-    if name in allow:
-        continue
-    hits = sorted(f for f in node.get("features", []) if arch.match(f))
-    if hits:
-        print(name + ": " + ", ".join(hits))
-')"
+    offenders="$(printf '%s' "$meta" | cargo run -q --manifest-path "$manifest" --bin arch-gate -- "$arch_features" "$allow")"
 
     if [ -n "$offenders" ]; then
         echo "ARCH GATE: a dependency compiles CPU-specific code by default —"
