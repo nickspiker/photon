@@ -1,6 +1,6 @@
 prefix=/usr/aarch64-redhat-linux/sys-root/fc42/usr
 includedir=${prefix}/include
-libdir=/mnt/Octopus/Code/photon/cross-libs/aarch64
+libdir=/mnt/Harbor/Code/photon/cross-libs/aarch64
 
 Name: dbus-1
 Description: D-Bus client library (vendored aarch64 cross lib — link flags only; libdbus-sys has no bindgen/C step, so Cflags never resolves headers)
