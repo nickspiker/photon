@@ -9,6 +9,7 @@
 
 - [project_lifecycle_flows.md](project_lifecycle_flows.md) — identity/device lifecycle DESIGNED (docs/lifecycle.md): D1 collision=KnownHandle, D2 double-attest=binding marker; D3 LastRites SUPERSEDED
 - [project_identity_never_dies.md](project_identity_never_dies.md) — IDENTITY NEVER DIES SHIPPED 2026-07-17: no terminal op (worker refuses zero-member folds, LastRites cut), brands survive departure, two-signature retire, fleet page "retired — still yours" + Release; retirement = obscure handle + puck
+- [succession-emit-side-unwired.md](succession-emit-side-unwired.md) — identity succession primitive + worker slot + contact RECEIVE path SHIPPED (05f7d27); EMIT side (build+publish SuccessorRecord on re-found) NOT wired — net-new, needs re-found UX; receive path inert until it ships
 
 - [feedback_handles_byte_precise.md](feedback_handles_byte_precise.md) — HARD RULE, repeatedly violated before: handles are BYTE-PRECISE full-Unicode (Nick ≠ Nick, whitespace-only valid, Zoë/李伟/김민준 first-class); ONLY validation = non-empty; NFC-at-encoder is the sole (keyboard-encoding) normalization; NEVER trim/fold/collapse
 - [feedback_fgtw_deploy_freely.md](feedback_fgtw_deploy_freely.md) — deploy fgtw.org (wrangler) + toka.wasm freely, no per-deploy confirmation
