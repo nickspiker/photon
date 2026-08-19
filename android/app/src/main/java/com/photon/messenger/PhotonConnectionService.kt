@@ -553,52 +553,67 @@ class PhotonConnectionService : Service() {
     private var captureThread: Thread? = null
     private var renderThread: Thread? = null
 
-    /** Called from Rust (call_service_void) when a call goes active. Mic permission must already be
-     *  granted (the Activity prompts at call initiation); without it we log and stay listen-only —
-     *  the call still connects rather than failing. */
+    /** Start (or, when the mic permission lands mid-call, RE-start) the capture leg. Idempotent: no-op
+     *  if no call is live or capture is already running. Missing permission → ask the Activity to
+     *  prompt at THIS call (PhotonActivity.requestMicPermission), whose grant callback calls back here
+     *  so the prompting call goes hot rather than staying mute until the next one. Public so the
+     *  Activity's permission-result callback can invoke it. */
+    fun startCapture() {
+        if (!callAudioRunning) return
+        if (captureThread?.isAlive == true) return
+        val sampleRate = 48000
+        val frameSamples = 480
+        val hasMic = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!hasMic) {
+            PhotonLog.w(TAG, "callAudio: RECORD_AUDIO not granted — prompting at the call; listen-only until granted")
+            PhotonActivity.live?.requestMicPermission()
+            return
+        }
+        captureThread = Thread({
+            try {
+                val minBuf = android.media.AudioRecord.getMinBufferSize(
+                    sampleRate,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT
+                ).coerceAtLeast(frameSamples * 4)
+                val rec = android.media.AudioRecord(
+                    android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                    sampleRate,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    minBuf
+                )
+                rec.startRecording()
+                PhotonLog.i(TAG, "callAudio: capture up (VOICE_COMMUNICATION, buf=$minBuf)")
+                val buf = ShortArray(frameSamples)
+                while (callAudioRunning) {
+                    var off = 0
+                    while (off < frameSamples && callAudioRunning) {
+                        val n = rec.read(buf, off, frameSamples - off)
+                        if (n <= 0) break
+                        off += n
+                    }
+                    if (off == frameSamples) nativeAudioCaptured(buf.copyOf())
+                }
+                rec.stop(); rec.release()
+            } catch (e: Exception) {
+                PhotonLog.w(TAG, "callAudio capture failed", e)
+            }
+        }, "call-capture").also { it.start() }
+    }
+
+    /** Called from Rust (call_service_void) when a call goes active — for BOTH an outgoing call's
+     *  answer and an incoming answer. Starts playback always and mic capture if permitted; a missing
+     *  mic permission is prompted HERE (at the call, not at launch) via startCapture, and the grant
+     *  re-runs capture so this very call goes hot. */
     fun startCallAudio() {
         if (callAudioRunning) return
         callAudioRunning = true
         val sampleRate = 48000
         val frameSamples = 480
 
-        val hasMic = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
-            android.content.pm.PackageManager.PERMISSION_GRANTED
-        if (hasMic) {
-            captureThread = Thread({
-                try {
-                    val minBuf = android.media.AudioRecord.getMinBufferSize(
-                        sampleRate,
-                        AudioFormat.CHANNEL_IN_MONO,
-                        AudioFormat.ENCODING_PCM_16BIT
-                    ).coerceAtLeast(frameSamples * 4)
-                    val rec = android.media.AudioRecord(
-                        android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                        sampleRate,
-                        AudioFormat.CHANNEL_IN_MONO,
-                        AudioFormat.ENCODING_PCM_16BIT,
-                        minBuf
-                    )
-                    rec.startRecording()
-                    PhotonLog.i(TAG, "callAudio: capture up (VOICE_COMMUNICATION, buf=$minBuf)")
-                    val buf = ShortArray(frameSamples)
-                    while (callAudioRunning) {
-                        var off = 0
-                        while (off < frameSamples && callAudioRunning) {
-                            val n = rec.read(buf, off, frameSamples - off)
-                            if (n <= 0) break
-                            off += n
-                        }
-                        if (off == frameSamples) nativeAudioCaptured(buf.copyOf())
-                    }
-                    rec.stop(); rec.release()
-                } catch (e: Exception) {
-                    PhotonLog.w(TAG, "callAudio capture failed", e)
-                }
-            }, "call-capture").also { it.start() }
-        } else {
-            PhotonLog.w(TAG, "callAudio: RECORD_AUDIO not granted — listen-only")
-        }
+        startCapture()
 
         renderThread = Thread({
             try {

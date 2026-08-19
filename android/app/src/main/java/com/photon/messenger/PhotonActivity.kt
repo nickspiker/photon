@@ -55,6 +55,10 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         /** True while the Activity is between onResume and onPause — the service's message notification suppresses itself when the user is already looking at the app. @Volatile: read from the Rust RX thread's upcall. */
         @Volatile
         var inForeground = false
+
+        /** The live Activity, for the Service to reach back into UI-only work (the call-start mic prompt). Set in onCreate, cleared in onDestroy. Single-Activity app, so this is the one instance. @Volatile: the Service reads it from the JNI call-start upcall thread. */
+        @Volatile
+        var live: PhotonActivity? = null
     }
 
     // Native UI context pointer (rendering, touch, etc.)
@@ -197,26 +201,33 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     // RECORD_AUDIO for voice calls (docs/calls.md). The manifest DECLARES it, and startCallAudio
     // checks it — but nothing ever REQUESTED it, so checkSelfPermission was always denied and every
     // Android call ran "listen-only" (the far side heard silence; field 2026-08-19 Emma↔Nick). A
-    // dangerous permission must be requested at runtime. Prompted once at startup (below) so the mic
-    // is ready before the first call; a denied grant leaves calls listen-only rather than crashing.
-    // (A future refinement can defer this to the actual call-initiation tap via a Rust upcall, the
-    // "prompt at first call" note on the manifest permission — but a pre-granted mic is what unblocks
-    // calls now, and one launch-time prompt is the reliable path without Service↔Activity plumbing.)
+    // dangerous permission must be requested at runtime, and CONTEXTUALLY — at the first call, NOT at
+    // launch (a messenger asking for the mic on startup reads as spyware). The trigger is the call
+    // going active (startCallAudio, for BOTH an outgoing call's answer and an incoming answer); when
+    // the mic is missing the Service calls requestMicPermission here, and on grant we re-run capture
+    // so the very call that prompted goes hot rather than staying mute till the next one.
     private val micPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
-        if (!isGranted) {
-            PhotonLog.w(TAG, "RECORD_AUDIO denied — voice calls will be listen-only until granted")
+        if (isGranted) {
+            // Grant landed mid-call — start the capture leg the missing permission skipped.
+            connectionService?.startCapture()
+        } else {
+            PhotonLog.w(TAG, "RECORD_AUDIO denied — this call stays listen-only")
         }
     }
 
-    private fun requestMicPermission() {
-        if (ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.RECORD_AUDIO
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    // Called from the Service (off the main thread, via the JNI call-start upcall) when a going-active
+    // call finds the mic ungranted. The launcher must fire on the main thread.
+    fun requestMicPermission() {
+        runOnUiThread {
+            if (ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.RECORD_AUDIO
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
         }
     }
 
@@ -295,6 +306,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        live = this // the Service reaches here for the call-start mic prompt
 
         // Pairing v2 beacon bridge: cache contexts + register the JNI upcall path before any
         // screen can ask the radio for anything (docs/pairing-v2.md).
@@ -432,10 +444,9 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         // When any peer's IP changes, FGTW broadcasts to this topic
         FirebaseMessaging.getInstance().subscribeToTopic("peer_updates")
 
-        // Request notification permission (Android 13+) and create channel
+        // Request notification permission (Android 13+) and create channel. The MICROPHONE is NOT
+        // requested here — it's prompted contextually at the first call (see micPermissionLauncher).
         requestNotificationPermission()
-        // Request the microphone up front so the first voice call isn't silently listen-only.
-        requestMicPermission()
     }
 
     private fun requestNotificationPermission() {
@@ -710,6 +721,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
 
     override fun onDestroy() {
         super.onDestroy()
+        if (live === this) live = null // drop the Service's back-reference to this (possibly recreated) Activity
         Choreographer.getInstance().removeFrameCallback(this)
         if (nativePtr != 0L) {
             // Retract the ptr from the service FIRST so its RX worker can't fire a headless tick into
