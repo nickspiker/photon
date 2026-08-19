@@ -617,15 +617,18 @@ class PhotonConnectionService : Service() {
 
         renderThread = Thread({
             try {
-                val minBuf = AudioTrack.getMinBufferSize(
-                    sampleRate,
-                    AudioFormat.CHANNEL_OUT_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT
-                ).coerceAtLeast(frameSamples * 4)
+                // LOW-LATENCY OUTPUT (Nick's call 2026-08-19): VOICE_COMMUNICATION forced the vendor voice pipeline — hardware AEC, but an 80ms buffer floor and no fast mixer (measured: lowLatency=false, granted=80ms), which is the whole of the Nick→Emma delay.
+                // Trade the vendor echo canceller for latency: USAGE_MEDIA rides the fast-mixer path and echo is left to our software suppression duck.
+                // The buffer is sized to a few NATIVE bursts (PROPERTY_OUTPUT_FRAMES_PER_BUFFER), NOT getMinBufferSize — a small burst-aligned buffer is what actually lets the fast track engage; the 80ms minBuf disqualified it — with a floor of two 10ms write chunks so a write always fits.
+                // The fast path also needs our 48k stream to match the device's native output rate, so nativeRate is logged: a mismatch is the usual reason lowLatency comes back false.
+                val am = applicationContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+                val nativeBurst = am.getProperty(android.media.AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER)?.toIntOrNull() ?: frameSamples
+                val nativeRate = am.getProperty(android.media.AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: sampleRate
+                val bufFrames = maxOf(nativeBurst * 4, frameSamples * 2)
                 val track = AudioTrack.Builder()
                     .setAudioAttributes(
                         AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
                             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                             .build()
                     )
@@ -636,22 +639,15 @@ class PhotonConnectionService : Service() {
                             .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                             .build()
                     )
-                    // LOW_LATENCY engages the device fast-mixer path (API 26+, our minSdk) and a single
-                    // device buffer instead of minBuf*2 — the biggest single cut to playback latency. The
-                    // adaptive jitter buffer in Rust (platform::audio) now absorbs network jitter BEFORE
-                    // this, so the device buffer stays shallow. Falls back to the normal path if the fast
-                    // mixer can't take a 48kHz mono stream; the blocking write still paces the loop.
-                    .setBufferSizeInBytes(minBuf)
+                    .setBufferSizeInBytes(bufFrames * 2)
                     .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                     .setTransferMode(AudioTrack.MODE_STREAM)
                     .build()
                 track.play()
-                // MEASURED output latency, not estimated: getBufferSizeInFrames is what the track ACTUALLY granted (LOW_LATENCY can shrink what we asked for, or silently fall back) and getPerformanceMode reports whether the fast-mixer path really engaged.
-                // reqFrames is what we asked for (minBuf bytes / 2 = mono PCM16 frames), so this logs the real device-buffer depth behind playback latency — replacing the earlier ballpark guess.
-                val reqFrames = minBuf / 2
+                // MEASURED, not estimated: getBufferSizeInFrames is what the track ACTUALLY granted (the framework can clamp a too-small ask up, or fall off the fast path) and getPerformanceMode says whether the fast mixer really engaged.
                 val gotFrames = track.bufferSizeInFrames
                 val fast = track.performanceMode == AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
-                PhotonLog.i(TAG, "callAudio: render up (VOICE_COMMUNICATION, req=${reqFrames}fr granted=${gotFrames}fr=${gotFrames * 1000 / sampleRate}ms lowLatency=$fast)")
+                PhotonLog.i(TAG, "callAudio: render up (MEDIA, req=${bufFrames}fr granted=${gotFrames}fr=${gotFrames * 1000 / sampleRate}ms lowLatency=$fast burst=$nativeBurst nativeRate=$nativeRate)")
                 while (callAudioRunning) {
                     // Rust hands back 10ms of decoded far-end (silence when the jitter buffer is dry) —
                     // the blocking write paces this loop at the device's real drain rate.
