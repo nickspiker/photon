@@ -211,15 +211,30 @@ founds v2 unconditionally (`ensure_member` → `genesis_v2`), so it hard-depends
    — blake3 over the now-empty `identity_sig` is already a no-op.) 29 fleet + 92 fgtw tests green.
    REMAINING: port the same to the worker's copy (above).
 2. **Succession** (this doc): the shared-crate PRIMITIVE is DONE in `fgtw/src/fleet.rs` —
-   `SuccessorRecord` (struct, `new` builder, `verify_for_pin`, VSF codec), `ContinuityEgg`,
-   `succession_signing_bytes`, `SUCCESSION_DOMAIN`. 6 succession tests green (round-trip, valid
-   re-pin, attacker-egg rejected, pin-mismatch, handle-proof-mismatch, monotonic). It is compiled
-   into both client and worker but CALLED BY NOTHING yet — zero behavior change.
-   DEFERRED (reviewed next step, held back from the unattended deploy because it changes contact-trust
-   behavior and nothing exercises it until a re-found): the photon wiring — emit a `SuccessorRecord`
-   on re-found + publish it to a succession slot; on contact refresh, fetch it, `verify_for_pin`
-   against the held pin, and migrate `pinned_genesis`. Needs a succession slot in the worker's storage
-   routing too.
-3. **Tripwire**: add the `const` assertion above at `V1_FLEET_VERIFY_SUNSET = (0, 57, 15)`.
+   `SuccessorRecord` (struct, `new` builder, `verify_for_pin`, `to_section`, VSF codec),
+   `ContinuityEgg`, `succession_signing_bytes`, `SUCCESSION_DOMAIN`. 6 succession tests green
+   (round-trip, valid re-pin, attacker-egg rejected, pin-mismatch, handle-proof-mismatch, monotonic).
+   - **Worker slot — DONE** (`fgtw-bootstrap/src/lib.rs`): `handle_succession_put` (member-gated,
+     mirrors `fstate_put`: device-signed envelope, signer must fold as a current fleet member,
+     structural `from_vsf_bytes` parse before store, record `hp` must equal envelope `hp`) +
+     `handle_succession_get` (public read), `succession_key`, dispatch on section names
+     `succession`/`succession_get`, `succession/` in the data-prefix registry. `cargo check`
+     (wasm32) clean.
+   - **Client oracle — DONE** (`fgtw/src/client.rs`): `fetch_successor` (public read),
+     `publish_successor` (device-signed envelope). Photon wrappers in
+     `src/network/fgtw/fleet.rs`.
+   - **Contact receive path — DONE** (`src/ui/photon_app/`): on a fold whose genesis differs from
+     the pin, `protocol.rs` collects a probe → `devices.rs::spawn_successor_check` fetches the slot
+     and runs `verify_for_pin` against the held pin OFF-THREAD → on a verified `Some(new_genesis)`
+     the tick migrates `pinned_genesis`, clears `identity_superseded`, and re-folds. In-flight
+     guard dedupes concurrent probes; a later refresh re-probes (record may publish late). An
+     unverifiable record leaves the contact a stranger (no pin move).
+   - **TICKET — emit side (NOT wired):** there is no re-found flow that BUILDS a `SuccessorRecord`
+     and calls `publish_successor`. It is net-new (no existing identity-recreation UX to hook) and
+     needs a UX decision: when/how a user declares "I re-founded this identity" (the re-founder must
+     still hold ≥1 old-chain device to sign a continuity egg via `SuccessorRecord::new`). Until this
+     ships, the receive path above is inert in practice — nothing publishes a record for it to find.
+3. **Tripwire** — DONE: the `const` assertion at `V1_FLEET_VERIFY_SUNSET = (0, 70, 0)` in
+   `src/network/fgtw/fleet.rs`.
 4. **Sunset** (a future release, when you call it): delete the v1 path, flip the flag — the tripwire
    is already green once the flag is false.
