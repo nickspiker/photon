@@ -688,7 +688,7 @@ impl PhotonApp {
                 .and_then(|fs| fs.effective(&format!("share.{}", pf.field_id)))
                 .and_then(crate::storage::fleet_settings::as_bool)
                 .unwrap_or(false);
-            pf.share_cb = Some(crate::ui::settings_widgets::Checkbox::new(
+            pf.share_cb = Some(fluor::widgets::Checkbox::new(
                 &mut self.hit_counter,
                 "",
                 0.,

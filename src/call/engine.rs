@@ -125,6 +125,8 @@ fn run(
     let mut next_play: Option<u32> = None;
 
     let (mut pkts_out, mut pkts_in, mut windows_lost) = (0u64, 0u64, 0u64);
+    // RX drop-reason tally — see the RX loop for why each is counted apart (addressing vs secret-desync diagnosis).
+    let (mut rx_seen, mut rx_drop_parse, mut rx_drop_route, mut rx_drop_open) = (0u64, 0u64, 0u64, 0u64);
 
     crate::logf!(
         "CALL: engine up — tx {} → {}, window {}B × {} frames, repair {}",
@@ -183,13 +185,18 @@ fn run(
 
         // ---- RX: sealed packets → fountain windows → opus → speaker ----
         while let Ok((bytes, src)) = sink_rx.try_recv() {
+            // DROP-REASON TALLY (docs/calls.md diagnostics): every RX reject below is a silent `continue`, so a dead call is indistinguishable at engine-down between "packets never reached this device" (addressing/NAT) and "packets arrived but won't decrypt" (basket-secret desync). Count them apart. Field 2026-08-19: a call went Active but engine-down read "0 in" with zero other signal — this tally is the tripwire that says which half broke. `rx_seen` counts datagrams the recv-worker fast-path actually handed us (magic already matched), so `rx_seen > 0 && pkts_in == 0` = arrived-but-undecryptable = secret mismatch; `rx_seen == 0` = never arrived = look at the target address / relay.
+            rx_seen += 1;
             let Some((header, sealed)) = packet::parse_header(&bytes) else {
+                rx_drop_parse += 1;
                 continue;
             };
             if header.call_id8 != params.call_id8 || header.dir != rx_dir {
+                rx_drop_route += 1;
                 continue;
             }
             let Some(payload) = packet::open(&mut rx_chain, &header, sealed) else {
+                rx_drop_open += 1;
                 continue; // wrong key/step/tamper — silence, never a guess
             };
             pkts_in += 1;
@@ -264,6 +271,17 @@ fn run(
         pkts_in,
         windows_lost
     );
+    // The diagnostic that separates the two silent-failure worlds (see the RX loop): rx_seen=0 → media never arrived (target address / NAT / relay); rx_seen>0 with pkts_in=0 and rx_drop_open>0 → arrived but the basket secret didn't match (key derivation desync). Only logged when something was received or dropped, so a clean call stays quiet.
+    if rx_seen > 0 || rx_drop_parse > 0 || rx_drop_route > 0 || rx_drop_open > 0 {
+        crate::logf!(
+            "CALL: rx tally — seen {} → parse-drop {}, route-drop {}, open-drop {}, decoded {}",
+            rx_seen,
+            rx_drop_parse,
+            rx_drop_route,
+            rx_drop_open,
+            pkts_in
+        );
+    }
     teardown();
     // tx_chain/rx_chain drop here — zeroized; the call is cryptographically gone.
 }

@@ -328,7 +328,7 @@ impl FluorApp for PhotonApp {
             1.,
             0.7,
         ));
-        self.attach_original_check = Some(crate::ui::settings_widgets::Checkbox::new(
+        self.attach_original_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
             "send original",
             0.,
@@ -370,7 +370,7 @@ impl FluorApp for PhotonApp {
         {
             b.set_font_family("Open Sans");
         }
-        self.settings_custodian_check = Some(crate::ui::settings_widgets::Checkbox::new(
+        self.settings_custodian_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
             "Be a custodian for others",
             0.,
@@ -380,7 +380,7 @@ impl FluorApp for PhotonApp {
             12.,
             false,
         ));
-        self.settings_chime_check = Some(crate::ui::settings_widgets::Checkbox::new(
+        self.settings_chime_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
             "Chime on new message",
             0.,
@@ -391,7 +391,7 @@ impl FluorApp for PhotonApp {
             true,
         ));
         // DEFAULTS OFF (user mandate): "presence" is the rich self-disclosure broadcast (busy, now-playing, mood) — NOT the online indicator, which is the avatar ring and is never gated by this. Deliberate disclosure is opt-in.
-        self.settings_presence_check = Some(crate::ui::settings_widgets::Checkbox::new(
+        self.settings_presence_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
             "Show my presence to contacts",
             0.,
@@ -401,7 +401,7 @@ impl FluorApp for PhotonApp {
             12.,
             false,
         ));
-        self.settings_autoupdate_check = Some(crate::ui::settings_widgets::Checkbox::new(
+        self.settings_autoupdate_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
             // Platform-honest: desktop release builds self-apply + re-exec, so "install" is literal. Android auto-CHECKS and notifies but deliberately doesn't auto-DOWNLOAD the APK in the background (metered-data safety — the tap-to-install then rides the unattended session installer, silent after the one-time confirm), so the label there says "check", not "install".
             if cfg!(target_os = "android") {
@@ -417,7 +417,7 @@ impl FluorApp for PhotonApp {
             true,
         ));
         // Hard logs default OFF: steady-state logging batches in RAM and reaches disk on edges only (wear); tick it while chasing a crash on this device — see lib.rs LOG_HARD.
-        self.settings_hardlogs_check = Some(crate::ui::settings_widgets::Checkbox::new(
+        self.settings_hardlogs_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
             "Hard logs — this device, 24h (write every line to disk)",
             0.,
@@ -430,7 +430,7 @@ impl FluorApp for PhotonApp {
         // Desktop only: Android's lifecycle is the OS's business (foreground service + FCM), so no toggle there.
         #[cfg(not(target_os = "android"))]
         {
-            self.settings_background_check = Some(crate::ui::settings_widgets::Checkbox::new(
+            self.settings_background_check = Some(fluor::widgets::Checkbox::new(
                 &mut self.hit_counter,
                 "Run in background (start at login, keep running when closed)",
                 0.,
@@ -442,7 +442,7 @@ impl FluorApp for PhotonApp {
             ));
         }
         // Security page: DANGEROUS auto-attest-on-reboot toggle. Off unless the operator opted a failsafe box in.
-        self.settings_unattended_check = Some(crate::ui::settings_widgets::Checkbox::new(
+        self.settings_unattended_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
             "Auto-attest on reboot (unattended)",
             0.,
