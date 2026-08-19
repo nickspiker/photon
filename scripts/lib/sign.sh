@@ -15,14 +15,9 @@ sign_binary() {
         fi
     else
         bin="target/$profile/photon-messenger"
-        # A no-target build is a HOST build, so on macOS it is an apple-darwin build — say so, or the
-        # codesign case below never matches. It didn't: `dev.sh` -> `desktop.sh` calls `sign_binary <profile>`
-        # with no target, so every native Mac dev build skipped Apple signing and fell through to an ad-hoc
-        # signature whose identifier is derived from the binary CONTENT (observed:
-        # `photon_messenger-81be93e6fc198260`). That means a NEW identity on every rebuild, while the release
-        # bundle carries the stable `org.fgtw.photon`. macOS TCC keys privacy grants to the code identity, so
-        # a churning identifier re-prompts for Local Network on every build and cannot hold onto
-        # identity-scoped state like an NSStatusItem.
+        # A no-target build is a HOST build, so on macOS it is an apple-darwin build — say so, or the codesign case below never matches. It didn't: `dev.sh` -> `desktop.sh` calls `sign_binary <profile>`
+        # with no target, so every native Mac dev build skipped Apple signing and fell through to an ad-hoc signature whose identifier is derived from the binary CONTENT (observed:
+        # `photon_messenger-81be93e6fc198260`). That means a NEW identity on every rebuild, while the release bundle carries the stable `org.fgtw.photon`. macOS TCC keys privacy grants to the code identity, so a churning identifier re-prompts for Local Network on every build and cannot hold onto identity-scoped state like an NSStatusItem.
         if [ "$(uname -s)" = "Darwin" ]; then
             target="$(uname -m | sed 's/^arm64$/aarch64/')-apple-darwin"
         fi

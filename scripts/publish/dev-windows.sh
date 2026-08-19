@@ -27,9 +27,7 @@ echo "Publishing dev manifest row..."
 manifest_publish_dev_row "Windows" "x86_64" "photon-messenger-windows-development.exe" target/x86_64-pc-windows-gnu/debug/photon-messenger.exe
 
 echo "Mirroring to GitHub Releases (dev)..."
-# Binary only — no installer script on GitHub. The GitHub fallback path is the README's copy-paste
-# commands (they resolve the newest content-hashed asset via the API); a stale-cacheable installer
-# script would defeat the point. The binary self-verifies on launch regardless of origin.
+# Binary only — no installer script on GitHub. The GitHub fallback path is the README's copy-paste commands (they resolve the newest content-hashed asset via the API); a stale-cacheable installer script would defeat the point. The binary self-verifies on launch regardless of origin.
 publish_github_dev "photon-messenger-windows-development.exe" target/x86_64-pc-windows-gnu/debug/photon-messenger.exe
 
 echo ""

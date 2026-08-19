@@ -1,9 +1,7 @@
 #!/bin/bash
 # Multi-target Photon Messenger release build + sign.
 #
-# Builds the native (x86_64 Linux) target plus aarch64-unknown-linux-gnu
-# via the cross toolchain configured in .cargo/config.toml. Each binary
-# is signed in place with photon-signature-signer; the install scripts
+# Builds the native (x86_64 Linux) target plus aarch64-unknown-linux-gnu via the cross toolchain configured in .cargo/config.toml. Each binary is signed in place with photon-signature-signer; the install scripts
 # (install-release.sh) refer to these by `linux-x86_64` / `linux-arm64`
 # suffix when uploaded to brobdingnagian.
 

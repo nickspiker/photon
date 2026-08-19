@@ -15,9 +15,12 @@ build_sign_install() {
     source "$(dirname "${BASH_SOURCE[0]}")/migration-gate.sh"
     migration_gate
 
-    # Wrapped-comment ratchet: one line per thought, never hard-wrapped — covers photon and the fgtw path-dep, zero baseline.
+    # Wrapped-comment ratchet: one line per thought, never hard-wrapped — covers photon, the fgtw path-dep, and the build scripts, zero baseline.
     source "$(dirname "${BASH_SOURCE[0]}")/comment-gate.sh"
     comment_gate
+
+    # NO-PYTHON ratchet: this is a Rust tree — no build script may shell out to python (use a Rust bitty-executable instead). Lives with comment-gate.sh; sourced above.
+    no_python_gate
 
     # CPU-feature ratchet: a dependency may not silently opt us into instructions our oldest device lacks (a Snapdragon 855 SIGILLed on ML-KEM's aarch64 Keccak assembly, 2026-08-01). See scripts/lib/arch-gate.sh.
     source "$(dirname "${BASH_SOURCE[0]}")/arch-gate.sh"
@@ -53,18 +56,12 @@ build_sign_install() {
     echo "Installed to $dir/photon-messenger"
 
     # macOS: refresh the .app bundle too, because that is what the Dock, Spotlight and Finder launch.
-    # Installing only to ~/.local/bin meant a dev build was built, signed, "installed" -- and every relaunch
-    # from the Dock kept running whatever the last RELEASE install or in-app update left behind. That cost a
-    # full debugging round: two fixes were reported as still-broken by testing a binary that had neither.
+    # Installing only to ~/.local/bin meant a dev build was built, signed, "installed" -- and every relaunch from the Dock kept running whatever the last RELEASE install or in-app update left behind. That cost a full debugging round: two fixes were reported as still-broken by testing a binary that had neither.
     #
-    # ONE fixed path, the same literal the installers use ($HOME/Applications/Photon Messenger.app) -- never
-    # a search, never /Applications. macOS keys TCC privacy grants to (code identity, bundle path), so a
-    # bundle that moves between builds re-prompts for Local Network exactly like the churning ad-hoc
-    # identifier did before sign.sh pinned org.fgtw.photon.
+    # ONE fixed path, the same literal the installers use ($HOME/Applications/Photon Messenger.app) -- never a search, never /Applications. macOS keys TCC privacy grants to (code identity, bundle path), so a bundle that moves between builds re-prompts for Local Network exactly like the churning ad-hoc identifier did before sign.sh pinned org.fgtw.photon.
     #
     # The binary is already fully signed at this point (Apple codesign via rcodesign, then the Ed25519
-    # append), so it is dropped in as-is: re-signing here would strip the Ed25519 tail and the binary would
-    # fail its own startup self_verify.
+    # append), so it is dropped in as-is: re-signing here would strip the Ed25519 tail and the binary would fail its own startup self_verify.
     #
     # Only refreshes a bundle that ALREADY exists -- building one is the installer's job (it has the
     # Info.plist and the icns). No bundle yet? Run installers/install-development.sh once.
