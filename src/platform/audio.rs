@@ -42,6 +42,9 @@ static JITTER_TARGET: AtomicUsize = AtomicUsize::new(JITTER_FLOOR);
 static JITTER_PRIMING: AtomicBool = AtomicBool::new(true);
 static JITTER_CLEAN_STREAK: AtomicUsize = AtomicUsize::new(0);
 
+/// Peak-held mean |sample| of what the device is rendering (~80ms decay) — the engine's soft duck reads this as the far-end activity signal, covering the device-buffer + acoustic lag without sample-accurate alignment.
+static FAR_LEVEL: AtomicUsize = AtomicUsize::new(0);
+
 /// What the far end is acoustically coupled to — the echo-layer dispatcher. `Headset` = no acoustic path, bypass everything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioRoute {
@@ -73,6 +76,11 @@ pub fn playback_depth() -> usize {
 /// Snapshot the far-end reference ring (for the suppression duck / a future canceller).
 pub fn render_reference() -> Vec<(i64, Vec<i16>)> {
     RENDER_REF.lock().unwrap().iter().cloned().collect()
+}
+
+/// The duck's far-end activity signal: peak-held mean |sample| of current render, decaying ~80ms.
+pub fn far_level() -> u32 {
+    FAR_LEVEL.load(Ordering::Relaxed) as u32
 }
 
 pub fn is_active() -> bool {
@@ -123,6 +131,10 @@ fn next_render_frame() -> Vec<i16> {
             }
         }
     };
+    // Far-end level for the duck: peak-hold with a per-frame decay (~80ms fall from full), so the mic stays attenuated across the device-buffer + acoustic lag rather than only the exact rendered instant.
+    let lvl = (frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>() / FRAME_SAMPLES as u64) as usize;
+    let old = FAR_LEVEL.load(Ordering::Relaxed);
+    FAR_LEVEL.store(lvl.max(old - old / 4), Ordering::Relaxed);
     {
         let mut r = RENDER_REF.lock().unwrap();
         if r.len() >= RENDER_REF_MAX {
@@ -142,6 +154,7 @@ fn clear_queues() {
     JITTER_TARGET.store(JITTER_FLOOR, Ordering::Relaxed);
     JITTER_PRIMING.store(true, Ordering::Relaxed);
     JITTER_CLEAN_STREAK.store(0, Ordering::Relaxed);
+    FAR_LEVEL.store(0, Ordering::Relaxed);
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +505,9 @@ mod tests {
         let r = render_reference();
         assert_eq!(r.len(), 4, "every rendered frame — silence or real — lands in the AEC reference");
         assert!(r[0].0 <= r[3].0, "reference is eagle-stamped in order");
+        // The duck's far-end signal: rendering real frames raised it (peak-hold survives the one silent frame), and session hygiene zeroes it.
+        assert!(far_level() > 0, "far_level tracks rendered energy for the duck");
         clear_queues();
+        assert_eq!(far_level(), 0, "clear_queues resets the duck's far-end signal");
     }
 }
