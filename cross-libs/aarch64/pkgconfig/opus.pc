@@ -1,0 +1,9 @@
+prefix=/mnt/Harbor/Code/photon/cross-libs/aarch64
+includedir=${prefix}/include
+libdir=${prefix}
+
+Name: Opus
+Description: Opus IETF audio codec - cross libs for aarch64
+Version: 1.5.2
+Libs: -L${libdir} -lopus
+Cflags: -I${includedir}

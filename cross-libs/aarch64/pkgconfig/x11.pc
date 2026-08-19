@@ -1,6 +1,6 @@
 prefix=/usr/aarch64-redhat-linux/sys-root/fc42/usr
 includedir=${prefix}/include
-libdir=/mnt/Octopus/Code/photon/cross-libs/aarch64
+libdir=/mnt/Harbor/Code/photon/cross-libs/aarch64
 
 Name: X11
 Description: X Library
