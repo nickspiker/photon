@@ -636,7 +636,13 @@ class PhotonConnectionService : Service() {
                             .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                             .build()
                     )
-                    .setBufferSizeInBytes(minBuf * 2)
+                    // LOW_LATENCY engages the device fast-mixer path (API 26+, our minSdk) and a single
+                    // device buffer instead of minBuf*2 — the biggest single cut to playback latency. The
+                    // adaptive jitter buffer in Rust (platform::audio) now absorbs network jitter BEFORE
+                    // this, so the device buffer stays shallow. Falls back to the normal path if the fast
+                    // mixer can't take a 48kHz mono stream; the blocking write still paces the loop.
+                    .setBufferSizeInBytes(minBuf)
+                    .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                     .setTransferMode(AudioTrack.MODE_STREAM)
                     .build()
                 track.play()
