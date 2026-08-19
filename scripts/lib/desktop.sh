@@ -7,24 +7,9 @@ build_sign_install() {
     local profile="$1"
     local prof_dir
 
-    # Hand-rolled-VSF ratchet: block the build if a network-facing file grew a raw parse site.
-    source "$(dirname "${BASH_SOURCE[0]}")/vsf-gate.sh"
-    vsf_gate
-
-    # Expired-compatibility-branch ratchet: a migration names the release it dies in, and this fails the build once the tree reaches it. See scripts/lib/migration-gate.sh.
-    source "$(dirname "${BASH_SOURCE[0]}")/migration-gate.sh"
-    migration_gate
-
-    # Wrapped-comment ratchet: one line per thought, never hard-wrapped — covers photon, the fgtw path-dep, and the build scripts, zero baseline.
-    source "$(dirname "${BASH_SOURCE[0]}")/comment-gate.sh"
-    comment_gate
-
-    # NO-PYTHON ratchet: this is a Rust tree — no build script may shell out to python (use a Rust bitty-executable instead). Lives with comment-gate.sh; sourced above.
-    no_python_gate
-
-    # CPU-feature ratchet: a dependency may not silently opt us into instructions our oldest device lacks (a Snapdragon 855 SIGILLed on ML-KEM's aarch64 Keccak assembly, 2026-08-01). See scripts/lib/arch-gate.sh.
-    source "$(dirname "${BASH_SOURCE[0]}")/arch-gate.sh"
-    arch_gate
+    # All the cheap source-level ratchets (vsf raw-parse, expired-migration, wrapped-comment, no-python, cpu-feature) in ONE list, run before the build — see scripts/lib/preflight.sh. The same set every publish runs via manifest_begin_dev_publish, so a slip fails identically here and there.
+    source "$(dirname "${BASH_SOURCE[0]}")/preflight.sh"
+    preflight_gates
 
     # Source freeze: reflink-snapshot photon + its path-dep closure THIS instant and build from the frozen copy — edits made while the build runs can't tear it. Off-btrfs (or any snapshot failure) builds the live tree exactly as before. Target stays the real ./target (see snapbuild.sh for why that's cache-coherent), so sign + install below are untouched.
     source "$(dirname "${BASH_SOURCE[0]}")/snapbuild.sh"
