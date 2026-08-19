@@ -9,7 +9,7 @@
 //! Queues are bounded drop-oldest: realtime audio must never block and never balloon — a stalled consumer costs the oldest 10ms, not memory or latency.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// The call engine's sample rate — everything above the device edge is 48kHz mono.
@@ -29,6 +29,18 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 const CAPTURE_Q_MAX: usize = 50; // 500ms
 const PLAYBACK_Q_MAX: usize = 100; // 1s
 const RENDER_REF_MAX: usize = 50; // 500ms
+
+// ADAPTIVE JITTER BUFFER (docs/calls.md): the far end arrives in bursts (a FEC window at a time) and the network jitters, so a fixed buffer either adds latency it doesn't need (clean LAN) or underruns (lossy relay).
+// Instead the render side plays silence until the queue reaches `JITTER_TARGET` frames, then drains steadily; a dry queue (underrun) GROWS the target and re-primes, while a long clean stretch SHRINKS it back toward the floor.
+// So a clean call rests at ~20ms of software buffer and only a jittery path pays more — exactly where the latency should go.
+// This sits BEFORE the device buffer, which is kept shallow (low-latency AudioTrack), so this is the ONE place jitter is absorbed.
+const JITTER_FLOOR: usize = 2; // 20ms — the clean-path resting depth
+const JITTER_CAP: usize = 12; // 120ms — the most we'll ever buffer, even on a bad relay
+const JITTER_GROW: usize = 2; // frames added on each underrun
+const JITTER_DECAY_FRAMES: usize = 500; // ~5s of clean playback before shrinking one step
+static JITTER_TARGET: AtomicUsize = AtomicUsize::new(JITTER_FLOOR);
+static JITTER_PRIMING: AtomicBool = AtomicBool::new(true);
+static JITTER_CLEAN_STREAK: AtomicUsize = AtomicUsize::new(0);
 
 /// What the far end is acoustically coupled to — the echo-layer dispatcher. `Headset` = no acoustic path, bypass everything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,11 +87,41 @@ fn push_captured(frame: Vec<i16>) {
     q.push_back(frame);
 }
 
-/// Pop the next render frame (silence when the buffer runs dry — the no-PLC doctrine: missing audio is silence, never guesswork) and log it into the reference ring.
+/// Pop the next render frame through the adaptive jitter buffer (silence when priming or dry — the no-PLC doctrine: missing audio is silence, never guesswork) and log it into the reference ring. Single-consumer (the one render loop), so the jitter atomics need no CAS.
 fn next_render_frame() -> Vec<i16> {
+    let silence = || vec![0i16; FRAME_SAMPLES];
     let frame = {
         let mut q = PLAYBACK_Q.lock().unwrap();
-        q.pop_front().unwrap_or_else(|| vec![0i16; FRAME_SAMPLES])
+        if JITTER_PRIMING.load(Ordering::Relaxed) {
+            // Building depth: play silence until the queue reaches the target, then start draining.
+            if q.len() >= JITTER_TARGET.load(Ordering::Relaxed) {
+                JITTER_PRIMING.store(false, Ordering::Relaxed);
+                q.pop_front().unwrap_or_else(silence)
+            } else {
+                silence()
+            }
+        } else {
+            match q.pop_front() {
+                Some(f) => {
+                    // Clean drain: after a long steady stretch, shrink the target one step toward the floor.
+                    let streak = JITTER_CLEAN_STREAK.fetch_add(1, Ordering::Relaxed) + 1;
+                    let target = JITTER_TARGET.load(Ordering::Relaxed);
+                    if streak >= JITTER_DECAY_FRAMES && target > JITTER_FLOOR {
+                        JITTER_TARGET.store(target - 1, Ordering::Relaxed);
+                        JITTER_CLEAN_STREAK.store(0, Ordering::Relaxed);
+                    }
+                    f
+                }
+                None => {
+                    // Underrun: grow the target (capped), reset the clean streak, and re-prime.
+                    let target = JITTER_TARGET.load(Ordering::Relaxed);
+                    JITTER_TARGET.store((target + JITTER_GROW).min(JITTER_CAP), Ordering::Relaxed);
+                    JITTER_CLEAN_STREAK.store(0, Ordering::Relaxed);
+                    JITTER_PRIMING.store(true, Ordering::Relaxed);
+                    silence()
+                }
+            }
+        }
     };
     {
         let mut r = RENDER_REF.lock().unwrap();
@@ -96,6 +138,10 @@ fn clear_queues() {
     CAPTURE_Q.lock().unwrap().clear();
     PLAYBACK_Q.lock().unwrap().clear();
     RENDER_REF.lock().unwrap().clear();
+    // Each call starts fresh at the jitter floor, re-priming — never inheriting the last call's grown depth.
+    JITTER_TARGET.store(JITTER_FLOOR, Ordering::Relaxed);
+    JITTER_PRIMING.store(true, Ordering::Relaxed);
+    JITTER_CLEAN_STREAK.store(0, Ordering::Relaxed);
 }
 
 // ---------------------------------------------------------------------------
@@ -427,16 +473,25 @@ mod tests {
         // Oldest were dropped: the first surviving frame is #10.
         assert_eq!(drained[0][0], 10);
 
-        // Dry render = silence (never PLC guesswork), and every rendered frame feeds the AEC reference.
-        clear_queues();
+        // Adaptive jitter buffer: renders silence while PRIMING (queue below the floor), drains real frames once the floor is reached, and a dry queue underruns to silence (never PLC guesswork). Every rendered frame — silence or real — feeds the AEC reference.
+        clear_queues(); // resets the jitter state: priming, target = JITTER_FLOOR
+        assert_eq!(JITTER_FLOOR, 2, "this test assumes a 2-frame floor");
+        // One frame is below the floor → still priming → silence, and the frame stays queued.
         queue_playback(vec![100i16; FRAME_SAMPLES]);
+        let s = next_render_frame();
+        assert_eq!(s[0], 0, "priming below the jitter floor renders silence");
+        // Reaching the floor releases the primer and draining begins with the oldest frame.
+        queue_playback(vec![101i16; FRAME_SAMPLES]);
         let a = next_render_frame();
-        assert_eq!(a[0], 100);
+        assert_eq!(a[0], 100, "at the floor, draining begins with the oldest queued frame");
         let b = next_render_frame();
-        assert_eq!(b[0], 0, "dry buffer renders silence, never PLC guesswork");
+        assert_eq!(b[0], 101, "then the next in order");
+        // Now dry → underrun → silence (never PLC guesswork).
+        let c = next_render_frame();
+        assert_eq!(c[0], 0, "dry buffer renders silence, never PLC guesswork");
         let r = render_reference();
-        assert_eq!(r.len(), 2, "every rendered frame lands in the AEC reference");
-        assert!(r[0].0 <= r[1].0, "reference is eagle-stamped in order");
+        assert_eq!(r.len(), 4, "every rendered frame — silence or real — lands in the AEC reference");
+        assert!(r[0].0 <= r[3].0, "reference is eagle-stamped in order");
         clear_queues();
     }
 }

@@ -15,7 +15,8 @@ use std::sync::Arc;
 
 /// 10ms @ 48kHz mono — must match platform::audio::FRAME_SAMPLES.
 const FRAME_SAMPLES: usize = crate::platform::audio::FRAME_SAMPLES;
-const FRAMES_PER_WINDOW: usize = 4;
+// 2 frames/window = ~10ms of TX batching before a window is FEC-encoded and sent (was 4 = ~30ms). Halving the window is the biggest single latency cut on the TX side; the cost is doubled relative FEC overhead (2 repair per 2 data instead of per 4), trivial at 32kbps. FLAG-DAY: both ends must run the same value — WINDOW_BYTES and the RX slot walk are derived from it, so a mismatched pair garbage-decodes. The dev fleet updates together.
+const FRAMES_PER_WINDOW: usize = 2;
 /// Fixed slot per encoded frame: 2-byte length prefix + up to 96 bytes of CELT (32kbps CBR ≈ 40; headroom to 76.8kbps).
 const FRAME_SLOT: usize = 2 + 96;
 const WINDOW_BYTES: usize = FRAMES_PER_WINDOW * FRAME_SLOT; // 392
@@ -127,6 +128,8 @@ fn run(
     let (mut pkts_out, mut pkts_in, mut windows_lost) = (0u64, 0u64, 0u64);
     // RX drop-reason tally — see the RX loop for why each is counted apart (addressing vs secret-desync diagnosis).
     let (mut rx_seen, mut rx_drop_parse, mut rx_drop_route, mut rx_drop_open) = (0u64, 0u64, 0u64, 0u64);
+    // Audio ENERGY readout — mean |sample| of what we CAPTURED (tx) and what we DECODED for playback (rx). A silent direction shows as ~0 here: near-zero tx = our mic content is dead (route/gain/AEC over-duck, NOT a permission miss — that path never reaches capture); non-zero rx that the user still didn't hear = a playback/route problem downstream. Separates "one side heard" into capture-silent vs playback-silent without guessing (field 2026-08-19).
+    let (mut tx_energy, mut tx_frames, mut rx_energy, mut rx_frames) = (0u64, 0u64, 0u64, 0u64);
 
     crate::logf!(
         "CALL: engine up — tx {} → {}, window {}B × {} frames, repair {}",
@@ -143,6 +146,8 @@ fn run(
             if muted.load(Ordering::Relaxed) || frame.len() != FRAME_SAMPLES {
                 continue;
             }
+            tx_energy += frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>();
+            tx_frames += 1;
             let mut enc = vec![0u8; FRAME_SLOT - 2];
             let n = match encoder.encode(&frame, &mut enc) {
                 Ok(n) => n,
@@ -231,7 +236,11 @@ fn run(
                     }
                     let mut pcm = vec![0i16; FRAME_SAMPLES];
                     match decoder.decode(&data[base + 2..base + 2 + n], &mut pcm, false) {
-                        Ok(s) if s == FRAME_SAMPLES => frames.push(pcm),
+                        Ok(s) if s == FRAME_SAMPLES => {
+                            rx_energy += pcm.iter().map(|v| v.unsigned_abs() as u64).sum::<u64>();
+                            rx_frames += 1;
+                            frames.push(pcm);
+                        }
                         Ok(_) | Err(_) => {}
                     }
                 }
@@ -262,7 +271,8 @@ fn run(
             rx_decoders.retain(|w, _| *w >= np);
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(4));
+        // 1ms poll granularity (was 4ms): captured frames and just-arrived packets wait at most 1ms for their loop pass, shaving ~6ms off the round trip for the cost of a few more wakeups — cheap on a call-dedicated thread.
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
     crate::logf!(
@@ -282,6 +292,16 @@ fn run(
             pkts_in
         );
     }
+    // Mean |sample| each way (0..32767). ~0 on a side = that direction carried silence; compare tx (our mic) vs rx (what we played) to place a "one-way heard" report at capture or playback.
+    let tx_level = if tx_frames > 0 { tx_energy / (tx_frames * FRAME_SAMPLES as u64) } else { 0 };
+    let rx_level = if rx_frames > 0 { rx_energy / (rx_frames * FRAME_SAMPLES as u64) } else { 0 };
+    crate::logf!(
+        "CALL: audio level — tx(mic) {} over {} frames, rx(play) {} over {} frames",
+        tx_level,
+        tx_frames,
+        rx_level,
+        rx_frames
+    );
     teardown();
     // tx_chain/rx_chain drop here — zeroized; the call is cryptographically gone.
 }
