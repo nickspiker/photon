@@ -346,8 +346,30 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(2); // confirm / cancel
         self.locked_retry_hit = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(1);
-        self.call_ui_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(3); // ☎ start / answer-or-hangup / decline
+        // Call controls (docs/calls.md) — retained Buttons with placeholder geometry; real rect/label/font-size land each frame in the render overlay block (phase-dependent). Registered cross-screen in `visit_app_widgets`, so hover/press/dispatch ride the same walk as every other Button. Construction order fixes the contiguous-id contract: status / start / action / decline. "Open Sans" matches the old hand-rolled pills' face.
+        self.call_status_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
+        self.call_start_btn = Some(Button::new(
+            &mut self.hit_counter,
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            "\u{260E} Call",
+        ));
+        self.call_action_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
+        self.call_decline_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
+        for b in [
+            self.call_status_btn.as_mut(),
+            self.call_start_btn.as_mut(),
+            self.call_action_btn.as_mut(),
+            self.call_decline_btn.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            b.set_font_family("Open Sans");
+        }
         self.settings_custodian_check = Some(crate::ui::settings_widgets::Checkbox::new(
             &mut self.hit_counter,
             "Be a custodian for others",
@@ -964,41 +986,7 @@ impl FluorApp for PhotonApp {
         mods: fluor::event::ModifiersState,
         ctx: &mut Context,
     ) -> EventResponse {
-        // CALL overlay pills — top of on_activate, before any state gate: a ring must be answerable from every screen (docs/calls.md).
-        if self.call_ui_base != HIT_NONE {
-            let phase = self.active_call.as_ref().map(|c| c.phase);
-            if hit_id == self.call_ui_base.wrapping_add(1) && phase.is_some() {
-                match phase {
-                    Some(crate::call::CallPhase::Ringing) => self.answer_call(),
-                    Some(crate::call::CallPhase::Ended) => self.keep_recording(),
-                    _ => self.hangup_call(),
-                }
-                ctx.window.request_redraw();
-                return EventResponse::Handled;
-            }
-            if hit_id == self.call_ui_base.wrapping_add(2) {
-                match phase {
-                    Some(crate::call::CallPhase::Ringing) => {
-                        self.decline_call();
-                        ctx.window.request_redraw();
-                        return EventResponse::Handled;
-                    }
-                    Some(crate::call::CallPhase::Ended) => {
-                        self.delete_recording();
-                        ctx.window.request_redraw();
-                        return EventResponse::Handled;
-                    }
-                    _ => {}
-                }
-            }
-            if hit_id == self.call_ui_base && self.active_call.is_none() {
-                if let Some(ci) = self.active_contact() {
-                    self.start_call(ci);
-                    ctx.window.request_redraw();
-                    return EventResponse::Handled;
-                }
-            }
-        }
+        // CALL overlay controls are now retained Buttons (call_action/decline/start) — their activation rides `dispatch_release` + the `take_click` poll in the Released and key paths (`dispatch_call_button_clicks`), NOT this hit-id branch. Nothing to do here.
 
         // Unattended-confirm (Security page) ARM/DISARM/cancel — dispatched HERE, at the top of on_activate, BEFORE any state gate. (These pills previously sat inside the `AppState::Conversation` block and so never fired on the Settings page — the arm click reached on_activate but was skipped.)
         if self.unattended_confirm.is_some() {
@@ -2008,6 +1996,20 @@ impl FluorApp for PhotonApp {
                         changed = true;
                     }
                 }
+                // Call overlay controls (cross-screen) clear their hover too — otherwise a tint sticks when the pointer leaves the window mid-call.
+                for btn in [
+                    self.call_start_btn.as_mut(),
+                    self.call_action_btn.as_mut(),
+                    self.call_decline_btn.as_mut(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    if btn.is_hovered() {
+                        btn.set_hovered(false);
+                        changed = true;
+                    }
+                }
                 if changed {
                     ctx.window.request_redraw();
                 }
@@ -2343,6 +2345,8 @@ impl FluorApp for PhotonApp {
                     }
                     ctx.window.request_redraw();
                 }
+                // Call overlay controls (answer/decline/start) — same release-edge poll.
+                self.dispatch_call_button_clicks(ctx);
                 EventResponse::Pass
             }
             Event::KeyboardInput { event: kev, .. } => {
@@ -2580,9 +2584,12 @@ impl FluorApp for PhotonApp {
                             if send_clicked {
                                 self.submit_message();
                             }
+                            // Call overlay controls — Enter/Space activation when one holds focus.
+                            let call_clicked = self.dispatch_call_button_clicks(ctx);
                             if attest_clicked
                                 || plus_clicked
                                 || send_clicked
+                                || call_clicked
                                 || matches!(resp, EventResponse::Handled)
                             {
                                 ctx.window.request_redraw();
@@ -3311,6 +3318,19 @@ impl FluorApp for PhotonApp {
             }
         }
         if let Some(btn) = self.message_send_btn.as_ref() {
+            if btn.hit_id() == hit {
+                return CursorIcon::Pointer;
+            }
+        }
+        // Call overlay controls (cross-screen) — pointer cursor when hovered.
+        for btn in [
+            self.call_start_btn.as_ref(),
+            self.call_action_btn.as_ref(),
+            self.call_decline_btn.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
             if btn.hit_id() == hit {
                 return CursorIcon::Pointer;
             }

@@ -10,6 +10,55 @@ use crate::call::signal::CallSignal;
 use crate::call::{ActiveCall, CallPhase};
 
 impl PhotonApp {
+    /// Poll the retained call Buttons' rising-edge clicks (docs/calls.md) — mirrors the attest/+/send pattern: `dispatch_release` (or a focused-key activation) fired `on_click`; we observe the edge here and run the phase's action. Called from BOTH the Released arm and the key path so pointer taps and Enter/Space on a focused call button both fire exactly once. The verb is phase-driven: action = Answer/Keep/Hang up, decline = Decline/Delete, start = place the call.
+    pub(super) fn dispatch_call_button_clicks(&mut self, ctx: &mut Context) -> bool {
+        let phase = self.active_call.as_ref().map(|c| c.phase);
+        let mut any = false;
+        if self
+            .call_action_btn
+            .as_mut()
+            .map(|b| b.take_click())
+            .unwrap_or(false)
+        {
+            match phase {
+                Some(CallPhase::Ringing) => self.answer_call(),
+                Some(CallPhase::Ended) => self.keep_recording(),
+                Some(_) => self.hangup_call(),
+                None => {}
+            }
+            any = true;
+        }
+        if self
+            .call_decline_btn
+            .as_mut()
+            .map(|b| b.take_click())
+            .unwrap_or(false)
+        {
+            match phase {
+                Some(CallPhase::Ringing) => self.decline_call(),
+                Some(CallPhase::Ended) => self.delete_recording(),
+                _ => {}
+            }
+            any = true;
+        }
+        if self
+            .call_start_btn
+            .as_mut()
+            .map(|b| b.take_click())
+            .unwrap_or(false)
+            && self.active_call.is_none()
+        {
+            if let Some(ci) = self.active_contact() {
+                self.start_call(ci);
+                any = true;
+            }
+        }
+        if any {
+            ctx.window.request_redraw();
+        }
+        any
+    }
+
     /// Place a call to the open (or named) contact. One live call at a time — v1 is singular by design.
     pub(super) fn start_call(&mut self, ci: usize) {
         if self.active_call.is_some() {
