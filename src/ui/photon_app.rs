@@ -1220,6 +1220,8 @@ pub struct PhotonApp {
     add_confirm_hit_id: HitId,
     /// AddDevice flow: base hit id for the tappable candidate rows (BLE/tap select). Row `i` stamps `add_candidate_hit_base + i`; up to 8 rows.
     add_candidate_hit_base: HitId,
+    /// Devices heard broadcasting LAN discovery under OUR OWN handle recently: (device pubkey, last heard). Feeds AddCandidate::heard_lan; entries older than LAN_HEARD_FRESH are pruned at read.
+    lan_heard: Vec<([u8; 32], std::time::Instant)>,
     /// AddDevice flow: the tap-to-bind (BLE/list select) path is in flight, so the Bound result shows the "did it turn green?" confirm instead of auto-rotating (that auto path is words-match only, where the typed key IS the confirmation). Reset when the flow ends.
     add_device_bind_ble: bool,
     /// Diagnostics "Submit" flow: result of the off-thread log upload to FGTW (blocking HTTP over up to 16 MiB). `Ok(())` → "Log sent" toast; `Err` → the reason. Drained in tick.
@@ -1857,6 +1859,7 @@ impl PhotonApp {
             add_device_stop: None,
             add_confirm_hit_id: HIT_NONE,
             add_candidate_hit_base: HIT_NONE,
+            lan_heard: Vec::new(),
             add_device_bind_ble: false,
             log_submit_rx: None,
             log_submit_tx: None,
@@ -2345,6 +2348,9 @@ fn orb_tint_for(online: bool) -> fluor::host::chrome::OrbTint {
     }
 }
 
+/// How long a LAN discovery hearing keeps a candidate marked "nearby" — comfortably past the joining device's ~8s announce cadence, short enough that a device that left the network stops reading as present.
+const LAN_HEARD_FRESH: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// One matcher candidate on the AddDevice screen: a verified binding request plus its precomputed expected word tokens (23, lowercase — `masked_device_words` split) and keyed display name. Precomputing keeps the per-keystroke match a plain string walk.
 struct AddCandidate {
     req: crate::network::fgtw::fleet::BindRequest,
@@ -2352,6 +2358,8 @@ struct AddCandidate {
     tokens: Vec<String>,
     /// This candidate's device pubkey is currently being heard over the BLE announce beacon — proximity confirmation (docs/pairing-v2.md, BLE transport). The candidate list marks these "nearby"; tapping any candidate binds it (BLE/tap select), typing its words still works too.
     heard_ble: bool,
+    /// Same proximity confirmation over the LAN: the candidate's device pubkey is currently broadcasting UDP discovery under OUR handle on this network (the joining device announces during its join loop). This is the "see local devices, add, done" path — the words remain the remote/no-LAN fallback.
+    heard_lan: bool,
 }
 
 /// Off-thread results for the AddDevice flow (candidate watch + bind + rotate), drained in `tick`.

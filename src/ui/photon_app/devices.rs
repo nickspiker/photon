@@ -1945,6 +1945,13 @@ impl PhotonApp {
         self.add_join_rx = Some(rx);
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         self.add_stop = Some(stop.clone());
+        // LAN visibility for the sponsor: the join loop announces this device on the local network (UDP discovery, same frame the fleet uses), so the sponsor's AddDevice screen shows a tappable "nearby" row instead of demanding the words. The words remain the remote/no-LAN fallback.
+        let lan_tx = self.status_checker.as_ref().map(|c| c.lan_broadcast_handle());
+        let lan_port = self
+            .handle_query
+            .as_ref()
+            .map(|h| h.port())
+            .unwrap_or(crate::PHOTON_PORT);
         std::thread::spawn(move || {
             // Derive the COMPLETE session roots once. identity_seed is microseconds; the ~1s memory-hard proof is reused from the probe when the caller passed it (the add-this-device branch already paid it), else computed here. Joined hands them to the attest worker so it never re-derives.
             let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
@@ -2043,6 +2050,13 @@ impl PhotonApp {
                         "timed out waiting to be added — re-enter the handle to try again".into(),
                     ));
                     return;
+                }
+                // Announce on the LAN each round (rides the poll cadence): the sponsor's screen lights this device's candidate row "nearby" the moment a frame lands.
+                if let Some(tx) = lan_tx.as_ref() {
+                    let _ = tx.send(crate::network::status::LanBroadcastRequest {
+                        our_handle_proof: hp,
+                        our_port: lan_port,
+                    });
                 }
                 // Genesis re-checked on EVERY fetch, not just the probe: a relay that served the real chain once must not be able to swap in a structurally-valid foreign chain mid-ceremony and have this loop adopt its members (the probe-time-only TOCTOU — docs/pairing-v2.md).
                 match fleet::current_members_verified(&hp) {

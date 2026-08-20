@@ -2498,10 +2498,34 @@ impl PhotonApp {
 
                 // LAN peer discovered via broadcast (NAT hairpinning workaround)
                 StatusUpdate::LanPeerDiscovered {
+                    device_pubkey,
                     handle_proof,
                     local_ip,
                     port,
                 } => {
+                    // An OWN-handle beacon from another device = a machine on this network claiming to be part of (or asking to join) OUR fleet — the proximity evidence the AddDevice tap list runs on. Record it and light any matching candidate immediately; the registry entry it must match is still signature-verified, so a LAN squatter with no valid bindreq never becomes tappable.
+                    let own_hp = self.session.as_ref().map(|s| s.handle_proof);
+                    if Some(handle_proof) == own_hp {
+                        if let Some(dk) = device_pubkey {
+                            let now = std::time::Instant::now();
+                            self.lan_heard.retain(|(_, t)| now.duration_since(*t) < LAN_HEARD_FRESH);
+                            match self.lan_heard.iter_mut().find(|(k, _)| *k == dk) {
+                                Some(e) => e.1 = now,
+                                None => {
+                                    self.lan_heard.push((dk, now));
+                                    crate::logf!("LAN: own-handle device {} broadcasting on this network", hex::encode(&dk[..4]));
+                                }
+                            }
+                            if matches!(self.state, AppState::AddDevice) {
+                                for c in self.add_device_candidates.iter_mut() {
+                                    if c.req.device_pubkey == dk && !c.heard_lan {
+                                        c.heard_lan = true;
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     // Find contact by handle_proof and store their LAN IP + port. Siblings AND the self-contact are skipped — an own-hp broadcast carries only (hp, port) with no device disambiguation, so it can't say WHICH of our devices it came from; sibling addresses flow via FGTW peer rows + pong source addresses instead.
                     for (idx, contact) in self.contacts.iter_mut().enumerate() {
                         if !contact.is_sibling
