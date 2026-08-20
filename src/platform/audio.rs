@@ -2,7 +2,7 @@
 //!
 //! The call engine speaks 48kHz mono i16 in 10ms frames (480 samples) and never touches a device API: it drains `captured_frames()` and feeds `queue_playback()`. Under that:
 //! - **Desktop**: a dedicated audio thread owns the cpal input+output streams (cpal streams are !Send — built and parked on their own thread, torn down when `stop()` clears the active flag). Device-rate/channel conversion happens at the callback edge via a naive linear resampler — correctness first; a better resampler is a drop-in.
-//! - **Android**: Kotlin owns AudioRecord/AudioTrack (the `VOICE_COMMUNICATION` source/usage — that routing is what engages the vendor echo canceller, echo layer 1) and crosses JNI into the same queues: `nativeAudioCaptured` pushes mic frames, `nativeAudioNextFrame` pulls render frames. Start/stop ride the MESSAGE_NOTIFIER service ref like notifications do.
+//! - **Android**: Kotlin owns AudioRecord/AudioTrack and crosses JNI into the same queues: `nativeAudioCaptured` pushes mic frames, `nativeAudioNextFrame` pulls render frames. Both ends ride the LOW-LATENCY paths (capture: VOICE_RECOGNITION raw fast-track; render: USAGE_MEDIA fast mixer) — vendor voice-pipeline processing is deliberately OFF both ways (Nick, latency-first 2026-08-20), so echo control belongs to OUR canceller over RENDER_REF. Start/stop ride the MESSAGE_NOTIFIER service ref like notifications do.
 //!
 //! **AEC plumbing from day one** (the retrofit-misery lesson): every rendered sample lands in an eagle-stamped reference ring BEFORE it reaches the device, whether or not any canceller exists yet. When a canceller (or the suppression duck) arrives, its far-end reference is already exact — the decoded signal we handed the DAC, not a guess at what some stack played.
 //!
@@ -34,7 +34,7 @@ const RENDER_REF_MAX: usize = 50; // 500ms
 // Instead the render side plays silence until the queue reaches `JITTER_TARGET` frames, then drains steadily; a dry queue (underrun) GROWS the target and re-primes, while a long clean stretch SHRINKS it back toward the floor.
 // So a clean call rests at ~20ms of software buffer and only a jittery path pays more — exactly where the latency should go.
 // This sits BEFORE the device buffer, which is kept shallow (low-latency AudioTrack), so this is the ONE place jitter is absorbed.
-const JITTER_FLOOR: usize = 2; // 20ms — the clean-path resting depth
+const JITTER_FLOOR: usize = 1; // 10ms — playback starts the instant the first frame exists; one frame of wobble tolerance. Zero is mechanically possible but useless: the queue is frame-quantized, so floor 0 saves at most one frame while making EVERY timing wobble an audible gap + re-prime stumble — and the adaptive growth would lift it right back. Below one frame the lever is smaller Opus frames (5ms CELT), not this constant.
 const JITTER_CAP: usize = 12; // 120ms — the most we'll ever buffer, even on a bad relay
 const JITTER_GROW: usize = 2; // frames added on each underrun
 const JITTER_DECAY_FRAMES: usize = 500; // ~5s of clean playback before shrinking one step
@@ -488,15 +488,15 @@ mod tests {
 
         // Adaptive jitter buffer: renders silence while PRIMING (queue below the floor), drains real frames once the floor is reached, and a dry queue underruns to silence (never PLC guesswork). Every rendered frame — silence or real — feeds the AEC reference.
         clear_queues(); // resets the jitter state: priming, target = JITTER_FLOOR
-        assert_eq!(JITTER_FLOOR, 2, "this test assumes a 2-frame floor");
-        // One frame is below the floor → still priming → silence, and the frame stays queued.
-        queue_playback(vec![100i16; FRAME_SAMPLES]);
+        assert_eq!(JITTER_FLOOR, 1, "this test assumes a 1-frame floor");
+        // Empty queue below the floor → still priming → silence.
         let s = next_render_frame();
         assert_eq!(s[0], 0, "priming below the jitter floor renders silence");
-        // Reaching the floor releases the primer and draining begins with the oldest frame.
-        queue_playback(vec![101i16; FRAME_SAMPLES]);
+        // The FIRST frame reaches the floor and plays immediately — the whole point of floor 1: zero added hold on a clean chain.
+        queue_playback(vec![100i16; FRAME_SAMPLES]);
         let a = next_render_frame();
-        assert_eq!(a[0], 100, "at the floor, draining begins with the oldest queued frame");
+        assert_eq!(a[0], 100, "at the floor, the first frame plays immediately");
+        queue_playback(vec![101i16; FRAME_SAMPLES]);
         let b = next_render_frame();
         assert_eq!(b[0], 101, "then the next in order");
         // Now dry → underrun → silence (never PLC guesswork).

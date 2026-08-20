@@ -598,15 +598,16 @@ class PhotonConnectionService : Service() {
                     AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT
                 ).coerceAtLeast(frameSamples * 4)
+                // VOICE_RECOGNITION, not VOICE_COMMUNICATION (Nick 2026-08-20, latency-first): the communication source routes thru the vendor voice pipeline — its NS/AGC/AEC chain AND its slow path (~30-40ms in), the largest remaining latency term now that output rides the fast mixer. VOICE_RECOGNITION is the canonical raw fast-track-eligible source: minimal processing, low latency. The trade, taken knowingly: vendor mic-side echo help is GONE, so speakerphone echo gets more audible until our own subtractive canceller (RENDER_REF is the reference, zero added delay) lands. Do NOT attach AcousticEchoCanceler here as a stopgap — effects kick capture off the fast path, un-doing this exact win.
                 val rec = android.media.AudioRecord(
-                    android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                    android.media.MediaRecorder.AudioSource.VOICE_RECOGNITION,
                     sampleRate,
                     AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT,
                     minBuf
                 )
                 rec.startRecording()
-                PhotonLog.i(TAG, "callAudio: capture up (VOICE_COMMUNICATION, buf=$minBuf)")
+                PhotonLog.i(TAG, "callAudio: capture up (VOICE_RECOGNITION raw fast-path, buf=$minBuf, granted=${rec.bufferSizeInFrames}fr)")
                 val buf = ShortArray(frameSamples)
                 while (callAudioRunning) {
                     var off = 0
