@@ -209,18 +209,19 @@ impl PhotonApp {
             .map_or(false, |c| {
                 !c.is_sibling && c.is_online && (c.chain_woven || c.friendship_id.is_some())
             });
-        let call_overlay: Option<(crate::call::CallPhase, String)> =
+        let call_overlay: Option<(crate::call::CallPhase, String, bool)> =
             self.active_call.as_ref().map(|c| {
-                let name = self
+                let peer = self
                     .contacts
                     .iter()
-                    .find(|k| k.handle_hash == c.peer_handle_hash)
-                    .map(|k| k.display_name())
-                    .unwrap_or_else(|| "?".into());
-                (c.phase, name)
+                    .find(|k| k.handle_hash == c.peer_handle_hash);
+                let name = peer.map(|k| k.display_name()).unwrap_or_else(|| "?".into());
+                // LIVE direct-path check, recomputed every frame: relay-only media does not exist yet, so a call with no validated direct path may sit Active-and-silent — the bar says so, and the warning self-clears the instant a punch validates (the engine bootstraps from the peer's first authenticated packet). No stored flag to go stale.
+                let direct = peer.map_or(false, |k| k.validated_path.is_some());
+                (c.phase, name, direct)
             });
         // Ringing / Ended show a SECOND action (Decline / Delete) beside the primary — hoisted so the end-of-frame hit re-stamp agrees with the early paint without re-deriving the phase.
-        let call_two_actions = call_overlay.as_ref().map_or(false, |(p, _)| {
+        let call_two_actions = call_overlay.as_ref().map_or(false, |(p, _, _)| {
             matches!(
                 p,
                 crate::call::CallPhase::Ringing | crate::call::CallPhase::Ended
@@ -360,17 +361,21 @@ impl PhotonApp {
             let pill_h = unit * 2.; // a comfortable tap target, two lines tall
             let cy = y0 + pill_h * 0.5; // Buttons take a CENTRE; the row is one pill tall
             let call_font = unit * 0.55; // button-text scale, proportional to the pill so it tracks zoom
-            if let Some((phase, name)) = &call_overlay {
+            if let Some((phase, name, direct)) = &call_overlay {
                 let phase = *phase;
                 let bar_w = buf_w as f32 * 0.9; // window-relative width — a bar spans the window
                 let x0 = (buf_w as f32 - bar_w) * 0.5;
                 let gap = unit * 0.5;
-                let status = match phase {
+                let mut status = match phase {
                     crate::call::CallPhase::Outgoing => format!("\u{260E} calling {}\u{2026}", name),
                     crate::call::CallPhase::Ringing => format!("\u{260E} {} calling", name),
                     crate::call::CallPhase::Active => format!("\u{260E} in call \u{2014} {}", name),
                     crate::call::CallPhase::Ended => "\u{260E} keep this recording?".to_string(),
                 };
+                // No validated direct path in a live phase → say so on the bar (media may be silent until a punch lands; the warning disappears live when it does). Plain text, no warning glyph — U+26A0 risks the same blank-render the Android font gave U+2192 (the send-arrow lesson).
+                if !direct && !matches!(phase, crate::call::CallPhase::Ended) {
+                    status.push_str(" \u{2014} no direct path");
+                }
                 let status_w = if call_two_actions { bar_w * 0.44 } else { bar_w * 0.62 };
                 let action_w = if call_two_actions {
                     (bar_w - status_w - gap * 2.) * 0.5
