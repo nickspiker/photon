@@ -89,7 +89,7 @@ pub fn save_contact_list(
         .map_err(|e| StorageError::Parse(e.to_string()))?;
 
     storage.write_addr(
-        &crate::storage::vault_key("contacts", storage.vault_seed()),
+        &crate::storage::vault_key("contacts", &storage.vault_seed()),
         &vsf_bytes,
     )
 }
@@ -97,7 +97,7 @@ pub fn save_contact_list(
 /// Load the contact list from encrypted index with schema validation
 pub fn load_contact_list(storage: &FlatStorage) -> Result<Vec<ContactIdentity>, StorageError> {
     let vsf_bytes =
-        match storage.read_addr(&crate::storage::vault_key("contacts", storage.vault_seed()))? {
+        match storage.read_addr(&crate::storage::vault_key("contacts", &storage.vault_seed()))? {
             Some(b) => b,
             None => return Ok(Vec::new()),
         };
@@ -580,7 +580,7 @@ pub fn save_sibling_list(devices: &[[u8; 32]], storage: &FlatStorage) -> Result<
         .encode()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
     storage.write_addr(
-        &crate::storage::vault_key("siblings", storage.vault_seed()),
+        &crate::storage::vault_key("siblings", &storage.vault_seed()),
         &vsf_bytes,
     )
 }
@@ -588,7 +588,7 @@ pub fn save_sibling_list(devices: &[[u8; 32]], storage: &FlatStorage) -> Result<
 /// Load the sibling device-pubkey index. Missing entry = empty fleet knowledge (single-device or pre-feature vault).
 pub fn load_sibling_list(storage: &FlatStorage) -> Result<Vec<[u8; 32]>, StorageError> {
     let vsf_bytes =
-        match storage.read_addr(&crate::storage::vault_key("siblings", storage.vault_seed()))? {
+        match storage.read_addr(&crate::storage::vault_key("siblings", &storage.vault_seed()))? {
             Some(b) => b,
             None => return Ok(Vec::new()),
         };
@@ -861,7 +861,7 @@ fn conversation_table(participants: &[[u8; 32]]) -> [u8; 32] {
 
 /// Our own party id — the identity pubkey every participant set is expressed in.
 fn our_party_id(storage: &FlatStorage) -> [u8; 32] {
-    crate::crypto::clutch::identity_party_id(storage.vault_seed())
+    crate::crypto::clutch::identity_party_id(&storage.vault_seed())
 }
 
 /// The ASCII-versioned friendship domain every pre-lanes table id was derived under. PINNED here as literal bytes: the live derivation moved to a binary version numeral, and a "legacy" address computed thru the CURRENT derive would point at nothing old rows ever used.
@@ -895,7 +895,7 @@ pub fn migrate_conversation_tables(
     let our_pid = our_party_id(storage);
     let mut moved = 0usize;
     for contact in contacts {
-        let legacy = legacy_conversation_id(storage.vault_seed(), &contact.handle_hash);
+        let legacy = legacy_conversation_id(&storage.vault_seed(), &contact.handle_hash);
         let fresh = conversation_table(&[our_pid, contact.handle_hash]);
         if legacy == fresh {
             continue;
