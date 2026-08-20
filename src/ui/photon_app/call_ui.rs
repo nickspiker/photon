@@ -77,6 +77,7 @@ impl PhotonApp {
             return;
         }
         let peer = contact.handle_hash;
+        let contact_validated = contact.validated_path.is_some();
         let call_id: [u8; 16] = rand::random();
         let caller_nonce: [u8; 32] = rand::random();
         let sig = CallSignal::Offer {
@@ -102,7 +103,11 @@ impl PhotonApp {
             engine: None,
             spool: None,
         });
-        crate::logf!("CALL: dialing {} (id {})", crate::fp(&peer), hex::encode(&call_id[..4]));
+        if contact_validated {
+            crate::logf!("CALL: dialing {} (id {})", crate::fp(&peer), hex::encode(&call_id[..4]));
+        } else {
+            crate::logf!("CALL: dialing {} (id {}) — NO validated direct path; media waits on a punch or the peer's first packet (relay media does not exist yet)", crate::fp(&peer), hex::encode(&call_id[..4]));
+        }
         self.scene_dirty = true;
     }
 
