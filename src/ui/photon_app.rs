@@ -1308,6 +1308,8 @@ pub struct PhotonApp {
     call_decline_btn: Option<Button>,
     /// Runtime-only stuck-tip ledger per friendship: (the peer's advertised head for OUR lane, exhaust→re-arm ladders seen at exactly that head). The anchor-wedge detector needs tip 0; a NONZERO head that never moves while our exhausted pendings re-arm and exhaust again is the same dead lane in disguise (the peer holds those rows as forwards it can never re-ACK) — two full ladders at one head trips the rotation.
     lane_rearm_cycles: std::collections::HashMap<crate::types::friendship::FriendshipId, (i64, u8)>,
+    /// Runtime-only re-serve burst cap per friendship: (the tip the last re-serve fired at, bursts spent there). Sibling-lane rows above OUR lane's tip would otherwise re-serve every pong forever — the peer holds them, dedups them, and dedup never advances our lane's tip — so each tip value gets a bounded number of bursts and the cap resets when the tip moves.
+    lane_reserve_bursts: std::collections::HashMap<crate::types::friendship::FriendshipId, (i64, u8)>,
     /// Rotating start index for the seed-registry resolve walk — the per-pulse device budget used to restart at contact zero every pulse, so head-of-list offline contacts starved everyone behind them of resolution forever.
     pb_resolve_cursor: usize,
     ckpt_mint_due: bool,
@@ -1911,6 +1913,7 @@ impl PhotonApp {
             call_action_btn: None,
             call_decline_btn: None,
             lane_rearm_cycles: std::collections::HashMap::new(),
+            lane_reserve_bursts: std::collections::HashMap::new(),
             pb_resolve_cursor: 0,
             ckpt_mint_due: false,
             ckpt_spineless_holds: 0,

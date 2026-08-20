@@ -278,6 +278,9 @@ impl PhotonApp {
 
         // Friendships whose send lane the wedge heal rotated this pass — persisted and row-flushed after the drain loop, where &mut self is available again.
         let mut rotated_flush: Vec<crate::types::friendship::FriendshipId> = Vec::new();
+        // Sender-side re-serve jobs (Nick's go, 2026-08-20): (contact idx, rows as (eagle_time, content, reference)) collected during the drain — chain_transmit needs &mut self, so execution waits for the checker borrow to release, same as rotated_flush.
+        let mut reserve_jobs: Vec<(usize, Vec<(i64, String, Option<(crate::types::RefKind, i64)>)>)> =
+            Vec::new();
         loop {
             // TIME BUDGET — the UI thread's stall is bounded whatever the storm size: past 250ms the rest of the backlog waits for the next tick (the channel holds it; un-replayed synthetic frames go back on chat_replay_queue below, order preserved). Unbounded, a churny catch-up pass measured 1.8s on the desktop — taps landed but nothing painted until the drain yielded (2026-08-11).
             if pass_start.elapsed().as_millis() > 250 {
@@ -421,6 +424,52 @@ impl PhotonApp {
                                                     urgent: true,
                                                     was_complete_before: false,
                                                 });
+                                        }
+                                        // SENDER-SIDE RE-SERVE (Nick's go, 2026-08-20) — the delivery-side fix the pull-gate comment above promises. The pending list only retransmits rows it still holds; a row implied-delivered by a FLEET ack that THIS peer device never received leaves their lane wedged forever — they gap-buffer every later row (twice on 2026-08-20 that hostage was a call ANSWER). The sealed tip is per-device cryptographic testimony of what they hold contiguously, and their row_count deficit is content-level evidence they lack rows — so when WE are strictly ahead, re-serve the oldest rows above the tip from the DURABLE store at their ORIGINAL stamps (the lane-rotation flush's proven semantics). The receiver's row-store dedup absorbs anything it already had and Re-ACKs it, clearing the fresh pending; a genuinely missing row processes normally and un-jams the gap cascade.
+                                        if n_rows > record.row_count {
+                                            const RESERVE_BURSTS_PER_TIP: u8 = 2;
+                                            const RESERVE_ROWS_PER_BURST: usize = 8;
+                                            let allowed = {
+                                                let e = self
+                                                    .lane_reserve_bursts
+                                                    .entry(fid)
+                                                    .or_insert((tip, 0));
+                                                if e.0 != tip {
+                                                    *e = (tip, 0);
+                                                }
+                                                if e.1 < RESERVE_BURSTS_PER_TIP {
+                                                    e.1 += 1;
+                                                    true
+                                                } else {
+                                                    false
+                                                }
+                                            };
+                                            if allowed {
+                                                let pending_times: std::collections::HashSet<i64> = chains
+                                                    .pending_messages
+                                                    .iter()
+                                                    .map(|m| m.eagle_time)
+                                                    .collect();
+                                                // Oldest-first: the OLDEST missing row is the one holding the peer's in-order gate shut; later holes fill on subsequent tip observations. Pending rows are excluded (they already retransmit); deleted and friend-recovered rows never re-serve.
+                                                let mut rows: Vec<(i64, String, Option<(crate::types::RefKind, i64)>)> = conv
+                                                    .messages
+                                                    .iter()
+                                                    .filter(|m| {
+                                                        m.is_outgoing
+                                                            && !m.recovered
+                                                            && !m.deleted
+                                                            && m.timestamp > tip
+                                                            && !pending_times.contains(&m.timestamp)
+                                                    })
+                                                    .map(|m| (m.timestamp, m.content.clone(), m.reference))
+                                                    .collect();
+                                                rows.sort_by_key(|(t, _, _)| *t);
+                                                rows.truncate(RESERVE_ROWS_PER_BURST);
+                                                if !rows.is_empty() {
+                                                    crate::logf!("CHAT: peer {} row(s) behind with our lane tip {} — re-serving {} row(s) from the durable store (the pending list called them delivered)", n_rows - record.row_count, tip, rows.len());
+                                                    reserve_jobs.push((ci, rows));
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -3958,6 +4007,23 @@ impl PhotonApp {
                 .position(|c| c.friendship_id == Some(fid))
             {
                 self.resend_held_messages(ci);
+            }
+        }
+
+        // Sender-side re-serve execution (checker borrow released): rebuild each missing row's wire frame at its ORIGINAL eagle_time. chain_transmit's already-in-flight guard keeps this idempotent, and its in-flight window paces the burst — a refused row just waits for the next tip observation.
+        for (ci, rows) in reserve_jobs {
+            let mut served = 0usize;
+            for (ts, content, reference) in rows {
+                if self.chain_transmit(ci, &content, ts, reference) {
+                    served += 1;
+                }
+            }
+            if served > 0 {
+                crate::logf!(
+                    "CHAT: re-served {} row(s) to {} from the durable store",
+                    served,
+                    crate::fp(&self.contacts[ci].handle_proof)
+                );
             }
         }
 
