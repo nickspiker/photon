@@ -146,7 +146,37 @@ fn absorb_loose_files(vault: &FlatStorage, device_secret: &[u8; 32]) {
             crate::log("STORAGE: reboot capsule folded into the vault");
         }
     }
-    // THE CENSUS SWEEP (Nick's rule, 2026-08-20): anything in the config dir that isn't the log or a `<token>.vsf` ring gets AUTO-NUKED. The keep-set: the device ring pair (primary + macOS same-dir shadow), the log + its crash sidecar (they land here only when temp is unwritable), and `blobs/` — spared solely because the session-open fold owns it (decrypt-or-delete, then the dir itself goes). Everything else — settings.vsf, lock/socket relics, orphan strays from any era — is deleted by name-independent sweep, so the next stray CLASS never needs its own line here.
+    // File-era blobs move INTO the vault NOW, pre-identity: the sealed bytes need no decrypt to relocate, so each file becomes a device-scope `blobfold/<id>` entry (id = blake3 of the sealed bytes, tracked in `blobfold/index`) and the dir dies on FIRST launch — the census never waits on an attest. The session open later decrypts each parked entry into a real blob value (or discards dead ciphertext from a wiped-away identity); see absorb_blob_files.
+    let bdir = dir.join("blobs");
+    if bdir.exists() {
+        let mut index = blobfold_index(vault);
+        let mut moved = 0usize;
+        if let Ok(rd) = std::fs::read_dir(&bdir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                let Ok(bytes) = std::fs::read(&p) else { continue };
+                // Markers and empty husks carry nothing recoverable.
+                if bytes.len() < 24 + 16 {
+                    let _ = std::fs::remove_file(&p);
+                    continue;
+                }
+                let id = *blake3::hash(&bytes).as_bytes();
+                if vault.write_device(&blobfold_entry(&id), &bytes).is_ok() {
+                    if !index.contains(&id) {
+                        index.push(id);
+                    }
+                    let _ = std::fs::remove_file(&p);
+                    moved += 1;
+                }
+            }
+        }
+        write_blobfold_index(vault, &index);
+        let _ = std::fs::remove_dir(&bdir);
+        if moved > 0 {
+            crate::logf!("STORAGE: {} file-era blob(s) parked inside the vault pending an identity to open them", moved);
+        }
+    }
+    // THE CENSUS SWEEP (Nick's rule, 2026-08-20): anything in the config dir that isn't the log or a `<token>.vsf` ring gets AUTO-NUKED. The keep-set: the device ring pair (primary + macOS same-dir shadow) and the log + its crash sidecar (they land here only when temp is unwritable). Everything else — settings.vsf, lock/socket relics, orphan strays from any era — is deleted by name-independent sweep, so the next stray CLASS never needs its own line here.
     // Desktop only: on Android `photon_config_dir` is the app-private files ROOT, which the OS and the JNI layer also write into — sweeping unknown names there would eat platform files. Android's sandbox already isolates it; the fold above still runs.
     #[cfg(not(target_os = "android"))]
     {
@@ -156,7 +186,6 @@ fn absorb_loose_files(vault: &FlatStorage, device_secret: &[u8; 32]) {
             format!("{}{}.vsf", ring, ".shadow"),
             "photon.log.vsf".to_string(),
             "photon.crash.txt".to_string(),
-            "blobs".to_string(),
         ];
         if let Ok(rd) = std::fs::read_dir(&dir) {
             for entry in rd.flatten() {
@@ -347,14 +376,70 @@ pub fn blob_delete(content_hash: &[u8; 32]) {
     }
 }
 
+/// The parked-blob ledger: `blobfold/index` = concatenated 32-byte ids, each id naming a `blobfold/<hex>` device-scope entry holding one file-era blob's SEALED bytes verbatim (moved pre-identity, opened at session).
+const BLOBFOLD_INDEX: &str = "blobfold/index";
+
+fn blobfold_entry(id: &[u8; 32]) -> String {
+    format!("blobfold/{}", hex::encode(id))
+}
+
+fn blobfold_index(vault: &FlatStorage) -> Vec<[u8; 32]> {
+    vault
+        .read_device(BLOBFOLD_INDEX)
+        .ok()
+        .flatten()
+        .map(|b| b.chunks_exact(32).map(|c| c.try_into().unwrap()).collect())
+        .unwrap_or_default()
+}
+
+fn write_blobfold_index(vault: &FlatStorage, ids: &[[u8; 32]]) {
+    if ids.is_empty() {
+        let _ = vault.delete_device(BLOBFOLD_INDEX);
+    } else {
+        let flat: Vec<u8> = ids.iter().flat_map(|id| id.iter().copied()).collect();
+        let _ = vault.write_device(BLOBFOLD_INDEX, &flat);
+    }
+}
+
 /// Fold the file-era blobs/ dir into the vault: decrypt each loose sealed file with the legacy blob key, re-derive its content hash from the plaintext (filenames are keyed hashes — unreversible by design), store it as a vault value, delete the file. Self-terminating (dir absent = done), crash-safe (a crash re-folds only what is left). Un-openable strays (crashed spool tmp, corrupt files) are dead ciphertext — deleted.
 fn absorb_blob_files(identity_seed: &[u8; 32]) {
+    let seal = blob_seal_key(identity_seed);
+    // Parked entries first (the pre-identity fold moved the files INSIDE the vault at first launch): decrypt each into a real blob value, or discard dead ciphertext — a wiped-away identity's blobs can never open again by construction.
+    if let Some(vault) = device_vault() {
+        let ids = blobfold_index(&vault);
+        if !ids.is_empty() {
+            let mut opened = 0usize;
+            let mut dead = 0usize;
+            for id in &ids {
+                let key = blobfold_entry(id);
+                let sealed = vault.read_device(&key).ok().flatten();
+                if let Some(plain) = sealed.and_then(|b| kete::decrypt_bytes(&b, &seal).ok()) {
+                    let hash = *blake3::hash(&plain).as_bytes();
+                    if blob_store(identity_seed, &hash, &plain).is_ok() {
+                        let _ = vault.delete_device(&key);
+                        opened += 1;
+                        continue;
+                    }
+                    continue; // vault refused the store — keep the parked entry, retry next open
+                }
+                let _ = vault.delete_device(&key);
+                dead += 1;
+            }
+            let remaining: Vec<[u8; 32]> = ids
+                .into_iter()
+                .filter(|id| matches!(vault.read_device(&blobfold_entry(id)), Ok(Some(_))))
+                .collect();
+            write_blobfold_index(&vault, &remaining);
+            if opened + dead > 0 {
+                crate::logf!("STORAGE: parked blobs settled — {} opened into the vault, {} dead ciphertext discarded", opened, dead);
+            }
+        }
+    }
     let Ok(cfg) = photon_config_dir() else { return };
     let dir = cfg.join("blobs");
     if !dir.exists() {
         return;
     }
-    let seal = blob_seal_key(identity_seed);
     let mut folded = 0usize;
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for e in entries.flatten() {
@@ -557,13 +642,18 @@ mod tests {
         std::fs::write(dir.join("mystery.dat"), b"x").unwrap();
         std::fs::write(dir.join("photon.log.vsf"), b"log").unwrap();
         std::fs::create_dir_all(dir.join("blobs")).unwrap();
-        std::fs::write(dir.join("blobs/awaiting-fold.bin"), b"x").unwrap();
+        let sealed = vec![0xEEu8; 64]; // big enough to be parkable ciphertext
+        std::fs::write(dir.join("blobs/parked.bin"), &sealed).unwrap();
         install_device_secret(secret);
-        let _v = device_vault().unwrap();
+        let v = device_vault().unwrap();
         assert!(!dir.join("junkdir").exists(), "stray dir survived the sweep");
         assert!(!dir.join("mystery.dat").exists(), "stray file survived the sweep");
         assert!(dir.join("photon.log.vsf").exists(), "the log must survive the sweep");
-        assert!(dir.join("blobs").exists(), "blobs are the session-open fold's to consume, not the sweep's");
+        // blobs/ dies on FIRST launch too — the sealed bytes are parked INSIDE the vault (blobfold entries) until an identity settles them.
+        assert!(!dir.join("blobs").exists(), "blobs dir survived first launch");
+        let ids = blobfold_index(&v);
+        assert_eq!(ids.len(), 1, "parked-blob ledger missing the moved file");
+        assert!(matches!(v.read_device(&blobfold_entry(&ids[0])), Ok(Some(_))));
     }
 
     /// Blobs are vault values at identity-keyed addresses; the file-era blobs/ dir folds in at session open and leaves the census.
