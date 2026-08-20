@@ -21,6 +21,7 @@ pub use kete::{android_vault_dirs, set_android_vault_dirs};
 ///
 /// Opens the ONE device vault (named from the device secret alone, exists from first launch), installs the session's vault seed as its identity (idempotent; a different identity is refused — one identity per device), then runs the in-place legacy migration exactly once. The shared registry underneath means concurrent callers (resume path + attest worker) receive the SAME engine — a second independent engine racing the live one is the corruption class that bricked a field vault ("seal verification failed" on every subsequent open).
 pub fn open_session_vault(
+    identity_seed: [u8; 32],
     vault_seed: [u8; 32],
     device_secret: [u8; 32],
 ) -> Result<std::sync::Arc<FlatStorage>, StorageError> {
@@ -28,6 +29,9 @@ pub fn open_session_vault(
     let vault = device_vault().ok_or_else(|| StorageError::Vault("device vault unavailable".to_string()))?;
     vault.set_identity(vault_seed)?;
     migrate_legacy_vault(&vault, &vault_seed, &device_secret);
+    // Blob addressing keys off the IDENTITY seed; with the identity scope live, the file-era blobs/ dir folds in.
+    blob_init_names(&identity_seed);
+    absorb_blob_files(&identity_seed);
     Ok(vault)
 }
 
@@ -138,6 +142,9 @@ fn absorb_loose_files(vault: &FlatStorage, device_secret: &[u8; 32]) {
     }
     // settings.vsf held only the log hex-elision knobs, whose runtime API vsf removed — the file is dead weight (env vars still override in dev). Delete the stray.
     let _ = std::fs::remove_file(dir.join("settings.vsf"));
+    // File-era runtime artifacts (lock + control socket live in runtime_dir now). A still-running OLD instance loses only its second-launch handoff for this one transition boot; its flock is on the fd, not the name.
+    let _ = std::fs::remove_file(dir.join("photon.lock"));
+    let _ = std::fs::remove_file(dir.join("control.sock"));
 }
 
 /// In-place migration from the per-identity vault era: every entry of the legacy vault is raw-copied (stored bytes verbatim, same addresses — the identity-scope key derivation is unchanged, so ciphertexts decrypt identically) into the device vault, then the legacy rings are renamed to `.legacy` backups — kept, not deleted, as missed-domain insurance until a later version reaps them. Marker-gated in the device scope, single-flight, idempotent; every row of history — including the first message ever sent over FGTW — survives.
@@ -245,73 +252,31 @@ pub fn isolate_test_storage() {
     );
 }
 
-/// The attachment blob directory: `<config>/blobs/`. Blobs live OUTSIDE the vault deliberately — the dual-ring mirror doubles every vault write and a multi-MB value triggers a vault-grow fsync that freezes the UI (the same phenomenon that made clutch keypairs memory-only). Each blob is one sealed file; the FILENAME is a keyed hash, never the plaintext hash (see BLOB_NAME_KEY).
-pub fn blob_dir() -> Result<std::path::PathBuf, std::io::Error> {
-    let dir = photon_config_dir()?.join("blobs");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
-
-/// Per-device blob seal key. Derived from the identity seed — blobs never leave this device as FILES (the wire carries its own seal under history/fleet keys), so the at-rest key needs no cross-device agreement; identity-seed derivation just means a restored session can still open its old blobs.
-pub fn blob_seal_key(identity_seed: &[u8; 32]) -> [u8; 32] {
-    blake3::derive_key(&format!("{}.blob.seal.v0", APP.id), identity_seed)
-}
-
-// FILENAMES ARE A FORENSIC SURFACE (Nick's threat model, found 2026-08-20): the v0 scheme named each file by the PLAINTEXT blake3 — the content was sealed, but anyone holding a CANDIDATE file could hash it and prove possession by filename alone, zero keys needed (a known-plaintext existence oracle in the filesystem). Names are now blake3 KEYED by a seed-derived name key — meaningless without the identity seed. The name key lives in a process global because presence checks run on the render path where no seed is in scope; it is set the moment a session's seed exists (blob_init_names) and cleared with the session.
+// BLOBS LIVE IN THE VAULT (2026-08-20, "ONE VAULT WITH A MIRROR FOR FUCKUPS AND HEALING"): an attachment/recording is one vault value at an identity-keyed address — arbitrary size in principle (EWE), sealed by the vault's own per-address keys, mirrored by the dual rings like everything else. The loose blobs/ dir is absorbed at session open.
+// ADDRESSES ARE A FORENSIC SURFACE (the v0 filename lesson): trie keys sit in plaintext in the vault leaves, so an unkeyed content-hash address would let anyone holding the rings + a CANDIDATE file prove possession with zero keys. The address is blake3 KEYED by a seed-derived name key — meaningless without the identity seed. The name key lives in a process global because presence checks run on the render path where no seed is in scope; it is set the moment a session's seed exists (blob_init_names) and cleared with the session.
 static BLOB_NAME_KEY: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
 
 fn blob_name_key_of(identity_seed: &[u8; 32]) -> [u8; 32] {
     blake3::derive_key(&format!("{}.blob.name.v1", APP.id), identity_seed)
 }
 
-/// The sealed file's name for a content hash: keyed blake3 under the session's name key. None = no session yet (presence reads false, deletes no-op — the same "vault not open" posture as everything else).
-fn blob_file_name(content_hash: &[u8; 32]) -> Option<String> {
+/// Legacy file-era blob seal key — still needed to OPEN old loose blob files during the absorb walk (the vault seals with its own keys from here on).
+fn blob_seal_key(identity_seed: &[u8; 32]) -> [u8; 32] {
+    blake3::derive_key(&format!("{}.blob.seal.v0", APP.id), identity_seed)
+}
+
+/// The vault address for a content hash: keyed blake3 under the session's name key. None = no session yet (presence reads false, deletes no-op — the same "vault not open" posture as everything else).
+fn blob_addr(content_hash: &[u8; 32]) -> Option<[u8; 32]> {
     let k = (*BLOB_NAME_KEY.lock().unwrap())?;
-    Some(format!(
-        "{}.bin",
-        hex::encode(blake3::keyed_hash(&k, content_hash).as_bytes())
-    ))
+    Some(*blake3::keyed_hash(&k, content_hash).as_bytes())
 }
 
-/// Install the blob name key for this session AND run the one-time v0→v1 rename walk: every 64-hex-named file is a v0 plaintext-hash name — re-key it. Marker-gated (`.names-v1`) so keyed names are never re-keyed; a fresh install writes the marker over an empty dir. Call whenever a session's identity seed becomes available.
+/// Install the blob name key for this session. Call whenever a session's identity seed becomes available. (The file-era v0→v1 rename walk is gone — the whole blobs/ dir folds into the vault in `absorb_blob_files`.)
 pub fn blob_init_names(identity_seed: &[u8; 32]) {
-    let key = blob_name_key_of(identity_seed);
-    *BLOB_NAME_KEY.lock().unwrap() = Some(key);
-    let Ok(dir) = blob_dir() else { return };
-    let marker = dir.join(".names-v1");
-    if marker.exists() {
-        return;
-    }
-    let mut renamed = 0usize;
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for e in entries.flatten() {
-            let name = e.file_name();
-            let Some(stem) = name.to_str().and_then(|n| n.strip_suffix(".bin")) else {
-                continue;
-            };
-            let Ok(bytes) = hex::decode(stem) else { continue };
-            let Ok(content_hash) = <[u8; 32]>::try_from(bytes.as_slice()) else {
-                continue;
-            };
-            let new = format!(
-                "{}.bin",
-                hex::encode(blake3::keyed_hash(&key, &content_hash).as_bytes())
-            );
-            if std::fs::rename(e.path(), dir.join(new)).is_ok() {
-                renamed += 1;
-            }
-        }
-    }
-    let _ = std::fs::write(&marker, b"1");
-    if renamed > 0 {
-        crate::logf!(
-            "blob: re-keyed {} v0 plaintext-hash filename(s) — the possession oracle is closed",
-            renamed
-        );
-    }
+    *BLOB_NAME_KEY.lock().unwrap() = Some(blob_name_key_of(identity_seed));
 }
 
-/// Store an attachment blob: seal plaintext under the device blob key, write it under the KEYED name. Idempotent — an existing file is left alone (content-addressed, same hash = same bytes).
+/// Store an attachment blob as a vault value at its identity-keyed address. Idempotent — content-addressed, same hash = same bytes, and the vault write is an overwrite-with-itself.
 pub fn blob_store(
     identity_seed: &[u8; 32],
     content_hash: &[u8; 32],
@@ -320,44 +285,89 @@ pub fn blob_store(
     if BLOB_NAME_KEY.lock().unwrap().is_none() {
         blob_init_names(identity_seed);
     }
-    let dir = blob_dir().map_err(|e| e.to_string())?;
-    let name = blob_file_name(content_hash).ok_or("blob: no session name key")?;
-    let path = dir.join(name);
-    if path.exists() {
-        return Ok(());
-    }
-    let sealed = kete::encrypt_bytes(plaintext, &blob_seal_key(identity_seed))?;
-    std::fs::write(&path, &sealed).map_err(|e| e.to_string())
+    let addr = blob_addr(content_hash).ok_or("blob: no session name key")?;
+    let vault = device_vault().ok_or("blob: vault unavailable")?;
+    vault.write_addr(&addr, plaintext).map_err(|e| e.to_string())
 }
 
-/// Load + open an attachment blob; verifies the content hash after decrypt. None = not held locally.
+/// Load an attachment blob from the vault; verifies the content hash after the vault's own AEAD. None = not held locally.
 pub fn blob_load(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Vec<u8>> {
     if BLOB_NAME_KEY.lock().unwrap().is_none() {
         blob_init_names(identity_seed);
     }
-    let dir = blob_dir().ok()?;
-    let sealed = std::fs::read(dir.join(blob_file_name(content_hash)?)).ok()?;
-    let plain = kete::decrypt_bytes(&sealed, &blob_seal_key(identity_seed)).ok()?;
+    let addr = blob_addr(content_hash)?;
+    let plain = device_vault()?.read_addr(&addr).ok()??;
     if blake3::hash(&plain).as_bytes() != content_hash {
-        crate::log("blob: content hash mismatch on load — corrupt blob file dropped");
+        crate::log("blob: content hash mismatch on load — corrupt blob value dropped");
         return None;
     }
     Some(plain)
 }
 
-/// Whether the blob for `content_hash` is held locally (no decrypt — presence only). False before a session exists (no name key = no way to look, same as no vault).
+/// Whether the blob for `content_hash` is held locally — stored-bytes presence, NO decrypt (render-path cheap). False before a session exists (no name key = no way to look, same as no vault).
 pub fn blob_present(content_hash: &[u8; 32]) -> bool {
-    match (blob_dir(), blob_file_name(content_hash)) {
-        (Ok(d), Some(name)) => d.join(name).exists(),
+    match (device_vault(), blob_addr(content_hash)) {
+        (Some(v), Some(addr)) => matches!(v.read_stored(&addr), Ok(Some(_))),
         _ => false,
     }
 }
 
-/// Delete a blob file (attachment tombstone follow-through — blobs CAN truly shred; only row content is braid-bound).
+/// Delete a blob value (attachment tombstone follow-through — blobs CAN truly shred; only row content is braid-bound).
 pub fn blob_delete(content_hash: &[u8; 32]) {
-    if let (Ok(dir), Some(name)) = (blob_dir(), blob_file_name(content_hash)) {
-        let _ = std::fs::remove_file(dir.join(name));
+    if let (Some(v), Some(addr)) = (device_vault(), blob_addr(content_hash)) {
+        let _ = v.delete_addr(&addr);
     }
+}
+
+/// Fold the file-era blobs/ dir into the vault: decrypt each loose sealed file with the legacy blob key, re-derive its content hash from the plaintext (filenames are keyed hashes — unreversible by design), store it as a vault value, delete the file. Self-terminating (dir absent = done), crash-safe (a crash re-folds only what is left). Un-openable strays (crashed spool tmp, corrupt files) are dead ciphertext — deleted.
+fn absorb_blob_files(identity_seed: &[u8; 32]) {
+    let Ok(cfg) = photon_config_dir() else { return };
+    let dir = cfg.join("blobs");
+    if !dir.exists() {
+        return;
+    }
+    let seal = blob_seal_key(identity_seed);
+    let mut folded = 0usize;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let path = e.path();
+            let opened = std::fs::read(&path)
+                .ok()
+                .and_then(|sealed| kete::decrypt_bytes(&sealed, &seal).ok());
+            if let Some(plain) = opened {
+                let hash = *blake3::hash(&plain).as_bytes();
+                if blob_store(identity_seed, &hash, &plain).is_ok() {
+                    let _ = std::fs::remove_file(&path);
+                    folded += 1;
+                    continue;
+                }
+                continue; // vault refused — keep the file, retry next launch
+            }
+            // Marker, crashed spool tmp, or corrupt seal — nothing recoverable lives here.
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    let _ = std::fs::remove_dir(&dir); // only falls when empty — a kept-for-retry file holds it
+    if folded > 0 {
+        crate::logf!("STORAGE: {} loose blob(s) folded into the vault", folded);
+    }
+}
+
+/// Process-lifetime artifacts (single-instance lock, control socket) live in the RUNTIME dir, not config — they are not state, and the config-dir census is exactly two files (log + vault). tmpfs where available, so a crash leaves nothing behind past reboot.
+pub fn runtime_dir() -> std::path::PathBuf {
+    #[cfg(unix)]
+    if let Ok(d) = std::env::var("XDG_RUNTIME_DIR") {
+        if !d.is_empty() {
+            return std::path::PathBuf::from(d).join("photon");
+        }
+    }
+    std::env::temp_dir().join("photon")
+}
+
+/// A runtime artifact path keyed to the DATA dir it guards: two instances on different data dirs (the PHOTON_DATA_DIR two-party dev setup) must never share a lock or a control socket.
+pub fn runtime_artifact(data_dir: &std::path::Path, ext: &str) -> std::path::PathBuf {
+    let h = blake3::hash(data_dir.to_string_lossy().as_bytes());
+    runtime_dir().join(format!("{}.{}", hex::encode(&h.as_bytes()[..8]), ext))
 }
 
 /// Holds the single-instance lock for the whole process; dropping it (or process exit/crash) releases it.
@@ -368,16 +378,19 @@ pub struct InstanceLock {
 }
 
 /// Single-instance guard, keyed to the data dir: two instances on the SAME dir would race the vault and corrupt the log (the trim is read-truncate-rewrite), so the second must not start.
-/// An advisory exclusive `flock` on `<data_dir>/photon.lock` — exact-keyed (no port hashing/collision, no interference from other apps), and the kernel releases it when the holding process dies, so a crash leaves no stale lock.
+/// An advisory exclusive `flock` on the dir-keyed runtime lock (see `runtime_artifact`) — the kernel releases it when the holding process dies, so a crash leaves no stale lock, and tmpfs means no artifact survives a reboot either.
 /// Returns the guard to keep alive for the whole process, or `None` if another instance already holds this dir. (Non-unix desktops fall back to a localhost socket; Android is single-instance by construction so this isn't compiled there.)
 #[cfg(all(unix, not(target_os = "android")))]
 pub fn acquire_single_instance(data_dir: &std::path::Path) -> Option<InstanceLock> {
     use std::os::unix::io::AsRawFd;
-    let _ = std::fs::create_dir_all(data_dir);
+    let lock_path = runtime_artifact(data_dir, "lock");
+    if let Some(parent) = lock_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     let file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
-        .open(data_dir.join("photon.lock"))
+        .open(&lock_path)
         .ok()?;
     // LOCK_EX | LOCK_NB: take it now or fail immediately if another live process holds it.
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
@@ -498,9 +511,46 @@ pub fn read_file(path: &Path, label: &str) -> Result<Vec<u8>, std::io::Error> {
 mod tests {
     use super::*;
 
+    /// Tests that touch the process-wide device secret / name-key globals run SERIALLY — a parallel rebind mid-test reads the wrong vault and flakes.
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        GATE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Blobs are vault values at identity-keyed addresses; the file-era blobs/ dir folds in at session open and leaves the census.
+    #[test]
+    fn blobs_live_in_the_vault_and_loose_files_fold() {
+        let _g = serial();
+        isolate_test_storage();
+        let identity = [0x6Au8; 32];
+        let vault_seed = [0x6Bu8; 32];
+        let secret = [0x6Cu8; 32];
+        // Plant a file-era sealed blob under a keyed (unreversible) name — the fold must recover the content hash from the plaintext.
+        let dir = photon_config_dir().unwrap().join("blobs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let plain = b"the kept recording".to_vec();
+        let hash = *blake3::hash(&plain).as_bytes();
+        let sealed = kete::encrypt_bytes(&plain, &blob_seal_key(&identity)).unwrap();
+        std::fs::write(dir.join("deadbeef00.bin"), sealed).unwrap();
+        std::fs::write(dir.join(".names-v1"), b"1").unwrap();
+        let _vault = open_session_vault(identity, vault_seed, secret).unwrap();
+        assert!(blob_present(&hash), "folded blob not present in the vault");
+        assert_eq!(blob_load(&identity, &hash), Some(plain));
+        assert!(!dir.exists(), "blobs dir still in the census");
+        // Fresh store / presence / delete round trip, all vault-side.
+        let p2 = vec![0xAB; 300_000];
+        let h2 = *blake3::hash(&p2).as_bytes();
+        blob_store(&identity, &h2, &p2).unwrap();
+        assert!(blob_present(&h2));
+        assert_eq!(blob_load(&identity, &h2), Some(p2));
+        blob_delete(&h2);
+        assert!(!blob_present(&h2));
+    }
+
     /// The file-era sprawl folds into the device vault at first open: binding marker (re-sealed), opt-in markers (→ flags), dead settings.vsf (deleted) — and the loose files leave the census.
     #[test]
     fn loose_files_fold_into_the_device_vault() {
+        let _g = serial();
         isolate_test_storage();
         let secret = [0x5Cu8; 32];
         let dir = photon_config_dir().unwrap();
@@ -526,6 +576,7 @@ mod tests {
     /// THE no-data-loss contract: a legacy per-identity vault's entries — string keys and raw addresses alike — survive verbatim into the device vault on the first open_session_vault, the legacy rings park as `.legacy` backups, and a second open changes nothing.
     #[test]
     fn open_session_vault_migrates_legacy_in_place() {
+        let _g = serial();
         isolate_test_storage();
         let vault_seed = [0x4Au8; 32];
         let device_secret = [0x4Bu8; 32];
@@ -535,7 +586,7 @@ mod tests {
             let first_message_addr = vault_key("rows", &[0x11u8; 32]);
             legacy.write_addr(&first_message_addr, b"the first message ever sent over FGTW").unwrap();
         }
-        let vault = open_session_vault(vault_seed, device_secret).unwrap();
+        let vault = open_session_vault([0x49u8; 32], vault_seed, device_secret).unwrap();
         assert_eq!(vault.read("contacts/index").unwrap(), Some(b"Emma,Nick".to_vec()));
         let first_message_addr = vault_key("rows", &[0x11u8; 32]);
         assert_eq!(
@@ -550,7 +601,7 @@ mod tests {
         }
         // Idempotent: a re-open (same session, next launch) is a no-op that still reads everything.
         drop(vault);
-        let again = open_session_vault(vault_seed, device_secret).unwrap();
+        let again = open_session_vault([0x49u8; 32], vault_seed, device_secret).unwrap();
         assert_eq!(again.read("contacts/index").unwrap(), Some(b"Emma,Nick".to_vec()));
     }
 }

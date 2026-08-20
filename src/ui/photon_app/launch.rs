@@ -195,8 +195,11 @@ impl PhotonApp {
                 if let Some(session) = &self.session {
                     if let Some(kp) = &self.device_keypair {
                         let device_secret = *kp.secret.as_bytes();
-                        match crate::storage::open_session_vault(session.vault_seed, device_secret)
-                        {
+                        match crate::storage::open_session_vault(
+                            session.identity_seed,
+                            session.vault_seed,
+                            device_secret,
+                        ) {
                             Ok(s) => self.storage = Some(s),
                             Err(e) => {
                                 crate::logf!("STORAGE: init failed: {}", e);

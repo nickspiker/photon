@@ -613,8 +613,11 @@ impl FluorApp for PhotonApp {
                 // open_session_vault = the ONE device vault via the shared registry: query_resume below spawns the attest worker, which opens this same vault — a second independent engine racing this one is how the vault corruption happened (stale engine committed over the live one's blocks → seal verification failed at every subsequent open).
                 // Phase-timed (the PERF summary below): everything in this arm runs on the UI thread BEFORE the first Ready frame, and the field measured ~1.2s of it with no line naming the eater — the timers make the next boot log ground truth.
                 let t_boot = std::time::Instant::now();
-                let opened =
-                    crate::storage::open_session_vault(remembered.vault_seed, device_secret);
+                let opened = crate::storage::open_session_vault(
+                    remembered.identity_seed,
+                    remembered.vault_seed,
+                    device_secret,
+                );
                 let ms_vault = t_boot.elapsed().as_millis();
                 match opened {
                     Ok(s) => {
