@@ -136,6 +136,10 @@ impl PhotonApp {
                     vault_seed: data.identity_seed,
                     handle_proof: data.handle_proof,
                 }));
+                // Blob name key (keyed filenames — the possession-oracle close) as soon as the attested seed exists.
+                if let Some(s) = &self.session {
+                    crate::storage::blob_init_names(&s.identity_seed);
+                }
                 // An armed lock-out fires HERE and only here — the handle just proved itself. A different identity attesting (thief typing their own name) discards the arm instead: their lock was never this fleet's to execute.
                 if let Some((pk, armer_hp, name)) = self.pending_lock.take() {
                     if data.handle_proof == armer_hp {

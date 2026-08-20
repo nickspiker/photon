@@ -600,6 +600,8 @@ impl FluorApp for PhotonApp {
 
         // Auto-resume from the remembered session roots. If tohu has this login's roots (persisted on a prior, FGTW-confirmed attest), paint Ready IMMEDIATELY from local state — we already own this identity, so there is no reason to block the first frame on the network. The avatar comes from a local cache file (no vault, no network); contacts + peer presence + cloud-merge arrive a beat later via the background `query_resume` and merge in thru `on_query_result`. A rejection (handle claimed by another device) bails back to the attest screen; a transient network error leaves the local session on Ready untouched. None (first run / post-logout) falls thru to the normal typed-attest flow.
         if let Some(remembered) = tohu::session() {
+            // Blob name key + the one-time v0→v1 filename re-key walk — BEFORE the first Ready frame, so render-path blob_present reads work immediately (and the plaintext-hash possession oracle is closed the moment a seed exists).
+            crate::storage::blob_init_names(&remembered.identity_seed);
             self.session = Some(remembered);
             self.hints_dismissed = false; // fresh Ready entry → the avatar prompt gets a chance until first interaction
                                           // Initialize local storage and load contacts immediately so the contact list is visible before the FGTW round-trip completes.
