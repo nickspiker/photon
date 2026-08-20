@@ -1,8 +1,10 @@
-//! End-to-end call MEDIA loop (docs/calls.md) — proves the crypto/codec/FEC/spool pieces compose
+//! End-to-end call MEDIA loop (docs/calls.md) — proves the crypto/codec/FEC pieces compose
 //! through one full call without a live network: both sides derive the basket from shared friendship
 //! material, a caller sends sealed fountain-coded windows under packet loss, the callee reassembles
-//! and Opus-decodes them, and the recording spool round-trips a kept call. This is the offline half of
-//! the self-call harness (the live two-instance test is a field step).
+//! and Opus-decodes them. This is the offline half of the self-call harness (the live two-instance
+//! test is a field step). Mirrors the engine's STRIPPED wire (2026-08-19): 6-byte clear header
+//! (magic+seq), sealed payload = [window_id:4][ctrl:1 = esi<<2|tier][symbol = the whole window],
+//! per-rung window sizes, 1 source + 1 repair packet per window.
 
 use photon_messenger::call::keys::{derive_call_secret, Direction, StepChain};
 use photon_messenger::call::packet;
@@ -21,13 +23,24 @@ fn basket() -> [u8; 32] {
 }
 
 const FRAME_SAMPLES: usize = 480; // 10ms @ 48k mono, == platform::audio::FRAME_SAMPLES
-const FRAME_SLOT: usize = 2 + 96;
-const FRAMES_PER_WINDOW: usize = 4;
-const WINDOW_BYTES: usize = FRAMES_PER_WINDOW * FRAME_SLOT;
-const FEC_MTU: u16 = 140;
+const FRAMES_PER_WINDOW: usize = 2;
+// The engine's ladder, mirrored: rates and per-rung max encoded bytes (slots sized so windows are 8-aligned = exact single RaptorQ symbol).
+const TIER_RATES: [i32; 4] = [16_000, 32_000, 64_000, 128_000];
+const TIER_MAX_ENC: [usize; 4] = [26, 46, 86, 166];
 
-fn oti() -> raptorq::ObjectTransmissionInformation {
-    raptorq::ObjectTransmissionInformation::with_defaults(WINDOW_BYTES as u64, FEC_MTU)
+fn tier_slot(t: usize) -> usize {
+    2 + TIER_MAX_ENC[t]
+}
+
+fn tier_window_bytes(t: usize) -> usize {
+    FRAMES_PER_WINDOW * tier_slot(t)
+}
+
+fn oti(t: usize) -> raptorq::ObjectTransmissionInformation {
+    raptorq::ObjectTransmissionInformation::with_defaults(
+        tier_window_bytes(t) as u64,
+        tier_window_bytes(t) as u16,
+    )
 }
 
 /// Both sides derive the identical secret from the same basket — the receive-anywhere property.
@@ -42,19 +55,18 @@ fn both_ends_agree_on_the_secret() {
     assert_eq!(a_tx.key(), b_rx.key());
 }
 
-/// The full media path: encode → window → fountain → seal → (drop 1 of N per window) → open → decode →
-/// reassemble, and assert the callee recovers the caller's audio through the loss.
+/// The full media path at EVERY ladder rung: encode → window → fountain → seal → (drop one of the two
+/// packets, alternating source/repair) → open → ctrl-byte unpack → decode → reassemble, asserting the
+/// callee recovers the caller's audio through the loss at each rung's own bitrate + geometry.
 #[test]
-fn media_survives_packet_loss_end_to_end() {
+fn media_survives_packet_loss_end_to_end_at_every_rung() {
     let secret = basket();
-    let call_id8 = [0x11u8; 8];
     let mut tx_chain = StepChain::new(&secret, Direction::CallerToCallee);
     let mut rx_chain = StepChain::new(&secret, Direction::CallerToCallee);
 
     let mut encoder =
         opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::LowDelay).unwrap();
     encoder.set_vbr(false).unwrap();
-    encoder.set_bitrate(opus::Bitrate::Bits(32_000)).unwrap();
     let mut decoder = opus::Decoder::new(48_000, opus::Channels::Mono).unwrap();
 
     // A recognizable 440Hz-ish tone the decoder should reproduce (energy, not bit-exactness — Opus is lossy).
@@ -67,68 +79,86 @@ fn media_survives_packet_loss_end_to_end() {
             .collect()
     };
 
-    let windows = 8usize;
+    let windows_per_tier = 4usize;
     let mut seq: u32 = 0;
+    let mut wid: u32 = 0;
     let mut recovered_windows = 0usize;
     let mut total_energy_out = 0.0f64;
 
-    for w in 0..windows {
-        // --- caller: encode 4 frames into a fixed-size window ---
-        let mut window_buf = vec![0u8; WINDOW_BYTES];
-        for f in 0..FRAMES_PER_WINDOW {
-            let pcm = make_frame(w * FRAMES_PER_WINDOW + f);
-            let mut enc = vec![0u8; FRAME_SLOT - 2];
-            let n = encoder.encode(&pcm, &mut enc).unwrap();
-            let base = f * FRAME_SLOT;
-            window_buf[base..base + 2].copy_from_slice(&(n as u16).to_le_bytes());
-            window_buf[base + 2..base + 2 + n].copy_from_slice(&enc[..n]);
-        }
-
-        // --- fountain-encode with 2 repair packets, seal each, DROP THE FIRST of the window (loss) ---
-        let fec = raptorq::Encoder::new(&window_buf, oti());
-        let packets = fec.get_encoded_packets(2);
-        let mut rx_decoder = raptorq::Decoder::new(oti());
-        let mut decoded_window: Option<Vec<u8>> = None;
-        for (i, ep) in packets.iter().enumerate() {
-            let lost = i == 0; // simulate one lost packet per window
-            let mut payload = Vec::new();
-            payload.extend_from_slice(&(w as u32).to_le_bytes());
-            payload.extend_from_slice(&ep.serialize());
-            tx_chain.advance_to(StepChain::step_for_seq(seq));
-            let wire = packet::seal(&tx_chain, &call_id8, Direction::CallerToCallee, seq, &payload)
-                .unwrap();
-            seq += 1;
-            if lost {
-                continue;
-            }
-            // --- callee: parse, open under the step key, feed the fountain decoder ---
-            let (header, sealed) = packet::parse_header(&wire).unwrap();
-            let opened = packet::open(&mut rx_chain, &header, sealed).unwrap();
-            let ep2 = raptorq::EncodingPacket::deserialize(&opened[4..]);
-            if let Some(data) = rx_decoder.decode(ep2) {
-                decoded_window = Some(data);
-            }
-        }
-
-        // --- callee: decode the recovered window's 4 frames back to PCM ---
-        if let Some(data) = decoded_window {
-            recovered_windows += 1;
+    for tier in 0..TIER_RATES.len() {
+        encoder.set_bitrate(opus::Bitrate::Bits(TIER_RATES[tier])).unwrap();
+        for w in 0..windows_per_tier {
+            // --- caller: encode 2 frames into this rung's window ---
+            let mut window_buf = vec![0u8; tier_window_bytes(tier)];
             for f in 0..FRAMES_PER_WINDOW {
-                let base = f * FRAME_SLOT;
-                let n =
-                    u16::from_le_bytes(data[base..base + 2].try_into().unwrap()) as usize;
-                let mut pcm = vec![0i16; FRAME_SAMPLES];
-                let got = decoder.decode(&data[base + 2..base + 2 + n], &mut pcm, false).unwrap();
-                assert_eq!(got, FRAME_SAMPLES);
-                total_energy_out += pcm.iter().map(|&s| (s as f64).powi(2)).sum::<f64>();
+                let pcm = make_frame((tier * windows_per_tier + w) * FRAMES_PER_WINDOW + f);
+                let mut enc = vec![0u8; TIER_MAX_ENC[tier]];
+                let n = encoder.encode(&pcm, &mut enc).unwrap();
+                let base = f * tier_slot(tier);
+                window_buf[base..base + 2].copy_from_slice(&(n as u16).to_le_bytes());
+                window_buf[base + 2..base + 2 + n].copy_from_slice(&enc[..n]);
+            }
+
+            // --- fountain: 1 source + 1 repair, exactly window-sized symbols; DROP one, alternating which ---
+            let fec = raptorq::Encoder::new(&window_buf, oti(tier));
+            let packets = fec.get_encoded_packets(1);
+            assert_eq!(packets.len(), 2);
+            let mut rx_decoder = raptorq::Decoder::new(oti(tier));
+            let mut decoded_window: Option<Vec<u8>> = None;
+            for (i, ep) in packets.iter().enumerate() {
+                let lost = i == (w % 2); // alternate losing the source and the repair
+                assert_eq!(ep.data().len(), tier_window_bytes(tier), "symbol must be the exact window");
+                let esi = ep.payload_id().encoding_symbol_id() as u8;
+                let mut payload = Vec::new();
+                payload.extend_from_slice(&wid.to_le_bytes());
+                payload.push((esi << 2) | tier as u8);
+                payload.extend_from_slice(ep.data());
+                tx_chain.advance_to(StepChain::step_for_seq(seq));
+                let wire = packet::seal(&tx_chain, seq, &payload).unwrap();
+                seq += 1;
+                if lost {
+                    continue;
+                }
+                // --- callee: parse the 6-byte header, open under the step key, unpack the ctrl byte ---
+                let (header, sealed) = packet::parse_header(&wire).unwrap();
+                let opened = packet::open(&mut rx_chain, &header, sealed).unwrap();
+                let rx_wid = u32::from_le_bytes(opened[..4].try_into().unwrap());
+                assert_eq!(rx_wid, wid);
+                let ctrl = opened[4];
+                let rx_tier = (ctrl & 0b11) as usize;
+                let rx_esi = (ctrl >> 2) as u32;
+                assert_eq!(rx_tier, tier);
+                assert_eq!(opened.len(), 5 + tier_window_bytes(rx_tier));
+                let ep2 = raptorq::EncodingPacket::new(
+                    raptorq::PayloadId::new(0, rx_esi),
+                    opened[5..].to_vec(),
+                );
+                if let Some(data) = rx_decoder.decode(ep2) {
+                    decoded_window = Some(data);
+                }
+            }
+            wid += 1;
+
+            // --- callee: decode the recovered window's frames back to PCM ---
+            if let Some(data) = decoded_window {
+                recovered_windows += 1;
+                for f in 0..FRAMES_PER_WINDOW {
+                    let base = f * tier_slot(tier);
+                    let n = u16::from_le_bytes(data[base..base + 2].try_into().unwrap()) as usize;
+                    let mut pcm = vec![0i16; FRAME_SAMPLES];
+                    let got = decoder.decode(&data[base + 2..base + 2 + n], &mut pcm, false).unwrap();
+                    assert_eq!(got, FRAME_SAMPLES);
+                    total_energy_out += pcm.iter().map(|&s| (s as f64).powi(2)).sum::<f64>();
+                }
             }
         }
     }
 
-    // Every window recovered despite one lost packet each (2 repair packets cover a single loss).
+    // Every window recovered despite one lost packet each — at every rung, whichever packet died.
     assert_eq!(
-        recovered_windows, windows,
-        "RaptorQ repair must recover every window through single-packet loss"
+        recovered_windows,
+        TIER_RATES.len() * windows_per_tier,
+        "the window must reassemble from either surviving packet at every rung"
     );
     // And the recovered audio carries real energy — the tone survived the round trip.
     assert!(
@@ -138,27 +168,17 @@ fn media_survives_packet_loss_end_to_end() {
     );
 }
 
-/// A window whose loss exceeds the repair budget must NOT decode — proving the FEC isn't silently
-/// fabricating, and the engine would correctly render that window as silence.
+/// A foreign basket's packet must not open under ours — call identity lives in the key, not a header field. (A mis-SIZED symbol is the engine's shape-drop's job: raptorq PANICS on wrong-size symbols rather than returning None, so the length check in the RX loop is load-bearing, verified by the shape-drop tally — never feed the decoder unchecked sizes.)
 #[test]
-fn loss_beyond_repair_budget_does_not_decode() {
+fn foreign_baskets_stay_sealed() {
     let secret = basket();
-    let mut tx_chain = StepChain::new(&secret, Direction::CalleeToCaller);
-    let mut window_buf = vec![7u8; WINDOW_BYTES];
-    window_buf[0] = 42;
-    let fec = raptorq::Encoder::new(&window_buf, oti());
-    let packets = fec.get_encoded_packets(2);
-    let mut rx_decoder = raptorq::Decoder::new(oti());
-    let mut decoded = None;
-    // Deliver only ONE packet — far below what's needed to reconstruct 392 bytes.
-    let ep = &packets[0];
-    let mut seq = 0u32;
-    tx_chain.advance_to(StepChain::step_for_seq(seq));
-    seq += 1;
-    let _ = seq;
-    let ep2 = raptorq::EncodingPacket::deserialize(&ep.serialize());
-    if let Some(d) = rx_decoder.decode(ep2) {
-        decoded = Some(d);
-    }
-    assert!(decoded.is_none(), "one packet cannot reconstruct a full window");
+    let foreign = derive_call_secret(&[9; 32], &[9; 32], &[9; 32], &[9; 16], &[9; 32], &[9; 32]);
+    let foreign_tx = StepChain::new(&foreign, Direction::CalleeToCaller);
+    let wire = packet::seal(&foreign_tx, 0, b"not ours, plenty long enough").unwrap();
+    let (h, sealed) = packet::parse_header(&wire).unwrap();
+    let mut our_rx = StepChain::new(&secret, Direction::CalleeToCaller);
+    assert!(
+        packet::open(&mut our_rx, &h, sealed).is_none(),
+        "a foreign basket's packet must be silence here"
+    );
 }

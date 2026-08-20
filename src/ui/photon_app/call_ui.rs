@@ -576,9 +576,9 @@ impl PhotonApp {
             Some((key, path, ticket)) => (Some((key, path)), Some(ticket)),
             None => (None, None),
         };
+        // No call_id in the engine params — the media wire dropped it (the basket-derived key IS the call identity; see packet.rs); the id's only job here is naming the spool above.
         let handle = crate::call::engine::start(crate::call::engine::EngineParams {
             secret,
-            call_id8,
             we_are_caller,
             peer_addr: addr,
             spool: spool_param,

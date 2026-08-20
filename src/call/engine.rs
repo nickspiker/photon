@@ -17,9 +17,8 @@ use std::sync::Arc;
 const FRAME_SAMPLES: usize = crate::platform::audio::FRAME_SAMPLES;
 /// 2 frames/window = ~10ms of TX batching before a window is FEC-encoded and sent.
 const FRAMES_PER_WINDOW: usize = 2;
-const FEC_MTU: u16 = 140;
-/// Repair packets per window — the redundancy dial (start comfortable, tune on field loss stats).
-const REPAIR_PACKETS: u32 = 2;
+// Repair symbols per window — with the symbol spanning the WHOLE window (see `oti`), 1 repair = 2 packets per window and the window survives EITHER packet lost. This beats the old 3-source+2-repair spread on both axes: fewer bytes (2 packets not 5) AND better loss odds (window dies only when BOTH packets drop, p² vs the old ≥3-of-5 tail).
+const REPAIR_PACKETS: u32 = 1;
 
 // CHANNEL-AWARE CBR LADDER (Nick's call 2026-08-19, flag day #2): four rungs 16k → 128k, every call starts at rung 0 and climbs on evidence — TCP-slow-start for voice.
 // The rate is CHANNEL-driven, never content-driven: within a rung everything is constant-size CBR (the VBR phoneme side channel stays closed), and a rung switch only tells an observer what the network already shows them.
@@ -30,8 +29,8 @@ const REPAIR_PACKETS: u32 = 2;
 // Opus bandwidth follows bitrate automatically (NB at 16k thru fullband at 128k), so this ladder IS the 8kHz→48kHz ramp with the PCM interface pinned at 48k.
 // FLAG-DAY: pre-ladder builds parse the tier byte as FEC payload and garbage-decode; the whole fleet updates together.
 const TIER_RATES: [i32; 4] = [16_000, 32_000, 64_000, 128_000];
-/// Max encoded bytes per 10ms frame at each rung: CBR emits rate/800 bytes, +4 headroom.
-const TIER_MAX_ENC: [usize; 4] = [24, 44, 84, 164];
+/// Max encoded bytes per 10ms frame at each rung: CBR emits rate/800 bytes, +6 headroom — sized so every rung's WINDOW is a multiple of 8, which makes the RaptorQ symbol exactly the window (its alignment rounds max_packet_size down to a multiple of 8; an unaligned window would split into two padded symbols and re-grow the wire).
+const TIER_MAX_ENC: [usize; 4] = [26, 46, 86, 166];
 /// Completed-window streak that earns one rung up (~1s at 20ms/window).
 const CLIMB_CLEAN_WINDOWS: u32 = 50;
 /// Rungs dropped on a lost window.
@@ -56,7 +55,6 @@ const DUCK_RELEASE: f32 = 0.05;
 
 pub struct EngineParams {
     pub secret: [u8; 32],
-    pub call_id8: [u8; 8],
     pub we_are_caller: bool,
     pub peer_addr: SocketAddr,
     /// Recording spool (key, path) — recording by default; None only when the spool couldn't be minted (disk trouble; the call proceeds unrecorded, logged).
@@ -75,9 +73,12 @@ impl EngineHandle {
     }
 }
 
-/// The FEC geometry at a rung — both ends derive it from the tier byte, so it needs no negotiation.
+/// The FEC geometry at a rung — both ends derive it from the tier byte, so it needs no negotiation. The symbol IS the window (max_packet_size = window, and windows are 8-aligned so raptorq's alignment rounding changes nothing): one source symbol, zero pad bytes — the MTU-padding trap (140-byte symbols carrying 26 real bytes at the floor) is dead.
 fn oti(tier: usize) -> raptorq::ObjectTransmissionInformation {
-    raptorq::ObjectTransmissionInformation::with_defaults(tier_window_bytes(tier) as u64, FEC_MTU)
+    raptorq::ObjectTransmissionInformation::with_defaults(
+        tier_window_bytes(tier) as u64,
+        tier_window_bytes(tier) as u16,
+    )
 }
 
 pub fn start(params: EngineParams) -> EngineHandle {
@@ -170,8 +171,8 @@ fn run(
     let mut next_play: Option<u32> = None;
 
     let (mut pkts_out, mut pkts_in, mut windows_lost) = (0u64, 0u64, 0u64);
-    // RX drop-reason tally — see the RX loop for why each is counted apart (addressing vs secret-desync diagnosis).
-    let (mut rx_seen, mut rx_drop_parse, mut rx_drop_route, mut rx_drop_open) = (0u64, 0u64, 0u64, 0u64);
+    // RX drop-reason tally — see the RX loop for why each is counted apart (addressing vs secret-desync diagnosis). Shape = opened fine but the payload geometry is wrong (truncation bug or a mixed-version peer).
+    let (mut rx_seen, mut rx_drop_parse, mut rx_drop_shape, mut rx_drop_open) = (0u64, 0u64, 0u64, 0u64);
     // Audio ENERGY readout — mean |sample| of what we CAPTURED (tx) and what we DECODED for playback (rx). A silent direction shows as ~0 here: near-zero tx = our mic content is dead (route/gain/AEC over-duck, NOT a permission miss — that path never reaches capture); non-zero rx that the user still didn't hear = a playback/route problem downstream. Separates "one side heard" into capture-silent vs playback-silent without guessing (field 2026-08-19).
     let (mut tx_energy, mut tx_frames, mut rx_energy, mut rx_frames) = (0u64, 0u64, 0u64, 0u64);
 
@@ -232,14 +233,15 @@ fn run(
             if frames_in_window == FRAMES_PER_WINDOW {
                 let fec = raptorq::Encoder::new(&window_buf, oti(tier));
                 for ep in fec.get_encoded_packets(REPAIR_PACKETS) {
-                    let mut payload = Vec::with_capacity(5 + FEC_MTU as usize + 8);
+                    // Sealed payload: [window_id:4][ctrl:1 = esi<<2 | tier][symbol = the whole window]. RaptorQ's 4-byte PayloadId is packed into the ctrl byte's upper 6 bits (source block is always 0, symbol id never exceeds a handful) and reconstructed on RX — 3 wire bytes saved per packet.
+                    let esi = ep.payload_id().encoding_symbol_id() as u8;
+                    let mut payload =
+                        Vec::with_capacity(5 + tier_window_bytes(TIER_RATES.len() - 1));
                     payload.extend_from_slice(&window_id.to_le_bytes());
-                    payload.push(tier as u8);
-                    payload.extend_from_slice(&ep.serialize());
+                    payload.push((esi << 2) | tier as u8);
+                    payload.extend_from_slice(ep.data());
                     tx_chain.advance_to(StepChain::step_for_seq(seq));
-                    if let Some(wire) =
-                        packet::seal(&tx_chain, &params.call_id8, tx_dir, seq, &payload)
-                    {
+                    if let Some(wire) = packet::seal(&tx_chain, seq, &payload) {
                         if !super::send_media(wire, peer) {
                             crate::log("CALL: media TX channel gone — engine stopping");
                             stop.store(true, Ordering::SeqCst);
@@ -262,10 +264,7 @@ fn run(
                 rx_drop_parse += 1;
                 continue;
             };
-            if header.call_id8 != params.call_id8 || header.dir != rx_dir {
-                rx_drop_route += 1;
-                continue;
-            }
+            // No call-id or direction check — both live in the key now: the AEAD below is the whole gate (a stale call's straggler or a cross-direction packet just fails to open).
             let Some(payload) = packet::open(&mut rx_chain, &header, sealed) else {
                 rx_drop_open += 1;
                 continue; // wrong key/step/tamper — silence, never a guess
@@ -276,17 +275,27 @@ fn run(
                 crate::logf!("CALL: peer media now from {} (was {})", src, peer);
                 peer = src;
             }
+            // Sealed payload shape: [window_id:4][ctrl:1][symbol]. The rung rides the ctrl byte's low 2 bits (slot walk + FEC geometry derive from it per window, so a mid-call rung switch decodes seamlessly); the symbol id rides the upper 6 — a symbol that isn't exactly that rung's window is malformed.
             if payload.len() < 5 {
+                rx_drop_shape += 1;
                 continue;
             }
             let wid = u32::from_le_bytes(payload[..4].try_into().unwrap());
-            // The window's ladder rung rides byte 4 — slot walk + FEC geometry derive from it per window, so a mid-call rung switch decodes seamlessly.
-            let wtier = (payload[4] as usize).min(TIER_RATES.len() - 1);
+            let ctrl = payload[4];
+            let wtier = (ctrl & 0b11) as usize;
+            let esi = (ctrl >> 2) as u32;
+            if payload.len() != 5 + tier_window_bytes(wtier) {
+                rx_drop_shape += 1;
+                continue;
+            }
             let np = *next_play.get_or_insert(wid);
             if wid < np || rx_done.contains_key(&wid) {
                 continue; // already played or already decoded
             }
-            let ep = raptorq::EncodingPacket::deserialize(&payload[5..]);
+            let ep = raptorq::EncodingPacket::new(
+                raptorq::PayloadId::new(0, esi),
+                payload[5..].to_vec(),
+            );
             let entry = rx_decoders
                 .entry(wid)
                 .or_insert_with(|| (wtier, raptorq::Decoder::new(oti(wtier))));
@@ -369,13 +378,13 @@ fn run(
         windows_lost
     );
     // The diagnostic that separates the two silent-failure worlds (see the RX loop): rx_seen=0 → media never arrived (target address / NAT / relay); rx_seen>0 with pkts_in=0 and rx_drop_open>0 → arrived but the basket secret didn't match (key derivation desync). Only logged when something was received or dropped, so a clean call stays quiet.
-    if rx_seen > 0 || rx_drop_parse > 0 || rx_drop_route > 0 || rx_drop_open > 0 {
+    if rx_seen > 0 || rx_drop_parse > 0 || rx_drop_shape > 0 || rx_drop_open > 0 {
         crate::logf!(
-            "CALL: rx tally — seen {} → parse-drop {}, route-drop {}, open-drop {}, decoded {}",
+            "CALL: rx tally — seen {} → parse-drop {}, open-drop {}, shape-drop {}, decoded {}",
             rx_seen,
             rx_drop_parse,
-            rx_drop_route,
             rx_drop_open,
+            rx_drop_shape,
             pkts_in
         );
     }
@@ -413,30 +422,53 @@ mod tests {
 
     #[test]
     fn tier_slots_fit_cbr_frames() {
-        // CBR emits exactly rate/800 bytes per 10ms frame; every rung's slot must hold that with margin, and the top rung must stay a single byte on the wire (the tier byte is a u8).
-        assert!(TIER_RATES.len() <= u8::MAX as usize);
+        // CBR emits exactly rate/800 bytes per 10ms frame; every rung's slot must hold that with margin. The rung index must fit the ctrl byte's 2 tier bits, and every window must be 8-aligned so raptorq's symbol is EXACTLY the window (unaligned would split + pad — the trap this design kills).
+        assert!(TIER_RATES.len() <= 4, "tier rides 2 bits of the ctrl byte");
         for t in 0..TIER_RATES.len() {
             assert!(TIER_RATES[t] as usize / 800 + 2 <= TIER_MAX_ENC[t], "rung {} slot too tight", t);
+            assert_eq!(tier_window_bytes(t) % 8, 0, "rung {} window must be 8-aligned", t);
         }
     }
 
     #[test]
-    fn every_rung_survives_one_lost_packet() {
-        // The per-tier FEC geometry (tier-sized window + repair packets) must reassemble after losing a source packet — the whole point of the fountain. Exercised at EVERY rung because each has its own window size and thus its own packet split.
+    fn every_rung_is_two_exact_packets_and_survives_either_loss() {
+        // The stripped geometry: symbol = whole window → exactly 1 source + REPAIR_PACKETS packets, each carrying window-sized data with ZERO pad bytes, and the window reassembles from EITHER packet alone (the repair symbol alone must suffice — that's the loss story).
         for t in 0..TIER_RATES.len() {
             let data: Vec<u8> = (0..tier_window_bytes(t)).map(|i| (i * 7 + t) as u8).collect();
             let enc = raptorq::Encoder::new(&data, oti(t));
-            let mut pkts = enc.get_encoded_packets(REPAIR_PACKETS);
-            pkts.remove(0);
-            let mut dec = raptorq::Decoder::new(oti(t));
-            let mut out: Option<Vec<u8>> = None;
-            for p in pkts {
-                if let Some(d) = dec.decode(p) {
-                    out = Some(d);
-                    break;
-                }
+            let pkts = enc.get_encoded_packets(REPAIR_PACKETS);
+            assert_eq!(pkts.len(), 1 + REPAIR_PACKETS as usize, "rung {}", t);
+            for p in &pkts {
+                assert_eq!(p.data().len(), tier_window_bytes(t), "rung {} symbol must be exactly the window", t);
+                // The symbol id must fit the ctrl byte's 6 bits (it's 0 or 1 here).
+                assert!(p.payload_id().encoding_symbol_id() < 64, "rung {}", t);
             }
-            assert_eq!(out.expect("window must reassemble"), data, "rung {}", t);
+            for lost in 0..pkts.len() {
+                let mut dec = raptorq::Decoder::new(oti(t));
+                let mut out: Option<Vec<u8>> = None;
+                for (i, p) in pkts.iter().enumerate() {
+                    if i == lost {
+                        continue;
+                    }
+                    // Round-trip thru the wire packing: esi into the ctrl byte, symbol bytes raw, reconstructed exactly as the RX loop does.
+                    let esi = p.payload_id().encoding_symbol_id();
+                    let rebuilt = raptorq::EncodingPacket::new(
+                        raptorq::PayloadId::new(0, esi),
+                        p.data().to_vec(),
+                    );
+                    if let Some(d) = dec.decode(rebuilt) {
+                        out = Some(d);
+                        break;
+                    }
+                }
+                assert_eq!(
+                    out.expect("window must reassemble from the surviving packet"),
+                    data,
+                    "rung {} lost packet {}",
+                    t,
+                    lost
+                );
+            }
         }
     }
 }
