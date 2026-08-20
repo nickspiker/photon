@@ -1628,7 +1628,7 @@ async fn run_checker(
                         None => &buf[..len],
                     };
 
-                    // VOICE MEDIA FAST PATH (docs/calls.md): two-byte magic check BEFORE the entire parse ladder — 50 packets/second must not pay for trial parsing, PT acks, or StatusUpdates. Matches route raw to the call engine's sink; with no live call they silently drop (also the correct fate for post-hangup stragglers). The magic collides with nothing here: VSF opens "RÅ<", PT DATA opens with a lowercase stream id.
+                    // VOICE MEDIA FAST PATH (docs/calls.md): one-byte high-ASCII magic check BEFORE the entire parse ladder (every other frame leads with plain ASCII: VSF 'R', PT lowercase) — 50 packets/second must not pay for trial parsing, PT acks, or StatusUpdates. Matches route raw to the call engine's sink; with no live call they silently drop (also the correct fate for post-hangup stragglers). The magic collides with nothing here: VSF opens "RÅ<", PT DATA opens with a lowercase stream id.
                     if crate::call::packet::is_media_packet(msg_bytes) {
                         crate::call::deliver_media(msg_bytes, src_addr);
                         continue;
