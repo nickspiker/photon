@@ -1,6 +1,6 @@
 ---
 name: project-great-cleanup
-description: "THE GREAT CLEANUP (7-phase approved plan, plans/pure-forging-acorn.md): Phase 1+2 SHIPPED 2026-08-20 (test isolation; ONE device vault + in-place migration + sprawl/blob absorption + runtime-dir artifacts + dir unification + census test + 500MB probe); Phase 3 self-is-a-contact NEXT; then fleet-first rejoin, JPEG excision, LAN-add restore, flag-day publish"
+description: "THE GREAT CLEANUP: Phases 1-6 ALL SHIPPED 2026-08-20 (test isolation; ONE device vault + migration; self-is-a-contact; fleet-first rejoin; JPEG excision + artifact gate; LAN add-device restore); Phase 7 = Nick's flag-day publish + field watch"
 metadata: 
   node_type: memory
   type: project
@@ -21,4 +21,12 @@ The Great Cleanup, approved 2026-08-20 (plan file: ~/.claude/plans/pure-forging-
 
 **Residual Phase 2 nits**: desktop log stays VOLATILE in temp per Nick's 2026-08-01 call (config census = the vault ring alone); fingerprint is machine-scoped so two OS accounts on one box = same device identity (second attest refused — consistent with one-owner-per-device, told Nick 2026-08-20).
 
-**NEXT: Phase 3** self is a contact ([[feedback-self-is-a-contact]]): fleet-route rid registration in hist_rid_map (black hole at conversation.rs drain_history_pages), live-push trace, ring tier from own-device presence, delete the 17 has_remote branches. Then Phase 4 fleet-first rejoin (gate spawn_next_pending_keygen on unprobed siblings), Phase 5 JPEG excision + artifact gate, Phase 6 add-device LAN discovery archaeology, Phase 7 flag-day publish (ZERO data loss).
+**Phase 3 SHIPPED** (photon 7004d6c+8354020): audit found rid registration/serve/merge/live-push already unified (black hole mechanics fixed piecemeal earlier); branch census = remaining gates are doctrine-approved degenerate forms; NEW: honest self ring (contact_conn_tier fold over siblings via row_ring_tier — a dead sync partner shows GREY, the 13-vs-0 class is now visible), storage seam test (save table == serve table for [pid,pid] degenerate addressing), black-hole log text retired. Live two-device walk = Phase 7 field watch.
+
+**Phase 4 SHIPPED** (c65c861): friend keygens hold at the ONE spawner chokepoint until every sibling has a presence VERDICT (pong or 3-timeout); sibling pair-weaves exempt (the chain-replication channel); unprobed siblings re-ping ~6s so a dead-sibling verdict lands ~18s; keygen result on an already-Complete contact discarded.
+
+**Phase 5 SHIPPED** (f081138): resample_to_jpeg + the whole resample card (slider/checkbox/pills/deferred-encode/probe_image_dims) DELETED — images send byte-exact; scripts/lib/artifact-gate.sh in preflight_gates (foreign image ENCODERS banned, fs::write fenced to allowlist = the approval record); AGENT.md Rule -1 = house formats only, formats/codecs/locations are owner decisions.
+
+**Phase 6 SHIPPED** (a755170): LAN add-device restored — join loop broadcasts UDP discovery each poll round; LanPeerDiscovered carries device_pubkey; own-handle beacons feed lan_heard ledger → candidate rows light "nearby" → tap binds thru the existing two-phase green confirm; words = remote fallback. Registry signature check unchanged (LAN squatter can't become tappable). Field verify pending.
+
+**Phase 7 = Nick's call**: flag-day publish (media wire v3 + storage v2 + cleanup, all since v0.57), rolling per-device upgrade path proven by migration tests, optional FGTW hygiene. Field watch: notes-to-self convergence both ways, config census two-file, re-serve lines, call counters, LAN tap-add, first-ever-FGTW-message present.
