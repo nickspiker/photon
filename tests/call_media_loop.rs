@@ -23,17 +23,17 @@ fn basket() -> [u8; 32] {
 }
 
 const FRAME_SAMPLES: usize = 480; // 10ms @ 48k mono, == platform::audio::FRAME_SAMPLES
-const FRAMES_PER_WINDOW: usize = 2;
-// The engine's ladder, mirrored: rates and per-rung max encoded bytes (slots sized so windows are 8-aligned = exact single RaptorQ symbol).
+// The engine's ladder, mirrored: rates, per-rung max encoded bytes (slots sized so windows are 8-aligned = exact single RaptorQ symbol), and per-rung frames/window (4 at the floor to amortize per-packet cost, 2 above).
 const TIER_RATES: [i32; 4] = [16_000, 32_000, 64_000, 128_000];
 const TIER_MAX_ENC: [usize; 4] = [26, 46, 86, 166];
+const TIER_FRAMES: [usize; 4] = [4, 2, 2, 2];
 
 fn tier_slot(t: usize) -> usize {
     2 + TIER_MAX_ENC[t]
 }
 
 fn tier_window_bytes(t: usize) -> usize {
-    FRAMES_PER_WINDOW * tier_slot(t)
+    TIER_FRAMES[t] * tier_slot(t)
 }
 
 fn oti(t: usize) -> raptorq::ObjectTransmissionInformation {
@@ -87,10 +87,10 @@ fn media_survives_packet_loss_end_to_end_at_every_rung() {
     for tier in 0..TIER_RATES.len() {
         encoder.set_bitrate(opus::Bitrate::Bits(TIER_RATES[tier])).unwrap();
         for w in 0..windows_per_tier {
-            // --- caller: encode 2 frames into this rung's window ---
+            // --- caller: encode this rung's frame count into its window ---
             let mut window_buf = vec![0u8; tier_window_bytes(tier)];
-            for f in 0..FRAMES_PER_WINDOW {
-                let pcm = make_frame((tier * windows_per_tier + w) * FRAMES_PER_WINDOW + f);
+            for f in 0..TIER_FRAMES[tier] {
+                let pcm = make_frame((tier * windows_per_tier + w) * 4 + f);
                 let mut enc = vec![0u8; TIER_MAX_ENC[tier]];
                 let n = encoder.encode(&pcm, &mut enc).unwrap();
                 let base = f * tier_slot(tier);
@@ -135,7 +135,7 @@ fn media_survives_packet_loss_end_to_end_at_every_rung() {
             // --- callee: decode the recovered window's frames back to PCM ---
             if let Some(data) = decoded_window {
                 recovered_windows += 1;
-                for f in 0..FRAMES_PER_WINDOW {
+                for f in 0..TIER_FRAMES[tier] {
                     let base = f * tier_slot(tier);
                     let n = u16::from_le_bytes(data[base..base + 2].try_into().unwrap()) as usize;
                     let mut pcm = vec![0i16; FRAME_SAMPLES];
