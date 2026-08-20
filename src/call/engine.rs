@@ -46,8 +46,9 @@ const fn tier_window_bytes(tier: usize) -> usize {
     TIER_FRAMES[tier] * tier_slot(tier)
 }
 
-// SOFT ENERGY DUCK (echo layer 2, docs/calls.md): with the Android output now on the MEDIA fast-mixer path there is no vendor AEC behind it, so when the far end is audibly rendering AND the route has an acoustic path (not Headset), the mic glides toward DUCK_GAIN_FLOOR instead of hard-gating.
-// Fast attack so speaker echo dies within ~2 frames, slow release so word tails aren't chopped; tune these in the field — the engine-down log counts ducked frames.
+// SOFT ENERGY DUCK (echo layer 2, docs/calls.md) — built but DISARMED (Nick, 2026-08-19): the first field passes run STRICT CLEAN echo-prone audio to hear the raw truth. Two reasons: the peak-hold far_level (~80ms hang) smears the gate's timing, which is exactly what clips double-talk and pumps; and Android capture still runs VOICE_COMMUNICATION, whose vendor mic-side AEC may or may not already cancel against the MEDIA-path output (device-dependent) — the raw run reveals which.
+// While disarmed the trigger is still MEASURED: far-active frames (what the duck WOULD have gated) are counted into the engine-down log, so the raw run quantifies both the echo and the would-be gate before any audio is touched. Flip DUCK_ENABLED to re-arm the glide.
+const DUCK_ENABLED: bool = false;
 const DUCK_FAR_LEVEL: u32 = 200;
 const DUCK_GAIN_FLOOR: f32 = 0.1;
 const DUCK_ATTACK: f32 = 0.5;
@@ -159,6 +160,7 @@ fn run(
     // Duck state: current gain glides between 1.0 and the floor; route is cached at engine start (Headset = no acoustic path = never duck; Unknown ducks, the safe default).
     let mut duck_gain: f32 = 1.0;
     let mut ducked_frames: u64 = 0;
+    let mut far_active_frames: u64 = 0;
     let route_ducks = !matches!(
         crate::platform::audio::route(),
         crate::platform::audio::AudioRoute::Headset
@@ -185,7 +187,13 @@ fn run(
         TIER_RATES[0] / 1000,
         TIER_FRAMES[0],
         REPAIR_PACKETS,
-        if route_ducks { "armed" } else { "bypassed (headset)" }
+        if !DUCK_ENABLED {
+            "disarmed (raw echo run)"
+        } else if route_ducks {
+            "armed"
+        } else {
+            "bypassed (headset)"
+        }
     );
 
     while !stop.load(Ordering::Relaxed) {
@@ -202,16 +210,21 @@ fn run(
             // Mic health level BEFORE the duck, so a heavy duck never reads as a dead mic in the tally.
             tx_energy += frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>();
             tx_frames += 1;
-            // Soft energy duck: far end audibly rendering + acoustic route → glide the mic toward the floor (fast attack); otherwise glide back to unity (slow release).
+            // Duck trigger — measured always, APPLIED only when armed (see the DUCK_ENABLED block: first field passes run raw echo-prone audio and just count what the duck would have gated).
             let mut frame = frame;
             let far_active = route_ducks && crate::platform::audio::far_level() > DUCK_FAR_LEVEL;
-            let target = if far_active { DUCK_GAIN_FLOOR } else { 1.0 };
-            let coef = if target < duck_gain { DUCK_ATTACK } else { DUCK_RELEASE };
-            duck_gain += (target - duck_gain) * coef;
-            if duck_gain < 0.995 {
-                ducked_frames += 1;
-                for s in frame.iter_mut() {
-                    *s = (*s as f32 * duck_gain) as i16;
+            if far_active {
+                far_active_frames += 1;
+            }
+            if DUCK_ENABLED {
+                let target = if far_active { DUCK_GAIN_FLOOR } else { 1.0 };
+                let coef = if target < duck_gain { DUCK_ATTACK } else { DUCK_RELEASE };
+                duck_gain += (target - duck_gain) * coef;
+                if duck_gain < 0.995 {
+                    ducked_frames += 1;
+                    for s in frame.iter_mut() {
+                        *s = (*s as f32 * duck_gain) as i16;
+                    }
                 }
             }
             let mut enc = vec![0u8; TIER_MAX_ENC[tier]];
@@ -390,13 +403,15 @@ fn run(
         rx_level,
         rx_frames
     );
-    // Ladder + duck field-tuning readout: where the call ended up, how it moved, and how often the duck engaged.
+    // Ladder + duck field-tuning readout: where the call ended up, how it moved, and — while the duck is disarmed — how often the far-active trigger WOULD have gated the mic (the raw-echo run's key number).
     crate::logf!(
-        "CALL: ladder — ended {} kbps, {} up(s), {} down(s); duck — {} of {} frames",
+        "CALL: ladder — ended {} kbps, {} up(s), {} down(s); duck {} — ducked {}, far-active {} of {} frames",
         TIER_RATES[tier] / 1000,
         tier_ups,
         tier_downs,
+        if DUCK_ENABLED { "armed" } else { "disarmed" },
         ducked_frames,
+        far_active_frames,
         tx_frames
     );
     teardown();
