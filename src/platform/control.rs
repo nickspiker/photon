@@ -1,6 +1,6 @@
 //! Second-launch handoff — the control channel a fresh `photon-messenger` invocation uses to tell the RESIDENT instance "show yourself" instead of dying with an "already running" error.
 //! One verb, one direction: `show\n`. No state crosses; the resident side reacts by surfacing its window (`PhotonEvent::ShowWindow` → `EventResponse::ShowWindow`). Anything richer belongs in the app protocol, not here.
-//! Transport per platform: a Unix domain socket at `<data_dir>/control.sock` (created ONLY after the flock single-instance guard is won, so a stale path can be unlinked safely), and on Windows the single-instance TcpListener itself doubles as the channel (it already exists, it's already dir-keyed, and any same-user process that could connect could equally just launch the app — "show the window" needs no authentication).
+//! Transport per platform: a Unix domain socket at the dir-keyed runtime path (`storage::runtime_artifact`; created ONLY after the flock single-instance guard is won, so a stale path can be unlinked safely), and on Windows the single-instance TcpListener itself doubles as the channel (it already exists, it's already dir-keyed, and any same-user process that could connect could equally just launch the app — "show the window" needs no authentication).
 
 use std::io::{Read, Write};
 
@@ -15,13 +15,16 @@ static LISTENER: std::sync::Mutex<Option<ControlListener>> = std::sync::Mutex::n
 
 #[cfg(unix)]
 fn socket_path(data_dir: &std::path::Path) -> std::path::PathBuf {
-    data_dir.join("control.sock")
+    crate::storage::runtime_artifact(data_dir, "sock")
 }
 
 /// Resident side, unix: bind the control socket. Call ONLY while holding the single-instance flock — that guarantee is what makes unlinking a leftover socket path safe (the previous owner is dead; the kernel freed its flock).
 #[cfg(unix)]
 pub fn install_unix_listener(data_dir: &std::path::Path) {
     let path = socket_path(data_dir);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     let _ = std::fs::remove_file(&path);
     match std::os::unix::net::UnixListener::bind(&path) {
         Ok(l) => *LISTENER.lock().unwrap() = Some(ControlListener::Unix(l)),

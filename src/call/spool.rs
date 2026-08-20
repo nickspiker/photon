@@ -26,7 +26,8 @@ impl Drop for SpoolTicket {
 
 /// Mint a fresh spool (key + path) for a call. The engine writes it; the ticket decides its fate.
 pub fn mint(call_id8: &[u8; 8]) -> Option<([u8; 32], std::path::PathBuf, SpoolTicket)> {
-    let dir = crate::storage::blob_dir().ok()?;
+    let dir = crate::storage::runtime_dir();
+    std::fs::create_dir_all(&dir).ok()?;
     let path = dir.join(format!("callspool-{}.tmp", hex::encode(call_id8)));
     let key: [u8; 32] = rand::random();
     Some((
