@@ -1,7 +1,7 @@
 //! The device-binding marker — the client half of ONE-IDENTITY-PER-DEVICE (docs/lifecycle.md D2).
 //!
 //! A DEVICE-scope vault entry (readable before any handle is typed — the device vault opens from the device secret alone at first launch) holding the party id of the identity this device is bound to. The Launch probe consults it with the CHEAP party-id derivation of the typed handle — a mismatch refuses before the ~1s memory-hard proof is ever spent. Written on attest/join success; cleared only by a wipe (clean_device_for_reuse) — a takeover-cleared SESSION does not unbind a device, only wiping does. The worker's one-owner-per-device index is the backstop for a scrubbed marker.
-//! Was a loose sealed file (`device_binding.vsf`) in the file-sprawl era; `absorb_loose_files` folded it in.
+//! Was a loose sealed file (`device_binding.vsf`) in the file-sprawl era; that file is a census stray now (deleted, not imported) — the worker's binding index backstops a device that loses the local marker.
 
 const ENTRY: &str = "binding/party";
 
