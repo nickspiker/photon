@@ -146,11 +146,33 @@ fn absorb_loose_files(vault: &FlatStorage, device_secret: &[u8; 32]) {
             crate::log("STORAGE: reboot capsule folded into the vault");
         }
     }
-    // settings.vsf held only the log hex-elision knobs, whose runtime API vsf removed — the file is dead weight (env vars still override in dev). Delete the stray.
-    let _ = std::fs::remove_file(dir.join("settings.vsf"));
-    // File-era runtime artifacts (lock + control socket live in runtime_dir now). A still-running OLD instance loses only its second-launch handoff for this one transition boot; its flock is on the fd, not the name.
-    let _ = std::fs::remove_file(dir.join("photon.lock"));
-    let _ = std::fs::remove_file(dir.join("control.sock"));
+    // THE CENSUS SWEEP (Nick's rule, 2026-08-20): anything in the config dir that isn't the log or a `<token>.vsf` ring gets AUTO-NUKED. The keep-set: the device ring pair (primary + macOS same-dir shadow), the log + its crash sidecar (they land here only when temp is unwritable), and `blobs/` — spared solely because the session-open fold owns it (decrypt-or-delete, then the dir itself goes). Everything else — settings.vsf, lock/socket relics, orphan strays from any era — is deleted by name-independent sweep, so the next stray CLASS never needs its own line here.
+    // Desktop only: on Android `photon_config_dir` is the app-private files ROOT, which the OS and the JNI layer also write into — sweeping unknown names there would eat platform files. Android's sandbox already isolates it; the fold above still runs.
+    #[cfg(not(target_os = "android"))]
+    {
+        let ring = tohu::device_vault_path_name(APP.id, device_secret);
+        let keep = [
+            format!("{}.vsf", ring),
+            format!("{}{}.vsf", ring, ".shadow"),
+            "photon.log.vsf".to_string(),
+            "photon.crash.txt".to_string(),
+            "blobs".to_string(),
+        ];
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for entry in rd.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if keep.iter().any(|k| *k == name) {
+                    continue;
+                }
+                let p = entry.path();
+                let removed = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+                match removed {
+                    Ok(()) => crate::logf!("STORAGE: census sweep — stray {} auto-nuked (config dir = the log + the vault)", name),
+                    Err(e) => crate::logf!("STORAGE: census sweep — could not remove {}: {}", name, e),
+                }
+            }
+        }
+    }
 }
 
 /// In-place migration from the per-identity vault era: every entry of the legacy vault is raw-copied (stored bytes verbatim, same addresses — the identity-scope key derivation is unchanged, so ciphertexts decrypt identically) into the device vault, then the legacy rings are renamed to `.legacy` backups — kept, not deleted, as missed-domain insurance until a later version reaps them. Marker-gated in the device scope, single-flight, idempotent; every row of history — including the first message ever sent over FGTW — survives.
@@ -523,6 +545,27 @@ mod tests {
         GATE.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// THE census rule: anything in the config dir that isn't the log or a vault ring is auto-nuked at first vault open — strays don't need to be known by name to die (the []x-left-blobs field find, 2026-08-20).
+    #[test]
+    fn census_sweep_auto_nukes_strays() {
+        let _g = serial();
+        isolate_test_storage();
+        let secret = [0x9Du8; 32];
+        let dir = photon_config_dir().unwrap();
+        std::fs::create_dir_all(dir.join("junkdir")).unwrap();
+        std::fs::write(dir.join("junkdir/orphan.bin"), b"x").unwrap();
+        std::fs::write(dir.join("mystery.dat"), b"x").unwrap();
+        std::fs::write(dir.join("photon.log.vsf"), b"log").unwrap();
+        std::fs::create_dir_all(dir.join("blobs")).unwrap();
+        std::fs::write(dir.join("blobs/awaiting-fold.bin"), b"x").unwrap();
+        install_device_secret(secret);
+        let _v = device_vault().unwrap();
+        assert!(!dir.join("junkdir").exists(), "stray dir survived the sweep");
+        assert!(!dir.join("mystery.dat").exists(), "stray file survived the sweep");
+        assert!(dir.join("photon.log.vsf").exists(), "the log must survive the sweep");
+        assert!(dir.join("blobs").exists(), "blobs are the session-open fold's to consume, not the sweep's");
+    }
+
     /// Blobs are vault values at identity-keyed addresses; the file-era blobs/ dir folds in at session open and leaves the census.
     #[test]
     fn blobs_live_in_the_vault_and_loose_files_fold() {
@@ -613,6 +656,7 @@ mod tests {
             .unwrap()
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "photon.log.vsf" && n != "photon.crash.txt")
             .collect();
         assert!(leftovers.is_empty(), "config-dir strays survived: {:?}", leftovers);
         // The device-vault rings exist at both mirror paths. (Per-dir "exactly one file" isn't assertable here — the test root is shared by the whole parallel suite, so sibling tests' vaults coexist; the field census is the two rings.)
