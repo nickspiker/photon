@@ -277,7 +277,7 @@ impl FleetSettings {
 /// Persist the settings state as one vault entry (the codec's own bytes; the vault layer AEADs them).
 pub fn save_fleet_settings(fs: &FleetSettings, storage: &FlatStorage) -> Result<(), StorageError> {
     storage.write_addr(
-        &crate::storage::vault_key("settings", storage.vault_seed()),
+        &crate::storage::vault_key("settings", &storage.vault_seed()),
         &settings_to_bytes(&fs.global, &fs.devices),
     )
 }
@@ -286,7 +286,7 @@ pub fn save_fleet_settings(fs: &FleetSettings, storage: &FlatStorage) -> Result<
 pub fn load_fleet_settings(storage: &FlatStorage, our_device: [u8; 32]) -> FleetSettings {
     let mut fs = FleetSettings::new(our_device);
     if let Ok(Some(bytes)) =
-        storage.read_addr(&crate::storage::vault_key("settings", storage.vault_seed()))
+        storage.read_addr(&crate::storage::vault_key("settings", &storage.vault_seed()))
     {
         match settings_from_bytes(&bytes) {
             Ok((g, d)) => {
