@@ -566,10 +566,16 @@ impl PhotonApp {
             crate::log("CALL: no secret — media engine not started");
             return (None, None);
         };
-        let Some(addr) = self.contacts.get(ci).and_then(|c| c.race_addrs()).map(|(a, _)| a) else {
-            crate::log("CALL: no direct address — media unavailable (relay media is deferred)");
-            return (None, None);
-        };
+        // No validated direct address is NOT no engine (field 2026-08-20, the "stuck call": Emma's validated path to Nick expired mid-session, this bail left her engine down, and the call sat Active-and-silent BOTH ways even though Nick held a valid path and its media was arriving — with no engine there was no sink to decode it and no TX to answer with). Start on the RELAY_ADDR sentinel instead: RX needs no address at all (the engine installs the sink), sends to the sentinel are swallowed harmlessly, and the peer's FIRST authenticated packet re-points TX at its real source (address-follows-auth). Media stays dead only when NEITHER side holds an address.
+        let addr = self
+            .contacts
+            .get(ci)
+            .and_then(|c| c.race_addrs())
+            .map(|(a, _)| a)
+            .unwrap_or_else(|| {
+                crate::log("CALL: no direct address — engine up on the sentinel; TX will follow the peer's first authenticated packet");
+                crate::network::status::RELAY_ADDR
+            });
         let call_id8: [u8; 8] = call_id[..8].try_into().unwrap();
         // Recording by default (docs/calls.md): the spool key lives ONLY in this ticket; the engine writes sealed records; keep/delete decides at hangup.
         let (spool_param, ticket) = match crate::call::spool::mint(&call_id8) {
