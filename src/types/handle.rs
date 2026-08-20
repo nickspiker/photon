@@ -27,7 +27,7 @@ impl Handle {
         Self::username_to_handle_proof(&self.text)
     }
 
-    /// Generate handle proof from a username string via [`ihi::handle_to_proof`] — the RAW typed string, byte-precise (Nick's rule, restored 2026-08-18: `Nick` ≠ `Nick`, whitespace is a literal handle, the ONLY validation is non-empty; the old case/space folding silently aliased identities and deleted the human's entropy). Memory-hard PoW (24MB scratch, 17 rounds, ~1s on 2025 hardware) — anti-squatting + ASIC-resistant. Returns the 32-byte proof.
+    /// Generate handle proof from a username string via [`ihi::handle_to_proof`] — the RAW typed string, byte-precise (Nick's rule, restored 2026-08-18: `Kea` ≠ `Nick`, whitespace is a literal handle, the ONLY validation is non-empty; the old case/space folding silently aliased identities and deleted the human's entropy). Memory-hard PoW (24MB scratch, 17 rounds, ~1s on 2025 hardware) — anti-squatting + ASIC-resistant. Returns the 32-byte proof.
     pub fn username_to_handle_proof(username: &str) -> [u8; 32] {
         *ihi::handle_to_proof(username).as_bytes()
     }
@@ -71,10 +71,10 @@ mod tests {
     fn handles_are_byte_precise() {
         // Every byte the human typed is identity — case, spacing, tabs, all of it.
         assert_eq!(Handle::canonical("FractalDecoder"), "FractalDecoder");
-        assert_eq!(Handle::canonical(" Nick "), " Nick ");
+        assert_eq!(Handle::canonical(" Kea "), " Kea ");
         assert_eq!(Handle::canonical("   "), "   ");
         assert_ne!(
-            Handle::username_to_handle_proof("Nick"),
+            Handle::username_to_handle_proof("Kea"),
             Handle::username_to_handle_proof("Nick"),
             "case is identity"
         );
