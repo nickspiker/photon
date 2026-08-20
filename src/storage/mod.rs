@@ -54,7 +54,7 @@ pub fn photon_config_dir() -> Result<std::path::PathBuf, std::io::Error> {
     }
 }
 
-/// The attachment blob directory: `<config>/blobs/`. Blobs live OUTSIDE the vault deliberately — the dual-ring mirror doubles every vault write and a multi-MB value triggers a vault-grow fsync that freezes the UI (the same phenomenon that made clutch keypairs memory-only). Each blob is one sealed file, content-addressed by the PLAINTEXT blake3.
+/// The attachment blob directory: `<config>/blobs/`. Blobs live OUTSIDE the vault deliberately — the dual-ring mirror doubles every vault write and a multi-MB value triggers a vault-grow fsync that freezes the UI (the same phenomenon that made clutch keypairs memory-only). Each blob is one sealed file; the FILENAME is a keyed hash, never the plaintext hash (see BLOB_NAME_KEY).
 pub fn blob_dir() -> Result<std::path::PathBuf, std::io::Error> {
     let dir = photon_config_dir()?.join("blobs");
     std::fs::create_dir_all(&dir)?;
@@ -66,14 +66,72 @@ pub fn blob_seal_key(identity_seed: &[u8; 32]) -> [u8; 32] {
     blake3::derive_key(&format!("{}.blob.seal.v0", APP.id), identity_seed)
 }
 
-/// Store an attachment blob: seal plaintext under the device blob key, write `<blobs>/<hash-hex>.bin`. Idempotent — an existing file is left alone (content-addressed, same hash = same bytes).
+// FILENAMES ARE A FORENSIC SURFACE (Nick's threat model, found 2026-08-20): the v0 scheme named each file by the PLAINTEXT blake3 — the content was sealed, but anyone holding a CANDIDATE file could hash it and prove possession by filename alone, zero keys needed (a known-plaintext existence oracle in the filesystem). Names are now blake3 KEYED by a seed-derived name key — meaningless without the identity seed. The name key lives in a process global because presence checks run on the render path where no seed is in scope; it is set the moment a session's seed exists (blob_init_names) and cleared with the session.
+static BLOB_NAME_KEY: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
+
+fn blob_name_key_of(identity_seed: &[u8; 32]) -> [u8; 32] {
+    blake3::derive_key(&format!("{}.blob.name.v1", APP.id), identity_seed)
+}
+
+/// The sealed file's name for a content hash: keyed blake3 under the session's name key. None = no session yet (presence reads false, deletes no-op — the same "vault not open" posture as everything else).
+fn blob_file_name(content_hash: &[u8; 32]) -> Option<String> {
+    let k = (*BLOB_NAME_KEY.lock().unwrap())?;
+    Some(format!(
+        "{}.bin",
+        hex::encode(blake3::keyed_hash(&k, content_hash).as_bytes())
+    ))
+}
+
+/// Install the blob name key for this session AND run the one-time v0→v1 rename walk: every 64-hex-named file is a v0 plaintext-hash name — re-key it. Marker-gated (`.names-v1`) so keyed names are never re-keyed; a fresh install writes the marker over an empty dir. Call whenever a session's identity seed becomes available.
+pub fn blob_init_names(identity_seed: &[u8; 32]) {
+    let key = blob_name_key_of(identity_seed);
+    *BLOB_NAME_KEY.lock().unwrap() = Some(key);
+    let Ok(dir) = blob_dir() else { return };
+    let marker = dir.join(".names-v1");
+    if marker.exists() {
+        return;
+    }
+    let mut renamed = 0usize;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let Some(stem) = name.to_str().and_then(|n| n.strip_suffix(".bin")) else {
+                continue;
+            };
+            let Ok(bytes) = hex::decode(stem) else { continue };
+            let Ok(content_hash) = <[u8; 32]>::try_from(bytes.as_slice()) else {
+                continue;
+            };
+            let new = format!(
+                "{}.bin",
+                hex::encode(blake3::keyed_hash(&key, &content_hash).as_bytes())
+            );
+            if std::fs::rename(e.path(), dir.join(new)).is_ok() {
+                renamed += 1;
+            }
+        }
+    }
+    let _ = std::fs::write(&marker, b"1");
+    if renamed > 0 {
+        crate::logf!(
+            "blob: re-keyed {} v0 plaintext-hash filename(s) — the possession oracle is closed",
+            renamed
+        );
+    }
+}
+
+/// Store an attachment blob: seal plaintext under the device blob key, write it under the KEYED name. Idempotent — an existing file is left alone (content-addressed, same hash = same bytes).
 pub fn blob_store(
     identity_seed: &[u8; 32],
     content_hash: &[u8; 32],
     plaintext: &[u8],
 ) -> Result<(), String> {
+    if BLOB_NAME_KEY.lock().unwrap().is_none() {
+        blob_init_names(identity_seed);
+    }
     let dir = blob_dir().map_err(|e| e.to_string())?;
-    let path = dir.join(format!("{}.bin", hex::encode(content_hash)));
+    let name = blob_file_name(content_hash).ok_or("blob: no session name key")?;
+    let path = dir.join(name);
     if path.exists() {
         return Ok(());
     }
@@ -83,8 +141,11 @@ pub fn blob_store(
 
 /// Load + open an attachment blob; verifies the content hash after decrypt. None = not held locally.
 pub fn blob_load(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Vec<u8>> {
+    if BLOB_NAME_KEY.lock().unwrap().is_none() {
+        blob_init_names(identity_seed);
+    }
     let dir = blob_dir().ok()?;
-    let sealed = std::fs::read(dir.join(format!("{}.bin", hex::encode(content_hash)))).ok()?;
+    let sealed = std::fs::read(dir.join(blob_file_name(content_hash)?)).ok()?;
     let plain = kete::decrypt_bytes(&sealed, &blob_seal_key(identity_seed)).ok()?;
     if blake3::hash(&plain).as_bytes() != content_hash {
         crate::log("blob: content hash mismatch on load — corrupt blob file dropped");
@@ -93,20 +154,18 @@ pub fn blob_load(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Ve
     Some(plain)
 }
 
-/// Whether the blob for `content_hash` is held locally (no decrypt — presence only).
+/// Whether the blob for `content_hash` is held locally (no decrypt — presence only). False before a session exists (no name key = no way to look, same as no vault).
 pub fn blob_present(content_hash: &[u8; 32]) -> bool {
-    blob_dir()
-        .map(|d| {
-            d.join(format!("{}.bin", hex::encode(content_hash)))
-                .exists()
-        })
-        .unwrap_or(false)
+    match (blob_dir(), blob_file_name(content_hash)) {
+        (Ok(d), Some(name)) => d.join(name).exists(),
+        _ => false,
+    }
 }
 
 /// Delete a blob file (attachment tombstone follow-through — blobs CAN truly shred; only row content is braid-bound).
 pub fn blob_delete(content_hash: &[u8; 32]) {
-    if let Ok(dir) = blob_dir() {
-        let _ = std::fs::remove_file(dir.join(format!("{}.bin", hex::encode(content_hash))));
+    if let (Ok(dir), Some(name)) = (blob_dir(), blob_file_name(content_hash)) {
+        let _ = std::fs::remove_file(dir.join(name));
     }
 }
 
