@@ -16,7 +16,7 @@
 - [succession-emit-side-unwired.md](succession-emit-side-unwired.md) — identity succession primitive + worker slot + contact RECEIVE path SHIPPED (05f7d27)
 
 - [feedback_self_is_a_contact.md](feedback_self_is_a_contact.md) — HARD RULE, repeatedly violated: self and bob are both people; the self/fleet conversation rides the IDENTICAL machinery (only the key material differs)
-- [feedback_handles_byte_precise.md](feedback_handles_byte_precise.md) — HARD RULE, repeatedly violated before: handles are BYTE-PRECISE full-Unicode (Nick ≠ Nick, whitespace-only valid, Zoë/李伟/김민준 first-class)
+- [feedback_handles_byte_precise.md](feedback_handles_byte_precise.md) — HARD RULE, repeatedly violated before: handles are BYTE-PRECISE full-Unicode (Kea ≠ Nick, whitespace-only valid, Zoë/李伟/김민준 first-class)
 - [feedback_fgtw_deploy_freely.md](feedback_fgtw_deploy_freely.md) — deploy fgtw.org (wrangler) + toka.wasm freely, no per-deploy confirmation
 - [project_avatar_encryption_wall.md](project_avatar_encryption_wall.md) — avatars are v'e'-encrypted per-handle; admin can't decrypt; browser AV1 decode infra (rav1d-in-wasm) built + deployed, belongs in photon
 
