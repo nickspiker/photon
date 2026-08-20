@@ -737,6 +737,7 @@ mod tests {
         let test_seed = [0xAA; 32];
         let device_secret = [0xBB; 32];
 
+        crate::storage::isolate_test_storage();
         let storage = FlatStorage::new(crate::storage::APP, test_seed, device_secret).unwrap();
 
         // Save
