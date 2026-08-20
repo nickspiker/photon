@@ -730,12 +730,12 @@ impl PhotonApp {
             && key_held(self.chord_rb_press, self.chord_rb_release, now)
     }
 
-    /// Delete every `.vsf` in the Photon app dirs (the on-disk vault: contacts, CLUTCH slots, ephemeral keypairs, friendship chains, plus old-path strays and derivation-change orphans). Returns the count deleted. Shared by the `[]n` (nuke, keep running) and `[]x` (nuke + exit) chords; `tag` prefixes the log lines so you can tell which fired. Does NOT touch the tohu session or any in-memory state — callers handle that.
+    /// SCORCHED EARTH: delete the ENTIRE Photon app dirs — vault rings, parked `.legacy` backups, orphan blobs, markers, every stray — both casings, config + data. A `*.vsf` filter used to leave blobs/ and strays standing after a "nuke everything" (field, 2026-08-20). Returns the count of top-level entries removed. Shared by the `[]n` (nuke, keep running) and `[]x` (nuke + exit) chords; `tag` prefixes the log lines. Does NOT touch the tohu session or any in-memory state — callers handle that.
     pub(super) fn dev_wipe_vault_files(tag: &str) -> usize {
         let mut count = 0usize;
         let wipe_dir = |dir: Option<std::path::PathBuf>, count: &mut usize| {
             let Some(base) = dir else { return };
-            // Both casings: the unified `photon/` dir (device vault) AND the pre-unification `Photon/` parking lot (legacy rings + their `.legacy` migration backups). A wipe means NOTHING identity-bearing survives, parked or live.
+            // Both casings: the unified `photon/` dir (device vault) AND the pre-unification `Photon/` parking lot. A wipe means NOTHING survives, parked or live.
             for sub in [crate::storage::APP.dir, "Photon"] {
                 let app_dir = base.join(sub);
                 let rd = match std::fs::read_dir(&app_dir) {
@@ -748,15 +748,18 @@ impl PhotonApp {
                 };
                 for entry in rd.flatten() {
                     let p = entry.path();
-                    if p.extension().map_or(false, |e| e == "vsf" || e == "legacy") {
-                        match std::fs::remove_file(&p) {
-                            Ok(()) => {
-                                eprintln!("{} deleted {}", tag, p.display());
-                                *count += 1;
-                            }
-                            Err(e) => {
-                                eprintln!("{} WARN: could not delete {}: {}", tag, p.display(), e)
-                            }
+                    let removed = if p.is_dir() {
+                        std::fs::remove_dir_all(&p)
+                    } else {
+                        std::fs::remove_file(&p)
+                    };
+                    match removed {
+                        Ok(()) => {
+                            eprintln!("{} deleted {}", tag, p.display());
+                            *count += 1;
+                        }
+                        Err(e) => {
+                            eprintln!("{} WARN: could not delete {}: {}", tag, p.display(), e)
                         }
                     }
                 }
