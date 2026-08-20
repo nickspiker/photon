@@ -2691,8 +2691,8 @@ impl PhotonApp {
                                             )
                                     })
                                     .map(|x| {
-                                        // One display line: hard newlines flatten to spaces before the truncate.
-                                        let d = body_of(x).replace('\n', " ");
+                                        // VERBATIM bytes, truncated only — no flatten, no substitution (the sender's newlines are the sender's message; the shaper renders them however it renders them).
+                                        let d = body_of(x);
                                         let mut s: String = d.chars().take(48).collect();
                                         if d.chars().count() > 48 {
                                             s.push('\u{2026}');
@@ -2890,8 +2890,8 @@ impl PhotonApp {
                             });
                             let snippet = target
                                 .map(|x| {
-                                    // One display line: hard newlines flatten to spaces before the truncate.
-                                    let d = body_of(x).replace('\n', " ");
+                                    // VERBATIM bytes, truncated only — no flatten, no substitution.
+                                    let d = body_of(x);
                                     let mut s: String = d.chars().take(56).collect();
                                     if d.chars().count() > 56 {
                                         s.push('\u{2026}');

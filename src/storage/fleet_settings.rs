@@ -10,48 +10,44 @@ use fgtw::fstate::{
 use vsf::VsfType;
 
 // ============================================================================ Typed-value readers =======================================================
-// v7 values are natively typed; a value that arrived from a v6 document is still the legacy v(b'r') raw wrapper until its next write re-types it, so every reader carries that one fallback. Writers only ever emit typed values.
+// Every value is natively typed (v7); the v6 raw-wrapper fallbacks died with the flag-day clean start (fresh vaults never carry one).
 
-/// f5 float, or the legacy raw 4 LE bytes.
+/// f5 float.
 pub fn as_f32(v: &VsfType) -> Option<f32> {
     match v {
         VsfType::f5(f) => Some(*f),
-        VsfType::v(b'r', b) if b.len() == 4 => Some(f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
         _ => None,
     }
 }
 
-/// u0 bool (or any unsigned width ≠ 0), or the legacy raw single byte.
+/// u0 bool (or any unsigned width ≠ 0).
 pub fn as_bool(v: &VsfType) -> Option<bool> {
     match v {
         VsfType::u0(b) => Some(*b),
-        VsfType::v(b'r', b) if b.len() == 1 => Some(b[0] != 0),
         _ => v.as_u64().map(|n| n != 0),
     }
 }
 
-/// Eagle-time oscillations (e6), or the legacy raw 8 BE bytes (logs.hard's old shape).
+/// Eagle-time oscillations (e6).
 pub fn as_osc(v: &VsfType) -> Option<i64> {
     match v {
         VsfType::e(vsf::types::EtType::e6(o)) => Some(*o),
-        VsfType::v(b'r', b) => <[u8; 8]>::try_from(b.as_slice()).ok().map(i64::from_be_bytes),
         _ => None,
     }
 }
 
-/// UTF-8 text (x, or ascii a), or the legacy raw bytes read as UTF-8.
+/// UTF-8 text (x, or ascii a).
 pub fn as_text(v: &VsfType) -> Option<String> {
     match v {
         VsfType::x(s) | VsfType::a(s) => Some(s.clone()),
-        VsfType::v(b'r', b) => String::from_utf8(b.clone()).ok(),
         _ => None,
     }
 }
 
-/// A 32-byte key (ke), or the legacy naked 32 raw bytes.
+/// A 32-byte key (ke).
 pub fn as_key32(v: &VsfType) -> Option<[u8; 32]> {
     match v {
-        VsfType::ke(b) | VsfType::v(b'r', b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
+        VsfType::ke(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
         _ => None,
     }
 }
@@ -82,10 +78,10 @@ pub fn as_u32_pair(v: &VsfType) -> Option<(u32, u32)> {
     }
 }
 
-/// Opaque application bytes (hR), or the legacy raw wrapper.
+/// Opaque application bytes (hR).
 pub fn as_bytes(v: &VsfType) -> Option<Vec<u8>> {
     match v {
-        VsfType::hR(b) | VsfType::v(b'r', b) => Some(b.clone()),
+        VsfType::hR(b) => Some(b.clone()),
         _ => None,
     }
 }
@@ -178,7 +174,7 @@ impl FleetSettings {
         let snapshot = self
             .effective(key)
             .cloned()
-            .unwrap_or(VsfType::v(b'r', Vec::new()));
+            .unwrap_or(VsfType::hR(Vec::new()));
         self.upsert_own(
             key,
             |e| e.linked = linked,
@@ -227,34 +223,20 @@ impl FleetSettings {
         map.updated = now;
     }
 
-    /// A fleet-wide GROW-ONLY pubkey set read as the union of its per-key entries (`<prefix><hex pubkey>`, value = the raw 32 bytes) and its legacy one-blob key (concatenated pubkeys — deployed data, read forever, never written again).
+    /// A fleet-wide GROW-ONLY pubkey set read as the union of its per-key entries (`<prefix><hex pubkey>`, value = typed ke).
     /// Per-key because the settings layer is LWW per key: two devices growing ONE blob concurrently each wrote old+own and LWW dropped one — for `fleet.locked` that meant a stolen device stayed trusted on part of the fleet until someone re-locked (the B4 union-merge race). One key per member makes concurrent adds COMMUTE: `merge_global_settings` unions distinct keys by construction, so no write order can lose an entry.
-    /// Grow-only holds by convention exactly as before: per-key entries are never tombstoned (an unlock/un-release is a deliberate future flow, not a merge artifact).
-    pub fn pubkey_set_union(&self, legacy_key: &str, prefix: &str) -> Vec<[u8; 32]> {
+    /// Grow-only holds by convention: per-key entries are never tombstoned by a merge (an unlock is a deliberate typed u0(false), which never parses as a key).
+    pub fn pubkey_set_union(&self, prefix: &str) -> Vec<[u8; 32]> {
         let mut out: Vec<[u8; 32]> = Vec::new();
-        let mut push = |bytes: &[u8]| {
-            if bytes.len() == 32 {
-                let mut a = [0u8; 32];
-                a.copy_from_slice(bytes);
-                if !out.contains(&a) {
-                    out.push(a);
-                }
-            }
-        };
-        // The legacy one-blob key: raw concatenated pubkeys inside the old raw wrapper — deployed data, read forever.
-        if let Some(VsfType::v(b'r', bytes)) = self.effective(legacy_key) {
-            for c in bytes.chunks_exact(32) {
-                push(c);
-            }
-        }
         for e in self
             .global
             .iter()
             .filter(|e| !e.tombstone && e.key.starts_with(prefix))
         {
-            // Typed ke (v7) or the naked legacy raw 32 (v6); an unlock tombstone (u0(false) typed, empty raw legacy) never parses as a key on either path.
             if let Some(k) = as_key32(&e.value) {
-                push(&k);
+                if !out.contains(&k) {
+                    out.push(k);
+                }
             }
         }
         out
@@ -389,16 +371,13 @@ mod tests {
         assert!(!fs.set("updates.auto", VsfType::u0(true), 500));
     }
 
-    /// THE B4 LOCKOUT RACE, closed: two devices locking DIFFERENT pubkeys at the SAME instant each write their own per-key entry, and the merge unions distinct keys — no write order can drop a lock. The old one-blob shape lost exactly this race (each side wrote old+own into one LWW key; one lock vanished and a stolen device stayed trusted on part of the fleet). The legacy blob still unions in read-only, so deployed locks survive the format change.
+    /// THE B4 LOCKOUT RACE, closed: two devices locking DIFFERENT pubkeys at the SAME instant each write their own per-key entry, and the merge unions distinct keys — no write order can drop a lock. The old one-blob shape lost exactly this race (each side wrote old+own into one LWW key; one lock vanished and a stolen device stayed trusted on part of the fleet).
     #[test]
     fn concurrent_locks_of_different_devices_both_survive_the_merge() {
         const STOLEN_A: [u8; 32] = [0xAA; 32];
         const STOLEN_B: [u8; 32] = [0xBB; 32];
-        const LEGACY: [u8; 32] = [0xCC; 32];
 
-        // Device 1 and device 2 share a base state carrying one legacy-blob lock.
         let mut dev1 = FleetSettings::new([1; 32]);
-        dev1.set("fleet.locked", VsfType::v(b'r', LEGACY.to_vec()), 100);
         let mut dev2 = dev1.clone();
         dev2.our_device = [2; 32];
 
@@ -408,10 +387,9 @@ mod tests {
             VsfType::ke(STOLEN_A.to_vec()),
             500,
         );
-        // dev2's lock stays the LEGACY naked-raw shape on purpose: a v6-era entry must union beside a typed one.
         dev2.set(
             &format!("fleet.locked.{}", hex::encode(STOLEN_B)),
-            VsfType::v(b'r', STOLEN_B.to_vec()),
+            VsfType::ke(STOLEN_B.to_vec()),
             500,
         );
 
@@ -420,7 +398,7 @@ mod tests {
         dev2.merge_from(dev1.global.clone(), dev1.devices.clone());
 
         for fs in [&dev1, &dev2] {
-            let locked = fs.pubkey_set_union("fleet.locked", "fleet.locked.");
+            let locked = fs.pubkey_set_union("fleet.locked.");
             assert!(
                 locked.contains(&STOLEN_A),
                 "device A's lock must survive the race"
@@ -429,18 +407,17 @@ mod tests {
                 locked.contains(&STOLEN_B),
                 "device B's lock must survive the race"
             );
-            assert!(
-                locked.contains(&LEGACY),
-                "a deployed legacy-blob lock reads forever"
-            );
-            assert_eq!(locked.len(), 3, "union, no duplicates");
+            assert_eq!(locked.len(), 2, "union, no duplicates");
         }
-        // A tombstoned per-key entry does NOT count (grow-only by convention — nothing writes tombstones today, but a hostile/buggy one must not read as a lock either way… and a malformed value never parses as a pubkey).
+        // A malformed value never parses as a pubkey, and an unlock tombstone (u0(false)) never reads as a lock.
         let mut fs = FleetSettings::new([3; 32]);
-        fs.set("fleet.locked.deadbeef", VsfType::v(b'r', vec![1, 2, 3]), 100);
-        assert!(fs
-            .pubkey_set_union("fleet.locked", "fleet.locked.")
-            .is_empty());
+        fs.set("fleet.locked.deadbeef", VsfType::hR(vec![1, 2, 3]), 100);
+        fs.set(
+            &format!("fleet.locked.{}", hex::encode([0xDDu8; 32])),
+            VsfType::u0(false),
+            100,
+        );
+        assert!(fs.pubkey_set_union("fleet.locked.").is_empty());
     }
 
     #[test]
@@ -452,16 +429,16 @@ mod tests {
         a.set(&key, VsfType::ke(STOLEN.to_vec()), 100);
         b.merge_from(a.global.clone(), a.devices.clone());
         assert!(b
-            .pubkey_set_union("fleet.locked", "fleet.locked.")
+            .pubkey_set_union("fleet.locked.")
             .contains(&STOLEN));
         // The owner's reversal: the typed u0(false) tombstone unlock_fleet_device writes. It never parses as a key, so it drops out of the union locally and syncs the reversal fleet-wide.
         a.set(&key, VsfType::u0(false), 200);
         assert!(a
-            .pubkey_set_union("fleet.locked", "fleet.locked.")
+            .pubkey_set_union("fleet.locked.")
             .is_empty());
         b.merge_from(a.global.clone(), a.devices.clone());
         assert!(
-            b.pubkey_set_union("fleet.locked", "fleet.locked.")
+            b.pubkey_set_union("fleet.locked.")
                 .is_empty(),
             "the unlock must sync"
         );
@@ -469,7 +446,7 @@ mod tests {
         b.set(&key, VsfType::ke(STOLEN.to_vec()), 300);
         a.merge_from(b.global.clone(), b.devices.clone());
         assert!(a
-            .pubkey_set_union("fleet.locked", "fleet.locked.")
+            .pubkey_set_union("fleet.locked.")
             .contains(&STOLEN));
     }
 

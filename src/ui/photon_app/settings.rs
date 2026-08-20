@@ -627,7 +627,7 @@ impl PhotonApp {
         true
     }
 
-    /// Build the You-page field boxes ONCE (HitId is a scarce u16 — never rebuild): the standard taxonomy, then any custom fields registered in `profile._custom` (one `id\tlabel` per line). Idempotent; values are loaded separately by [`Self::load_you_fields`]; expandable-field instances (addr2, email3, …) are appended by [`Self::sync_expandable_fields`].
+    /// Build the You-page field boxes ONCE (HitId is a scarce u16 — never rebuild): the standard taxonomy, then any custom fields registered as `profile._custom.<id>` per-key entries (value = the verbatim label). Idempotent; values are loaded separately by [`Self::load_you_fields`]; expandable-field instances (addr2, email3, …) are appended by [`Self::sync_expandable_fields`].
     pub(super) fn build_you_fields(&mut self) {
         if !self.you_fields.is_empty() {
             return;
@@ -646,20 +646,25 @@ impl PhotonApp {
                 share_cb: None,
             });
         }
-        let custom = self
+        // Custom fields are PER-KEY entries (`profile._custom.<id>` = label) — no line/separator format, so a label legally holds tabs, newlines, anything: the bytes are the human's, verbatim.
+        let custom: Vec<(String, String)> = self
             .fleet_settings
             .as_ref()
-            .and_then(|fs| fs.effective("profile._custom"))
-            .and_then(crate::storage::fleet_settings::as_text)
+            .map(|fs| {
+                let mut v: Vec<(String, String)> = fs
+                    .global
+                    .iter()
+                    .filter(|e| !e.tombstone && e.key.starts_with("profile._custom."))
+                    .filter_map(|e| {
+                        crate::storage::fleet_settings::as_text(&e.value)
+                            .map(|label| (e.key["profile._custom.".len()..].to_string(), label))
+                    })
+                    .collect();
+                v.sort_by(|a, b| a.0.cmp(&b.0));
+                v
+            })
             .unwrap_or_default();
-        for line in custom.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            let (id, label) = line.split_once('\t').unwrap_or((line, line));
-            let id = id.trim().to_string();
-            let label = label.trim().to_string();
+        for (id, label) in custom {
             if id.is_empty() || self.you_fields.iter().any(|f| f.field_id == id) {
                 continue;
             }
@@ -859,16 +864,11 @@ impl PhotonApp {
         let mut pairs: Vec<(String, vsf::VsfType)> = Vec::new();
         for f in &self.you_fields {
             let v: String = f.tb.chars.iter().collect();
-            pairs.push((
-                format!("profile.{}", f.field_id),
-                vsf::VsfType::x(v.trim().to_string()),
-            ));
+            // VERBATIM — the typed bytes ARE the value; no trim, ever.
+            pairs.push((format!("profile.{}", f.field_id), vsf::VsfType::x(v)));
             if let Some(tag_tb) = &f.tag_tb {
                 let t: String = tag_tb.chars.iter().collect();
-                pairs.push((
-                    format!("profile.{}_label", f.field_id),
-                    vsf::VsfType::x(t.trim().to_string()),
-                ));
+                pairs.push((format!("profile.{}_label", f.field_id), vsf::VsfType::x(t)));
             }
         }
         let fs = self.fleet_settings.as_mut().unwrap();
@@ -898,17 +898,18 @@ impl PhotonApp {
         }
     }
 
-    /// "Add" → register the label typed in the add box as a custom field (e.g. "Address 2" → id `address_2`), append its box, and persist the `profile._custom` registry so it reloads next launch. No-op on an empty label or a duplicate id.
+    /// "Add" → register the label typed in the add box as a custom field (label bytes VERBATIM; the id is an internal ascii slug, or a label-hash when the label has no ascii), append its box, and persist it as a `profile._custom.<id>` entry so it reloads next launch. No-op on an empty label or a duplicate id.
     pub(super) fn add_custom_field(&mut self) {
         let raw: String = match self.you_add_textbox.as_ref() {
             Some(tb) => tb.chars.iter().collect(),
             None => return,
         };
-        let label = raw.trim().to_string();
+        // VERBATIM label — the human's bytes, whatever they are. Non-empty is the only validation.
+        let label = raw;
         if label.is_empty() {
             return;
         }
-        // Sanitise the label to a field_id: lowercase ascii-alphanumeric, every other run → a single underscore, trimmed.
+        // Derive a field_id: an INTERNAL storage key, never displayed — ascii-slugged for key hygiene; a label with no ascii-alphanumeric content (whitespace, emoji, CJK…) keys by its hash instead of being refused.
         let mut id = String::new();
         let mut pending_us = false;
         for c in label.chars() {
@@ -923,7 +924,7 @@ impl PhotonApp {
             }
         }
         if id.is_empty() {
-            return;
+            id = hex::encode(&blake3::hash(label.as_bytes()).as_bytes()[..8]);
         }
         if self.you_fields.iter().any(|f| f.field_id == id) {
             self.ready_toast = Some("That field already exists".to_string());
@@ -942,15 +943,8 @@ impl PhotonApp {
             tag_tb: None,
             share_cb: None,
         });
-        // Persist the whole custom registry (id\tlabel per line) so the field survives a relaunch.
-        let reg = self
-            .you_fields
-            .iter()
-            .filter(|f| f.custom)
-            .map(|f| format!("{}\t{}", f.field_id, f.label))
-            .collect::<Vec<_>>()
-            .join("\n");
-        self.settings_set("profile._custom", vsf::VsfType::x(reg));
+        // Persist as its own per-key entry so the field survives a relaunch — no registry format for the label bytes to collide with.
+        self.settings_set(&format!("profile._custom.{}", self.you_fields.last().unwrap().field_id), vsf::VsfType::x(label.clone()));
         if let Some(tb) = self.you_add_textbox.as_mut() {
             tb.clear();
         }

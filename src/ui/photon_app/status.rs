@@ -1092,8 +1092,7 @@ impl PhotonApp {
                         let wake = self.event_proxy.clone();
                         queue_job(&self.braid_job_tx, move || {
                             use crate::crypto::chain::{
-                                decrypt_layers, decrypt_layers_legacy, derive_salt,
-                                generate_scratch, CURRENT_KEY_INDEX,
+                                decrypt_layers, derive_salt, generate_scratch, CURRENT_KEY_INDEX,
                             };
                             let salt = derive_salt(&their_last_plaintext, &sender_chain);
                             let scratch = generate_scratch(&sender_chain, &salt);
@@ -1102,32 +1101,13 @@ impl PhotonApp {
                             let key_fp = hex::encode(&blake3::hash(&sender_chain.current_key()[..]).as_bytes()[..4]);
                             let salt_fp = hex::encode(&blake3::hash(&salt[..]).as_bytes()[..4]);
                             crate::logf!("CHAIN DECRYPT: lane={}..., key#{}, salt#{}, eagle_time={}, ciphertext_len={}", hex::encode(&lane[..4]), key_fp, salt_fp, timestamp, ciphertext.len());
-                            // CIPHER READ-BOTH (2026-08-18 XChaCha migration): the Layer-2 stream cipher has no auth tag, so the message-package parse IS the validator. Try the current
-                            // XChaCha20 first; only if it doesn't parse, peel the memory-hard scratch is reused (cipher-independent) and retry the legacy ChaCha20. If NEITHER parses it's a genuine fork — hand the current-format bytes downstream so the fork detector behaves exactly as before. MIGRATION: drop the legacy arm a few versions out.
-                            let current = decrypt_layers(
+                            let plaintext = decrypt_layers(
                                 &ciphertext,
                                 &sender_chain,
                                 CURRENT_KEY_INDEX,
                                 &scratch,
                                 &et,
                             );
-                            let plaintext = if crate::network::message_package::parse_message_package(&current).is_ok() {
-                                current
-                            } else {
-                                let legacy = decrypt_layers_legacy(
-                                    &ciphertext,
-                                    &sender_chain,
-                                    CURRENT_KEY_INDEX,
-                                    &scratch,
-                                    &et,
-                                );
-                                if crate::network::message_package::parse_message_package(&legacy).is_ok() {
-                                    crate::log("CHAIN DECRYPT: opened under legacy ChaCha20 (pre-migration frame)");
-                                    legacy
-                                } else {
-                                    current
-                                }
-                            };
                             let _ = tx.send(BraidRxDecrypted {
                                 conversation_token,
                                 lane,

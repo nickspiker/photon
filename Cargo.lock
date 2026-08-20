@@ -5738,7 +5738,7 @@ checksum = "47846491253e976bdd07d0f9cc24b7daf24720d11309302ccbbc6e6b6e53550a"
 dependencies = [
  "skrifa",
  "yazi",
- "Nick",
+ "zeno",
 ]
 
 [[package]]
@@ -7845,7 +7845,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "Nick"
+name = "zeno"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6df3dc4292935e51816d896edcd52aa30bc297907c26167fec31e2b0c6a32524"

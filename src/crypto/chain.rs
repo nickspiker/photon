@@ -9,7 +9,7 @@
 
 use chacha20::{
     cipher::{KeyIvInit, StreamCipher},
-    ChaCha20, XChaCha20,
+    XChaCha20,
 };
 use ihi::{smear_hash, spaghettify};
 use thiserror::Error;
@@ -350,15 +350,7 @@ fn derive_fresh_link(
 
 // ============================================================================
 
-// // ChaCha20 Nonce Derivation ============================================================================
-/// Derive the legacy 12-byte ChaCha20 nonce from Eagle time (first 12 bytes of BLAKE3(timestamp)). Read-both only since the 2026-08-18 XChaCha migration; [`derive_xnonce`] is what new frames use.
-pub fn derive_nonce(eagle_time: &EagleTime) -> [u8; 12] {
-    let hash = blake3::hash(&eagle_time.oscillations().unwrap_or(0).to_le_bytes());
-    let mut nonce = [0u8; 12];
-    nonce.copy_from_slice(&hash.as_bytes()[..12]);
-    nonce
-}
-
+// // XChaCha20 Nonce Derivation ============================================================================
 /// Derive the 24-byte XChaCha20 nonce from Eagle time (first 24 bytes of BLAKE3(timestamp)). The 192-bit nonce is the message braid's half of the 2026-08-18 stack-wide XChaCha migration — uniform with the AEAD layer, though the chain never carried birthday risk (per-message key rotation + a unique-per-message timestamp already precluded reuse).
 pub fn derive_xnonce(eagle_time: &EagleTime) -> [u8; 24] {
     let hash = blake3::hash(&eagle_time.oscillations().unwrap_or(0).to_le_bytes());
@@ -416,26 +408,6 @@ pub fn decrypt_layers(
     let mut cipher = XChaCha20::new(&chacha_key.into(), &nonce.into());
     cipher.apply_keystream(&mut intermediate);
 
-    intermediate
-}
-
-/// LEGACY Layer-2 decrypt: ChaCha20 (12-byte nonce, `.v0` key context) for frames minted before the
-/// 2026-08-18 XChaCha migration. A raw stream cipher has no auth tag, so the caller MUST validate the result (the message-package parse) before trusting it — the RX worker tries [`decrypt_layers`] first and falls back here only when the current-format parse fails. MIGRATION: drop a few versions out.
-pub fn decrypt_layers_legacy(
-    ciphertext: &[u8],
-    chain: &Chain,
-    key_index: usize,
-    scratch: &[u8],
-    eagle_time: &EagleTime,
-) -> Vec<u8> {
-    let mut intermediate = ciphertext.to_vec();
-    for (i, byte) in intermediate.iter_mut().enumerate() {
-        *byte ^= scratch[i % scratch.len()];
-    }
-    let chacha_key = blake3::derive_key("photon.chain.chacha.v0", &chain.links[key_index]);
-    let nonce = derive_nonce(eagle_time);
-    let mut cipher = ChaCha20::new(&chacha_key.into(), &nonce.into());
-    cipher.apply_keystream(&mut intermediate);
     intermediate
 }
 
@@ -708,32 +680,6 @@ mod tests {
             &eagle_time,
         );
         assert_eq!(&decrypted[..], plaintext);
-    }
-
-    /// The read-both path for the Layer-2 stream (2026-08-18 XChaCha migration): a ciphertext produced under the LEGACY ChaCha20 (`.v0` key, 12-byte nonce) must recover via `decrypt_layers_legacy`
-    /// and must NOT recover via the current XChaCha `decrypt_layers` (proving the two keystreams are disjoint, so the RX worker's parse-as-validator picks the right one).
-    #[test]
-    fn legacy_stream_reads_via_legacy_path_only() {
-        use chacha20::cipher::{KeyIvInit, StreamCipher};
-        let chain = make_test_chain();
-        let salt = derive_salt(&[], &chain);
-        let scratch = generate_scratch(&chain, &salt);
-        let et = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
-        let plaintext = b"a pre-migration braid frame";
-
-        // Synthesize a legacy v0 ciphertext: ChaCha20(.v0 key, 12-byte nonce) then XOR scratch.
-        let key = blake3::derive_key("photon.chain.chacha.v0", chain.current_key());
-        let nonce = derive_nonce(&et);
-        let mut ct = plaintext.to_vec();
-        ChaCha20::new(&key.into(), &nonce.into()).apply_keystream(&mut ct);
-        for (i, b) in ct.iter_mut().enumerate() {
-            *b ^= scratch[i % scratch.len()];
-        }
-
-        let via_legacy = decrypt_layers_legacy(&ct, &chain, CURRENT_KEY_INDEX, &scratch, &et);
-        assert_eq!(&via_legacy[..], plaintext, "legacy path recovers a v0 frame");
-        let via_current = decrypt_layers(&ct, &chain, CURRENT_KEY_INDEX, &scratch, &et);
-        assert_ne!(&via_current[..], plaintext, "the XChaCha path yields garbage on a v0 frame");
     }
 
     #[test]

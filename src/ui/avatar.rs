@@ -1403,35 +1403,22 @@ pub fn decrypt_av1_data_from_seed(
     )
 }
 
-/// `decrypt_av1_data` with an explicit avatar key — the pin's first half; how a contact's avatar decrypts from the pin alone, no handle/seed. Reads the current XChaCha20-Poly1305 (24-byte nonce) format first, then the legacy ChaCha20-Poly1305 (12-byte nonce) for avatars uploaded before the 2026-08-18 migration — the Poly1305 tag disambiguates, and a friend's next avatar upload rewrites to the new format. MIGRATION: drop the legacy branch a few versions out.
+/// `decrypt_av1_data` with an explicit avatar key — the pin's first half; how a contact's avatar decrypts from the pin alone, no handle/seed. XChaCha20-Poly1305, [nonce:24][ct+tag].
 pub fn decrypt_av1_data_with_key(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit, Nonce, XChaCha20Poly1305, XNonce};
+    use chacha20poly1305::{aead::Aead, KeyInit, XChaCha20Poly1305, XNonce};
 
-    if encrypted.len() < 12 + 16 {
+    if encrypted.len() < 24 + 16 {
         return Err(format!(
-            "Encrypted data too short: {} bytes (need at least 28)",
+            "Encrypted data too short: {} bytes (need at least 40)",
             encrypted.len()
         ));
     }
-
-    // Current: XChaCha20-Poly1305, [nonce:24][ct+tag].
-    if encrypted.len() >= 24 + 16 {
-        if let (Ok(cipher), Ok(nonce)) = (
-            XChaCha20Poly1305::new_from_slice(key),
-            XNonce::try_from(&encrypted[..24]),
-        ) {
-            if let Ok(va_wrapped) = cipher.decrypt(&nonce, &encrypted[24..]) {
-                return decode_va_wrapper(&va_wrapped);
-            }
-        }
-    }
-    // Legacy: ChaCha20-Poly1305, [nonce:12][ct+tag].
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
+    let cipher = XChaCha20Poly1305::new_from_slice(key)
         .map_err(|e| format!("Failed to create cipher: {}", e))?;
-    let nonce = Nonce::try_from(&encrypted[..12]).map_err(|_| "bad nonce")?;
+    let nonce = XNonce::try_from(&encrypted[..24]).map_err(|_| "bad nonce")?;
     let va_wrapped = cipher
-        .decrypt(&nonce, &encrypted[12..])
-        .map_err(|e| format!("Decryption failed (both XChaCha and legacy): {}", e))?;
+        .decrypt(&nonce, &encrypted[24..])
+        .map_err(|e| format!("Decryption failed: {}", e))?;
     decode_va_wrapper(&va_wrapped)
 }
 
@@ -2167,23 +2154,22 @@ pub fn scale_avatar(src: &[u8], diameter: usize) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
-mod xchacha_migration_tests {
+mod avatar_seal_tests {
     use super::*;
 
-    /// XChaCha round-trip + legacy 12-byte-nonce read-both for the avatar seal (2026-08-18 migration).
+    /// XChaCha20-Poly1305 is the ONLY avatar seal — round-trips, and a pre-migration ChaCha20 (12-byte nonce) blob is refused (the read-both fallback died with the flag-day clean start).
     #[test]
-    fn avatar_seal_round_trips_and_reads_legacy() {
+    fn avatar_seal_is_xchacha_only() {
         let key = [0x5au8; 32];
         let av1 = b"pretend-this-is-an-av1-obu-bitstream".to_vec();
 
-        // Current format: encrypt writes XChaCha (24-byte nonce), decrypt reads it.
         let sealed = encrypt_av1_data_with_key(&av1, &key).unwrap();
         assert_eq!(sealed.len(), 24 + encode_va_wrapper(&av1).len() + 16);
         assert_eq!(decrypt_av1_data_with_key(&sealed, &key).unwrap(), av1);
-        // Wrong key fails both branches.
+        // Wrong key fails.
         assert!(decrypt_av1_data_with_key(&sealed, &[0u8; 32]).is_err());
 
-        // Legacy: synthesize a [nonce:12][ct] blob under ChaCha20-Poly1305 and confirm read-both opens it.
+        // A legacy [nonce:12][ct] ChaCha20-Poly1305 blob is dead ciphertext now.
         use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit, Nonce};
         let wrapped = encode_va_wrapper(&av1);
         let nonce = [0x33u8; 12];
@@ -2193,6 +2179,6 @@ mod xchacha_migration_tests {
             .unwrap();
         let mut legacy = nonce.to_vec();
         legacy.extend_from_slice(&ct);
-        assert_eq!(decrypt_av1_data_with_key(&legacy, &key).unwrap(), av1);
+        assert!(decrypt_av1_data_with_key(&legacy, &key).is_err());
     }
 }

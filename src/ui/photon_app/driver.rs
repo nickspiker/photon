@@ -629,30 +629,6 @@ impl FluorApp for PhotonApp {
                         self.contacts = crate::storage::contacts::load_all_contacts(&s);
                         self.apply_locked_set();
                         let ms_contacts = t_phase.elapsed().as_millis();
-                        let t_phase = std::time::Instant::now();
-                        // One-time re-home onto the participant-set table key (the local key used to mix our raw seed with their party id). Self-terminating: it copies only when the legacy table has rows and the new one does not, so every launch after the first is a no-op and the MIGRATION line stops appearing. Runs BEFORE messages load, or the first read would find an empty table and the conversation would look wiped.
-                        match crate::storage::contacts::migrate_conversation_tables(
-                            &self.contacts,
-                            &s,
-                        ) {
-                            Ok(n) if n > 0 => crate::logf!(
-                                "MIGRATION: {} conversation(s) re-homed onto participant-set keys",
-                                n
-                            ),
-                            Err(e) => crate::logf!("MIGRATION: conversation re-key failed: {}", e),
-                            _ => {}
-                        }
-                        // Second hop, same shape: the friendship domain flipped to a binary version numeral on the lanes flag-day, which moved every table id — rows written under the ASCII domain re-home here. Chained AFTER the seed-mixed migration so a device that never ran it still lands in one pass.
-                        match crate::storage::contacts::migrate_conversation_domains(&self.contacts, &s)
-                        {
-                            Ok(n) if n > 0 => crate::logf!(
-                                "MIGRATION: {} conversation(s) re-homed onto the binary-numeral domain",
-                                n
-                            ),
-                            Err(e) => crate::logf!("MIGRATION: domain re-key failed: {}", e),
-                            _ => {}
-                        }
-                        let ms_migrations = t_phase.elapsed().as_millis();
                         for c in self.contacts.iter_mut() {
                             if let Some((
                                 kp,
@@ -919,15 +895,14 @@ impl FluorApp for PhotonApp {
                                 }
                             }
                         }
-                        // Notes-to-self is NOT bootstrapped (Nick 2026-08-01): an empty conversation with yourself is not a contact you asked for, and it sat at the top of the list looking broken because it has no peer to pong a name or avatar. Add yourself deliberately and it appears; until then the list holds only people you chose. The stale-key migration still runs so a self row carried from an older build is re-homed before the keygen sweep looks at it.
-                        self.migrate_stale_self_row();
+                        // Notes-to-self is NOT bootstrapped (Nick 2026-08-01): an empty conversation with yourself is not a contact you asked for, and it sat at the top of the list looking broken because it has no peer to pong a name or avatar. Add yourself deliberately and it appears; until then the list holds only people you chose.
                         self.settle_self_display();
                         self.scrub_zero_remote_rounds();
                         // Re-key Pending contacts that still lack keypairs after the rehydrate — but ONE AT A TIME (spawn_next_pending_keygen, repeated each tick), never all at once: parallel McEliece keygens on launch starved the UI thread.
                         self.spawn_next_pending_keygen();
                         crate::logf!(
-                            "PERF: resume load — vault {}ms, contacts {}ms, migrations {}ms, messages {}ms, chains {}ms, keypairs {}ms ({} rehydrated), settings {}ms → local Ready in {}ms (UI thread)",
-                            ms_vault, ms_contacts, ms_migrations, ms_messages, ms_chains, ms_keypairs, rehydrated, ms_settings, t_boot.elapsed().as_millis()
+                            "PERF: resume load — vault {}ms, contacts {}ms, messages {}ms, chains {}ms, keypairs {}ms ({} rehydrated), settings {}ms → local Ready in {}ms (UI thread)",
+                            ms_vault, ms_contacts, ms_messages, ms_chains, ms_keypairs, rehydrated, ms_settings, t_boot.elapsed().as_millis()
                         );
                     }
                     Err(e) => {
@@ -2353,8 +2328,8 @@ impl FluorApp for PhotonApp {
                 }
 
                 match &kev.logical_key {
-                    // Tab cycles focus thru the widget tree in registration order (launch widgets first, then chrome). Intercepted BEFORE delivery so textbox can't swallow it as "\t" insertion.
-                    Key::Named(NamedKey::Tab) => {
+                    // Tab cycles focus thru the widget tree in registration order (launch widgets first, then chrome). Intercepted BEFORE delivery so the traversal pair stays traversal; Ctrl+Tab is NOT intercepted — it falls thru to the focused widget, which types a literal tab (the verbatim-insert escape hatch; paste is the other).
+                    Key::Named(NamedKey::Tab) if !ctx.modifiers.control_key() => {
                         let dir = if ctx.modifiers.shift_key() {
                             TabDir::Backward
                         } else {

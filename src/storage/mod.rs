@@ -14,18 +14,12 @@ pub const APP: kete::App<'static> = kete::App {
     dir: "photon",
 };
 
-/// The pre-unification namespace (`Photon/`, capital P) — used ONLY to locate and open legacy per-identity vaults during the in-place migration. Same `id`, so every KDF context (and therefore every migrated ciphertext) is identical.
-const LEGACY_APP: kete::App<'static> = kete::App {
-    id: "photon",
-    dir: "Photon",
-};
-
 #[cfg(target_os = "android")]
 pub use kete::{android_vault_dirs, set_android_vault_dirs};
 
 /// THE vault open — every runtime site (attest worker, launch, resume) comes thru here and nowhere else.
 ///
-/// Opens the ONE device vault (named from the device secret alone, exists from first launch), installs the session's vault seed as its identity (idempotent; a different identity is refused — one identity per device), then runs the in-place legacy migration exactly once. The shared registry underneath means concurrent callers (resume path + attest worker) receive the SAME engine — a second independent engine racing the live one is the corruption class that bricked a field vault ("seal verification failed" on every subsequent open).
+/// Opens the ONE device vault (named from the device secret alone, exists from first launch) and installs the session's vault seed as its identity (idempotent; a different identity is refused — one identity per device). No local import/migration layer: THE FLEET IS THE BACKUP — a fresh vault fills from chain replication + history sync, the same way any rejoining device does. The shared registry underneath means concurrent callers (resume path + attest worker) receive the SAME engine — a second independent engine racing the live one is the corruption class that bricked a field vault ("seal verification failed" on every subsequent open).
 pub fn open_session_vault(
     identity_seed: [u8; 32],
     vault_seed: [u8; 32],
@@ -34,7 +28,6 @@ pub fn open_session_vault(
     install_device_secret(device_secret);
     let vault = device_vault().ok_or_else(|| StorageError::Vault("device vault unavailable".to_string()))?;
     vault.set_identity(vault_seed)?;
-    migrate_legacy_vault(&vault, &vault_seed, &device_secret);
     // Blob addressing keys off the IDENTITY seed.
     blob_init_names(&identity_seed);
     Ok(vault)
@@ -131,17 +124,28 @@ fn census_sweep(device_secret: &[u8; 32]) {
             }
         }
         for dir in targets {
-            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-            for entry in rd.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if keep.iter().any(|k| *k == name) {
-                    continue;
+            if let Ok(rd) = std::fs::read_dir(&dir) {
+                for entry in rd.flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if keep.iter().any(|k| *k == name) {
+                        continue;
+                    }
+                    let p = entry.path();
+                    let removed = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+                    match removed {
+                        Ok(()) => crate::logf!("STORAGE: census — {} deleted (the census is the vault ring + the log, nothing else)", name),
+                        Err(e) => crate::logf!("STORAGE: census — could not remove {}: {}", name, e),
+                    }
                 }
-                let p = entry.path();
-                let removed = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
-                match removed {
-                    Ok(()) => crate::logf!("STORAGE: census — {} deleted (the census is the vault ring + the log, nothing else)", name),
-                    Err(e) => crate::logf!("STORAGE: census — could not remove {}: {}", name, e),
+            }
+            // The pre-unification `Photon/` sibling dir is a stray WHOLESALE — the fleet is the backup, so per-identity ring archaeology has no home here. Guard: on a case-insensitive filesystem (macOS) "Photon" resolves to the LIVE dir — canonical-compare and skip.
+            let Some(parent) = dir.parent() else { continue };
+            let legacy = parent.join("Photon");
+            let is_alias = matches!((legacy.canonicalize(), dir.canonicalize()), (Ok(a), Ok(b)) if a == b);
+            if legacy.exists() && !is_alias {
+                match std::fs::remove_dir_all(&legacy) {
+                    Ok(()) => crate::logf!("STORAGE: census — legacy dir {} deleted (the fleet is the backup)", legacy.display()),
+                    Err(e) => crate::logf!("STORAGE: census — could not remove {}: {}", legacy.display(), e),
                 }
             }
         }
@@ -158,60 +162,6 @@ fn photon_data_dir() -> Option<std::path::PathBuf> {
         }
     }
     dirs::data_dir().map(|p| p.join(APP.dir))
-}
-
-/// In-place migration from the per-identity vault era: every entry of the legacy vault is raw-copied (stored bytes verbatim, same addresses — the identity-scope key derivation is unchanged, so ciphertexts decrypt identically) into the device vault, then the legacy rings are renamed to `.legacy` backups — kept, not deleted, as missed-domain insurance until a later version reaps them. Marker-gated in the device scope, single-flight, idempotent; every row of history — including the first message ever sent over FGTW — survives.
-fn migrate_legacy_vault(vault: &FlatStorage, vault_seed: &[u8; 32], device_secret: &[u8; 32]) {
-    // Single-flight: the resume path and the attest worker can race into open_session_vault; only one runs the walk (the other would only redo identical idempotent writes, but the log should say it happened once).
-    static MIGRATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _flight = match MIGRATION.lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-    const MARKER: &str = "migration/legacy-vault-v1";
-    let already = matches!(vault.read_device(MARKER), Ok(Some(_)));
-    let legacy_paths = match kete::vault_ring_paths(LEGACY_APP, vault_seed, device_secret) {
-        Ok(p) => p,
-        Err(e) => {
-            crate::logf!("STORAGE: legacy vault path resolution failed (migration skipped): {}", e);
-            return;
-        }
-    };
-    if !already {
-        if legacy_paths.iter().any(|p| p.exists()) {
-            match FlatStorage::open_shared(LEGACY_APP, *vault_seed, *device_secret) {
-                Ok(legacy) => match vault.adopt_all_entries_from(&legacy) {
-                    Ok(count) => {
-                        // Marker AFTER the copy is durable — a crash mid-walk re-runs the whole (idempotent) walk next launch. Value = entry count, binary at rest.
-                        if let Err(e) = vault.write_device(MARKER, &(count as u64).to_le_bytes()) {
-                            crate::logf!("STORAGE: migration marker write failed (walk will re-run next launch): {}", e);
-                            return;
-                        }
-                        crate::logf!("STORAGE: legacy vault migrated in place — {} entries carried into the device vault", count);
-                    }
-                    Err(e) => {
-                        crate::logf!("STORAGE: legacy vault migration FAILED (will retry next launch, legacy vault untouched): {}", e);
-                        return;
-                    }
-                },
-                Err(e) => {
-                    crate::logf!("STORAGE: legacy vault open failed (migration deferred): {}", e);
-                    return;
-                }
-            }
-        } else {
-            // Fresh install — nothing to carry; the marker records that the question was settled.
-            let _ = vault.write_device(MARKER, &0u64.to_le_bytes());
-        }
-    }
-    // Backup-rename OUTSIDE the marker gate: retried every launch until the rings are actually out of the census (Windows can refuse a rename while the just-dropped legacy engine's handle lingers; Linux never does).
-    for p in legacy_paths.iter().filter(|p| p.exists()) {
-        let backup = p.with_extension("vsf.legacy");
-        match std::fs::rename(p, &backup) {
-            Ok(()) => crate::logf!("STORAGE: legacy vault ring parked as backup: {}", backup.display()),
-            Err(e) => crate::logf!("STORAGE: legacy ring rename deferred ({}): {}", p.display(), e),
-        }
-    }
 }
 
 /// The canonical vault address for a logical entry: `blake3_kdf("photon.storage.entry.v0", domain || scope)`.
@@ -545,7 +495,7 @@ mod tests {
         assert!(!blob_present(&h2));
     }
 
-    /// THE census contract: after a session opens over a full file-era sprawl (legacy vault + strays + blobs), the config tree holds EXACTLY the device-vault ring per dir — history migrated from the legacy rings, every stray deleted.
+    /// THE census contract: after a session opens over a full file-era sprawl (strays + blobs + a legacy `Photon/` sibling dir), the config tree holds EXACTLY the ring + log — every stray deleted, the legacy dir gone wholesale.
     #[test]
     fn end_state_census_is_the_vault_alone() {
         let _g = serial();
@@ -553,21 +503,19 @@ mod tests {
         let identity = [0x7Au8; 32];
         let vault_seed = [0x7Bu8; 32];
         let secret = [0x7Cu8; 32];
-        // Full sprawl: legacy vault with history, loose marker + settings + a file-era blob.
-        {
-            let legacy = FlatStorage::new(LEGACY_APP, vault_seed, secret).unwrap();
-            legacy.write("rows/genesis", b"the first message ever sent over FGTW").unwrap();
-        }
         let cfg = photon_config_dir().unwrap();
         std::fs::create_dir_all(cfg.join("blobs")).unwrap();
         std::fs::write(cfg.join("blobs/aa.bin"), vec![0xAAu8; 96]).unwrap();
         std::fs::write(cfg.join("unattended_reboot"), b"on").unwrap();
         std::fs::write(cfg.join("settings.vsf"), b"dead").unwrap();
+        // The pre-unification parking lot: a capital-P sibling dir with an old per-identity ring in it.
+        let legacy_dir = cfg.parent().unwrap().join("Photon");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::write(legacy_dir.join("oldring.vsf"), vec![0x11u8; 256]).unwrap();
 
-        let vault = open_session_vault(identity, vault_seed, secret).unwrap();
-        assert_eq!(vault.read("rows/genesis").unwrap(), Some(b"the first message ever sent over FGTW".to_vec()));
+        let _vault = open_session_vault(identity, vault_seed, secret).unwrap();
 
-        // Census: the strays and the blobs dir are gone from the config dir.
+        // Census: the strays and the blobs dir are gone from the config dir, and the legacy dir is gone wholesale.
         let leftovers: Vec<String> = std::fs::read_dir(&cfg)
             .unwrap()
             .flatten()
@@ -575,6 +523,7 @@ mod tests {
             .filter(|n| n != "photon.log.vsf")
             .collect();
         assert!(leftovers.is_empty(), "config-dir strays survived: {:?}", leftovers);
+        assert!(!legacy_dir.exists(), "legacy Photon/ dir survived the census");
         // The device-vault rings exist at both mirror paths. (Per-dir "exactly one file" isn't assertable here — the test root is shared by the whole parallel suite, so sibling tests' vaults coexist; the field census is the two rings.)
         let device_name = tohu::device_vault_path_name(APP.id, &secret);
         let ring_paths = kete::vault_ring_paths(APP, &vault_seed, &secret).unwrap();
@@ -582,42 +531,22 @@ mod tests {
             let ring = p.parent().unwrap().join(format!("{}.vsf", device_name));
             assert!(ring.exists(), "device ring missing: {}", ring.display());
         }
-        let legacy_paths = kete::vault_ring_paths(LEGACY_APP, &vault_seed, &secret).unwrap();
-        for p in &legacy_paths {
-            assert!(!p.exists());
-            assert!(p.with_extension("vsf.legacy").exists());
-        }
     }
 
-    /// THE no-data-loss contract: a legacy per-identity vault's entries — string keys and raw addresses alike — survive verbatim into the device vault on the first open_session_vault, the legacy rings park as `.legacy` backups, and a second open changes nothing.
+    /// THE born-empty contract: a fresh vault holds ZERO entries — no imports, no parked ciphertext, nothing. History reaches a new device from the FLEET (chain replication + history sync), never from local file archaeology. A re-open writes nothing either.
     #[test]
-    fn open_session_vault_migrates_legacy_in_place() {
+    fn fresh_vault_is_born_empty() {
         let _g = serial();
         isolate_test_storage();
         let vault_seed = [0x4Au8; 32];
         let device_secret = [0x4Bu8; 32];
-        {
-            let legacy = FlatStorage::new(LEGACY_APP, vault_seed, device_secret).unwrap();
-            legacy.write("contacts/index", b"Emma,Nick").unwrap();
-            let first_message_addr = vault_key("rows", &[0x11u8; 32]);
-            legacy.write_addr(&first_message_addr, b"the first message ever sent over FGTW").unwrap();
-        }
         let vault = open_session_vault([0x49u8; 32], vault_seed, device_secret).unwrap();
-        assert_eq!(vault.read("contacts/index").unwrap(), Some(b"Emma,Nick".to_vec()));
-        let first_message_addr = vault_key("rows", &[0x11u8; 32]);
-        assert_eq!(
-            vault.read_addr(&first_message_addr).unwrap(),
-            Some(b"the first message ever sent over FGTW".to_vec())
-        );
-        // The legacy rings are OUT of the census — parked as backups, never deleted.
-        let legacy_paths = kete::vault_ring_paths(LEGACY_APP, &vault_seed, &device_secret).unwrap();
-        for p in &legacy_paths {
-            assert!(!p.exists(), "legacy ring still in the census: {}", p.display());
-            assert!(p.with_extension("vsf.legacy").exists(), "backup missing for {}", p.display());
-        }
-        // Idempotent: a re-open (same session, next launch) is a no-op that still reads everything.
+        assert!(vault.live_addrs().unwrap().is_empty(), "fresh vault is not empty");
         drop(vault);
         let again = open_session_vault([0x49u8; 32], vault_seed, device_secret).unwrap();
-        assert_eq!(again.read("contacts/index").unwrap(), Some(b"Emma,Nick".to_vec()));
+        assert!(again.live_addrs().unwrap().is_empty(), "a bare re-open wrote entries");
+        // And the identity scope round-trips.
+        again.write("state/probe", b"x").unwrap();
+        assert_eq!(again.read("state/probe").unwrap(), Some(b"x".to_vec()));
     }
 }

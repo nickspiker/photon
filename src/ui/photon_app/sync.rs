@@ -145,36 +145,6 @@ impl PhotonApp {
         }
     }
 
-    /// One-time key migration for a self row minted under an older party-id scheme: it carries a hash no current derivation reproduces, so every participant-set check misses it — it renders as a stranger and its sends fall into the chain path and get withdrawn (a field device's stuck notes-to-self, v0.51.12-era row on v0.51.40). Matched by our own handle_proof (excluding siblings, which also carry it); adopting the current pid re-persists contact + messages, which re-homes the rows under the current conversation table key. Self-terminating — deletable when the log line stops appearing in the field.
-    ///
-    /// This used to ALSO force `is_online = true` and `clutch_state = Complete` on every load, merge and attest — and the row still showed OFFLINE whenever a settle site was missed. Reachability and keyedness are now DERIVED from the participant set (`is_reachable` / `is_zero_remote`), so there is nothing to force and nothing to miss.
-    pub(super) fn migrate_stale_self_row(&mut self) {
-        let Some((our_pid, our_hp)) = self.session.as_ref().map(|s| {
-            (
-                crate::crypto::clutch::identity_party_id(&s.identity_seed),
-                s.handle_proof,
-            )
-        }) else {
-            return;
-        };
-        for contact in self.contacts.iter_mut() {
-            if !contact.is_sibling
-                && contact.handle_proof == our_hp
-                && contact.handle_hash != our_pid
-            {
-                crate::logf!(
-                    "SELF: migrating stale self-contact key {} -> current party id",
-                    crate::fp(&contact.handle_hash)
-                );
-                contact.handle_hash = our_pid;
-                if let Some(storage) = self.storage.as_ref() {
-                    let _ = crate::storage::contacts::save_contact(contact, storage);
-                    // Conversation rows re-home at the storage layer (`migrate_conversation_tables`) once the pid is right — nothing message-shaped lives on the contact any more.
-                }
-            }
-        }
-    }
-
     /// A conversation with zero remote participants can hold NO ceremony — nothing to exchange, nobody to offer at. Yet the field found the notes row Pending with a sent offer (the ContactId collision routed a sibling's keygen onto it, 2026-08-13), which rings the parked-ceremony doorbell every ~5min and re-arms 573KB offers at our own fleet on every path-up edge. Scrub round debris off zero-remote rows and settle them Complete (zero-remote is keyed-on-arrival by doctrine).
     pub(super) fn scrub_zero_remote_rounds(&mut self) {
         for ci in 0..self.contacts.len() {

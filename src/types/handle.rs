@@ -6,6 +6,14 @@ pub struct Handle {
     pub key: DevicePubkey, // X25519 public key
 }
 
+// ============================================================================
+// DON'T FUCKING TOUCH HANDLES!!!
+// ============================================================================
+// The string the human typed IS the identity — EXACTLY those bytes. The ONLY transform in the entire stack is NFC, and it lives INSIDE the vsf `x` encoder (composed vs decomposed byte orders for the SAME visible glyphs) — never here, never in a widget, never in a flow, never in a worker.
+// No trim. No case fold. No whitespace collapse. No control-char filtering. Newlines, tabs, leading/trailing spaces, emoji, every assigned Unicode codepoint: ALL identity. Non-empty is the ONLY validation, anywhere, forever.
+// This rule has been violated FIVE separate times (case folding in photon, in fgtw, in the portal JS, a hidden ASCII `c + 32`, and a `.trim()` in the join flow). Every single violation silently aliased or bifurcated a human's permanent identity — the "phantom taken handle" class of bug.
+// The KATs in the tests below pin the derivation byte-for-byte. If your change breaks one, REVERT YOUR CHANGE. Do not update the KAT.
+// ============================================================================
 impl Handle {
     pub fn new(username: String, identity: DevicePubkey) -> Self {
         Self {
@@ -76,11 +84,42 @@ mod tests {
             "a trailing space is identity"
         );
         assert_ne!(
-            Handle::to_identity_seed("Nelson"),
-            Handle::to_identity_seed("Nelson"),
+            Handle::to_identity_seed("Kea"),
+            Handle::to_identity_seed("kea"),
             "the folding is gone from the seed path too"
         );
     }
+
+    /// KNOWN-ANSWER TESTS — the identity-seed derivation pinned byte-for-byte.
+    /// These are the machine half of the DON'T FUCKING TOUCH HANDLES rule: any transform that creeps in anywhere below `to_identity_seed` (a fold, a trim, a whitespace collapse, a control-char filter, an encoder change, a dependency bump that shifts vsf's `x` encoding) changes these bytes and fails this test.
+    /// A failure here means identities BIFURCATE in the field — people locked out of what they attested. If your change breaks this test, revert your change. Never update these constants.
+    #[test]
+    fn identity_seed_known_answers() {
+        let kats: &[(&str, &str)] = &[
+            ("kea", KAT_KEA),
+            ("Kea", KAT_KEA_CAP),     // case is identity
+            ("kea ", KAT_KEA_SPACE),  // a trailing space is identity
+            ("ke\ta", KAT_KEA_TAB),   // a tab is identity
+            ("ke\na", KAT_KEA_NL),    // a newline is identity
+            ("Zoë", KAT_ZOE),         // precomposed U+00EB
+        ];
+        for (handle, expected) in kats {
+            assert_eq!(
+                hex::encode(Handle::to_identity_seed(handle)),
+                *expected,
+                "identity seed drifted for {handle:?} — the derivation is FROZEN; revert whatever changed it"
+            );
+        }
+        // NFC is the ONE transform that exists, inside the vsf x encoder: decomposed "Zoe\u{0308}" lands on the SAME bytes as precomposed "Zoë".
+        assert_eq!(hex::encode(Handle::to_identity_seed("Zoe\u{0308}")), KAT_ZOE);
+    }
+
+    const KAT_KEA: &str = "3d533a65869d0890ea95f99d2758bb9c525233455bf341b09b05cde3d989d444";
+    const KAT_KEA_CAP: &str = "c658bfcdb7dc43a90aa51c29e28f00335a254284551bf113a88becc00d515649";
+    const KAT_KEA_SPACE: &str = "629be888e63d860e404dc6c4c6267be3f2e5daef9c5500c0d80ffa4d13e4dd1d";
+    const KAT_KEA_TAB: &str = "b09960ab452649a131ef53a72863e7819afecbecca28d51cb62da4684d7c6c41";
+    const KAT_KEA_NL: &str = "bfc4039e9e09c54bfb4148a3524a136b23dfeace2bf05e84967cef4e8bf52536";
+    const KAT_ZOE: &str = "be6ad9a0ddb94a84ecf1639818b4ff9ea8ef231680c2ee19db1ae48b2cff142e";
 
     /// Handles are FULL Unicode — every assigned codepoint is a first-class handle character (ihi's Huffman codebook covers all 1,112,064). The one normalization that exists anywhere is NFC at the VSF `x` encoder: composed vs decomposed forms of the SAME glyphs (a mac and an android keyboard emitting different byte orders for one visible name) agree, while every HUMAN-VISIBLE distinction — case, spacing, script — stays identity.
     #[test]
