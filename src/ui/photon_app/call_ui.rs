@@ -196,7 +196,7 @@ impl PhotonApp {
         ci: usize,
         sig: CallSignal,
         rx_lane_key: Option<[u8; 32]>,
-        _row_ts: i64,
+        row_ts: i64,
         from_merge: bool,
         row_is_outgoing: bool,
     ) {
@@ -222,13 +222,23 @@ impl PhotonApp {
                         if from_merge {
                             return;
                         }
+                        // STALE-OFFER GATE (re-serve era, 2026-08-20): the durable-store re-serve can deliver an offer row the live retransmit ladder never landed — hours after the caller gave up. An offer that OLD is history, not a doorbell (the same physics the merge-path rule above encodes; a live caller's retransmits arrive within seconds). Not a ring TIMER — ringing still stops only on edges; this is an age check on STARTING one, made on the row's own stamp.
+                        let age = vsf::eagle_time_oscillations().saturating_sub(row_ts);
+                        if age > 60 * vsf::OSCILLATIONS_PER_SECOND as i64 {
+                            crate::logf!(
+                                "CALL: offer {} arrived {}s stale (re-served history) — recorded, not ringing",
+                                hex::encode(&call_id[..4]),
+                                age / vsf::OSCILLATIONS_PER_SECOND as i64
+                            );
+                            return;
+                        }
                         self.active_call = Some(ActiveCall {
                             call_id,
                             peer_handle_hash: peer,
                             we_are_caller: false,
                             phase: CallPhase::Ringing,
                             phase_osc: vsf::eagle_time_oscillations(),
-                            offer_osc: _row_ts,
+                            offer_osc: row_ts,
                             caller_nonce: nonce,
                             callee_nonce: None,
                             offer_lane_key: Some(offer_key),
