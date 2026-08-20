@@ -605,6 +605,7 @@ mod tests {
 
     /// A throwaway vault holding the pair secrets a live fan-out test needs. Phase A wraps require an egged pair between rotator and recipient, so each simulated device gets its own vault carrying the shared secret for every pair it participates in — exactly what a completed sibling CLUTCH would have stored.
     fn egged_vault(tag: &str, ours: &Keypair, peers: &[&Keypair]) -> crate::storage::FlatStorage {
+        crate::storage::isolate_test_storage();
         let vault_seed = *ihi::handle_to_hash(tag).as_bytes();
         let storage =
             crate::storage::FlatStorage::new(crate::storage::APP, vault_seed, rand::random())

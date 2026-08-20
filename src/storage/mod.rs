@@ -41,8 +41,8 @@ pub fn photon_config_dir() -> Result<std::path::PathBuf, std::io::Error> {
     }
     #[cfg(not(target_os = "android"))]
     {
-        // Dev-only override: PHOTON_DATA_DIR points a whole instance (vault + log + lock) at a separate dir, so a second instance can run isolated for two-party testing (pair with PHOTON_FINGERPRINT for a distinct device identity). Compiled out of release so production has no escape hatch from the single-instance lock.
-        #[cfg(feature = "development")]
+        // Dev-only override: PHOTON_DATA_DIR points a whole instance (vault + log + lock) at a separate dir, so a second instance can run isolated for two-party testing (pair with PHOTON_FINGERPRINT for a distinct device identity). Compiled out of release so production has no escape hatch from the single-instance lock. Also alive under cfg(test): the test-isolation helper routes EVERY disk write thru it so `cargo test` can never touch a real config dir again (the "eight vaults" mystery, 2026-08-20).
+        #[cfg(any(feature = "development", test))]
         if let Ok(custom) = std::env::var("PHOTON_DATA_DIR") {
             if !custom.is_empty() {
                 return Ok(std::path::PathBuf::from(custom));
@@ -52,6 +52,17 @@ pub fn photon_config_dir() -> Result<std::path::PathBuf, std::io::Error> {
             std::io::Error::new(std::io::ErrorKind::NotFound, "config dir not found")
         })
     }
+}
+
+/// TEST ISOLATION — every disk-touching test calls this FIRST. Routes photon's config dir (blobs, settings, binding, markers) AND kete's vault rings into the system tempdir; a test that forgets this writes REAL 17MB vault rings + strays into the developer's live home (the "eight vaults, recent timestamps" field mystery). Idempotent, process-global, shared root.
+#[cfg(test)]
+pub fn isolate_test_storage() {
+    let root = std::env::temp_dir().join("photon-tests");
+    std::env::set_var("PHOTON_DATA_DIR", root.join("cfg"));
+    kete::set_vault_dirs_override(
+        root.join("vault-cfg").to_string_lossy().into_owned(),
+        root.join("vault-data").to_string_lossy().into_owned(),
+    );
 }
 
 /// The attachment blob directory: `<config>/blobs/`. Blobs live OUTSIDE the vault deliberately — the dual-ring mirror doubles every vault write and a multi-MB value triggers a vault-grow fsync that freezes the UI (the same phenomenon that made clutch keypairs memory-only). Each blob is one sealed file; the FILENAME is a keyed hash, never the plaintext hash (see BLOB_NAME_KEY).

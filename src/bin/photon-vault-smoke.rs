@@ -1,10 +1,10 @@
 //! Smoke test for the ferros_vault-backed FlatStorage.
 //!
-//! Exercises every FlatStorage public method against a real per-handle vault file under `~/.config/Photon/<derived>.vsf` using a hard-coded test handle. Useful for verifying the on-disk vault works end-to-end before a real attestation has fired in Photon (which is what would normally trigger `FlatStorage::new` at runtime).
+//! Exercises every FlatStorage public method against a vault file using a hard-coded test handle. Useful for verifying the on-disk vault works end-to-end before a real attestation has fired in Photon (which is what would normally trigger `FlatStorage::new` at runtime).
 //!
-//! Cleanup: `rm -rf ~/.config/Photon/ ~/.local/share/Photon/` between runs.
+//! DEFAULT: writes under the system tempdir (`/tmp/photon-vault-smoke/`) — a smoke run must never salt the developer's REAL config dir with plausible-looking 17MB vault rings (the "eight vaults, recent timestamps" field mystery, 2026-08-20). Pass `--real-dirs` to exercise the true XDG paths deliberately; clean up after with `rm -rf ~/.config/Photon/ ~/.local/share/Photon/`.
 //!
-//! Hard-coded test handle + test device_secret — NOT real photon identity. The vault file written by this smoke test is intentionally separate from any real vault Photon would create; once a real attestation lands, Photon calls `FlatStorage::new(real_handle, real_device_secret)` which derives a different filename and the smoke-test vault becomes invisible.
+//! Hard-coded test handle + test device_secret — NOT real photon identity.
 
 use photon_messenger::storage::FlatStorage;
 
@@ -19,6 +19,14 @@ const TEST_DEVICE_SECRET: [u8; 32] = [
 
 fn main() {
     println!("=== photon-vault-smoke ===");
+    if !std::env::args().any(|a| a == "--real-dirs") {
+        let root = std::env::temp_dir().join("photon-vault-smoke");
+        kete::set_vault_dirs_override(
+            root.join("cfg").to_string_lossy().into_owned(),
+            root.join("data").to_string_lossy().into_owned(),
+        );
+        println!("(tempdir mode: {} — pass --real-dirs for the XDG paths)", root.display());
+    }
     println!("Initializing FlatStorage …");
 
     let storage = match FlatStorage::new(

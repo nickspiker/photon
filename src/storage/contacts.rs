@@ -1390,6 +1390,7 @@ mod tests {
 
         let device_secret = [29u8; 32];
         let vault_seed = *ihi::handle_to_hash("me-messages-test").as_bytes();
+        crate::storage::isolate_test_storage();
         let app = crate::storage::APP;
 
         // A two-participant conversation: our pid derived from the vault seed the same way the app does, the peer's an arbitrary pid.
@@ -1471,6 +1472,7 @@ mod tests {
 
         let device_secret = [31u8; 32];
         let vault_seed = *ihi::handle_to_hash("me-sibling-test").as_bytes();
+        crate::storage::isolate_test_storage();
         let app = crate::storage::APP;
 
         let sib_device = [0x44u8; 32];
@@ -1527,6 +1529,7 @@ mod tests {
 
         let device_secret = [37u8; 32];
         let vault_seed = *ihi::handle_to_hash("me-blind-test").as_bytes();
+        crate::storage::isolate_test_storage();
         let app = crate::storage::APP;
 
         let mut c = Contact::new(
@@ -1578,6 +1581,7 @@ mod tests {
 
         let device_secret = [41u8; 32];
         let vault_seed = *ihi::handle_to_hash("me-fold-test").as_bytes();
+        crate::storage::isolate_test_storage();
         let app = crate::storage::APP;
 
         let mut c = Contact::new(
@@ -1634,6 +1638,7 @@ mod tests {
 
         let device_secret = [31u8; 32];
         let vault_seed = *ihi::handle_to_hash("me-paging-test").as_bytes();
+        crate::storage::isolate_test_storage();
         let app = crate::storage::APP;
         let their_seed = [7u8; 32];
 
