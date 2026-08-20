@@ -13,6 +13,7 @@
 - [project_identity_never_dies.md](project_identity_never_dies.md) — IDENTITY NEVER DIES SHIPPED 2026-07-17: no terminal op (worker refuses zero-member folds, LastRites cut), brands survive departure, two-signature retire, fleet page "retired — still yours" + Release; retirement = obscure handle + puck
 - [succession-emit-side-unwired.md](succession-emit-side-unwired.md) — identity succession primitive + worker slot + contact RECEIVE path SHIPPED (05f7d27); EMIT side (build+publish SuccessorRecord on re-found) NOT wired — net-new, needs re-found UX; receive path inert until it ships
 
+- [feedback_self_is_a_contact.md](feedback_self_is_a_contact.md) — HARD RULE, repeatedly violated: self and bob are both people; the self/fleet conversation rides the IDENTICAL machinery (only the key material differs); fixes = DELETE the 17 has_remote branches, never a 'self-sync feature'
 - [feedback_handles_byte_precise.md](feedback_handles_byte_precise.md) — HARD RULE, repeatedly violated before: handles are BYTE-PRECISE full-Unicode (Nick ≠ Nick, whitespace-only valid, Zoë/李伟/김민준 first-class); ONLY validation = non-empty; NFC-at-encoder is the sole (keyboard-encoding) normalization; NEVER trim/fold/collapse
 - [feedback_fgtw_deploy_freely.md](feedback_fgtw_deploy_freely.md) — deploy fgtw.org (wrangler) + toka.wasm freely, no per-deploy confirmation
 - [project_avatar_encryption_wall.md](project_avatar_encryption_wall.md) — avatars are v'e'-encrypted per-handle; admin can't decrypt; browser AV1 decode infra (rav1d-in-wasm) built + deployed, belongs in photon
