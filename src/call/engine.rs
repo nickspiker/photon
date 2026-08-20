@@ -146,7 +146,7 @@ fn run(
         crate::log("CALL: no spool — this call is not being recorded");
     }
     let mut peer = params.peer_addr;
-    let mut seq: u32 = 0;
+    // seq is DERIVED per packet (window_id * 2 + esi) — no independent counter to drift.
     let mut window_id: u32 = 0;
     let mut window_buf: Vec<u8> = Vec::with_capacity(tier_window_bytes(TIER_RATES.len() - 1));
     let mut frames_in_window = 0usize;
@@ -233,22 +233,17 @@ fn run(
             if frames_in_window == FRAMES_PER_WINDOW {
                 let fec = raptorq::Encoder::new(&window_buf, oti(tier));
                 for ep in fec.get_encoded_packets(REPAIR_PACKETS) {
-                    // Sealed payload: [window_id:4][ctrl:1 = esi<<2 | tier][symbol = the whole window]. RaptorQ's 4-byte PayloadId is packed into the ctrl byte's upper 6 bits (source block is always 0, symbol id never exceeds a handful) and reconstructed on RX — 3 wire bytes saved per packet.
-                    let esi = ep.payload_id().encoding_symbol_id() as u8;
-                    let mut payload =
-                        Vec::with_capacity(5 + tier_window_bytes(TIER_RATES.len() - 1));
-                    payload.extend_from_slice(&window_id.to_le_bytes());
-                    payload.push((esi << 2) | tier as u8);
-                    payload.extend_from_slice(ep.data());
+                    // Sealed payload = the BARE symbol. Everything else derives from seq under the fixed 2-packets-per-window invariant: window_id = seq >> 1, esi = seq & 1, and the rung from the payload LENGTH (the four windows have four distinct sizes). A window never straddles a ratchet step (2 divides PACKETS_PER_STEP), so per-packet advance stays monotonic.
+                    let esi = ep.payload_id().encoding_symbol_id();
+                    let seq = window_id.wrapping_mul(2).wrapping_add(esi);
                     tx_chain.advance_to(StepChain::step_for_seq(seq));
-                    if let Some(wire) = packet::seal(&tx_chain, seq, &payload) {
+                    if let Some(wire) = packet::seal(&tx_chain, seq, ep.data()) {
                         if !super::send_media(wire, peer) {
                             crate::log("CALL: media TX channel gone — engine stopping");
                             stop.store(true, Ordering::SeqCst);
                         }
                         pkts_out += 1;
                     }
-                    seq = seq.wrapping_add(1);
                 }
                 window_id = window_id.wrapping_add(1);
                 window_buf.clear();
@@ -275,31 +270,28 @@ fn run(
                 crate::logf!("CALL: peer media now from {} (was {})", src, peer);
                 peer = src;
             }
-            // Sealed payload shape: [window_id:4][ctrl:1][symbol]. The rung rides the ctrl byte's low 2 bits (slot walk + FEC geometry derive from it per window, so a mid-call rung switch decodes seamlessly); the symbol id rides the upper 6 — a symbol that isn't exactly that rung's window is malformed.
-            if payload.len() < 5 {
+            // Payload = the bare symbol; the bookkeeping all derives: window_id = seq >> 1, esi = seq & 1, rung from the LENGTH (four rungs, four distinct window sizes). No length match = malformed (or a mixed-version peer) — shape-drop, which is LOAD-BEARING: raptorq panics on mis-sized symbols, so nothing unchecked may reach the decoder.
+            let wid = header.seq >> 1;
+            let esi = header.seq & 1;
+            let Some(wtier) = (0..TIER_RATES.len()).find(|&t| payload.len() == tier_window_bytes(t))
+            else {
                 rx_drop_shape += 1;
                 continue;
-            }
-            let wid = u32::from_le_bytes(payload[..4].try_into().unwrap());
-            let ctrl = payload[4];
-            let wtier = (ctrl & 0b11) as usize;
-            let esi = (ctrl >> 2) as u32;
-            if payload.len() != 5 + tier_window_bytes(wtier) {
-                rx_drop_shape += 1;
-                continue;
-            }
+            };
             let np = *next_play.get_or_insert(wid);
             if wid < np || rx_done.contains_key(&wid) {
                 continue; // already played or already decoded
             }
-            let ep = raptorq::EncodingPacket::new(
-                raptorq::PayloadId::new(0, esi),
-                payload[5..].to_vec(),
-            );
+            let ep = raptorq::EncodingPacket::new(raptorq::PayloadId::new(0, esi), payload);
             let entry = rx_decoders
                 .entry(wid)
                 .or_insert_with(|| (wtier, raptorq::Decoder::new(oti(wtier))));
             let dtier = entry.0;
+            // A same-window packet at a DIFFERENT rung can't happen from a healthy sender (rung switches land on window boundaries) — feeding it would panic the decoder, so it's a shape-drop too.
+            if dtier != wtier {
+                rx_drop_shape += 1;
+                continue;
+            }
             if let Some(data) = entry.1.decode(ep) {
                 rx_decoders.remove(&wid);
                 let mut frames = Vec::with_capacity(FRAMES_PER_WINDOW);

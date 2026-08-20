@@ -2,9 +2,9 @@
 //! through one full call without a live network: both sides derive the basket from shared friendship
 //! material, a caller sends sealed fountain-coded windows under packet loss, the callee reassembles
 //! and Opus-decodes them. This is the offline half of the self-call harness (the live two-instance
-//! test is a field step). Mirrors the engine's STRIPPED wire (2026-08-19): 6-byte clear header
-//! (magic+seq), sealed payload = [window_id:4][ctrl:1 = esi<<2|tier][symbol = the whole window],
-//! per-rung window sizes, 1 source + 1 repair packet per window.
+//! test is a field step). Mirrors the engine's STRIPPED wire (2026-08-19, round 2): 5-byte clear
+//! header (magic C7 + seq), sealed payload = the BARE symbol — window_id = seq >> 1, esi = seq & 1,
+//! and the rung derives from the payload LENGTH; 1 source + 1 repair packet per window.
 
 use photon_messenger::call::keys::{derive_call_secret, Direction, StepChain};
 use photon_messenger::call::packet;
@@ -56,7 +56,7 @@ fn both_ends_agree_on_the_secret() {
 }
 
 /// The full media path at EVERY ladder rung: encode → window → fountain → seal → (drop one of the two
-/// packets, alternating source/repair) → open → ctrl-byte unpack → decode → reassemble, asserting the
+/// packets, alternating source/repair) → open → derive wid/esi/tier from seq + length → decode, asserting the
 /// callee recovers the caller's audio through the loss at each rung's own bitrate + geometry.
 #[test]
 fn media_survives_packet_loss_end_to_end_at_every_rung() {
@@ -80,7 +80,6 @@ fn media_survives_packet_loss_end_to_end_at_every_rung() {
     };
 
     let windows_per_tier = 4usize;
-    let mut seq: u32 = 0;
     let mut wid: u32 = 0;
     let mut recovered_windows = 0usize;
     let mut total_energy_out = 0.0f64;
@@ -108,31 +107,25 @@ fn media_survives_packet_loss_end_to_end_at_every_rung() {
             for (i, ep) in packets.iter().enumerate() {
                 let lost = i == (w % 2); // alternate losing the source and the repair
                 assert_eq!(ep.data().len(), tier_window_bytes(tier), "symbol must be the exact window");
-                let esi = ep.payload_id().encoding_symbol_id() as u8;
-                let mut payload = Vec::new();
-                payload.extend_from_slice(&wid.to_le_bytes());
-                payload.push((esi << 2) | tier as u8);
-                payload.extend_from_slice(ep.data());
-                tx_chain.advance_to(StepChain::step_for_seq(seq));
-                let wire = packet::seal(&tx_chain, seq, &payload).unwrap();
-                seq += 1;
+                // seq is DERIVED: window_id * 2 + esi — the payload is the bare symbol, nothing else.
+                let esi = ep.payload_id().encoding_symbol_id();
+                let pseq = wid * 2 + esi;
+                tx_chain.advance_to(StepChain::step_for_seq(pseq));
+                let wire = packet::seal(&tx_chain, pseq, ep.data()).unwrap();
                 if lost {
                     continue;
                 }
-                // --- callee: parse the 6-byte header, open under the step key, unpack the ctrl byte ---
+                // --- callee: parse the 5-byte header, open under the step key, DERIVE the bookkeeping ---
                 let (header, sealed) = packet::parse_header(&wire).unwrap();
                 let opened = packet::open(&mut rx_chain, &header, sealed).unwrap();
-                let rx_wid = u32::from_le_bytes(opened[..4].try_into().unwrap());
+                let rx_wid = header.seq >> 1;
+                let rx_esi = header.seq & 1;
                 assert_eq!(rx_wid, wid);
-                let ctrl = opened[4];
-                let rx_tier = (ctrl & 0b11) as usize;
-                let rx_esi = (ctrl >> 2) as u32;
+                let rx_tier = (0..TIER_RATES.len())
+                    .find(|&t| opened.len() == tier_window_bytes(t))
+                    .expect("payload length must name a rung");
                 assert_eq!(rx_tier, tier);
-                assert_eq!(opened.len(), 5 + tier_window_bytes(rx_tier));
-                let ep2 = raptorq::EncodingPacket::new(
-                    raptorq::PayloadId::new(0, rx_esi),
-                    opened[5..].to_vec(),
-                );
+                let ep2 = raptorq::EncodingPacket::new(raptorq::PayloadId::new(0, rx_esi), opened);
                 if let Some(data) = rx_decoder.decode(ep2) {
                     decoded_window = Some(data);
                 }
