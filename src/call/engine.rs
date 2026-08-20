@@ -2,7 +2,7 @@
 //!
 //! Shape choices, and why:
 //! - **Opus RESTRICTED_LOWDELAY (CELT), CBR, on a channel-aware ladder.** No SILK prediction, no in-band FEC, 2.5ms lookahead — loss repair belongs to the fountain code, not psychoacoustic guesswork. Within a rung the wire is constant-size CBR (traffic-shape privacy); the rung climbs/drops only on channel evidence (see the TIER_RATES block).
-//! - **RaptorQ over a tier-sized window (4×10ms at the floor, 2×10ms above).** Frames length-prefix into that rung's fixed slots; the sealed payload is the BARE symbol and the receiver derives the rung from its LENGTH, the window from seq>>1, the symbol id from seq&1 — no negotiation, no bookkeeping bytes. Repair count is the loss dial.
+//! - **RaptorQ over a tier-sized window (4×10ms at the floor, 2×10ms above), one datagram per window.** Frames length-prefix into that rung's fixed slots; the sealed payload is [ctrl][source(N)][repair(N−1)] — the repair PIGGYBACKS on the next window's datagram, so the two copies ride 20-40ms apart (burst-loss immunity) at half the packet rate, and seq IS the window id. The ctrl byte names both rungs; steady-state latency is untouched (only loss RECOVERY waits one window).
 //! - **No PLC.** A window that can't decode is silence (the playback queue runs dry and renders zeros) — never synthesized guesswork.
 //! - **The peer's address FOLLOWS its authenticated packets**: a media packet that opens under the call key re-points our TX at its source address. NAT rebinds and (later) device handoff work without any signaling — the AEAD is the authorization.
 //! - Teardown zeroizes both step chains ([`keys::StepChain`] Drop) — the call becomes undecryptable everywhere, forever.
@@ -23,14 +23,14 @@ const REPAIR_PACKETS: u32 = 1;
 // CHANNEL-AWARE CBR LADDER (Nick's call 2026-08-19, flag day #2): four rungs 16k → 128k, every call starts at rung 0 and climbs on evidence — TCP-slow-start for voice.
 // The rate is CHANNEL-driven, never content-driven: within a rung everything is constant-size CBR (the VBR phoneme side channel stays closed), and a rung switch only tells an observer what the network already shows them.
 // Slots and windows are TIER-SIZED so low rungs are genuinely cheap on the wire — a fixed max-size slot would pad 16k out to 128k's cost (the padding trap).
-// The wire carries NO tier field: the rungs' window sizes are pairwise distinct, so the sealed payload's LENGTH names the rung and a mid-call switch decodes seamlessly.
+// The ctrl byte names each symbol's rung (a switch between windows makes the bundle's two symbols different sizes — length alone went ambiguous when the repair started piggybacking); a mid-call switch decodes seamlessly.
 // Dynamics are AIMD on edges, not timers: CLIMB_CLEAN_WINDOWS completed windows → one rung up; a lost window → DROP_RUNGS_ON_LOSS down.
 // Climb evidence is RECEIVE-side cleanliness — a proxy for the channel both ways until a call_stats feedback frame exists (deferred in docs/calls.md); comment here so nobody mistakes it for measured TX loss.
 // Opus bandwidth follows bitrate automatically (NB at 16k thru fullband at 128k), so this ladder IS the 8kHz→48kHz ramp with the PCM interface pinned at 48k.
 // FLAG-DAY: pre-ladder builds cannot parse this wire at all; the whole fleet updates together.
 const TIER_RATES: [i32; 4] = [16_000, 32_000, 64_000, 128_000];
-/// Max encoded bytes per 10ms frame at each rung: CBR emits rate/800 bytes, +6 headroom — sized so every rung's WINDOW is a multiple of 8, which makes the RaptorQ symbol exactly the window (its alignment rounds max_packet_size down to a multiple of 8; an unaligned window would split into two padded symbols and re-grow the wire).
-const TIER_MAX_ENC: [usize; 4] = [26, 46, 86, 166];
+/// Max encoded bytes per 10ms frame at each rung: hard CBR emits exactly rate/800 bytes, +2 headroom — sized so every rung's WINDOW is a multiple of 8, which makes the RaptorQ symbol exactly the window (its alignment rounds max_packet_size down to a multiple of 8; an unaligned window would split into two padded symbols and re-grow the wire). Trimmed from +6 in the piggyback flag day: at the floor the slot padding was 21% of the wire.
+const TIER_MAX_ENC: [usize; 4] = [22, 42, 82, 162];
 /// Completed-window streak that earns one rung up (~0.5s at 20ms windows, ~1s at the floor's 40ms) — the fast first climb keeps the POTS-ish floor a blink on a clean link.
 const CLIMB_CLEAN_WINDOWS: u32 = 25;
 /// Rungs dropped on a lost window.
@@ -41,7 +41,7 @@ const fn tier_slot(tier: usize) -> usize {
     2 + TIER_MAX_ENC[tier]
 }
 
-/// FEC window bytes at a rung. The four values must stay pairwise DISTINCT — the sealed length is the wire's only tier signal (pinned by test).
+/// FEC window bytes at a rung.
 const fn tier_window_bytes(tier: usize) -> usize {
     TIER_FRAMES[tier] * tier_slot(tier)
 }
@@ -147,8 +147,10 @@ fn run(
         crate::log("CALL: no spool — this call is not being recorded");
     }
     let mut peer = params.peer_addr;
-    // seq is DERIVED per packet (window_id * 2 + esi) — no independent counter to drift.
+    // seq IS the window id — one datagram per window, no independent counter to drift.
     let mut window_id: u32 = 0;
+    // The completed window's repair symbol (tier, bytes), waiting to piggyback on the NEXT window's datagram.
+    let mut prev_repair: Option<(usize, Vec<u8>)> = None;
     let mut window_buf: Vec<u8> = Vec::with_capacity(tier_window_bytes(TIER_RATES.len() - 1));
     let mut frames_in_window = 0usize;
 
@@ -244,20 +246,31 @@ fn run(
             frames_in_window += 1;
 
             if frames_in_window == TIER_FRAMES[tier] {
+                // PIGGYBACK BUNDLE (flag day, 2026-08-20): ONE datagram per window — sealed payload [ctrl:1][source(N)][repair(N−1)]. Halves the packet rate (per-packet header cost was 19% of the floor wire), and the window's two copies now ride datagrams one window APART, so a burst must kill two consecutive datagrams to lose audio — strictly better than the old back-to-back pair. Steady-state latency unchanged: the source still ships the instant the window closes; only loss RECOVERY waits one extra window. seq = window id (the nonce, the step index, everything); ctrl = tier_src:2 | rep_present:1<<2 | tier_rep:2<<3, because a rung switch between windows makes the two symbols different sizes and the length alone goes ambiguous.
                 let fec = raptorq::Encoder::new(&window_buf, oti(tier));
-                for ep in fec.get_encoded_packets(REPAIR_PACKETS) {
-                    // Sealed payload = the BARE symbol. Everything else derives from seq under the fixed 2-packets-per-window invariant: window_id = seq >> 1, esi = seq & 1, and the rung from the payload LENGTH (the four windows have four distinct sizes). A window never straddles a ratchet step (2 divides PACKETS_PER_STEP), so per-packet advance stays monotonic.
-                    let esi = ep.payload_id().encoding_symbol_id();
-                    let seq = window_id.wrapping_mul(2).wrapping_add(esi);
-                    tx_chain.advance_to(StepChain::step_for_seq(seq));
-                    if let Some(wire) = packet::seal(&tx_chain, seq, ep.data()) {
-                        if !super::send_media(wire, peer) {
-                            crate::log("CALL: media TX channel gone — engine stopping");
-                            stop.store(true, Ordering::SeqCst);
-                        }
-                        pkts_out += 1;
-                    }
+                let pkts = fec.get_encoded_packets(REPAIR_PACKETS);
+                let rep = prev_repair.take();
+                let mut payload = Vec::with_capacity(1 + tier_window_bytes(tier) * 2);
+                let ctrl = tier as u8
+                    | rep
+                        .as_ref()
+                        .map_or(0, |(rt, _)| 0b100 | ((*rt as u8) << 3));
+                payload.push(ctrl);
+                payload.extend_from_slice(pkts[0].data());
+                if let Some((_, r)) = &rep {
+                    payload.extend_from_slice(r);
                 }
+                let seq = window_id;
+                tx_chain.advance_to(StepChain::step_for_seq(seq));
+                if let Some(wire) = packet::seal(&tx_chain, seq, &payload) {
+                    if !super::send_media(wire, peer) {
+                        crate::log("CALL: media TX channel gone — engine stopping");
+                        stop.store(true, Ordering::SeqCst);
+                    }
+                    pkts_out += 1;
+                }
+                // The repair symbol rides the NEXT window's datagram. The final window's repair never ships (the call ended); its ~20-40ms tail is protected only by its source — accepted.
+                prev_repair = Some((tier, pkts[1].data().to_vec()));
                 window_id = window_id.wrapping_add(1);
                 window_buf.clear();
                 frames_in_window = 0;
@@ -283,58 +296,77 @@ fn run(
                 crate::logf!("CALL: peer media now from {} (was {})", src, peer);
                 peer = src;
             }
-            // Payload = the bare symbol; the bookkeeping all derives: window_id = seq >> 1, esi = seq & 1, rung from the LENGTH (four rungs, four distinct window sizes). No length match = malformed (or a mixed-version peer) — shape-drop, which is LOAD-BEARING: raptorq panics on mis-sized symbols, so nothing unchecked may reach the decoder.
-            let wid = header.seq >> 1;
-            let esi = header.seq & 1;
-            let Some(wtier) = (0..TIER_RATES.len()).find(|&t| payload.len() == tier_window_bytes(t))
-            else {
+            // Bundle payload: [ctrl:1][source(seq)][repair(seq−1) if flagged]. seq IS the window id; the ctrl byte names both rungs (a rung switch between windows makes the two symbols different sizes, so length alone is ambiguous). The EXACT-length check is LOAD-BEARING: raptorq panics on mis-sized symbols, so nothing unchecked may reach a decoder.
+            if payload.is_empty() {
                 rx_drop_shape += 1;
                 continue;
+            }
+            let ctrl = payload[0];
+            let tier_src = (ctrl & 0b11) as usize;
+            let rep_present = ctrl & 0b100 != 0;
+            let tier_rep = ((ctrl >> 3) & 0b11) as usize;
+            let src_len = tier_window_bytes(tier_src);
+            let expected = 1 + src_len + if rep_present { tier_window_bytes(tier_rep) } else { 0 };
+            if payload.len() != expected {
+                rx_drop_shape += 1;
+                continue;
+            }
+            let body = &payload[1..];
+            // Feed the source symbol to window seq, and the piggybacked repair to window seq−1 — same per-symbol pipeline for both (dedup → fountain → slot walk → Opus → climb evidence).
+            let mut inputs: [(u32, usize, u32, &[u8]); 2] =
+                [(header.seq, tier_src, 0, &body[..src_len]), (0, 0, 1, &[])];
+            let n_inputs = if rep_present && header.seq > 0 {
+                inputs[1] = (header.seq - 1, tier_rep, 1, &body[src_len..]);
+                2
+            } else {
+                1
             };
-            let np = *next_play.get_or_insert(wid);
-            if wid < np || rx_done.contains_key(&wid) {
-                continue; // already played or already decoded
-            }
-            let ep = raptorq::EncodingPacket::new(raptorq::PayloadId::new(0, esi), payload);
-            let entry = rx_decoders
-                .entry(wid)
-                .or_insert_with(|| (wtier, raptorq::Decoder::new(oti(wtier))));
-            let dtier = entry.0;
-            // A same-window packet at a DIFFERENT rung can't happen from a healthy sender (rung switches land on window boundaries) — feeding it would panic the decoder, so it's a shape-drop too.
-            if dtier != wtier {
-                rx_drop_shape += 1;
-                continue;
-            }
-            if let Some(data) = entry.1.decode(ep) {
-                rx_decoders.remove(&wid);
-                let mut frames = Vec::with_capacity(TIER_FRAMES[dtier]);
-                for slot in 0..TIER_FRAMES[dtier] {
-                    let base = slot * tier_slot(dtier);
-                    let n = u16::from_le_bytes(data[base..base + 2].try_into().unwrap()) as usize;
-                    if n == 0 || n > TIER_MAX_ENC[dtier] {
-                        continue;
-                    }
-                    if let Some(w) = spool.as_mut() {
-                        w.append(1, vsf::eagle_time_oscillations(), &data[base + 2..base + 2 + n]);
-                    }
-                    let mut pcm = vec![0i16; FRAME_SAMPLES];
-                    match decoder.decode(&data[base + 2..base + 2 + n], &mut pcm, false) {
-                        Ok(s) if s == FRAME_SAMPLES => {
-                            rx_energy += pcm.iter().map(|v| v.unsigned_abs() as u64).sum::<u64>();
-                            rx_frames += 1;
-                            frames.push(pcm);
-                        }
-                        Ok(_) | Err(_) => {}
-                    }
+            for &(wid, wtier, esi, sym) in inputs.iter().take(n_inputs) {
+                let np = *next_play.get_or_insert(wid);
+                if wid < np || rx_done.contains_key(&wid) {
+                    continue; // already played or already decoded
                 }
-                rx_done.insert(wid, frames);
-                // Receive-side cleanliness is the climb evidence (channel proxy — see the ladder comment): a full streak of completed windows earns one rung up.
-                clean_rx_windows += 1;
-                if clean_rx_windows >= CLIMB_CLEAN_WINDOWS && pending_tier + 1 < TIER_RATES.len() {
-                    pending_tier += 1;
-                    clean_rx_windows = 0;
-                    tier_ups += 1;
-                    crate::logf!("CALL: tier up → {} kbps", TIER_RATES[pending_tier] / 1000);
+                let ep = raptorq::EncodingPacket::new(raptorq::PayloadId::new(0, esi), sym.to_vec());
+                let entry = rx_decoders
+                    .entry(wid)
+                    .or_insert_with(|| (wtier, raptorq::Decoder::new(oti(wtier))));
+                let dtier = entry.0;
+                // A same-window symbol at a DIFFERENT rung can't happen from a healthy sender (rung switches land on window boundaries) — feeding it would panic the decoder, so it's a shape-drop too.
+                if dtier != wtier {
+                    rx_drop_shape += 1;
+                    continue;
+                }
+                if let Some(data) = entry.1.decode(ep) {
+                    rx_decoders.remove(&wid);
+                    let mut frames = Vec::with_capacity(TIER_FRAMES[dtier]);
+                    for slot in 0..TIER_FRAMES[dtier] {
+                        let base = slot * tier_slot(dtier);
+                        let n = u16::from_le_bytes(data[base..base + 2].try_into().unwrap()) as usize;
+                        if n == 0 || n > TIER_MAX_ENC[dtier] {
+                            continue;
+                        }
+                        if let Some(w) = spool.as_mut() {
+                            w.append(1, vsf::eagle_time_oscillations(), &data[base + 2..base + 2 + n]);
+                        }
+                        let mut pcm = vec![0i16; FRAME_SAMPLES];
+                        match decoder.decode(&data[base + 2..base + 2 + n], &mut pcm, false) {
+                            Ok(s) if s == FRAME_SAMPLES => {
+                                rx_energy += pcm.iter().map(|v| v.unsigned_abs() as u64).sum::<u64>();
+                                rx_frames += 1;
+                                frames.push(pcm);
+                            }
+                            Ok(_) | Err(_) => {}
+                        }
+                    }
+                    rx_done.insert(wid, frames);
+                    // Receive-side cleanliness is the climb evidence (channel proxy — see the ladder comment): a full streak of completed windows earns one rung up.
+                    clean_rx_windows += 1;
+                    if clean_rx_windows >= CLIMB_CLEAN_WINDOWS && pending_tier + 1 < TIER_RATES.len() {
+                        pending_tier += 1;
+                        clean_rx_windows = 0;
+                        tier_ups += 1;
+                        crate::logf!("CALL: tier up → {} kbps", TIER_RATES[pending_tier] / 1000);
+                    }
                 }
             }
         }
@@ -429,13 +461,11 @@ mod tests {
 
     #[test]
     fn tier_slots_fit_cbr_frames() {
-        // CBR emits exactly rate/800 bytes per 10ms frame; every rung's slot must hold that with margin, every window must be 8-aligned so raptorq's symbol is EXACTLY the window (unaligned would split + pad — the trap this design kills), and the window sizes must be pairwise DISTINCT because the sealed length is the wire's ONLY tier signal.
+        // CBR emits exactly rate/800 bytes per 10ms frame; every rung's slot must hold that with margin, every window must be 8-aligned so raptorq's symbol is EXACTLY the window (unaligned would split + pad — the trap this design kills), and both rung indices must fit the ctrl byte's 2-bit fields.
+        assert!(TIER_RATES.len() <= 4, "tiers ride 2-bit ctrl fields");
         for t in 0..TIER_RATES.len() {
             assert!(TIER_RATES[t] as usize / 800 + 2 <= TIER_MAX_ENC[t], "rung {} slot too tight", t);
             assert_eq!(tier_window_bytes(t) % 8, 0, "rung {} window must be 8-aligned", t);
-            for u in 0..t {
-                assert_ne!(tier_window_bytes(t), tier_window_bytes(u), "rungs {} and {} share a window size — the length-is-the-tier signal breaks", t, u);
-            }
         }
     }
 

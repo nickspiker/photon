@@ -1,12 +1,12 @@
 //! Media packet wire format — the ONE non-VSF datagram in the system, because 100 packets/second earns a fixed 5-byte header instead of a parsed document.
 //!
-//! `[magic:1 = C7] [seq:4 LE] [ciphertext = the bare FEC symbol] [tag:4]`
+//! `[magic:1 = C7] [seq:4 LE] [ciphertext = the window bundle: ctrl + source(N) + repair(N−1)] [tag:4]`
 //!
 //! STRIPPED to the bone (Nick, 2026-08-19 — the first cut carried 42 fixed bytes + an MTU-padded symbol, ~13× the audio rate at the ladder floor): every field an endpoint can DERIVE is derived, every field the tag already proves is deleted.
 //! - `step` — gone: it is `seq / PACKETS_PER_STEP` by construction; the old header field was checked-redundant.
 //! - `dir` — gone: each direction seals under its own StepChain key, so a wrong-direction packet simply fails the tag.
 //! - `call_id` — gone: the key is basket-derived per call (one live call per handle), so a stale call's straggler fails under the live key.
-//! - `window_id`, the FEC symbol id, AND the ladder tier — gone (round 2, same day): the geometry is invariantly 2 packets per window, so `window_id = seq >> 1` and `esi = seq & 1`; the rungs have distinct window sizes, so the sealed LENGTH is the tier. The payload is the bare symbol.
+//! - `window_id` — gone: one datagram per window, so seq IS the window id; the repair symbol for window N−1 PIGGYBACKS behind window N's source (half the packet rate, copies a window apart for burst immunity). One sealed ctrl byte names the two symbols' rungs (a mid-bundle rung switch makes length alone ambiguous).
 //!
 //! The single magic byte lives in the HIGH half of ASCII, which no other frame on the wire touches: VSF opens 'R' (0x52), PT DATA a lowercase stream id (0x61-0x7A) — every legitimate first byte is ≤ 0x7F. The recv worker checks this one byte FIRST and routes matches raw to the call engine — no PT ack, no StatusUpdate, no parse ladder — or silently drops them when no call is active.
 //!
