@@ -139,6 +139,7 @@ sha2 = "0.10.9"
 sha3 = "0.11.0-rc.3"
 i256 = "0.2.3"
 chacha20 = { version = "0.9.1", features = ["std"] }
+poly1305 = "0.8"  # hand-composed RFC 8439 for the call media plane's truncated tag (packet.rs)
 futures = "0.3.31"
 resize = "0.8.8"
 rgb = "0.8.52"

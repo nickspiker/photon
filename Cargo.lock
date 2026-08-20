@@ -4214,6 +4214,7 @@ dependencies = [
  "p384",
  "p521",
  "pollster",
+ "poly1305 0.8.0",
  "pqc_dilithium",
  "pqcrypto-hqc",
  "pqcrypto-mlkem",
