@@ -109,6 +109,13 @@ And a device that cannot read the slot cannot clobber it — the roster-preserve
 
 ## Cutover
 
-Flag-day, consistent with the no-compat doctrine: PFO1 replaces PFO0 outright, readers do not read-both.
-Order: (1) worker deploys the locked-signer refusal on `fanout_put` (backwards-neutral — PFO0 blobs still pass the guard); (2) clients ship PFO1; (3) the first publish after cutover is a shrink-style mint (fresh key, ira wraps, re-seal), which retires every PFO0 artifact in one act.
-The worker's stored revision register carries forward untouched — PFO1 revisions continue the same monotonic sequence, so the flag-day-deadlock class (proposing 1 over a live register) cannot recur.
+Flag-day, consistent with the no-compat doctrine: the new blob version replaces the old outright, readers do not read-both.
+Order: (1) worker deploys the locked-signer refusal on `fanout_put` (backwards-neutral — old blobs still pass the guard); (2) clients ship v2; (3) the first publish after cutover is a CARRYING mint, which retires every old artifact in one act.
+The worker's stored revision register carries forward untouched — v2 revisions continue the same monotonic sequence, so the flag-day-deadlock class (proposing 1 over a live register) cannot recur.
+
+AMENDED AT FIELD CONTACT (2026-08-20, the half-crossed-fleet lesson): the establish mint is NEVER plain — it always runs the carry discipline (`recover_or_establish_carrying`).
+With a cached key that still opens the fstate slot (an in-place upgrade), the establish IS the atomic preserve → mint → re-seal — the upgraded device carries the fleet's roster/settings/avatar-pins across the key boundary in its first publish, and every other device then restores off the worker with zero siblings online, exactly the old oracle-slot UX.
+With nothing preservable and sealed state present under a key this device lacks (a wiped device crossing first), the mint is REFUSED — establishing would orphan the fleet's state, and pushing near-empty state over it is the wiped-device clobber class.
+That device waits; the keyholder that crosses later carries the state, and the waiter recovers off its wrap.
+Consequence: upgrade a HEALTHY device first.
+A mixed-version fleet still mint-wars by construction (each side treats the other's blob as absent) — the carry rules stop the empty side from participating, but the war truly ends only when every live device speaks the same version.

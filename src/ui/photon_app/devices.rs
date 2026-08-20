@@ -884,6 +884,13 @@ impl PhotonApp {
         // Locked devices (treat-as-stolen) are chain members that must NOT be wrapped: the heal rotates whenever the live fan-out covers more devices than the DESIRED set (fold minus locked), which fires on a member's self-departure AND on a lockout identically.
         let locked = self.locked_devices();
         // This device's shareable state, snapshotted on the UI thread — the heal's re-seal push carries it even when the old-key pull comes up empty.
+        // "Meaningful" = we hold at least one FRIEND row (non-sibling, non-self): the establish-carry guard pushes near-empty state NEVER (the wiped-device clobber class) but a real roster always.
+        let ours_meaningful = {
+            let our_hp = self.our_handle_proof();
+            self.contacts
+                .iter()
+                .any(|c| !c.is_sibling && Some(c.handle_proof) != our_hp)
+        };
         let ours = fgtw::fstate::FleetState {
             roster: self.current_roster(),
             global_settings: self
@@ -959,7 +966,15 @@ impl PhotonApp {
                 }
                 return;
             }
-            match fleet::recover_or_establish_fleet_key(&hp, &device_key, &identity_seed) {
+            match fleet::recover_or_establish_carrying(
+                &hp,
+                &device_key,
+                &identity_seed,
+                &storage,
+                &addr,
+                ours,
+                ours_meaningful,
+            ) {
                 Ok(Some(k)) => {
                     if let Err(e) = storage.write_addr(&addr, &k) {
                         crate::logf!("FLEET: fleet key cache failed: {}", e);
@@ -996,8 +1011,23 @@ impl PhotonApp {
             .as_ref()
             .map(|fs| (fs.global.clone(), fs.devices.clone()));
         let fkc = self.fleet_key_ram.clone();
+        // The same carry discipline as the key sync: an establish here must never orphan or clobber the slot (see recover_or_establish_carrying).
+        let ours_meaningful = entries.iter().any(|e| e.handle_proof != hp);
+        let ours_state = fgtw::fstate::FleetState {
+            roster: entries.clone(),
+            global_settings: live.as_ref().map(|l| l.0.clone()).unwrap_or_default(),
+            device_settings: live.as_ref().map(|l| l.1.clone()).unwrap_or_default(),
+        };
         std::thread::spawn(move || {
-            match fleet::recover_or_establish_fleet_key(&hp, &kp, &identity_seed) {
+            match fleet::recover_or_establish_carrying(
+                &hp,
+                &kp,
+                &identity_seed,
+                &storage,
+                &addr,
+                ours_state,
+                ours_meaningful,
+            ) {
                 Ok(Some(k)) => {
                     if let Err(e) = storage.write_addr(&addr, &k) {
                         crate::logf!("FLEET: fleet key cache failed: {}", e);
