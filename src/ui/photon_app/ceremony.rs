@@ -489,6 +489,15 @@ impl PhotonApp {
                         break;
                     }
 
+                    // FLEET-FIRST belt-and-braces: chains adopted while this keygen ground (replication flipped the contact Complete) — the ceremony is already unnecessary; installing keys would re-arm a round on a finished friendship and offer at a friend who long since has the chain.
+                    if contact.clutch_state == crate::types::ClutchState::Complete {
+                        crate::logf!(
+                            "CLUTCH: keygen result for {} — discarded, chains already adopted (Complete)",
+                            crate::fp(&contact.handle_proof).as_str()
+                        );
+                        break;
+                    }
+
                     // §4.2: a claim landed while keygen was running (roster merge parked this contact mid-flight) — installing the result would resurrect the parked round and re-send a competing offer. Drop it on the floor.
                     if ceremony_parked_by(contact, Some(device_pubkey), &siblings) {
                         // RESPONDER EXCEPTION, gated on a STALE owner: the friend's offer sitting in their slot deadlocks a parked device when their build offers to one device only (observed live against a v0.40 peer: the drain dropped the responding keygen, their KEM/proofs then fell on a keyless Pending contact forever, both sides stalled) — so ownership may FOLLOW the friend's offer. But a friend's offer is NOT a choice of device: a responder's offer fans out over the relay to the whole fleet, so every sibling receives it — and ungated, each one "followed the choice", stole the ceremony from a sibling actively running it, and minted its own round (three concurrent rounds, cross-round proof drops on every side, the ceremony stuck "testing the secure channel" — live pair, 2026-08-03). The roster clock separates the two shapes: a live owner claimed within the round TTL, a deadlocked one has been silent past it. Recent claim → park and drop the keygen below, the owner's round completes and fleet sync carries the chains; stale claim → the original rescue: claim, bump the LWW clock so siblings adopt + discard-on-park, and install the keys.

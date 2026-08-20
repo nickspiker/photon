@@ -1128,6 +1128,8 @@ pub struct PhotonApp {
     avatar_req_pending: std::collections::HashMap<[u8; 32], i64>,
     /// Request ids WE minted for history pages, rid → (the conversation the request was FOR, sent osc). The AUTHORITATIVE page-match: the per-conversation `in_flight` rid alone starved recovery when two contact rows resolved the same peer (field, 2026-08-10 — a duplicated contact meant the page's token resolved to one conversation while the rid lived on the OTHER's record, so every served page dropped "rid unmatched" forever). A page matching ANY rid here was asked for by us, whatever contact the token resolves to today. Entries are consumed on match and swept by the same in-flight timeout.
     hist_rid_map: std::collections::HashMap<[u8; 32], (crate::types::ConversationId, i64)>,
+    /// Fleet-first keygen gate edge state — true while the gate is actively holding friend keygens (logs the hold and the release ONCE each, not per tick).
+    keygen_fleet_gate_holding: bool,
     /// History-serve rate limiting, keyed by conversation_token: (last-served eagle-time, recent request ids). Dedups replayed hist_req frames (the redundant alt-path copy arrives ~always) and caps the serve cadence per conversation.
     history_serve: std::collections::HashMap<[u8; 32], (i64, std::collections::VecDeque<[u8; 32]>)>,
     /// Completed friendship chains, keyed by friendship id — populated when a CLUTCH ceremony completes (the per-conversation rolling key material lives here). Persisted via `save_friendship_chains`; loaded on attest/resume.
@@ -1821,6 +1823,7 @@ impl PhotonApp {
             avatar_dl_started: std::collections::HashSet::new(),
             avatar_req_pending: std::collections::HashMap::new(),
             hist_rid_map: std::collections::HashMap::new(),
+            keygen_fleet_gate_holding: false,
             history_serve: std::collections::HashMap::new(),
             friendship_chains: Vec::new(),
             chord_lb_press: None,
@@ -2937,6 +2940,10 @@ fn contact_ping_due(c: &crate::types::Contact, now: std::time::Instant) -> bool 
     let Some(last) = c.last_pinged else {
         return true; // never pinged — always reach a contact at least once
     };
+    // FLEET-FIRST probe acceleration: an UNPROBED sibling gates every friend keygen (spawn_next_pending_keygen), so its verdict must land in seconds — re-ping just past the 5s expiry so the 3 offline strikes accrue back-to-back (~18s to a dead-sibling verdict) instead of riding the 60s backoff (~2min). Ends at the verdict edge; the normal cadence owns the row from there.
+    if c.is_sibling && !c.presence_probed {
+        return now.duration_since(last) >= std::time::Duration::from_secs(6);
+    }
     let recent_traffic = c
         .last_heard
         .is_some_and(|t| now.duration_since(t) < std::time::Duration::from_secs(120));
