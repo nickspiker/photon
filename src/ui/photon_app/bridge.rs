@@ -39,37 +39,18 @@ impl PhotonApp {
     }
 
     /// Fire an attest with caller-supplied roots (the probe already derived them), skipping the permanence interstitial and the second proof. First-attest persistence semantics.
-    /// Path of the unattended reboot capsule (`<config>/reboot_capsule`). None if the config dir can't be resolved.
-    pub(super) fn reboot_capsule_path() -> Option<std::path::PathBuf> {
-        crate::storage::photon_config_dir()
-            .ok()
-            .map(|d| d.join("reboot_capsule"))
-    }
+    /// Device-scope vault entry holding the unattended reboot capsule (was the `<config>/reboot_capsule` loose file). The device vault opens pre-attest, so the boot path reads it before any UI.
+    pub(super) const REBOOT_CAPSULE_ENTRY: &'static str = "capsule/reboot";
 
-    /// Path of the unattended-mode opt-IN marker (`<config>/unattended_reboot`). Presence = the operator turned "Auto-attest on reboot" ON. Read at resume before any UI, so it must be a plain durable file, not vault state.
-    pub(super) fn unattended_marker_path() -> Option<std::path::PathBuf> {
-        crate::storage::photon_config_dir()
-            .ok()
-            .map(|d| d.join("unattended_reboot"))
-    }
-
-    /// Whether unattended auto-attest-on-reboot is enabled (default OFF — marker absent).
+    /// Whether unattended auto-attest-on-reboot is enabled (default OFF — flag absent). Device-scope vault flag (was the `<config>/unattended_reboot` marker file).
     pub(super) fn unattended_enabled() -> bool {
-        Self::unattended_marker_path().map_or(false, |p| p.exists())
+        crate::storage::device_flag("flags/unattended_reboot")
     }
 
-    /// BRIDGE host opt-in marker (`<config>/remote_terminal`). Presence = this device will SERVE remote shells to fleet siblings. Off by default; a durable file so a resident/headless host honours it with no UI.
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-    pub(super) fn remote_terminal_marker_path() -> Option<std::path::PathBuf> {
-        crate::storage::photon_config_dir()
-            .ok()
-            .map(|d| d.join("remote_terminal"))
-    }
-
-    /// Whether this device serves remote shells (default OFF).
+    /// Whether this device serves remote shells to fleet siblings (default OFF). Device-scope vault flag (was the `<config>/remote_terminal` marker file); a resident/headless host honours it with no UI.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     pub(super) fn remote_terminal_enabled() -> bool {
-        Self::remote_terminal_marker_path().map_or(false, |p| p.exists())
+        crate::storage::device_flag("flags/remote_terminal")
     }
 
     /// Handle one received `term` DATA frame — CROSS-PLATFORM, the chat-as-shell model (line in, line out; the PTY host in network/bridge.rs is a separate future path). Gate: fold-verified SIBLING only (our own device), never a friend. Two roles:
@@ -323,14 +304,8 @@ impl PhotonApp {
 
     /// Turn unattended mode on/off. ON writes the marker AND (also requires background/autostart so a reboot actually relaunches photon) refreshes the capsule from the live session. OFF removes the marker and shreds the capsule.
     pub(super) fn set_unattended(&mut self, on: bool) {
-        let Some(marker) = Self::unattended_marker_path() else {
-            return;
-        };
+        crate::storage::set_device_flag("flags/unattended_reboot", on);
         if on {
-            let _ = std::fs::write(
-                &marker,
-                b"operator enabled unattended auto-attest on reboot\n",
-            );
             // Unattended only means anything if the box relaunches photon at boot — force background/autostart on.
             #[cfg(not(target_os = "android"))]
             {
@@ -343,9 +318,8 @@ impl PhotonApp {
                 "UNATTENDED: auto-attest-on-reboot ENABLED (also forced background/autostart on)",
             );
         } else {
-            let _ = std::fs::remove_file(&marker);
-            if let Some(p) = Self::reboot_capsule_path() {
-                tohu::clear_reboot_capsule(&p);
+            if let Some(v) = crate::storage::device_vault() {
+                let _ = v.delete_device(Self::REBOOT_CAPSULE_ENTRY);
             }
             crate::log("UNATTENDED: auto-attest-on-reboot DISABLED (capsule shredded)");
         }
@@ -353,18 +327,21 @@ impl PhotonApp {
 
     /// Refresh the reboot capsule from the live session IFF unattended mode is on; otherwise ensure no capsule exists. Called on every successful attest and on toggle-on.
     pub(super) fn refresh_reboot_capsule(&self) {
-        let Some(path) = Self::reboot_capsule_path() else {
+        let Some(vault) = crate::storage::device_vault() else {
             return;
         };
         if Self::unattended_enabled() {
             if let Some(session) = self.session.as_ref() {
-                match tohu::store_reboot_capsule(session, &path) {
+                let stored = tohu::seal_reboot_capsule(session)
+                    .map_err(|e| e.to_string())
+                    .and_then(|bytes| vault.write_device(Self::REBOOT_CAPSULE_ENTRY, &bytes).map_err(|e| e.to_string()));
+                match stored {
                     Ok(()) => crate::log("UNATTENDED: reboot capsule refreshed (device-bound; opens only on this hardware)"),
                     Err(e) => crate::logf!("UNATTENDED: reboot capsule write failed: {}", e),
                 }
             }
         } else {
-            tohu::clear_reboot_capsule(&path);
+            let _ = vault.delete_device(Self::REBOOT_CAPSULE_ENTRY);
         }
     }
 }

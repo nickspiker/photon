@@ -23,10 +23,8 @@ impl PhotonApp {
             return;
         }
         // ONE IDENTITY PER DEVICE (docs/lifecycle.md D2): the binding marker names the identity this device carries; a different typed handle refuses HERE — before the ~1s memory-hard proof is spent. The check is cheap (the typed handle's party id derives without the proof). Typing the BOUND identity's own handle passes and resumes normally; unbinding is a wipe (Panel → Security). The worker's one-owner index backstops a scrubbed marker.
-        if let Some(kp) = self.device_keypair.as_ref() {
-            if let Some(bound) =
-                crate::storage::device_binding::bound_party_id(kp.secret.as_bytes())
-            {
+        {
+            if let Some(bound) = crate::storage::device_binding::bound_party_id() {
                 let typed_pid = crate::crypto::clutch::identity_party_id(
                     &crate::types::Handle::to_identity_seed(&handle),
                 );
@@ -174,12 +172,9 @@ impl PhotonApp {
                 self.reconcile_worker_locks();
                 self.reconcile_worker_unlocks();
                 // Bind the device to this identity (docs/lifecycle.md D2): the marker refuses a second identity at the NEXT submit, before its proof is spent. Idempotent on resume; cleared only by a wipe.
-                if let Some(kp) = self.device_keypair.as_ref() {
-                    crate::storage::device_binding::bind(
-                        kp.secret.as_bytes(),
-                        &crate::crypto::clutch::identity_party_id(&data.identity_seed),
-                    );
-                }
+                crate::storage::device_binding::bind(&crate::crypto::clutch::identity_party_id(
+                    &data.identity_seed,
+                ));
                 // UNATTENDED MODE: if the operator has opted this box into auto-attest-on-reboot, refresh the reboot capsule now that we hold a live session, so the NEXT reboot resumes without a handle. No-op (and the capsule is cleared) when the toggle is off — see refresh_reboot_capsule.
                 self.refresh_reboot_capsule();
                 self.pending_broadcast_signal = 1;

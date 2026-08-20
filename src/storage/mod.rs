@@ -4,7 +4,6 @@ pub mod device_binding;
 pub mod fanout_pairs;
 pub mod fleet_settings;
 pub mod friendship;
-pub mod settings;
 
 // The storage adapter (was `flat.rs`) now lives in the shared `kete` crate. Re-export its surface so existing call sites — `crate::storage::FlatStorage`, `StorageError`, `encrypt_bytes`/`decrypt_bytes` (used by cloud.rs) — keep resolving unchanged.
 pub use kete::{decrypt_bytes, encrypt_bytes, App, FlatStorage, StorageError};
@@ -25,10 +24,120 @@ pub fn open_session_vault(
     vault_seed: [u8; 32],
     device_secret: [u8; 32],
 ) -> Result<std::sync::Arc<FlatStorage>, StorageError> {
-    let vault = FlatStorage::open_device_shared(APP, device_secret)?;
+    install_device_secret(device_secret);
+    let vault = device_vault().ok_or_else(|| StorageError::Vault("device vault unavailable".to_string()))?;
     vault.set_identity(vault_seed)?;
     migrate_legacy_vault(&vault, &vault_seed, &device_secret);
     Ok(vault)
+}
+
+/// The resolved device secret — installed by driver init / open_session_vault / the Android JNI wiring (all hand in the same fingerprint-deterministic bytes) and self-derived on desktop when a pre-init caller (main's CLI toggles, early widget state) needs the device vault first. A Mutex, not a OnceLock, so tests can rebind — at runtime every writer carries identical bytes.
+static DEVICE_SECRET: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
+
+/// Install the device secret (from the resolved device keypair).
+pub fn install_device_secret(secret: [u8; 32]) {
+    if let Ok(mut g) = DEVICE_SECRET.lock() {
+        *g = Some(secret);
+    }
+}
+
+fn resolved_device_secret() -> Option<[u8; 32]> {
+    if let Ok(g) = DEVICE_SECRET.lock() {
+        if let Some(s) = *g {
+            return Some(s);
+        }
+    }
+    // Desktop self-derivation; Android has no in-Rust fingerprint oracle (Build.FINGERPRINT lives Java-side), so a pre-install caller there gets None and the feature reads its default.
+    #[cfg(not(target_os = "android"))]
+    {
+        let fp = crate::network::fgtw::get_machine_fingerprint().ok()?;
+        let kp = crate::network::fgtw::derive_device_keypair(&fp);
+        let s = *kp.secret.as_bytes();
+        install_device_secret(s);
+        return Some(s);
+    }
+    #[cfg(target_os = "android")]
+    None
+}
+
+/// THE process-wide device vault, pre-identity: open from the device secret alone, from first launch, before any handle is typed. This is where the pre-attest state lives (D2 binding, opt-in flags, reboot capsule) — Nick's key model: entries are hash(thing|device) here and hash(thing|device|person) once attested (the identity scope on the same vault, unlocked by open_session_vault). First open absorbs the loose-file sprawl.
+/// The cache is SECRET-KEYED, not first-open-wins: a rebound secret (tests; never runtime) re-resolves instead of silently serving the old vault. kete's shared-engine registry does the real dedup underneath.
+pub fn device_vault() -> Option<std::sync::Arc<FlatStorage>> {
+    static DEVICE_VAULT: std::sync::Mutex<Option<([u8; 32], std::sync::Arc<FlatStorage>)>> =
+        std::sync::Mutex::new(None);
+    let secret = resolved_device_secret()?;
+    let mut g = DEVICE_VAULT.lock().ok()?;
+    if let Some((s, v)) = g.as_ref() {
+        if *s == secret {
+            return Some(v.clone());
+        }
+    }
+    match FlatStorage::open_device_shared(APP, secret) {
+        Ok(v) => {
+            absorb_loose_files(&v, &secret);
+            *g = Some((secret, v.clone()));
+            Some(v)
+        }
+        Err(e) => {
+            crate::logf!("STORAGE: device vault open failed: {}", e);
+            None
+        }
+    }
+}
+
+/// A device-scope boolean flag (opt-ins/vetoes that used to be marker FILES). Present = true, absent = false; the caller owns the default polarity.
+pub fn device_flag(key: &str) -> bool {
+    device_vault().map_or(false, |v| matches!(v.read_device(key), Ok(Some(_))))
+}
+
+/// Write (`true`) or delete (`false`) a device-scope flag entry.
+pub fn set_device_flag(key: &str, on: bool) {
+    let Some(v) = device_vault() else { return };
+    let r = if on { v.write_device(key, &[1u8]) } else { v.delete_device(key) };
+    if let Err(e) = r {
+        crate::logf!("STORAGE: device flag {} write failed: {}", key, e);
+    }
+}
+
+/// Fold the loose-file sprawl into the device vault — each artifact is move-then-delete, so the walk is self-terminating (absent file = already folded) and crash-safe (a crash re-folds only what's left). No marker needed. Runs once per process at first device-vault open.
+fn absorb_loose_files(vault: &FlatStorage, device_secret: &[u8; 32]) {
+    let Ok(dir) = photon_config_dir() else { return };
+    // D2 binding marker: sealed under its own device-derived key in the file era — decrypt with that key, store the party id as a device-scope entry (the vault seals it from here on).
+    let binding = dir.join("device_binding.vsf");
+    if let Ok(bytes) = std::fs::read(&binding) {
+        let key = blake3::derive_key("photon.device_binding.v0", device_secret);
+        if let Ok(plain) = kete::decrypt_bytes(&bytes, &key) {
+            if vault.write_device("binding/party", &plain).is_ok() {
+                let _ = std::fs::remove_file(&binding);
+                crate::log("STORAGE: device binding folded into the vault");
+            }
+        } else {
+            // Unreadable under this device's key = not ours/corrupt — the worker index backstops; the stray still leaves the census.
+            let _ = std::fs::remove_file(&binding);
+        }
+    }
+    // Opt-in / veto markers: file existence becomes a flag entry.
+    for (file, key) in [
+        ("unattended_reboot", "flags/unattended_reboot"),
+        ("remote_terminal", "flags/remote_terminal"),
+        ("background_optout", "flags/background_optout"),
+    ] {
+        let p = dir.join(file);
+        if p.exists() && vault.write_device(key, &[1u8]).is_ok() {
+            let _ = std::fs::remove_file(&p);
+            crate::logf!("STORAGE: {} marker folded into the vault", file);
+        }
+    }
+    // Reboot capsule: already-sealed bytes move verbatim — tohu opens them from wherever they live.
+    let capsule = dir.join("reboot_capsule");
+    if let Ok(bytes) = std::fs::read(&capsule) {
+        if vault.write_device("capsule/reboot", &bytes).is_ok() {
+            let _ = std::fs::remove_file(&capsule);
+            crate::log("STORAGE: reboot capsule folded into the vault");
+        }
+    }
+    // settings.vsf held only the log hex-elision knobs, whose runtime API vsf removed — the file is dead weight (env vars still override in dev). Delete the stray.
+    let _ = std::fs::remove_file(dir.join("settings.vsf"));
 }
 
 /// In-place migration from the per-identity vault era: every entry of the legacy vault is raw-copied (stored bytes verbatim, same addresses — the identity-scope key derivation is unchanged, so ciphertexts decrypt identically) into the device vault, then the legacy rings are renamed to `.legacy` backups — kept, not deleted, as missed-domain insurance until a later version reaps them. Marker-gated in the device scope, single-flight, idempotent; every row of history — including the first message ever sent over FGTW — survives.
@@ -388,6 +497,31 @@ pub fn read_file(path: &Path, label: &str) -> Result<Vec<u8>, std::io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The file-era sprawl folds into the device vault at first open: binding marker (re-sealed), opt-in markers (→ flags), dead settings.vsf (deleted) — and the loose files leave the census.
+    #[test]
+    fn loose_files_fold_into_the_device_vault() {
+        isolate_test_storage();
+        let secret = [0x5Cu8; 32];
+        let dir = photon_config_dir().unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = blake3::derive_key("photon.device_binding.v0", &secret);
+        std::fs::write(
+            dir.join("device_binding.vsf"),
+            kete::encrypt_bytes(&[0x77u8; 32], &key).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(dir.join("unattended_reboot"), b"operator opt-in").unwrap();
+        std::fs::write(dir.join("settings.vsf"), b"dead-knobs").unwrap();
+        install_device_secret(secret);
+        // Asserts go thru the held Arc, not the global accessors — a parallel test may rebind the process-wide secret mid-flight; the vault itself is immutable truth.
+        let v = device_vault().unwrap();
+        assert_eq!(v.read_device("binding/party").unwrap(), Some(vec![0x77u8; 32]));
+        assert!(matches!(v.read_device("flags/unattended_reboot"), Ok(Some(_))));
+        assert!(!dir.join("device_binding.vsf").exists(), "binding file still in the census");
+        assert!(!dir.join("unattended_reboot").exists(), "marker file still in the census");
+        assert!(!dir.join("settings.vsf").exists(), "dead settings file still in the census");
+    }
 
     /// THE no-data-loss contract: a legacy per-identity vault's entries — string keys and raw addresses alike — survive verbatim into the device vault on the first open_session_vault, the legacy rings park as `.legacy` backups, and a second open changes nothing.
     #[test]

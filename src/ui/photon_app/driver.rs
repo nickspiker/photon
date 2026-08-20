@@ -488,6 +488,8 @@ impl FluorApp for PhotonApp {
         };
         // Stash a clone for app-level operations that need the keypair after init (avatar upload via `upload_avatar`). The clone is cheap (Ed25519 keypair is ~64 bytes); we can't ask HandleQuery for it back because its constructor moves the keypair into the worker threads.
         self.device_keypair = Some(keypair.clone());
+        // Hand the device secret to storage so the pre-identity device vault (D2 binding, opt-in flags, reboot capsule) resolves from here on — on Android this is the ONLY route (no in-Rust fingerprint oracle).
+        crate::storage::install_device_secret(*keypair.secret.as_bytes());
         #[cfg(not(target_os = "android"))]
         let hq = HandleQuery::new(keypair, proxy.clone());
         #[cfg(target_os = "android")]
@@ -590,8 +592,9 @@ impl FluorApp for PhotonApp {
 
         // UNATTENDED MODE (off by default, Security → "Auto-attest on reboot"): the boot-locked tohu session dies on reboot BY DESIGN, so a normal reboot lands on the typed-attest screen. When the operator has explicitly opted a failsafe box into unattended mode, a device-bound reboot capsule (sealed under the hardware fingerprint, not the wairua) survives the reboot — adopt it into tohu's live session here so the identical resume path below runs with no handle typed. The capsule opens ONLY on the same hardware; a copy elsewhere fails. If tohu already has a live session (warm restart, same boot) this is a no-op.
         if tohu::session().is_none() {
-            if let Some(cap) =
-                Self::reboot_capsule_path().and_then(|p| tohu::load_reboot_capsule(&p))
+            if let Some(cap) = crate::storage::device_vault()
+                .and_then(|v| v.read_device(Self::REBOOT_CAPSULE_ENTRY).ok().flatten())
+                .and_then(|bytes| tohu::open_reboot_capsule(&bytes))
             {
                 crate::log("RESUME: unattended reboot capsule opened — auto-attesting with no handle (Security toggle is ON)");
                 let _ = tohu::set_session(&cap); // re-arm the normal (boot-locked) session so the rest of this boot behaves like a warm restart
@@ -2195,10 +2198,10 @@ impl FluorApp for PhotonApp {
                     if hit_id == self.known_mine_hit {
                         if let Some(session) = self.probed_session.take() {
                             // ONE IDENTITY PER DEVICE holds HERE too (docs/lifecycle.md D2): this path bypasses submit_handle's marker gate, and the worker's bindreq gate would only fire AFTER the words screen showed. A device bound to a different identity never gets to the words.
-                            if let Some(kp) = self.device_keypair.as_ref() {
-                                if let Some(bound) = crate::storage::device_binding::bound_party_id(
-                                    kp.secret.as_bytes(),
-                                ) {
+                            {
+                                if let Some(bound) =
+                                    crate::storage::device_binding::bound_party_id()
+                                {
                                     if crate::crypto::clutch::identity_party_id(
                                         &session.identity_seed,
                                     ) != bound

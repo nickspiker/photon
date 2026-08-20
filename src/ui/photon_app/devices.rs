@@ -1923,9 +1923,7 @@ impl PhotonApp {
             return;
         };
         // ONE IDENTITY PER DEVICE at the join door (docs/lifecycle.md D2): the direct join-mode entry (orb toggle → type handle) skips submit_handle's marker gate, and the worker's bindreq gate would only reject AFTER the words screen showed. Refuse a device bound to a different identity BEFORE any words, any beacon, any registry post.
-        if let Some(bound) =
-            crate::storage::device_binding::bound_party_id(device_key.secret.as_bytes())
-        {
+        if let Some(bound) = crate::storage::device_binding::bound_party_id() {
             let typed_pid = crate::crypto::clutch::identity_party_id(
                 &crate::types::Handle::to_identity_seed(&handle),
             );

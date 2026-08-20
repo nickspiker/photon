@@ -696,6 +696,7 @@ mod tests {
     #[test]
     fn pre_document_vault_blob_now_fails_strict() {
         // A distinct seed from the other tests in this module so the two vaults can't collide.
+        crate::storage::isolate_test_storage();
         let storage =
             FlatStorage::new(crate::storage::APP, [0xC1; 32], [0xC2; 32]).expect("storage");
 

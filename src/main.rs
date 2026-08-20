@@ -60,27 +60,16 @@ fn main() {
         let enable = std::env::args().any(|a| a == "--enable-remote-terminal");
         let disable = std::env::args().any(|a| a == "--disable-remote-terminal");
         if enable || disable {
-            match photon_messenger::storage::photon_config_dir() {
-                Ok(dir) => {
-                    let marker = dir.join("remote_terminal");
-                    if enable {
-                        let _ = std::fs::create_dir_all(&dir);
-                        match std::fs::write(
-                            &marker,
-                            b"operator enabled serving remote shells to fleet siblings\n",
-                        ) {
-                            Ok(()) => println!(
-                                "remote-terminal host ENABLED ({}). Restart photon to serve.",
-                                marker.display()
-                            ),
-                            Err(e) => eprintln!("failed to enable: {e}"),
-                        }
-                    } else {
-                        let _ = std::fs::remove_file(&marker);
-                        println!("remote-terminal host DISABLED.");
-                    }
+            // The flag is a device-scope vault entry now; device_vault self-derives the device secret from the machine fingerprint, so this works headless with no session.
+            if photon_messenger::storage::device_vault().is_some() {
+                photon_messenger::storage::set_device_flag("flags/remote_terminal", enable);
+                if enable {
+                    println!("remote-terminal host ENABLED. Restart photon to serve.");
+                } else {
+                    println!("remote-terminal host DISABLED.");
                 }
-                Err(e) => eprintln!("no config dir: {e}"),
+            } else {
+                eprintln!("failed: device vault unavailable");
             }
             return;
         }
@@ -144,15 +133,6 @@ fn main() {
     photon_messenger::logf!("SIGNATURE CHECK PASSED");
     photon_messenger::logf!("Ed25519 signature: {}", signature_hex);
     photon_messenger::log("");
-
-    // Load user settings (creates settings.vsf with defaults on first run) and apply the log-display knobs to vsf's inspector BEFORE any VSF gets dumped, so the very first packet logged is elided.
-    let settings = photon_messenger::storage::settings::Settings::load_or_create();
-    settings.apply();
-    photon_messenger::logf!(
-        "Settings: log hex elision head = {} tail = {} bytes",
-        settings.hex_head,
-        settings.hex_tail
-    );
 
     // Startup message
     photon_messenger::log("Photon Messenger - Distilled to what messaging actually requires, for true data sovereignty");
