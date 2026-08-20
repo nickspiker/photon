@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -209,9 +210,27 @@ class PhotonConnectionService : Service() {
             }
         }
 
-        val notification = buildNotification()
-        startForeground(NOTIFICATION_ID, notification)
+        // EXPLICIT dataSync-only foreground type at launch. The two-arg startForeground inherits the manifest's FULL type set (dataSync|microphone), and Android 14 (targetSDK 34) hard-rejects a microphone-type FGS start without RECORD_AUDIO granted + the app in an eligible state — which is every fresh launch now that the mic prompt is deferred to the first call (launch crash on Android 14 Samsungs, field 2026-08-19; pre-14 devices don't enforce and were fine). The mic type is ADDED at call time by promoteForeground(true) in startCapture and dropped again at stopCallAudio.
+        promoteForeground(false)
         return START_STICKY
+    }
+
+    /** (Re)assert the foreground notification with explicit FGS types: dataSync always, microphone only when a call is actively capturing (withMic). API 29- has no typed startForeground; the MICROPHONE constant is API 30+. SecurityException is caught, not fatal: an ineligible mic promotion (e.g., backgrounded edge) degrades to listen-only instead of crashing the whole app. */
+    private fun promoteForeground(withMic: Boolean) {
+        val notification = buildNotification()
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                if (withMic && Build.VERSION.SDK_INT >= 30) {
+                    types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                }
+                startForeground(NOTIFICATION_ID, notification, types)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            PhotonLog.w(TAG, "startForeground(withMic=$withMic) rejected — continuing degraded", e)
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -570,6 +589,8 @@ class PhotonConnectionService : Service() {
             PhotonActivity.live?.requestMicPermission()
             return
         }
+        // Android 14 FGS discipline: the microphone type is added to the foreground service ONLY now — at an actual call, with the permission granted and the app foreground (the user just tapped answer/call). Launch-time mic-typed startForeground is what crashed Android 14 devices.
+        promoteForeground(true)
         captureThread = Thread({
             try {
                 val minBuf = android.media.AudioRecord.getMinBufferSize(
@@ -668,6 +689,8 @@ class PhotonConnectionService : Service() {
         callAudioRunning = false
         captureThread = null
         renderThread = null
+        // Drop the microphone FGS type the moment the call ends — back to dataSync-only (privacy indicator off, Android 14 mic-FGS accounting closed).
+        promoteForeground(false)
         PhotonLog.i(TAG, "callAudio: stopped")
     }
 }
