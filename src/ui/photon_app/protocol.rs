@@ -266,6 +266,9 @@ impl PhotonApp {
                     {
                         use crate::network::fgtw::fleet;
                         let heard = crate::network::pairing_beacon::heard();
+                        let now = std::time::Instant::now();
+                        self.lan_heard.retain(|(_, t)| now.duration_since(*t) < LAN_HEARD_FRESH);
+                        let lan_heard = self.lan_heard.clone();
                         self.add_device_candidates = reqs
                             .into_iter()
                             .map(|req| {
@@ -282,6 +285,8 @@ impl PhotonApp {
                                             req.t,
                                         )
                                     }),
+                                    // LAN proximity: the candidate's own pubkey heard broadcasting under our handle on this network.
+                                    heard_lan: lan_heard.iter().any(|(k, _)| *k == req.device_pubkey),
                                     req,
                                 }
                             })

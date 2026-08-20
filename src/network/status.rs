@@ -492,6 +492,8 @@ pub enum StatusUpdate {
     },
     /// LAN peer discovered via broadcast (NAT hairpinning workaround)
     LanPeerDiscovered {
+        /// The beaconing DEVICE (the frame's `ke` field) — present on every current beacon; None only for pre-ke frames. This is what lets an own-handle beacon mean something: it names WHICH device of the fleet (or which joining candidate) is on this LAN.
+        device_pubkey: Option<[u8; 32]>,
         handle_proof: [u8; 32],
         local_ip: Ipv4Addr,
         port: u16,
@@ -922,6 +924,11 @@ impl StatusChecker {
     /// Clone of the proof channel for a deferred send — the ceremony drain attaches it to the durable chains write so the proof fires post-durability (ChainsPostDurable::CeremonyProof).
     pub fn complete_proof_sender(&self) -> Sender<ClutchCompleteRequest> {
         self.complete_proof_sender.clone()
+    }
+
+    /// A cloneable handle for off-thread LAN broadcasting — the JOIN loop announces the joining device on the local network with it (the "see local devices" half of add-device).
+    pub fn lan_broadcast_handle(&self) -> Sender<LanBroadcastRequest> {
+        self.lan_broadcast_sender.clone()
     }
 
     /// Broadcast presence on LAN for local peer discovery (non-blocking) Solves NAT hairpinning - when peers are on same LAN, they can discover each other's local IPs
@@ -4258,6 +4265,7 @@ fn parse_lan_discovery(
         port
     );
     Some(StatusUpdate::LanPeerDiscovered {
+        device_pubkey: beacon_device,
         handle_proof,
         local_ip,
         port,
