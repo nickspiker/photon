@@ -650,25 +650,6 @@ struct AttachInstalled {
 
 /// Greedy word-wrap for the message list: split `s` into lines that each measure ≤ `max_w` under `style`. Word widths are measured individually and summed (kerning across a space is negligible at chat sizes), so the cost is O(words), not O(words²) re-shapes. A single word wider than the line hard-breaks by chars — a pasted URL/hash must wrap, not vanish off-screen. Empty input yields one empty line so the row keeps its height.
 /// Bubble DISPLAY text for a row: attachment rows render as a pill line — paperclip, name, dozenal size, and an actions hint while the blob isn't held locally. Everything else passes thru. The raw marker string never reaches a glyph.
-/// Attachment resample card geometry: (centre_x, centre_y, w, h) — shared by layout + render + hit rects.
-fn attach_card_rect(buf_w: usize, buf_h: usize, unit: f32) -> (f32, f32, f32, f32) {
-    let w = (buf_w as f32 * 0.82).min(unit * 22.0);
-    let h = unit * 6.4;
-    (buf_w as f32 * 0.5, buf_h as f32 * 0.44, w, h)
-}
-
-/// The slider's resample curve: t ≤ 0.6 ramps the long edge 256→4096 at hard compression ("small → medium, shit quality"); past 0.6 the edge holds 4K and JPEG quality ramps 35→92 ("good on the high end").
-fn attach_curve(t: f32) -> (u32, u8) {
-    let t = t.clamp(0.0, 1.0);
-    if t <= 0.6 {
-        let f = t / 0.6;
-        ((256.0 * 16.0f32.powf(f)).round() as u32, 35)
-    } else {
-        let f = (t - 0.6) / 0.4;
-        (4096, (35.0 + f * 57.0).round() as u8)
-    }
-}
-
 /// The starter reaction vocabulary, default order — the strip re-ranks by fleet-wide usage on top of this (stable sort, so ties keep this order). Emoji-as-text is the proven path (the paperclip pill); the heart carries VS16 so it renders emoji-style, not text-style.
 const DEFAULT_REACTIONS: [&str; 5] = [
     "\u{1F44D}",
@@ -1536,15 +1517,6 @@ pub struct PhotonApp {
     settings_theme_dropdown: Option<fluor::widgets::Dropdown>,
     /// Appearance-page zoom / text-size control — a real fluor `Slider`.
     settings_zoom_slider: Option<fluor::widgets::Slider>,
-    /// A picked/dropped IMAGE awaiting the resample decision (non-images send immediately). (contact idx, filename, original bytes, (w, h)).
-    pending_attach: Option<(usize, String, Vec<u8>, (u32, u32))>,
-    /// Deferred encode (the pending_delete pattern): `Some(false)` = armed (paint "encoding…" this frame), `Some(true)` = feedback painted (tick runs the encode now).
-    pending_attach_encode: Option<bool>,
-    /// Resample overlay controls — created with placeholder geometry at init, positioned each frame while the overlay is up.
-    attach_slider: Option<fluor::widgets::Slider>,
-    attach_original_check: Option<fluor::widgets::Checkbox>,
-    /// Overlay action pills: base = send, base+1 = cancel. Paperclip compose button = base+2.
-    attach_ui_base: HitId,
     /// Live PT transfer progress (peer, done, total, outbound) — throttled push from the status thread; drives the pill progress bar.
     attach_progress: Vec<(std::net::SocketAddr, u32, u32, bool)>,
     /// Blob pushes confirmed landed (attach_have), this session.
@@ -1999,11 +1971,6 @@ impl PhotonApp {
             settings_btn_base: HIT_NONE,
             settings_theme_dropdown: None,
             settings_zoom_slider: None,
-            pending_attach: None,
-            pending_attach_encode: None,
-            attach_slider: None,
-            attach_original_check: None,
-            attach_ui_base: HIT_NONE,
             attach_progress: Vec::new(),
             attach_confirmed: std::collections::HashSet::new(),
             pending_attach_picker: false,
@@ -2511,15 +2478,6 @@ impl PhotonApp {
         if matches!(self.state, AppState::Conversation) {
             // The compose box is the only focusable widget in a conversation; yielding it here wires click-to-focus, Tab, and key dispatch. Same `compose_ready` the render reads — one definition, so the walk and the paint can never disagree again.
             let compose_ready = self.compose_ready();
-            // Attachment resample overlay controls ride the conversation walk while pending (independent of the compose gate).
-            if self.pending_attach.is_some() {
-                if let Some(sl) = self.attach_slider.as_mut() {
-                    f(sl);
-                }
-                if let Some(cb) = self.attach_original_check.as_mut() {
-                    f(cb);
-                }
-            }
             if compose_ready {
                 if let Some(tb) = self.message_textbox.as_mut() {
                     f(tb);

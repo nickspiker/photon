@@ -319,28 +319,6 @@ impl FluorApp for PhotonApp {
             1.,
             0.5,
         ));
-        // Attachment resample overlay: quality/size slider (default 0.7 ≈ 4K decent) + the send-original checkbox that disables it, plus a 3-id pill block (send / cancel / paperclip).
-        self.attach_slider = Some(fluor::widgets::Slider::new(
-            &mut self.hit_counter,
-            0.,
-            0.,
-            1.,
-            1.,
-            0.7,
-        ));
-        self.attach_original_check = Some(fluor::widgets::Checkbox::new(
-            &mut self.hit_counter,
-            "send original",
-            0.,
-            0.,
-            1.,
-            1.,
-            12.,
-            false,
-        ));
-        self.hit_counter = self.hit_counter.wrapping_add(1);
-        self.attach_ui_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(2);
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.unattended_confirm_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(2); // confirm / cancel
@@ -1586,41 +1564,6 @@ impl FluorApp for PhotonApp {
 
         // Message-row tap (conversation) — toggle that message's details strip (direction, age, delivery, copy). The copy pill copies the message text via the platform clipboard (arboard / Kotlin poll bridge).
         if matches!(self.state, AppState::Conversation) && self.msg_hit_base != HIT_NONE {
-            // Attachment overlay pills: send (arms the deferred encode — "encoding…" paints first) / cancel. Paperclip (base+2): Android opens the system picker; desktop hints the drop gesture.
-            if self.attach_ui_base != HIT_NONE
-                && hit_id == self.attach_ui_base
-                && self.pending_attach.is_some()
-            {
-                self.pending_attach_encode = Some(false);
-                self.scene_dirty = true;
-                ctx.window.request_redraw();
-                return EventResponse::Handled;
-            }
-            if self.attach_ui_base != HIT_NONE
-                && hit_id == self.attach_ui_base.wrapping_add(1)
-                && self.pending_attach.is_some()
-            {
-                self.pending_attach = None;
-                self.pending_attach_encode = None;
-                self.scene_dirty = true;
-                ctx.window.request_redraw();
-                return EventResponse::Handled;
-            }
-            if self.attach_ui_base != HIT_NONE && hit_id == self.attach_ui_base.wrapping_add(2) {
-                #[cfg(target_os = "android")]
-                {
-                    self.pending_attach_picker = true;
-                }
-                #[cfg(not(target_os = "android"))]
-                {
-                    self.ready_toast =
-                        Some("drop a file on the conversation to attach".to_string());
-                    self.ready_toast_screen = None;
-                }
-                self.scene_dirty = true;
-                ctx.window.request_redraw();
-                return EventResponse::Handled;
-            }
             if hit_id == self.msg_copy_id && hit_id != HIT_NONE {
                 if let Some((sci, ts, out)) = self.selected_msg {
                     let text_opt = self.conv_of(sci).and_then(|v| {
@@ -2772,52 +2715,6 @@ impl FluorApp for PhotonApp {
 
         // Point the top-left orb at the current subject (peer avatar + their presence ring in a conversation, else the Photon orb + our connectivity). Self-diffing — a no-op unless the contact / avatar / screen changed.
         self.update_orb();
-
-        // Deferred attachment encode: runs AFTER the "encoding…" frame painted (the pending_delete pattern) — a 50MP decode+Lanczos+JPEG can take a second or two and must not eat the press feedback.
-        if self.pending_attach_encode == Some(true) {
-            if let Some((ci, name, bytes, _dims)) = self.pending_attach.take() {
-                self.pending_attach_encode = None;
-                let send_original = self
-                    .attach_original_check
-                    .as_ref()
-                    .map(|c| c.is_checked())
-                    .unwrap_or(false);
-                if send_original {
-                    self.attach_send_now(ci, name, bytes);
-                } else {
-                    let t = self
-                        .attach_slider
-                        .as_ref()
-                        .map(|s| s.value())
-                        .unwrap_or(0.7);
-                    let (edge, q) = attach_curve(t);
-                    match crate::ui::avatar::resample_to_jpeg(&bytes, edge, q) {
-                        Ok((jpeg, w, h)) => {
-                            let stem = name
-                                .rsplit_once('.')
-                                .map(|(st, _)| st.to_string())
-                                .unwrap_or(name);
-                            crate::logf!(
-                                "attach: resampled to {}x{} q{} ({} bytes)",
-                                w,
-                                h,
-                                q,
-                                jpeg.len()
-                            );
-                            self.attach_send_now(ci, format!("{}.jpg", stem), jpeg);
-                        }
-                        Err(e) => {
-                            crate::logf!("attach: resample failed: {} — sending original", e);
-                            self.attach_send_now(ci, name, bytes);
-                        }
-                    }
-                }
-                self.scene_dirty = true;
-                needs_redraw = true;
-            } else {
-                self.pending_attach_encode = None;
-            }
-        }
 
         // Deferred message delete: runs only AFTER the "deleting…" frame painted (see pending_delete). TOMBSTONE, not removal: the flag propagates monotonically thru fleet sync (push + sweep + merge true-wins), and a hidden DELETE marker rides the chain to the FRIEND so their side tombstones too — delete-for-everyone. Content is preserved internally (braid weave dependency — see ChatMessage::deleted).
         if let Some(((sci, ts, out), true)) = self.pending_delete {

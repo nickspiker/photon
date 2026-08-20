@@ -90,17 +90,6 @@ impl PhotonApp {
             btn.set_rect(send_cx, compose_cy, send_size, send_size);
             btn.set_font_size(font_size);
         }
-        // Attachment resample overlay: a centred card — name/dims line, slider, send-original check, [send][cancel] pills (pills stamp their own hit rects in the render). Card metrics mirror the render block (attach_card_rect).
-        if self.pending_attach.is_some() {
-            let (cx, cy, w, _h) = attach_card_rect(buf_w, buf_h, unit);
-            if let Some(sl) = self.attach_slider.as_mut() {
-                sl.set_rect(cx, cy - unit * 0.2, w * 0.72, unit * 0.9);
-            }
-            if let Some(cb) = self.attach_original_check.as_mut() {
-                cb.set_rect(cx, cy + unit * 1.1, w * 0.72, unit * 0.9);
-                cb.set_font_size(font_size * 0.9);
-            }
-        }
 
         // Settings panel (STUB): position the stateful widgets on the selected page. Content-body rows give each control a slot; a control's rect is a portion of its row so the label can sit beside / above it. Only the active page's widgets are repositioned — the others keep their placeholder geometry off-screen, and `visit` gates them out anyway.
         if let AppState::Settings(page) = self.state {

@@ -19,21 +19,8 @@ impl PhotonApp {
         self.send_attachment_from_bytes(ci, name, bytes);
     }
 
-    /// Byte entry (Android picker + desktop drop converge here). Images fork to the RESAMPLE OVERLAY (slider = size/quality curve, checkbox = send original); everything else sends immediately.
+    /// Byte entry (Android picker + desktop drop converge here). Every file — images included — sends BYTE-EXACT: no re-encode exists in this codebase (house doctrine; the JPEG resample overlay was excised 2026-08-20, the attachments rework is parked).
     pub(super) fn send_attachment_from_bytes(&mut self, ci: usize, name: String, bytes: Vec<u8>) {
-        if let Some(dims) = crate::ui::avatar::probe_image_dims(&bytes) {
-            if let Some(sl) = self.attach_slider.as_mut() {
-                sl.set_value(0.7);
-                sl.set_enabled(true);
-            }
-            if let Some(cb) = self.attach_original_check.as_mut() {
-                cb.set_checked(false);
-            }
-            self.pending_attach = Some((ci, name, bytes, dims));
-            self.pending_attach_encode = None;
-            self.scene_dirty = true;
-            return;
-        }
         self.attach_send_now(ci, name, bytes);
     }
 
@@ -42,7 +29,7 @@ impl PhotonApp {
         const MAX_ATTACH: usize = 25 * 1024 * 1024;
         if bytes.is_empty() || bytes.len() > MAX_ATTACH {
             self.ready_toast =
-                Some("attachment limit is 25 MB \u{2014} resample the image down".to_string());
+                Some("attachment limit is 25 MB".to_string());
             self.ready_toast_screen = None;
             crate::logf!("attach: rejected ({} bytes)", bytes.len());
             return;

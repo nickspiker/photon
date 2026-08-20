@@ -1,4 +1,14 @@
 # AGENT.md - Code Generation Rules
+## Rule -1: House Formats Only — Formats, Codecs, and Storage Locations Are OWNER Decisions
+
+The house formats are: **VSF** (every file/wire/vault structure), **AV1 via rav1e/rav1d** (the only image encoding — avatars, Photon-only at rest), **Opus** (audio), **blake3** (hashing), **XChaCha20-Poly1305** (sealing).
+
+**You may NOT introduce:**
+- Any output format or ENCODER not on that list (JPEG, PNG, WebP, protobuf, JSON-at-rest, SQLite, …). Decoding foreign images for ingest is fine; encoding to one is not. A session once bolted an adjustable-quality JPEG encoder beside the AV1 pipeline and it shipped — a forensically-identifiable foreign format the owner never approved. That class is now gate-enforced (`scripts/lib/artifact-gate.sh`).
+- Any new on-disk location or loose file. State lives in THE vault (kete, one device vault, config census = the log + the vault ring); process-lifetime artifacts live in `storage::runtime_dir()`. A new `fs::write` site is gate-enforced against an allowlist — being on the allowlist IS the record that Nick approved it.
+
+If a task seems to need a new format, codec, or file: **STOP and ask Nick.** The answer being "obviously convenient" is exactly how the JPEG got in.
+
 ## Rule 0: Bounds Checks and Saturating Arithmetic
 **IF YOU ADD ANY BOUNDS CHECK OR SATURATING ARITHMETIC, YOU ARE REQUIRED TO:**
 0. **STATE WHY** it was added

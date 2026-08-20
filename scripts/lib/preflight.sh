@@ -13,4 +13,6 @@ preflight_gates() {
     migration_gate || exit 1
     source "$d/arch-gate.sh"
     arch_gate || exit 1
+    source "$d/artifact-gate.sh"
+    artifact_gate || exit 1
 }

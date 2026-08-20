@@ -78,50 +78,6 @@ pub fn avatar_rgb_f32_to_u8(vsf_rgb_f32: &[f32]) -> Vec<u8> {
 }
 
 /// The FAST half of avatar-set: decode + EXIF/ICC handling + centre-crop + Lanczos resize + circular mask + γ2 — everything except the AV1 encode. Milliseconds; safe on the UI thread for the instant-display path.
-/// Cheap header sniff: dimensions iff `bytes` parses as an image (no full decode). Drives the attach-resample offer.
-pub fn probe_image_dims(bytes: &[u8]) -> Option<(u32, u32)> {
-    image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?
-        .into_dimensions()
-        .ok()
-}
-
-/// Attachment resample: decode (EXIF-rotated, same treatment as avatars), downscale so the long edge fits `long_edge` (never upscales), encode JPEG at `quality`. Returns (jpeg_bytes, w, h). JPEG over AV1 deliberately — the saved file must open EVERYWHERE, not just inside photon.
-pub fn resample_to_jpeg(
-    bytes: &[u8],
-    long_edge: u32,
-    quality: u8,
-) -> Result<(Vec<u8>, u32, u32), String> {
-    use image::ImageDecoder;
-    let mut decoder = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|e| format!("sniff: {}", e))?
-        .into_decoder()
-        .map_err(|e| format!("decode: {}", e))?;
-    let orientation = decoder
-        .orientation()
-        .unwrap_or(image::metadata::Orientation::NoTransforms);
-    let mut img =
-        image::DynamicImage::from_decoder(decoder).map_err(|e| format!("decode: {}", e))?;
-    img.apply_orientation(orientation);
-    let (w, h) = (img.width(), img.height());
-    let long = w.max(h);
-    if long > long_edge {
-        let scale = long_edge as f32 / long as f32;
-        let nw = ((w as f32 * scale).round() as u32).max(1);
-        let nh = ((h as f32 * scale).round() as u32).max(1);
-        img = img.resize_exact(nw, nh, image::imageops::FilterType::Lanczos3);
-    }
-    let rgb = img.to_rgb8();
-    let (ow, oh) = (rgb.width(), rgb.height());
-    let mut out = Vec::new();
-    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100));
-    rgb.write_with_encoder(enc)
-        .map_err(|e| format!("jpeg: {}", e))?;
-    Ok((out, ow, oh))
-}
-
 pub fn image_to_avatar_rgb_f32(image_data: &[u8]) -> Result<Vec<f32>, String> {
     use resize::Type::Lanczos3;
     use rgb::FromSlice;
