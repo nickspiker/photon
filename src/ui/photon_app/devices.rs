@@ -1261,8 +1261,6 @@ impl PhotonApp {
         hps.sort_unstable();
         hps.dedup();
         self.spawn_contact_fleet_refresh(hps);
-        // Re-home any stale-keyed self row before persisting the newly-added tail. The keygen filter skips zero-remote conversations by itself — nothing to force.
-        self.migrate_stale_self_row();
         let start = self.contacts.len() - added;
         if let Some(storage) = self.storage.as_ref().cloned() {
             for c in &self.contacts[start..] {
@@ -1464,7 +1462,7 @@ impl PhotonApp {
     pub(super) fn locked_devices(&self) -> Vec<[u8; 32]> {
         self.fleet_settings
             .as_ref()
-            .map(|fs| fs.pubkey_set_union("fleet.locked", "fleet.locked."))
+            .map(|fs| fs.pubkey_set_union("fleet.locked."))
             .unwrap_or_default()
     }
 
@@ -1559,7 +1557,7 @@ impl PhotonApp {
 
     /// Treat-as-stolen: lock a fleet device out WITHOUT touching the membership chain (removal is self-signed only, zero exceptions). The device stays a permanent member; the fleet stops trusting it — the locked set syncs fleet-wide, every trust gate refuses it, and the fleet key rotates so its cached key goes stale.
     pub(super) fn lock_out_device(&mut self, pk: [u8; 32]) {
-        // PER-KEY write, never read-union-write on one blob: two devices locking DIFFERENT pubkeys concurrently each unioned old+own into the same LWW key and one lock was DROPPED — a stolen device stayed trusted on part of the fleet until someone re-locked. Distinct keys commute under merge_global_settings, so a lock can no longer lose a race. The legacy blob stays readable (locked_devices unions it) and is never written again.
+        // PER-KEY write, never read-union-write on one blob: two devices locking DIFFERENT pubkeys concurrently each unioned old+own into the same LWW key and one lock was DROPPED — a stolen device stayed trusted on part of the fleet until someone re-locked. Distinct keys commute under merge_global_settings, so a lock can no longer lose a race.
         if !self.is_locked_device(&pk) {
             self.settings_set(&format!("fleet.locked.{}", hex::encode(pk)), vsf::VsfType::ke(pk.to_vec()));
         }
@@ -1574,28 +1572,8 @@ impl PhotonApp {
     /// Order is tombstone-first: the fleet-synced marker empties BEFORE the worker push, so every sibling's `reconcile_worker_locks` stops re-asserting the lock and `reconcile_worker_unlocks` re-drives the clear until the worker agrees — there is no strandable state in either direction.
     /// Re-admission is a GROW: the compliance rotation mints the next epoch including the freshly-eligible device; no shrink semantics involved.
     pub(super) fn unlock_fleet_device(&mut self, pk: [u8; 32], name: &str) {
-        // Value-level tombstone, now honestly typed: u0(false) = "not locked". It never parses as a key on either read path (typed ke or legacy raw 32), so it drops out of pubkey_set_union on every build, and LWW carries the reversal fleet-wide.
+        // Value-level tombstone, honestly typed: u0(false) = "not locked". It never parses as a key, so it drops out of pubkey_set_union, and LWW carries the reversal fleet-wide.
         self.settings_set(&format!("fleet.locked.{}", hex::encode(pk)), vsf::VsfType::u0(false));
-        // A pre-per-key lock may also live in the legacy one-blob key — rewrite it without this device (whole-blob LWW; the concurrent-writer race the per-key split fixed is tolerable on the rare unlock path).
-        let legacy: Vec<u8> = self
-            .fleet_settings
-            .as_ref()
-            .and_then(|fs| fs.effective("fleet.locked"))
-            .and_then(|v| match v {
-                vsf::VsfType::v(b'r', b) => Some(b.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
-        if legacy.chunks_exact(32).any(|c| c == pk) {
-            let rewritten: Vec<u8> = legacy
-                .chunks_exact(32)
-                .filter(|c| *c != pk)
-                .flatten()
-                .copied()
-                .collect();
-            // The legacy blob keeps its legacy shape on rewrite — it is the one deliberately-raw survivor (deployed concatenated pubkeys, read forever, never re-typed).
-            self.settings_set("fleet.locked", vsf::VsfType::v(b'r', rewritten));
-        }
         self.apply_locked_set();
         self.spawn_worker_unlock_push(pk);
         self.spawn_fleet_key_rotate_for_compliance();
@@ -1688,7 +1666,7 @@ impl PhotonApp {
     pub(super) fn released_brands(&self) -> Vec<[u8; 32]> {
         self.fleet_settings
             .as_ref()
-            .map(|fs| fs.pubkey_set_union("fleet.released", "fleet.released."))
+            .map(|fs| fs.pubkey_set_union("fleet.released."))
             .unwrap_or_default()
     }
 
@@ -1914,7 +1892,7 @@ impl PhotonApp {
             Some(tb) => tb.chars.iter().collect(),
             None => return,
         };
-        let handle = handle.trim().to_string();
+        // HANDLES ARE BYTE-PRECISE: the RAW typed string goes to the derivation — no trim, no fold, ever. Non-empty is the ONLY validation; whitespace-only is a valid handle. This was the last surface still trimming (attest never did), which made an edge-whitespace handle attestable but unjoinable.
         if handle.is_empty() {
             return;
         }

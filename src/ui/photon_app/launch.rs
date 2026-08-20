@@ -22,7 +22,7 @@ impl PhotonApp {
         if handle.is_empty() {
             return;
         }
-        // ONE IDENTITY PER DEVICE (docs/lifecycle.md D2): the binding marker names the identity this device carries; a different typed handle refuses HERE — before the ~1s memory-hard proof is spent. The check is cheap (the typed handle's party id derives without the proof). Typing the BOUND identity's own handle passes and resumes normally; unbinding is a wipe (Panel → Security). The worker's one-owner index backstops a scrubbed marker.
+        // ONE IDENTITY PER DEVICE (docs/lifecycle.md D2): the binding marker names the identity this device carries; a different typed handle refuses HERE — before the ~1s memory-hard proof is spent. The check is cheap (the typed handle's party id derives without the proof — and the handle bytes go to the derivation RAW, byte-precise). Typing the BOUND identity's own handle passes and resumes normally; unbinding is a wipe (Panel → Security). The worker's one-owner index backstops a scrubbed marker.
         {
             if let Some(bound) = crate::storage::device_binding::bound_party_id() {
                 let typed_pid = crate::crypto::clutch::identity_party_id(
@@ -247,8 +247,6 @@ impl PhotonApp {
                     );
                     // Register the merged contacts' pubkeys so the checker answers their pings, and kick CLUTCH keygen for any that arrived Pending without keypairs. The resume path (load_all_contacts) already does this for locally-stored contacts, but cloud/FGTW-merged contacts land here AFTER that ran — without this they sit Pending forever with no keypairs, no offer, no connection (exactly what broke after a []n nuke wiped the local vault and contacts came back only via cloud).
                     self.reseed_contact_pubkeys();
-                    // A merged self row minted under an older pid scheme re-homes here; the keygen filter below skips zero-remote conversations by itself.
-                    self.migrate_stale_self_row();
                     // Kick at most ONE keygen now; the rest are serialized by spawn_next_pending_keygen (called each tick) so we never run two McEliece keygens at once — two in parallel on launch starved the UI thread (the "first launch hangs" symptom). The Pending + keyless contacts are picked up one at a time as each keygen completes.
                     self.spawn_next_pending_keygen();
                 }
