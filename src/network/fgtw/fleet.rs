@@ -376,13 +376,71 @@ pub fn recover_fleet_key(
     fgtw::client::recover_fleet_key(&PhotonTransport, handle_proof, device_key, identity_seed)
 }
 
-/// Recover the current fleet key, or ESTABLISH revision 1 if no fan-out exists yet (the genesis founder).
-pub fn recover_or_establish_fleet_key(
+/// Recover the current fleet key, or ESTABLISH — always CARRYING the fleet's state across a key boundary (docs/fleet-key.md cutover). The cases:
+/// - Readable fan-out with our wrap → the key (plain recovery).
+/// - Readable fan-out, no wrap for us → None (fresh bind: the sponsor's grow releases the key — the two-phase gate).
+/// - Absent/unreadable fan-out, and the CACHED key still opens the fstate slot (an in-place upgrade crossing the version boundary) → the atomic carry: preserve → mint → re-seal, one act.
+/// - Absent/unreadable fan-out, nothing preservable, and the slot HOLDS sealed state under a key we lack → WAIT, no mint: minting would orphan the fleet's state (and a near-empty push would clobber it — the wiped-device class). The keyholder that crosses later carries it.
+/// - Absent fan-out and no sealed state → plain establish (genesis; also a meaningful-state holder re-seeds the slot it carries).
+pub fn recover_or_establish_carrying(
     handle_proof: &[u8; 32],
     device_key: &Keypair,
     identity_seed: &[u8; 32],
+    storage: &crate::storage::FlatStorage,
+    cache_addr: &[u8; 32],
+    ours: fgtw::fstate::FleetState,
+    ours_meaningful: bool,
 ) -> Result<Option<[u8; 32]>, String> {
-    fgtw::client::recover_or_establish_fleet_key(&PhotonTransport, handle_proof, device_key, identity_seed)
+    match fetch_fanout(handle_proof) {
+        Ok(Some((_, kfp, _rotator, wraps))) => Ok(fgtw::fanout::fanout_open(
+            handle_proof,
+            &kfp,
+            &wraps,
+            device_key,
+            identity_seed,
+        )),
+        // Ok(None) = no fan-out; Err = an unreadable (pre-v2) blob — both mean this device may have to establish, and both demand the carry rules below.
+        Ok(None) | Err(_) => {
+            // Genesis-verified fold: a mint must never wrap toward a member set a relay could have swapped.
+            let members = current_members_verified(handle_proof)?;
+            if members.is_empty() {
+                return Ok(None);
+            }
+            let cached = storage
+                .read_addr(cache_addr)
+                .ok()
+                .flatten()
+                .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
+            let preserved = cached.and_then(|k| pull_fstate(handle_proof, &k).ok().flatten());
+            if preserved.is_none() && !ours_meaningful {
+                // Nothing to carry and nothing of our own worth pushing — if sealed state EXISTS under a key we lack, a mint here orphans it. Probe: not_found = truly empty (safe to establish); a decrypt failure = state is there, wait for its keyholder.
+                let probe_key = cached.unwrap_or([0u8; 32]);
+                if pull_fstate(handle_proof, &probe_key).is_err() {
+                    crate::log("FLEET: fan-out unreadable and the fleet's state is sealed under a key this device does not hold — waiting for a keyholder to cross (no orphaning mint)");
+                    return Ok(None);
+                }
+            }
+            let (revision, key) = mint_fleet_key(handle_proof, device_key, &members, identity_seed)?;
+            let _ = storage.write_addr(cache_addr, &key);
+            if preserved.is_some() || ours_meaningful {
+                let merged = fgtw::fstate::merge_fstate(preserved.unwrap_or_default(), ours);
+                match push_fstate(handle_proof, device_key, &key, &merged) {
+                    Ok(()) => crate::logf!(
+                        "FLEET: establish mint at revision {} — fleet state carried across the key boundary",
+                        revision
+                    ),
+                    Err(e) => crate::logf!(
+                        "FLEET: establish mint at revision {} but the carry push failed ({}); the next roster/settings write re-seals",
+                        revision,
+                        e
+                    ),
+                }
+            } else {
+                crate::logf!("FLEET: establish mint at revision {} (nothing to carry)", revision);
+            }
+            Ok(Some(key))
+        }
+    }
 }
 
 /// Publish the FULL fleet-shared state (roster + settings layers): seal under the fleet key (kete) and PUT to the membership-gated slot. The settings sync layer calls this with its cached state.

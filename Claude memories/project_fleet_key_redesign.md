@@ -1,6 +1,6 @@
 ---
 name: project-fleet-key-redesign
-description: "fleet-key REDESIGN spec'd 2026-08-20 (docs/fleet-key.md @2c81c39, Nick reviewing before build): ira-wrapped, revision-published, shrink-only mint; replaces pair-secret fanout + epoch churn after the three-key wedge"
+description: "fleet-key redesign BUILT 2026-08-20 (fgtw 2db38e7, worker ba39484 DEPLOYED, photon f322e58): ira-wrapped fanout v2, revision-published, shrink-only mint, oracle slot deleted; docs/fleet-key.md amended at implementation (no rotator in wrap bind; grow = full re-wrap)"
 metadata: 
   node_type: memory
   type: project
@@ -16,6 +16,8 @@ Nick's spec, written to docs/fleet-key.md BEFORE implementation (his instruction
 - Fan-out revision = publish counter; worker monotonic guard UNCHANGED and byte-blind; one worker addition: fanout_put refuses locked signers (gap: locked devices are still members, membership check alone let a thief publish).
 - GROW (add/egg/unlock) = revision+1, same key, add one wrap, no re-seal. SHRINK (lock, self-departure) = the ONLY mint, atomic: preserve-pull old → mint → wrap survivors → publish → re-seal fstate; old key dropped only after.
 - DELETES: oracle recovery slot (tonight's stale-key source), pair-secret wrap targeting + "dark until egged", rotation-on-growth edges, compliance-rotation path, timered roster retry (adoption becomes kfp-edge-driven).
-- Cutover: flag-day PFO0→PFO1, no read-both; worker guard addition first (backwards-neutral); first post-cutover publish is a shrink-style mint.
+- Cutover: flag-day PFO v1→v2, no read-both; worker guard addition first (backwards-neutral); first post-cutover publish is a shrink-style mint.
+
+BUILT 2026-08-20, all suites green (photon 235, fgtw 97): fgtw @2db38e7 (fanout v2: FANOUT_VERSION=2, fleet_key_fingerprint, mint_fleet_key/grow_fleet_wraps/recover via ira+seed), worker @ba39484 DEPLOYED to fgtw.org (locked-signer refusal on fanout_put), photon @f322e58 (spawn_fleet_key_grow on explicit release edges only — green-confirm/egg/unlock — preserving the two-phase gate; shrink heal = the only mint, atomic thru re-seal; oracle slot machinery deleted; attest worker + joiner recover via fan-out; roster retry parks under the failed key and re-fires on the key-adoption EDGE). Two spec amendments discovered at implementation and folded into docs/fleet-key.md: the wrap bind drops the rotator (grows strand pre-grow wraps otherwise; the kfp bind already kills splicing) and grow = full re-wrap of the desired set (wraps are unlabelled, a grower can't know which member lacks one). fanout_pairs stays — pair secrets remain the ceremony/scoped-slot channel, just not key distribution. FIELD: first launch on this build mints fresh (v1 blob fails the version gate, mint steps over its revision) — the desktop can self-heal the wedge solo now; the fstate slot re-seal still needs a keyholder with state (the MacBook) online for the roster to survive into the new seal, same caution as before: NOTHING deploys to the MacBook/Android until history is redundant.
 
 FIELD STATE meanwhile: desktop is born-empty + wedged (cannot read fstate slot); the MacBook holds the ONLY complete history copy — [[project-great-cleanup]] census DELETES un-migrated legacy rings, so DEPLOYING THE CURRENT BUILD TO THE MACBOOK (or Android) DESTROYS THE LAST COPY. Nothing deploys to siblings until the fleet holds redundant history again. Nick was rightly furious at the "deploying is safe" claim — wire-compatible ≠ storage-safe.
