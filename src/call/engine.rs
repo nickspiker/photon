@@ -246,7 +246,7 @@ fn run(
             frames_in_window += 1;
 
             if frames_in_window == TIER_FRAMES[tier] {
-                // PIGGYBACK BUNDLE (flag day, 2026-08-20): ONE datagram per window — sealed payload [ctrl:1][source(N)][repair(N−1)]. Halves the packet rate (per-packet header cost was 19% of the floor wire), and the window's two copies now ride datagrams one window APART, so a burst must kill two consecutive datagrams to lose audio — strictly better than the old back-to-back pair. Steady-state latency unchanged: the source still ships the instant the window closes; only loss RECOVERY waits one extra window. seq = window id (the nonce, the step index, everything); ctrl = tier_src:2 | rep_present:1<<2 | tier_rep:2<<3, because a rung switch between windows makes the two symbols different sizes and the length alone goes ambiguous.
+                // PIGGYBACK BUNDLE (flag day, 2026-08-20): ONE datagram per window — sealed payload [ctrl:1][source(N)][repair(N−1)]. Halves the packet rate (per-packet header cost was 19% of the floor wire), and the window's two copies now ride datagrams one window APART, so a burst must kill two consecutive datagrams to lose audio — strictly better than the old back-to-back pair. Steady-state latency unchanged: the source still ships the instant the window closes; only loss RECOVERY waits one extra window. seq = window id (the nonce, the step index, everything); ctrl = tier_src:3 | rep_present:1<<3 | tier_rep:3<<4 — THREE-bit tier fields so the ladder can grow to 8 rungs (survival rung below, stereo rung above) WITHOUT another flag day; a rung switch between windows makes the two symbols different sizes, which is why the tiers ride explicitly at all.
                 let fec = raptorq::Encoder::new(&window_buf, oti(tier));
                 let pkts = fec.get_encoded_packets(REPAIR_PACKETS);
                 let rep = prev_repair.take();
@@ -254,7 +254,7 @@ fn run(
                 let ctrl = tier as u8
                     | rep
                         .as_ref()
-                        .map_or(0, |(rt, _)| 0b100 | ((*rt as u8) << 3));
+                        .map_or(0, |(rt, _)| 0b1000 | ((*rt as u8) << 4));
                 payload.push(ctrl);
                 payload.extend_from_slice(pkts[0].data());
                 if let Some((_, r)) = &rep {
@@ -302,9 +302,14 @@ fn run(
                 continue;
             }
             let ctrl = payload[0];
-            let tier_src = (ctrl & 0b11) as usize;
-            let rep_present = ctrl & 0b100 != 0;
-            let tier_rep = ((ctrl >> 3) & 0b11) as usize;
+            let tier_src = (ctrl & 0b111) as usize;
+            let rep_present = ctrl & 0b1000 != 0;
+            let tier_rep = ((ctrl >> 4) & 0b111) as usize;
+            // Bounds-check BEFORE any geometry lookup: a rung this build doesn't know (a newer peer's future ladder entry) is a shape-drop, never an index panic — which also makes ADDING rungs a graceful degrade instead of a flag day.
+            if tier_src >= TIER_RATES.len() || (rep_present && tier_rep >= TIER_RATES.len()) {
+                rx_drop_shape += 1;
+                continue;
+            }
             let src_len = tier_window_bytes(tier_src);
             let expected = 1 + src_len + if rep_present { tier_window_bytes(tier_rep) } else { 0 };
             if payload.len() != expected {
@@ -461,8 +466,8 @@ mod tests {
 
     #[test]
     fn tier_slots_fit_cbr_frames() {
-        // CBR emits exactly rate/800 bytes per 10ms frame; every rung's slot must hold that with margin, every window must be 8-aligned so raptorq's symbol is EXACTLY the window (unaligned would split + pad — the trap this design kills), and both rung indices must fit the ctrl byte's 2-bit fields.
-        assert!(TIER_RATES.len() <= 4, "tiers ride 2-bit ctrl fields");
+        // CBR emits exactly rate/800 bytes per 10ms frame; every rung's slot must hold that with margin, every window must be 8-aligned so raptorq's symbol is EXACTLY the window (unaligned would split + pad — the trap this design kills), and both rung indices must fit the ctrl byte's 3-bit fields.
+        assert!(TIER_RATES.len() <= 8, "tiers ride 3-bit ctrl fields");
         for t in 0..TIER_RATES.len() {
             assert!(TIER_RATES[t] as usize / 800 + 2 <= TIER_MAX_ENC[t], "rung {} slot too tight", t);
             assert_eq!(tier_window_bytes(t) % 8, 0, "rung {} window must be 8-aligned", t);
