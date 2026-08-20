@@ -21,6 +21,7 @@
 
 - [project_manifestus_tombstone_bug.md](project_manifestus_tombstone_bug.md) — vault corruption = fast-delete left committed pointer; FIXED @ manifestus 56bde9a, desktop vault repaired zero-loss; publish to all devices PENDING
 - [project_storage_layering.md](project_storage_layering.md) — 3 storage layers (vault/chain-state/rārangi conversation DB); file-tree paths half-assed into flat vault, de-stringing to blake3(domain,scope) + wiring rārangi
+- [project_reserve_delivery.md](project_reserve_delivery.md) — RE-SERVE SHIPPED 97e2bcc 2026-08-20: durable store outranks pending list (sealed tip + row deficit → re-serve non-pending rows, 8/burst ×2/tip); stale-offer 60s ring gate; field-verify pending
 - [project_rarangi_messages_fleet.md](project_rarangi_messages_fleet.md) — message rows: table=friendship_id bytes, pk=monotonic u64 counter; fleet=a conversation, vaults byte-identical except device crypt key
 - [project_fleet_routing_scale.md](project_fleet_routing_scale.md) — fleet invariants: any size (12+, no 2-device shortcuts) in eggs/braid/fan-out; reply-TX to the friend device you last RX'd from, rest of fleet delivered as fast as routable
 - [project_fleet_braid_plane.md](project_fleet_braid_plane.md) — §14 CUTOVER CLOSED 2026-08-18 @ 2adff1d: spine built, §14.5 slot superseded by docs/durability.md (FLEET-HOLDS-HISTORY), horizon+shred redesigned local (post-voice-calls), linearizer retired by lanes; next major = voice calls
