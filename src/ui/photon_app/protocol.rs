@@ -213,10 +213,10 @@ impl PhotonApp {
         // Keep any notes-to-self row showing OUR name and avatar — a profile edit or a fresh avatar must reach it, and nothing else ever will (no peer pongs us).
         self.settle_self_display();
 
-        // A sibling pair just became egged — rotate so its wrap exists (Phase A). Edge-driven off the ceremony drain, never polled.
-        if std::mem::take(&mut self.fanout_rotate_pending) {
-            crate::log("FANOUT: newly egged sibling — rotating so it gets a wrap");
-            self.spawn_fleet_key_rotate_for_compliance();
+        // A sibling pair just became egged — a consent edge worth a GROW so its wrap exists without waiting for the sponsor's confirm path (docs/fleet-key.md: growth never mints). Edge-driven off the ceremony drain, never polled.
+        if std::mem::take(&mut self.fanout_grow_pending) {
+            crate::log("FANOUT: newly egged sibling — growing so it gets a wrap");
+            self.spawn_fleet_key_grow();
         }
 
         // Drain handle_query results. `try_recv` is non-blocking; we collect into local Vecs so the immutable borrow on `handle_query` ends before the `&mut self` handlers run. Three channels feed in: attestation results, connectivity changes, handle searches.
@@ -539,7 +539,6 @@ impl PhotonApp {
                         self.add_join_rx = Some(rx);
                         let hp = session.handle_proof;
                         let kp = self.device_keypair.clone();
-                        let store = self.storage.clone();
                         let wake = self.event_proxy.clone();
                         std::thread::spawn(move || {
                             let Some(kp) = kp else { return };
@@ -549,7 +548,7 @@ impl PhotonApp {
                                 if let Ok(Some(k)) = crate::network::fgtw::fleet::recover_fleet_key(
                                     &hp,
                                     &kp,
-                                    store.as_deref(),
+                                    &session.identity_seed,
                                 ) {
                                     if tx.send(JoinUpdate::Joined(Some(k), session)).is_err() {
                                         return; // screen left — nobody waiting
@@ -822,11 +821,22 @@ impl PhotonApp {
             }
         }
 
+        // The key-adoption edge: a parked pull re-fires the moment the cached fleet key differs from the one it failed under. No timer — adoption is the only event that can change the outcome (the 45s refold edge remains the transport-failure backstop).
+        if let Some(failed_under) = self.roster_pull_parked_under {
+            let current = self.fleet_key_ram.lock().ok().and_then(|g| *g);
+            if current != failed_under {
+                self.roster_pull_parked_under = None;
+                self.needs_initial_roster_pull = true;
+                crate::log("FLEET: fleet key landed — re-firing the parked roster pull");
+            }
+        }
+
         match self.roster_pull_rx.as_ref().map(|rx| rx.try_recv()) {
             Some(Ok(Ok(state))) => {
                 self.roster_pull_rx = None;
                 self.roster_pull_retries_left = 0;
                 self.roster_pull_exhausted = false;
+                self.roster_pull_parked_under = None;
                 // Settings layers fold in first (global LWW + device newest-copy-wins); a change persists and takes effect on the next read of each key — a sibling's toggle lands here.
                 if self.ensure_fleet_settings() {
                     let changed = self
@@ -883,8 +893,10 @@ impl PhotonApp {
                 self.roster_pull_rx = None;
                 if self.roster_pull_retries_left > 0 {
                     self.roster_pull_retries_left -= 1;
-                    self.needs_initial_roster_pull = true;
-                    crate::logf!("FLEET: roster pull failed — retrying once the current fleet key lands ({} attempt(s) left)", self.roster_pull_retries_left);
+                    // Park on the key we failed under; the tick's adoption-edge check re-fires when a DIFFERENT key lands. Re-arming immediately burned the whole budget before any key could arrive.
+                    self.roster_pull_parked_under =
+                        Some(self.fleet_key_ram.lock().ok().and_then(|g| *g));
+                    crate::logf!("FLEET: roster pull failed — parked until a fresh fleet key lands ({} attempt(s) left)", self.roster_pull_retries_left);
                 } else {
                     self.roster_pull_exhausted = true;
                     crate::log("FLEET: roster pull retries exhausted — the 45s refold edge re-arms it (fleet events help sooner when the socket is up)");

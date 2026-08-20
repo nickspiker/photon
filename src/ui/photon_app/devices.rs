@@ -438,11 +438,11 @@ impl PhotonApp {
             return;
         }
         self.ckpt_last_attempt = Some(Instant::now());
-        let (Some(kp), Some(hp), Some(fleet_key), Some(storage)) = (
+        let (Some(kp), Some(hp), Some(fleet_key), Some(identity_seed)) = (
             self.device_keypair.clone(),
             self.our_handle_proof(),
             self.fleet_key_cached(),
-            self.storage.as_ref().cloned(),
+            self.session.as_ref().map(|s| s.identity_seed),
         ) else {
             return;
         };
@@ -461,7 +461,7 @@ impl PhotonApp {
             };
             // The fan-out epoch names WHICH fleet key folds into the derivation — recover the pair together so they can't skew.
             let (fanout_epoch, fk) =
-                match fleet::recover_fleet_key_with_epoch(&hp, &kp, Some(&storage)) {
+                match fleet::recover_fleet_key_with_epoch(&hp, &kp, &identity_seed) {
                     Ok(Some((e, k))) => (e, k),
                     _ => (0, fleet_key),
                 };
@@ -817,28 +817,32 @@ impl PhotonApp {
     }
 
     /// Mint the next fan-out epoch because a sibling pair just became EGGED (Phase A): until its pair secret existed the sibling could not be wrapped, so it held no fleet key. Same rotation the sponsor's confirm runs — the worker's monotonic epoch guard makes concurrent siblings converge, and a `stale` loser simply adopts the winner's key on its next sync.
-    pub(super) fn spawn_fleet_key_rotate_for_compliance(&self) {
+    /// GROW the fan-out (docs/fleet-key.md): republish wraps for the desired ira set under the SAME held key. Never a mint — the fingerprint does not move, so no sibling has adoption or re-seal work. Fired on the explicit release edges only (green-confirm add, egg completion, unlock) — NEVER from an automatic sweep, so a bound-but-unconfirmed device cannot receive the key before its human's confirm (the two-phase gate).
+    pub(super) fn spawn_fleet_key_grow(&self) {
         use crate::network::fgtw::fleet;
-        let (Some(hp), Some(device_key), Some(storage), Some(session)) = (
+        let (Some(hp), Some(device_key), Some(session)) = (
             self.our_handle_proof(),
             self.device_keypair.clone(),
-            self.storage.as_ref().cloned(),
             self.session.as_ref(),
         ) else {
             return;
         };
         let identity_seed = session.identity_seed;
-        let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
         let busy = self.fleet_heal_busy.clone();
-        let fkc = self.fleet_key_ram.clone();
-        // Snapshot on the UI thread, filter in the closure — same discipline as the heal. Unfiltered members here RE-WRAPPED a locked device at the next new-egg rotation, silently undoing the lock's key rotation (found 2026-08-15 wiring unlock).
+        let held = self.fleet_key_ram.lock().ok().and_then(|g| *g);
+        // Snapshot on the UI thread, filter in the closure — a locked device must NOT be wrapped (found 2026-08-15 wiring unlock).
         let locked = self.locked_devices();
         std::thread::spawn(move || {
             // RAII latch: released on EVERY exit, panics included — a manual store(false) here once left a poisoned latch parking key sync for the whole session.
             let Some(_latch) = HealLatch::acquire(&busy) else {
-                return; // a heal already holds the latch; its rotation covers this too
+                return; // a heal already holds the latch; its publish covers this too
             };
-            // Genesis-verified fold: never rotate toward a member set a relay could have swapped.
+            // A grow needs the CURRENT key in hand; a device without it has nothing to release — the next keyholder's edge covers the newcomer.
+            let Some(held) = held else {
+                crate::log("FANOUT: grow skipped — this device does not hold the current key");
+                return;
+            };
+            // Genesis-verified fold: never wrap toward a member set a relay could have swapped.
             let members = match fleet::current_members_verified(&hp) {
                 Ok(m) if !m.is_empty() => m
                     .into_iter()
@@ -849,22 +853,13 @@ impl PhotonApp {
             if members.is_empty() {
                 return;
             }
-            match fleet::rotate_fleet_key(&hp, &device_key, &members, Some(&storage)) {
-                Ok((epoch, k)) => {
-                    if let Err(e) = storage.write_addr(&addr, &k) {
-                        crate::logf!("FANOUT: fleet key cache failed: {}", e);
-                    }
-                    if let Ok(mut g) = fkc.lock() {
-                        *g = Some(k);
-                    }
-                    // Every key edge refreshes OUR wipe-proof recovery slot — the path a wiped, sibling-less device gets its contacts back thru.
-                    fleet::publish_recovery_slot(&k, &identity_seed, &device_key, &hp);
-                    crate::logf!(
-                        "FANOUT: rotated to epoch {} — egged siblings wrapped",
-                        epoch
-                    );
-                }
-                Err(e) => crate::logf!("FANOUT: compliance rotation failed: {}", e),
+            match fleet::grow_fleet_wraps(&hp, &device_key, &held, &members, &identity_seed) {
+                Ok(revision) => crate::logf!(
+                    "FANOUT: grew to revision {} — {} ira(s) wrapped, key unchanged",
+                    revision,
+                    members.len()
+                ),
+                Err(e) => crate::logf!("FANOUT: grow failed: {}", e),
             }
         });
     }
@@ -907,22 +902,22 @@ impl PhotonApp {
             if busy.load(Ordering::Acquire) {
                 return; // a heal is mid-flight; it caches the freshest key itself, and its fanout_put fires a fresh `fleet` bump for a clean re-sync
             }
-            // Fail toward no-rotate: any fetch/verify miss here just falls thru to the plain recover path.
+            // Fail toward no-mint: any fetch/verify miss here just falls thru to the plain recover path.
             let heal_members = (|| {
                 let members = fleet::current_members_verified(&hp).ok()?;
                 let desired: Vec<[u8; 32]> = members
                     .into_iter()
                     .filter(|m| !locked.contains(m))
                     .collect();
-                let (_, _, wraps) = fleet::fetch_fanout(&hp).ok().flatten()?;
+                let (_, _, _, wraps) = fleet::fetch_fanout(&hp).ok().flatten()?;
                 fleet::fanout_needs_rotation(wraps.len(), desired.len()).then_some(desired)
             })();
             if let Some(members) = heal_members {
-                // RAII latch — released on every exit including a panic mid-rotate (the old manual store left it poisoned).
+                // RAII latch — released on every exit including a panic mid-mint (the old manual store left it poisoned).
                 let Some(_latch) = HealLatch::acquire(&busy) else {
                     return;
                 };
-                // Preserve the slot BEFORE the re-key makes it unopenable. A racing sibling's re-push can already have re-sealed it (AEAD miss → default) — then our push carries `ours` alone, and whatever the slot uniquely held rides back on that sibling's next write (CRDT union, no tombstone loss).
+                // THE ATOMIC SHRINK DUTY (docs/fleet-key.md): preserve the slot BEFORE the mint makes it unopenable. A racing sibling's re-push can already have re-sealed it (AEAD miss → default) — then our push carries `ours` alone, and whatever the slot uniquely held rides back on that sibling's next write (CRDT union, no tombstone loss).
                 let old_key = storage
                     .read_addr(&addr)
                     .ok()
@@ -931,19 +926,18 @@ impl PhotonApp {
                 let preserved = old_key
                     .and_then(|k| fleet::pull_fstate(&hp, &k).ok().flatten())
                     .unwrap_or_default();
-                match fleet::rotate_fleet_key(&hp, &device_key, &members, Some(&storage)) {
-                    Ok((epoch, new_key)) => {
+                match fleet::mint_fleet_key(&hp, &device_key, &members, &identity_seed) {
+                    Ok((revision, new_key)) => {
                         if let Err(e) = storage.write_addr(&addr, &new_key) {
-                            crate::logf!("FLEET: rotated key cache failed: {}", e);
+                            crate::logf!("FLEET: minted key cache failed: {}", e);
                         }
                         if let Ok(mut g) = fkc.lock() {
                             *g = Some(new_key);
                         }
-                        fleet::publish_recovery_slot(&new_key, &identity_seed, &device_key, &hp);
                         let merged = fgtw::fstate::merge_fstate(preserved, ours);
                         match fleet::push_fstate(&hp, &device_key, &new_key, &merged) {
-                            Ok(()) => crate::logf!("FLEET: removal heal — rotated to epoch {} ({} member(s)), fstate re-sealed", epoch, members.len()),
-                            Err(e) => crate::logf!("FLEET: removal heal — rotated to epoch {} but the re-seal push failed ({}); the next roster/settings write re-seals", epoch, e),
+                            Ok(()) => crate::logf!("FLEET: shrink heal — minted at revision {} ({} ira(s) wrapped), fstate re-sealed", revision, members.len()),
+                            Err(e) => crate::logf!("FLEET: shrink heal — minted at revision {} but the re-seal push failed ({}); the next roster/settings write re-seals", revision, e),
                         }
                         let _ = rotated_tx.send(());
                         if let Some(w) = wake.as_ref() {
@@ -951,22 +945,21 @@ impl PhotonApp {
                         }
                     }
                     Err(e) => {
-                        // Lost the race (or the write failed): a sibling's rotation is the live epoch — adopt it.
-                        crate::logf!("FLEET: removal heal — rotation not ours ({}); adopting the current fan-out", e);
+                        // Lost the race (or the write failed): a sibling's mint is the live key — adopt it.
+                        crate::logf!("FLEET: shrink heal — mint not ours ({}); adopting the current fan-out", e);
                         if let Ok(Some(k)) =
-                            fleet::recover_fleet_key(&hp, &device_key, Some(&storage))
+                            fleet::recover_fleet_key(&hp, &device_key, &identity_seed)
                         {
                             let _ = storage.write_addr(&addr, &k);
                             if let Ok(mut g) = fkc.lock() {
                                 *g = Some(k);
                             }
-                            fleet::publish_recovery_slot(&k, &identity_seed, &device_key, &hp);
                         }
                     }
                 }
                 return;
             }
-            match fleet::recover_or_establish_fleet_key(&hp, &device_key, Some(&storage)) {
+            match fleet::recover_or_establish_fleet_key(&hp, &device_key, &identity_seed) {
                 Ok(Some(k)) => {
                     if let Err(e) = storage.write_addr(&addr, &k) {
                         crate::logf!("FLEET: fleet key cache failed: {}", e);
@@ -976,7 +969,6 @@ impl PhotonApp {
                     if let Ok(mut g) = fkc.lock() {
                         *g = Some(k);
                     }
-                    fleet::publish_recovery_slot(&k, &identity_seed, &device_key, &hp);
                 }
                 Ok(None) => {}
                 Err(e) => crate::logf!("FLEET: fleet key sync failed: {}", e),
@@ -1005,7 +997,7 @@ impl PhotonApp {
             .map(|fs| (fs.global.clone(), fs.devices.clone()));
         let fkc = self.fleet_key_ram.clone();
         std::thread::spawn(move || {
-            match fleet::recover_or_establish_fleet_key(&hp, &kp, Some(&storage)) {
+            match fleet::recover_or_establish_fleet_key(&hp, &kp, &identity_seed) {
                 Ok(Some(k)) => {
                     if let Err(e) = storage.write_addr(&addr, &k) {
                         crate::logf!("FLEET: fleet key cache failed: {}", e);
@@ -1013,8 +1005,6 @@ impl PhotonApp {
                     if let Ok(mut g) = fkc.lock() {
                         *g = Some(k);
                     }
-                    // Key edge → refresh the wipe-proof recovery slot.
-                    fleet::publish_recovery_slot(&k, &identity_seed, &kp, &hp);
                     crate::log("FLEET: fleet key synced from fan-out (post-bind)");
                     if entries.is_empty() {
                         return; // no contacts to share, but the key is now current for the roster PULL
@@ -1042,13 +1032,6 @@ impl PhotonApp {
             }
             if let Ok(mut g) = self.fleet_key_ram.lock() {
                 *g = Some(*key);
-            }
-            // Key edge → refresh the wipe-proof recovery slot (off-thread: it is a blocking upload).
-            if let (Some(kp), Some(hp)) = (self.device_keypair.clone(), self.our_handle_proof()) {
-                let (k, seed) = (*key, session.identity_seed);
-                std::thread::spawn(move || {
-                    crate::network::fgtw::fleet::publish_recovery_slot(&k, &seed, &kp, &hp);
-                });
             }
         }
     }
@@ -1343,7 +1326,7 @@ impl PhotonApp {
         }
     }
 
-    /// Phase TWO — the human pressed "It's in" after seeing the new device leave its words screen: rotate the fleet key to the member set including the newcomer, releasing the key to it. Held behind the press so a wrong bind stays a keyless ledger entry.
+    /// Phase TWO — the human pressed "It's in" after seeing the new device leave its words screen: GROW the fan-out to the member set including the newcomer, releasing the CURRENT key to it (docs/fleet-key.md — growth never mints). Held behind the press so a wrong bind stays a keyless ledger entry; this explicit edge IS the two-phase gate.
     pub(super) fn spawn_confirm_add(&mut self) {
         use crate::network::fgtw::fleet;
         if self.add_device_checking || self.add_device_bound.is_none() {
@@ -1351,16 +1334,24 @@ impl PhotonApp {
         }
         self.add_device_status = "Finishing\u{2026}".to_string();
         self.add_device_checking = true;
-        if let (Some(hp), Some(kp), Some(tx)) = (
+        if let (Some(hp), Some(kp), Some(tx), Some(session)) = (
             self.our_handle_proof(),
             self.device_keypair.clone(),
             self.add_device_tx.clone(),
+            self.session.as_ref(),
         ) {
-            let store = self.storage.clone();
+            let identity_seed = session.identity_seed;
+            let held = self.fleet_key_ram.lock().ok().and_then(|g| *g);
+            let locked = self.locked_devices();
             std::thread::spawn(move || {
-                let r = fleet::current_members(&hp).and_then(|members| {
-                    fleet::rotate_fleet_key(&hp, &kp, &members, store.as_deref()).map(|_| ())
-                });
+                let r = (|| {
+                    let held = held.ok_or_else(|| "confirm: this device does not hold the fleet key".to_string())?;
+                    let members: Vec<[u8; 32]> = fleet::current_members(&hp)?
+                        .into_iter()
+                        .filter(|m| !locked.contains(m))
+                        .collect();
+                    fleet::grow_fleet_wraps(&hp, &kp, &held, &members, &identity_seed).map(|_| ())
+                })();
                 let _ = tx.send(match r {
                     Ok(()) => AddDeviceUpdate::Rotated,
                     Err(e) => AddDeviceUpdate::Failed(e),
@@ -1576,7 +1567,7 @@ impl PhotonApp {
         self.settings_set(&format!("fleet.locked.{}", hex::encode(pk)), vsf::VsfType::u0(false));
         self.apply_locked_set();
         self.spawn_worker_unlock_push(pk);
-        self.spawn_fleet_key_rotate_for_compliance();
+        self.spawn_fleet_key_grow();
         self.ready_toast = Some(format!(
             "{name} unlocked \u{2014} it can rejoin the fleet on its next attest."
         ));
@@ -2042,8 +2033,8 @@ impl PhotonApp {
                         // In the fleet — this is the green, and LEAVING THIS SCREEN is what the far-side human confirms, so it must happen NOW, not after the key. Withdraw our request (the author's exit act), try the fan-out once in case the sponsor already confirmed, and hand off — the key otherwise arrives via the post-attest fleet-event sync the moment the green-confirm rotation lands (the worker broadcasts "fleet" on fanout_put). Waiting here deadlocks the ceremony: the sponsor waits for our green before releasing the key this wait was for.
                         crate::log("JOIN: bound — this device is in the fleet chain");
                         withdraw("green");
-                        // No storage yet (the vault opens at attest), so no pair secret toward the sponsor — this attempt can only succeed once we are egged. The key arrives via the post-attest sync after our sibling CLUTCH with the sponsor mints the pair secret and the sponsor re-rotates (Phase A compliance).
-                        let fleet_key = fleet::recover_fleet_key(&hp, &device_key, None)
+                        // The wrap opens with the ira keypair + identity seed alone (docs/fleet-key.md) — no vault, no pair secret, no ceremony. It succeeds the moment the sponsor's green-confirm GROW lands; before that there is no wrap for us and the key arrives via the post-attest fleet-event sync.
+                        let fleet_key = fleet::recover_fleet_key(&hp, &device_key, &identity_seed)
                             .ok()
                             .flatten();
                         crate::logf!(

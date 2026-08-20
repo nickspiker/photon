@@ -1032,9 +1032,9 @@ impl PhotonApp {
                         self.egged_cache.remove(&their_device);
                         // A scoped slot's ADDRESS is derived from this secret, so re-minting it moves the reader to an address nothing was ever written to — their avatar silently stops resolving. Re-grant on the mint edge: one ~80 byte slot write against the blob we already published, no re-upload.
                         self.scoped_regrant_pending.push(result.fanout_pair_secret);
-                        // A newly egged SIBLING can now be wrapped, so mint the next fan-out epoch that includes it. Idempotent by the worker's monotonic epoch guard; a loser just adopts the winner's key. A friend's secret changes no fleet state, so no rotation.
+                        // A newly egged SIBLING just completed its consent ceremony — GROW the fan-out so its wrap exists (same key, docs/fleet-key.md). Idempotent by the worker's monotonic revision guard; a race loser refetches. A friend's secret changes no fleet state, so no publish.
                         if is_sibling {
-                            self.fanout_rotate_pending = true;
+                            self.fanout_grow_pending = true;
                         }
                     }
                     Err(e) => crate::logf!("PAIR: secret store failed: {}", e),

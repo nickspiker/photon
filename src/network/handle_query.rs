@@ -734,34 +734,19 @@ impl HandleQuery {
                             .ok()
                             .flatten()
                             .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
-                        // No local key = a wiped (or fresh-on-this-machine) vault. Before giving up, try OUR ORACLE RECOVERY SLOT — the wipe-surviving path that needs no live sibling: the machine re-derives the slot's address and key from its own hardware oracle. This is what makes contacts/avatar restore work with every other device off.
+                        // No local key = a wiped (or fresh-on-this-machine) vault. Recover from the FAN-OUT with the ira keypair + identity seed — no live sibling, no ceremony, no side channel (docs/fleet-key.md): the ira re-derives from the machine oracle, so a wiped device opens its own wrap by construction. This is what makes contacts/avatar restore work with every other device off.
                         if fleet_key.is_none() {
-                            if let Some(k) =
-                                crate::network::fgtw::fleet::recover_fleet_key_from_oracle(
-                                    &identity_seed,
-                                )
-                            {
-                                crate::log("RECOVERY: fleet key recovered from our oracle slot (no sibling needed)");
+                            if let Ok(Some(k)) = crate::network::fgtw::fleet::recover_fleet_key(
+                                &handle_proof,
+                                &keypair,
+                                &identity_seed,
+                            ) {
+                                crate::log("RECOVERY: fleet key recovered from the fan-out (ira wrap — no sibling needed)");
                                 let _ = storage.write_addr(
                                     &crate::storage::vault_key("fleet_key", &vault_seed),
                                     &k,
                                 );
                                 fleet_key = Some(k);
-                            }
-                        }
-
-                        // Backstop for the slot's write side: a stable fleet may not hit a rotation edge for weeks, and a device that never published its slot is a device whose NEXT wipe still strands. Attest is the one moment every device passes; if the slot doesn't open to the key we hold, publish it now. One GET on the attest path, self-quieting once the slot matches.
-                        if let Some(fk) = fleet_key {
-                            let slot = crate::network::fgtw::fleet::recover_fleet_key_from_oracle(
-                                &identity_seed,
-                            );
-                            if slot != Some(fk) {
-                                crate::network::fgtw::fleet::publish_recovery_slot(
-                                    &fk,
-                                    &identity_seed,
-                                    &keypair,
-                                    &handle_proof,
-                                );
                             }
                         }
 

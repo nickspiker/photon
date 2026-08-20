@@ -1238,7 +1238,7 @@ pub struct PhotonApp {
     /// One-heal-at-a-time latch for the removal-rotates flow (braid.md §14.2), shared with the key-sync thread and cleared on its exit. Guards both the duplicate-rotation race and the stale-cache window (a plain key sync running mid-heal would re-cache the pre-rotation key over the fresh one).
     fleet_heal_busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// A sibling pair just became egged (Phase A) — mint the next fan-out epoch so that sibling finally gets a wrap. Set by the ceremony drain, consumed by the tick (the rotation needs `&self` off the drain's borrows).
-    fanout_rotate_pending: bool,
+    fanout_grow_pending: bool,
     /// Reader secrets that just changed and need a fresh scoped slot written for them (the ceremony drain cannot do the blocking upload itself). Drained by the tick.
     scoped_regrant_pending: Vec<[u8; 32]>,
     /// Own-avatar recovery deferred until the fleet settings carry the avatar pin (the pin is what addresses and decrypts the published copy). Cleared once the recovery actually spawns.
@@ -1387,6 +1387,8 @@ pub struct PhotonApp {
     needs_initial_roster_pull: bool,
     /// Retry budget for the initial roster pull. A fresh device's pairing-recovered key is a PRE-rotation generation (adding a device rotates the fleet key via the fan-out re-key), so the first pull decrypts the current roster with a stale key and fails `aead::Error`. The in-flight `spawn_fleet_key_sync` writes the current key within ~150ms, so on a failed pull we re-arm `needs_initial_roster_pull` and retry — the pull's own ~150ms round-trip naturally spaces attempts, and this budget caps them so a genuinely-undecryptable roster gives up instead of spinning (next fleet event / relaunch re-tries).
     roster_pull_retries_left: u8,
+    /// A failed roster pull parks HERE with the fleet key it failed under (None = no key was held); the tick re-fires the pull exactly when the cached key CHANGES — the key-adoption edge, never a timer (the old loop burned its whole budget before the key ever landed).
+    roster_pull_parked_under: Option<Option<[u8; 32]>>,
     /// True once the pull budget above ran dry WITHOUT a successful pull — the B4 convergence hole: with the WebSocket down there is no "next fleet event", so an exhausted device had no roster until relaunch. The 45s fleet-refold edge reads this and re-arms a small budget, making the existing poll the backstop. Cleared on success and on each re-arm.
     roster_pull_exhausted: bool,
     /// This device's avatar in BT.2020 γ=2.0 u8 RGB, sized `crate::avatar::AVATAR_SIZE × AVATAR_SIZE × 3`. `None` until `on_query_result` pulls one from local storage (no saved avatar = stays `None`, Ready screen falls back to the grey placeholder).
@@ -1786,7 +1788,7 @@ impl PhotonApp {
             seal_job_tx: spawn_job_worker("photon-seal"),
             braid_job_tx: spawn_job_worker("photon-braid"),
             fleet_heal_busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            fanout_rotate_pending: false,
+            fanout_grow_pending: false,
             self_avatar_recover_pending: None,
             scoped_regrant_pending: Vec::new(),
             fleet_rotated_tx: {
@@ -1907,6 +1909,7 @@ impl PhotonApp {
             fleet_key_ram: std::sync::Arc::new(std::sync::Mutex::new(None)),
             needs_initial_roster_pull: false,
             roster_pull_retries_left: 0,
+            roster_pull_parked_under: None,
             roster_pull_exhausted: false,
             device_avatar_pixels: None,
             device_avatar_scaled: None,
