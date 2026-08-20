@@ -3,27 +3,16 @@
 //! Every path here is user-owned (HKCU / ~/Library/LaunchAgents / ~/.config/autostart): no sudo, no UAC, no prompts.
 //! The registered command is `<current_exe> --background`, so a login launch comes up RESIDENT (hidden window, network up) rather than opening a window over the fresh session.
 
-// ───────── Default-ON policy (user mandate) ───────── Background residency + launch-at-login are ON unless the user explicitly turned them off. The OS artifact alone can't carry that: auto-enrolling every launch would resurrect a login item the user deleted, so the explicit "no" lives in a marker file — present = user opted out, absent = default-on. The artifact stays the OS-visible truth for WHAT runs at login; the marker is only the user's veto.
+// ───────── Default-ON policy (user mandate) ───────── Background residency + launch-at-login are ON unless the user explicitly turned them off. The OS artifact alone can't carry that: auto-enrolling every launch would resurrect a login item the user deleted, so the explicit "no" lives in a device-scope vault flag — present = user opted out, absent = default-on. The artifact stays the OS-visible truth for WHAT runs at login; the flag is only the user's veto.
 
-fn optout_path() -> Option<std::path::PathBuf> {
-    crate::storage::photon_config_dir()
-        .ok()
-        .map(|d| d.join("background_optout"))
-}
-
-/// The user's standing wish: `true` unless they flipped the settings toggle off. Drives `resident_mode` and the toggle's initial state.
+/// The user's standing wish: `true` unless they flipped the settings toggle off. Drives `resident_mode` and the toggle's initial state. The veto is a device-scope vault flag (was the `<config>/background_optout` marker file).
 pub fn background_desired() -> bool {
-    optout_path().map_or(true, |p| !p.exists())
+    !crate::storage::device_flag("flags/background_optout")
 }
 
-/// Record the toggle: off writes the veto marker, on removes it.
+/// Record the toggle: off writes the veto flag, on removes it.
 pub fn set_background_desired(on: bool) {
-    let Some(p) = optout_path() else { return };
-    if on {
-        let _ = std::fs::remove_file(&p);
-    } else {
-        let _ = std::fs::write(&p, b"user disabled background mode\n");
-    }
+    crate::storage::set_device_flag("flags/background_optout", !on);
 }
 
 /// Default-on enrollment, called once per launch: if backgrounding is desired and no login item exists yet, write it. Idempotent and best-effort — a failure logs and the session still runs resident; the next launch retries.

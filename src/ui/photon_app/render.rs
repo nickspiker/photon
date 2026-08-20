@@ -441,11 +441,7 @@ impl PhotonApp {
             // ONE IDENTITY PER DEVICE (docs/lifecycle.md D2): if the binding marker exists this device already carries an identity, so the launch screen must offer only RESUME (type the bound handle) + WIPE.
             // Awareness lives at RENDER time here, mirroring the submit-time refusal at attest(): a bound device must never render fresh-attest-as-anyone / join-another-fleet / pairing-words UI, only get bounced after interacting.
             // Cheap: the party id derives from the device secret without the memory-hard proof.
-            let device_bound = self
-                .device_keypair
-                .as_ref()
-                .and_then(|kp| crate::storage::device_binding::bound_party_id(kp.secret.as_bytes()))
-                .is_some();
+            let device_bound = crate::storage::device_binding::bound_party_id().is_some();
 
             // Clear the attest block's footprint in the shared hit_test_map BEFORE re-stamping this frame's widgets. Chrome only wipes the map on its own dirty cycles (`rasterize_chrome` early-returns when chrome is clean), but the launch widgets re-stamp every frame — so when the Attest button stops rendering (handle cleared to empty) on a chrome-clean frame, its old hit-rect would otherwise linger and keep dispatching pointer + hitmask. The attest_block is the only Photon-owned region of the map on this screen, so clearing the whole block each frame is the cheap correct reset; the textbox/button/∞ below re-stamp whatever is actually present.
             restamp_hit_rect(
