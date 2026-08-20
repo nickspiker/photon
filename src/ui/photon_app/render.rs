@@ -1250,7 +1250,8 @@ impl PhotonApp {
                     dm_conversation(&self.conversations, &our_handle_hash, &self.contacts[ci])
                         .is_some_and(|v| v.unread_count > 0);
                 let unread_band = ring_thickness * 2.0;
-                let ring = ring_tier_colour(
+                let ring = row_ring_tier_in(
+                    &self.contacts,
                     &self.contacts[ci],
                     self.contacts[ci].remote_count(&our_handle_hash) > 0,
                 );
@@ -1613,7 +1614,7 @@ impl PhotonApp {
                             rows[0].h * 5.0,
                         );
                         let (cx, cy) = (block.center_x(), block.center_y());
-                        let ring = ring_tier_colour(contact, !is_self);
+                        let ring = row_ring_tier_in(&self.contacts, contact, !is_self);
                         if let Some(scaled) = contact.avatar_scaled.as_ref() {
                             crate::ui::avatar_render::draw_avatar(
                                 &mut canvas,
@@ -2062,6 +2063,8 @@ impl PhotonApp {
                         let id = contact.conversation(&our_handle_hash).id();
                         self.conversations.iter().find(|v| v.id() == id)
                     };
+                    // Ring computed BEFORE the closure: row_ring_tier borrows &self, and the closure outlives writes to disjoint self fields below.
+                    let conv_ring = row_ring_tier_in(&self.contacts, contact, !is_self_contact);
                     // Stamp the avatar disc + tier ring at a given centre-y — stream entry #0's avatar. Clip rides in as a parameter and the caller passes the LIST clip: the avatar obeys exactly the same boundary as every message (a hardcoded None once let it paint through the top edge onto its own visual layer).
                     let draw_conv_avatar =
                         |canvas: &mut Canvas, cy: f32, clip: Option<fluor::paint::Clip>| {
@@ -2088,7 +2091,7 @@ impl PhotonApp {
                                     clip,
                                 );
                             }
-                            let ring = ring_tier_colour(contact, !is_self_contact);
+                            let ring = conv_ring;
                             let ring_thick = (avatar_r * 0.0375).max(1.0);
                             paint::draw_circle(
                                 canvas,

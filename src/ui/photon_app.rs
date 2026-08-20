@@ -2838,56 +2838,89 @@ fn contact_status_line(
     c.clutch_status_detail()
 }
 
-/// Presence-ring tier (user spec, VSF-authored in theme.rs): cyan = direct in the same room (LAN), green = direct across the WAN, amber = relay-only, grey = offline. LAN = the validated direct path is a private / link-local / ULA address; a same-site GLOBAL v6 path (e.g. two phones on one home /64) still reads green — refining that needs a same-prefix check against our own addresses, later.
-fn ring_tier_colour(c: &crate::types::Contact, has_remote: bool) -> u32 {
-    // A conversation with no remote participants lives on this machine — nearer than the same room, so it wears the LAN tier. Derived from the participant set, never a forced `is_online` write.
-    if !has_remote {
-        return *theme::RING_LAN_COLOUR;
-    }
+/// One connectivity classification for ANY counterparty device row — the ring and the path dot both map from this, and the self row folds it over the fleet siblings (same rule, different counterparty set — self and bob are both people).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ConnTier {
+    Lan,
+    Wan,
+    Relay,
+    Offline,
+}
+
+/// The tier of one contact row's live connectivity. A LIVE validated direct path is authoritative and wins over reached_via_relay — that flag tracks how the LAST frame happened to arrive, and a peer reachable BOTH ways (good direct path + the relay pipe still delivering redundant copies) flips it every cycle (the amber/green flicker). validated_path is held state with a TTL, so it doesn't flap; relay only colours the tier when there is genuinely no direct path.
+pub(crate) fn contact_conn_tier(c: &crate::types::Contact) -> ConnTier {
     if !c.is_online {
-        return *theme::RING_OFFLINE_COLOUR;
+        return ConnTier::Offline;
     }
-    // A LIVE validated direct path is authoritative and wins over reached_via_relay. That flag tracks how the LAST frame happened to arrive, and a peer reachable BOTH ways (good direct path + the relay pipe still delivering redundant copies) flips it every cycle — the amber/green flicker. validated_path is held state with a TTL, so it doesn't flap; relay only colours the ring when there is genuinely no direct path.
     if let Some((addr, _)) = c.validated_path.as_ref() {
         // is_private_addr, not a hand-rolled check: a dual-stack socket validates LAN paths in the V4-MAPPED-v6 form (::ffff:192.168.x.y), which a bare V6-segment test reads as WAN — one side of a same-room pair showed LAN while the other showed WAN (field 2026-08-20, Emma↔1). The helper unmaps before classifying.
         return if is_private_addr(&addr.ip()) {
-            *theme::RING_LAN_COLOUR
+            ConnTier::Lan
         } else {
-            *theme::RING_ONLINE_COLOUR
+            ConnTier::Wan
         };
     }
-    // No validated direct path: relay if that's how we're reaching them, else online-but-still-punching (green, the direct attempt is in flight).
     if c.reached_via_relay {
-        *theme::RING_RELAY_COLOUR
+        ConnTier::Relay
     } else {
-        *theme::RING_ONLINE_COLOUR
+        // Online with no proven direct path yet: the punch is still in flight.
+        ConnTier::Wan
+    }
+}
+
+/// Presence-ring tier (user spec, VSF-authored in theme.rs): cyan = direct in the same room (LAN), green = direct across the WAN, amber = relay-only, grey = offline. LAN = the validated direct path is a private / link-local / ULA address; a same-site GLOBAL v6 path (e.g. two phones on one home /64) still reads green — refining that needs a same-prefix check against our own addresses, later.
+pub(crate) fn ring_tier_colour(c: &crate::types::Contact, has_remote: bool) -> u32 {
+    // Zero-remote rows must come thru row_ring_tier (the sibling fold); a direct call with has_remote=false is the single-device degenerate answer.
+    let tier = if has_remote { contact_conn_tier(c) } else { ConnTier::Lan };
+    ring_colour_of(tier)
+}
+
+/// A row's HONEST ring tier over an explicit contacts slice — the free-fn form for render scopes where `chrome.as_mut()` pins self (contacts is a disjoint field). For a friend row the tier is the friend's own classification; for the self/notes row it is the best tier over the fleet SIBLINGS — same classifier, different counterparty set, so a dead sync partner shows grey instead of a hardcoded always-LAN lie. No siblings = single-device fleet = LAN.
+pub(crate) fn row_ring_tier_in(
+    contacts: &[crate::types::Contact],
+    c: &crate::types::Contact,
+    has_remote: bool,
+) -> u32 {
+    if has_remote {
+        return ring_tier_colour(c, true);
+    }
+    match contacts
+        .iter()
+        .filter(|s| s.is_sibling && !s.locked_out)
+        .map(contact_conn_tier)
+        .min()
+    {
+        Some(t) => ring_colour_of(t),
+        None => ring_tier_colour(c, false),
+    }
+}
+
+pub(crate) fn ring_colour_of(tier: ConnTier) -> u32 {
+    match tier {
+        ConnTier::Lan => *theme::RING_LAN_COLOUR,
+        ConnTier::Wan => *theme::RING_ONLINE_COLOUR,
+        ConnTier::Relay => *theme::RING_RELAY_COLOUR,
+        ConnTier::Offline => *theme::RING_OFFLINE_COLOUR,
     }
 }
 
 /// The transport tier of a live path as a DOT colour: LAN green (same subnet — no NAT, nothing in the middle), WAN cyan (a punched or routable direct path across the internet), relay orange (no direct path — frames ride the seed's pipe). `None` for a device that isn't reachable at all, which renders no dot.
 /// Same held-state rule the avatar ring uses: a live `validated_path` is authoritative and outranks `reached_via_relay`, because that flag tracks how the LAST frame happened to arrive and flaps every cycle for a peer reachable both ways.
 fn path_tier_colour(c: &crate::types::Contact, has_remote: bool) -> Option<u32> {
-    // Zero remote participants: the "path" is this machine's own memory — the LAN tier, unconditionally.
-    if !has_remote {
-        return Some(*theme::PATH_LAN_COLOUR);
+    let tier = if has_remote { contact_conn_tier(c) } else { ConnTier::Lan };
+    match tier {
+        ConnTier::Lan => Some(*theme::PATH_LAN_COLOUR),
+        ConnTier::Wan => {
+            // A validated path earns WAN; online with no proven direct path yet rides the relay — say so rather than promising a direct path we don't have.
+            if c.validated_path.is_some() {
+                Some(*theme::PATH_WAN_COLOUR)
+            } else {
+                Some(*theme::PATH_RELAY_COLOUR)
+            }
+        }
+        ConnTier::Relay => Some(*theme::PATH_RELAY_COLOUR),
+        ConnTier::Offline => None,
     }
-    if !c.is_online {
-        return None;
-    }
-    if let Some((addr, _)) = c.validated_path.as_ref() {
-        // Same v4-mapped-v6 unmapping as ring_tier_colour — see the note there.
-        return Some(if is_private_addr(&addr.ip()) {
-            *theme::PATH_LAN_COLOUR
-        } else {
-            *theme::PATH_WAN_COLOUR
-        });
-    }
-    Some(if c.reached_via_relay {
-        *theme::PATH_RELAY_COLOUR
-    } else {
-        // Online with no proven direct path yet: the punch is still in flight, and every frame meanwhile rides the relay — say so rather than promising a direct path we don't have.
-        *theme::PATH_RELAY_COLOUR
-    })
 }
 
 /// How many doublings a contact's presence cadence may take: 1 minute at level 0 up to roughly an hour. Beyond that a contact is effectively "checked hourly", which is the floor Nick asked for on battery grounds.

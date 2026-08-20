@@ -152,15 +152,10 @@ impl PhotonApp {
         }
         // Ring colours are DERIVED state — recompute and diff every tick, repaint on any change (see painted_ring_tiers).
         {
-            let our_hh = self
-                .session
-                .as_ref()
-                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
-                .unwrap_or([0u8; 32]);
             let tiers: Vec<u32> = self
                 .contacts
                 .iter()
-                .map(|c| ring_tier_colour(c, c.remote_count(&our_hh) > 0))
+                .map(|c| self.row_ring_tier(c))
                 .collect();
             if tiers != self.painted_ring_tiers {
                 self.painted_ring_tiers = tiers;

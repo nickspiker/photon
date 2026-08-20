@@ -49,7 +49,7 @@ impl PhotonApp {
                 ci,
                 has_avatar,
                 c.avatar_pin,
-                ring_tier_colour(c, orb_has_remote),
+                self.row_ring_tier(c),
                 c.is_online || !orb_has_remote,
             )
         });
@@ -92,7 +92,7 @@ impl PhotonApp {
                             | ((255 - p[2]) as u32)
                     })
                     .collect();
-                let ring = ring_tier_colour(c, orb_has_remote);
+                let ring = super::row_ring_tier_in(&self.contacts, c, orb_has_remote);
                 let online = c.is_online || !orb_has_remote;
                 chrome.app_icon = Some(fluor::host::icon::Icon {
                     width: diam as u32,
@@ -210,6 +210,11 @@ impl PhotonApp {
     pub(super) fn is_zero_remote(&self, c: &crate::types::Contact) -> bool {
         self.our_party_id(c)
             .is_some_and(|us| c.remote_count(&us) == 0)
+    }
+
+    /// A row's HONEST ring tier — the general rule for every row: the best connectivity tier over the devices this conversation has to reach. For a friend row that is the friend (their own row's classification); for the self/notes row it is the fleet SIBLINGS — same classifier, different counterparty set, so a dead sync partner shows as a grey ring instead of a hardcoded always-LAN lie (the 13-vs-0 notes divergence was invisible precisely because self always rendered "connected"). No siblings = single-device fleet: the row lives here alone, nearest possible = LAN.
+    pub(super) fn row_ring_tier(&self, c: &crate::types::Contact) -> u32 {
+        super::row_ring_tier_in(&self.contacts, c, self.has_remote(c))
     }
 
     /// The conversation `self.contacts[ci]` stands for, if it has materialized. `None` before the session is up or before anything touched it.
@@ -1274,7 +1279,6 @@ impl PhotonApp {
                 // Snapshot the facts the gates below need, so the &mut contact borrow ends here (the claim check walks self.contacts).
                 let contact_is_sibling = contact.is_sibling;
                 let sender_name = contact.display_name();
-                let contact_handle_hash = contact.handle_hash;
                 // Use actual eagle_time and sorted insert for correct chronological order
                 let mut msg = ChatMessage::new_with_timestamp(
                     message_text,
@@ -1643,7 +1647,7 @@ impl PhotonApp {
                     .is_some_and(|(rid, _, _)| *rid == request_id)
             };
             if !(rid_matches || from_sibling) {
-                crate::logf!("HISTORY: page from {} DROPPED — rid unmatched and sender is not a fold-trusted sibling (self-sync black-hole suspect)", crate::fp(&sender_pubkey.key));
+                crate::logf!("HISTORY: page from {} DROPPED — rid unmatched and sender is not a fold-trusted sibling", crate::fp(&sender_pubkey.key));
                 continue;
             }
             let conv_pos = {
