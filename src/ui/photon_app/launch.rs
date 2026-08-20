@@ -196,15 +196,12 @@ impl PhotonApp {
                     self.device_avatar_scaled = None;
                     self.device_avatar_scaled_diameter = 0;
                 }
-                // Initialize local encrypted storage from the session's vault_seed + device secret. open_shared: on a resume this returns the SAME engine the resume path already opened (and the attest worker holds) — a second independent engine on the live vault is the corruption class, not a refresh.
+                // Initialize local encrypted storage from the session's vault_seed + device secret. open_session_vault: on a resume this returns the SAME engine the resume path already opened (and the attest worker holds) — a second independent engine on the live vault is the corruption class, not a refresh.
                 if let Some(session) = &self.session {
                     if let Some(kp) = &self.device_keypair {
                         let device_secret = *kp.secret.as_bytes();
-                        match crate::storage::FlatStorage::open_shared(
-                            crate::storage::APP,
-                            session.vault_seed,
-                            device_secret,
-                        ) {
+                        match crate::storage::open_session_vault(session.vault_seed, device_secret)
+                        {
                             Ok(s) => self.storage = Some(s),
                             Err(e) => {
                                 crate::logf!("STORAGE: init failed: {}", e);
