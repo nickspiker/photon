@@ -558,9 +558,15 @@ impl PhotonApp {
         let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
         // §4.2 one-CLUTCH-per-friendship: a friend claimed by ANOTHER of our devices PARKS here — its ceremony is the fleet's ceremony (see ceremony_parked_by for the full rules incl. the woven guard and the probed-before-takeover boot-race fix). An owner that is PROBED-offline is presence-driven takeover: the contact re-enters the queue and the pickup below re-claims it. Sibling weaves are per-device-pair by design — never parked.
         let siblings = sibling_presence_snapshot(&self.contacts);
+        // FLEET-FIRST REJOIN (the re-clutch storm fix): while ANY fleet sibling still lacks a presence VERDICT (pong or 3-timeout — an evidence edge, never a timer), FRIEND keygens hold. A wiped device's restored contacts arrive Pending+keyless and the old code fired ceremonies at every friend within milliseconds — seconds before chain replication from an online sibling would have flipped them all Complete with no ceremony at all. Once every sibling is probed: online siblings ⇒ chains arrive and adoption drains the queue; all-offline ⇒ this is the identity's only live device and clutching is legitimately ours. Sibling PAIR-WEAVES are exempt — they are the very channel the chains replicate over.
+        let sibling_probe_pending = self
+            .contacts
+            .iter()
+            .any(|s| s.is_sibling && !s.locked_out && !s.presence_probed);
         // A conversation with no remote participants has nothing to exchange, so it never enters the queue. (This replaces a comparison against the raw identity SEED that could never match a pid — self was excluded from keygen only because something else forced its state Complete.)
         let next_idx = self.contacts.iter().position(|c| {
             self.has_remote(c)
+                && (c.is_sibling || !sibling_probe_pending)
                 && c.clutch_state == crate::types::ClutchState::Pending
                 && c.clutch_our_keypairs.is_none()
                 && !c.clutch_keygen_in_progress
@@ -569,6 +575,27 @@ impl PhotonApp {
                     .map_or(true, |t| now - t >= CLUTCH_ROUND_TTL_OSC)
                 && !ceremony_parked_by(c, our_device, &siblings)
         });
+        if next_idx.is_none() && sibling_probe_pending && !self.keygen_fleet_gate_holding {
+            // Only worth a line when the gate is actually holding candidates back.
+            let held = self
+                .contacts
+                .iter()
+                .filter(|c| {
+                    !c.is_sibling
+                        && self.has_remote(c)
+                        && c.clutch_state == crate::types::ClutchState::Pending
+                        && c.clutch_our_keypairs.is_none()
+                })
+                .count();
+            if held > 0 {
+                crate::logf!("CLUTCH: fleet-first — holding {} friend keygen(s) until every sibling is probed (chains may replicate instead)", held);
+                self.keygen_fleet_gate_holding = true;
+            }
+        }
+        if !sibling_probe_pending && self.keygen_fleet_gate_holding {
+            self.keygen_fleet_gate_holding = false;
+            crate::log("CLUTCH: fleet-first gate released — every sibling probed");
+        }
         if let Some(i) = next_idx {
             // Party id per contact: identity seed for friends, device-derived pid for fleet siblings.
             let Some(our_pid) = self.our_party_id(&self.contacts[i]) else {
