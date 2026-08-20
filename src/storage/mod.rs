@@ -35,9 +35,8 @@ pub fn open_session_vault(
     let vault = device_vault().ok_or_else(|| StorageError::Vault("device vault unavailable".to_string()))?;
     vault.set_identity(vault_seed)?;
     migrate_legacy_vault(&vault, &vault_seed, &device_secret);
-    // Blob addressing keys off the IDENTITY seed; with the identity scope live, the file-era blobs/ dir folds in.
+    // Blob addressing keys off the IDENTITY seed.
     blob_init_names(&identity_seed);
-    absorb_blob_files(&identity_seed);
     Ok(vault)
 }
 
@@ -70,7 +69,7 @@ fn resolved_device_secret() -> Option<[u8; 32]> {
     None
 }
 
-/// THE process-wide device vault, pre-identity: open from the device secret alone, from first launch, before any handle is typed. This is where the pre-attest state lives (D2 binding, opt-in flags, reboot capsule) — Nick's key model: entries are hash(thing|device) here and hash(thing|device|person) once attested (the identity scope on the same vault, unlocked by open_session_vault). First open absorbs the loose-file sprawl.
+/// THE process-wide device vault, pre-identity: open from the device secret alone, from first launch, before any handle is typed. This is where the pre-attest state lives (D2 binding, opt-in flags, reboot capsule) — Nick's key model: entries are hash(thing|device) here and hash(thing|device|person) once attested (the identity scope on the same vault, unlocked by open_session_vault). First open runs the census sweep.
 /// The cache is SECRET-KEYED, not first-open-wins: a rebound secret (tests; never runtime) re-resolves instead of silently serving the old vault. kete's shared-engine registry does the real dedup underneath.
 pub fn device_vault() -> Option<std::sync::Arc<FlatStorage>> {
     static DEVICE_VAULT: std::sync::Mutex<Option<([u8; 32], std::sync::Arc<FlatStorage>)>> =
@@ -84,7 +83,7 @@ pub fn device_vault() -> Option<std::sync::Arc<FlatStorage>> {
     }
     match FlatStorage::open_device_shared(APP, secret) {
         Ok(v) => {
-            absorb_loose_files(&v, &secret);
+            census_sweep(&secret);
             *g = Some((secret, v.clone()));
             Some(v)
         }
@@ -109,85 +108,30 @@ pub fn set_device_flag(key: &str, on: bool) {
     }
 }
 
-/// Fold the loose-file sprawl into the device vault — each artifact is move-then-delete, so the walk is self-terminating (absent file = already folded) and crash-safe (a crash re-folds only what's left). No marker needed. Runs once per process at first device-vault open.
-fn absorb_loose_files(vault: &FlatStorage, device_secret: &[u8; 32]) {
-    let Ok(dir) = photon_config_dir() else { return };
-    // D2 binding marker: sealed under its own device-derived key in the file era — decrypt with that key, store the party id as a device-scope entry (the vault seals it from here on).
-    let binding = dir.join("device_binding.vsf");
-    if let Ok(bytes) = std::fs::read(&binding) {
-        let key = blake3::derive_key("photon.device_binding.v0", device_secret);
-        if let Ok(plain) = kete::decrypt_bytes(&bytes, &key) {
-            if vault.write_device("binding/party", &plain).is_ok() {
-                let _ = std::fs::remove_file(&binding);
-                crate::log("STORAGE: device binding folded into the vault");
-            }
-        } else {
-            // Unreadable under this device's key = not ours/corrupt — the worker index backstops; the stray still leaves the census.
-            let _ = std::fs::remove_file(&binding);
-        }
-    }
-    // Opt-in / veto markers: file existence becomes a flag entry.
-    for (file, key) in [
-        ("unattended_reboot", "flags/unattended_reboot"),
-        ("remote_terminal", "flags/remote_terminal"),
-        ("background_optout", "flags/background_optout"),
-    ] {
-        let p = dir.join(file);
-        if p.exists() && vault.write_device(key, &[1u8]).is_ok() {
-            let _ = std::fs::remove_file(&p);
-            crate::logf!("STORAGE: {} marker folded into the vault", file);
-        }
-    }
-    // Reboot capsule: already-sealed bytes move verbatim — tohu opens them from wherever they live.
-    let capsule = dir.join("reboot_capsule");
-    if let Ok(bytes) = std::fs::read(&capsule) {
-        if vault.write_device("capsule/reboot", &bytes).is_ok() {
-            let _ = std::fs::remove_file(&capsule);
-            crate::log("STORAGE: reboot capsule folded into the vault");
-        }
-    }
-    // File-era blobs move INTO the vault NOW, pre-identity: the sealed bytes need no decrypt to relocate, so each file becomes a device-scope `blobfold/<id>` entry (id = blake3 of the sealed bytes, tracked in `blobfold/index`) and the dir dies on FIRST launch — the census never waits on an attest. The session open later decrypts each parked entry into a real blob value (or discards dead ciphertext from a wiped-away identity); see absorb_blob_files.
-    let bdir = dir.join("blobs");
-    if bdir.exists() {
-        let mut index = blobfold_index(vault);
-        let mut moved = 0usize;
-        if let Ok(rd) = std::fs::read_dir(&bdir) {
-            for e in rd.flatten() {
-                let p = e.path();
-                let Ok(bytes) = std::fs::read(&p) else { continue };
-                // Markers and empty husks carry nothing recoverable.
-                if bytes.len() < 24 + 16 {
-                    let _ = std::fs::remove_file(&p);
-                    continue;
-                }
-                let id = *blake3::hash(&bytes).as_bytes();
-                if vault.write_device(&blobfold_entry(&id), &bytes).is_ok() {
-                    if !index.contains(&id) {
-                        index.push(id);
-                    }
-                    let _ = std::fs::remove_file(&p);
-                    moved += 1;
-                }
-            }
-        }
-        write_blobfold_index(vault, &index);
-        let _ = std::fs::remove_dir(&bdir);
-        if moved > 0 {
-            crate::logf!("STORAGE: {} file-era blob(s) parked inside the vault pending an identity to open them", moved);
-        }
-    }
-    // THE CENSUS SWEEP (Nick's rule, 2026-08-20): anything in the config dir that isn't the log or a `<token>.vsf` ring gets AUTO-NUKED. The keep-set: the device ring pair (primary + macOS same-dir shadow) and the log + its crash sidecar (they land here only when temp is unwritable). Everything else — settings.vsf, lock/socket relics, orphan strays from any era — is deleted by name-independent sweep, so the next stray CLASS never needs its own line here.
-    // Desktop only: on Android `photon_config_dir` is the app-private files ROOT, which the OS and the JNI layer also write into — sweeping unknown names there would eat platform files. Android's sandbox already isolates it; the fold above still runs.
+/// THE CENSUS (Nick's rule, sharpened 2026-08-20): a file in the primary or secondary photon dir either matches `<device token>.vsf` or the log, or it is DELETED — no backups, no folding, no conversion, no exceptions. File-era artifacts (device_binding.vsf, opt-in markers, reboot capsule, blobs/, settings.vsf) die here with everything else: flags and bindings re-arm thru their live vault paths; sealed file content nothing can re-key is dead. Name-independent sweep, so the next stray CLASS never needs its own line. Runs once per process at first device-vault open.
+/// Desktop only: on Android `photon_config_dir` is the app-private files ROOT, which the OS and the JNI layer also write into — sweeping unknown names there would eat platform files; the sandbox already isolates it.
+fn census_sweep(device_secret: &[u8; 32]) {
+    #[cfg(target_os = "android")]
+    let _ = device_secret;
     #[cfg(not(target_os = "android"))]
     {
         let ring = tohu::device_vault_path_name(APP.id, device_secret);
         let keep = [
             format!("{}.vsf", ring),
-            format!("{}{}.vsf", ring, ".shadow"),
+            format!("{}.shadow.vsf", ring), // the mirror when primary and secondary collide into one dir (macOS)
             "photon.log.vsf".to_string(),
-            "photon.crash.txt".to_string(),
         ];
-        if let Ok(rd) = std::fs::read_dir(&dir) {
+        let mut targets: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(d) = photon_config_dir() {
+            targets.push(d);
+        }
+        if let Some(d) = photon_data_dir() {
+            if !targets.contains(&d) {
+                targets.push(d);
+            }
+        }
+        for dir in targets {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
             for entry in rd.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if keep.iter().any(|k| *k == name) {
@@ -196,12 +140,24 @@ fn absorb_loose_files(vault: &FlatStorage, device_secret: &[u8; 32]) {
                 let p = entry.path();
                 let removed = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
                 match removed {
-                    Ok(()) => crate::logf!("STORAGE: census sweep — stray {} auto-nuked (config dir = the log + the vault)", name),
-                    Err(e) => crate::logf!("STORAGE: census sweep — could not remove {}: {}", name, e),
+                    Ok(()) => crate::logf!("STORAGE: census — {} deleted (the census is the vault ring + the log, nothing else)", name),
+                    Err(e) => crate::logf!("STORAGE: census — could not remove {}: {}", name, e),
                 }
             }
         }
     }
+}
+
+/// The secondary (data-dir) photon dir — the vault mirror's home where the XDG split gives two roots. Honors the same dev/test override as [`photon_config_dir`] (the override points the whole instance at ONE dir; the census dedupes).
+#[cfg(not(target_os = "android"))]
+fn photon_data_dir() -> Option<std::path::PathBuf> {
+    #[cfg(any(feature = "development", test))]
+    if let Ok(custom) = std::env::var("PHOTON_DATA_DIR") {
+        if !custom.is_empty() {
+            return Some(std::path::PathBuf::from(custom));
+        }
+    }
+    dirs::data_dir().map(|p| p.join(APP.dir))
 }
 
 /// In-place migration from the per-identity vault era: every entry of the legacy vault is raw-copied (stored bytes verbatim, same addresses — the identity-scope key derivation is unchanged, so ciphertexts decrypt identically) into the device vault, then the legacy rings are renamed to `.legacy` backups — kept, not deleted, as missed-domain insurance until a later version reaps them. Marker-gated in the device scope, single-flight, idempotent; every row of history — including the first message ever sent over FGTW — survives.
@@ -309,17 +265,12 @@ pub fn isolate_test_storage() {
     );
 }
 
-// BLOBS LIVE IN THE VAULT (2026-08-20, "ONE VAULT WITH A MIRROR FOR FUCKUPS AND HEALING"): an attachment/recording is one vault value at an identity-keyed address — arbitrary size in principle (EWE), sealed by the vault's own per-address keys, mirrored by the dual rings like everything else. The loose blobs/ dir is absorbed at session open.
+// BLOBS LIVE IN THE VAULT (2026-08-20, "ONE VAULT WITH A MIRROR FOR FUCKUPS AND HEALING"): an attachment/recording is one vault value at an identity-keyed address — arbitrary size in principle (EWE), sealed by the vault's own per-address keys, mirrored by the dual rings like everything else. A file-era blobs/ dir is a census stray — deleted, never imported.
 // ADDRESSES ARE A FORENSIC SURFACE (the v0 filename lesson): trie keys sit in plaintext in the vault leaves, so an unkeyed content-hash address would let anyone holding the rings + a CANDIDATE file prove possession with zero keys. The address is blake3 KEYED by a seed-derived name key — meaningless without the identity seed. The name key lives in a process global because presence checks run on the render path where no seed is in scope; it is set the moment a session's seed exists (blob_init_names) and cleared with the session.
 static BLOB_NAME_KEY: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
 
 fn blob_name_key_of(identity_seed: &[u8; 32]) -> [u8; 32] {
     blake3::derive_key(&format!("{}.blob.name.v1", APP.id), identity_seed)
-}
-
-/// Legacy file-era blob seal key — still needed to OPEN old loose blob files during the absorb walk (the vault seals with its own keys from here on).
-fn blob_seal_key(identity_seed: &[u8; 32]) -> [u8; 32] {
-    blake3::derive_key(&format!("{}.blob.seal.v0", APP.id), identity_seed)
 }
 
 /// The vault address for a content hash: keyed blake3 under the session's name key. None = no session yet (presence reads false, deletes no-op — the same "vault not open" posture as everything else).
@@ -328,7 +279,7 @@ fn blob_addr(content_hash: &[u8; 32]) -> Option<[u8; 32]> {
     Some(*blake3::keyed_hash(&k, content_hash).as_bytes())
 }
 
-/// Install the blob name key for this session. Call whenever a session's identity seed becomes available. (The file-era v0→v1 rename walk is gone — the whole blobs/ dir folds into the vault in `absorb_blob_files`.)
+/// Install the blob name key for this session. Call whenever a session's identity seed becomes available. (The file-era blobs/ dir is NOT imported — the census deletes it like every other stray.)
 pub fn blob_init_names(identity_seed: &[u8; 32]) {
     *BLOB_NAME_KEY.lock().unwrap() = Some(blob_name_key_of(identity_seed));
 }
@@ -373,96 +324,6 @@ pub fn blob_present(content_hash: &[u8; 32]) -> bool {
 pub fn blob_delete(content_hash: &[u8; 32]) {
     if let (Some(v), Some(addr)) = (device_vault(), blob_addr(content_hash)) {
         let _ = v.delete_addr(&addr);
-    }
-}
-
-/// The parked-blob ledger: `blobfold/index` = concatenated 32-byte ids, each id naming a `blobfold/<hex>` device-scope entry holding one file-era blob's SEALED bytes verbatim (moved pre-identity, opened at session).
-const BLOBFOLD_INDEX: &str = "blobfold/index";
-
-fn blobfold_entry(id: &[u8; 32]) -> String {
-    format!("blobfold/{}", hex::encode(id))
-}
-
-fn blobfold_index(vault: &FlatStorage) -> Vec<[u8; 32]> {
-    vault
-        .read_device(BLOBFOLD_INDEX)
-        .ok()
-        .flatten()
-        .map(|b| b.chunks_exact(32).map(|c| c.try_into().unwrap()).collect())
-        .unwrap_or_default()
-}
-
-fn write_blobfold_index(vault: &FlatStorage, ids: &[[u8; 32]]) {
-    if ids.is_empty() {
-        let _ = vault.delete_device(BLOBFOLD_INDEX);
-    } else {
-        let flat: Vec<u8> = ids.iter().flat_map(|id| id.iter().copied()).collect();
-        let _ = vault.write_device(BLOBFOLD_INDEX, &flat);
-    }
-}
-
-/// Fold the file-era blobs/ dir into the vault: decrypt each loose sealed file with the legacy blob key, re-derive its content hash from the plaintext (filenames are keyed hashes — unreversible by design), store it as a vault value, delete the file. Self-terminating (dir absent = done), crash-safe (a crash re-folds only what is left). Un-openable strays (crashed spool tmp, corrupt files) are dead ciphertext — deleted.
-fn absorb_blob_files(identity_seed: &[u8; 32]) {
-    let seal = blob_seal_key(identity_seed);
-    // Parked entries first (the pre-identity fold moved the files INSIDE the vault at first launch): decrypt each into a real blob value, or discard dead ciphertext — a wiped-away identity's blobs can never open again by construction.
-    if let Some(vault) = device_vault() {
-        let ids = blobfold_index(&vault);
-        if !ids.is_empty() {
-            let mut opened = 0usize;
-            let mut dead = 0usize;
-            for id in &ids {
-                let key = blobfold_entry(id);
-                let sealed = vault.read_device(&key).ok().flatten();
-                if let Some(plain) = sealed.and_then(|b| kete::decrypt_bytes(&b, &seal).ok()) {
-                    let hash = *blake3::hash(&plain).as_bytes();
-                    if blob_store(identity_seed, &hash, &plain).is_ok() {
-                        let _ = vault.delete_device(&key);
-                        opened += 1;
-                        continue;
-                    }
-                    continue; // vault refused the store — keep the parked entry, retry next open
-                }
-                let _ = vault.delete_device(&key);
-                dead += 1;
-            }
-            let remaining: Vec<[u8; 32]> = ids
-                .into_iter()
-                .filter(|id| matches!(vault.read_device(&blobfold_entry(id)), Ok(Some(_))))
-                .collect();
-            write_blobfold_index(&vault, &remaining);
-            if opened + dead > 0 {
-                crate::logf!("STORAGE: parked blobs settled — {} opened into the vault, {} dead ciphertext discarded", opened, dead);
-            }
-        }
-    }
-    let Ok(cfg) = photon_config_dir() else { return };
-    let dir = cfg.join("blobs");
-    if !dir.exists() {
-        return;
-    }
-    let mut folded = 0usize;
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for e in entries.flatten() {
-            let path = e.path();
-            let opened = std::fs::read(&path)
-                .ok()
-                .and_then(|sealed| kete::decrypt_bytes(&sealed, &seal).ok());
-            if let Some(plain) = opened {
-                let hash = *blake3::hash(&plain).as_bytes();
-                if blob_store(identity_seed, &hash, &plain).is_ok() {
-                    let _ = std::fs::remove_file(&path);
-                    folded += 1;
-                    continue;
-                }
-                continue; // vault refused — keep the file, retry next launch
-            }
-            // Marker, crashed spool tmp, or corrupt seal — nothing recoverable lives here.
-            let _ = std::fs::remove_file(&path);
-        }
-    }
-    let _ = std::fs::remove_dir(&dir); // only falls when empty — a kept-for-retry file holds it
-    if folded > 0 {
-        crate::logf!("STORAGE: {} loose blob(s) folded into the vault", folded);
     }
 }
 
@@ -630,7 +491,7 @@ mod tests {
         GATE.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// THE census rule: anything in the config dir that isn't the log or a vault ring is auto-nuked at first vault open — strays don't need to be known by name to die (the []x-left-blobs field find, 2026-08-20).
+    /// THE census rule (Nick, verbatim, 2026-08-20): a file in the primary or secondary dir that doesn't match `<device token>.vsf` or the log "goes bye bye. no backey uppey, no convertey, no touchey." Strays don't need to be known by name to die, file-era artifacts included — nothing is imported into the vault.
     #[test]
     fn census_sweep_auto_nukes_strays() {
         let _g = serial();
@@ -642,41 +503,39 @@ mod tests {
         std::fs::write(dir.join("mystery.dat"), b"x").unwrap();
         std::fs::write(dir.join("photon.log.vsf"), b"log").unwrap();
         std::fs::create_dir_all(dir.join("blobs")).unwrap();
-        let sealed = vec![0xEEu8; 64]; // big enough to be parkable ciphertext
-        std::fs::write(dir.join("blobs/parked.bin"), &sealed).unwrap();
+        std::fs::write(dir.join("blobs/orphan.bin"), vec![0xEEu8; 64]).unwrap();
+        let key = blake3::derive_key("photon.device_binding.v0", &secret);
+        std::fs::write(dir.join("device_binding.vsf"), kete::encrypt_bytes(&[0x77u8; 32], &key).unwrap()).unwrap();
+        std::fs::write(dir.join("unattended_reboot"), b"operator opt-in").unwrap();
+        std::fs::write(dir.join("settings.vsf"), b"dead-knobs").unwrap();
         install_device_secret(secret);
         let v = device_vault().unwrap();
-        assert!(!dir.join("junkdir").exists(), "stray dir survived the sweep");
-        assert!(!dir.join("mystery.dat").exists(), "stray file survived the sweep");
-        assert!(dir.join("photon.log.vsf").exists(), "the log must survive the sweep");
-        // blobs/ dies on FIRST launch too — the sealed bytes are parked INSIDE the vault (blobfold entries) until an identity settles them.
-        assert!(!dir.join("blobs").exists(), "blobs dir survived first launch");
-        let ids = blobfold_index(&v);
-        assert_eq!(ids.len(), 1, "parked-blob ledger missing the moved file");
-        assert!(matches!(v.read_device(&blobfold_entry(&ids[0])), Ok(Some(_))));
+        assert!(!dir.join("junkdir").exists(), "stray dir survived the census");
+        assert!(!dir.join("mystery.dat").exists(), "stray file survived the census");
+        assert!(!dir.join("blobs").exists(), "blobs dir survived the census");
+        assert!(!dir.join("device_binding.vsf").exists(), "binding file survived the census");
+        assert!(!dir.join("unattended_reboot").exists(), "marker file survived the census");
+        assert!(!dir.join("settings.vsf").exists(), "settings file survived the census");
+        assert!(dir.join("photon.log.vsf").exists(), "the log must survive the census");
+        // No conversion: deleted files leave NOTHING behind in the vault.
+        assert_eq!(v.read_device("binding/party").unwrap(), None);
+        assert_eq!(v.read_device("flags/unattended_reboot").unwrap(), None);
     }
 
-    /// Blobs are vault values at identity-keyed addresses; the file-era blobs/ dir folds in at session open and leaves the census.
+    /// Blobs are vault values at identity-keyed addresses — store/presence/load/delete all vault-side; a planted file-era blobs/ dir is deleted, not imported.
     #[test]
-    fn blobs_live_in_the_vault_and_loose_files_fold() {
+    fn blobs_live_in_the_vault() {
         let _g = serial();
         isolate_test_storage();
         let identity = [0x6Au8; 32];
         let vault_seed = [0x6Bu8; 32];
         let secret = [0x6Cu8; 32];
-        // Plant a file-era sealed blob under a keyed (unreversible) name — the fold must recover the content hash from the plaintext.
         let dir = photon_config_dir().unwrap().join("blobs");
         std::fs::create_dir_all(&dir).unwrap();
-        let plain = b"the kept recording".to_vec();
-        let hash = *blake3::hash(&plain).as_bytes();
-        let sealed = kete::encrypt_bytes(&plain, &blob_seal_key(&identity)).unwrap();
-        std::fs::write(dir.join("deadbeef00.bin"), sealed).unwrap();
-        std::fs::write(dir.join(".names-v1"), b"1").unwrap();
+        std::fs::write(dir.join("deadbeef00.bin"), vec![0xCDu8; 128]).unwrap();
         let _vault = open_session_vault(identity, vault_seed, secret).unwrap();
-        assert!(blob_present(&hash), "folded blob not present in the vault");
-        assert_eq!(blob_load(&identity, &hash), Some(plain));
-        assert!(!dir.exists(), "blobs dir still in the census");
-        // Fresh store / presence / delete round trip, all vault-side.
+        assert!(!dir.exists(), "blobs dir survived the census");
+        // Fresh store / presence / load / delete round trip, all vault-side.
         let p2 = vec![0xAB; 300_000];
         let h2 = *blake3::hash(&p2).as_bytes();
         blob_store(&identity, &h2, &p2).unwrap();
@@ -686,33 +545,7 @@ mod tests {
         assert!(!blob_present(&h2));
     }
 
-    /// The file-era sprawl folds into the device vault at first open: binding marker (re-sealed), opt-in markers (→ flags), dead settings.vsf (deleted) — and the loose files leave the census.
-    #[test]
-    fn loose_files_fold_into_the_device_vault() {
-        let _g = serial();
-        isolate_test_storage();
-        let secret = [0x5Cu8; 32];
-        let dir = photon_config_dir().unwrap();
-        std::fs::create_dir_all(&dir).unwrap();
-        let key = blake3::derive_key("photon.device_binding.v0", &secret);
-        std::fs::write(
-            dir.join("device_binding.vsf"),
-            kete::encrypt_bytes(&[0x77u8; 32], &key).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(dir.join("unattended_reboot"), b"operator opt-in").unwrap();
-        std::fs::write(dir.join("settings.vsf"), b"dead-knobs").unwrap();
-        install_device_secret(secret);
-        // Asserts go thru the held Arc, not the global accessors — a parallel test may rebind the process-wide secret mid-flight; the vault itself is immutable truth.
-        let v = device_vault().unwrap();
-        assert_eq!(v.read_device("binding/party").unwrap(), Some(vec![0x77u8; 32]));
-        assert!(matches!(v.read_device("flags/unattended_reboot"), Ok(Some(_))));
-        assert!(!dir.join("device_binding.vsf").exists(), "binding file still in the census");
-        assert!(!dir.join("unattended_reboot").exists(), "marker file still in the census");
-        assert!(!dir.join("settings.vsf").exists(), "dead settings file still in the census");
-    }
-
-    /// THE census contract: after a session opens over a full file-era sprawl (legacy vault + strays + blobs), the config tree holds EXACTLY the device-vault ring per dir — everything else absorbed or parked as a `.legacy` backup in the old parking lot.
+    /// THE census contract: after a session opens over a full file-era sprawl (legacy vault + strays + blobs), the config tree holds EXACTLY the device-vault ring per dir — history migrated from the legacy rings, every stray deleted.
     #[test]
     fn end_state_census_is_the_vault_alone() {
         let _g = serial();
@@ -720,33 +553,26 @@ mod tests {
         let identity = [0x7Au8; 32];
         let vault_seed = [0x7Bu8; 32];
         let secret = [0x7Cu8; 32];
-        // Full sprawl: legacy vault with history, loose binding + marker + a sealed blob file.
+        // Full sprawl: legacy vault with history, loose marker + settings + a file-era blob.
         {
             let legacy = FlatStorage::new(LEGACY_APP, vault_seed, secret).unwrap();
             legacy.write("rows/genesis", b"the first message ever sent over FGTW").unwrap();
         }
         let cfg = photon_config_dir().unwrap();
         std::fs::create_dir_all(cfg.join("blobs")).unwrap();
-        let plain = b"attached bytes".to_vec();
-        let hash = *blake3::hash(&plain).as_bytes();
-        std::fs::write(
-            cfg.join("blobs/aa.bin"),
-            kete::encrypt_bytes(&plain, &blob_seal_key(&identity)).unwrap(),
-        )
-        .unwrap();
+        std::fs::write(cfg.join("blobs/aa.bin"), vec![0xAAu8; 96]).unwrap();
         std::fs::write(cfg.join("unattended_reboot"), b"on").unwrap();
         std::fs::write(cfg.join("settings.vsf"), b"dead").unwrap();
 
         let vault = open_session_vault(identity, vault_seed, secret).unwrap();
         assert_eq!(vault.read("rows/genesis").unwrap(), Some(b"the first message ever sent over FGTW".to_vec()));
-        assert_eq!(blob_load(&identity, &hash), Some(plain));
 
         // Census: the strays and the blobs dir are gone from the config dir.
         let leftovers: Vec<String> = std::fs::read_dir(&cfg)
             .unwrap()
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| n != "photon.log.vsf" && n != "photon.crash.txt")
+            .filter(|n| n != "photon.log.vsf")
             .collect();
         assert!(leftovers.is_empty(), "config-dir strays survived: {:?}", leftovers);
         // The device-vault rings exist at both mirror paths. (Per-dir "exactly one file" isn't assertable here — the test root is shared by the whole parallel suite, so sibling tests' vaults coexist; the field census is the two rings.)
