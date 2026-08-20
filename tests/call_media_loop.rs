@@ -115,7 +115,7 @@ fn media_survives_datagram_loss_via_piggybacked_repair() {
             let rep = prev_repair.take();
             let mut payload = Vec::new();
             let ctrl =
-                tier as u8 | rep.as_ref().map_or(0, |(rt, _)| 0b100 | ((*rt as u8) << 3));
+                tier as u8 | rep.as_ref().map_or(0, |(rt, _)| 0b1000 | ((*rt as u8) << 4));
             payload.push(ctrl);
             payload.extend_from_slice(pkts[0].data());
             if let Some((_, r)) = &rep {
@@ -136,9 +136,9 @@ fn media_survives_datagram_loss_via_piggybacked_repair() {
             let (header, sealed) = packet::parse_header(&wire).unwrap();
             let opened = packet::open(&mut rx_chain, &header, sealed).unwrap();
             let ctrl = opened[0];
-            let tier_src = (ctrl & 0b11) as usize;
-            let rep_present = ctrl & 0b100 != 0;
-            let tier_rep = ((ctrl >> 3) & 0b11) as usize;
+            let tier_src = (ctrl & 0b111) as usize;
+            let rep_present = ctrl & 0b1000 != 0;
+            let tier_rep = ((ctrl >> 4) & 0b111) as usize;
             let src_len = tier_window_bytes(tier_src);
             let expect =
                 1 + src_len + if rep_present { tier_window_bytes(tier_rep) } else { 0 };
