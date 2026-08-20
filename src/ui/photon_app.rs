@@ -2846,13 +2846,8 @@ fn ring_tier_colour(c: &crate::types::Contact, has_remote: bool) -> u32 {
     }
     // A LIVE validated direct path is authoritative and wins over reached_via_relay. That flag tracks how the LAST frame happened to arrive, and a peer reachable BOTH ways (good direct path + the relay pipe still delivering redundant copies) flips it every cycle — the amber/green flicker. validated_path is held state with a TTL, so it doesn't flap; relay only colours the ring when there is genuinely no direct path.
     if let Some((addr, _)) = c.validated_path.as_ref() {
-        let lan = match addr.ip() {
-            std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
-            std::net::IpAddr::V6(v6) => {
-                (v6.segments()[0] & 0xffc0) == 0xfe80 || (v6.segments()[0] & 0xfe00) == 0xfc00
-            }
-        };
-        return if lan {
+        // is_private_addr, not a hand-rolled check: a dual-stack socket validates LAN paths in the V4-MAPPED-v6 form (::ffff:192.168.x.y), which a bare V6-segment test reads as WAN — one side of a same-room pair showed LAN while the other showed WAN (field 2026-08-20, Emma↔1). The helper unmaps before classifying.
+        return if is_private_addr(&addr.ip()) {
             *theme::RING_LAN_COLOUR
         } else {
             *theme::RING_ONLINE_COLOUR
@@ -2877,13 +2872,8 @@ fn path_tier_colour(c: &crate::types::Contact, has_remote: bool) -> Option<u32> 
         return None;
     }
     if let Some((addr, _)) = c.validated_path.as_ref() {
-        let lan = match addr.ip() {
-            std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
-            std::net::IpAddr::V6(v6) => {
-                (v6.segments()[0] & 0xffc0) == 0xfe80 || (v6.segments()[0] & 0xfe00) == 0xfc00
-            }
-        };
-        return Some(if lan {
+        // Same v4-mapped-v6 unmapping as ring_tier_colour — see the note there.
+        return Some(if is_private_addr(&addr.ip()) {
             *theme::PATH_LAN_COLOUR
         } else {
             *theme::PATH_WAN_COLOUR
