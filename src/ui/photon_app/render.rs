@@ -372,9 +372,9 @@ impl PhotonApp {
                     crate::call::CallPhase::Active => format!("\u{260E} in call \u{2014} {}", name),
                     crate::call::CallPhase::Ended => "\u{260E} keep this recording?".to_string(),
                 };
-                // No validated direct path in a live phase → say so on the bar (media may be silent until a punch lands; the warning disappears live when it does). Plain text, no warning glyph — U+26A0 risks the same blank-render the Android font gave U+2192 (the send-arrow lesson).
+                // No validated direct path in a live phase → say so on the bar (media may be silent until a punch lands; the warning disappears live when it does). The ⚠ is safe everywhere: fonts are fully bundled + deterministic (fluor's explicit-db TextRenderer, zero system-font pulls — verified 2026-08-20), and Noto Sans Symbols 2 covers U+26A0 in the same 2600 block as the field-proven ☎.
                 if !direct && !matches!(phase, crate::call::CallPhase::Ended) {
-                    status.push_str(" \u{2014} no direct path");
+                    status.push_str(" \u{26A0} no direct path");
                 }
                 let status_w = if call_two_actions { bar_w * 0.44 } else { bar_w * 0.62 };
                 let action_w = if call_two_actions {
