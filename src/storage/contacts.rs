@@ -1344,6 +1344,36 @@ mod tests {
     use super::*;
     use vsf::VsfSection;
 
+    /// THE self-conversation storage seam (the notes black-hole class): rows saved under the DEDUPED self participant set must serve back thru the page reader's [pid, pid] degenerate addressing — save table == serve table, or a sibling asking for our notes gets an empty page while both UIs claim "synchronized".
+    #[test]
+    fn self_conversation_pages_serve_like_any_other() {
+        crate::storage::isolate_test_storage();
+        let vault_seed = [0x8Au8; 32];
+        let device_secret = [0x8Bu8; 32];
+        let storage = FlatStorage::new(crate::storage::APP, vault_seed, device_secret).unwrap();
+        let our_pid = crate::crypto::clutch::identity_party_id(&vault_seed);
+        // The self conversation exactly as Contact::conversation builds it: [us, us] → dedup → {us}.
+        let mut conv = crate::types::Conversation::new([our_pid, our_pid]);
+        for i in 0..13i64 {
+            conv.messages.push(crate::types::ChatMessage::new_with_timestamp(
+                format!("note {i}"),
+                true,
+                1_000_000 + i,
+            ));
+        }
+        save_messages(&conv, &storage).unwrap();
+        // Serve side: the fleet-route page read addresses the table as [our_pid, their_seed] with their_seed = our own pid for the self row.
+        let (rows, more) =
+            load_message_page_before(&our_pid, i64::MAX, 50, usize::MAX, &storage).unwrap();
+        assert_eq!(rows.len(), 13, "self rows must serve — the 13-vs-0 black-hole seam");
+        assert!(!more);
+        assert_eq!(rows.last().unwrap().content, "note 12");
+        // And the walk's page cursor form: strictly-before paging returns the older remainder.
+        let (older, _) =
+            load_message_page_before(&our_pid, 1_000_005, 50, usize::MAX, &storage).unwrap();
+        assert_eq!(older.len(), 5);
+    }
+
     #[test]
     fn test_contact_identity_roundtrip() {
         let identity = ContactIdentity {
