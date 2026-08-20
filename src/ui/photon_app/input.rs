@@ -746,25 +746,28 @@ impl PhotonApp {
         let mut count = 0usize;
         let wipe_dir = |dir: Option<std::path::PathBuf>, count: &mut usize| {
             let Some(base) = dir else { return };
-            let app_dir = base.join(crate::storage::APP.dir);
-            let rd = match std::fs::read_dir(&app_dir) {
-                Ok(rd) => rd,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
-                Err(e) => {
-                    eprintln!("{} WARN: read_dir {}: {}", tag, app_dir.display(), e);
-                    return;
-                }
-            };
-            for entry in rd.flatten() {
-                let p = entry.path();
-                if p.extension().map_or(false, |e| e == "vsf") {
-                    match std::fs::remove_file(&p) {
-                        Ok(()) => {
-                            eprintln!("{} deleted {}", tag, p.display());
-                            *count += 1;
-                        }
-                        Err(e) => {
-                            eprintln!("{} WARN: could not delete {}: {}", tag, p.display(), e)
+            // Both casings: the unified `photon/` dir (device vault) AND the pre-unification `Photon/` parking lot (legacy rings + their `.legacy` migration backups). A wipe means NOTHING identity-bearing survives, parked or live.
+            for sub in [crate::storage::APP.dir, "Photon"] {
+                let app_dir = base.join(sub);
+                let rd = match std::fs::read_dir(&app_dir) {
+                    Ok(rd) => rd,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => {
+                        eprintln!("{} WARN: read_dir {}: {}", tag, app_dir.display(), e);
+                        continue;
+                    }
+                };
+                for entry in rd.flatten() {
+                    let p = entry.path();
+                    if p.extension().map_or(false, |e| e == "vsf" || e == "legacy") {
+                        match std::fs::remove_file(&p) {
+                            Ok(()) => {
+                                eprintln!("{} deleted {}", tag, p.display());
+                                *count += 1;
+                            }
+                            Err(e) => {
+                                eprintln!("{} WARN: could not delete {}: {}", tag, p.display(), e)
+                            }
                         }
                     }
                 }
