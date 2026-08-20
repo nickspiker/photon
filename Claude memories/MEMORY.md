@@ -2,6 +2,8 @@
 
 ## Desktop corpus (project_* / feedback_* / reference_*)
 
+- [project_fleet_key_redesign.md](project_fleet_key_redesign.md) — fleet-key REDESIGN spec'd (docs/fleet-key.md @2c81c39, Nick reviewing): ira-wrapped, revision-published, shrink-only mint; DANGER: deploying current build to MacBook/Android destroys the last history copy (census deletes un-migrated rings)
+
 - [project_great_cleanup.md](project_great_cleanup.md) — GREAT CLEANUP: Phases 1-6 ALL SHIPPED 2026-08-20 (device vault+migration, self-honest rings, fleet-first rejoin, JPEG gate, LAN add); Phase 7 = Nick's publish
 
 - [project_button_one_renderer.md](project_button_one_renderer.md) — ONE pill/button renderer in fluor (draw_pill_immediate + retained Button); photon never hand-rolls squircles

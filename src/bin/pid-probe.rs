@@ -106,12 +106,13 @@ fn main() {
         }
         Err(e) => println!("  pb_devices: fetch failed: {}", e),
     }
-    // The fan-out envelope is plaintext structure (epoch + rotator + per-device wraps; the KEYS inside the wraps stay sealed) — the ground truth for "which epoch is live and who minted it" when siblings disagree about the fleet key.
+    // The fan-out envelope is plaintext structure (revision + key fingerprint + latest publisher + per-device wraps; the KEYS inside the wraps stay sealed) — the ground truth for "which key is live and who last published" when siblings disagree about the fleet key.
     match photon_messenger::network::fgtw::fleet::fetch_fanout(&hp) {
-        Ok(Some((epoch, rotator, wraps))) => {
+        Ok(Some((revision, kfp, rotator, wraps))) => {
             println!(
-                "fan-out: epoch {}  rotator {}…  {} wrap(s) for:",
-                epoch,
+                "fan-out: revision {}  key {}…  publisher {}…  {} wrap(s) for:",
+                revision,
+                hex::encode(&kfp[..4]),
                 hex::encode(&rotator[..4]),
                 wraps.len()
             );

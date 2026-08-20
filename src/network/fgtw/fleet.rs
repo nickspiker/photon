@@ -229,118 +229,39 @@ pub fn bindreq_list(
 pub fn post_fanout(
     handle_proof: &[u8; 32],
     device_key: &Keypair,
-    epoch: u64,
+    revision: u64,
+    kfp: &[u8; 32],
     wraps: &[FanoutWrap],
 ) -> Result<(), String> {
-    fgtw::client::post_fanout(&PhotonTransport, handle_proof, device_key, epoch, wraps)
+    fgtw::client::post_fanout(&PhotonTransport, handle_proof, device_key, revision, kfp, wraps)
 }
 
-/// Fetch the current fan-out (epoch + rotator + wraps), or None if none published yet.
+/// Fetch the current fan-out (revision + kfp + rotator + wraps), or None if none published yet.
 pub fn fetch_fanout(
     handle_proof: &[u8; 32],
-) -> Result<Option<(u64, [u8; 32], Vec<FanoutWrap>)>, String> {
+) -> Result<Option<(u64, [u8; 32], [u8; 32], Vec<FanoutWrap>)>, String> {
     fgtw::client::fetch_fanout(&PhotonTransport, handle_proof)
 }
 
-/// The pair-secret lookup every fan-out call needs: our OWN device answers from its self secret (no ceremony with oneself), any sibling from the vault entry its CLUTCH minted. `None` = that device is NOT COMPLIANT — it gets no wrap and cannot open ours.
-fn pair_lookup<'a>(
-    device_key: &'a Keypair,
-    storage: Option<&'a crate::storage::FlatStorage>,
-) -> impl Fn(&[u8; 32]) -> Option<[u8; 32]> + 'a {
-    let ours = device_key.public.to_bytes();
-    move |peer: &[u8; 32]| {
-        if *peer == ours {
-            return Some(crate::storage::fanout_pairs::self_secret(
-                device_key.secret.as_bytes(),
-                &ours,
-            ));
-        }
-        crate::storage::fanout_pairs::load(&ours, peer, storage?)
-    }
-}
-
-/// Rotate (or first-establish) the fleet key: mint fresh, seal to the COMPLIANT subset of `members`, publish at `stored_epoch + 1`. A member with no pair secret toward us is skipped — dark until its ceremony completes and the next rotation includes it.
-pub fn rotate_fleet_key(
+/// MINT the fleet key — genesis and SHRINK only (docs/fleet-key.md): fresh key sealed to every ira in `members`, published at revision+1. The caller owns the atomic shrink duty: preserve-pull the fstate slot under the old key BEFORE, re-seal under the returned key immediately AFTER. No compliance filter — the ira IS the wrap target, straight off the chain; a locked/departed device is excluded by the caller.
+pub fn mint_fleet_key(
     handle_proof: &[u8; 32],
     device_key: &Keypair,
     members: &[[u8; 32]],
-    storage: Option<&crate::storage::FlatStorage>,
-) -> Result<(u64, [u8; 32]), String> {
-    let lookup = pair_lookup(device_key, storage);
-    let compliant: Vec<([u8; 32], [u8; 32])> = members
-        .iter()
-        .filter_map(|m| lookup(m).map(|ps| (*m, ps)))
-        .collect();
-    let skipped = members.len().saturating_sub(compliant.len());
-    if skipped > 0 {
-        crate::logf!(
-            "FANOUT: {} member device(s) not yet egged — no wrap this epoch (they re-clutch, next rotation includes them)",
-            skipped
-        );
-    }
-    if compliant.is_empty() {
-        return Err("fanout: no compliant members to wrap".into());
-    }
-    fgtw::client::rotate_fleet_key(&PhotonTransport, handle_proof, device_key, &compliant)
-}
-
-/// The oracle-rooted kek for OUR fleet-key recovery slot (braid.md §14 statelessness, restored). Derived from the device ORACLE + the identity seed: the oracle is the one secret a wipe cannot destroy, and the identity binding keeps two identities on one machine from sharing a slot. Pure hashing, no curve — nothing here for a quantum harvester. `None` when the platform oracle is unreadable.
-fn recovery_kek(identity_seed: &[u8; 32]) -> Option<[u8; 32]> {
-    let dev = tohu::device::device_secret().ok()?;
-    let mut h = blake3::Hasher::new();
-    h.update(b"PHOTON_FLEET_RECOVERY_v\x01");
-    h.update(&dev);
-    h.update(identity_seed);
-    Some(*h.finalize().as_bytes())
-}
-
-/// The slot purpose: base tag ‖ publisher pid (the scoped-blob publisher-in-purpose rule — one derivation shape everywhere, even where the publisher is always us).
-fn recovery_purpose(identity_seed: &[u8; 32]) -> Vec<u8> {
-    let pid = crate::crypto::clutch::identity_party_id(identity_seed);
-    let mut p = Vec::with_capacity(9 + 32);
-    p.extend_from_slice(b"fleet-key");
-    p.extend_from_slice(&pid);
-    p
-}
-
-fn recovery_addr(kek: &[u8; 32], purpose: &[u8]) -> String {
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-    URL_SAFE_NO_PAD.encode(fgtw::scoped_blob::slot_address(kek, purpose))
-}
-
-/// Publish OUR fleet-key recovery slot (blocking — call off-thread, on every edge where this device gains the current key: genesis, rotation, fan-out sync, pairing hand-off). This is what lets a WIPED device, alone, its siblings off, get its contacts and avatar back: the wrap Phase A gated on a vault-held pair secret is bypassed by a slot only this machine can find or open.
-pub fn publish_recovery_slot(
-    fleet_key: &[u8; 32],
     identity_seed: &[u8; 32],
-    device_keypair: &Keypair,
-    handle_proof: &[u8; 32],
-) {
-    let Some(kek) = recovery_kek(identity_seed) else {
-        return;
-    };
-    let purpose = recovery_purpose(identity_seed);
-    let Ok(sealed) = fgtw::scoped_blob::seal_value(&kek, &purpose, fleet_key) else {
-        return;
-    };
-    match crate::network::fgtw::blob::put_blob_blocking(
-        &recovery_addr(&kek, &purpose),
-        &sealed,
-        device_keypair,
-        handle_proof,
-    ) {
-        Ok(()) => crate::log("RECOVERY: fleet-key slot refreshed (oracle-derived, wipe-proof)"),
-        Err(e) => crate::logf!("RECOVERY: fleet-key slot publish failed: {}", e),
-    }
+) -> Result<(u64, [u8; 32]), String> {
+    fgtw::client::mint_fleet_key(&PhotonTransport, handle_proof, device_key, members, identity_seed)
 }
 
-/// Recover the fleet key from OUR oracle slot (blocking) — the wiped-device path: no vault, no siblings, just this machine and the wall. `None` = no slot (never published, or a different machine).
-pub fn recover_fleet_key_from_oracle(identity_seed: &[u8; 32]) -> Option<[u8; 32]> {
-    let kek = recovery_kek(identity_seed)?;
-    let purpose = recovery_purpose(identity_seed);
-    let sealed = crate::network::fgtw::blob::get_blob_blocking(&recovery_addr(&kek, &purpose))
-        .ok()
-        .flatten()?;
-    fgtw::scoped_blob::open_value(&kek, &purpose, &sealed)
+/// GROW the fan-out: republish wraps for `members` under the SAME held key at revision+1 — the add-device/egg/unlock edge. Never a mint; the fingerprint does not move.
+pub fn grow_fleet_wraps(
+    handle_proof: &[u8; 32],
+    device_key: &Keypair,
+    held_key: &[u8; 32],
+    members: &[[u8; 32]],
+    identity_seed: &[u8; 32],
+) -> Result<u64, String> {
+    fgtw::client::grow_fleet_wraps(&PhotonTransport, handle_proof, device_key, held_key, members, identity_seed)
 }
 
 // ── The epoch-spine custody slot: {k ‖ epoch_k ‖ prev_k ‖ prev_epoch} sealed under a fleet-key-derived custody key, addressed by the fleet key — the wiped-device jump-to-head, refreshed by each checkpoint winner and re-sealed across rotations. Live siblings never need it (ckpt_state frames serve device-to-device). ──
@@ -441,42 +362,27 @@ pub fn push_checkpoint(
 pub fn recover_fleet_key_with_epoch(
     handle_proof: &[u8; 32],
     device_key: &Keypair,
-    storage: Option<&crate::storage::FlatStorage>,
+    identity_seed: &[u8; 32],
 ) -> Result<Option<(u64, [u8; 32])>, String> {
-    fgtw::client::recover_fleet_key_with_epoch(
-        &PhotonTransport,
-        handle_proof,
-        device_key,
-        &pair_lookup(device_key, storage),
-    )
+    fgtw::client::recover_fleet_key_with_epoch(&PhotonTransport, handle_proof, device_key, identity_seed)
 }
 
-/// Recover the current fleet key from the fan-out with this device's key + its pair secret toward the rotator (None if not a current member, or not yet egged with whoever rotated).
+/// Recover the current fleet key from the fan-out with this device's ira keypair + the identity seed (None if this device has no wrap: locked, departed, or a fresh bind awaiting its sponsor's grow). A wiped device recovers by construction — the ira re-derives from the oracle.
 pub fn recover_fleet_key(
     handle_proof: &[u8; 32],
     device_key: &Keypair,
-    storage: Option<&crate::storage::FlatStorage>,
+    identity_seed: &[u8; 32],
 ) -> Result<Option<[u8; 32]>, String> {
-    fgtw::client::recover_fleet_key(
-        &PhotonTransport,
-        handle_proof,
-        device_key,
-        &pair_lookup(device_key, storage),
-    )
+    fgtw::client::recover_fleet_key(&PhotonTransport, handle_proof, device_key, identity_seed)
 }
 
-/// Recover the current fleet key, or ESTABLISH epoch 1 if no fan-out exists yet (the genesis founder).
+/// Recover the current fleet key, or ESTABLISH revision 1 if no fan-out exists yet (the genesis founder).
 pub fn recover_or_establish_fleet_key(
     handle_proof: &[u8; 32],
     device_key: &Keypair,
-    storage: Option<&crate::storage::FlatStorage>,
+    identity_seed: &[u8; 32],
 ) -> Result<Option<[u8; 32]>, String> {
-    fgtw::client::recover_or_establish_fleet_key(
-        &PhotonTransport,
-        handle_proof,
-        device_key,
-        &pair_lookup(device_key, storage),
-    )
+    fgtw::client::recover_or_establish_fleet_key(&PhotonTransport, handle_proof, device_key, identity_seed)
 }
 
 /// Publish the FULL fleet-shared state (roster + settings layers): seal under the fleet key (kete) and PUT to the membership-gated slot. The settings sync layer calls this with its cached state.
@@ -603,35 +509,6 @@ mod tests {
         k.public.to_bytes()
     }
 
-    /// A throwaway vault holding the pair secrets a live fan-out test needs. Phase A wraps require an egged pair between rotator and recipient, so each simulated device gets its own vault carrying the shared secret for every pair it participates in — exactly what a completed sibling CLUTCH would have stored.
-    fn egged_vault(tag: &str, ours: &Keypair, peers: &[&Keypair]) -> crate::storage::FlatStorage {
-        crate::storage::isolate_test_storage();
-        let vault_seed = *ihi::handle_to_hash(tag).as_bytes();
-        let storage =
-            crate::storage::FlatStorage::new(crate::storage::APP, vault_seed, rand::random())
-                .expect("test vault");
-        for peer in peers {
-            // Symmetric stand-in for the ceremony-derived secret: both devices derive the same bytes from the sorted pair.
-            let (lo, hi) = if pk(ours) <= pk(peer) {
-                (pk(ours), pk(peer))
-            } else {
-                (pk(peer), pk(ours))
-            };
-            let mut h = blake3::Hasher::new();
-            h.update(b"test pair");
-            h.update(&lo);
-            h.update(&hi);
-            crate::storage::fanout_pairs::store(
-                &pk(ours),
-                &pk(peer),
-                h.finalize().as_bytes(),
-                &storage,
-            )
-            .expect("store pair secret");
-        }
-        storage
-    }
-
     /// End-to-end against LIVE fgtw.org: genesis a fresh fleet, run the full words-first device-ADD ceremony (binding request → member-gated list → matcher words → consent-carrying bind → rotate → recover → withdraw), and confirm the new device folds in with the fleet key.
     /// Ignored by default (hits the network + leaves ephemeral random-key objects); run with `--ignored`.
     #[test]
@@ -648,13 +525,11 @@ mod tests {
             current_members(&handle_proof).unwrap(),
             vec![member.public.to_bytes()]
         );
-        let member_vault = egged_vault("fanout-live-member", &member, &[&newdev]);
-        let newdev_vault = egged_vault("fanout-live-newdev", &newdev, &[&member]);
-        let (_, k1) = rotate_fleet_key(
+        let (_, k1) = mint_fleet_key(
             &handle_proof,
             &member,
             &[member.public.to_bytes()],
-            Some(&member_vault),
+            &identity_seed,
         )
         .expect("establish");
 
@@ -673,18 +548,16 @@ mod tests {
             shown
         );
 
-        // Bind (carrying the request's consent) + rotate: the new device is a member and recovers the NEW epoch key with its own device key.
+        // Bind (carrying the request's consent) + GROW: the new device is a member and recovers the SAME key with its own ira keypair + the identity seed — growth never mints (docs/fleet-key.md).
         bind_device(&member, &handle_proof, req).expect("bind");
         let members2 = current_members(&handle_proof).unwrap();
         assert!(members2.contains(&newdev.public.to_bytes()));
-        let (_, k2) = rotate_fleet_key(&handle_proof, &member, &members2, Some(&member_vault))
-            .expect("rotate");
-        assert_ne!(k2, k1);
+        grow_fleet_wraps(&handle_proof, &member, &k1, &members2, &identity_seed).expect("grow");
         assert_eq!(
-            recover_fleet_key(&handle_proof, &newdev, Some(&newdev_vault))
+            recover_fleet_key(&handle_proof, &newdev, &identity_seed)
                 .unwrap()
                 .unwrap(),
-            k2
+            k1
         );
 
         // The author withdraws its request (the exit act) — the set reads empty afterwards.
@@ -724,23 +597,21 @@ mod tests {
 
         // A claims the fleet and establishes the first fan-out (epoch 1, sealed to [A]).
         ensure_member(&a, &handle_proof, &identity_seed).expect("genesis");
-        let a_vault = egged_vault("fanout-rot-a", &a, &[&b]);
-        let b_vault = egged_vault("fanout-rot-b", &b, &[&a]);
-        let (e1, k1) =
-            rotate_fleet_key(&handle_proof, &a, &[pk(&a)], Some(&a_vault)).expect("establish");
-        assert_eq!(e1, 1);
+        let (r1, k1) =
+            mint_fleet_key(&handle_proof, &a, &[pk(&a)], &identity_seed).expect("establish");
+        assert_eq!(r1, 1);
         assert_eq!(
-            recover_fleet_key(&handle_proof, &a, Some(&a_vault))
+            recover_fleet_key(&handle_proof, &a, &identity_seed)
                 .unwrap()
                 .unwrap(),
             k1
         );
-        // B isn't a member yet → cannot recover.
-        assert!(recover_fleet_key(&handle_proof, &b, Some(&b_vault))
+        // B has no wrap yet → cannot recover, even holding the identity seed (the two-phase gate: the wrap arrives with the sponsor's grow).
+        assert!(recover_fleet_key(&handle_proof, &b, &identity_seed)
             .unwrap()
             .is_none());
 
-        // A sponsors B (B's request carries its consent), then rotates to [A, B]: a fresh key both can open.
+        // A sponsors B (B's request carries its consent), then GROWS to [A, B]: the SAME key, one new wrap.
         bindreq_put(&b, &identity_seed, &handle_proof, &[0u8; 32]).expect("B posts request");
         let reqs = bindreq_list(&a, &handle_proof, &identity_seed).expect("list");
         let req_b = reqs
@@ -749,46 +620,44 @@ mod tests {
             .expect("B's request");
         bind_device(&a, &handle_proof, req_b).expect("bind B");
         let members2 = current_members(&handle_proof).unwrap();
-        let (e2, k2) =
-            rotate_fleet_key(&handle_proof, &a, &members2, Some(&a_vault)).expect("rotate to A,B");
-        assert_eq!(e2, 2);
-        assert_ne!(k2, k1);
+        let r2 = grow_fleet_wraps(&handle_proof, &a, &k1, &members2, &identity_seed).expect("grow to A,B");
+        assert_eq!(r2, 2);
         assert_eq!(
-            recover_fleet_key(&handle_proof, &a, Some(&a_vault))
+            recover_fleet_key(&handle_proof, &a, &identity_seed)
                 .unwrap()
                 .unwrap(),
-            k2
+            k1
         );
         assert_eq!(
-            recover_fleet_key(&handle_proof, &b, Some(&b_vault))
+            recover_fleet_key(&handle_proof, &b, &identity_seed)
                 .unwrap()
                 .unwrap(),
-            k2
+            k1
         );
 
-        // B departs (self-signed — the only remove there is); A rotates to [A]: A gets the new key, B cannot — departure + rotation withhold.
+        // B departs (self-signed — the only remove there is); A MINTS to [A]: the shrink, the only key change — A holds the new key, B cannot.
         depart_device(&b, &handle_proof).expect("B departs");
         let members3 = current_members(&handle_proof).unwrap();
         assert_eq!(members3, vec![pk(&a)]);
-        let (e3, k3) =
-            rotate_fleet_key(&handle_proof, &a, &members3, Some(&a_vault)).expect("rotate to A");
-        assert_eq!(e3, 3);
+        let (r3, k3) =
+            mint_fleet_key(&handle_proof, &a, &members3, &identity_seed).expect("mint to A");
+        assert_eq!(r3, 3);
+        assert_ne!(k3, k1);
         assert_eq!(
-            recover_fleet_key(&handle_proof, &a, Some(&a_vault))
+            recover_fleet_key(&handle_proof, &a, &identity_seed)
                 .unwrap()
                 .unwrap(),
             k3
         );
-        assert!(recover_fleet_key(&handle_proof, &b, Some(&b_vault))
+        assert!(recover_fleet_key(&handle_proof, &b, &identity_seed)
             .unwrap()
             .is_none());
 
-        // A stale rotation (epoch ≤ stored) is rejected by the worker's monotonic guard.
-        let stale_members: Vec<([u8; 32], [u8; 32])> =
-            members3.iter().map(|m| (*m, [0u8; 32])).collect();
-        let stale =
-            fanout_seal(&handle_proof, 3, &new_fleet_key(), &pk(&a), &stale_members).unwrap();
-        assert!(post_fanout(&handle_proof, &a, 3, &stale).is_err());
+        // A stale publish (revision ≤ stored) is rejected by the worker's monotonic guard.
+        let stale_key = new_fleet_key();
+        let stale = fanout_seal(&handle_proof, &stale_key, &members3, &identity_seed).unwrap();
+        let stale_kfp = fgtw::fanout::fleet_key_fingerprint(&stale_key);
+        assert!(post_fanout(&handle_proof, &a, 3, &stale_kfp, &stale).is_err());
     }
 
     /// End-to-end removal HEAL against LIVE fgtw.org — the §14.12-1 recipe `spawn_fleet_key_sync` runs when a departure lands: the shrink sentinel fires (fan-out wraps > folded members), the survivor preserves the fstate slot under the OLD key, rotates, re-pushes the merge under the NEW epoch — settings intact, the leaver locked out of both the fan-out and the re-sealed slot.
@@ -803,11 +672,9 @@ mod tests {
 
         // Two-member fleet at epoch 2, with a settings marker sealed into the slot under k2.
         ensure_member(&a, &handle_proof, &identity_seed).expect("genesis");
-        let a_vault = egged_vault("fanout-heal-a", &a, &[&b]);
-        let b_vault = egged_vault("fanout-heal-b", &b, &[&a]);
-        let (e1, _) =
-            rotate_fleet_key(&handle_proof, &a, &[pk(&a)], Some(&a_vault)).expect("establish");
-        assert_eq!(e1, 1);
+        let (r1, k2) =
+            mint_fleet_key(&handle_proof, &a, &[pk(&a)], &identity_seed).expect("establish");
+        assert_eq!(r1, 1);
         bindreq_put(&b, &identity_seed, &handle_proof, &[0u8; 32]).expect("B posts request");
         let reqs = bindreq_list(&a, &handle_proof, &identity_seed).expect("list");
         let req_b = reqs
@@ -815,14 +682,15 @@ mod tests {
             .find(|r| r.device_pubkey == pk(&b))
             .expect("B's request");
         bind_device(&a, &handle_proof, req_b).expect("bind B");
-        let (e2, k2) = rotate_fleet_key(
+        let r2 = grow_fleet_wraps(
             &handle_proof,
             &a,
+            &k2,
             &current_members(&handle_proof).unwrap(),
-            Some(&a_vault),
+            &identity_seed,
         )
-        .expect("rotate to A,B");
-        assert_eq!(e2, 2);
+        .expect("grow to A,B");
+        assert_eq!(r2, 2);
         let marker = SettingEntry {
             key: "test.heal_marker".into(),
             value: vsf::VsfType::hR(b"survives".to_vec()),
@@ -840,7 +708,7 @@ mod tests {
         depart_device(&b, &handle_proof).expect("B departs");
         let members = current_members(&handle_proof).unwrap();
         assert_eq!(members, vec![pk(&a)]);
-        let (_, _, wraps) = fetch_fanout(&handle_proof)
+        let (_, _, _, wraps) = fetch_fanout(&handle_proof)
             .expect("fetch")
             .expect("a fan-out");
         assert!(
@@ -852,9 +720,9 @@ mod tests {
         let preserved = pull_fstate(&handle_proof, &k2)
             .expect("pull")
             .expect("slot readable under the old key");
-        let (e3, k3) =
-            rotate_fleet_key(&handle_proof, &a, &members, Some(&a_vault)).expect("heal rotation");
-        assert_eq!(e3, 3);
+        let (r3, k3) =
+            mint_fleet_key(&handle_proof, &a, &members, &identity_seed).expect("heal mint");
+        assert_eq!(r3, 3);
         push_fstate(
             &handle_proof,
             &a,
@@ -865,7 +733,7 @@ mod tests {
 
         // The survivor recovers the new epoch and the marker survived the re-seal; the leaver recovers nothing and its old key no longer opens the slot.
         assert_eq!(
-            recover_fleet_key(&handle_proof, &a, Some(&a_vault))
+            recover_fleet_key(&handle_proof, &a, &identity_seed)
                 .unwrap()
                 .unwrap(),
             k3
@@ -882,17 +750,17 @@ mod tests {
         );
         assert_eq!(healed.roster.len(), 1, "roster must survive the re-seal");
         assert!(
-            recover_fleet_key(&handle_proof, &b, Some(&b_vault))
+            recover_fleet_key(&handle_proof, &b, &identity_seed)
                 .unwrap()
                 .is_none(),
-            "the leaver must not recover the healed epoch"
+            "the leaver must not recover the healed key"
         );
         assert!(
             pull_fstate(&handle_proof, &k2).is_err(),
             "the leaver's cached key must not open the re-sealed slot"
         );
         // Post-heal steady state: the sentinel is quiet again.
-        let (_, _, wraps) = fetch_fanout(&handle_proof)
+        let (_, _, _, wraps) = fetch_fanout(&handle_proof)
             .expect("fetch")
             .expect("a fan-out");
         assert!(!fanout_needs_rotation(wraps.len(), members.len()));

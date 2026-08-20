@@ -26,13 +26,15 @@ The wrap target is the member's ira KEYPAIR — the device pubkey recorded in th
 
 KEK derivation, harvest-hardened per Nick's ruling:
 
-    kek = blake3(ecdh(rotator_ephemeral, member_ira_pub) ‖ identity_seed ‖ bind)
-    bind = handle_proof ‖ kfp ‖ rotator_ira_pub ‖ member_ira_pub
+    kek = blake3(ecdh(wrap_ephemeral, member_ira_pub) ‖ identity_seed ‖ bind)
+    bind = handle_proof ‖ kfp ‖ member_ira_pub
+
+AMENDED AT IMPLEMENTATION (2026-08-20): the rotator is NOT in the bind — a grow's wraps are minted by a different publisher than the original minter, so a rotator bind would strand every pre-grow wrap; and it bought nothing, because splicing a valid wrap of the SAME key is a no-op and any other key fails its fingerprint. The blob still names its latest publisher, as provenance.
 
 - The ECDH half means opening a wrap requires the member device's ira SECRET — a thief holding the identity seed (a stolen attested device does) still cannot open any wrap but its own device's, which is exactly the one that stops being minted at lock.
 - The identity-seed half means a quantum harvester who breaks the curve still needs the identity seed — the handle-derived secret that exists nowhere at rest.
 - An identity-seed-only KEK is FORBIDDEN: the stolen attested device holds the seed, and the lock would be paper.
-- The bind ties a wrap to (fleet, key, rotator, recipient): a wrap binds the key fingerprint, NOT the revision, so grow publishes never invalidate existing wraps, and splicing is dead — an old key's wrap fails its `kfp` bind, and re-presenting a current-key wrap opens the key you already hold.
+- The bind ties a wrap to (fleet, key, recipient): a wrap binds the key fingerprint, NOT the revision or the publisher, so grow publishes never invalidate existing wraps, and splicing is dead — an old key's wrap fails its `kfp` bind, and re-presenting a current-key wrap opens the key you already hold.
 - The AEAD keying keeps the existing 64-byte XOF split `(aead_key, commit)`: `commit` binds the ciphertext to the exact key (the partitioning-oracle / invisible-salamander defense) and doubles as the recipient selector.
 - Quantum posture, stated honestly: the ECDH half is harvestable in a post-quantum world; the seed mix is the mitigation today, and the wrap layer swaps to a KEM without touching anything else in this design if that posture changes.
 
@@ -54,7 +56,7 @@ Locked devices are still chain members by doctrine, so the membership check alon
 ## Events
 
 GROW — add-device, egg-completion, unlock:
-- revision+1, SAME key, same `kfp`, wraps = existing + one new wrap for the added ira.
+- revision+1, SAME key, same `kfp`, wraps = a fresh full re-wrap of the desired ira set (wraps are unlabelled, so a grower cannot know which member lacks one; a full re-wrap is always correct and costs one ECDH per member).
 - No re-seal, no adoption work for existing members; the new device just finds its wrap.
 - Unlock is a plain grow: the lock-time mint already denied the thief everything after the lock; the owner's recovered device reads current state with the current key.
 
