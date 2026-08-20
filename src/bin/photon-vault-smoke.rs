@@ -2,7 +2,7 @@
 //!
 //! Exercises every FlatStorage public method against a vault file using a hard-coded test handle. Useful for verifying the on-disk vault works end-to-end before a real attestation has fired in Photon (which is what would normally trigger `FlatStorage::new` at runtime).
 //!
-//! DEFAULT: writes under the system tempdir (`/tmp/photon-vault-smoke/`) — a smoke run must never salt the developer's REAL config dir with plausible-looking 17MB vault rings (the "eight vaults, recent timestamps" field mystery, 2026-08-20). Pass `--real-dirs` to exercise the true XDG paths deliberately; clean up after with `rm -rf ~/.config/Photon/ ~/.local/share/Photon/`.
+//! DEFAULT: writes under the system tempdir (`/tmp/photon-vault-smoke/`) — a smoke run must never salt the developer's REAL config dir with plausible-looking 17MB vault rings (the "eight vaults, recent timestamps" field mystery, 2026-08-20). Pass `--real-dirs` to exercise the true XDG paths deliberately; clean up after with `rm -rf ~/.config/photon/ ~/.local/share/photon/`.
 //!
 //! Hard-coded test handle + test device_secret — NOT real photon identity.
 
@@ -143,9 +143,49 @@ fn main() {
         }
     }
 
+    // Large-value probe (EWE: values are arbitrary size in principle — a blob is ONE vault value, never at-rest chunks). `--big` adds 500MB to the default 25MB probe.
+    println!("\n=== Large-value probe ===");
+    let mut sizes: Vec<usize> = vec![25 * 1024 * 1024];
+    if std::env::args().any(|a| a == "--big") {
+        sizes.push(500 * 1024 * 1024);
+    }
+    for size in sizes {
+        let mut value = vec![0u8; size];
+        // Incompressible-ish, deterministic fill so dedup/zero-page effects can't flatter the numbers.
+        for (i, b) in value.iter_mut().enumerate() {
+            *b = (i as u64).wrapping_mul(0x9E3779B97F4A7C15).to_le_bytes()[0];
+        }
+        let addr = *blake3::hash(&size.to_le_bytes()).as_bytes();
+        let t = std::time::Instant::now();
+        match storage.write_addr(&addr, &value) {
+            Ok(()) => {
+                let w_ms = t.elapsed().as_millis();
+                let t2 = std::time::Instant::now();
+                let back = storage.read_addr(&addr).ok().flatten();
+                let r_ms = t2.elapsed().as_millis();
+                let ok = back.as_deref() == Some(value.as_slice());
+                println!(
+                    "  {:>4} MB: write = {} ms  read = {} ms  verify = {}",
+                    size / (1024 * 1024),
+                    w_ms,
+                    r_ms,
+                    if ok { "OK" } else { "MISMATCH" }
+                );
+                if !ok {
+                    std::process::exit(1);
+                }
+                let _ = storage.delete_addr(&addr);
+            }
+            Err(e) => {
+                eprintln!("FATAL: {} MB write failed: {}", size / (1024 * 1024), e);
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Report file size + path.
     println!("\n=== Disk state ===");
-    if let Some(dir) = dirs::config_dir().map(|p| p.join("Photon")) {
+    if let Some(dir) = dirs::config_dir().map(|p| p.join(photon_messenger::storage::APP.dir)) {
         match std::fs::read_dir(&dir) {
             Ok(entries) => {
                 for entry in entries.flatten() {
