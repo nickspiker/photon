@@ -2,6 +2,8 @@
 
 ## Desktop corpus (project_* / feedback_* / reference_*)
 
+- [project_great_cleanup.md](project_great_cleanup.md) — GREAT CLEANUP: Phases 1+2 SHIPPED 2026-08-20 (ONE device vault + in-place migration + sprawl/blob absorption, 500MB probe green); Phase 3 self-is-a-contact NEXT
+
 - [project_button_one_renderer.md](project_button_one_renderer.md) — ONE pill/button renderer in fluor (draw_pill_immediate + retained Button); photon never hand-rolls squircles; ALL controls first-class in fluor::widgets (Checkbox moved in @5b6a184, radio not built yet)
 
 - [project_render_storm_lag.md](project_render_storm_lag.md) — ROOT-CAUSED 2026-08-15: lag = VAULT MUTEX contention (UI-tick avatar probe read vs background persist writers); photon fix @c6f65e8 (probe cached, ticks vault-free); LIBRARIAN SHIPPED kete@931fd90 (vault-owner thread, mutex deleted, reads-first mailbox); residual: UI read_addr site audit
