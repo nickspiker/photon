@@ -996,6 +996,21 @@ impl PhotonApp {
                                 c.ping_backoff = 0;
                                 c.last_pinged = None;
                             }
+                            // RECEIVER-DRIVEN GAP HEAL (2026-08-20): the backoff collapse above only works when the SENDER still holds the missing row as a pending — a row their side believes delivered (fleet-ACK'd via a sibling, or swept past ack_hash persistence) NEVER retransmits, and the in-order gate then holds every later row hostage forever. Field proof: a call ANSWER sat buffered behind one such hole while the caller rang out (a78c6f9b), and the chronic 53-buffered/4-filled stuck-message logs are the same class. The friend provably HOLDS the missing row (it is their own outgoing), so arm the urgent friend history walk — the same arm the strand-miss path uses in conversation.rs — which re-serves the hole from their store regardless of anyone's pending list. Gated on not-already-recovering so repeat buffering of the same frame doesn't re-arm a walk already in flight. Direct field access: `chains` pins friendship_chains for this block, and conversations is a disjoint field.
+                            if !self.contacts[contact_idx].is_sibling {
+                                let conv = &mut self.conversations[conv_pos];
+                                if conv.history_recovery.as_ref().map_or(true, |r| r.complete) {
+                                    crate::log("CHAT: gap arms the history walk — the friend holds the missing row(s)");
+                                    conv.history_recovery = Some(crate::types::HistoryRecovery {
+                                        oldest_recovered_osc: i64::MAX,
+                                        complete: false,
+                                        in_flight: None,
+                                        next_request_osc: 0,
+                                        urgent: true,
+                                        was_complete_before: false,
+                                    });
+                                }
+                            }
                             // The buffered entry carries the LANE label (the field predates lanes and keeps its name) — the replay re-enters the arm with it, resolving the same lane.
                             chains.buffer_for_gap(
                                 prev_msg_hp,
