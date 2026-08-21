@@ -93,21 +93,26 @@ impl PhotonApp {
         // HOST role: a `$ ` command runs here (desktop-unix + opt-in). Remember where to reply.
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
         {
-            if Self::remote_terminal_enabled() {
-                if let Some(cmd) = line.strip_prefix("$ ").or_else(|| line.strip_prefix("$\t")) {
-                    let relay_to = self
-                        .contacts
-                        .get(ci)
-                        .filter(|c| c.validated_path.is_none())
-                        .map(|c| c.relay_device_list())
-                        .unwrap_or_default();
-                    self.bridge_clients
-                        .insert(session_id, (sender_device, (sender_addr, None), relay_to));
+            if let Some(cmd) = line.strip_prefix("$ ").or_else(|| line.strip_prefix("$\t")) {
+                let relay_to = self
+                    .contacts
+                    .get(ci)
+                    .filter(|c| c.validated_path.is_none())
+                    .map(|c| c.relay_device_list())
+                    .unwrap_or_default();
+                self.bridge_clients
+                    .insert(session_id, (sender_device, (sender_addr, None), relay_to));
+                if Self::remote_terminal_enabled() {
                     self.run_bridge_command(session_id, cmd);
-                    // Also show the incoming command in the host's own conversation history.
-                    self.bridge_post_bubble(ci, &line, false);
-                    return;
+                } else {
+                    // LOUD REFUSAL: a disabled host used to swallow `$ ` commands into a silent chat bubble — the client couldn't tell disabled from broken from unreachable (the Europe incident's shape, and the flag-day census wiped the old marker file fleet-wide with no migration, so EVERY host went silently dark). The command still shows in both histories; the client now gets told exactly what to do about it.
+                    crate::logf!("BRIDGE: `$` command from sibling REFUSED — remote terminal is disabled on this host");
+                    let notice = "[bridge host disabled — on this machine run: photon-messenger --enable-remote-terminal (while photon is closed), then relaunch photon]";
+                    self.send_bridge_frame(session_id, notice.as_bytes());
                 }
+                // Also show the incoming command in the host's own conversation history.
+                self.bridge_post_bubble(ci, &line, false);
+                return;
             }
         }
         // Otherwise (CLIENT reply, or a plain chat line): post it as an incoming bubble in that sibling's conversation.
