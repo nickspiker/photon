@@ -12,9 +12,10 @@
 //!   -p, --pull          fetch this identity's SUBMITTED logs straight from FGTW (needs --handle or --seed), decrypt, and decode — no manual R2 wrangling. The seed derives both the retrieval tag (to find them) and the key (to open them).
 //!   -H, --handle NAME   the peer's handle. Derives their identity seed on the spot (cheap) — the friendly way to identify whose logs to pull. Use this; --seed is the raw-bytes escape hatch.
 //!   -s, --seed HEX64    the peer's 32-byte identity seed directly (deterministic from their handle). Equivalent to --handle but pre-derived.
+//!   -S, --session       pull YOUR OWN logs using the live tohu session registers (the seed this device's app actually submitted under — the ground truth when a --handle pull comes up empty). No handle typed, no seed echoed.
 //!   -k, --key  HEX64    like --seed for local decrypt but you already hold the raw 32-byte log key (skips the seed→key derivation; can't --pull).
 //!
-//! Examples: `photonlog -l warn` · `photonlog --pull --handle alice -l warn` · `photonlog --pull --seed <64hex>` · `photonlog her-blob.vsf --handle alice`.
+//! Examples: `photonlog -l warn` · `photonlog --pull --handle alice -l warn` · `photonlog --pull --session` · `photonlog her-blob.vsf --handle alice`.
 
 use std::io::Read;
 
@@ -122,6 +123,14 @@ fn main() {
                 Some(s) => seed = Some(s),
                 None => {
                     eprintln!("photonlog: --seed needs 64 hex chars (the 32-byte identity seed)");
+                    std::process::exit(2);
+                }
+            },
+            // The live tohu registers hold the seed THIS device's app submits under — which can differ from a fresh handle derivation (a resumed session carries its registers verbatim across derivation eras). Reading them is the sanctioned seed source (same as photon-vault-carry), and the seed never appears on a command line or a screen.
+            "-S" | "--session" => match tohu::session() {
+                Some(s) => seed = Some(s.identity_seed),
+                None => {
+                    eprintln!("photonlog: no live session in the tohu registers — open photon once this boot (resume or attest), then retry");
                     std::process::exit(2);
                 }
             },

@@ -142,6 +142,8 @@ impl FluorApp for PhotonApp {
             crate::log(
                 "EXIT: deliberate quit (shift+close / Shift+Escape) — bypassing resident hide",
             );
+            // Quit is a flush edge: our `false` makes the host process::exit(), and the soft-mode RAM batch dies with the process (field 2026-08-21: freshly-recreated hang evidence evaporated on close because only panic/background/submit flushed).
+            crate::flush_log_buffer();
             return false;
         }
         // Resident mode: close = hide, keep running (network, timers, notifications). The host does the set_visible(false); we track "nobody's looking" for the notification gate. Non-resident closes exit as ever.
@@ -151,6 +153,8 @@ impl FluorApp for PhotonApp {
             crate::log("RESIDENT: window hidden on close — still running; launch photon again to surface it");
             true
         } else {
+            // Same flush edge as the deliberate-quit path above — non-resident close exits the process.
+            crate::flush_log_buffer();
             false
         }
     }
@@ -3054,6 +3058,8 @@ impl FluorApp for PhotonApp {
         }
         if let Some(exe) = self.update_reexec.take() {
             crate::log("UPDATE: re-exec into the new binary");
+            // exec() replaces the process image (and the Windows arm exits) — flush the soft-mode batch or the update trail (and everything since the last edge) dies here.
+            crate::flush_log_buffer();
             #[cfg(unix)]
             {
                 use std::os::unix::process::CommandExt;
