@@ -1396,7 +1396,7 @@ impl PhotonApp {
                     #[cfg(target_os = "android")]
                     {
                         let chirp_seed =
-                            relationship_digest(&contact_handle_hash, &our_handle_hash);
+                            relationship_digest(&from_handle_hash, &our_handle_hash);
                         crate::platform::jni_android::notify_new_message(
                             &msg_hp,
                             &chirp_seed,
