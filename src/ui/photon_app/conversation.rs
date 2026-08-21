@@ -1375,8 +1375,13 @@ impl PhotonApp {
                     }
                 }
                 let conv = &mut self.conversations[conv_pos];
+                // NEW row vs a re-delivery of one we already hold — same (timestamp, content) identity the insert's dedup uses. A re-served/dual-path duplicate must never bump unread or ding: a sender stuck in a re-serve loop rang the receiver every cycle forever (field 2026-08-21, "constant dings"), and every ring inflated the unread count for a message the human already had.
+                let is_new_row = !conv
+                    .messages
+                    .iter()
+                    .any(|m| m.timestamp == msg.timestamp && m.content == msg.content);
                 conv.insert_message_sorted(msg.clone());
-                if !is_edit_row {
+                if !is_edit_row && is_new_row {
                     conv.scroll_offset = 0.0; // Scroll to show new message (an edit repaints in place)
                 }
                 self.scene_dirty = true;
@@ -1384,14 +1389,14 @@ impl PhotonApp {
                 // Persist (async — see persist_hashes)
                 persist_ci = Some(contact_idx);
 
-                if !contact_is_sibling && !looking && !is_edit_row {
+                if !contact_is_sibling && !looking && !is_edit_row && is_new_row {
                     // A real friend message landed while nobody was looking — bump the persistent unread counter (contacts-list inner ring + float-to-top; cleared at conversation-open). Written after the loop via the coalescing conv-state writer.
                     conv.unread_count += 1;
                     conv_state_pos = Some(conv_pos);
                 }
 
                 // System notification, POST-DECRYPT: real sender display name + message text BY DESIGN — hiding content on the lock screen is the OS's job, and the pre-decrypt RX worker no longer notifies at all (it over-dinged on probes and sibling fleet-sync frames it couldn't tell apart). RUST is the one suppression decision now: `will_ding` (not looking, no live sibling clearer, real friend row) gates the call — the fleet-wide half of the 2026-07-23 design on top of the local `looking` gate. Desktop's notify keeps its own visual gate (no toast while attended) + both dedup on msg_hp.
-                if will_ding {
+                if will_ding && is_new_row {
                     // The notification chirp seeds from the RELATIONSHIP DIGEST — the same value the desktop in-app chirp and the contact's colours use — so one sender sounds the same on EVERY device. It seeded from the pinned device key before, which differs per device (each pins its own first-met device) and per platform: "messages from one sender sound different on each device".
                     #[cfg(target_os = "android")]
                     {
