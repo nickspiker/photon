@@ -1108,6 +1108,8 @@ pub struct PhotonApp {
     hist_rid_map: std::collections::HashMap<[u8; 32], (crate::types::ConversationId, i64)>,
     /// Fleet-first keygen gate edge state — true while the gate is actively holding friend keygens (logs the hold and the release ONCE each, not per tick).
     keygen_fleet_gate_holding: bool,
+    /// Blind-deposit flip-flop detector, keyed (contact hp, depositor device): (hash of the blob the CURRENT stored deposit replaced, consecutive A-B-A flips). Two photon installs sharing one device key wage an S-war — each twin's deposit replaces the other's forever (field 2026-08-21: 400 deposits from ONE device in an afternoon log, each a ~1.5s durable commit, wall-to-wall vault load). At 3 consecutive flips the commits DECIMATE 8:1 (drop-unacked; pure counter, no timer) — the war's write load collapses, a GENUINE re-key still lands within 8 retries, and a byte-identical (stable) deposit resets the detector. Runtime-only: a restart re-arms detection, which is fine.
+    blind_flip: std::collections::HashMap<([u8; 32], [u8; 32]), ([u8; 32], u32)>,
     /// History-serve rate limiting, keyed by conversation_token: (last-served eagle-time, recent request ids). Dedups replayed hist_req frames (the redundant alt-path copy arrives ~always) and caps the serve cadence per conversation.
     history_serve: std::collections::HashMap<[u8; 32], (i64, std::collections::VecDeque<[u8; 32]>)>,
     /// Completed friendship chains, keyed by friendship id — populated when a CLUTCH ceremony completes (the per-conversation rolling key material lives here). Persisted via `save_friendship_chains`; loaded on attest/resume.
@@ -1797,6 +1799,7 @@ impl PhotonApp {
             avatar_req_pending: std::collections::HashMap::new(),
             hist_rid_map: std::collections::HashMap::new(),
             keygen_fleet_gate_holding: false,
+            blind_flip: std::collections::HashMap::new(),
             history_serve: std::collections::HashMap::new(),
             friendship_chains: Vec::new(),
             chord_lb_press: None,
