@@ -116,6 +116,8 @@ Landed as three commits, a different shape than the owner-thread design sketched
 
 Still inline, DELIBERATELY: CLUTCH KEM decap (~120ms, once per ceremony — entangled with the offer/KEM/complete state machine; move it when the ceremony code is next open, not as a drive-by), the two once-per-ceremony chains saves (CLUTCH completion, sibling chain reset), and startup vault loads (pre-first-paint).
 
+- **TWIN-DEVICE: two photon packages on one Android share ONE device identity** (field 2026-08-21, the two-icons phone): both apps are TOKEN-signed, ANDROID_ID is per-signing-cert, so both derive the SAME device key — two disjoint vaults announcing/attesting as one device (her log: "Handle registered to this device" ×3 in 15 min, the apps re-registering over each other). Every frame to that device key reaches whichever app holds the pipe; protocol state splits between the two vaults; the re-add CLUTCH completed crypto-correct on both ends and then drowned in the proof-placement storm (each side: "peer can't place our proof") because completions landed in the wrong app. OPERATIONAL fix: uninstall the old package — one app, one device. DESIGN question for the fingerprint (tohu): mixing the PACKAGE NAME into the device fingerprint would make a second package a distinct device — but changing derivation shifts EVERY existing Android device identity (a flag-day), and the TOKEN family sharing ANDROID_ID is deliberate for TOKEN auth. Decide deliberately, not as a hotfix.
+
 ## Transport / NAT traversal — direct-path hardening
 
 - **Mac wake for messages/calls (LOW PRIORITY, approved 2026-08-21)** — two stages, implementation undecided:
