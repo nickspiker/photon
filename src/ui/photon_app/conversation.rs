@@ -1316,14 +1316,20 @@ impl PhotonApp {
                 // Snapshot the facts the gates below need, so the &mut contact borrow ends here (the claim check walks self.contacts).
                 let contact_is_sibling = contact.is_sibling;
                 let sender_name = contact.display_name();
-                // BRIDGE host capture: a `$ ` line from a SIBLING is a command to run on this box — stash it (before message_text moves into the row) and execute after the chains borrow ends. The message still stores + ACKs as an ordinary bubble, so the operator's command brightens on our ACK; then the reply rides back as an ordinary message. The fold-verified, non-locked sibling gate at the top of this receive already authorized it — the `$ ` prefix is the only extra check, matching the legacy term path exactly.
+                // BRIDGE host capture: a sibling conversation is a chat-as-shell, so EVERY incoming line from a sibling is a command to run on this box (no `$` — the shell already prompts; Nick's call 2026-08-21) — EXCEPT a row already carrying the output marker, which is a reply coming back and must NOT re-execute (else output bounces forever). Stash the command before message_text moves into the row; execute after the chains borrow ends. The row still stores + ACKs as an ordinary bubble; the fold-verified, non-locked sibling gate at the top already authorized it.
                 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-                if contact_is_sibling {
-                    if let Some(cmd) = message_text
+                if contact_is_sibling
+                    && !message_text.starts_with(crate::types::BRIDGE_OUTPUT_PREFIX)
+                    && !is_chain_probe
+                {
+                    // Tolerate a leading `$ ` for muscle memory, but it is not required.
+                    let cmd = message_text
                         .strip_prefix("$ ")
                         .or_else(|| message_text.strip_prefix("$\t"))
-                    {
-                        bridge_run = Some((contact_idx, cmd.to_string()));
+                        .unwrap_or(&message_text)
+                        .to_string();
+                    if !cmd.trim().is_empty() {
+                        bridge_run = Some((contact_idx, cmd));
                     }
                 }
                 // Use actual eagle_time and sorted insert for correct chronological order
