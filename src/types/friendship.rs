@@ -841,7 +841,8 @@ impl FriendshipChains {
         self.lane_root.is_some() && other.lane_root.is_some() && self.lane_root != other.lane_root
     }
 
-    /// True when `other` is a DIFFERENT era that provably superseded ours — the caller replaces this blob wholesale (sanitized). The ceremony's GENESIS stamp decides, not `mutated_osc`: the dead era's clock does not actually go quiet — retransmit and gap bookkeeping keep bumping it, so the stale sibling could out-tick a freshly-woven era indefinitely (live pair, 2026-08-05). Genesis is written once at completion and never moves. Legacy blobs (genesis 0 on both) fall back to the old clock so two pre-stamp eras still converge somewhere.
+    /// True when `other` is a DIFFERENT era that provably superseded ours — the caller replaces this blob wholesale (sanitized). The ceremony's GENESIS stamp decides, not `mutated_osc`: the dead era's clock does not actually go quiet — retransmit and gap bookkeeping keep bumping it, so the stale sibling could out-tick a freshly-woven era indefinitely (live pair, 2026-08-05). Genesis is written once at completion and never moves.
+    /// EQUAL genesis (the 0==0 legacy tie in practice): the old mutated_osc fallback NEVER converged — both siblings keep out-ticking their own era with held-message commits and retransmit bookkeeping, each refusing the other forever (field-caught 2026-08-21: fid ae1311ac, `ours genesis 0 vs incoming 0`, standing refusal both directions). The lane_root's byte order is a DETERMINISTIC winner every device computes identically, so the fleet converges in one push; if it happens to settle on the era the friend can't read, the very next garbage streak fires a re-key whose fresh era carries a REAL genesis and supersedes cleanly everywhere — convergence first, correctness by the ceremony that follows.
     pub fn era_superseded_by(&self, other: &FriendshipChains) -> bool {
         if !self.differs_in_era_from(other) {
             return false;
@@ -849,7 +850,7 @@ impl FriendshipChains {
         if self.genesis_osc != other.genesis_osc {
             return other.genesis_osc > self.genesis_osc;
         }
-        other.mutated_osc > self.mutated_osc
+        other.lane_root > self.lane_root
     }
 
     /// Merge a sibling's replicated copy, LANE-WISE (docs/lanes.md checkpoints): a lane we lack is taken whole; a lane we hold is replaced iff the incoming position is STRICTLY greater — a fast-forward of the same deterministic replay, always safe. Device-local state (our label, pendings, send tip, weave view) stays OURS untouched; the root and history key adopt only where we lack them. Replaces whole-blob newest-wins, whose fork window was both devices overwriting each other's live lanes. Returns whether anything changed. SAME-ERA ONLY: the caller must judge `differs_in_era_from` first — a re-keyed root never merges, it supersedes wholesale.
