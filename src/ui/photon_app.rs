@@ -522,7 +522,9 @@ struct HistPageOpened {
     conversation_token: [u8; 32],
     request_id: [u8; 32],
     sender_pubkey: crate::types::DevicePubkey,
-    page: crate::network::history_pages::HistoryPagePlain,
+    /// `None` = the page ARRIVED but failed to decrypt (key/era divergence) — the drain counts these toward the divergence park instead of silently re-requesting the same undecryptable page forever. The fp names the key that failed, for the park's key-change resume test.
+    page: Option<crate::network::history_pages::HistoryPagePlain>,
+    open_key_fp: [u8; 4],
 }
 
 /// A queued background job — boxed so heterogeneous closures share one worker.

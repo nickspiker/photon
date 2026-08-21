@@ -1161,6 +1161,8 @@ impl PhotonApp {
                         next_request_osc: 0,
                         urgent: true,
                         was_complete_before: false,
+                        decrypt_fail_streak: 0,
+                        parked_key_fp: None,
                     });
                 }
                 break 'commit;
@@ -1532,9 +1534,17 @@ impl PhotonApp {
                 .map(|(_, c)| c.lane_summary().into_iter().collect())
                 .unwrap_or_default();
             // LANE-WISE adopt (docs/lanes.md): a lane merges iff its position is strictly greater — replacing whole-blob newest-wins, whose fork window was two devices clobbering each other's live lanes and pendings. A fresh device takes the whole copy SANITIZED (the sender's minted label, pendings and send tip stripped — adopting those would make this device write on the sender's lane). Echo dies naturally: a sibling merging our pushed union finds no greater positions and stays silent.
+            // Arrival at DEBUG: without it a healthy no-op receive and a frame that never arrived are indistinguishable — the exact ambiguity that stalled the 2026-08-21 era-wedge diagnosis (324 pushes logged, zero receive-side lines of any kind).
+            crate::logf_at!(
+                crate::LogLevel::Debug,
+                "CHAIN-SYNC: frame from {} for fid {} (incoming genesis {})",
+                crate::fp(&sender_pubkey.key),
+                crate::fp(&fid.0),
+                incoming.genesis_osc
+            );
             let mut incoming = incoming;
             let adopted = match self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) {
-                // ERA SUPERSEDE before any lane math: a re-key mints a NEW lane_root, and the lane-wise merge below adopts a root only where one is absent — so a sibling holding the old era would keep dead chains forever, deriving garbage lanes for every new-era label it meets. Two blobs under one friendship with DIFFERENT roots are different eras, and eras replace wholesale: the newer mutated_osc wins (the dead era's clock goes quiet the moment the friend stops sending on it), sanitized like any replicated copy. Losing the race one round just means our next push carries the newer era back.
+                // ERA SUPERSEDE before any lane math: a re-key mints a NEW lane_root, and the lane-wise merge below adopts a root only where one is absent — so a sibling holding the old era would keep dead chains forever, deriving garbage lanes for every new-era label it meets. Two blobs under one friendship with DIFFERENT roots are different eras, and eras replace wholesale: the newer GENESIS wins (era_superseded_by), sanitized like any replicated copy. Losing the race one round just means our next push carries the newer era back.
                 Some((_, local)) if local.differs_in_era_from(&incoming) => {
                     if local.era_superseded_by(&incoming) {
                         incoming.sanitize_replicated();
@@ -1542,6 +1552,14 @@ impl PhotonApp {
                         crate::logf!("CHAIN-SYNC: superseded chain era for fid {} — re-keyed root adopted wholesale", crate::fp(&fid.0));
                         true
                     } else {
+                        // The refusal is LOAD-BEARING evidence, always loud: two live eras under one friendship (a §4.2 competing-ceremony survivor, or a stale device that out-raced the heal) show up ONLY here — both genesis stamps named so the next log convicts which side holds the elder era.
+                        crate::logf!(
+                            "CHAIN-SYNC: era REFUSED for fid {} — ours genesis {} vs incoming {} from {} (elder era kept; if this repeats forever, two live eras exist)",
+                            crate::fp(&fid.0),
+                            local.genesis_osc,
+                            incoming.genesis_osc,
+                            crate::fp(&sender_pubkey.key)
+                        );
                         false
                     }
                 }
@@ -1637,6 +1655,7 @@ impl PhotonApp {
                 request_id,
                 sender_pubkey,
                 page,
+                open_key_fp,
             } = opened;
             let from_sibling = self
                 .contacts
@@ -1664,6 +1683,30 @@ impl PhotonApp {
                     "HISTORY: opened page from {} DROPPED — token resolves to no contact",
                     crate::fp(&sender_pubkey.key)
                 );
+                continue;
+            };
+            // DECRYPT FAILURE (page: None): the page arrived but the key doesn't open it — a key/era divergence with the sender, not transport. Count it; at the threshold, PARK the walk under the failing key's fingerprint. The park releases itself the moment the conversation's key CHANGES (re-key completed, era adopted) — sweep-side comparison, no timer. Without this, expiry re-requested the same undecryptable 17KB page forever (field 2026-08-21: 161 pages/35min, both fleets, feeding the render storm).
+            let Some(page) = page else {
+                self.hist_rid_map.remove(&request_id);
+                let cid = self.contacts[idx].conversation(&our_pid).id();
+                if let Some(rec) = self
+                    .conversations
+                    .iter_mut()
+                    .find(|v| v.id() == cid)
+                    .and_then(|v| v.history_recovery.as_mut())
+                {
+                    rec.in_flight = None;
+                    rec.decrypt_fail_streak = rec.decrypt_fail_streak.saturating_add(1);
+                    if rec.decrypt_fail_streak >= 4 && rec.parked_key_fp.is_none() {
+                        rec.parked_key_fp = Some(open_key_fp);
+                        crate::logf!(
+                            "HISTORY: walk PARKED for {} — {} consecutive pages undecryptable under key#{}; resumes when the key changes",
+                            crate::fp(&sender_pubkey.key),
+                            rec.decrypt_fail_streak,
+                            hex::encode(open_key_fp)
+                        );
+                    }
+                }
                 continue;
             };
             // rid must match a request WE minted — a page we didn't ask for (or asked for long ago) is dropped; merging is idempotent so a raced duplicate that DOES match is harmless. A friend page must match; a sibling page without a matching rid is the live push — merge it, but leave the cursor alone.
@@ -1792,6 +1835,9 @@ impl PhotonApp {
                 if rid_matches {
                     if let Some(rec) = conv.history_recovery.as_mut() {
                         rec.in_flight = None;
+                        // A page that OPENS clears the divergence evidence — the failing key era is behind us.
+                        rec.decrypt_fail_streak = 0;
+                        rec.parked_key_fp = None;
                         if page.oldest_osc < rec.oldest_recovered_osc {
                             rec.oldest_recovered_osc = page.oldest_osc;
                         }

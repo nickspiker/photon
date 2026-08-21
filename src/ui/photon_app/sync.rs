@@ -1278,6 +1278,8 @@ impl PhotonApp {
                 next_request_osc: 0,
                 urgent: false, // background catch-up rides the trickle
                 was_complete_before,
+                decrypt_fail_streak: 0,
+                parked_key_fp: None,
             });
             kicked += 1;
         }
@@ -1432,6 +1434,23 @@ impl PhotonApp {
             else {
                 continue;
             };
+            // DIVERGENCE PARK: while the conversation's history key still fingerprints as the one that kept failing to open pages, a re-request just re-downloads the same undecryptable 17KB — skip until the key CHANGES (re-key completed / era adopted), which is the resume edge. State comparison per sweep, no timer.
+            if let Some(parked) = rec.parked_key_fp {
+                let current_fp: Option<[u8; 4]> = self.contacts[idx]
+                    .friendship_id
+                    .and_then(|fid| self.friendship_chains.iter().find(|(id, _)| *id == fid))
+                    .and_then(|(_, c)| c.history_key().copied())
+                    .map(|k| blake3::hash(&k).as_bytes()[..4].try_into().unwrap());
+                if current_fp == Some(parked) {
+                    continue;
+                }
+                rec.parked_key_fp = None;
+                rec.decrypt_fail_streak = 0;
+                crate::logf!(
+                    "HISTORY: walk RESUMED — history key changed (was key#{})",
+                    hex::encode(parked)
+                );
+            }
             // Expire a lost in-flight request so the walk resumes.
             if let Some((_, sent_osc, _)) = rec.in_flight {
                 if now_osc.saturating_sub(sent_osc) > HIST_INFLIGHT_TIMEOUT_OSC {

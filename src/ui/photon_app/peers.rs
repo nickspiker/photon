@@ -227,11 +227,17 @@ impl PhotonApp {
                 if !ours {
                     continue;
                 }
+                let lan_ok =
+                    lan.filter(|a| !crate::network::traverse::gather::is_bogus_addr(a));
                 let ep = contact.endpoint_mut(&dev);
+                // CHANGE-EDGE ONLY: an identical record is a no-op — no log line, no `learned`, no re-punch. The resolve sweep re-delivers the same records every cycle, and adopting them unconditionally logged 1,768 identical adoptions in one 35-minute field log (2026-08-21) while re-firing ping_contacts each pass — a self-inflicted punch storm against a record that never moved.
+                let changed = ep.public != Some(pubaddr) || (lan_ok.is_some() && ep.lan != lan_ok);
                 ep.public = Some(pubaddr);
-                if let Some(l) = lan.filter(|a| !crate::network::traverse::gather::is_bogus_addr(a))
-                {
+                if let Some(l) = lan_ok {
                     ep.lan = Some(l);
+                }
+                if !changed {
+                    continue;
                 }
                 // Named adoption, not just a count: five field rounds of "the record is perfect but the punch never probes it" (2026-08-16) came down to guessing WHICH device/address pair actually landed on WHICH contact — this line answers it.
                 crate::logf!(
