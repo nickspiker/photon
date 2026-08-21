@@ -856,6 +856,11 @@ impl PhotonApp {
 
     /// "Update" → write every field's current text (and tag) to its `profile.<id>` / `profile.<id>_label` setting and push the whole batch to the fleet ONCE (not one network push per field). Empty fields are saved as empty (a cleared value, legal). Reports what happened via the status toast.
     pub(super) fn save_you_profile(&mut self) {
+        // A save may only clear what the human could SEE: boxes that were never loaded from settings are empty by accident of timing, and saving them writes fresh-stamped blanks that clear every populated field fleet-wide (field 2026-08-21: the display name wiped and the wipe propagated). Loaded-first is the invariant; the You page loads on entry, so a human's real save always passes.
+        if !self.you_fields_loaded {
+            crate::log("SETTINGS: profile save refused — fields not loaded from settings yet (a save now would clear values the human never saw)");
+            return;
+        }
         if !self.ensure_fleet_settings() {
             return;
         }
