@@ -2,7 +2,7 @@
 
 ## Desktop corpus (project_* / feedback_* / reference_*)
 
-- [feedback_no_redundant_disk_ops.md](feedback_no_redundant_disk_ops.md) — machines are BTRFS-snapshotted many times over (Harbor+Chiton+MEGA): NEVER invent backup bundles/copies before destructive ops; batch full-repo scans, one pass
+- [feedback_no_redundant_disk_ops.md](feedback_no_redundant_disk_ops.md) — 8 rolling BTRFS snapshots per 8h (+stragglers, Harbor+Chiton+MEGA); a wanted safety copy = REFLINK (cp --reflink=always), never a literal copy; batch full-repo scans, one pass
 
 - [project_fleet_key_redesign.md](project_fleet_key_redesign.md) — fleet-key REDESIGN spec'd (docs/fleet-key.md @2c81c39, Nick reviewing): ira-wrapped, revision-published, shrink-only mint; DANGER: deploying current build to MacBook/Android destroys the last history copy (census deletes un-migrated rings)
 

@@ -1,6 +1,6 @@
 ---
 name: feedback-no-redundant-disk-ops
-description: "Nick's machines are BTRFS-snapshotted many times over (Harbor + Chiton + MEGA) — NEVER invent backup steps (bundles, copies, safety tarballs) before destructive git/file ops, and don't hammer the SSD with avoidable full-repo passes"
+description: "Nick's storage: 8 rolling BTRFS snapshots at 8-hour cadence (+ stragglers), Harbor + Chiton + MEGA — a wanted safety copy is a BTRFS REFLINK (cp --reflink=always), NEVER a literal byte copy (bundle/tarball/plain cp = SSD wear for zero reason)"
 metadata: 
   node_type: memory
   type: feedback
@@ -11,4 +11,4 @@ Nick (2026-08-21, before the history rewrite): "It's backed up seventeen times, 
 
 **Why:** the working drives are copy-on-write BTRFS subvolumes with a deep snapshot rotation, mirrored across two pools plus MEGA. Any past state of any repo — including .git — is recoverable from the filesystem itself. A pre-operation bundle/copy is pure redundant I/O, and the reflex to add one reads as not understanding his storage architecture.
 
-**How to apply:** before a destructive-looking local operation (history rewrite, bulk delete, vault surgery), the snapshot IS the backup — proceed, or at most ask him to confirm a recent snapshot exists. Never create bundles/tarballs/copy-dirs as safety theater. Same spirit as [[feedback-build-dev-script]] (bare cargo build thrashes the machine): batch full-repo/full-history scans into single passes, nice them, and don't loop per-commit over a thousand commits when one piped pass answers the question.
+**How to apply (Nick's refinement, 2026-08-21):** the baseline is 8 rolling snapshots, one per eight hours, plus older ones that hang around — so most "should I back up first?" instincts are already answered by the filesystem. If an operation is genuinely dangerous and a dedicated safety copy is warranted, take a BTRFS reflink (`cp --reflink=always -r`) — copy-on-write, instant, zero duplicated bytes. NEVER a literal copy (git bundle, tarball, plain cp): pointless SSD wear. Same spirit as [[feedback-build-dev-script]] (bare cargo build thrashes the machine): batch full-repo/full-history scans into single passes, nice them, and don't loop per-commit over a thousand commits when one piped pass answers the question.
