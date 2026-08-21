@@ -159,6 +159,7 @@ Ordered; land + 2-device-test each before the next, relay tier (above) is last. 
 - **macOS softbuffer present-on-clean**: legacy carried an untested "re-present even when clean or the window goes black" workaround for transparent windows; re-verify against fluor's renderer on a real Mac.
 - **dev-adb.sh stale rust builds**: the adb dev deploy sometimes reuses a stale-built .so — force the rust rebuild or hash-check before packaging.
 - **Android API 26-29 IME inset**: with `adjustNothing` (2026-07-25 keyboard model — surface never resizes), `WindowInsetsCompat.ime()` is only reliable on API 30+; pre-30 devices report 0 so the compose bar stays under the keyboard. All fleet devices are 30+; revisit only if an old device joins (fallback: popup-window height probe).
+- **Samsung colourspace rejection** (field 2026-08-21, a friend's phone): `setBuffersDataSpace(BT2020 | GAMMA2_2 | FULL)` returns -22 (EINVAL) so the surface stays on the compositor default — colours render thru whatever the vendor default is instead of the calibrated BT.2020+γ2.2 path (the ~2% LUT floor from project_android_color_pipeline_floor assumes the tag TAKES). Needs a per-device dataspace capability probe with a graceful fallback chain (BT2020 → DISPLAY_P3 → SRGB) and the LUT re-derived against whichever actually took.
 
 ---
 

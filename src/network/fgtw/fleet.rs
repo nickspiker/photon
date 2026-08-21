@@ -382,6 +382,7 @@ pub fn recover_fleet_key(
 /// - Absent/unreadable fan-out, and the CACHED key still opens the fstate slot (an in-place upgrade crossing the version boundary) → the atomic carry: preserve → mint → re-seal, one act.
 /// - Absent/unreadable fan-out, nothing preservable, and the slot HOLDS sealed state under a key we lack → WAIT, no mint: minting would orphan the fleet's state (and a near-empty push would clobber it — the wiped-device class). The keyholder that crosses later carries it.
 /// - Absent fan-out and no sealed state → plain establish (genesis; also a meaningful-state holder re-seeds the slot it carries).
+/// - Recovered key + a slot STILL sealed under a dead key + a SOLE-member fleet → re-seed the slot with OUR state under the recovered key (the solo mint orphans the old seal on purpose; without this the device is boxed in — pulls fail forever, the clobber guard blocks every push, and the friendless breaker never fires. Field: the first spoke crossing, 2026-08-21).
 pub fn recover_or_establish_carrying(
     handle_proof: &[u8; 32],
     device_key: &Keypair,
@@ -392,13 +393,22 @@ pub fn recover_or_establish_carrying(
     ours_meaningful: bool,
 ) -> Result<Option<[u8; 32]>, String> {
     match fetch_fanout(handle_proof) {
-        Ok(Some((_, kfp, _rotator, wraps))) => Ok(fgtw::fanout::fanout_open(
-            handle_proof,
-            &kfp,
-            &wraps,
-            device_key,
-            identity_seed,
-        )),
+        Ok(Some((_, kfp, _rotator, wraps))) => {
+            let key = fgtw::fanout::fanout_open(handle_proof, &kfp, &wraps, device_key, identity_seed);
+            if let Some(k) = key {
+                // SOLO RE-SEED: only when the slot is undecryptable under the key we legitimately hold AND the genesis-verified fold says this device is the fleet's only member — a solo fleet has no sibling roster to clobber, so overwriting the orphaned seal with our state (even near-empty) is exactly right: readable-empty beats a sealed tomb. Multi-device fleets never take this path (their keyholder/breaker machinery carries the state instead).
+                if matches!(pull_fstate(handle_proof, &k), Err(ref e) if e.contains("aead") || e.contains("decrypt")) {
+                    let me = device_key.public.to_bytes();
+                    if matches!(current_members_verified(handle_proof), Ok(ref m) if m.len() == 1 && m[0] == me) {
+                        match push_fstate(handle_proof, device_key, &k, &ours) {
+                            Ok(()) => crate::log("FLEET: solo re-seed — orphaned slot re-sealed under the recovered key"),
+                            Err(e) => crate::logf!("FLEET: solo re-seed push failed ({}); the next sync retries", e),
+                        }
+                    }
+                }
+            }
+            Ok(key)
+        }
         // Ok(None) = no fan-out; Err = an unreadable (pre-v2) blob — both mean this device may have to establish, and both demand the carry rules below.
         Ok(None) | Err(_) => {
             // Genesis-verified fold: a mint must never wrap toward a member set a relay could have swapped.
@@ -424,15 +434,18 @@ pub fn recover_or_establish_carrying(
             }
             let (revision, key) = mint_fleet_key(handle_proof, device_key, &members, identity_seed)?;
             let _ = storage.write_addr(cache_addr, &key);
-            if preserved.is_some() || ours_meaningful {
+            // A SOLO mint re-seeds even with nothing to carry: the mint just orphaned the old seal on purpose, no sibling roster exists to clobber, and a readable slot is what lets this device's own pulls/pushes work from here on (field 2026-08-21: the first spoke crossing minted "nothing to carry" and then sat wedged — pulls dead on the orphaned seal, pushes blocked by the clobber guard, breaker friendless).
+            if preserved.is_some() || ours_meaningful || solo {
+                let carried = preserved.is_some() || ours_meaningful;
                 let merged = fgtw::fstate::merge_fstate(preserved.unwrap_or_default(), ours);
                 match push_fstate(handle_proof, device_key, &key, &merged) {
                     Ok(()) => crate::logf!(
-                        "FLEET: establish mint at revision {} — fleet state carried across the key boundary",
-                        revision
+                        "FLEET: establish mint at revision {} — {}",
+                        revision,
+                        if carried { "fleet state carried across the key boundary" } else { "solo slot re-seeded" }
                     ),
                     Err(e) => crate::logf!(
-                        "FLEET: establish mint at revision {} but the carry push failed ({}); the next roster/settings write re-seals",
+                        "FLEET: establish mint at revision {} but the re-seal push failed ({}); the next roster/settings write re-seals",
                         revision,
                         e
                     ),
