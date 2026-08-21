@@ -667,13 +667,8 @@ fn display_content(content: &str) -> String {
         } else {
             " \u{2014} tap for actions"
         };
-        format!(
-            "\u{1F4CE} {} \u{00B7} {}\u{202F}{}{}",
-            name,
-            crate::dozenal_glyphs(units),
-            label,
-            state
-        )
+        // Plain decimal for the size (Nick 2026-08-21: the VERSION is the only dozenal surface for now — a UI base toggle may come later, "humans are not ready for that shit").
+        format!("\u{1F4CE} {} \u{00B7} {}\u{202F}{}{}", name, units, label, state)
     } else {
         // Reference rows (reply/edit/react) need no stripping: their content IS the bare body/glyph — the reference is a typed FIELD, never a string encoding.
         content.to_string()
