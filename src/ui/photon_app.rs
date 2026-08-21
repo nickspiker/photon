@@ -1526,16 +1526,6 @@ pub struct PhotonApp {
     attach_confirmed: std::collections::HashSet<[u8; 32]>,
     /// Android: set when the paperclip asks for the system file picker; drained by nativePollAttachPicker.
     pending_attach_picker: bool,
-    /// Per-session client routing: session_id → (client device pubkey, their addr pair, relay list) so the reader-thread drain knows where to send output. Captured at `term_open`.
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-    bridge_clients: std::collections::HashMap<
-        [u8; 16],
-        (
-            [u8; 32],
-            (std::net::SocketAddr, Option<std::net::SocketAddr>),
-            Vec<[u8; 32]>,
-        ),
-    >,
     /// Recovery-page "be a custodian" opt-in — a custom `Checkbox`.
     settings_custodian_check: Option<fluor::widgets::Checkbox>,
     /// Notifications-page global chime on/off — a custom `Checkbox`.
@@ -1980,8 +1970,6 @@ impl PhotonApp {
             attach_progress: Vec::new(),
             attach_confirmed: std::collections::HashSet::new(),
             pending_attach_picker: false,
-            #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-            bridge_clients: std::collections::HashMap::new(),
             settings_custodian_check: None,
             settings_chime_check: None,
             settings_presence_check: None,

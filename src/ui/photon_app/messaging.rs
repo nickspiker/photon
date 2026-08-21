@@ -74,26 +74,7 @@ impl PhotonApp {
         let ci = contact_idx;
         let text = text.to_string();
 
-        // BRIDGE (chat-as-shell): a message typed in a SIBLING conversation goes DIRECTLY to that one device over a `term` frame (siblings have no friendship chain + notes-to-self fans to the whole fleet, so neither existing path targets a single device). The bubble is stored locally; the target device runs any `$ ` command and replies. Desktop-unix carries the reply-runner; the SEND works from any platform.
-        {
-            let is_sibling = self.contacts.get(ci).map(|c| c.is_sibling).unwrap_or(false);
-            if is_sibling && !suppress_bubble {
-                // Store the outgoing bubble locally so the conversation shows what was asked.
-                if let Some(conv) = self.conv_mut_of(ci) {
-                    let mut msg = ChatMessage::new_with_timestamp(
-                        text.clone(),
-                        true,
-                        vsf::eagle_time_oscillations(),
-                    );
-                    msg.delivered = true;
-                    conv.insert_message_sorted(msg.clone());
-                    conv.scroll_offset = 0.0;
-                }
-                self.persist_messages_async(ci);
-                self.send_bridge_text(ci, &text);
-                return true;
-            }
-        }
+        // BRIDGE rides the REGULAR chain path now (Nick's call 2026-08-21): a `$ ` command typed in a sibling conversation is an ordinary message to that one device — a per-sibling conversation is exactly [our_sibling_pid, that_device_pid], so the general path below already targets the single device with full chain durability (retransmit + ACK + re-serve). The old is_sibling branch fire-and-forgot a term frame with NONE of that, which is why commands to a momentarily-unreachable device evaporated. The host detects the `$ ` prefix on RECEIVE (conversation.rs) and replies with another ordinary message; faint-until-ACKed rendering comes free.
 
         // How many people does this message have to reach? For our own notes the answer is zero, so there is nothing to encrypt, nothing to dispatch, and nothing left to wait for — the row is delivered because delivery to an empty set is already complete. That is not a special case for self; it is what the general rule evaluates to when the participant set has one member (docs: the conversation model). A conversation with one remote takes the chain path below, and so does one with fifty.
         let remotes = match self.contacts.get(ci) {
