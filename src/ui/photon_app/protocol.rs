@@ -847,14 +847,18 @@ impl PhotonApp {
                     // A pulled `fleet.locked` lands here: sweep it onto the sibling rows so every trust gate refuses the locked device from this tick on.
                     self.apply_locked_set();
                     if changed {
+                        // Snapshot + OFF-THREAD write: this inline save was one of the ~900ms UI-thread vault writes in the 2026-08-21 field capture, and it fires on every changed fstate merge (the Mac's log showed 37 pulls in one 35-minute window).
                         if let (Some(fs), Some(storage)) =
-                            (self.fleet_settings.as_ref(), self.storage.as_ref())
+                            (self.fleet_settings.as_ref(), self.storage.as_ref().cloned())
                         {
-                            if let Err(e) =
-                                crate::storage::fleet_settings::save_fleet_settings(fs, storage)
-                            {
-                                crate::logf!("SETTINGS: persist after merge failed: {}", e);
-                            }
+                            let snapshot = fs.clone();
+                            queue_job(&self.seal_job_tx, move || {
+                                if let Err(e) = crate::storage::fleet_settings::save_fleet_settings(
+                                    &snapshot, &storage,
+                                ) {
+                                    crate::logf!("SETTINGS: persist after merge failed: {}", e);
+                                }
+                            });
                         }
                         self.apply_settings_to_ui();
                         // A sibling's profile edit just landed: refresh the You-page boxes from the merged values (reload-on-next-frame) and republish our pong name in case profile.name changed.
