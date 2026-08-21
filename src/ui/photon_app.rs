@@ -671,6 +671,9 @@ fn display_content(content: &str) -> String {
         };
         // Plain decimal for the size (Nick 2026-08-21: the VERSION is the only dozenal surface for now — a UI base toggle may come later, "humans are not ready for that shit").
         format!("\u{1F4CE} {} \u{00B7} {}\u{202F}{}{}", name, units, label, state)
+    } else if let Some(out) = content.strip_prefix(crate::types::BRIDGE_OUTPUT_PREFIX) {
+        // Bridge command output — the marker is anti-bounce plumbing, never shown; the human sees only the shell result.
+        out.to_string()
     } else {
         // Reference rows (reply/edit/react) need no stripping: their content IS the bare body/glyph — the reference is a typed FIELD, never a string encoding.
         content.to_string()
