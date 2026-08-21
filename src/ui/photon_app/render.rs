@@ -2061,10 +2061,21 @@ impl PhotonApp {
                         .as_ref()
                         .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
                         .unwrap_or([0u8; 32]);
+                    // The device-derived sibling pid, captured here (immutable self reads only) so the conv key below needs no &self call while `contact` holds a borrow.
+                    let our_sibling_pid = self
+                        .device_keypair
+                        .as_ref()
+                        .map(|kp| crate::crypto::clutch::sibling_party_id(kp.public.as_bytes()));
                     let is_self_contact = contact.remote_count(&our_handle_hash) == 0;
-                    // The conversation this screen paints — messages, scroll, unread all read from here, never from the contact. Field-precise lookup (no &self method): the scope below writes disjoint `self` fields while this borrow is live.
+                    // THE conversation key MUST match how the SEND path keyed it (`our_party_id`): for a SIBLING that is the device-derived sibling pid, NOT our_handle_hash (the identity pid). Using our_handle_hash here made the render look up an EMPTY phantom conversation for every sibling — the send inserted the bubble into the sibling-pid-keyed conversation, the screen painted the identity-keyed one, and a bridge command vanished on send ("BOOP", field 2026-08-21). Friends and self are unaffected: their party id already EQUALS our_handle_hash. Mirrors `our_party_id` exactly, so insert and render read the same object.
+                    let conv_party_id = if contact.is_sibling {
+                        our_sibling_pid.unwrap_or(our_handle_hash)
+                    } else {
+                        our_handle_hash
+                    };
+                    // The conversation this screen paints — messages, scroll, unread all read from here, never from the contact. Field-precise lookup: the scope below writes disjoint `self` fields while this borrow is live.
                     let conv: Option<&crate::types::Conversation> = {
-                        let id = contact.conversation(&our_handle_hash).id();
+                        let id = contact.conversation(&conv_party_id).id();
                         self.conversations.iter().find(|v| v.id() == id)
                     };
                     // Ring computed BEFORE the closure: row_ring_tier borrows &self, and the closure outlives writes to disjoint self fields below.
