@@ -1054,6 +1054,8 @@ pub fn load_conversation_state(
                     next_request_osc: 0,
                     urgent: false,
                     was_complete_before: complete,
+                    decrypt_fail_streak: 0,
+                    parked_key_fp: None,
                 });
             }
             return;
@@ -1089,6 +1091,8 @@ fn load_legacy_conv_state(
                 next_request_osc: 0,
                 urgent: false,
                 was_complete_before: complete,
+                decrypt_fail_streak: 0,
+                parked_key_fp: None,
             }
         });
     (unread, rec)

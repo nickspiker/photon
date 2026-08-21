@@ -767,6 +767,8 @@ impl PhotonApp {
                     next_request_osc: 0,
                     urgent: true, // head page jumps the trickle interval — conversation usable ASAP
                     was_complete_before,
+                    decrypt_fail_streak: 0,
+                    parked_key_fp: None,
                 });
                 crate::log("HISTORY: recovery kicked off (head page next tick)");
             }

@@ -139,6 +139,10 @@ pub struct HistoryRecovery {
     pub urgent: bool,
     /// The persisted `hist_complete` value at kickoff. Early-stop rule: if history was complete before this (re-)kickoff and a page contributes zero new rows, the history is still complete — a routine re-key on an intact pair stops after one page instead of re-walking 10 years.
     pub was_complete_before: bool,
+    /// Consecutive pages that arrived but failed to decrypt (a key/era divergence, not transport). Cleared by any page that opens.
+    pub decrypt_fail_streak: u32,
+    /// Divergence park: fp of the history key that kept failing. While the CURRENT key still fingerprints the same, the walk stays parked — re-requesting just re-downloads 17KB of undecryptable page per cycle forever (field 2026-08-21: 161 pages in 35 min, both fleets). The moment the key CHANGES (re-key completed, era adopted) the fingerprint differs and the walk resumes — an edge expressed as state, no timer.
+    pub parked_key_fp: Option<[u8; 4]>,
 }
 
 /// A handle name stored as VSF text (normalized Unicode, unambiguous) Wrapper around String that represents a VSF x-type text value

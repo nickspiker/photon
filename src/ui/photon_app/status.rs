@@ -423,6 +423,8 @@ impl PhotonApp {
                                                     next_request_osc: 0,
                                                     urgent: true,
                                                     was_complete_before: false,
+                                                    decrypt_fail_streak: 0,
+                                                    parked_key_fp: None,
                                                 });
                                         }
                                         // SENDER-SIDE RE-SERVE (Nick's go, 2026-08-20) — the delivery-side fix the pull-gate comment above promises. The pending list only retransmits rows it still holds; a row implied-delivered by a FLEET ack that THIS peer device never received leaves their lane wedged forever — they gap-buffer every later row (twice on 2026-08-20 that hostage was a call ANSWER). The sealed tip is per-device cryptographic testimony of what they hold contiguously, and their row_count deficit is content-level evidence they lack rows — so when WE are strictly ahead, re-serve the oldest rows above the tip from the DURABLE store at their ORIGINAL stamps (the lane-rotation flush's proven semantics). The receiver's row-store dedup absorbs anything it already had and Re-ACKs it, clearing the fresh pending; a genuinely missing row processes normally and un-jams the gap cascade.
@@ -1057,6 +1059,8 @@ impl PhotonApp {
                                         next_request_osc: 0,
                                         urgent: true,
                                         was_complete_before: false,
+                                        decrypt_fail_streak: 0,
+                                        parked_key_fp: None,
                                     });
                                 }
                             }
@@ -3444,6 +3448,8 @@ impl PhotonApp {
                         // OFF-THREAD: opening the sealed page (kete over up to MAX_PAGE_BYTES) ran inline here — 210-485ms per page in the field (2026-08-08), the largest single status-arm stall. The worker only decrypts and posts back; EVERY gate that reads mutable state (in-flight rid match, sibling trust, contact indexes) lives in drain_history_pages, evaluated against current state instead of a dispatch-time snapshot.
                         let tx = self.hist_opened_tx.clone();
                         let wake = self.event_proxy.clone();
+                        let open_key_fp: [u8; 4] =
+                            blake3::hash(&key).as_bytes()[..4].try_into().unwrap();
                         queue_job(&self.seal_job_tx, move || {
                             match crate::network::history_pages::open_history_page(&sealed, &key) {
                                 Ok(page) => {
@@ -3451,14 +3457,32 @@ impl PhotonApp {
                                         conversation_token,
                                         request_id,
                                         sender_pubkey,
-                                        page,
+                                        page: Some(page),
+                                        open_key_fp,
                                     });
                                     if let Some(w) = wake.as_ref() {
                                         let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
                                     }
                                 }
                                 Err(e) => {
-                                    crate::logf!("HISTORY: page open failed ({}) — dropped", e)
+                                    // Named failure: the anonymous form of this line stalled the 2026-08-21 era-wedge diagnosis (161 drops, zero attribution). The failure ALSO rides the channel so the drain can count it toward the divergence park — silently re-requesting the same undecryptable page re-downloads 17KB per cycle forever.
+                                    crate::logf!(
+                                        "HISTORY: page open failed ({}) from {} token {} key#{} — dropped",
+                                        e,
+                                        crate::fp(&sender_pubkey.key),
+                                        hex::encode(&conversation_token[..4]),
+                                        hex::encode(open_key_fp)
+                                    );
+                                    let _ = tx.send(HistPageOpened {
+                                        conversation_token,
+                                        request_id,
+                                        sender_pubkey,
+                                        page: None,
+                                        open_key_fp,
+                                    });
+                                    if let Some(w) = wake.as_ref() {
+                                        let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                    }
                                 }
                             }
                         });

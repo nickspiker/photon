@@ -291,6 +291,8 @@ impl PhotonApp {
         };
         // The 1-px noise inset exists ONLY to clear the window perimeter hairline / shadow band — so gate it on whether that perimeter is actually drawn, which is exactly `!chrome.full_edge`. A windowed desktop draws the perimeter → inset. A maximized/fullscreen desktop goes full_edge (no perimeter) and Android forces full_edge too → paint to the screen edge, else a 1-px unpainted border shows. (Earlier this was hardcoded per-OS, so desktop-maximized still inset for a perimeter that wasn't there.) `|| cfg!(android)` keeps the Android always-fullscreen guarantee even on a transient pre-resize frame where full_edge hasn't synced yet.
         let bg_fullscreen = chrome.full_edge || cfg!(target_os = "android");
+        // Stage marks for the >1s breakdown at the end of the frame — the flat "render took Nms" line named the SCREEN but not the STAGE, which stalled the 2026-08-21 hang hunt (5.8-8.8s Conversation renders, no idea where inside).
+        let mark_pre = std::time::Instant::now();
         chrome.rasterize_bg(ctx.damage, |canvas| {
             // Chromatic wave FIRST, then the background noise — that is the paint order for the spectrum band.
             if on_launch {
@@ -345,6 +347,7 @@ impl PhotonApp {
             ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == chrome.app_icon_btn.id(),
         );
         chrome.rasterize_chrome(ctx.damage, ctx.text, ctx.clip_mask);
+        let mark_chrome = std::time::Instant::now();
 
         // Chord hint — painted INTO `target` BEFORE `flatten_into` so the hint glyphs sit at the TOP of the under-blend chain (chrome composes UNDER them).
         if held_now {
@@ -4897,6 +4900,7 @@ impl PhotonApp {
             }
         }
 
+        let mark_content = std::time::Instant::now();
         chrome.flatten_into(target, buf_w, buf_h, None);
 
         // Development builds get the amber debug theme (orange bg tint / window hairline / title) via fluor's `amber` feature — pure theme-CONSTANT swaps, zero extra drawing steps. The old post-composite amber wash is gone: it wrote straight-RGB into fluor's α+darkness buffer, which inverted to blue.
@@ -4914,6 +4918,17 @@ impl PhotonApp {
             }
         }
 
+        // The stage breakdown, only when the frame is a felt hang: which of the four coarse stages ate it. `content` covers every per-screen paint block (rows, text shaping, avatars) — when it dominates on Conversation, the next split goes inside that block.
+        let total_ms = _rt.0.elapsed().as_millis();
+        if total_ms > 1000 {
+            crate::logf!(
+                "PERF: render breakdown — pre {}ms, bg+chrome {}ms, content {}ms, flatten {}ms",
+                mark_pre.duration_since(_rt.0).as_millis() as u64,
+                mark_chrome.duration_since(mark_pre).as_millis() as u64,
+                mark_content.duration_since(mark_chrome).as_millis() as u64,
+                mark_content.elapsed().as_millis() as u64
+            );
+        }
         // Everything content-flavoured is now freshly painted — the next frame can narrow to pure widget damage unless something re-dirties the scene.
         self.scene_dirty = false;
     }
