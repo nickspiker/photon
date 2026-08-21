@@ -1,13 +1,15 @@
 ---
 name: reference-log-pull
-description: "pull submitted device logs from FGTW with photonlog --pull --handle <handle> (test identity); desktop's own log at ~/.config/photon/photon.log.vsf"
+description: "pull submitted device logs: photonlog --pull --session (own machine, from live tohu registers) or --handle <LEFT-column map bytes>; MAP FORMAT = 'handle = petname' — handle LEFT, petname RIGHT, burned 2026-08-21 by reading it backwards; desktop local log = tmpfs, volatile soft-mode"
 metadata: 
   node_type: memory
   type: reference
   originSessionId: f4272721-c713-4a82-a97a-db8106029756
 ---
 
-`./target/debug/photonlog --pull --handle <handle>` fetches ALL of that identity's submitted logs from FGTW (derives retrieval tag + decrypt key from the handle), decodes to lines; one handle covers every device's submissions.
+`photonlog --pull --session` (added 2026-08-21, commit b58312b) pulls the LOCAL machine's own submitted logs from the live tohu registers — the seed the app actually submitted under, no handle typed anywhere. Preferred for own-machine pulls.
+`photonlog --pull --handle <handle>` re-derives from handle bytes. **THE MAP-COLUMN TRAP (burned 2026-08-21, cost an hour of phantom identity-drift theories):** keys/claude-pseudonym-map.txt is `<handle> = <petname>` — the SECRET handle is the LEFT column, the safe prose alias is the RIGHT. Passing the right-column text as --handle derives a garbage tag that "finds nothing" and looks exactly like a vanished submission or a stale map. Extract the LEFT column mechanically (shell var, never echoed); verified same day: the live desktop session tag equals derive(left-column bytes) precisely — registers, map, and app all agree.
+One identity covers every device's submissions.
 Nick = the user's test identity (handed over 2026-07-23 for debugging; delete this memory if asked).
 Nick fleet GROUND TRUTH (pid-probe verified 2026-07-23): handle_proof=7ff3835f…, identity_party_id=1861e459…; desktop 90e571bf = device name "FlakyPositive", sibling-pid 1af83ffd → pid-pseudonym "BarkCook"; phone 1be949c1 = "LotteryStandard", sibling-pid d48d972b → "TheoryConvertible".
 NAMING TRAPS (cost three wrong diagnoses in one day):
@@ -19,7 +21,7 @@ Mary ground truth (RESOLVED 2026-07-23, the ghost-contact saga): her ONE phone h
 LANDMINE: every Android device attested under an OLD-signing-key build will silently shift device identity when it first runs a TOKEN-signed build — its fleet chain lists the old key, the new key can't fold in without re-pairing. Sarah's fleet (3+ devices, attested pre-change, currently offline) is the standing case: expect orphaned identities / re-attest flows when she updates, NOT a protocol bug.
 Nick's "Mary" contact = the f2103dc8 GHOST, resurrected by the JUL-22 14:06:44 bulk cloud-restore (identity-never-dies keeps the ghost chain alive; its addr rows point at the real phone). Ceremony ran 7/8 across the identity boundary (early frames match by address/device, only the token-keyed ClutchComplete exposes it → "unknown conversation_token 4d56c97a" storm; her side reads "0 resends left" and fires anyway = budget floor unenforced).
 Fix queue born from this: pid-bind ceremony frames from frame ONE (fail loudly on identity mismatch); enforce the proof-resend floor + terminal state; flag restored contacts whose chain folds to devices we've never spoken to. Unstick = delete ghost Mary on Nick (tombstone syncs) + re-add as "Mary".
-The desktop's live log reads directly: ~/.config/photon/photon.log.vsf (decode with photonlog; also -g grep / -l level flags).
+The desktop's live log is VOLATILE tmpfs: /tmp/photon-<user>/photon.log.vsf (decode with photonlog; also -g grep / -l level flags). SOFT-MODE means records batch in RAM and reach disk only on edges (panic/background/submit/threshold — and since b58312b, quit + update-re-exec); mid-session the file may not exist at all. Submit success CLEARS the local file by design — "not local anymore" is correct behavior.
 Submissions are whole-log snapshots split by `── photon-logs/<tag>/<eagle>-dev<id>.vsf ──` boundaries; the log rotates at 16 MiB so a tiny follow-up submission = post-rotation content only.
 
 **PULL TO FILE FIRST (burned 2026-08-15):** submitted logs are ephemeral (24h sweep + can vanish between pulls) — always `photonlog --pull --handle X > /tmp/x.log` immediately, grep the file; piping the pull straight into grep threw away a one-shot storm capture.
