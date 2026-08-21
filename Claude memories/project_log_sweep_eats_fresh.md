@@ -1,6 +1,6 @@
 ---
 name: project-log-sweep-eats-fresh
-description: "fgtw worker :17 hourly retention sweep DELETED an 18-min-old 2.8MB log submission (24h rule violated) while sparing same-window objects; instrumented worker deployed 2026-08-21, tail armed for the 14:17Z cron; planned fix = compare key-embedded eagle osc, not workers-rs uploaded()"
+description: "13:17Z 2026-08-21 window ate an 18-min-old submission; NOT reproduced at 14:17Z under instrumentation (all bait kept, eater unconvicted); hardened key-osc sweep + [observability] COMMITTED fgtw-bootstrap 8fe1b83 — DEPLOY BLOCKED on interactive wrangler login (OAuth grant killed by concurrent-tail refresh race)"
 metadata: 
   node_type: memory
   type: project
@@ -13,4 +13,5 @@ Instrumented worker (per-object key/uploaded_ms/verdict console_log) DEPLOYED 20
 Planned fix regardless of verdict: the object key already embeds the upload eagle-osc (`<osc>-dev<tag>.vsf`) — compare THAT against now-osc minus 24h, pure numbers from our own format, no JS Date interop. Then remove the diagnostic logging, delete the bait objects, remove wrangler.sweeptest.toml + the preview_bucket_name line (scratch, uncommitted), redeploy.
 Also open: `wrangler dev --remote` unusable on this account ("Could not create remote preview session"), and the deleted 2.8MB submission held Nick's 3-4 ~1s desktop hang captures — evidence LOST (local copy died on close pre-flush-fix); next occurrence is catchable since quit is a flush edge (photon b58312b).
 The retrieval-tag identity check came out CLEAN: the desktop session tag equals the derivation from the real handle exactly (the transient "mismatch" was the map-column trap in [[reference-log-pull]]) — the sweep is the sole culprit.
+VERDICT 14:17Z: all 6 bait objects SURVIVED the instrumented cron — the 13:17Z eater did NOT reproduce; no lifecycle rule, no client log_delete caller, formally unconvicted. Hardened sweep (age from the key-embedded eagle osc, uploaded() only for timestampless keys, verdict lines persisted via [observability]) COMMITTED fgtw-bootstrap 8fe1b83 + pushed; bait deleted, scratch config removed. DEPLOY BLOCKED: the wrangler OAuth grant died mid-session (crash-looping tails raced the refresh-token rotation → "Not logged in") — Nick runs `wrangler login`, then `./deploy.sh --worker-only`. Until then the 13:28Z instrumented deployment (correct behavior, tail-only logging) is live. LESSON: never crash-loop wrangler commands — concurrent refreshes burn the OAuth grant.
 Related: [[reference-log-pull]] (--session flag + map-column trap), [[project-render-storm-lag]].
