@@ -1695,18 +1695,18 @@ async fn run_checker(
                                         );
                                     }
 
-                                    // Inspect completed PT data with VSF inspector
-                                    if let Ok(inspection) = vsf::inspect::inspect_vsf(&data) {
-                                        crate::logf!(
-                                            "PT: Received VSF ({} bytes):\n{}",
-                                            data.len(),
-                                            inspection
+                                    // Inspect completed PT data via the OPT-IN inspector (PHOTON_INSPECT=net). This call site predated the opt-in gate and dumped a full coloured tree for EVERY completed PT transfer — 200 trees in one 35-minute field log during a page storm, exactly the volume problem the gate exists for (16 MiB self-trim eating whole sessions).
+                                    #[cfg(feature = "development")]
+                                    {
+                                        let msg = crate::network::inspect::vsf_inspect(
+                                            &data,
+                                            "PT",
+                                            "RX",
+                                            &src_addr.to_string(),
                                         );
-                                    } else {
-                                        crate::logf!(
-                                            "PT: Received {} bytes - NOT valid VSF",
-                                            data.len()
-                                        );
+                                        if !msg.is_empty() {
+                                            crate::log(&msg);
+                                        }
                                     }
 
                                     // Parse PT data as CLUTCH message and emit appropriate event
