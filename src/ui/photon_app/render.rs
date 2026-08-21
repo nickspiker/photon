@@ -75,7 +75,8 @@ impl PhotonApp {
         ) {
             active_ci
                 .and_then(|ci| self.contacts.get(ci))
-                .map(|c| c.display_name())
+                // Pending… until they publish a real name — the title bar is a visual surface; the pseudonym lives ONLY in the contact panel's identity section (Nick 2026-08-21, matching the contact list).
+                .map(|c| c.display_name_or_pending())
                 .unwrap_or_else(|| "Conversation".to_string())
         } else if matches!(self.state, AppState::Ready) {
             let own_hp = self.session.as_ref().map(|s| s.handle_proof);
