@@ -891,29 +891,33 @@ impl PhotonApp {
             Some(Ok(Err(ref _e))) => {
                 // Pull failed to fetch/decrypt. On a fresh join this is the pairing key still being a pre-rotation generation; the in-flight fan-out key sync writes the current key within ~150ms, so re-arm and retry until the budget runs out (the pull's own round-trip spaces the attempts).
                 self.roster_pull_rx = None;
-                if self.roster_pull_retries_left > 0 {
-                    self.roster_pull_retries_left -= 1;
-                    // Park on the key we failed under; the tick's adoption-edge check re-fires when a DIFFERENT key lands. Re-arming immediately burned the whole budget before any key could arrive.
-                    self.roster_pull_parked_under =
-                        Some(self.fleet_key_ram.lock().ok().and_then(|g| *g));
-                    crate::logf!("FLEET: roster pull failed — parked until a fresh fleet key lands ({} attempt(s) left)", self.roster_pull_retries_left);
-                } else {
-                    self.roster_pull_exhausted = true;
-                    crate::log("FLEET: roster pull retries exhausted — the 45s refold edge re-arms it (fleet events help sooner when the socket is up)");
-                    // Exhausted against an UNDECRYPTABLE slot is a deadlock, not patience running out: the bytes are sealed under a superseded fleet key, so no number of re-reads will ever open them, and a device that only ever pulls will retry forever with nothing to show (a wiped field device: 27 aead failures, no contacts, no name, no avatar). A push breaks it — `push_roster` re-seals from local state when it finds the slot unreadable — so fire one instead of waiting for an event that cannot help.
-                    // But an aead failure cannot say WHICH side is stale — and a freshly wiped device is the STALE party (its oracle-slot key predates the fleet's current rotation) holding a roster that is empty but for the attest-minted self row. Its "re-seal" overwrote the fleet's one roster copy with that near-emptiness under a key no sibling holds (macbook field incident, 2026-08-16). So the breaker fires only when we hold FRIEND rows to re-seal (non-sibling, non-self — the self row exists on every fresh attest and proves nothing); a friendless device waits — the sibling egg → fresh-epoch mint → wrap path delivers the current key, and the 45s refold edge re-pulls.
-                    if _e.contains("aead") || _e.contains("decrypt") {
-                        let our_proof = self.session.as_ref().map(|s| s.handle_proof);
-                        let have_friend_state = self
-                            .contacts
-                            .iter()
-                            .any(|c| !c.is_sibling && Some(c.handle_proof) != our_proof);
-                        if have_friend_state {
-                            crate::log("FLEET: the slot cannot be decrypted under the current key — pushing to re-seal it rather than re-reading bytes nobody can open");
-                            self.spawn_roster_push();
-                        } else {
-                            crate::log("FLEET: slot undecryptable and no local friend rows to re-seal — we are the stale party (wiped device); holding for the current fleet key via sibling egg + rotation");
-                        }
+                // THE AEAD BREAKER runs BEFORE any parking (moved 2026-08-21 — it used to live behind retry exhaustion, and the park-on-key-edge retry FROZE the attempts so exhaustion never came: the one device holding a full roster sat parked forever while the whole fleet waited on the re-seal only it could perform). An undecryptable slot is a deadlock, not patience running out: the bytes are sealed under a superseded key, so no re-read helps — a push re-seals from local state.
+                // The clobber guard stands unchanged: an aead failure cannot say WHICH side is stale, and a freshly wiped device is the STALE party holding a near-empty roster (macbook field incident, 2026-08-16) — so the breaker fires only when we hold FRIEND rows (non-sibling, non-self) worth sealing; a friendless device parks below and waits for a key edge.
+                let mut broke = false;
+                if _e.contains("aead") || _e.contains("decrypt") {
+                    let our_proof = self.session.as_ref().map(|s| s.handle_proof);
+                    let have_friend_state = self
+                        .contacts
+                        .iter()
+                        .any(|c| !c.is_sibling && Some(c.handle_proof) != our_proof);
+                    if have_friend_state {
+                        crate::log("FLEET: the slot cannot be decrypted under the current key — pushing to re-seal it from local state rather than re-reading bytes nobody can open");
+                        self.spawn_roster_push();
+                        // Re-pull AFTER our re-seal lands so the merged slot round-trips (the push also fires the worker's fstate event, which re-pulls every sibling).
+                        self.needs_initial_roster_pull = true;
+                        broke = true;
+                    }
+                }
+                if !broke {
+                    if self.roster_pull_retries_left > 0 {
+                        self.roster_pull_retries_left -= 1;
+                        // Park on the key we failed under; the tick's adoption-edge check re-fires when a DIFFERENT key lands. Re-arming immediately burned the whole budget before any key could arrive.
+                        self.roster_pull_parked_under =
+                            Some(self.fleet_key_ram.lock().ok().and_then(|g| *g));
+                        crate::logf!("FLEET: roster pull failed — parked until a fresh fleet key lands ({} attempt(s) left)", self.roster_pull_retries_left);
+                    } else {
+                        self.roster_pull_exhausted = true;
+                        crate::log("FLEET: roster pull retries exhausted — the 45s refold edge re-arms it (fleet events help sooner when the socket is up)");
                     }
                 }
             }
