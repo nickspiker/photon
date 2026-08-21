@@ -3603,6 +3603,57 @@ impl PhotonApp {
                                     crate::log("BLIND: put REJECTED (bad blob length)");
                                     continue;
                                 }
+                                // BYTE-IDENTICAL redeposit: the stored copy is ALREADY durable (its commit gated the original ack) — pure lost-ack heal, re-ack with ZERO vault writes. Also the war-stability signal: a repeating value means the depositor settled, reset the flip detector.
+                                let current = self.contacts[idx]
+                                    .deposited_blinds
+                                    .iter()
+                                    .find(|(d, _, _)| *d == sender_pubkey.key)
+                                    .map(|(_, b, _)| b.clone());
+                                let flip_key = (self.contacts[idx].handle_proof, sender_pubkey.key);
+                                if current.as_ref() == Some(&blob) {
+                                    self.blind_flip.remove(&flip_key);
+                                    if let (Some(kp), Some(checker)) =
+                                        (self.device_keypair.as_ref(), self.status_checker.as_ref())
+                                    {
+                                        if let Ok(vsf_bytes) =
+                                            crate::network::fgtw::protocol::build_blind_ack_vsf(
+                                                &conversation_token,
+                                                &request_id,
+                                                kp.public.as_bytes(),
+                                                kp.secret.as_bytes(),
+                                            )
+                                        {
+                                            let (primary, alt) = self.contacts[idx]
+                                                .race_addrs()
+                                                .unwrap_or((sender_addr, None));
+                                            let _ = checker.history_dispatch().send(
+                                                crate::network::status::HistorySendRequest {
+                                                    peer_addr: primary,
+                                                    alt_addr: alt,
+                                                    recipient_pubkey: sender_pubkey.key,
+                                                    relay_to: self.contacts[idx].relay_device_list(),
+                                                    vsf_bytes,
+                                                },
+                                            );
+                                        }
+                                    }
+                                    continue;
+                                }
+                                // FLIP-FLOP WAR BRAKE: a REPLACING deposit whose bytes equal the value it replaced LAST TIME is the A-B-A signature of two installs sharing one device key, each overwriting the other forever (field 2026-08-21: 400 rounds in one log, every round a ~1.5s durable commit — the vault spent the afternoon on one contact). At 3 consecutive flips, commits decimate 8:1 — dropped rounds are UNACKED (no durability lie; the depositor just retries), a genuine re-key still lands within 8 rounds, and the byte-identical arm above resets the detector the moment the value stabilizes.
+                                if let Some(cur) = current.as_ref() {
+                                    let cur_hash = *blake3::hash(cur).as_bytes();
+                                    let incoming_hash = *blake3::hash(&blob).as_bytes();
+                                    let (prev_hash, flips) =
+                                        self.blind_flip.get(&flip_key).copied().unwrap_or(([0u8; 32], 0));
+                                    let flips = if prev_hash == incoming_hash { flips + 1 } else { 0 };
+                                    self.blind_flip.insert(flip_key, (cur_hash, flips));
+                                    if flips >= 3 && flips % 8 != 0 {
+                                        if flips == 3 {
+                                            crate::logf!("BLIND: deposit WAR from {} device {} — alternating values (two installs on one device key?); decimating commits 8:1 until it stabilizes", crate::fp(&flip_key.0), crate::fp(&sender_pubkey.key));
+                                        }
+                                        continue;
+                                    }
+                                }
                                 // Upsert by depositor device — a redeposit (re-key, S regen) replaces. Idempotent, so a duplicate put just re-acks (lost-ack heal).
                                 let c = &mut self.contacts[idx];
                                 if let Some(entry) = c
