@@ -52,28 +52,7 @@ fn main() {
         panic!("TEST PANIC - this should appear in the log");
     }
 
-    // BRIDGE host opt-in from the CLI (headless remote boxes): `--enable-remote-terminal` / `--disable-remote-terminal`
-    // writes/removes the <config>/remote_terminal marker and exits. A running photon then serves (or stops serving)
-    // remote shells to fold-verified fleet siblings. Desktop-unix only.
-    #[cfg(all(unix, not(target_os = "android")))]
-    {
-        let enable = std::env::args().any(|a| a == "--enable-remote-terminal");
-        let disable = std::env::args().any(|a| a == "--disable-remote-terminal");
-        if enable || disable {
-            // The flag is a device-scope vault entry now; device_vault self-derives the device secret from the machine fingerprint, so this works headless with no session.
-            if photon_messenger::storage::device_vault().is_some() {
-                photon_messenger::storage::set_device_flag("flags/remote_terminal", enable);
-                if enable {
-                    println!("remote-terminal host ENABLED. Restart photon to serve.");
-                } else {
-                    println!("remote-terminal host DISABLED.");
-                }
-            } else {
-                eprintln!("failed: device vault unavailable");
-            }
-            return;
-        }
-    }
+    // BRIDGE needs no host opt-in (Nick's ruling 2026-08-21): the fold-verified, non-locked sibling gate IS the authorization — the old --enable/--disable-remote-terminal flag pair is gone (its census-wiped marker had silently darkened every host: the Europe incident's second half). A locked-out device is the one thing the bridge refuses.
 
     // Verify binary signature matches fractaldecoder (Ed25519 cryptographic signature)
     let signature_hex = match self_verify::verify_binary_hash() {
