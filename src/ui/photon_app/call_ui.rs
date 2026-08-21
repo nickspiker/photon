@@ -528,8 +528,9 @@ impl PhotonApp {
         match crate::call::spool::finalize(ticket, &seed) {
             Some((hash, size)) => {
                 if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
+                    // "call.audio" (video calls will mint "call.video") — no POTS in Photon, so nothing here is a "phone call".
                     let content =
-                        crate::types::attachment_content(&hash, "call.phcall", size);
+                        crate::types::attachment_content(&hash, "call.audio", size);
                     let mut row = ChatMessage::new_with_timestamp(content, true, offer_osc + 2);
                     row.notified = true;
                     row.delivered = true;
