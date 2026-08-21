@@ -412,7 +412,9 @@ pub fn recover_or_establish_carrying(
                 .flatten()
                 .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
             let preserved = cached.and_then(|k| pull_fstate(handle_proof, &k).ok().flatten());
-            if preserved.is_none() && !ours_meaningful {
+            // A SOLE-member fleet has no other keyholder to wait for — the wait below would be forever, orphaning is inevitable, and it is harmless (the slot re-seeds from this device's ceremonies). This is every single-device friend crossing the flag day.
+            let solo = members.len() == 1 && members[0] == device_key.public.to_bytes();
+            if preserved.is_none() && !ours_meaningful && !solo {
                 // Nothing to carry and nothing of our own worth pushing — if sealed state EXISTS under a key we lack, a mint here orphans it. Probe: not_found = truly empty (safe to establish); a decrypt failure = state is there, wait for its keyholder.
                 let probe_key = cached.unwrap_or([0u8; 32]);
                 if pull_fstate(handle_proof, &probe_key).is_err() {
