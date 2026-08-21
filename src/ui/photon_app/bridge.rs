@@ -52,11 +52,12 @@ impl PhotonApp {
     /// - CLIENT (any platform): a DATA frame is a reply (command output or a chat line) → post it into that sibling's conversation as an incoming bubble.
     pub(super) fn on_bridge_frame(
         &mut self,
-        session_id: [u8; 16],
+        // session_id + sender_addr were the term-reply routing keys; the reply rides the durable chain now (run_bridge_command_chat), so only the sender identity + payload matter here.
+        _session_id: [u8; 16],
         kind: u8,
         sealed_payload: Vec<u8>,
         sender_device: [u8; 32],
-        sender_addr: std::net::SocketAddr,
+        _sender_addr: std::net::SocketAddr,
     ) {
         use crate::network::fgtw::protocol::term_kind;
         // SIBLING gate (both roles). Never a friend — and never a LOCKED-OUT sibling: with no host flag (Nick's ruling 2026-08-21, the fold IS the authorization), this line is the whole wall between a stolen device and a shell on every fleet machine.
@@ -85,24 +86,18 @@ impl PhotonApp {
         let line = String::from_utf8_lossy(&payload).to_string();
 
         // HOST role: a `$ ` command runs here (desktop-unix). NO host flag (Nick's ruling 2026-08-21): the fold-verified, non-locked sibling gate above IS the authorization — the bridge conversation is a regular chat screen and a `$ ` line just runs, exactly as typing it at that machine would. The old off-by-default flag was the Europe incident's second half: the census wiped its marker fleet-wide and a disabled host swallowed commands into silent chat bubbles.
+        // BACKWARD-COMPAT ONLY: this term-frame receive path exists so a not-yet-updated sibling (old build, still term-sending) can still drive this host during a rollout. New builds send commands as ORDINARY chat messages (the durable path); those never reach here — they land in the chat receive path, which runs the same `run_bridge_command_chat`. Both roads lead to one runner + one chat reply.
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
         {
             if let Some(cmd) = line.strip_prefix("$ ").or_else(|| line.strip_prefix("$\t")) {
-                let relay_to = self
-                    .contacts
-                    .get(ci)
-                    .filter(|c| c.validated_path.is_none())
-                    .map(|c| c.relay_device_list())
-                    .unwrap_or_default();
-                self.bridge_clients
-                    .insert(session_id, (sender_device, (sender_addr, None), relay_to));
-                self.run_bridge_command(session_id, cmd);
-                // Also show the incoming command in the host's own conversation history.
+                let cmd = cmd.to_string();
+                // Show the incoming command in the host's own conversation, then run + reply over the durable chain (not a term frame).
                 self.bridge_post_bubble(ci, &line, false);
+                self.run_bridge_command_chat(ci, &cmd);
                 return;
             }
         }
-        // Otherwise (CLIENT reply, or a plain chat line): post it as an incoming bubble in that sibling's conversation.
+        // Otherwise (a plain chat line over the legacy term path): post it as an incoming bubble in that sibling's conversation.
         self.bridge_post_bubble(ci, &line, false);
     }
 
@@ -121,100 +116,13 @@ impl PhotonApp {
         self.persist_messages_async(ci);
     }
 
-    /// BRIDGE client SEND: transmit a line typed in a sibling conversation to that device as a `term` DATA frame (the sibling device-to-device transport). The line rides fleet-sealed; the host runs any `$ ` command and replies with a term DATA frame carrying the output, which our client-receive turns back into a chat bubble. `session_id` is derived from the device pair so both sides agree without a handshake.
-    pub(super) fn send_bridge_text(&mut self, ci: usize, text: &str) {
-        let Some((device, addr_pair, relay_to)) = self.contacts.get(ci).map(|c| {
-            // Relay UNCONDITIONALLY (the BLIND-frame doctrine): a "validated" path can be a stale endpoint — field 2026-08-21, the controlling sibling sent both commands to another device's dead cellular v6 (primary from a smeared row) with the relay skipped because a validated_path existed, so the frames died silently. The bridge is a human at a keyboard expecting a shell; it rides every path it has, every time.
-            (c.public_identity.key, c.race_addrs(), c.relay_device_list())
-        }) else {
-            return;
-        };
-        // If there's no direct address, fall back to the RELAY sentinel (0.0.0.0:0) + the relay list — same path chat uses for an unreachable-but-relayable peer. Only truly hopeless (no address AND no relay) bails.
-        let (peer_addr, alt_addr) = match addr_pair {
-            Some(pair) => pair,
-            None if !relay_to.is_empty() => (crate::network::status::RELAY_ADDR, None),
-            None => {
-                self.ready_toast =
-                    Some("That device has no address or relay yet — can't reach it.".to_string());
-                self.ready_toast_screen = None;
-                crate::logf!(
-                    "BRIDGE: send bail — sibling {} has no address and no relay",
-                    crate::fp(&device)
-                );
-                return;
-            }
-        };
-        let Some(fleet_key) = self.fleet_key_cached() else {
-            crate::log("BRIDGE: send bail — no fleet key");
-            return;
-        };
-        // Session id = blake3(sorted device pair) truncated — stable, handshake-free, per-pair.
-        let session_id = self.bridge_session_id(&device);
-        let Ok(sealed) = crate::network::bridge::seal_term(text.as_bytes(), &fleet_key) else {
-            return;
-        };
-        let (Some(kp), Some(checker)) =
-            (self.device_keypair.as_ref(), self.status_checker.as_ref())
-        else {
-            crate::log("BRIDGE: send bail — no device key or status checker");
-            return;
-        };
-        let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_term_vsf(
-            &session_id,
-            crate::network::fgtw::protocol::term_kind::DATA,
-            sealed,
-            kp.public.as_bytes(),
-            kp.secret.as_bytes(),
-        ) else {
-            return;
-        };
-        checker.send_history(crate::network::status::HistorySendRequest {
-            peer_addr,
-            alt_addr,
-            recipient_pubkey: device,
-            vsf_bytes,
-            relay_to: relay_to.clone(),
-        });
-        crate::logf!(
-            "BRIDGE: sent line to sibling {} via {} ({} relay targets)",
-            crate::fp(&device),
-            peer_addr,
-            relay_to.len()
-        );
-    }
-
-    /// Stable, handshake-free session id for a device pair: blake3 of the two device pubkeys sorted. Both ends compute the same 16 bytes.
-    pub(super) fn bridge_session_id(&self, other_device: &[u8; 32]) -> [u8; 16] {
-        let ours = self
-            .device_keypair
-            .as_ref()
-            .map(|kp| *kp.public.as_bytes())
-            .unwrap_or([0u8; 32]);
-        let (a, b) = if ours <= *other_device {
-            (ours, *other_device)
-        } else {
-            (*other_device, ours)
-        };
-        let mut input = Vec::with_capacity(64);
-        input.extend_from_slice(&a);
-        input.extend_from_slice(&b);
-        let h = blake3::hash(&input);
-        let mut id = [0u8; 16];
-        id.copy_from_slice(&h.as_bytes()[..16]);
-        id
-    }
-
-    /// BRIDGE (chat-as-shell): run one `$ ` command with the login shell, then reply to the client with the combined stdout+stderr as a term DATA frame (which the client posts as a bubble). Output tail-capped; non-zero exit appended. Runs in the operator's own login environment — the operator shelling into their own box.
+    /// Run one `$ ` command with the login shell and return the combined stdout+stderr, tail-capped, non-zero exit appended. Pure — no reply, no bubble; the caller routes the output. Runs in the operator's own login environment (the operator shelling into their own box). Blocks the caller for the command's duration: this runs on the HOST (the remote box, not the operator's screen), so a slow command never freezes the operator's UI — only the unwatched host's.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-    pub(super) fn run_bridge_command(&mut self, session_id: [u8; 16], cmd: &str) {
-        const MAX_OUT: usize = 12 * 1024; // keep a reply comfortably inside one frame
+    pub(super) fn execute_bridge_command(cmd: &str) -> String {
+        const MAX_OUT: usize = 12 * 1024; // keep a reply comfortably inside one chain message
         crate::logf!("BRIDGE: running command from sibling: {}", cmd);
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        let output = std::process::Command::new(&shell)
-            .arg("-lc")
-            .arg(cmd)
-            .output();
-        let reply = match output {
+        match std::process::Command::new(&shell).arg("-lc").arg(cmd).output() {
             Ok(out) => {
                 let mut body = String::new();
                 body.push_str(&String::from_utf8_lossy(&out.stdout));
@@ -225,7 +133,7 @@ impl PhotonApp {
                 if body.len() > MAX_OUT {
                     // Keep the TAIL — the end of a command's output is usually what matters.
                     let cut = body.len() - MAX_OUT;
-                    body = format!("…(truncated {} bytes)\n{}", cut, &body[cut..]);
+                    body = format!("\u{2026}(truncated {} bytes)\n{}", cut, &body[cut..]);
                 }
                 let code = out.status.code().unwrap_or(-1);
                 if body.trim().is_empty() {
@@ -240,53 +148,15 @@ impl PhotonApp {
                 body
             }
             Err(e) => format!("(failed to run: {})", e),
-        };
-        // Reply to the client as a term DATA frame; also show it in the host's own conversation.
-        self.send_bridge_frame(session_id, reply.as_bytes());
-        if let Some(ci) = self.contacts.iter().position(|c| {
-            self.bridge_clients
-                .get(&session_id)
-                .map(|(dev, _, _)| c.is_sibling && c.knows_device(dev))
-                .unwrap_or(false)
-        }) {
-            self.bridge_post_bubble(ci, &reply, true);
         }
     }
 
-    /// Send a term DATA frame to the client of `session_id` (host → client reply path).
+    /// HOST role, chat transport (the durable path Nick asked for 2026-08-21): a `$ ` command arrived as an ORDINARY chat message in the sibling `ci`'s conversation — run it and reply with the output as an ordinary chat message BACK to that sibling. The command reached us with full chain reliability (retransmit + ACK + re-serve); the reply rides the same machinery home. The operator sees their command brighten on our ACK (it reached the terminal), then the output land as a normal incoming bubble. No term frames, no session map, no host flag — the fold-verified sibling gate at the receive site is the whole authorization.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-    pub(super) fn send_bridge_frame(&self, session_id: [u8; 16], payload: &[u8]) {
-        let Some((device, addr_pair, relay_to)) = self.bridge_clients.get(&session_id).cloned()
-        else {
-            return;
-        };
-        let Some(fleet_key) = self.fleet_key_cached() else {
-            return;
-        };
-        let Ok(sealed) = crate::network::bridge::seal_term(payload, &fleet_key) else {
-            return;
-        };
-        let (Some(kp), Some(checker)) =
-            (self.device_keypair.as_ref(), self.status_checker.as_ref())
-        else {
-            return;
-        };
-        let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_term_vsf(
-            &session_id,
-            crate::network::fgtw::protocol::term_kind::DATA,
-            sealed,
-            kp.public.as_bytes(),
-            kp.secret.as_bytes(),
-        ) else {
-            return;
-        };
-        checker.send_history(crate::network::status::HistorySendRequest {
-            peer_addr: addr_pair.0,
-            alt_addr: addr_pair.1,
-            recipient_pubkey: device,
-            vsf_bytes,
-            relay_to,
-        });
+    pub(super) fn run_bridge_command_chat(&mut self, ci: usize, cmd: &str) {
+        let reply = Self::execute_bridge_command(cmd);
+        // Reply rides the regular chain send — durable, retransmitted, ACKed, re-served on reconnect, exactly like any message in this conversation.
+        self.send_chain_message(ci, &reply, false, None);
     }
 
     /// Turn unattended mode on/off. ON writes the marker AND (also requires background/autostart so a reboot actually relaunches photon) refreshes the capsule from the live session. OFF removes the marker and shreds the capsule.

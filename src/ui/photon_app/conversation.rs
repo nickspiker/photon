@@ -937,6 +937,9 @@ impl PhotonApp {
         let mut call_signal_evt: Option<(usize, crate::call::signal::CallSignal, Option<[u8; 32]>, i64)> = None;
         let mut recv_seal_idx: Option<usize> = None;
         let mut persist_ci: Option<usize> = None;
+        // BRIDGE host: a `$ ` command arrived as an ordinary sibling message — run it + reply AFTER the chains borrow ends (needs &mut self). Deferred like sibling_push.
+        #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+        let mut bridge_run: Option<(usize, String)> = None;
         let mut conv_state_pos: Option<usize> = None;
         let mut replays: Vec<crate::network::status::StatusUpdate> = Vec::new();
         let mut need_sync = false;
@@ -1308,6 +1311,16 @@ impl PhotonApp {
                 // Snapshot the facts the gates below need, so the &mut contact borrow ends here (the claim check walks self.contacts).
                 let contact_is_sibling = contact.is_sibling;
                 let sender_name = contact.display_name();
+                // BRIDGE host capture: a `$ ` line from a SIBLING is a command to run on this box — stash it (before message_text moves into the row) and execute after the chains borrow ends. The message still stores + ACKs as an ordinary bubble, so the operator's command brightens on our ACK; then the reply rides back as an ordinary message. The fold-verified, non-locked sibling gate at the top of this receive already authorized it — the `$ ` prefix is the only extra check, matching the legacy term path exactly.
+                #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+                if contact_is_sibling {
+                    if let Some(cmd) = message_text
+                        .strip_prefix("$ ")
+                        .or_else(|| message_text.strip_prefix("$\t"))
+                    {
+                        bridge_run = Some((contact_idx, cmd.to_string()));
+                    }
+                }
                 // Use actual eagle_time and sorted insert for correct chronological order
                 let mut msg = ChatMessage::new_with_timestamp(
                     message_text,
@@ -1504,6 +1517,11 @@ impl PhotonApp {
         }
         if !replays.is_empty() {
             self.chat_replay_queue.extend(replays);
+        }
+        // BRIDGE host: run the captured `$ ` command and reply over the durable chain. LAST, past every borrow — the command's own bubble + ACK are already committed above, so the operator's row brightens (reached the terminal) before the reply lands.
+        #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+        if let Some((ci, cmd)) = bridge_run {
+            self.run_bridge_command_chat(ci, &cmd);
         }
     }
 
