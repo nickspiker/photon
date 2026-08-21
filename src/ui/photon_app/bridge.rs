@@ -47,14 +47,8 @@ impl PhotonApp {
         crate::storage::device_flag("flags/unattended_reboot")
     }
 
-    /// Whether this device serves remote shells to fleet siblings (default OFF). Device-scope vault flag (was the `<config>/remote_terminal` marker file); a resident/headless host honours it with no UI.
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-    pub(super) fn remote_terminal_enabled() -> bool {
-        crate::storage::device_flag("flags/remote_terminal")
-    }
-
-    /// Handle one received `term` DATA frame — CROSS-PLATFORM, the chat-as-shell model (line in, line out; the PTY host in network/bridge.rs is a separate future path). Gate: fold-verified SIBLING only (our own device), never a friend. Two roles:
-    /// - HOST (desktop-unix + opt-in): a `$ `-prefixed line is a command → run it + reply with the output as another DATA frame. A non-command line just posts to the sibling conversation.
+    /// Handle one received `term` DATA frame — CROSS-PLATFORM, the chat-as-shell model (line in, line out; the PTY host in network/bridge.rs is a separate future path). Gate: fold-verified, NON-LOCKED sibling only (our own device), never a friend — and that gate is the WHOLE authorization (no host flag, Nick's ruling 2026-08-21: the bridge is a regular chat screen between your own devices). Two roles:
+    /// - HOST (desktop-unix): a `$ `-prefixed line is a command → run it + reply with the output as another DATA frame. A non-command line just posts to the sibling conversation.
     /// - CLIENT (any platform): a DATA frame is a reply (command output or a chat line) → post it into that sibling's conversation as an incoming bubble.
     pub(super) fn on_bridge_frame(
         &mut self,
@@ -65,13 +59,13 @@ impl PhotonApp {
         sender_addr: std::net::SocketAddr,
     ) {
         use crate::network::fgtw::protocol::term_kind;
-        // SIBLING gate (both roles). Never a friend.
+        // SIBLING gate (both roles). Never a friend — and never a LOCKED-OUT sibling: with no host flag (Nick's ruling 2026-08-21, the fold IS the authorization), this line is the whole wall between a stolen device and a shell on every fleet machine.
         let sib_idx = self
             .contacts
             .iter()
-            .position(|c| c.is_sibling && c.knows_device(&sender_device));
+            .position(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_device));
         let Some(ci) = sib_idx else {
-            crate::log("BRIDGE: frame from a non-sibling — dropped");
+            crate::log("BRIDGE: frame from a non-sibling (or locked-out) device — dropped");
             return;
         };
         let Some(fleet_key) = self.fleet_key_cached() else {
@@ -90,7 +84,7 @@ impl PhotonApp {
         }
         let line = String::from_utf8_lossy(&payload).to_string();
 
-        // HOST role: a `$ ` command runs here (desktop-unix + opt-in). Remember where to reply.
+        // HOST role: a `$ ` command runs here (desktop-unix). NO host flag (Nick's ruling 2026-08-21): the fold-verified, non-locked sibling gate above IS the authorization — the bridge conversation is a regular chat screen and a `$ ` line just runs, exactly as typing it at that machine would. The old off-by-default flag was the Europe incident's second half: the census wiped its marker fleet-wide and a disabled host swallowed commands into silent chat bubbles.
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
         {
             if let Some(cmd) = line.strip_prefix("$ ").or_else(|| line.strip_prefix("$\t")) {
@@ -102,14 +96,7 @@ impl PhotonApp {
                     .unwrap_or_default();
                 self.bridge_clients
                     .insert(session_id, (sender_device, (sender_addr, None), relay_to));
-                if Self::remote_terminal_enabled() {
-                    self.run_bridge_command(session_id, cmd);
-                } else {
-                    // LOUD REFUSAL: a disabled host used to swallow `$ ` commands into a silent chat bubble — the client couldn't tell disabled from broken from unreachable (the Europe incident's shape, and the flag-day census wiped the old marker file fleet-wide with no migration, so EVERY host went silently dark). The command still shows in both histories; the client now gets told exactly what to do about it.
-                    crate::logf!("BRIDGE: `$` command from sibling REFUSED — remote terminal is disabled on this host");
-                    let notice = "[bridge host disabled — on this machine run: photon-messenger --enable-remote-terminal (while photon is closed), then relaunch photon]";
-                    self.send_bridge_frame(session_id, notice.as_bytes());
-                }
+                self.run_bridge_command(session_id, cmd);
                 // Also show the incoming command in the host's own conversation history.
                 self.bridge_post_bubble(ci, &line, false);
                 return;
