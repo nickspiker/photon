@@ -421,10 +421,15 @@ impl PhotonApp {
         let has_history = self.conv_of(ci).is_some_and(|v| !v.messages.is_empty());
         let can_fleet_forward =
             !c.is_sibling && has_history && self.contacts.iter().any(|s| s.is_sibling);
+        // A Complete SIBLING is always composable — it is EXACTLY what chain_transmit accepts for a sibling (lane_capable is false for siblings by construction, so Complete is the whole gate there). Without this, compose_ready collapsed to `chain_woven` alone for a sibling, and that runtime seal flag resets on restart — so a bridge conversation (a per-sibling contact) had NO compose box until a re-seal probe happened to land, and commands typed into the void vanished (field 2026-08-21, the bridge conversation that ate every command). The self/notes row stays covered by is_zero_remote; this covers the per-device sibling conversations the bridge opens.
+        let sibling_sendable = c.is_sibling
+            && c.clutch_state == crate::types::ClutchState::Complete
+            && c.friendship_id.is_some();
         self.is_zero_remote(c)
             || c.chain_woven
             || self.lane_transmit_capable(ci)
             || can_fleet_forward
+            || sibling_sendable
     }
 
     /// The conversation for `self.contacts[ci]`, materialized empty on first touch — so no caller ever branches on "does it exist yet". `None` only before the session is up.
