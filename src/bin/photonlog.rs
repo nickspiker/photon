@@ -12,6 +12,7 @@
 //!   -p, --pull          fetch this identity's SUBMITTED logs straight from FGTW (needs --handle or --seed), decrypt, and decode — no manual R2 wrangling. The seed derives both the retrieval tag (to find them) and the key (to open them).
 //!   -H, --handle NAME   the peer's handle. Derives their identity seed on the spot (cheap) — the friendly way to identify whose logs to pull. Use this; --seed is the raw-bytes escape hatch.
 //!   -s, --seed HEX64    the peer's 32-byte identity seed directly (deterministic from their handle). Equivalent to --handle but pre-derived.
+//!   -P, --petname NAME  resolve NAME thru the dev-machine pseudonym map ($FERROS_HANDLE_MAP, lines of `handle = petname`) and pull that identity's logs — the handle never touches a command line, a screen, or a transcript. THE way to pull a person's logs on a dev machine; --handle stays for machines without the map.
 //!   -S, --session       pull YOUR OWN logs using the live tohu session registers (the seed this device's app actually submitted under — the ground truth when a --handle pull comes up empty). No handle typed, no seed echoed.
 //!   -k, --key  HEX64    like --seed for local decrypt but you already hold the raw 32-byte log key (skips the seed→key derivation; can't --pull).
 //!
@@ -83,6 +84,38 @@ fn read_all(path: &str) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Resolve a petname to its handle thru the dev-machine pseudonym map: lines of `handle = petname`, handle LEFT (the secret), petname RIGHT (the safe prose alias) — the same file the handle-guard reads, so the two tools can never disagree on which column is which.
+/// Match = case-insensitive on the petname's first word (the right column may carry a parenthetical note); ambiguity is an error listing the petnames (safe to print), never a guess — a fuzzy match pulling the WRONG person's logs would be worse than no match.
+fn petname_to_handle(petname: &str) -> Result<String, String> {
+    let map_path = std::env::var("FERROS_HANDLE_MAP")
+        .unwrap_or_else(|_| "/mnt/Harbor/Code/keys/claude-pseudonym-map.txt".to_string());
+    let map = std::fs::read_to_string(&map_path)
+        .map_err(|e| format!("cannot read pseudonym map {map_path}: {e} (set FERROS_HANDLE_MAP)"))?;
+    let want = petname.to_lowercase();
+    let mut hits: Vec<(String, String)> = Vec::new();
+    for line in map.lines() {
+        let line = line.trim_end();
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        let Some((handle, pet)) = line.split_once(" = ") else {
+            continue;
+        };
+        let pet_word = pet.split_whitespace().next().unwrap_or("");
+        if pet.to_lowercase() == want || pet_word.to_lowercase() == want {
+            hits.push((handle.to_string(), pet.to_string()));
+        }
+    }
+    match hits.len() {
+        0 => Err(format!("no map entry with petname '{petname}'")),
+        1 => Ok(hits.remove(0).0),
+        _ => Err(format!(
+            "petname '{petname}' is ambiguous in the map: {}",
+            hits.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>().join(" | ")
+        )),
+    }
+}
+
 /// Parse a 64-char hex string into a 32-byte array (identity seed or raw log key).
 fn parse_hex32(s: &str) -> Option<[u8; 32]> {
     let v = (0..s.len())
@@ -123,6 +156,21 @@ fn main() {
                 Some(s) => seed = Some(s),
                 None => {
                     eprintln!("photonlog: --seed needs 64 hex chars (the 32-byte identity seed)");
+                    std::process::exit(2);
+                }
+            },
+            "-P" | "--petname" => match args.next() {
+                Some(p) => match petname_to_handle(&p) {
+                    Ok(h) => {
+                        seed = Some(photon_messenger::storage::contacts::derive_identity_seed(&h))
+                    }
+                    Err(e) => {
+                        eprintln!("photonlog: {e}");
+                        std::process::exit(2);
+                    }
+                },
+                None => {
+                    eprintln!("photonlog: --petname needs the person's petname (right column of the map)");
                     std::process::exit(2);
                 }
             },
@@ -167,7 +215,7 @@ fn main() {
     // Pull mode: fetch this identity's submitted logs straight from FGTW, decrypt, and decode — no manual R2 wrangling. The seed derives the retrieval tag (to find them) and the log key (to open them); knowledge of the seed IS the whole capability.
     if pull {
         let Some(seed) = seed else {
-            eprintln!("photonlog: --pull needs --handle <name> (or --seed <64hex>) to identify whose logs to fetch");
+            eprintln!("photonlog: --pull needs --petname <name>, --handle <name>, --session, or --seed <64hex> to identify whose logs to fetch");
             std::process::exit(2);
         };
         let tag = photon_messenger::log_retrieval_tag(&seed);
