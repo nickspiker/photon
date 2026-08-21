@@ -2,6 +2,8 @@
 
 ## Desktop corpus (project_* / feedback_* / reference_*)
 
+- [feedback_no_redundant_disk_ops.md](feedback_no_redundant_disk_ops.md) — machines are BTRFS-snapshotted many times over (Harbor+Chiton+MEGA): NEVER invent backup bundles/copies before destructive ops; batch full-repo scans, one pass
+
 - [project_fleet_key_redesign.md](project_fleet_key_redesign.md) — fleet-key REDESIGN spec'd (docs/fleet-key.md @2c81c39, Nick reviewing): ira-wrapped, revision-published, shrink-only mint; DANGER: deploying current build to MacBook/Android destroys the last history copy (census deletes un-migrated rings)
 
 - [project_great_cleanup.md](project_great_cleanup.md) — GREAT CLEANUP: Phases 1-6 ALL SHIPPED 2026-08-20 (device vault+migration, self-honest rings, fleet-first rejoin, JPEG gate, LAN add); Phase 7 = Nick's publish
