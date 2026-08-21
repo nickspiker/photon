@@ -171,9 +171,6 @@ impl PhotonApp {
             crate::crypto::clutch::ClutchKemResponsePayload,
             crate::crypto::clutch::ClutchAllKeypairs,
         )> = Vec::new();
-        // BRIDGE: term frames deferred past the drain (on_bridge_frame needs &mut self; the drain holds an immutable `checker` borrow). Cross-platform.
-        let mut term_frames: Vec<([u8; 16], u8, Vec<u8>, [u8; 32], std::net::SocketAddr)> =
-            Vec::new();
         let mut lan_ping_indices: Vec<usize> = Vec::new(); // Contact indices to ping immediately on new LAN discovery
                                                            // Collect pending message retransmit requests (friendship_id, ip, handle, device_pubkey, last_received_ef6) to process after loop last_received_ef6 from pong tells us what they already have - only retransmit newer
         let mut retransmit_requests: Vec<(
@@ -243,7 +240,6 @@ impl PhotonApp {
                 StatusUpdate::OurLanAddrObserved { .. } => "OurLanAddrObserved",
                 StatusUpdate::ReflexiveLearned { .. } => "ReflexiveLearned",
                 StatusUpdate::PathValidated { .. } => "PathValidated",
-                StatusUpdate::TermReceived { .. } => "TermReceived",
             }
         }
         {
@@ -2956,22 +2952,6 @@ impl PhotonApp {
                         });
                     }
                 }
-                // BRIDGE: a term frame from a fleet sibling. Cross-platform — a DATA frame is either a command to run (host, desktop-unix) or a reply to display (client, any platform). Deferred past the drain's borrow.
-                StatusUpdate::TermReceived {
-                    session_id,
-                    kind,
-                    sealed_payload,
-                    sender_pubkey,
-                    sender_addr,
-                } => {
-                    term_frames.push((
-                        session_id,
-                        kind,
-                        sealed_payload,
-                        sender_pubkey.key,
-                        sender_addr,
-                    ));
-                }
                 StatusUpdate::ChainSyncReceived {
                     conversation_token,
                     epoch_k,
@@ -4175,11 +4155,6 @@ impl PhotonApp {
         }
         if heal_due {
             self.reannounce_attention_state();
-        }
-        // BRIDGE: process deferred term frames now the drain's borrow is released. Cross-platform — the CLIENT role (post a reply bubble) runs everywhere; the HOST role (run a `$ ` command) is unix-gated inside on_bridge_frame.
-        for (session_id, kind, sealed_payload, sender_device, sender_addr) in term_frames {
-            self.on_bridge_frame(session_id, kind, sealed_payload, sender_device, sender_addr);
-            changed = true;
         }
 
         // Retransmit pending messages to contacts that just came online Use last_received_ef6 from pong to only retransmit messages they don't have
