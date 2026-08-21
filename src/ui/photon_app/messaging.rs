@@ -155,10 +155,13 @@ impl PhotonApp {
 
     /// Persist a conversation's message table WITHOUT blocking the UI thread. Snapshots the conversation and hands it to one background writer that coalesces bursts (latest snapshot per conversation id wins — an older snapshot can never clobber a newer one because the drain keeps only the last). The write itself is the same `save_messages` full-table rewrite; only the thread changed.
     pub(super) fn persist_messages_async(&mut self, ci: usize) {
+        // EVERY exit below is LOUD (field 2026-08-21: a run's later sends vanished at relaunch while earlier ones persisted — three silent failure modes on the one path whose failure IS data loss, and the log couldn't say which fired).
         let Some(conv) = self.conv_of(ci).cloned() else {
+            crate::logf!("STORAGE: message persist SKIPPED — no conversation object resolves for contact index {} (rows live in RAM only until this is fixed)", ci);
             return;
         };
         let Some(storage) = self.storage.as_ref().cloned() else {
+            crate::log("STORAGE: message persist SKIPPED — no storage (vault not open)");
             return;
         };
         // Storage rides WITH each snapshot (not captured once): logout/login swaps the vault, and a worker holding the first session's Arc would write a dead vault forever.
@@ -177,15 +180,26 @@ impl PhotonApp {
                         latest.push(next);
                     }
                     for (v, st) in latest {
-                        if let Err(e) = crate::storage::contacts::save_messages(&v, &st) {
-                            crate::logf!("STORAGE: async message persist failed: {}", e);
+                        // catch_unwind: ONE poisoned snapshot must not kill the writer for the whole session — a dead writer silently stranded every subsequent message in RAM (they vanished at relaunch).
+                        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            crate::storage::contacts::save_messages(&v, &st)
+                        }));
+                        match r {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => crate::logf!("STORAGE: async message persist failed: {}", e),
+                            Err(_) => crate::log("STORAGE: message persist writer caught a PANIC — snapshot dropped, writer survives"),
                         }
                     }
                 }
             });
             tx
         });
-        let _ = tx.send((conv, storage));
+        if tx.send((conv.clone(), storage.clone())).is_err() {
+            // The writer thread is dead. Respawn and retry once — the fresh channel's receiver is alive by construction, so the retry cannot loop.
+            crate::log("STORAGE: message persist writer was DEAD — respawning and retrying");
+            self.persist_tx = None;
+            self.persist_messages_async(ci);
+        }
     }
 
     /// Persist a friendship's chains OFF the UI thread with no gated signal — the safe-to-delay saves (ACK pending-removal, chain-sync adopt), where a lost write just re-converges idempotently.
