@@ -3718,13 +3718,16 @@ impl PhotonApp {
                             };
                             self.contacts[idx].blind_in_flight = None;
                             self.contacts[idx].blind_deposited = true;
-                            if let Some(storage) = self.storage.as_ref() {
-                                if let Err(e) = crate::storage::contacts::save_contact_state(
-                                    &self.contacts[idx],
-                                    storage,
-                                ) {
-                                    crate::logf!("BLIND: deposited-flag persist failed: {}", e);
-                                }
+                            // OFF-THREAD, snapshot pattern: this inline save was the `BlindFrameReceived 890ms (UI thread)` arm in the 2026-08-21 hang capture — a full vault write on the render thread for a flag only WE read (no ack depends on it, unlike the deposit path above; a crash before the write just re-runs the confirm, idempotent).
+                            if let Some(storage) = self.storage.as_ref().cloned() {
+                                let snapshot = self.contacts[idx].clone();
+                                queue_job(&self.seal_job_tx, move || {
+                                    if let Err(e) = crate::storage::contacts::save_contact_state(
+                                        &snapshot, &storage,
+                                    ) {
+                                        crate::logf!("BLIND: deposited-flag persist failed: {}", e);
+                                    }
+                                });
                             }
                             crate::logf!(
                                 "BLIND: deposit confirmed at {}",
@@ -3849,13 +3852,15 @@ impl PhotonApp {
                                                         s,
                                                         s_id: sid,
                                                     };
-                                                // A served deposit IS a confirmed deposit at this friend.
+                                                // A served deposit IS a confirmed deposit at this friend. Persist OFF-THREAD (snapshot pattern) — the sibling inline save was the 890ms UI-thread arm; this is the same flag on the reconstitute path.
                                                 self.contacts[idx].blind_deposited = true;
-                                                if let Some(storage) = self.storage.as_ref() {
-                                                    let _ = crate::storage::contacts::save_contact_state(
-                                                        &self.contacts[idx],
-                                                        storage,
-                                                    );
+                                                if let Some(storage) = self.storage.as_ref().cloned() {
+                                                    let snapshot = self.contacts[idx].clone();
+                                                    queue_job(&self.seal_job_tx, move || {
+                                                        let _ = crate::storage::contacts::save_contact_state(
+                                                            &snapshot, &storage,
+                                                        );
+                                                    });
                                                 }
                                             }
                                         }
@@ -4203,16 +4208,28 @@ impl PhotonApp {
         // 3. Offers are sent from check_clutch_keygens or the KeysGenerated handler above
         // This avoids UI freeze from synchronous McEliece keygen (~100ms) and handle_proof (~1s)
 
-        // Persist any published-name adoptions from this drain (deferred: saving inside the loop would fight the contacts borrow). The name lives in the per-contact STATE entry, not the index.
+        // Persist any published-name adoptions from this drain (deferred: saving inside the loop would fight the contacts borrow). The name lives in the per-contact STATE entry, not the index. OFF-THREAD, snapshot pattern — these fired inline on the UI thread at ~900ms per vault write in the 2026-08-21 field capture; the batch of snapshots rides ONE worker job (and the librarian's group commit makes the burst one flush).
         let name_adopted = self.contacts.iter().any(|c| c.published_name_dirty);
         if name_adopted {
-            if let Some(storage) = self.storage.as_ref() {
-                for contact in self.contacts.iter_mut().filter(|c| c.published_name_dirty) {
-                    contact.published_name_dirty = false;
-                    if let Err(e) = crate::storage::contacts::save_contact_state(contact, storage) {
-                        crate::logf!("CONTACT: published-name persist failed: {}", e);
+            if let Some(storage) = self.storage.as_ref().cloned() {
+                let snapshots: Vec<crate::types::Contact> = self
+                    .contacts
+                    .iter_mut()
+                    .filter(|c| c.published_name_dirty)
+                    .map(|c| {
+                        c.published_name_dirty = false;
+                        c.clone()
+                    })
+                    .collect();
+                queue_job(&self.seal_job_tx, move || {
+                    for snapshot in &snapshots {
+                        if let Err(e) =
+                            crate::storage::contacts::save_contact_state(snapshot, &storage)
+                        {
+                            crate::logf!("CONTACT: published-name persist failed: {}", e);
+                        }
                     }
-                }
+                });
             }
         }
 
@@ -4231,7 +4248,8 @@ impl PhotonApp {
             }
             // A fresh pin means a fresh avatar to pull — the sweep's remembered probes are stale.
             self.avatar_probe_cache.clear();
-            if let Some(storage) = self.storage.as_ref() {
+            // OFF-THREAD (snapshot): the index rewrite is a full vault write — ~900ms inline on the UI thread in the 2026-08-21 field capture, and pin adoptions arrive with every fstate merge cycle.
+            if let Some(storage) = self.storage.as_ref().cloned() {
                 let index: Vec<crate::storage::contacts::ContactIdentity> = self
                     .contacts
                     .iter()
@@ -4242,9 +4260,11 @@ impl PhotonApp {
                         avatar_pin: c.avatar_pin,
                     })
                     .collect();
-                if let Err(e) = crate::storage::contacts::save_contact_list(&index, storage) {
-                    crate::logf!("CONTACT: avatar-pin persist failed: {}", e);
-                }
+                queue_job(&self.seal_job_tx, move || {
+                    if let Err(e) = crate::storage::contacts::save_contact_list(&index, &storage) {
+                        crate::logf!("CONTACT: avatar-pin persist failed: {}", e);
+                    }
+                });
             }
             for i in avatar_adopted {
                 // A rotated pin names a NEW avatar: drop the once-per-session latch first, or the fetch dedups itself into a no-op and the new picture never arrives until a restart (one device picked, the peer kept the old face — 2026-08-02).
