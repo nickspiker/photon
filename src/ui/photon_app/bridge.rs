@@ -20,7 +20,7 @@ impl PhotonApp {
         if let Some(conv) = self.conv_mut_of(ci) {
             if conv.messages.is_empty() {
                 let hint = ChatMessage::new_with_timestamp(
-                    "Bridge ready. Type a command prefixed with \u{201c}$ \u{201d} (e.g. $ uptime) and this device runs it, replying with the output. Requires the target to have the remote-terminal host enabled.".to_string(),
+                    "Bridge ready. Type a command prefixed with \u{201c}$ \u{201d} (e.g. $ uptime) and the other device runs it, replying with the output. It's your own fleet — no setup on either end.".to_string(),
                     false,
                     vsf::eagle_time_oscillations(),
                 );
@@ -124,13 +124,8 @@ impl PhotonApp {
     /// BRIDGE client SEND: transmit a line typed in a sibling conversation to that device as a `term` DATA frame (the sibling device-to-device transport). The line rides fleet-sealed; the host runs any `$ ` command and replies with a term DATA frame carrying the output, which our client-receive turns back into a chat bubble. `session_id` is derived from the device pair so both sides agree without a handshake.
     pub(super) fn send_bridge_text(&mut self, ci: usize, text: &str) {
         let Some((device, addr_pair, relay_to)) = self.contacts.get(ci).map(|c| {
-            // Always gather a relay list for a sibling with no proven path — the bridge must reach an idle device even when presence never adopted a direct address.
-            let relay = if c.validated_path.is_none() {
-                c.relay_device_list()
-            } else {
-                Vec::new()
-            };
-            (c.public_identity.key, c.race_addrs(), relay)
+            // Relay UNCONDITIONALLY (the BLIND-frame doctrine): a "validated" path can be a stale endpoint — field 2026-08-21, the controlling sibling sent both commands to another device's dead cellular v6 (primary from a smeared row) with the relay skipped because a validated_path existed, so the frames died silently. The bridge is a human at a keyboard expecting a shell; it rides every path it has, every time.
+            (c.public_identity.key, c.race_addrs(), c.relay_device_list())
         }) else {
             return;
         };
