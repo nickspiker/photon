@@ -52,6 +52,8 @@ pub enum RefKind {
     React = 3,
     /// BRIDGE command OUTPUT. A sibling conversation is a chat-as-shell: every plain incoming sibling line is a command the host runs; the host's reply carries THIS typed kind so it renders as an ordinary visible bubble but is never re-executed (the anti-bounce flag). Typed wire field, NOT a content sentinel — the reply/edit/react rework's whole point was to stop embedding markers in human text; the bridge honours the same rule. No target row, so the reference's `i64` is 0 and ignored.
     BridgeOut = 4,
+    /// BRIDGE session RESET — the client sends this when it OPENS the bridge, telling the host to kill its persistent shell for us and start fresh (Nick 2026-08-22: "opening the bridge nukes any terminal open, clears and spawns new"). A hidden control row: never displayed, never run as a command. No target; `i64` is 0.
+    BridgeReset = 5,
 }
 
 impl RefKind {
@@ -61,6 +63,7 @@ impl RefKind {
             2 => Some(RefKind::Edit),
             3 => Some(RefKind::React),
             4 => Some(RefKind::BridgeOut),
+            5 => Some(RefKind::BridgeReset),
             _ => None,
         }
     }

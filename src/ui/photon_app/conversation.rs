@@ -1317,11 +1317,18 @@ impl PhotonApp {
                 let contact_is_sibling = contact.is_sibling;
                 let sender_name = contact.display_name();
                 // BRIDGE host capture: a sibling conversation is a chat-as-shell, so an incoming line from a sibling is a command to run on this box (no `$` — the shell already prompts; Nick 2026-08-21) — EXCEPT a row whose TYPED reference is BridgeOut, which is a reply coming back and must NOT re-execute (else output bounces). Capture the candidate here (before message_text moves); it is promoted to an actual run ONLY if the row is NEW (is_new_row, computed below) — a re-served/duplicate/history-backfilled command must never re-execute, or a reconnect would replay the entire command history (Nick 2026-08-22).
+                // A BridgeReset row (the peer opened the bridge) drops our shell for them — hidden, never a command, never displayed.
+                #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+                let bridge_reset = contact_is_sibling
+                    && matches!(wire_reference, Some((crate::types::RefKind::BridgeReset, _)));
                 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
                 let bridge_cmd_candidate: Option<String> = if contact_is_sibling
                     && !is_chain_probe
-                    && !matches!(wire_reference, Some((crate::types::RefKind::BridgeOut, _)))
-                {
+                    && !matches!(
+                        wire_reference,
+                        Some((crate::types::RefKind::BridgeOut, _))
+                            | Some((crate::types::RefKind::BridgeReset, _))
+                    ) {
                     let cmd = message_text
                         .strip_prefix("$ ")
                         .or_else(|| message_text.strip_prefix("$\t"))
@@ -1410,10 +1417,12 @@ impl PhotonApp {
                     conv.scroll_offset = 0.0; // Scroll to show new message (an edit repaints in place)
                 }
                 self.scene_dirty = true;
-                // Promote a captured bridge command to an actual run ONLY on first receipt — a re-serve/duplicate/history-backfill must never re-execute (Nick 2026-08-22).
+                // Promote a captured bridge command to an actual run ONLY on first receipt — a re-serve/duplicate/history-backfill must never re-execute (Nick 2026-08-22). A reset likewise fires once.
                 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
                 if is_new_row {
-                    if let Some(cmd) = bridge_cmd_candidate {
+                    if bridge_reset {
+                        bridge_run = Some((contact_idx, String::new())); // sentinel: empty cmd = reset (handled at the drain site)
+                    } else if let Some(cmd) = bridge_cmd_candidate {
                         bridge_run = Some((contact_idx, cmd));
                     }
                 }
@@ -1535,10 +1544,14 @@ impl PhotonApp {
         if !replays.is_empty() {
             self.chat_replay_queue.extend(replays);
         }
-        // BRIDGE host: run the captured `$ ` command and reply over the durable chain. LAST, past every borrow — the command's own bubble + ACK are already committed above, so the operator's row brightens (reached the terminal) before the reply lands.
+        // BRIDGE host: dispatch the captured command (or a reset) LAST, past every borrow. The command's own bubble + ACK are already committed above, so the operator's row brightens (reached the terminal) before the reply lands. An empty cmd is the reset sentinel — the peer opened the bridge; drop our shell so their first command starts fresh.
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
         if let Some((ci, cmd)) = bridge_run {
-            self.run_bridge_command_chat(ci, &cmd);
+            if cmd.is_empty() {
+                self.reset_bridge_shell(ci);
+            } else {
+                self.run_bridge_command_chat(ci, &cmd);
+            }
         }
     }
 
