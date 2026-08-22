@@ -141,7 +141,7 @@ impl PhotonApp {
             crate::log("BRIDGE: no sibling contact for that device — cannot open");
             return;
         };
-        // FRESH SESSION on open (Nick 2026-08-22): the terminal is ephemeral, so opening WIPES the on-screen rows AND drops any stale in-flight command frames for this sibling — otherwise old commands from a prior session would retransmit and re-appear after the wipe. This is safe now because sibling frames are anchor-only (they weave no strands), so a wiped row can never strand-miss a later frame. The host shell also resets (below) so cwd/env start clean.
+        // FRESH SESSION on open (Nick 2026-08-22): the terminal is ephemeral, so opening WIPES the on-screen rows, and any stale in-flight command frames are abandoned via LANE ROTATION — never a bare pending clear. Each frame links the previous frame's hash, so clearing pending mid-chain destroys the only copies of frames the peer still needs to link: the peer gap-buffers everything after the hole forever ('expected prev X — buffering (ahead of us)') and nothing ever ACKs again (field 2026-08-22, the no-ACK wedge THIS comment replaces). rotate_our_lane is the sanctioned abandon: retire the dead lane wholesale, mint a fresh one; the peer materializes it from the first frame's wire label and links from its ANCHOR — no hole possible. Safe for ephemeral rows because sibling frames are anchor-only (no strand ever references a wiped row). The host shell also resets (below) so cwd/env start clean.
         if let Some(conv) = self.conv_mut_of(ci) {
             conv.messages.clear();
         }
@@ -151,7 +151,12 @@ impl PhotonApp {
                 .iter_mut()
                 .find(|(id, _)| *id == fid)
             {
-                chains.pending_messages.clear();
+                // Rotation only when frames are actually in flight — a drained lane IS a fresh session at the chain level, and needless rotation grows the peer's lane-label set for nothing.
+                if !chains.pending_messages.is_empty() {
+                    if let Some((dead, fresh, retired)) = chains.rotate_our_lane() {
+                        crate::logf!("BRIDGE: open with {} stale in-flight frame(s) — rotated lane {}... to {}... (fresh session discards them cleanly)", retired, hex::encode(&dead[..4]), hex::encode(&fresh[..4]));
+                    }
+                }
             }
         }
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
@@ -201,14 +206,18 @@ impl PhotonApp {
         let Some(dev) = self.contacts.get(ci).map(|c| c.public_identity.key) else {
             return;
         };
-        // Symmetric with the client's open: drop any stale in-flight OUTPUT frames for this sibling so replies from the prior session don't retransmit into the freshly-wiped screen. Anchor-only makes this safe (no strand depends on them).
+        // Symmetric with the client's open: abandon any stale in-flight OUTPUT frames via lane rotation (NEVER a bare pending clear — that leaves a mid-chain hash hole the peer buffers behind forever; see open_bridge_conversation). Replies from the prior session stop retransmitting into the freshly-wiped screen.
         if let Some(fid) = self.contacts.get(ci).and_then(|c| c.friendship_id) {
             if let Some((_, chains)) = self
                 .friendship_chains
                 .iter_mut()
                 .find(|(id, _)| *id == fid)
             {
-                chains.pending_messages.clear();
+                if !chains.pending_messages.is_empty() {
+                    if let Some((dead, fresh, retired)) = chains.rotate_our_lane() {
+                        crate::logf!("BRIDGE: reset with {} stale in-flight output frame(s) — rotated lane {}... to {}...", retired, hex::encode(&dead[..4]), hex::encode(&fresh[..4]));
+                    }
+                }
             }
         }
         self.ensure_bridge_exec();
