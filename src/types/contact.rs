@@ -50,6 +50,8 @@ pub enum RefKind {
     Reply = 1,
     Edit = 2,
     React = 3,
+    /// BRIDGE command OUTPUT. A sibling conversation is a chat-as-shell: every plain incoming sibling line is a command the host runs; the host's reply carries THIS typed kind so it renders as an ordinary visible bubble but is never re-executed (the anti-bounce flag). Typed wire field, NOT a content sentinel — the reply/edit/react rework's whole point was to stop embedding markers in human text; the bridge honours the same rule. No target row, so the reference's `i64` is 0 and ignored.
+    BridgeOut = 4,
 }
 
 impl RefKind {
@@ -58,6 +60,7 @@ impl RefKind {
             1 => Some(RefKind::Reply),
             2 => Some(RefKind::Edit),
             3 => Some(RefKind::React),
+            4 => Some(RefKind::BridgeOut),
             _ => None,
         }
     }
@@ -180,8 +183,6 @@ pub const DELETE_MARKER_PREFIX: &str = "\u{1}\u{2}photon-delete\u{2}\u{1}";
 /// Prefix for call-signaling rows (docs/calls.md): offer/answer/decline/busy/hangup/taken ride the lanes as ordinary encrypted messages — a call is indistinguishable from a text on the wire. Grammar + parsing live in `crate::call::signal`; the type layer only owns the marker so `is_control_content` can hide them.
 pub const CALL_PREFIX: &str = "\u{1}\u{2}photon-call\u{2}\u{1}";
 
-/// Prefix on a BRIDGE COMMAND OUTPUT row. The bridge is a chat-as-shell between siblings: in a sibling conversation EVERY typed line is a command (no `$` — the shell already prompts), so the host runs any incoming sibling message that is NOT already output. The host's REPLY carries this marker so it renders as an ordinary VISIBLE bubble but is never re-executed on the operator's side (without it, output that happened to look like a command would run back — an infinite bounce). NOT control content: it's the shell result the human wants to see; `display_content` strips the marker for display.
-pub const BRIDGE_OUTPUT_PREFIX: &str = "\u{1}\u{2}photon-bridge-out\u{2}\u{1}";
 
 /// True for any CONTROL message content (chain probe, delete marker, call signaling) — machinery rows that no UI, digest, weave window, or history page may surface.
 pub fn is_control_content(content: &str) -> bool {

@@ -1316,11 +1316,11 @@ impl PhotonApp {
                 // Snapshot the facts the gates below need, so the &mut contact borrow ends here (the claim check walks self.contacts).
                 let contact_is_sibling = contact.is_sibling;
                 let sender_name = contact.display_name();
-                // BRIDGE host capture: a sibling conversation is a chat-as-shell, so EVERY incoming line from a sibling is a command to run on this box (no `$` — the shell already prompts; Nick's call 2026-08-21) — EXCEPT a row already carrying the output marker, which is a reply coming back and must NOT re-execute (else output bounces forever). Stash the command before message_text moves into the row; execute after the chains borrow ends. The row still stores + ACKs as an ordinary bubble; the fold-verified, non-locked sibling gate at the top already authorized it.
+                // BRIDGE host capture: a sibling conversation is a chat-as-shell, so EVERY incoming line from a sibling is a command to run on this box (no `$` — the shell already prompts; Nick's call 2026-08-21) — EXCEPT a row whose TYPED reference is BridgeOut, which is a reply coming back and must NOT re-execute (else output bounces forever). The distinction rides the typed wire field, never a content sentinel. Stash the command before message_text moves into the row; execute after the chains borrow ends. The row still stores + ACKs as an ordinary bubble; the fold-verified, non-locked sibling gate at the top already authorized it.
                 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
                 if contact_is_sibling
-                    && !message_text.starts_with(crate::types::BRIDGE_OUTPUT_PREFIX)
                     && !is_chain_probe
+                    && !matches!(wire_reference, Some((crate::types::RefKind::BridgeOut, _)))
                 {
                     // Tolerate a leading `$ ` for muscle memory, but it is not required.
                     let cmd = message_text
