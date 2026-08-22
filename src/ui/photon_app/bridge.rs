@@ -86,9 +86,8 @@ impl PhotonApp {
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     pub(super) fn run_bridge_command_chat(&mut self, ci: usize, cmd: &str) {
         let reply = Self::execute_bridge_command(cmd);
-        // Tag the reply as OUTPUT so the operator's side renders it (stripped) but never runs it back as a command — the anti-bounce marker. Rides the regular chain send: durable, retransmitted, ACKed, re-served on reconnect.
-        let tagged = format!("{}{}", crate::types::BRIDGE_OUTPUT_PREFIX, reply);
-        self.send_chain_message(ci, &tagged, false, None);
+        // Reply content is the RAW shell output — no sentinel in it. The OUTPUT nature rides the TYPED reference field (RefKind::BridgeOut), so the operator's side renders it as an ordinary bubble and the host-run gate skips it (anti-bounce). Same durable chain send as any message.
+        self.send_chain_message(ci, &reply, false, Some((crate::types::RefKind::BridgeOut, 0)));
     }
 
     /// Turn unattended mode on/off. ON writes the marker AND (also requires background/autostart so a reboot actually relaunches photon) refreshes the capsule from the live session. OFF removes the marker and shreds the capsule.
