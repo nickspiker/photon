@@ -141,7 +141,19 @@ impl PhotonApp {
             crate::log("BRIDGE: no sibling contact for that device — cannot open");
             return;
         };
-        // Open no longer WIPES the message rows: the braid weaves against them, so clearing (or not persisting) them causes strand misses that HOLD every reply (field 2026-08-22). Rows persist like any conversation; the screen shows the recent session. The host shell still resets on open so the SHELL (cwd/env) starts fresh — that's independent of the message rows.
+        // FRESH SESSION on open (Nick 2026-08-22): the terminal is ephemeral, so opening WIPES the on-screen rows AND drops any stale in-flight command frames for this sibling — otherwise old commands from a prior session would retransmit and re-appear after the wipe. This is safe now because sibling frames are anchor-only (they weave no strands), so a wiped row can never strand-miss a later frame. The host shell also resets (below) so cwd/env start clean.
+        if let Some(conv) = self.conv_mut_of(ci) {
+            conv.messages.clear();
+        }
+        if let Some(fid) = self.contacts.get(ci).and_then(|c| c.friendship_id) {
+            if let Some((_, chains)) = self
+                .friendship_chains
+                .iter_mut()
+                .find(|(id, _)| *id == fid)
+            {
+                chains.pending_messages.clear();
+            }
+        }
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
         self.send_bridge_reset(ci);
         self.open_conversation_with(ci);
@@ -189,6 +201,16 @@ impl PhotonApp {
         let Some(dev) = self.contacts.get(ci).map(|c| c.public_identity.key) else {
             return;
         };
+        // Symmetric with the client's open: drop any stale in-flight OUTPUT frames for this sibling so replies from the prior session don't retransmit into the freshly-wiped screen. Anchor-only makes this safe (no strand depends on them).
+        if let Some(fid) = self.contacts.get(ci).and_then(|c| c.friendship_id) {
+            if let Some((_, chains)) = self
+                .friendship_chains
+                .iter_mut()
+                .find(|(id, _)| *id == fid)
+            {
+                chains.pending_messages.clear();
+            }
+        }
         self.ensure_bridge_exec();
         if let Some(tx) = self.bridge_cmd_tx.as_ref() {
             let _ = tx.send(BridgeJob::Reset(dev));
