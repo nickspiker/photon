@@ -1009,9 +1009,38 @@ impl PhotonApp {
             // CAS: the lane must be EXACTLY where dispatch saw it. The expected prev still verifying proves no advance, no era swap, no adopt moved the lane while the worker ran — which also proves the decrypt's salt inputs were current, so a parse failure below IS fork evidence. Any mismatch means this plaintext came from dead state: drop it and never feed it to the fork detector; is_duplicate covers the raced-copy case (two UDP copies of one frame both dispatched pre-mark, the first committed).
             if chains.chain(&lane).is_none()
                 || chains.verify_chain_link(&lane, &prev_msg_hp).is_err()
-                || chains.is_duplicate(&lane, timestamp)
             {
-                crate::logf!("CHAT: braid decrypt landed on moved lane state (raced duplicate or era adopt) — dropped; a live frame re-enters clean thru the arm");
+                crate::logf!("CHAT: braid decrypt landed on moved lane state (era adopt / fork) — dropped; a live frame re-enters clean thru the arm");
+                break 'commit;
+            }
+            // DUPLICATE (eagle_time <= last received on this lane): the sender is resending because our ACK was lost. Re-ACK STATELESSLY from THIS copy's plaintext — the decrypted duplicate IS the re-ACK anchor, so no stored row is needed. This heals the lost-ACK stall for ANY message and, crucially, closes the ephemeral-bridge seam: bridge rows don't persist, so there's no stored row to re-ACK from, but this path never needed one (Nick's "hidden anchor", realized with zero bytes kept). Never re-advances or re-runs — dedup already proved we hold it.
+            if chains.is_duplicate(&lane, timestamp) {
+                let ph = *blake3::hash(&plaintext).as_bytes();
+                let recipient_pubkey = self
+                    .contacts
+                    .get(contact_idx)
+                    .map(|c| *c.public_identity.as_bytes())
+                    .unwrap_or([0u8; 32]);
+                let relay_to = self
+                    .contacts
+                    .get(contact_idx)
+                    .map(|c| c.relay_device_list())
+                    .unwrap_or_default();
+                ack_enqueue = Some((
+                    chains.clone(),
+                    AckRequest {
+                        peer_addr: sender_addr,
+                        recipient_pubkey,
+                        conversation_token,
+                        acked_eagle_time: timestamp,
+                        plaintext_hash: ph,
+                        relay_to,
+                    },
+                ));
+                crate::logf!(
+                    "CHAT: duplicate at eagle_time {} — re-ACKing (lost-ACK heal, stateless)",
+                    timestamp
+                );
                 break 'commit;
             }
             // The conversation this frame lands in — resolved THRU THE CONTACT, the same derivation the loader, the persist snapshot, the page server, and the census all use. It used to materialize from chains.participants(): whenever the chains' expression of OUR half differs from the contact path's pid (a stale-era ceremony's participant set), that minted a SHADOW conversation — live rows accumulated in an object no loader fills and no persist snapshot reads, so they rendered all session and DIED at restart (field, 2026-08-11: a device advertised 92 rows from RAM while its disk table held 7). The chains stay crypto truth; the CONTACT is conversation truth.
