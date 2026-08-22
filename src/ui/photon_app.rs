@@ -1526,6 +1526,9 @@ pub struct PhotonApp {
     attach_confirmed: std::collections::HashSet<[u8; 32]>,
     /// Android: set when the paperclip asks for the system file picker; drained by nativePollAttachPicker.
     pending_attach_picker: bool,
+    /// One persistent shell per sibling DEVICE key (host side) — the bridge session. Spawned on that sibling's first command, reused for every command after so `cd`/env/state persist like a real terminal; a wedged/dead one is dropped and the next command respawns. Desktop-unix only (the shell host).
+    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    bridge_shells: std::collections::HashMap<[u8; 32], bridge::BridgeShell>,
     /// Recovery-page "be a custodian" opt-in — a custom `Checkbox`.
     settings_custodian_check: Option<fluor::widgets::Checkbox>,
     /// Notifications-page global chime on/off — a custom `Checkbox`.
@@ -1970,6 +1973,8 @@ impl PhotonApp {
             attach_progress: Vec::new(),
             attach_confirmed: std::collections::HashSet::new(),
             pending_attach_picker: false,
+            #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+            bridge_shells: std::collections::HashMap::new(),
             settings_custodian_check: None,
             settings_chime_check: None,
             settings_presence_check: None,

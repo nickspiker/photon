@@ -1,6 +1,124 @@
-//! BRIDGE remote terminal + unattended reboot — sibling PTY frames, bridge conversations, command execution, and the reboot-capsule/unattended markers.
+//! BRIDGE remote terminal + unattended reboot — persistent per-sibling shell, bridge conversations, command execution, and the reboot-capsule/unattended markers.
 
 use super::*;
+
+/// One persistent shell for a sibling's bridge session (host side). A single long-lived `bash` process — spawned on the first command, reused for every command after — so working directory, exported vars, and shell state persist exactly like a real terminal, instead of a fresh `bash -lc` per command (Nick, 2026-08-22). A reader thread drains stdout into a channel so a command that hangs (reads stdin, never returns) can't wedge the session forever: `run` waits with a timeout and the caller respawns on failure. stderr is merged into stdout in-shell (`exec 2>&1`); a per-session random sentinel marks each command's output boundary + exit code — shell-internal only, it NEVER touches the Photon wire.
+#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+pub(super) struct BridgeShell {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    lines: std::sync::mpsc::Receiver<Option<String>>,
+    sentinel: String,
+}
+
+#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+impl BridgeShell {
+    /// Per-command wall-clock cap. A command still running after this returns an error; the caller drops the shell so the next command starts fresh — the anti-wedge for `cat`, a REPL, or a genuinely long job.
+    const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    const MAX_OUT: usize = 12 * 1024;
+
+    fn spawn() -> std::io::Result<BridgeShell> {
+        use std::io::{BufRead, Write};
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("bash")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null()) // merged into stdout below via `exec 2>&1`
+            .spawn()?;
+        let mut stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        // Reader thread: every stdout line becomes a channel item; EOF (shell died) sends one `None` and ends.
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(stdout);
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => {
+                        let _ = tx.send(None);
+                        break;
+                    }
+                    Ok(_) => {
+                        if tx.send(Some(line)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        let _ = tx.send(None);
+                        break;
+                    }
+                }
+            }
+        });
+        let sentinel = format!("__PHOTON_BRIDGE_{:016x}__", rand::random::<u64>());
+        // Init: merge stderr→stdout, load aliases best-effort (guarded .bashrc often skips non-interactive, so force expand_aliases + source explicitly), silence any prompt. `true` gives the priming run below a clean exit to read up to.
+        writeln!(
+            stdin,
+            "exec 2>&1; shopt -s expand_aliases 2>/dev/null; [ -f ~/.bashrc ] && source ~/.bashrc 2>/dev/null; [ -f ~/.bash_aliases ] && source ~/.bash_aliases 2>/dev/null; PS1=''; PROMPT_COMMAND=''; true"
+        )?;
+        let mut sh = BridgeShell { child, stdin, lines: rx, sentinel };
+        // Drain init noise (bashrc chatter/errors) up to a priming sentinel so the FIRST real command's output starts clean.
+        let _ = sh.run("true");
+        Ok(sh)
+    }
+
+    /// Feed one command, then a sentinel that carries the command's exit code; collect every line until the sentinel. Returns the formatted output, or Err on shell death / timeout (caller respawns).
+    fn run(&mut self, cmd: &str) -> Result<String, String> {
+        use std::io::Write;
+        writeln!(self.stdin, "{}", cmd).map_err(|e| e.to_string())?;
+        // `$?` here is `cmd`'s exit — expanded on this line, right after cmd ran.
+        writeln!(self.stdin, "printf '%s %d\\n' '{}' \"$?\"", self.sentinel)
+            .map_err(|e| e.to_string())?;
+        self.stdin.flush().map_err(|e| e.to_string())?;
+        let deadline = std::time::Instant::now() + Self::RUN_TIMEOUT;
+        let mut body = String::new();
+        let mut code = 0i32;
+        loop {
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .ok_or_else(|| "command timed out".to_string())?;
+            match self.lines.recv_timeout(remaining) {
+                Ok(Some(line)) => {
+                    if let Some(rest) = line.trim_end().strip_prefix(&self.sentinel) {
+                        code = rest.trim().parse().unwrap_or(-1);
+                        break;
+                    }
+                    if body.len() < Self::MAX_OUT {
+                        body.push_str(&line);
+                    }
+                }
+                Ok(None) => return Err("shell exited".to_string()),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    return Err("command timed out".to_string())
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("shell reader gone".to_string())
+                }
+            }
+        }
+        if body.len() >= Self::MAX_OUT {
+            body.push_str("\n\u{2026}(output truncated)");
+        }
+        let trimmed = body.trim_end_matches('\n');
+        let out = if trimmed.is_empty() {
+            if code == 0 {
+                "(no output)".to_string()
+            } else {
+                format!("(no output, exit {})", code)
+            }
+        } else if code != 0 {
+            format!("{}\n[exit {}]", trimmed, code)
+        } else {
+            trimmed.to_string()
+        };
+        Ok(out)
+    }
+
+    fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
 
 impl PhotonApp {
     /// Enter the add-device (pairing-words) flow. Was the interim Ready-orb action; now reached from the Fleet page's "Add device" pill. Spawns the bindreq watch so the candidate set is live before the first keystroke.
@@ -47,47 +165,52 @@ impl PhotonApp {
         crate::storage::device_flag("flags/unattended_reboot")
     }
 
-    /// Run one `$ ` command with the login shell and return the combined stdout+stderr, tail-capped, non-zero exit appended. Pure — no reply, no bubble; the caller routes the output. Runs in the operator's own login environment (the operator shelling into their own box). Blocks the caller for the command's duration: this runs on the HOST (the remote box, not the operator's screen), so a slow command never freezes the operator's UI — only the unwatched host's.
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-    pub(super) fn execute_bridge_command(cmd: &str) -> String {
-        const MAX_OUT: usize = 12 * 1024; // keep a reply comfortably inside one chain message
-        crate::logf!("BRIDGE: running command from sibling: {}", cmd);
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        match std::process::Command::new(&shell).arg("-lc").arg(cmd).output() {
-            Ok(out) => {
-                let mut body = String::new();
-                body.push_str(&String::from_utf8_lossy(&out.stdout));
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                if !stderr.is_empty() {
-                    body.push_str(&stderr);
-                }
-                if body.len() > MAX_OUT {
-                    // Keep the TAIL — the end of a command's output is usually what matters.
-                    let cut = body.len() - MAX_OUT;
-                    body = format!("\u{2026}(truncated {} bytes)\n{}", cut, &body[cut..]);
-                }
-                let code = out.status.code().unwrap_or(-1);
-                if body.trim().is_empty() {
-                    body = if code == 0 {
-                        "(no output)".to_string()
-                    } else {
-                        format!("(no output, exit {})", code)
-                    };
-                } else if code != 0 {
-                    body.push_str(&format!("\n[exit {}]", code));
-                }
-                body
-            }
-            Err(e) => format!("(failed to run: {})", e),
-        }
-    }
-
-    /// HOST role, chat transport (the durable path Nick asked for 2026-08-21): a `$ ` command arrived as an ORDINARY chat message in the sibling `ci`'s conversation — run it and reply with the output as an ordinary chat message BACK to that sibling. The command reached us with full chain reliability (retransmit + ACK + re-serve); the reply rides the same machinery home. The operator sees their command brighten on our ACK (it reached the terminal), then the output land as a normal incoming bubble. No term frames, no session map, no host flag — the fold-verified sibling gate at the receive site is the whole authorization.
+    /// HOST role, chat transport: a command arrived as an ordinary chat message in the sibling `ci`'s conversation — run it in that sibling's PERSISTENT shell and reply with the raw output as an ordinary message (typed RefKind::BridgeOut so it renders but never re-runs). ONE shell per sibling, spawned on the first command and reused for every one after — so `cd`, exported vars, and set variables persist exactly like a real session (Nick's call 2026-08-22: "opening the bridge starts a fresh session, not after every command"). The command reached us with full chain reliability; the reply rides the same machinery home.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     pub(super) fn run_bridge_command_chat(&mut self, ci: usize, cmd: &str) {
-        let reply = Self::execute_bridge_command(cmd);
-        // Reply content is the RAW shell output — no sentinel in it. The OUTPUT nature rides the TYPED reference field (RefKind::BridgeOut), so the operator's side renders it as an ordinary bubble and the host-run gate skips it (anti-bounce). Same durable chain send as any message.
+        let Some(dev) = self.contacts.get(ci).map(|c| c.public_identity.key) else {
+            return;
+        };
+        crate::logf!("BRIDGE: running command from sibling: {}", cmd);
+        // Get-or-spawn this sibling's persistent shell; a dead one (EOF/timeout last time) respawns transparently.
+        let need_spawn = !self.bridge_shells.contains_key(&dev);
+        if need_spawn {
+            match BridgeShell::spawn() {
+                Ok(sh) => {
+                    self.bridge_shells.insert(dev, sh);
+                }
+                Err(e) => {
+                    self.send_chain_message(
+                        ci,
+                        &format!("(bridge shell failed to start: {e})"),
+                        false,
+                        Some((crate::types::RefKind::BridgeOut, 0)),
+                    );
+                    return;
+                }
+            }
+        }
+        let reply = match self.bridge_shells.get_mut(&dev) {
+            Some(sh) => match sh.run(cmd) {
+                Ok(out) => out,
+                Err(e) => {
+                    // Wedged or died (a command that read stdin, or the shell exited) — drop it so the next command starts a fresh session, and say so.
+                    self.bridge_shells.remove(&dev);
+                    format!("(session reset: {e})")
+                }
+            },
+            None => return,
+        };
+        // Reply content is the RAW shell output — no sentinel in it. The OUTPUT nature rides the TYPED reference field (RefKind::BridgeOut). Same durable chain send as any message.
         self.send_chain_message(ci, &reply, false, Some((crate::types::RefKind::BridgeOut, 0)));
+    }
+
+    /// Kill every persistent bridge shell (e.g. at logout / shutdown). Idempotent.
+    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    pub(super) fn close_bridge_shells(&mut self) {
+        for (_, mut sh) in self.bridge_shells.drain() {
+            sh.kill();
+        }
     }
 
     /// Turn unattended mode on/off. ON writes the marker AND (also requires background/autostart so a reboot actually relaunches photon) refreshes the capsule from the live session. OFF removes the marker and shreds the capsule.
