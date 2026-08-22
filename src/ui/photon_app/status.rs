@@ -31,6 +31,9 @@ impl PhotonApp {
         timed_drain!("history_pages", self.drain_history_pages());
         // Chain-sync blobs the open workers finished — adopt before the arm loop so this tick's replication push already carries the adopted heads.
         timed_drain!("chain_syncs", self.drain_chain_syncs());
+        // Bridge command output the off-thread executor finished — reply over the chain (RefKind::BridgeOut). Zero shell work here; the exec thread did that.
+        #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+        timed_drain!("bridge_out", self.drain_bridge_output());
         // Braid decrypts the workers finished — commit before the arm loop so a gap-refill replay re-enters THIS tick's gates.
         timed_drain!("braid_rx", self.drain_braid_rx());
         // Send encrypts the workers finished — commit + hand to the durable-transmit writer.

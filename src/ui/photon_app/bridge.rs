@@ -165,51 +165,67 @@ impl PhotonApp {
         crate::storage::device_flag("flags/unattended_reboot")
     }
 
-    /// HOST role, chat transport: a command arrived as an ordinary chat message in the sibling `ci`'s conversation — run it in that sibling's PERSISTENT shell and reply with the raw output as an ordinary message (typed RefKind::BridgeOut so it renders but never re-runs). ONE shell per sibling, spawned on the first command and reused for every one after — so `cd`, exported vars, and set variables persist exactly like a real session (Nick's call 2026-08-22: "opening the bridge starts a fresh session, not after every command"). The command reached us with full chain reliability; the reply rides the same machinery home.
+    /// HOST role, chat transport: a NEW command arrived as an ordinary chat message in the sibling `ci`'s conversation — dispatch it to the OFF-THREAD bridge executor, which runs it in that sibling's PERSISTENT shell and posts the raw output back for `drain_bridge_output` to reply with (typed RefKind::BridgeOut so it renders but never re-runs). Running the shell inline froze the host's event loop for the command's whole duration, stalling the ACK it owes the operator (field 2026-08-22). ONE shell per sibling, spawned on first command and reused after so `cd`/env/state persist like a real session; the executor thread OWNS the shells so nothing blocks the UI.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     pub(super) fn run_bridge_command_chat(&mut self, ci: usize, cmd: &str) {
         let Some(dev) = self.contacts.get(ci).map(|c| c.public_identity.key) else {
             return;
         };
-        crate::logf!("BRIDGE: running command from sibling: {}", cmd);
-        // Get-or-spawn this sibling's persistent shell; a dead one (EOF/timeout last time) respawns transparently.
-        let need_spawn = !self.bridge_shells.contains_key(&dev);
-        if need_spawn {
-            match BridgeShell::spawn() {
-                Ok(sh) => {
-                    self.bridge_shells.insert(dev, sh);
-                }
-                Err(e) => {
-                    self.send_chain_message(
-                        ci,
-                        &format!("(bridge shell failed to start: {e})"),
-                        false,
-                        Some((crate::types::RefKind::BridgeOut, 0)),
-                    );
-                    return;
-                }
-            }
-        }
-        let reply = match self.bridge_shells.get_mut(&dev) {
-            Some(sh) => match sh.run(cmd) {
-                Ok(out) => out,
-                Err(e) => {
-                    // Wedged or died (a command that read stdin, or the shell exited) — drop it so the next command starts a fresh session, and say so.
-                    self.bridge_shells.remove(&dev);
-                    format!("(session reset: {e})")
-                }
-            },
-            None => return,
-        };
-        // Reply content is the RAW shell output — no sentinel in it. The OUTPUT nature rides the TYPED reference field (RefKind::BridgeOut). Same durable chain send as any message.
-        self.send_chain_message(ci, &reply, false, Some((crate::types::RefKind::BridgeOut, 0)));
+        let wake = self.event_proxy.clone();
+        let tx = self.bridge_cmd_tx.get_or_insert_with(|| {
+            let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<(usize, [u8; 32], String)>();
+            let (out_tx, out_rx) = std::sync::mpsc::channel::<(usize, String)>();
+            self.bridge_out_rx = Some(out_rx);
+            std::thread::Builder::new()
+                .name("bridge-exec".to_string())
+                .spawn(move || {
+                    let mut shells: std::collections::HashMap<[u8; 32], BridgeShell> =
+                        std::collections::HashMap::new();
+                    while let Ok((ci, dev, cmd)) = cmd_rx.recv() {
+                        crate::logf!("BRIDGE: running command from sibling: {}", cmd);
+                        if !shells.contains_key(&dev) {
+                            match BridgeShell::spawn() {
+                                Ok(sh) => {
+                                    shells.insert(dev, sh);
+                                }
+                                Err(e) => {
+                                    let _ = out_tx.send((ci, format!("(bridge shell failed to start: {e})")));
+                                    if let Some(w) = wake.as_ref() {
+                                        let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        let out = match shells.get_mut(&dev).unwrap().run(&cmd) {
+                            Ok(o) => o,
+                            Err(e) => {
+                                // Wedged/died (a command that read stdin, or the shell exited) — drop it so the NEXT command respawns a fresh session.
+                                shells.remove(&dev);
+                                format!("(session reset: {e})")
+                            }
+                        };
+                        let _ = out_tx.send((ci, out));
+                        if let Some(w) = wake.as_ref() {
+                            let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                        }
+                    }
+                })
+                .expect("spawn bridge-exec");
+            cmd_tx
+        });
+        let _ = tx.send((ci, dev, cmd.to_string()));
     }
 
-    /// Kill every persistent bridge shell (e.g. at logout / shutdown). Idempotent.
+    /// Tick drain: reply with each finished command's output over the durable chain (RefKind::BridgeOut). UI thread, but zero shell work — just the send. No-op when the executor isn't running.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-    pub(super) fn close_bridge_shells(&mut self) {
-        for (_, mut sh) in self.bridge_shells.drain() {
-            sh.kill();
+    pub(super) fn drain_bridge_output(&mut self) {
+        let outs: Vec<(usize, String)> = match self.bridge_out_rx.as_ref() {
+            Some(rx) => rx.try_iter().collect(),
+            None => return,
+        };
+        for (ci, out) in outs {
+            self.send_chain_message(ci, &out, false, Some((crate::types::RefKind::BridgeOut, 0)));
         }
     }
 

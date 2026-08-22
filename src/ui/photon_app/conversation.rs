@@ -1316,22 +1316,21 @@ impl PhotonApp {
                 // Snapshot the facts the gates below need, so the &mut contact borrow ends here (the claim check walks self.contacts).
                 let contact_is_sibling = contact.is_sibling;
                 let sender_name = contact.display_name();
-                // BRIDGE host capture: a sibling conversation is a chat-as-shell, so EVERY incoming line from a sibling is a command to run on this box (no `$` — the shell already prompts; Nick's call 2026-08-21) — EXCEPT a row whose TYPED reference is BridgeOut, which is a reply coming back and must NOT re-execute (else output bounces forever). The distinction rides the typed wire field, never a content sentinel. Stash the command before message_text moves into the row; execute after the chains borrow ends. The row still stores + ACKs as an ordinary bubble; the fold-verified, non-locked sibling gate at the top already authorized it.
+                // BRIDGE host capture: a sibling conversation is a chat-as-shell, so an incoming line from a sibling is a command to run on this box (no `$` — the shell already prompts; Nick 2026-08-21) — EXCEPT a row whose TYPED reference is BridgeOut, which is a reply coming back and must NOT re-execute (else output bounces). Capture the candidate here (before message_text moves); it is promoted to an actual run ONLY if the row is NEW (is_new_row, computed below) — a re-served/duplicate/history-backfilled command must never re-execute, or a reconnect would replay the entire command history (Nick 2026-08-22).
                 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-                if contact_is_sibling
+                let bridge_cmd_candidate: Option<String> = if contact_is_sibling
                     && !is_chain_probe
                     && !matches!(wire_reference, Some((crate::types::RefKind::BridgeOut, _)))
                 {
-                    // Tolerate a leading `$ ` for muscle memory, but it is not required.
                     let cmd = message_text
                         .strip_prefix("$ ")
                         .or_else(|| message_text.strip_prefix("$\t"))
                         .unwrap_or(&message_text)
                         .to_string();
-                    if !cmd.trim().is_empty() {
-                        bridge_run = Some((contact_idx, cmd));
-                    }
-                }
+                    (!cmd.trim().is_empty()).then_some(cmd)
+                } else {
+                    None
+                };
                 // Use actual eagle_time and sorted insert for correct chronological order
                 let mut msg = ChatMessage::new_with_timestamp(
                     message_text,
@@ -1411,6 +1410,13 @@ impl PhotonApp {
                     conv.scroll_offset = 0.0; // Scroll to show new message (an edit repaints in place)
                 }
                 self.scene_dirty = true;
+                // Promote a captured bridge command to an actual run ONLY on first receipt — a re-serve/duplicate/history-backfill must never re-execute (Nick 2026-08-22).
+                #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+                if is_new_row {
+                    if let Some(cmd) = bridge_cmd_candidate {
+                        bridge_run = Some((contact_idx, cmd));
+                    }
+                }
 
                 // Persist (async — see persist_hashes)
                 persist_ci = Some(contact_idx);
