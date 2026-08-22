@@ -141,15 +141,9 @@ impl PhotonApp {
             crate::log("BRIDGE: no sibling contact for that device — cannot open");
             return;
         };
-        // OPEN = FRESH SESSION (Nick 2026-08-22): wipe the screen (bridge rows are ephemeral RAM anyway) and seed the hint, so every open is a clean terminal.
+        // OPEN = FRESH SESSION (Nick 2026-08-22): wipe the screen (bridge rows are ephemeral RAM anyway). No hint blurb — a terminal doesn't explain itself; it's a clean screen until output arrives.
         if let Some(conv) = self.conv_mut_of(ci) {
             conv.messages.clear();
-            let hint = ChatMessage::new_with_timestamp(
-                "Bridge ready \u{2014} type a command (e.g. uptime) and the other device runs it, output comes back. Your own fleet; no setup, no \u{201c}$\u{201d} needed. Fresh session each open; interactive programs (vim, top, a REPL) aren't supported.".to_string(),
-                false,
-                vsf::eagle_time_oscillations(),
-            );
-            conv.insert_message_sorted(hint);
         }
         // Tell the host to kill its shell for us so the FIRST command starts a genuinely fresh session (cwd/env reset), matching the wiped screen.
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
