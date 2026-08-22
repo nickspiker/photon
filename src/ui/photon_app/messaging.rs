@@ -136,7 +136,10 @@ impl PhotonApp {
 
     /// Persist a conversation's message table WITHOUT blocking the UI thread. Snapshots the conversation and hands it to one background writer that coalesces bursts (latest snapshot per conversation id wins — an older snapshot can never clobber a newer one because the drain keeps only the last). The write itself is the same `save_messages` full-table rewrite; only the thread changed.
     pub(super) fn persist_messages_async(&mut self, ci: usize) {
-        // NOTE (2026-08-22): bridge rows were briefly EPHEMERAL (skip-persist for is_sibling) to keep the terminal from bloating history — but that BROKE the braid. The braid weaves each message against prior conversation rows for the ratchet; ephemeral rows meant a reply's strand referenced a command row the peer no longer held → "braid strand miss" → the frame HELD forever, so output never displayed and never ACKed (the Linux resent one reply 12×). The braid fundamentally needs the rows as weave material, so bridge rows persist like any message. Replay-execute is still prevented independently by the is_new_row gate at the receive site. (A truly ephemeral terminal would need anchor-only, strand-free bridge frames — a chain-level change, ticketed.)
+        // BRIDGE rows are EPHEMERAL — the terminal keeps NO history at rest. Safe now because sibling frames are anchor-only (see the braid selection in send_chain_message): nothing weaves against a bridge row, so not persisting it can't produce a strand miss (the earlier ephemeral attempt DID break the braid precisely because frames still wove strands — field 2026-08-22, one reply resent 12× and never ACKed). Chain durability is untouched: lane positions, pending, and last_received_times live in friendship_chains (persisted separately), so retransmit/ACK/dedup and the is_new_row replay guard all still hold; only the display rows are transient.
+        if self.contacts.get(ci).map_or(false, |c| c.is_sibling) {
+            return;
+        }
         // EVERY exit below is LOUD (field 2026-08-21: a run's later sends vanished at relaunch while earlier ones persisted — three silent failure modes on the one path whose failure IS data loss, and the log couldn't say which fired).
         let Some(conv) = self.conv_of(ci).cloned() else {
             crate::logf!("STORAGE: message persist SKIPPED — no conversation object resolves for contact index {} (rows live in RAM only until this is fixed)", ci);
@@ -532,9 +535,11 @@ impl PhotonApp {
         };
 
         // The braid: choose up to TWO distinct prior PEER messages to weave into this chain step. Eligible = incoming messages (is_outgoing == false) in the last ≤256 of this conversation — any stored incoming row is one the receive path already ACKed, so the sender knows the peer holds it (both-held → identical strands → lockstep). The weave ingredient is the message's x-text (`content`), recoverable identically on both sides from the message DB. Each chosen message's eagle_time goes on the wire so the receiver resolves the SAME content. 0 eligible → weave nothing (anchor). 1 → single strand. ≥2 → two distinct (a true braid). Pick with gen_range (bounded, bias-free) — NEVER modulo. Strands are sorted by eagle_time so both peers frame derive_fresh_link identically regardless of pick order.
+        // BRIDGE lanes are ANCHOR-ONLY: a sibling command/output frame weaves ZERO strands and requires none on receive. The braid's extra entropy is a friend-conversation property; a fleet-internal bridge is already fleet-key secured and still ratchets via the incorporated hp each step, so dropping the weave costs no real secrecy. The payoff is what Nick wants: with no strand dependency the terminal rows can be EPHEMERAL (wiped on open, never persisted) without ever producing a "braid strand miss" that holds a reply forever (field 2026-08-22). Anchor is an already-supported case (0 eligible → weave nothing) — this just forces it for siblings.
+        let anchor_only = self.contacts.get(ci).map_or(false, |c| c.is_sibling);
         let (woven_strands, woven_times): (Vec<Vec<u8>>, Vec<i64>) = {
             let mut chosen: Vec<(i64, Vec<u8>)> = Vec::new();
-            if let Some(conv) = self.conv_of(ci) {
+            if let Some(conv) = self.conv_of(ci).filter(|_| !anchor_only) {
                 let window: Vec<&crate::types::ChatMessage> = conv
                     .messages
                     .iter()
