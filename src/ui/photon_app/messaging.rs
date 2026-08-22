@@ -136,10 +136,7 @@ impl PhotonApp {
 
     /// Persist a conversation's message table WITHOUT blocking the UI thread. Snapshots the conversation and hands it to one background writer that coalesces bursts (latest snapshot per conversation id wins — an older snapshot can never clobber a newer one because the drain keeps only the last). The write itself is the same `save_messages` full-table rewrite; only the thread changed.
     pub(super) fn persist_messages_async(&mut self, ci: usize) {
-        // BRIDGE rows are EPHEMERAL (Nick 2026-08-22): a sibling conversation is a chat-as-shell, and terminal I/O is not conversation history. Never persisting it kills three problems at the root — no vault bloat, no re-serve storm, and NO command REPLAY on reconnect (a persisted command row would back-fill + re-execute). The chain ratchet still persists (persist_chains_then); only the display table is RAM-only, so opening the bridge is always a clean screen. The zero-remote notes-to-self contact is NOT is_sibling, so notes history is untouched.
-        if self.contacts.get(ci).map_or(false, |c| c.is_sibling) {
-            return;
-        }
+        // NOTE (2026-08-22): bridge rows were briefly EPHEMERAL (skip-persist for is_sibling) to keep the terminal from bloating history — but that BROKE the braid. The braid weaves each message against prior conversation rows for the ratchet; ephemeral rows meant a reply's strand referenced a command row the peer no longer held → "braid strand miss" → the frame HELD forever, so output never displayed and never ACKed (the Linux resent one reply 12×). The braid fundamentally needs the rows as weave material, so bridge rows persist like any message. Replay-execute is still prevented independently by the is_new_row gate at the receive site. (A truly ephemeral terminal would need anchor-only, strand-free bridge frames — a chain-level change, ticketed.)
         // EVERY exit below is LOUD (field 2026-08-21: a run's later sends vanished at relaunch while earlier ones persisted — three silent failure modes on the one path whose failure IS data loss, and the log couldn't say which fired).
         let Some(conv) = self.conv_of(ci).cloned() else {
             crate::logf!("STORAGE: message persist SKIPPED — no conversation object resolves for contact index {} (rows live in RAM only until this is fixed)", ci);

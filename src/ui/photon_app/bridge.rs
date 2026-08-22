@@ -141,11 +141,7 @@ impl PhotonApp {
             crate::log("BRIDGE: no sibling contact for that device — cannot open");
             return;
         };
-        // OPEN = FRESH SESSION (Nick 2026-08-22): wipe the screen (bridge rows are ephemeral RAM anyway). No hint blurb — a terminal doesn't explain itself; it's a clean screen until output arrives.
-        if let Some(conv) = self.conv_mut_of(ci) {
-            conv.messages.clear();
-        }
-        // Tell the host to kill its shell for us so the FIRST command starts a genuinely fresh session (cwd/env reset), matching the wiped screen.
+        // Open no longer WIPES the message rows: the braid weaves against them, so clearing (or not persisting) them causes strand misses that HOLD every reply (field 2026-08-22). Rows persist like any conversation; the screen shows the recent session. The host shell still resets on open so the SHELL (cwd/env) starts fresh — that's independent of the message rows.
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
         self.send_bridge_reset(ci);
         self.open_conversation_with(ci);
