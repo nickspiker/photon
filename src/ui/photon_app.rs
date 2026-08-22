@@ -685,6 +685,10 @@ fn chat_row_visible(raw: &[crate::types::ChatMessage], m: &crate::types::ChatMes
     if matches!(m.reference, Some((crate::types::RefKind::React, _))) {
         return false;
     }
+    // BridgeReset is a hidden control row (the peer opened the bridge) — never a bubble.
+    if matches!(m.reference, Some((crate::types::RefKind::BridgeReset, _))) {
+        return false;
+    }
     if let Some((crate::types::RefKind::Edit, t)) = m.reference {
         return !raw.iter().any(|x| {
             x.timestamp == t
@@ -1528,7 +1532,7 @@ pub struct PhotonApp {
     pending_attach_picker: bool,
     /// Bridge executor channels (host side): commands go to the off-thread `bridge-exec` worker that owns one persistent shell per sibling device; finished output comes back here for `drain_bridge_output` to reply with. Lazily created on the first command so a fleet that never bridges spawns nothing. Desktop-unix only (the shell host).
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-    bridge_cmd_tx: Option<std::sync::mpsc::Sender<(usize, [u8; 32], String)>>,
+    bridge_cmd_tx: Option<std::sync::mpsc::Sender<bridge::BridgeJob>>,
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     bridge_out_rx: Option<std::sync::mpsc::Receiver<(usize, String)>>,
     /// Recovery-page "be a custodian" opt-in — a custom `Checkbox`.
