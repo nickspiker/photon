@@ -13,3 +13,5 @@ Nick undoes by editing earlier messages ("edit one word and BOOP"). Confirmed 20
 **Why:** message edits fork the transcript and the fork carries nothing over — anything not persisted outside the conversation is unrecoverable, including facts established before the edit point.
 
 **How to apply:** when a session establishes a load-bearing fact or design decision (e.g. braid/chain semantics), write it to memory or repo docs at the moment it's established. Keep exploration cheap to replay: name the files that mattered, not just conclusions.
+
+**The other half (learned 2026-08-23): a rewind erases CONTEXT, not the REPO.** A rewound session's commits, pushes, and working-tree state all survive — the post-rewind session sees a stale system-snapshot and a repo that is AHEAD of what its context says happened. Before re-implementing anything after an apparent reset: `git reflog` + compare HEAD against the last thing context can account for. The 2026-08-23 session nearly re-implemented three already-landed, already-pushed, already-published fixes because the rewound turns had finished them invisibly.

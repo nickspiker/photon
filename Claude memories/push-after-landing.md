@@ -1,17 +1,16 @@
 ---
 name: push-after-landing
-description: "push photon after committing, and commit+push the memory repo after memory writes — this MacBook is the only copy of neither, ever again"
+description: "Push photon (code + 'Claude memories/') after landing work; the private photon-claude-memory repo is RETIRED 2026-08-23 — memories ride THIS repo on every machine"
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 81588914-5914-4600-bb98-72cc4fae2260
-  modified: 2026-08-14T00:36:01.517Z
+  modified: 2026-08-23
 ---
 
-2026-08-13: photon sat 24 commits ahead of origin (a full week of wedge fixes existed only on the travelling MacBook) and the memory directory had NO git at all. Nick: "so I don't drop this macbook in the ocean and they are lost?" — both are now remote-backed.
+After landing work: commit and push photon — and memories are part of photon now, so a memory write is committed and pushed WITH the session's photon commits, not to any side repo. No machine is ever the only copy (the MacBook gets wiped frequently; the desktop holds Harbor/Chiton/MEGA mirrors — [[reference_backups]]).
 
-**Why:** the MacBook travels (hotels, airports, oceans); local-only state is one accident from gone.
+**History:** the MacBook briefly kept a separate PRIVATE memory repo (photon-claude-memory). That was the wrong model twice over — it contradicted [[project_humanitys_code]] (nothing is private but keys + handles), and its history accumulated actual handles ([[no-private-handles]]). Folded into 'Claude memories/' and DELETED 2026-08-23. If a stray clone of it ever resurfaces, its content is superseded — do not resurrect it.
 
-**How to apply:** after landing photon commits in a session, `git push` before the session ends (memory [[nick-publishes]] allows commit/push — only publish scripts are Nick's). After writing/updating memory files, `git -C ~/.claude/projects/-Users-nick-Code-photon/memory add -A && commit && push` — the remote is the PRIVATE repo github.com/nickspiker/photon-claude-memory (must stay private: memories name handles and family roles the public photon repo must never carry, see [[no-private-handles]]).
+**Mechanics on a machine whose harness memory dir is a symlink into the photon checkout (the MacBook since 2026-08-23):** memory writes land directly in the working tree — `git pull` photon before acting on memory each session (another machine may have pushed), and never leave memory edits uncommitted at session end. Related: [[macbook-trails-remote]], [[persist-findings-early]].
 
-**2026-08-13 correction (the second fuckup):** this repo is the SHARED corpus for ALL of Nick's machines, not the MacBook's. The desktop (`/mnt/Harbor/Code/photon`, memory dir `-mnt-Octopus-Code-photon`) holds its own richer memory set (`project_*` naming: bridge, chain_advance_desync, fleet_unification_v1, clutch_token_asymmetry, …) that predates this repo — merge instructions live in README.md (union merge, MEMORY.md is the only conflict). `git pull` the memory repo BEFORE acting on memory each session — another machine may have pushed. Until the desktop merge lands, treat the desktop corpus as unseen context: its memories on chain replication / CLUTCH tokens overlap this week's per-device-lanes surgery and must be read for contradictions once visible.
+**Tag quarantine (2026-08-23):** release tags v36–v54 were DELETED — they pinned the pre-rewrite line whose commit MESSAGES carried handles ([[no-private-handles]]). If any clone still holds them: delete locally (`git tag -d`), and never run a bare `git push --tags` from such a clone — it would resurrect the dirty commits on the fresh remote.
