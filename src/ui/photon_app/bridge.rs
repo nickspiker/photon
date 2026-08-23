@@ -187,10 +187,10 @@ impl BridgeShell {
         });
         let sentinel = format!("__PHOTON_BRIDGE_{:016x}__", rand::random::<u64>());
         let job_sentinel = format!("__PHOTON_BRIDGE_JOB_{:016x}__", rand::random::<u64>());
-        // Init: merge stderr→stdout, job control ON (set -m — each command becomes its own process group so the interrupt path can signal the command tree without touching bash), notifications routed thru the normal flow (their `[n]+ Done` lines are filtered by the job-notice screen below), aliases best-effort (guarded .bashrc often skips non-interactive, so force expand_aliases + source explicitly), prompt silenced. `true` gives the priming run below a clean exit to read up to.
+        // Init: merge stderr→stdout, job control ON (set -m — each command becomes its own process group so the interrupt path can signal the command tree without touching bash), notifications routed thru the normal flow (their `[n]+ Done` lines are filtered by the job-notice screen below), aliases best-effort (guarded .bashrc often skips non-interactive, so force expand_aliases + source explicitly), prompt silenced, then a bare `cd` — the spawned bash inherits PHOTON'S OWN cwd, which is whatever the launch path bequeathed (`/` from the Dock, the repo after a dev.sh reload, luck from autostart); every terminal starts at ~ and so does this one. `true` gives the priming run below a clean exit to read up to.
         writeln!(
             stdin,
-            "exec 2>&1; set -m 2>/dev/null; shopt -s expand_aliases 2>/dev/null; [ -f ~/.bashrc ] && source ~/.bashrc 2>/dev/null; [ -f ~/.bash_aliases ] && source ~/.bash_aliases 2>/dev/null; PS1=''; PROMPT_COMMAND=''; true"
+            "exec 2>&1; set -m 2>/dev/null; shopt -s expand_aliases 2>/dev/null; [ -f ~/.bashrc ] && source ~/.bashrc 2>/dev/null; [ -f ~/.bash_aliases ] && source ~/.bash_aliases 2>/dev/null; cd 2>/dev/null; PS1=''; PROMPT_COMMAND=''; true"
         )?;
         let mut sh = BridgeShell {
             child,

@@ -80,7 +80,8 @@ reload_photon() {
         open "$HOME/Applications/Photon Messenger.app"
         echo "Reload: Photon Messenger.app relaunched"
     elif [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
-        setsid "$HOME/.local/bin/$name" >/dev/null 2>&1 </dev/null &
+        # Launch from ~, in a subshell so this script's cwd stays put — without it the relaunched photon inherits the REPO as cwd (dev.sh cd'd here) and bequeaths it to every bridge shell it spawns.
+        (cd "$HOME" && setsid "$HOME/.local/bin/$name" >/dev/null 2>&1 </dev/null &)
         echo "Reload: $name relaunched"
     else
         echo "Reload: skipped the relaunch — no display in this environment (the swap is installed; launch from the desktop)"
