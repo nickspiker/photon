@@ -22,22 +22,7 @@ impl PhotonApp {
         if handle.is_empty() {
             return;
         }
-        // ONE IDENTITY PER DEVICE (docs/lifecycle.md D2): the binding marker names the identity this device carries; a different typed handle refuses HERE — before the ~1s memory-hard proof is spent. The check is cheap (the typed handle's party id derives without the proof — and the handle bytes go to the derivation RAW, byte-precise). Typing the BOUND identity's own handle passes and resumes normally; unbinding is a wipe (Panel → Security). The worker's one-owner index backstops a scrubbed marker.
-        {
-            if let Some(bound) = crate::storage::device_binding::bound_party_id() {
-                let typed_pid = crate::crypto::clutch::identity_party_id(
-                    &crate::types::Handle::to_identity_seed(&handle),
-                );
-                if typed_pid != bound {
-                    crate::log("attest: DEVICE BUSY — this device is bound to another identity; refusing before the proof");
-                    self.state = AppState::Launch(LaunchState::Error(
-                        "this device already carries an identity \u{2014} type its handle to resume. To hand the device to someone else: put that identity on another device first, then Remove & shred (Settings \u{2192} Security)".to_string(),
-                    ));
-                    self.refocus_handle_select_all();
-                    return;
-                }
-            }
-        }
+        // ONE IDENTITY PER DEVICE (docs/lifecycle.md D2) is decided in the probe worker now, AFTER the memory-hard proof — the cheap pre-proof compare that used to live here made the binding marker a fast offline handle oracle (2026-08-23 ticket). The wrong-handle refusal arrives as ProbeOutcome::DeviceBusy below; the right handle pays nothing it wasn't already paying to resume.
         // A press FROM the Confirm interstitial is the deliberate second act: claim the (probed-Fresh) handle with the roots the probe already derived — no second proof, no permanence warning re-shown. GUARD: fire the stashed roots ONLY if the box still holds the handle they were derived from. Every edit path tears Confirm down, but this is the invariant that survives a missed one — firing stale roots attests a DIFFERENT identity than the box shows (observed: probe handle A, retype to taken handle B, press → attested as A, user believes they claimed B). On mismatch the press falls thru to a fresh probe of the current text.
         if matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
             if let Some(btn) = self.attest_btn.as_mut() {
@@ -113,6 +98,13 @@ impl PhotonApp {
                         ));
                         self.refocus_handle_select_all();
                     }
+                    ProbeOutcome::DeviceBusy => {
+                        // The post-proof marker refusal (docs/lifecycle.md D2) — same message the old cheap gate showed, now ~1s later and oracle-free.
+                        self.state = AppState::Launch(LaunchState::Error(
+                            "this device already carries an identity \u{2014} type its handle to resume. To hand the device to someone else: put that identity on another device first, then Remove & shred (Settings \u{2192} Security)".to_string(),
+                        ));
+                        self.refocus_handle_select_all();
+                    }
                 }
             }
             QueryResult::Success(data) => {
@@ -171,10 +163,8 @@ impl PhotonApp {
                 // Durable reconcile: re-push every locally-locked device to the worker now we're freshly online, so a lock whose immediate push failed (offline at lock time, stale-chain race) still reaches the worker before the stolen device could be wiped+reattested. Idempotent puts, and usually a no-op empty loop (most fleets lock nothing).
                 self.reconcile_worker_locks();
                 self.reconcile_worker_unlocks();
-                // Bind the device to this identity (docs/lifecycle.md D2): the marker refuses a second identity at the NEXT submit, before its proof is spent. Idempotent on resume; cleared only by a wipe.
-                crate::storage::device_binding::bind(&crate::crypto::clutch::identity_party_id(
-                    &data.identity_seed,
-                ));
+                // Bind the device to this identity (docs/lifecycle.md D2): the v1 marker digests the MEMORY-HARD proof, so the busy check can never verify a cheap guess (the 2026-08-23 oracle fix). Idempotent on resume — which is also the self-heal that upgrades any legacy pid marker in the field. Cleared only by a wipe.
+                crate::storage::device_binding::bind(&data.handle_proof);
                 // UNATTENDED MODE: if the operator has opted this box into auto-attest-on-reboot, refresh the reboot capsule now that we hold a live session, so the NEXT reboot resumes without a handle. No-op (and the capsule is cleared) when the toggle is off — see refresh_reboot_capsule.
                 self.refresh_reboot_capsule();
                 self.pending_broadcast_signal = 1;

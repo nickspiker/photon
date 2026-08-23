@@ -67,6 +67,8 @@ pub enum ProbeOutcome {
     JoinOurs,
     /// A chain exists whose genesis is NOT bound to this handle's identity — someone else founded it (squatter / different person). Can't claim.
     Taken,
+    /// The device-binding marker names a DIFFERENT identity than the typed handle (docs/lifecycle.md D2). Decided here, AFTER the proof, by design: the v1 marker verifies only against the memory-hard proof, so a wrong-handle guess costs the full ~1s hardening instead of a microsecond pid derive (the 2026-08-23 offline-oracle fix). Offline-complete — no fetch happens.
+    DeviceBusy,
 }
 
 /// Result of a handle query
@@ -453,6 +455,18 @@ impl HandleQuery {
                         vault_seed: identity_seed,
                         handle_proof,
                     };
+                    // ONE IDENTITY PER DEVICE (docs/lifecycle.md D2), gated HERE — after the proof, before the network. The old gate sat in submit_handle and compared the CHEAP party id, which made the marker a fast offline handle oracle (2026-08-23 ticket); the owner's right handle pays nothing extra because the proof above was already needed to resume.
+                    if crate::storage::device_binding::busy_for(
+                        &handle_proof,
+                        &crate::crypto::clutch::identity_party_id(&identity_seed),
+                    ) {
+                        crate::log("attest: DEVICE BUSY — this device is bound to another identity; refused post-proof");
+                        let _ = tx.send(QueryResult::Probe {
+                            outcome: ProbeOutcome::DeviceBusy,
+                            session,
+                        });
+                        continue;
+                    }
                     let outcome = match crate::network::fgtw::fleet::fetch(&handle_proof) {
                         Ok(None) => ProbeOutcome::Fresh,
                         Ok(Some(blob)) => {
