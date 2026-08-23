@@ -62,3 +62,27 @@ build_sign_install() {
         fi
     fi
 }
+
+# Swap the live process for the build that just landed: TERM the running instance (quit is a flush edge since b58312b, so state lands), a short bounded wait, KILL any holdout, then launch the fresh install detached from this terminal. macOS launches the .app (the bundle is the stable TCC/notification identity — ~/.local/bin would be a different face); elsewhere the installed binary, skipped when no display is reachable (a headless/SSH build has nowhere to paint). Running THIS thru the bridge works — the swap completes because bash outlives its dead parent — but the command's output dies with the old process; expect silence, then the new instance's presence.
+reload_photon() {
+    local name="photon-messenger"
+    if pgrep -x "$name" >/dev/null 2>&1; then
+        echo "Reload: stopping the running $name..."
+        pkill -TERM -x "$name" 2>/dev/null || true
+        local i
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+            pgrep -x "$name" >/dev/null 2>&1 || break
+            sleep 0.3
+        done
+        pkill -KILL -x "$name" 2>/dev/null || true
+    fi
+    if [ "$(uname -s)" = "Darwin" ]; then
+        open "$HOME/Applications/Photon Messenger.app"
+        echo "Reload: Photon Messenger.app relaunched"
+    elif [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+        setsid "$HOME/.local/bin/$name" >/dev/null 2>&1 </dev/null &
+        echo "Reload: $name relaunched"
+    else
+        echo "Reload: skipped the relaunch — no display in this environment (the swap is installed; launch from the desktop)"
+    fi
+}

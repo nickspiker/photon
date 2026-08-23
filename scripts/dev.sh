@@ -8,4 +8,6 @@ source scripts/lib/desktop.sh
 source scripts/lib/worktree-check.sh
 worktree_check
 build_sign_install dev
+# Reload: nuke the running instance and launch the build that just landed — set -e means we only get here on a completed build+sign+install, so a broken build can never kill a working photon.
+reload_photon
 echo "completed $(date '+%F %T')"
