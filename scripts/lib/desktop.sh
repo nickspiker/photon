@@ -64,17 +64,26 @@ build_sign_install() {
 }
 
 # Swap the live process for the build that just landed: TERM the running instance (quit is a flush edge since b58312b, so state lands), a short bounded wait, KILL any holdout, then launch the fresh install detached from this terminal. macOS launches the .app (the bundle is the stable TCC/notification identity — ~/.local/bin would be a different face); elsewhere the installed binary, skipped when no display is reachable (a headless/SSH build has nowhere to paint). Running THIS thru the bridge works — the swap completes because bash outlives its dead parent — but the command's output dies with the old process; expect silence, then the new instance's presence.
+#
+# COMM TRUNCATION (field 2026-08-23, the stacked-instances incident): Linux clips process names to 15 chars and "photon-messenger" is 16, so an exact-name pgrep/pkill silently matches NOTHING there — the reload killed nobody, stacked a fresh instance beside the old one, and the old one kept the relay pipe (answering the bridge with code deleted hours earlier). macOS keeps full names, which is why the Mac test lied that this worked. Match BOTH spellings; each no-ops on the other platform.
+photon_alive() {
+    pgrep -x photon-messenger >/dev/null 2>&1 || pgrep -x photon-messenge >/dev/null 2>&1
+}
+photon_signal() {
+    pkill "$1" -x photon-messenger 2>/dev/null || true
+    pkill "$1" -x photon-messenge 2>/dev/null || true
+}
 reload_photon() {
     local name="photon-messenger"
-    if pgrep -x "$name" >/dev/null 2>&1; then
+    if photon_alive; then
         echo "Reload: stopping the running $name..."
-        pkill -TERM -x "$name" 2>/dev/null || true
+        photon_signal -TERM
         local i
         for i in 1 2 3 4 5 6 7 8 9 10; do
-            pgrep -x "$name" >/dev/null 2>&1 || break
+            photon_alive || break
             sleep 0.3
         done
-        pkill -KILL -x "$name" 2>/dev/null || true
+        photon_signal -KILL
     fi
     if [ "$(uname -s)" = "Darwin" ]; then
         open "$HOME/Applications/Photon Messenger.app"
