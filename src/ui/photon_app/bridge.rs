@@ -22,13 +22,32 @@ pub(super) struct BridgeEmit {
     pub cwd: String,
 }
 
-/// The interrupt registry the UI thread signals through while a worker is blocked draining output: device → (the shell's live foreground-job pgid handle, the bash pid). Written by workers at spawn/death, removed by Reset — its ABSENCE after a shell death tells the worker the death was a deliberate reset (swallow the "(shell died)" frame instead of sending it into a freshly wiped screen).
+/// The interrupt registry the UI thread signals through while a worker is blocked draining output: device → the shell's bash pid. The in-flight command is found live as bash's child TREE (a foreground group needs no announce — see run_streaming's foreground rationale). Written by workers at spawn/death, removed by Reset — its ABSENCE after a shell death tells the worker the death was a deliberate reset (swallow the "(shell died)" frame instead of sending it into a freshly wiped screen).
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-pub(super) type BridgeFgMap = std::sync::Arc<
-    std::sync::Mutex<
-        std::collections::HashMap<[u8; 32], (std::sync::Arc<std::sync::atomic::AtomicI32>, i32)>,
-    >,
->;
+pub(super) type BridgeFgMap =
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<[u8; 32], i32>>>;
+
+/// Every live descendant of `root`, breadth-first via `pgrep -P` (present on every unix host the bridge ships to). The foreground command and everything it spawned — bash itself excluded by construction.
+#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+fn bridge_child_tree(root: i32) -> Vec<i32> {
+    let mut all: Vec<i32> = Vec::new();
+    let mut frontier = vec![root];
+    while let Some(p) = frontier.pop() {
+        if let Ok(out) = std::process::Command::new("pgrep")
+            .arg("-P")
+            .arg(p.to_string())
+            .output()
+        {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                if let Ok(c) = line.trim().parse::<i32>() {
+                    all.push(c);
+                    frontier.push(c);
+                }
+            }
+        }
+    }
+    all
+}
 
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 fn bridge_wake(w: &Option<std::sync::Arc<dyn WakeSender<PhotonEvent>>>) {
@@ -56,7 +75,7 @@ fn spawn_bridge_worker(
                 if shell.is_none() {
                     match BridgeShell::spawn() {
                         Ok(s) => {
-                            fg.lock().unwrap().insert(dev, (s.fg_pgid.clone(), s.child.id() as i32));
+                            fg.lock().unwrap().insert(dev, s.child.id() as i32);
                             shell = Some(s);
                         }
                         Err(e) => {
@@ -121,11 +140,7 @@ pub(super) struct BridgeShell {
     stdin: std::process::ChildStdin,
     lines: std::sync::mpsc::Receiver<Option<String>>,
     sentinel: String,
-    /// The job sentinel: `{ cmd; } &` under `set -m` puts each command in its OWN process group (leader pid = $!), announced on this second shell-internal line — so an interrupt signals the command's whole tree and never bash itself.
-    job_sentinel: String,
     host: String,
-    /// The foreground command's process-group id, readable by the UI thread's interrupt path while the worker is blocked draining output. 0 = no command in flight.
-    fg_pgid: std::sync::Arc<std::sync::atomic::AtomicI32>,
 }
 
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
@@ -186,20 +201,17 @@ impl BridgeShell {
             }
         });
         let sentinel = format!("__PHOTON_BRIDGE_{:016x}__", rand::random::<u64>());
-        let job_sentinel = format!("__PHOTON_BRIDGE_JOB_{:016x}__", rand::random::<u64>());
-        // Init: merge stderr→stdout, job control ON (set -m — each command becomes its own process group so the interrupt path can signal the command tree without touching bash), notifications routed thru the normal flow (their `[n]+ Done` lines are filtered by the job-notice screen below), aliases best-effort (guarded .bashrc often skips non-interactive, so force expand_aliases + source explicitly), prompt silenced, then a bare `cd` — the spawned bash inherits PHOTON'S OWN cwd, which is whatever the launch path bequeathed (`/` from the Dock, the repo after a dev.sh reload, luck from autostart); every terminal starts at ~ and so does this one. `true` gives the priming run below a clean exit to read up to.
+        // Init: merge stderr→stdout, aliases best-effort (guarded .bashrc often skips non-interactive, so force expand_aliases + source explicitly), prompt silenced, then a bare `cd` — the spawned bash inherits PHOTON'S OWN cwd, which is whatever the launch path bequeathed (`/` from the Dock, the repo after a dev.sh reload, luck from autostart); every terminal starts at ~ and so does this one. `true` gives the priming run below a clean exit to read up to.
         writeln!(
             stdin,
-            "exec 2>&1; set -m 2>/dev/null; shopt -s expand_aliases 2>/dev/null; [ -f ~/.bashrc ] && source ~/.bashrc 2>/dev/null; [ -f ~/.bash_aliases ] && source ~/.bash_aliases 2>/dev/null; cd 2>/dev/null; PS1=''; PROMPT_COMMAND=''; true"
+            "exec 2>&1; shopt -s expand_aliases 2>/dev/null; [ -f ~/.bashrc ] && source ~/.bashrc 2>/dev/null; [ -f ~/.bash_aliases ] && source ~/.bash_aliases 2>/dev/null; cd 2>/dev/null; PS1=''; PROMPT_COMMAND=''; true"
         )?;
         let mut sh = BridgeShell {
             child,
             stdin,
             lines: rx,
             sentinel,
-            job_sentinel,
             host: String::new(),
-            fg_pgid: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
         };
         // Drain init noise (bashrc chatter/errors) up to a priming sentinel so the FIRST real command's output starts clean, then capture the hostname once — bash defines $HOSTNAME even non-interactively, so no external binary runs.
         let _ = sh.run_streaming("true", |_| {});
@@ -227,25 +239,19 @@ impl BridgeShell {
             .any(|v| tail.starts_with(v))
     }
 
-    /// Feed one command as its own JOB (own process group under `set -m`, announced on the shell-internal job sentinel so the interrupt path can signal the command's whole tree without touching bash), stream every committed line to `emit` as the FULL accumulated snapshot, and return (exit code, cwd) from the closing sentinel. Blocks until the command completes or the shell dies — no timeout by design; `fg_pgid` is the operator's lever while this drains. The tail is kept on overflow (a build's errors live at the END).
+    /// Feed one command as a FOREGROUND brace group — foreground because a backgrounded group is a SUBSHELL, and a subshell's `cd`/exports die with it (field 2026-08-23: every cd silently no-op'd and the operator found themselves in ~ believing they were in the repo — the persistent-shell property is the bridge's whole point). Stream every committed line to `emit` as the FULL accumulated snapshot; the closing sentinel carries exit code + cwd. Blocks until the command completes or the shell dies — no timeout by design; the interrupt path signals bash's child TREE from outside (bridge_interrupt_host), which needs no job announce at all. The tail is kept on overflow (a build's errors live at the END).
     fn run_streaming(
         &mut self,
         cmd: &str,
         mut emit: impl FnMut(&str),
     ) -> Result<(i32, String, String), String> {
         use std::io::Write;
-        use std::sync::atomic::Ordering;
-        // The group brace closes on its OWN line so a trailing `#comment` in cmd can't swallow it; a multi-line paste rides inside the group unchanged.
+        // The group brace closes on its OWN line so a trailing `#comment` in cmd can't swallow it; a multi-line paste rides inside the group unchanged. Foreground group = current shell = state persists.
         writeln!(self.stdin, "{{ {}", cmd).map_err(|e| e.to_string())?;
+        writeln!(self.stdin, "}}").map_err(|e| e.to_string())?;
         writeln!(
             self.stdin,
-            "}} & __pb=$!; printf '%s %d\\n' '{}' \"$__pb\"",
-            self.job_sentinel
-        )
-        .map_err(|e| e.to_string())?;
-        writeln!(
-            self.stdin,
-            "wait \"$__pb\"; printf '%s %d %s\\n' '{}' \"$?\" \"$PWD\"",
+            "printf '%s %d %s\\n' '{}' \"$?\" \"$PWD\"",
             self.sentinel
         )
         .map_err(|e| e.to_string())?;
@@ -256,17 +262,10 @@ impl BridgeShell {
             let line = match self.lines.recv() {
                 Ok(Some(l)) => l,
                 Ok(None) | Err(_) => {
-                    self.fg_pgid.store(0, Ordering::Relaxed);
                     return Err("shell exited".to_string());
                 }
             };
-            if let Some(rest) = line.trim_end().strip_prefix(&self.job_sentinel) {
-                self.fg_pgid
-                    .store(rest.trim().parse().unwrap_or(0), Ordering::Relaxed);
-                continue;
-            }
             if let Some(rest) = line.trim_end().strip_prefix(&self.sentinel) {
-                self.fg_pgid.store(0, Ordering::Relaxed);
                 let rest = rest.trim_start();
                 let (code_s, cwd) = rest.split_once(' ').unwrap_or((rest, ""));
                 let final_body = if dropped {
@@ -299,12 +298,11 @@ impl BridgeShell {
         Self::line_is_job_notice(line)
     }
 
-    /// Kill the SESSION: the foreground job's whole group first (bash's death alone orphans it — exactly the invisible-deploy failure this replaces), then bash.
+    /// Kill the SESSION: the foreground command's whole descendant tree first (bash's death alone orphans it — exactly the invisible-deploy failure this replaces), then bash.
     fn kill(&mut self) {
-        let pg = self.fg_pgid.load(std::sync::atomic::Ordering::Relaxed);
-        if pg > 0 {
+        for pid in bridge_child_tree(self.child.id() as i32) {
             unsafe {
-                libc::kill(-pg, libc::SIGKILL);
+                libc::kill(pid, libc::SIGKILL);
             }
         }
         let _ = self.child.kill();
@@ -398,7 +396,7 @@ impl PhotonApp {
         }
     }
 
-    /// A BridgeCtl row arrived (the operator pressed Stop): signal the in-flight command's OWN process group — never bash, so the session and its cwd survive the interrupt. A late arrival after completion finds pgid 0 and is a natural no-op.
+    /// A BridgeCtl row arrived (the operator pressed Stop): signal the in-flight command's descendant tree — never bash, so the session and its cwd survive the interrupt. A late arrival after completion finds an empty tree and is a natural no-op.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     pub(super) fn bridge_interrupt_host(&mut self, ci: usize, sig: u64) {
         let Some(dev) = self.contacts.get(ci).map(|c| c.public_identity.key) else {
@@ -407,24 +405,26 @@ impl PhotonApp {
         let Some(fg) = self.bridge_fg.as_ref() else {
             return;
         };
-        let pg = fg
-            .lock()
-            .unwrap()
-            .get(&dev)
-            .map(|(h, _)| h.load(std::sync::atomic::Ordering::Relaxed))
-            .unwrap_or(0);
-        if pg > 0 {
-            let sig = match sig {
-                15 => libc::SIGTERM,
-                9 => libc::SIGKILL,
-                _ => libc::SIGINT,
-            };
-            crate::logf!("BRIDGE: interrupt from operator — signal {} to job pgid {}", sig, pg);
-            unsafe {
-                libc::kill(-pg, sig);
-            }
-        } else {
+        let pid = fg.lock().unwrap().get(&dev).copied().unwrap_or(0);
+        let tree = if pid > 0 { bridge_child_tree(pid) } else { Vec::new() };
+        if tree.is_empty() {
             crate::log("BRIDGE: interrupt arrived with no command in flight — no-op");
+            return;
+        }
+        let sig = match sig {
+            15 => libc::SIGTERM,
+            9 => libc::SIGKILL,
+            _ => libc::SIGINT,
+        };
+        crate::logf!(
+            "BRIDGE: interrupt from operator — signal {} to {} process(es) under the shell",
+            sig,
+            tree.len()
+        );
+        for c in tree {
+            unsafe {
+                libc::kill(c, sig);
+            }
         }
     }
 
@@ -532,15 +532,16 @@ impl PhotonApp {
                 while let Ok(job) = cmd_rx.recv() {
                     match job {
                         BridgeJob::Reset(dev) => {
-                            // Deregister FIRST (the worker reads absence as "deliberate reset — hush"), then kill the foreground job's group AND bash: bash's death alone orphans a running command invisibly, the exact lie the old timeout told (field 2026-08-23).
+                            // Deregister FIRST (the worker reads absence as "deliberate reset — hush"), then kill the command's descendant tree AND bash: bash's death alone orphans a running command invisibly, the exact lie the old timeout told (field 2026-08-23).
                             workers.remove(&dev);
-                            if let Some((h, pid)) = fg.lock().unwrap().remove(&dev) {
-                                let pg = h.load(std::sync::atomic::Ordering::Relaxed);
-                                unsafe {
-                                    if pg > 0 {
-                                        libc::kill(-pg, libc::SIGKILL);
+                            if let Some(pid) = fg.lock().unwrap().remove(&dev) {
+                                for c in bridge_child_tree(pid) {
+                                    unsafe {
+                                        libc::kill(c, libc::SIGKILL);
                                     }
-                                    if pid > 0 {
+                                }
+                                if pid > 0 {
+                                    unsafe {
                                         libc::kill(pid, libc::SIGKILL);
                                     }
                                 }
