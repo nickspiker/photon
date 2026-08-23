@@ -280,8 +280,10 @@ impl PhotonApp {
         // Friendships whose send lane the wedge heal rotated this pass — persisted and row-flushed after the drain loop, where &mut self is available again.
         let mut rotated_flush: Vec<crate::types::friendship::FriendshipId> = Vec::new();
         // Sender-side re-serve jobs (Nick's go, 2026-08-20): (contact idx, rows as (eagle_time, content, reference)) collected during the drain — chain_transmit needs &mut self, so execution waits for the checker borrow to release, same as rotated_flush.
-        let mut reserve_jobs: Vec<(usize, Vec<(i64, String, Option<(crate::types::RefKind, i64)>)>)> =
-            Vec::new();
+        let mut reserve_jobs: Vec<(
+            usize,
+            Vec<(i64, String, Option<(crate::types::RefKind, i64)>)>,
+        )> = Vec::new();
         loop {
             // TIME BUDGET — the UI thread's stall is bounded whatever the storm size: past 250ms the rest of the backlog waits for the next tick (the channel holds it; un-replayed synthetic frames go back on chat_replay_queue below, order preserved). Unbounded, a churny catch-up pass measured 1.8s on the desktop — taps landed but nothing painted until the drain yielded (2026-08-11).
             if pass_start.elapsed().as_millis() > 250 {
@@ -361,10 +363,7 @@ impl PhotonApp {
                                 crate::logf!("CHAT: re-armed {} given-up pending msg(s) past peer lane tip {} (stall recovery)", n, tip);
                                 // STUCK-TIP WEDGE — the anchor wedge in disguise (round-9 field, 2026-08-17): the peer's head for our lane is NONZERO but never moves (its lane stalled exactly where ours wedged; the rows above it reached the fleet as forwards nobody can re-ACK), so exhaust → re-arm → exhaust loops forever below the tip-0 detector. Two FULL retry ladders re-armed at the very same advertised head = the peer provably cannot advance past it; rotate, and the re-serve converges rows by identity exactly like the anchor heal.
                                 let ladders = {
-                                    let e = self
-                                        .lane_rearm_cycles
-                                        .entry(*fid)
-                                        .or_insert((tip, 0));
+                                    let e = self.lane_rearm_cycles.entry(*fid).or_insert((tip, 0));
                                     if e.0 == tip {
                                         e.1 = e.1.saturating_add(1);
                                     } else {
@@ -486,7 +485,13 @@ impl PhotonApp {
                                                             && m.timestamp > tip
                                                             && !pending_times.contains(&m.timestamp)
                                                     })
-                                                    .map(|m| (m.timestamp, m.content.clone(), m.reference))
+                                                    .map(|m| {
+                                                        (
+                                                            m.timestamp,
+                                                            m.content.clone(),
+                                                            m.reference,
+                                                        )
+                                                    })
                                                     .collect();
                                                 rows.sort_by_key(|(t, _, _)| *t);
                                                 rows.truncate(RESERVE_ROWS_PER_BURST);
@@ -1125,7 +1130,9 @@ impl PhotonApp {
                             let scratch = generate_scratch(&sender_chain, &salt);
                             let et = vsf::EagleTime::from_oscillations(timestamp);
                             // Key/salt FINGERPRINTS (BLAKE3), never the bytes — mirrors CHAIN ENCRYPT so the two still diff for a chain divergence, without putting ratchet key material in a handle-readable log.
-                            let key_fp = hex::encode(&blake3::hash(&sender_chain.current_key()[..]).as_bytes()[..4]);
+                            let key_fp = hex::encode(
+                                &blake3::hash(&sender_chain.current_key()[..]).as_bytes()[..4],
+                            );
                             let salt_fp = hex::encode(&blake3::hash(&salt[..]).as_bytes()[..4]);
                             crate::logf!("CHAIN DECRYPT: lane={}..., key#{}, salt#{}, eagle_time={}, ciphertext_len={}", hex::encode(&lane[..4]), key_fp, salt_fp, timestamp, ciphertext.len());
                             let plaintext = decrypt_layers(
@@ -2515,12 +2522,16 @@ impl PhotonApp {
                     if Some(handle_proof) == own_hp {
                         if let Some(dk) = device_pubkey {
                             let now = std::time::Instant::now();
-                            self.lan_heard.retain(|(_, t)| now.duration_since(*t) < LAN_HEARD_FRESH);
+                            self.lan_heard
+                                .retain(|(_, t)| now.duration_since(*t) < LAN_HEARD_FRESH);
                             match self.lan_heard.iter_mut().find(|(k, _)| *k == dk) {
                                 Some(e) => e.1 = now,
                                 None => {
                                     self.lan_heard.push((dk, now));
-                                    crate::logf!("LAN: own-handle device {} broadcasting on this network", hex::encode(&dk[..4]));
+                                    crate::logf!(
+                                        "LAN: own-handle device {} broadcasting on this network",
+                                        hex::encode(&dk[..4])
+                                    );
                                 }
                             }
                             if matches!(self.state, AppState::AddDevice) {
@@ -2711,8 +2722,8 @@ impl PhotonApp {
                                     .copied()?;
                                 Some((key, other))
                             });
-                        let friend_route: Option<(usize, [u8; 32], Option<u64>)> =
-                            key_and_other.and_then(|(key, other)| {
+                        let friend_route: Option<(usize, [u8; 32], Option<u64>)> = key_and_other
+                            .and_then(|(key, other)| {
                                 self.contacts
                                     .iter()
                                     .position(|c| {
@@ -2733,10 +2744,8 @@ impl PhotonApp {
                                 return None;
                             }
                             let (k, epoch) = self.fleet_epoch?;
-                            let key = crate::crypto::clutch::fleet_epoch_seal_key(
-                                &epoch,
-                                b"hist_page",
-                            );
+                            let key =
+                                crate::crypto::clutch::fleet_epoch_seal_key(&epoch, b"hist_page");
                             let idx =
                                 self.contact_idx_for_conversation_token(&conversation_token)?;
                             Some((idx, key, Some(k)))
@@ -3138,9 +3147,7 @@ impl PhotonApp {
                         c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
                     });
                     if is_sib {
-                        let newer = self
-                            .fleet_focus_claim
-                            .map_or(true, |(_, _, cur)| osc > cur);
+                        let newer = self.fleet_focus_claim.map_or(true, |(_, _, cur)| osc > cur);
                         if active && newer {
                             self.fleet_focus_claim =
                                 Some((conversation_token, sender_pubkey.key, osc));
@@ -3150,10 +3157,11 @@ impl PhotonApp {
                                 hex::encode(&conversation_token[..4])
                             );
                             // A claim IS attention (the open was human input THERE) — one frame moves both slots, mirroring the sender's local adopt.
-                            let a_newer = attn_adopt.or(self.fleet_attention).map_or(
-                                true,
-                                |(d, cur)| osc > cur || (osc == cur && sender_pubkey.key > d),
-                            );
+                            let a_newer = attn_adopt
+                                .or(self.fleet_attention)
+                                .map_or(true, |(d, cur)| {
+                                    osc > cur || (osc == cur && sender_pubkey.key > d)
+                                });
                             if a_newer {
                                 attn_adopt = Some((sender_pubkey.key, osc));
                             }
@@ -3374,18 +3382,12 @@ impl PhotonApp {
                     let (key, contact_idx) = if from_sibling {
                         // Fleet-route pages seal under the EPOCH hist_page key (the B-arc re-seal): `ek` names the sealing epoch; we open at our k or k−1 across a checkpoint crossing. Behind the sender → request spine state (the chain_sync catch-up move) and drop; the request re-fires and self-heals. `ek` absent from a sibling = a pre-epoch build — flag-day drop, loudly.
                         let key = match (epoch_k, self.fleet_epoch, self.fleet_epoch_prev) {
-                            (Some(ek), Some((k, e)), _) if ek == k => {
-                                Some(crate::crypto::clutch::fleet_epoch_seal_key(
-                                    &e,
-                                    b"hist_page",
-                                ))
-                            }
-                            (Some(ek), _, Some((pk, pe))) if ek == pk => {
-                                Some(crate::crypto::clutch::fleet_epoch_seal_key(
-                                    &pe,
-                                    b"hist_page",
-                                ))
-                            }
+                            (Some(ek), Some((k, e)), _) if ek == k => Some(
+                                crate::crypto::clutch::fleet_epoch_seal_key(&e, b"hist_page"),
+                            ),
+                            (Some(ek), _, Some((pk, pe))) if ek == pk => Some(
+                                crate::crypto::clutch::fleet_epoch_seal_key(&pe, b"hist_page"),
+                            ),
                             (Some(ek), cur, _) => {
                                 let our_k = cur.map(|(k, _)| k).unwrap_or(0);
                                 crate::logf!("HISTORY: fleet page sealed at k={} but our spine is at k={} — requesting state from the fleet", ek, our_k);
@@ -3638,7 +3640,8 @@ impl PhotonApp {
                                                     peer_addr: primary,
                                                     alt_addr: alt,
                                                     recipient_pubkey: sender_pubkey.key,
-                                                    relay_to: self.contacts[idx].relay_device_list(),
+                                                    relay_to: self.contacts[idx]
+                                                        .relay_device_list(),
                                                     vsf_bytes,
                                                 },
                                             );
@@ -3650,9 +3653,16 @@ impl PhotonApp {
                                 if let Some(cur) = current.as_ref() {
                                     let cur_hash = *blake3::hash(cur).as_bytes();
                                     let incoming_hash = *blake3::hash(&blob).as_bytes();
-                                    let (prev_hash, flips) =
-                                        self.blind_flip.get(&flip_key).copied().unwrap_or(([0u8; 32], 0));
-                                    let flips = if prev_hash == incoming_hash { flips + 1 } else { 0 };
+                                    let (prev_hash, flips) = self
+                                        .blind_flip
+                                        .get(&flip_key)
+                                        .copied()
+                                        .unwrap_or(([0u8; 32], 0));
+                                    let flips = if prev_hash == incoming_hash {
+                                        flips + 1
+                                    } else {
+                                        0
+                                    };
                                     self.blind_flip.insert(flip_key, (cur_hash, flips));
                                     if flips >= 3 && flips % 8 != 0 {
                                         if flips == 3 {
@@ -3912,7 +3922,9 @@ impl PhotonApp {
                                                     };
                                                 // A served deposit IS a confirmed deposit at this friend. Persist OFF-THREAD (snapshot pattern) — the sibling inline save was the 890ms UI-thread arm; this is the same flag on the reconstitute path.
                                                 self.contacts[idx].blind_deposited = true;
-                                                if let Some(storage) = self.storage.as_ref().cloned() {
+                                                if let Some(storage) =
+                                                    self.storage.as_ref().cloned()
+                                                {
                                                     let snapshot = self.contacts[idx].clone();
                                                     queue_job(&self.seal_job_tx, move || {
                                                         let _ = crate::storage::contacts::save_contact_state(
@@ -4171,7 +4183,10 @@ impl PhotonApp {
         if let Some(dead) = attn_void {
             if self.fleet_attention.map_or(false, |(d, _)| d == dead) {
                 self.set_fleet_attention(None);
-                crate::logf!("ATTN: holder {} went offline — ball voided", crate::fp(&dead));
+                crate::logf!(
+                    "ATTN: holder {} went offline — ball voided",
+                    crate::fp(&dead)
+                );
             }
         }
         if let Some(v) = attn_adopt {
