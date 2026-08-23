@@ -54,6 +54,10 @@ pub enum RefKind {
     BridgeOut = 4,
     /// BRIDGE session RESET — the client sends this when it OPENS the bridge, telling the host to kill its persistent shell for us and start fresh (Nick 2026-08-22: "opening the bridge nukes any terminal open, clears and spawns new"). A hidden control row: never displayed, never run as a command. No target; `i64` is 0.
     BridgeReset = 5,
+    /// BRIDGE COMMAND — the typed mark that says "run me" (2026-08-23). Execution used to key on being any plain sibling row (with a legacy `$ ` content prefix merely stripped) — content-as-trigger, the exact class the reply/edit/react rework exists to kill. The client stamps every bridge-conversation send with this kind; the host runs ONLY rows carrying it (a transition arm still accepts bare legacy rows, loudly). No target; `i64` is 0.
+    BridgeCmd = 6,
+    /// BRIDGE INTERRUPT — the operator's stop lever (Ctrl+K / the Stop pill), targeting the command row's eagle_time. The signal number rides the typed `bsig` wire field; the host signals the command's own process group, never bash. Hidden control row; late arrival after completion is a natural no-op.
+    BridgeCtl = 7,
 }
 
 impl RefKind {
@@ -64,6 +68,8 @@ impl RefKind {
             3 => Some(RefKind::React),
             4 => Some(RefKind::BridgeOut),
             5 => Some(RefKind::BridgeReset),
+            6 => Some(RefKind::BridgeCmd),
+            7 => Some(RefKind::BridgeCtl),
             _ => None,
         }
     }
@@ -85,6 +91,10 @@ pub struct ChatMessage {
     pub reference: Option<(RefKind, i64)>,
     /// The fleet has DISCHARGED its alert duty for this row exactly once (docs design 2026-07-23): true the moment any device dings for it OR displays it live (the active-clearer). Explicitly NOT "read" — never records whether the human looked. Synced fleet-internally like `delivered` (true wins, monotone; rides the sibling row pushes + history pages, sealed under fleet keys — friends never see it). Absent on pre-feature rows/pages = TRUE, so history can never re-ding. Outgoing rows are born true (your own sends never alert you).
     pub notified: bool,
+    /// BRIDGE runtime only (never persisted — bridge rows are ephemeral): the newest streamed snapshot's sequence on a BridgeOut row, so an out-of-order or duplicated partial can never regress the display.
+    pub bridge_seq: u64,
+    /// BRIDGE runtime only: the exit code once this BridgeOut row's command completed — present = FINAL frame arrived, the in-flight predicate's other half.
+    pub bridge_exit: Option<i64>,
 }
 
 impl ChatMessage {
@@ -99,6 +109,8 @@ impl ChatMessage {
             deleted: false,
             reference: None,
             notified: is_outgoing,
+            bridge_seq: 0,
+            bridge_exit: None,
         }
     }
 
@@ -114,6 +126,8 @@ impl ChatMessage {
             deleted: false,
             reference: None,
             notified: is_outgoing,
+            bridge_seq: 0,
+            bridge_exit: None,
         }
     }
 

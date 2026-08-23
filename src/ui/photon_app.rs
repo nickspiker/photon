@@ -695,8 +695,11 @@ fn chat_row_visible(raw: &[crate::types::ChatMessage], m: &crate::types::ChatMes
     if matches!(m.reference, Some((crate::types::RefKind::React, _))) {
         return false;
     }
-    // BridgeReset is a hidden control row (the peer opened the bridge) — never a bubble.
-    if matches!(m.reference, Some((crate::types::RefKind::BridgeReset, _))) {
+    // BridgeReset (the peer opened the bridge) and BridgeCtl (a Stop press) are hidden control rows — never bubbles.
+    if matches!(
+        m.reference,
+        Some((crate::types::RefKind::BridgeReset | crate::types::RefKind::BridgeCtl, _))
+    ) {
         return false;
     }
     if let Some((crate::types::RefKind::Edit, t)) = m.reference {
@@ -1386,6 +1389,7 @@ pub struct PhotonApp {
         String,
         i64,
         Option<(crate::types::RefKind, i64)>,
+        Option<crate::network::message_package::BridgeWire>,
         u64,
     )>,
     /// Unique identities the seed knows (including us), off the latest signed announce ack. The Ready-screen count reads this as a floor: the peer STORE only fills by gossip now, so on a fresh session it holds nothing but our own record and would show "0 peers" to a user who can see nine friends in the contact list.
@@ -1549,11 +1553,23 @@ pub struct PhotonApp {
     attach_confirmed: std::collections::HashSet<[u8; 32]>,
     /// Android: set when the paperclip asks for the system file picker; drained by nativePollAttachPicker.
     pending_attach_picker: bool,
-    /// Bridge executor channels (host side): commands go to the off-thread `bridge-exec` worker that owns one persistent shell per sibling device; finished output comes back here for `drain_bridge_output` to reply with. Lazily created on the first command so a fleet that never bridges spawns nothing. Desktop-unix only (the shell host).
+    /// Bridge executor channels (host side): commands go to the off-thread dispatcher that routes to one worker+shell per sibling device; FINAL outputs come back here for `drain_bridge_output` to reply with. Lazily created on the first command so a fleet that never bridges spawns nothing. Desktop-unix only (the shell host).
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     bridge_cmd_tx: Option<std::sync::mpsc::Sender<bridge::BridgeJob>>,
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-    bridge_out_rx: Option<std::sync::mpsc::Receiver<(usize, String)>>,
+    bridge_out_rx: Option<std::sync::mpsc::Receiver<bridge::BridgeEmit>>,
+    /// Latest-wins streamed-snapshot slot per contact (host side) — the UI drain paces the wire, a burst collapses to the newest snapshot, no clock anywhere.
+    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    bridge_partials: Option<
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<usize, bridge::BridgeEmit>>>,
+    >,
+    /// The interrupt registry (host side): device → (foreground-job pgid handle, bash pid), so a Stop arriving while a worker is blocked draining output can signal the command's own process group directly.
+    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    bridge_fg: Option<bridge::BridgeFgMap>,
+    /// CLIENT side, any platform: the latest locus the bridge host reported — (device, host name, cwd) — rendered as the strip above the compose box so the operator is never blind to where commands land (field 2026-08-23: a pull meant for photon ran in keys/).
+    bridge_locus: Option<([u8; 32], String, String)>,
+    /// CLIENT side: Stop-press escalation for the in-flight command — (command eagle_time, presses so far); each press walks SIGINT → SIGTERM → SIGKILL, reset when a new command starts.
+    bridge_int: Option<(i64, u8)>,
     /// Recovery-page "be a custodian" opt-in — a custom `Checkbox`.
     settings_custodian_check: Option<fluor::widgets::Checkbox>,
     /// Notifications-page global chime on/off — a custom `Checkbox`.
@@ -2003,6 +2019,12 @@ impl PhotonApp {
             bridge_cmd_tx: None,
             #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
             bridge_out_rx: None,
+            #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+            bridge_partials: None,
+            #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+            bridge_fg: None,
+            bridge_locus: None,
+            bridge_int: None,
             settings_custodian_check: None,
             settings_chime_check: None,
             settings_presence_check: None,

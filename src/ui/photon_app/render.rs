@@ -2073,6 +2073,15 @@ impl PhotonApp {
                         .as_ref()
                         .map(|kp| crate::crypto::clutch::sibling_party_id(kp.public.as_bytes()));
                     let is_self_contact = contact.remote_count(&our_handle_hash) == 0;
+                    // BRIDGE locus strip inputs (2026-08-23, the blind-cwd fix): the host-reported host:cwd for THIS sibling device, plus whether a command is in flight — which puts the Stop pill in the band.
+                    let bridge_strip_txt: Option<String> = if contact.is_sibling {
+                        self.bridge_locus
+                            .as_ref()
+                            .filter(|(d, _, _)| *d == contact.public_identity.key)
+                            .map(|(_, h, c)| format!("{h}:{c}"))
+                    } else {
+                        None
+                    };
                     // THE conversation key MUST match how the SEND path keyed it (`our_party_id`): for a SIBLING that is the device-derived sibling pid, NOT our_handle_hash (the identity pid). Using our_handle_hash here made the render look up an EMPTY phantom conversation for every sibling — the send inserted the bubble into the sibling-pid-keyed conversation, the screen painted the identity-keyed one, and a bridge command vanished on send ("BOOP", field 2026-08-21). Friends and self are unaffected: their party id already EQUALS our_handle_hash. Mirrors `our_party_id` exactly, so insert and render read the same object.
                     let conv_party_id = if contact.is_sibling {
                         our_sibling_pid.unwrap_or(our_handle_hash)
@@ -2084,6 +2093,30 @@ impl PhotonApp {
                         let id = contact.conversation(&conv_party_id).id();
                         self.conversations.iter().find(|v| v.id() == id)
                     };
+                    // In-flight = the newest outgoing BridgeCmd with no FINAL output yet (bridge_exit stamped by the replace-in-place). Field-precise mirror of bridge_inflight_target — a &self method call here would collide with the live chrome borrow.
+                    let bridge_inflight = contact.is_sibling
+                        && conv.map_or(false, |v| {
+                            v.messages
+                                .iter()
+                                .rev()
+                                .find(|m| {
+                                    m.is_outgoing
+                                        && matches!(
+                                            m.reference,
+                                            Some((crate::types::RefKind::BridgeCmd, _))
+                                        )
+                                })
+                                .map_or(false, |cmd| {
+                                    !v.messages.iter().any(|m| {
+                                        m.reference
+                                            == Some((
+                                                crate::types::RefKind::BridgeOut,
+                                                cmd.timestamp,
+                                            ))
+                                            && m.bridge_exit.is_some()
+                                    })
+                                })
+                        });
                     // Ring computed BEFORE the closure: row_ring_tier borrows &self, and the closure outlives writes to disjoint self fields below.
                     let conv_ring = row_ring_tier_in(&self.contacts, contact, !is_self_contact);
                     // Stamp the avatar disc + tier ring at a given centre-y — stream entry #0's avatar. Clip rides in as a parameter and the caller passes the LIST clip: the avatar obeys exactly the same boundary as every message (a hardcoded None once let it paint through the top edge onto its own visual layer).
@@ -2227,7 +2260,9 @@ impl PhotonApp {
                             - live_compose_h
                             - compose_margin
                             - unit * 0.5
-                            - if compose_strip.is_some() {
+                            - if compose_strip.is_some()
+                                || (bridge_strip_txt.is_some() || bridge_inflight)
+                            {
                                 unit * 0.9
                             } else {
                                 0.0
@@ -2959,6 +2994,54 @@ impl PhotonApp {
                                 None,
                                 None,
                             );
+                        }
+                        // ── BRIDGE locus strip: `host:cwd` in the reserved band, dim — the terminal finally says where it stands (a real prompt's job; field 2026-08-23: a pull meant for photon ran in keys/). While a command runs, the Stop pill sits at the band's right edge — the operator's lever, escalating INT → TERM → KILL per press. An armed reply/edit strip wins the band for its moment.
+                        if compose_strip.is_none() && (bridge_strip_txt.is_some() || bridge_inflight)
+                        {
+                            let strip_y = list_bottom + unit * 0.55;
+                            if let Some(loc) = &bridge_strip_txt {
+                                ctx.text.draw_text_left(
+                                    &mut canvas,
+                                    loc,
+                                    pad_x,
+                                    strip_y,
+                                    &TextStyle::new(
+                                        msg_size * 0.8,
+                                        theme::half_colour(*theme::LABEL_COLOUR),
+                                    )
+                                    .weight(500),
+                                    None,
+                                    None,
+                                );
+                            }
+                            if bridge_inflight {
+                                let label = "stop";
+                                let style =
+                                    TextStyle::new(msg_size * 0.85, *theme::ERROR_TEXT_COLOUR)
+                                        .weight(700)
+                                        .font("Oxanium");
+                                let w = ctx.text.measure_text(label, &style);
+                                let sx = buf_w as f32 - pad_x - w;
+                                ctx.text.draw_text_left(
+                                    &mut canvas,
+                                    label,
+                                    sx,
+                                    strip_y,
+                                    &style,
+                                    None,
+                                    None,
+                                );
+                                restamp_hit_rect(
+                                    &mut chrome.hit_test_map,
+                                    buf_w,
+                                    buf_h,
+                                    (sx - unit * 0.5) as isize,
+                                    (strip_y - unit * 0.7) as isize,
+                                    (sx + w + unit * 0.5) as isize,
+                                    (strip_y + unit * 0.4) as isize,
+                                    self.msg_action_base.wrapping_add(5),
+                                );
+                            }
                         }
 
                         // ── Compose box (pinned bottom) ──────────────────────────── Shown when THIS device can dispatch — the pre-chrome `compose_ready` snapshot, the same one definition the focus walk reads. No placeholder text: the box's position says what it's for (Nick, 2026-08-09 — the hint lingered after sends and earned nothing).

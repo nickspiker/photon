@@ -5,27 +5,135 @@ use super::*;
 /// Work item for the off-thread bridge executor: run a command in a sibling's persistent shell, or reset (kill) that sibling's shell so the next command starts fresh.
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 pub(super) enum BridgeJob {
-    Run(usize, [u8; 32], String),
+    /// (contact idx, device, command text, the command row's eagle_time — the target streamed output frames reference).
+    Run(usize, [u8; 32], String, i64),
     Reset([u8; 32]),
 }
 
-/// One persistent shell for a sibling's bridge session (host side). A single long-lived `bash` process — spawned on the first command, reused for every command after — so working directory, exported vars, and shell state persist exactly like a real terminal, instead of a fresh `bash -lc` per command (Nick, 2026-08-22). A reader thread drains stdout into a channel so a command that hangs (reads stdin, never returns) can't wedge the session forever: `run` waits with a timeout and the caller respawns on failure. stderr is merged into stdout in-shell (`exec 2>&1`); a per-session random sentinel marks each command's output boundary + exit code — shell-internal only, it NEVER touches the Photon wire.
+/// One streamed emission from the executor toward the wire: `body` is the FULL accumulated output so far (a snapshot, never a delta — loss/reorder/dedup of any one frame is then a free no-op), `target` is the command row's eagle_time (what the client's replace-in-place keys on), `fin` carries the exit code once the command completed, and the locus names where the shell stands so the operator is never blind to host+cwd again (field 2026-08-23: a pull meant for photon ran in keys/). Partials ride a latest-wins slot (a superseded snapshot is garbage by definition); finals ride the ordered channel because every one must reach the wire.
+#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+pub(super) struct BridgeEmit {
+    pub ci: usize,
+    pub target: i64,
+    pub seq: u64,
+    pub body: String,
+    pub fin: Option<i32>,
+    pub host: String,
+    pub cwd: String,
+}
+
+/// The interrupt registry the UI thread signals through while a worker is blocked draining output: device → (the shell's live foreground-job pgid handle, the bash pid). Written by workers at spawn/death, removed by Reset — its ABSENCE after a shell death tells the worker the death was a deliberate reset (swallow the "(shell died)" frame instead of sending it into a freshly wiped screen).
+#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+pub(super) type BridgeFgMap = std::sync::Arc<
+    std::sync::Mutex<
+        std::collections::HashMap<[u8; 32], (std::sync::Arc<std::sync::atomic::AtomicI32>, i32)>,
+    >,
+>;
+
+#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+fn bridge_wake(w: &Option<std::sync::Arc<dyn WakeSender<PhotonEvent>>>) {
+    if let Some(w) = w {
+        let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+    }
+}
+
+/// One worker thread per sibling device, owning that device's persistent shell. Per-device because the executor used to serialize EVERY sibling thru one thread — with no timeout, one long build would have queued every other bridge behind it. The worker blocks in run_streaming for as long as the command takes; liveness is visible thru the streamed partials, and the operator's stop lever runs thru BridgeFgMap, not thru this queue.
+#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+fn spawn_bridge_worker(
+    dev: [u8; 32],
+    fin_tx: std::sync::mpsc::Sender<BridgeEmit>,
+    partials: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<usize, BridgeEmit>>>,
+    fg: BridgeFgMap,
+    wake: Option<std::sync::Arc<dyn WakeSender<PhotonEvent>>>,
+) -> std::sync::mpsc::Sender<(usize, String, i64)> {
+    let (tx, rx) = std::sync::mpsc::channel::<(usize, String, i64)>();
+    let spawned = std::thread::Builder::new()
+        .name("bridge-shell".to_string())
+        .spawn(move || {
+            let mut shell: Option<BridgeShell> = None;
+            let mut last_cwd = String::new();
+            while let Ok((ci, cmd, ts)) = rx.recv() {
+                if shell.is_none() {
+                    match BridgeShell::spawn() {
+                        Ok(s) => {
+                            fg.lock().unwrap().insert(dev, (s.fg_pgid.clone(), s.child.id() as i32));
+                            shell = Some(s);
+                        }
+                        Err(e) => {
+                            let _ = fin_tx.send(BridgeEmit { ci, target: ts, seq: 1, body: format!("(bridge shell failed to start: {e})"), fin: Some(-1), host: String::new(), cwd: String::new() });
+                            bridge_wake(&wake);
+                            continue;
+                        }
+                    }
+                }
+                let sh = shell.as_mut().unwrap();
+                let host = sh.host.clone();
+                let cwd0 = last_cwd.clone();
+                let mut seq: u64 = 0;
+                let res = sh.run_streaming(&cmd, |snap| {
+                    seq += 1;
+                    // Latest-wins slot: a burst collapses to whatever snapshot is current when the UI drains; wake only on the empty→occupied edge so a spewing build can't flood the event loop.
+                    let fresh = partials
+                        .lock()
+                        .unwrap()
+                        .insert(ci, BridgeEmit { ci, target: ts, seq, body: snap.to_string(), fin: None, host: host.clone(), cwd: cwd0.clone() })
+                        .is_none();
+                    if fresh {
+                        bridge_wake(&wake);
+                    }
+                });
+                match res {
+                    Ok((code, cwd, body)) => {
+                        last_cwd = cwd.clone();
+                        let trimmed = body.trim_end_matches('\n');
+                        let text = if trimmed.is_empty() {
+                            if code == 0 { "(no output)".to_string() } else { format!("(no output, exit {code})") }
+                        } else if code != 0 {
+                            format!("{trimmed}\n[exit {code}]")
+                        } else {
+                            trimmed.to_string()
+                        };
+                        let _ = fin_tx.send(BridgeEmit { ci, target: ts, seq: seq + 1, body: text, fin: Some(code), host, cwd });
+                        bridge_wake(&wake);
+                    }
+                    Err(e) => {
+                        // Registry absence = a deliberate Reset killed us — the client wiped its screen, so a death notice would land as a stray bubble in a fresh session. A REAL death (bash exited, crashed) reports once and the next command respawns.
+                        let was_registered = fg.lock().unwrap().remove(&dev).is_some();
+                        if was_registered {
+                            let _ = fin_tx.send(BridgeEmit { ci, target: ts, seq: seq + 1, body: format!("(shell died: {e} — fresh session on the next command)"), fin: Some(-1), host, cwd: cwd0 });
+                            bridge_wake(&wake);
+                        }
+                        return;
+                    }
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        crate::logf!("BRIDGE: worker thread spawn failed: {}", e);
+    }
+    tx
+}
+
+/// One persistent shell for a sibling's bridge session (host side). A single long-lived `bash` process — spawned on the first command, reused for every command after — so working directory, exported vars, and shell state persist exactly like a real terminal, instead of a fresh `bash -lc` per command (Nick, 2026-08-22). stderr is merged into stdout in-shell (`exec 2>&1`); a per-session random sentinel marks each command's output boundary + exit code + cwd — shell-internal plumbing between this process and its own child, it NEVER touches the Photon wire (the wire carries typed VSF fields only). There is deliberately NO command timeout: busy is not wedged, liveness is the child process existing, and the operator holds the interrupt (the 30s reset both lied about killing the command AND orphaned a running deploy — field 2026-08-23). Shell DEATH is the one respawn edge.
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 pub(super) struct BridgeShell {
     child: std::process::Child,
     stdin: std::process::ChildStdin,
     lines: std::sync::mpsc::Receiver<Option<String>>,
     sentinel: String,
+    /// The job sentinel: `{ cmd; } &` under `set -m` puts each command in its OWN process group (leader pid = $!), announced on this second shell-internal line — so an interrupt signals the command's whole tree and never bash itself.
+    job_sentinel: String,
+    host: String,
+    /// The foreground command's process-group id, readable by the UI thread's interrupt path while the worker is blocked draining output. 0 = no command in flight.
+    fg_pgid: std::sync::Arc<std::sync::atomic::AtomicI32>,
 }
 
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 impl BridgeShell {
-    /// Per-command wall-clock cap. A command still running after this returns an error; the caller drops the shell so the next command starts fresh — the anti-wedge for `cat`, a REPL, or a genuinely long job.
-    const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
     const MAX_OUT: usize = 12 * 1024;
 
     fn spawn() -> std::io::Result<BridgeShell> {
-        use std::io::{BufRead, Write};
+        use std::io::{Read, Write};
         use std::process::{Command, Stdio};
         let mut child = Command::new("bash")
             .stdin(Stdio::piped())
@@ -35,95 +143,189 @@ impl BridgeShell {
         let mut stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
-        // Reader thread: every stdout line becomes a channel item; EOF (shell died) sends one `None` and ends.
+        // Reader thread with the CR line discipline: `\n` commits a line; a bare `\r` (progress-bar redraw) RESETS the pending line so an animation collapses to its latest state instead of a thousand ghost frames; `\r\n` is a plain terminator. EOF (shell died) sends one `None` and ends.
         std::thread::spawn(move || {
-            let mut reader = std::io::BufReader::new(stdout);
+            let mut stdout = stdout;
+            let mut buf = [0u8; 4096];
+            let mut line: Vec<u8> = Vec::new();
+            let mut pending_cr = false;
             loop {
-                let mut line = String::new();
-                match reader.read_line(&mut line) {
-                    Ok(0) => {
-                        let _ = tx.send(None);
-                        break;
-                    }
-                    Ok(_) => {
-                        if tx.send(Some(line)).is_err() {
-                            break;
+                let n = match stdout.read(&mut buf) {
+                    Ok(0) | Err(_) => {
+                        if !line.is_empty() {
+                            let _ = tx.send(Some(String::from_utf8_lossy(&line).into_owned()));
                         }
-                    }
-                    Err(_) => {
                         let _ = tx.send(None);
-                        break;
+                        return;
+                    }
+                    Ok(n) => n,
+                };
+                for &b in &buf[..n] {
+                    if pending_cr {
+                        pending_cr = false;
+                        if b == b'\n' {
+                            if tx.send(Some(String::from_utf8_lossy(&line).into_owned())).is_err() {
+                                return;
+                            }
+                            line.clear();
+                            continue;
+                        }
+                        line.clear();
+                    }
+                    match b {
+                        b'\n' => {
+                            if tx.send(Some(String::from_utf8_lossy(&line).into_owned())).is_err() {
+                                return;
+                            }
+                            line.clear();
+                        }
+                        b'\r' => pending_cr = true,
+                        _ => line.push(b),
                     }
                 }
             }
         });
         let sentinel = format!("__PHOTON_BRIDGE_{:016x}__", rand::random::<u64>());
-        // Init: merge stderr→stdout, load aliases best-effort (guarded .bashrc often skips non-interactive, so force expand_aliases + source explicitly), silence any prompt. `true` gives the priming run below a clean exit to read up to.
+        let job_sentinel = format!("__PHOTON_BRIDGE_JOB_{:016x}__", rand::random::<u64>());
+        // Init: merge stderr→stdout, job control ON (set -m — each command becomes its own process group so the interrupt path can signal the command tree without touching bash), notifications routed thru the normal flow (their `[n]+ Done` lines are filtered by the job-notice screen below), aliases best-effort (guarded .bashrc often skips non-interactive, so force expand_aliases + source explicitly), prompt silenced. `true` gives the priming run below a clean exit to read up to.
         writeln!(
             stdin,
-            "exec 2>&1; shopt -s expand_aliases 2>/dev/null; [ -f ~/.bashrc ] && source ~/.bashrc 2>/dev/null; [ -f ~/.bash_aliases ] && source ~/.bash_aliases 2>/dev/null; PS1=''; PROMPT_COMMAND=''; true"
+            "exec 2>&1; set -m 2>/dev/null; shopt -s expand_aliases 2>/dev/null; [ -f ~/.bashrc ] && source ~/.bashrc 2>/dev/null; [ -f ~/.bash_aliases ] && source ~/.bash_aliases 2>/dev/null; PS1=''; PROMPT_COMMAND=''; true"
         )?;
-        let mut sh = BridgeShell { child, stdin, lines: rx, sentinel };
-        // Drain init noise (bashrc chatter/errors) up to a priming sentinel so the FIRST real command's output starts clean.
-        let _ = sh.run("true");
+        let mut sh = BridgeShell {
+            child,
+            stdin,
+            lines: rx,
+            sentinel,
+            job_sentinel,
+            host: String::new(),
+            fg_pgid: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
+        };
+        // Drain init noise (bashrc chatter/errors) up to a priming sentinel so the FIRST real command's output starts clean, then capture the hostname once — bash defines $HOSTNAME even non-interactively, so no external binary runs.
+        let _ = sh.run_streaming("true", |_| {});
+        sh.host = sh
+            .run_streaming("printf '%s\\n' \"$HOSTNAME\"", |_| {})
+            .map(|(_, _, body)| body.trim().to_string())
+            .unwrap_or_default();
         Ok(sh)
     }
 
-    /// Feed one command, then a sentinel that carries the command's exit code; collect every line until the sentinel. Returns the formatted output, or Err on shell death / timeout (caller respawns).
-    fn run(&mut self, cmd: &str) -> Result<String, String> {
-        use std::io::Write;
-        writeln!(self.stdin, "{}", cmd).map_err(|e| e.to_string())?;
-        // `$?` here is `cmd`'s exit — expanded on this line, right after cmd ran.
-        writeln!(self.stdin, "printf '%s %d\\n' '{}' \"$?\"", self.sentinel)
-            .map_err(|e| e.to_string())?;
-        self.stdin.flush().map_err(|e| e.to_string())?;
-        let deadline = std::time::Instant::now() + Self::RUN_TIMEOUT;
-        let mut body = String::new();
-        let mut code = 0i32;
-        loop {
-            let remaining = deadline
-                .checked_duration_since(std::time::Instant::now())
-                .ok_or_else(|| "command timed out".to_string())?;
-            match self.lines.recv_timeout(remaining) {
-                Ok(Some(line)) => {
-                    if let Some(rest) = line.trim_end().strip_prefix(&self.sentinel) {
-                        code = rest.trim().parse().unwrap_or(-1);
-                        break;
-                    }
-                    if body.len() < Self::MAX_OUT {
-                        body.push_str(&line);
-                    }
-                }
-                Ok(None) => return Err("shell exited".to_string()),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    return Err("command timed out".to_string())
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err("shell reader gone".to_string())
-                }
-            }
-        }
-        if body.len() >= Self::MAX_OUT {
-            body.push_str("\n\u{2026}(output truncated)");
-        }
-        let trimmed = body.trim_end_matches('\n');
-        let out = if trimmed.is_empty() {
-            if code == 0 {
-                "(no output)".to_string()
-            } else {
-                format!("(no output, exit {})", code)
-            }
-        } else if code != 0 {
-            format!("{}\n[exit {}]", trimmed, code)
-        } else {
-            trimmed.to_string()
+    /// A `set -m` job-completion notice (`[1]+  Done   { cmd; }`) is shell chrome, not command output — screen it. Narrow shape: `[digits]` then an optional +/- then whitespace then a known verdict word.
+    fn line_is_job_notice(line: &str) -> bool {
+        let Some(rest) = line.strip_prefix('[') else {
+            return false;
         };
-        Ok(out)
+        let Some(close) = rest.find(']') else {
+            return false;
+        };
+        if close == 0 || !rest[..close].bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+        let tail = rest[close + 1..].trim_start_matches(['+', '-']).trim_start();
+        ["Done", "Terminated", "Interrupt", "Killed", "Stopped", "Exit", "Running"]
+            .iter()
+            .any(|v| tail.starts_with(v))
     }
 
+    /// Feed one command as its own JOB (own process group under `set -m`, announced on the shell-internal job sentinel so the interrupt path can signal the command's whole tree without touching bash), stream every committed line to `emit` as the FULL accumulated snapshot, and return (exit code, cwd) from the closing sentinel. Blocks until the command completes or the shell dies — no timeout by design; `fg_pgid` is the operator's lever while this drains. The tail is kept on overflow (a build's errors live at the END).
+    fn run_streaming(
+        &mut self,
+        cmd: &str,
+        mut emit: impl FnMut(&str),
+    ) -> Result<(i32, String, String), String> {
+        use std::io::Write;
+        use std::sync::atomic::Ordering;
+        // The group brace closes on its OWN line so a trailing `#comment` in cmd can't swallow it; a multi-line paste rides inside the group unchanged.
+        writeln!(self.stdin, "{{ {}", cmd).map_err(|e| e.to_string())?;
+        writeln!(
+            self.stdin,
+            "}} & __pb=$!; printf '%s %d\\n' '{}' \"$__pb\"",
+            self.job_sentinel
+        )
+        .map_err(|e| e.to_string())?;
+        writeln!(
+            self.stdin,
+            "wait \"$__pb\"; printf '%s %d %s\\n' '{}' \"$?\" \"$PWD\"",
+            self.sentinel
+        )
+        .map_err(|e| e.to_string())?;
+        self.stdin.flush().map_err(|e| e.to_string())?;
+        let mut body = String::new();
+        let mut dropped = false;
+        loop {
+            let line = match self.lines.recv() {
+                Ok(Some(l)) => l,
+                Ok(None) | Err(_) => {
+                    self.fg_pgid.store(0, Ordering::Relaxed);
+                    return Err("shell exited".to_string());
+                }
+            };
+            if let Some(rest) = line.trim_end().strip_prefix(&self.job_sentinel) {
+                self.fg_pgid
+                    .store(rest.trim().parse().unwrap_or(0), Ordering::Relaxed);
+                continue;
+            }
+            if let Some(rest) = line.trim_end().strip_prefix(&self.sentinel) {
+                self.fg_pgid.store(0, Ordering::Relaxed);
+                let rest = rest.trim_start();
+                let (code_s, cwd) = rest.split_once(' ').unwrap_or((rest, ""));
+                let final_body = if dropped {
+                    format!("\u{2026}(earlier output dropped)\n{}", body)
+                } else {
+                    body
+                };
+                return Ok((code_s.parse().unwrap_or(-1), cwd.to_string(), final_body));
+            }
+            if Self::line_is_job_notice(&line) {
+                continue;
+            }
+            body.push_str(&line);
+            body.push('\n');
+            if body.len() > Self::MAX_OUT {
+                let cut = body.len() - Self::MAX_OUT;
+                body.drain(..cut);
+                dropped = true;
+            }
+            if dropped {
+                emit(&format!("\u{2026}(earlier output dropped)\n{}", body));
+            } else {
+                emit(&body);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn job_notice_screen_for_tests(line: &str) -> bool {
+        Self::line_is_job_notice(line)
+    }
+
+    /// Kill the SESSION: the foreground job's whole group first (bash's death alone orphans it — exactly the invisible-deploy failure this replaces), then bash.
     fn kill(&mut self) {
+        let pg = self.fg_pgid.load(std::sync::atomic::Ordering::Relaxed);
+        if pg > 0 {
+            unsafe {
+                libc::kill(-pg, libc::SIGKILL);
+            }
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+#[cfg(all(test, unix, not(target_os = "android"), not(target_os = "redox")))]
+mod tests {
+    use super::*;
+
+    /// The job-notice screen eats exactly bash's `set -m` chrome and nothing a command plausibly prints.
+    #[test]
+    fn job_notice_screen_is_narrow() {
+        assert!(BridgeShell::job_notice_screen_for_tests("[1]+  Done                    { ls; }"));
+        assert!(BridgeShell::job_notice_screen_for_tests("[2]-  Terminated              { sleep 99; }"));
+        assert!(BridgeShell::job_notice_screen_for_tests("[12] Running { x; } &"));
+        assert!(!BridgeShell::job_notice_screen_for_tests("[ok] Done in 3s"));
+        assert!(!BridgeShell::job_notice_screen_for_tests("Done"));
+        assert!(!BridgeShell::job_notice_screen_for_tests("[1] some array output"));
+        assert!(!BridgeShell::job_notice_screen_for_tests("plain build line"));
     }
 }
 
@@ -159,6 +361,9 @@ impl PhotonApp {
                 }
             }
         }
+        // A fresh session starts unoriented: the locus strip fills from the first output's typed fields, and no Stop escalation carries over.
+        self.bridge_locus = None;
+        self.bridge_int = None;
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
         self.send_bridge_reset(ci);
         self.open_conversation_with(ci);
@@ -183,13 +388,88 @@ impl PhotonApp {
 
     /// HOST role, chat transport: a NEW command arrived as an ordinary chat message in the sibling `ci`'s conversation — dispatch it to the OFF-THREAD bridge executor, which runs it in that sibling's PERSISTENT shell and posts the raw output back for `drain_bridge_output` to reply with (typed RefKind::BridgeOut so it renders but never re-runs). Running the shell inline froze the host's event loop for the command's whole duration, stalling the ACK it owes the operator (field 2026-08-22). ONE shell per sibling, spawned on first command and reused after so `cd`/env/state persist like a real session; the executor thread OWNS the shells so nothing blocks the UI.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-    pub(super) fn run_bridge_command_chat(&mut self, ci: usize, cmd: &str) {
+    pub(super) fn run_bridge_command_chat(&mut self, ci: usize, cmd: &str, cmd_ts: i64) {
         let Some(dev) = self.contacts.get(ci).map(|c| c.public_identity.key) else {
             return;
         };
         self.ensure_bridge_exec();
         if let Some(tx) = self.bridge_cmd_tx.as_ref() {
-            let _ = tx.send(BridgeJob::Run(ci, dev, cmd.to_string()));
+            let _ = tx.send(BridgeJob::Run(ci, dev, cmd.to_string(), cmd_ts));
+        }
+    }
+
+    /// A BridgeCtl row arrived (the operator pressed Stop): signal the in-flight command's OWN process group — never bash, so the session and its cwd survive the interrupt. A late arrival after completion finds pgid 0 and is a natural no-op.
+    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    pub(super) fn bridge_interrupt_host(&mut self, ci: usize, sig: u64) {
+        let Some(dev) = self.contacts.get(ci).map(|c| c.public_identity.key) else {
+            return;
+        };
+        let Some(fg) = self.bridge_fg.as_ref() else {
+            return;
+        };
+        let pg = fg
+            .lock()
+            .unwrap()
+            .get(&dev)
+            .map(|(h, _)| h.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(0);
+        if pg > 0 {
+            let sig = match sig {
+                15 => libc::SIGTERM,
+                9 => libc::SIGKILL,
+                _ => libc::SIGINT,
+            };
+            crate::logf!("BRIDGE: interrupt from operator — signal {} to job pgid {}", sig, pg);
+            unsafe {
+                libc::kill(-pg, sig);
+            }
+        } else {
+            crate::log("BRIDGE: interrupt arrived with no command in flight — no-op");
+        }
+    }
+
+    /// The Stop button (client side, ANY platform — a phone must be able to stop a runaway build too): find the in-flight command, escalate SIGINT → SIGTERM → SIGKILL per press, and send the typed BridgeCtl row targeting it. Hidden control row; the host signals the job's own process group, so the session and its cwd survive.
+    pub(super) fn bridge_send_interrupt(&mut self, ci: usize) {
+        let Some(t) = self.bridge_inflight_target(ci) else {
+            return;
+        };
+        let level = match self.bridge_int {
+            Some((t0, l)) if t0 == t => (l + 1).min(2),
+            _ => 0,
+        };
+        self.bridge_int = Some((t, level));
+        let sig = [2u64, 15, 9][level as usize];
+        let wire = crate::network::message_package::BridgeWire {
+            sig: Some(sig),
+            ..Default::default()
+        };
+        crate::logf!(
+            "BRIDGE: Stop pressed — sending signal {} for the in-flight command",
+            sig
+        );
+        self.send_chain_message(
+            ci,
+            " ",
+            true,
+            Some((crate::types::RefKind::BridgeCtl, t)),
+            Some(wire),
+        );
+    }
+
+    /// The in-flight command, if any: the newest outgoing BridgeCmd row whose streamed output has no FINAL yet (`bridge_exit` is stamped by the replace-in-place when the exit frame lands). Drives the Stop button's visibility.
+    pub(super) fn bridge_inflight_target(&self, ci: usize) -> Option<i64> {
+        let conv = self.conv_of(ci)?;
+        let cmd = conv.messages.iter().rev().find(|m| {
+            m.is_outgoing && matches!(m.reference, Some((crate::types::RefKind::BridgeCmd, _)))
+        })?;
+        let done = conv.messages.iter().any(|m| {
+            m.reference == Some((crate::types::RefKind::BridgeOut, cmd.timestamp))
+                && m.bridge_exit.is_some()
+        });
+        if done {
+            None
+        } else {
+            Some(cmd.timestamp)
         }
     }
 
@@ -197,7 +477,7 @@ impl PhotonApp {
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     pub(super) fn send_bridge_reset(&mut self, ci: usize) {
         // A minimal payload; the TYPED reference carries the meaning and the row is hidden either way.
-        self.send_chain_message(ci, " ", false, Some((crate::types::RefKind::BridgeReset, 0)));
+        self.send_chain_message(ci, " ", false, Some((crate::types::RefKind::BridgeReset, 0)), None);
     }
 
     /// Host received a BridgeReset (the peer opened the bridge) → drop that sibling's shell so the next command respawns fresh.
@@ -226,7 +506,7 @@ impl PhotonApp {
         }
     }
 
-    /// Lazily spawn the off-thread bridge executor (owns one persistent shell per sibling device). No-op once running.
+    /// Lazily spawn the off-thread bridge DISPATCHER (routes jobs to one worker thread per sibling device — see spawn_bridge_worker). No-op once running.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     fn ensure_bridge_exec(&mut self) {
         if self.bridge_cmd_tx.is_some() {
@@ -234,50 +514,56 @@ impl PhotonApp {
         }
         let wake = self.event_proxy.clone();
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<BridgeJob>();
-        let (out_tx, out_rx) = std::sync::mpsc::channel::<(usize, String)>();
-        self.bridge_out_rx = Some(out_rx);
+        let (fin_tx, fin_rx) = std::sync::mpsc::channel::<BridgeEmit>();
+        let partials: std::sync::Arc<
+            std::sync::Mutex<std::collections::HashMap<usize, BridgeEmit>>,
+        > = Default::default();
+        let fg: BridgeFgMap = Default::default();
+        self.bridge_out_rx = Some(fin_rx);
+        self.bridge_partials = Some(partials.clone());
+        self.bridge_fg = Some(fg.clone());
         std::thread::Builder::new()
             .name("bridge-exec".to_string())
             .spawn(move || {
-                let mut shells: std::collections::HashMap<[u8; 32], BridgeShell> =
-                    std::collections::HashMap::new();
+                let mut workers: std::collections::HashMap<
+                    [u8; 32],
+                    std::sync::mpsc::Sender<(usize, String, i64)>,
+                > = std::collections::HashMap::new();
                 while let Ok(job) = cmd_rx.recv() {
-                    let (ci, dev, cmd) = match job {
-                        BridgeJob::Run(ci, dev, cmd) => (ci, dev, cmd),
+                    match job {
                         BridgeJob::Reset(dev) => {
-                            // Kill the old shell; the next Run respawns a fresh session.
-                            if let Some(mut sh) = shells.remove(&dev) {
-                                sh.kill();
-                            }
-                            continue;
-                        }
-                    };
-                    crate::logf!("BRIDGE: running command from sibling: {}", cmd);
-                    if !shells.contains_key(&dev) {
-                        match BridgeShell::spawn() {
-                            Ok(sh) => {
-                                shells.insert(dev, sh);
-                            }
-                            Err(e) => {
-                                let _ = out_tx.send((ci, format!("(bridge shell failed to start: {e})")));
-                                if let Some(w) = wake.as_ref() {
-                                    let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                            // Deregister FIRST (the worker reads absence as "deliberate reset — hush"), then kill the foreground job's group AND bash: bash's death alone orphans a running command invisibly, the exact lie the old timeout told (field 2026-08-23).
+                            workers.remove(&dev);
+                            if let Some((h, pid)) = fg.lock().unwrap().remove(&dev) {
+                                let pg = h.load(std::sync::atomic::Ordering::Relaxed);
+                                unsafe {
+                                    if pg > 0 {
+                                        libc::kill(-pg, libc::SIGKILL);
+                                    }
+                                    if pid > 0 {
+                                        libc::kill(pid, libc::SIGKILL);
+                                    }
                                 }
-                                continue;
                             }
                         }
-                    }
-                    let out = match shells.get_mut(&dev).unwrap().run(&cmd) {
-                        Ok(o) => o,
-                        Err(e) => {
-                            // Wedged/died (a command that read stdin, or the shell exited) — drop it so the NEXT command respawns a fresh session.
-                            shells.remove(&dev);
-                            format!("(session reset: {e})")
+                        BridgeJob::Run(ci, dev, cmd, ts) => {
+                            crate::logf!("BRIDGE: running command from sibling: {}", cmd);
+                            let alive = workers
+                                .get(&dev)
+                                .map(|tx| tx.send((ci, cmd.clone(), ts)).is_ok())
+                                .unwrap_or(false);
+                            if !alive {
+                                let tx = spawn_bridge_worker(
+                                    dev,
+                                    fin_tx.clone(),
+                                    partials.clone(),
+                                    fg.clone(),
+                                    wake.clone(),
+                                );
+                                let _ = tx.send((ci, cmd, ts));
+                                workers.insert(dev, tx);
+                            }
                         }
-                    };
-                    let _ = out_tx.send((ci, out));
-                    if let Some(w) = wake.as_ref() {
-                        let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
                     }
                 }
             })
@@ -285,15 +571,39 @@ impl PhotonApp {
         self.bridge_cmd_tx = Some(cmd_tx);
     }
 
-    /// Tick drain: reply with each finished command's output over the durable chain (RefKind::BridgeOut). UI thread, but zero shell work — just the send. No-op when the executor isn't running.
+    /// Tick drain: reply with streamed snapshots (latest-wins partials) and finals over the durable chain, every frame carrying the typed locus + seq (+ exit on finals). The UI tick IS the pacing — a spewing build collapses to one frame per drain pass with no clock anywhere. UI thread, but zero shell work — just the sends. No-op when the executor isn't running.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     pub(super) fn drain_bridge_output(&mut self) {
-        let outs: Vec<(usize, String)> = match self.bridge_out_rx.as_ref() {
+        let mut emits: Vec<BridgeEmit> = match self.bridge_out_rx.as_ref() {
             Some(rx) => rx.try_iter().collect(),
             None => return,
         };
-        for (ci, out) in outs {
-            self.send_chain_message(ci, &out, false, Some((crate::types::RefKind::BridgeOut, 0)));
+        if let Some(slots) = self.bridge_partials.clone() {
+            let mut m = slots.lock().unwrap();
+            emits.extend(m.drain().map(|(_, e)| e));
+        }
+        if emits.is_empty() {
+            return;
+        }
+        // Finals sort after partials for the same command, so the durable frame is the one left standing.
+        emits.sort_by_key(|e| (e.target, e.fin.is_some(), e.seq));
+        for e in emits {
+            let wire = crate::network::message_package::BridgeWire {
+                host: (!e.host.is_empty()).then(|| e.host.clone()),
+                cwd: (!e.cwd.is_empty()).then(|| e.cwd.clone()),
+                seq: Some(e.seq),
+                exit: e.fin.map(|c| c as i64),
+                sig: None,
+            };
+            // Partials are BEST-EFFORT (suppressed bubble, no held-row machinery — a dropped one is superseded by the next snapshot); the FINAL rides the full durable path (bubble + retransmit + held-row re-serve), because it is the one frame that must survive.
+            let is_final = e.fin.is_some();
+            self.send_chain_message(
+                e.ci,
+                &e.body,
+                !is_final,
+                Some((crate::types::RefKind::BridgeOut, e.target)),
+                Some(wire),
+            );
         }
     }
 

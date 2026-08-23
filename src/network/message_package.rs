@@ -21,6 +21,33 @@ pub struct MessagePackage {
     pub woven_times: Vec<i64>,
     /// Typed reference: (RefKind wire value, target eagle_time) — reply/edit/react metadata as a FIELD. None = a plain message.
     pub reference: Option<(u8, i64)>,
+    /// Typed bridge extras (locus / stream state / interrupt signal) — fields, never content markers. None = not a bridge frame.
+    pub bridge: Option<BridgeWire>,
+}
+
+/// The bridge's typed wire extras, riding the inner package as named optional fields: the locus that ends blind-cwd operation (field 2026-08-23), the snapshot sequence + final exit that make streamed output loss-proof (every partial is the FULL accumulated text; newest seq wins), and the interrupt signal. An old peer's parser discards the names it doesn't know; a new peer reading an old frame sees all-None — no flag day.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BridgeWire {
+    /// Host machine name (once per shell, repeated on every output frame — the frame is self-sufficient).
+    pub host: Option<String>,
+    /// The shell's working directory — post-command truth from the host, last-known on partials.
+    pub cwd: Option<String>,
+    /// Snapshot sequence per command, monotonically increasing; the client keeps the newest.
+    pub seq: Option<u64>,
+    /// Exit code — present exactly on the FINAL frame of a command.
+    pub exit: Option<i64>,
+    /// Interrupt signal number (SIGINT/SIGTERM/SIGKILL) on a BridgeCtl row.
+    pub sig: Option<u64>,
+}
+
+impl BridgeWire {
+    pub fn is_empty(&self) -> bool {
+        self.host.is_none()
+            && self.cwd.is_none()
+            && self.seq.is_none()
+            && self.exit.is_none()
+            && self.sig.is_none()
+    }
 }
 
 /// Schema for the package section. `pad` is random bytes for traffic-analysis size jitter — schema'd sections serialize fields in schema order, so the old shuffled-field trick is gone; parsing is by NAME, which is the stronger version of what the shuffle enforced.
@@ -31,6 +58,11 @@ fn msg_schema() -> SectionSchema {
         .field("wt", TypeConstraint::Any) // e6, zero to two entries
         .field("refk", TypeConstraint::AnyUnsigned) // reference kind: 0 = none
         .field("reft", TypeConstraint::Any) // e6 reference target; 0 when kind is none
+        .field("bhost", TypeConstraint::Utf8Text) // bridge locus: host machine name
+        .field("bcwd", TypeConstraint::Utf8Text) // bridge locus: shell working directory
+        .field("bseq", TypeConstraint::AnyUnsigned) // bridge snapshot sequence
+        .field("bexit", TypeConstraint::Any) // i6 bridge exit code; present = final frame
+        .field("bsig", TypeConstraint::AnyUnsigned) // bridge interrupt signal number
         .field("pad", TypeConstraint::Any) // hR random jitter; length is the only meaning
 }
 
@@ -40,6 +72,7 @@ pub fn build_message_package(
     incorporated_hp: &[u8; 32],
     woven_times: &[i64],
     reference: Option<(u8, i64)>,
+    bridge: Option<&BridgeWire>,
     pad: &[u8],
 ) -> Result<Vec<u8>, String> {
     let mut builder = msg_schema()
@@ -61,6 +94,33 @@ pub fn build_message_package(
         builder = builder
             .append_multi("wt", vec![VsfType::e(vsf::types::EtType::e6(t))])
             .map_err(|e| e.to_string())?;
+    }
+    if let Some(b) = bridge {
+        if let Some(h) = &b.host {
+            builder = builder
+                .set("bhost", VsfType::x(h.clone()))
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(c) = &b.cwd {
+            builder = builder
+                .set("bcwd", VsfType::x(c.clone()))
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(s) = b.seq {
+            builder = builder
+                .set("bseq", VsfType::u6(s))
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(x) = b.exit {
+            builder = builder
+                .set("bexit", VsfType::i6(x))
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(s) = b.sig {
+            builder = builder
+                .set("bsig", VsfType::u3(s.min(0xFF) as u8))
+                .map_err(|e| e.to_string())?;
+        }
     }
     if !pad.is_empty() {
         builder = builder
@@ -125,6 +185,36 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
             _ => None,
         })
         .unwrap_or(0);
+    // Bridge extras — every reader width-agnostic (as_u64/as_i64, never exact-width matches) and every absence a clean None.
+    let text_field = |name: &str| -> Option<String> {
+        section
+            .get_fields(name)
+            .first()
+            .and_then(|f| f.values.first())
+            .and_then(|v| match v {
+                VsfType::x(s) => Some(s.clone()),
+                _ => None,
+            })
+    };
+    let bridge = BridgeWire {
+        host: text_field("bhost"),
+        cwd: text_field("bcwd"),
+        seq: section
+            .get_fields("bseq")
+            .first()
+            .and_then(|f| f.values.first())
+            .and_then(|v| v.as_u64()),
+        exit: section
+            .get_fields("bexit")
+            .first()
+            .and_then(|f| f.values.first())
+            .and_then(|v| v.as_i64()),
+        sig: section
+            .get_fields("bsig")
+            .first()
+            .and_then(|f| f.values.first())
+            .and_then(|v| v.as_u64()),
+    };
     Ok(MessagePackage {
         body,
         incorporated_hp,
@@ -133,6 +223,7 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
             0 => None,
             k => Some((k, ref_target)),
         },
+        bridge: (!bridge.is_empty()).then_some(bridge),
     })
 }
 
@@ -148,6 +239,7 @@ mod tests {
             &[7u8; 32],
             &[111, 222],
             Some((1, 987_654_321)),
+            None,
             &[0xAA; 17],
         )
         .unwrap();
@@ -156,15 +248,16 @@ mod tests {
         assert_eq!(parsed.incorporated_hp, [7u8; 32]);
         assert_eq!(parsed.woven_times, vec![111, 222]);
         assert_eq!(parsed.reference, Some((1, 987_654_321)));
+        assert_eq!(parsed.bridge, None);
 
         // A reaction retract: empty body, no wovens, no pad.
-        let retract = build_message_package("", &[0u8; 32], &[], Some((3, 42)), &[]).unwrap();
+        let retract = build_message_package("", &[0u8; 32], &[], Some((3, 42)), None, &[]).unwrap();
         let parsed = parse_message_package(&retract).unwrap();
         assert_eq!(parsed.body, "");
         assert_eq!(parsed.reference, Some((3, 42)));
 
         // A plain message carries no reference.
-        let plain = build_message_package("hi", &[0u8; 32], &[5], None, &[1, 2, 3]).unwrap();
+        let plain = build_message_package("hi", &[0u8; 32], &[5], None, None, &[1, 2, 3]).unwrap();
         assert_eq!(parse_message_package(&plain).unwrap().reference, None);
 
         assert!(parse_message_package(b"not a vsf document").is_err());
@@ -173,12 +266,44 @@ mod tests {
     /// Two packages with identical inputs but different pads differ on the wire (size jitter works) yet parse identically — the pad carries no meaning.
     #[test]
     fn pad_jitters_the_wire_without_touching_meaning() {
-        let a = build_message_package("x", &[1u8; 32], &[9], None, &[0u8; 4]).unwrap();
-        let b = build_message_package("x", &[1u8; 32], &[9], None, &[0u8; 40]).unwrap();
+        let a = build_message_package("x", &[1u8; 32], &[9], None, None, &[0u8; 4]).unwrap();
+        let b = build_message_package("x", &[1u8; 32], &[9], None, None, &[0u8; 40]).unwrap();
         assert_ne!(a.len(), b.len());
         assert_eq!(
             parse_message_package(&a).unwrap(),
             parse_message_package(&b).unwrap()
         );
+    }
+
+    /// Bridge extras ride as named typed fields — locus + stream state + interrupt all survive the round trip, absence parses as None, and a partial (no exit) is distinguishable from a final.
+    #[test]
+    fn bridge_extras_round_trip_typed() {
+        let wire = BridgeWire {
+            host: Some("leviathan".into()),
+            cwd: Some("/mnt/Harbor/Code/photon".into()),
+            seq: Some(7),
+            exit: None,
+            sig: None,
+        };
+        let partial =
+            build_message_package("out so far", &[0u8; 32], &[], Some((4, 999)), Some(&wire), &[])
+                .unwrap();
+        let parsed = parse_message_package(&partial).unwrap();
+        let b = parsed.bridge.expect("bridge extras present");
+        assert_eq!(b.host.as_deref(), Some("leviathan"));
+        assert_eq!(b.cwd.as_deref(), Some("/mnt/Harbor/Code/photon"));
+        assert_eq!(b.seq, Some(7));
+        assert_eq!(b.exit, None);
+
+        let fin = BridgeWire { exit: Some(-1), seq: Some(8), ..wire };
+        let final_frame =
+            build_message_package("done", &[0u8; 32], &[], Some((4, 999)), Some(&fin), &[])
+                .unwrap();
+        assert_eq!(parse_message_package(&final_frame).unwrap().bridge.unwrap().exit, Some(-1));
+
+        let ctl = BridgeWire { sig: Some(2), ..Default::default() };
+        let ctl_frame =
+            build_message_package(" ", &[0u8; 32], &[], Some((5, 999)), Some(&ctl), &[]).unwrap();
+        assert_eq!(parse_message_package(&ctl_frame).unwrap().bridge.unwrap().sig, Some(2));
     }
 }

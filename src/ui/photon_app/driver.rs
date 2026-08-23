@@ -1596,6 +1596,7 @@ impl FluorApp for PhotonApp {
                             &body,
                             false,
                             Some((crate::types::RefKind::React, ts)),
+                            None,
                         ) && !toggled_off
                         {
                             self.stamp_react_used(&glyph);
@@ -1614,6 +1615,14 @@ impl FluorApp for PhotonApp {
                 && hit_id < self.msg_action_base.wrapping_add(8)
             {
                 let slot = hit_id - self.msg_action_base;
+                // STOP (slot 5, the bridge locus strip's pill): no selected row needed — it always targets the in-flight command; each press escalates the signal.
+                if slot == 5 {
+                    if let Some(ci) = self.active_contact() {
+                        self.bridge_send_interrupt(ci);
+                    }
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
                 if let Some((sci, ts, out)) = self.selected_msg {
                     match slot {
                         // REPLY = a REFERENCE, never a quote: arm the target eagle_time; the compose strip shows the referenced message at half alpha, and the sent row carries only the reference — the renderer resolves it live, so a later edit of the target updates every reply pointing at it.
@@ -1677,7 +1686,7 @@ impl FluorApp for PhotonApp {
                                             .find(|m| m.timestamp == ts && m.is_outgoing == out)
                                             .and_then(|m| m.reference)
                                     });
-                                    if self.chain_transmit(sci, &text, ts, re_ref) {
+                                    if self.chain_transmit(sci, &text, ts, re_ref, None) {
                                         self.ready_toast = Some("re-sent on the chain".to_string());
                                     } else {
                                         let row = self.conv_of(sci).and_then(|v| {
@@ -2739,7 +2748,7 @@ impl FluorApp for PhotonApp {
                 let is_sib = self.contacts.get(sci).map(|c| c.is_sibling).unwrap_or(true);
                 if has_remote && !is_sib {
                     let marker = format!("{}{}", crate::types::DELETE_MARKER_PREFIX, ts);
-                    if self.send_chain_message(sci, &marker, true, None) {
+                    if self.send_chain_message(sci, &marker, true, None, None) {
                         crate::log(
                             "msg-details: delete marker sent to the friend (delete-for-everyone)",
                         );

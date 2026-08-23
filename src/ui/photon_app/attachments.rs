@@ -44,7 +44,7 @@ impl PhotonApp {
         }
         let content = crate::types::attachment_content(&hash, &name, bytes.len() as u64);
         // The row: ordinary chain send (or fleet-forward on a chainless device) — everything downstream treats it as a normal message.
-        if !self.send_chain_message(ci, &content, false, None) {
+        if !self.send_chain_message(ci, &content, false, None, None) {
             crate::log("attach: row send failed (no chain, no fleet) — attachment stays local");
         }
         // The blob: eager PT push to the friend. Siblings + offline races fetch on demand (attach_req).

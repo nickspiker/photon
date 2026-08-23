@@ -35,6 +35,7 @@ impl PhotonApp {
                 &glyph,
                 false,
                 Some((crate::types::RefKind::React, target)),
+                None,
             ) {
                 self.stamp_react_used(&glyph);
             }
@@ -54,8 +55,15 @@ impl PhotonApp {
                 self.compose_reply_to
                     .take()
                     .map(|t| (crate::types::RefKind::Reply, t))
+            })
+            .or_else(|| {
+                // A sibling conversation IS the bridge terminal, and a command is marked by TYPE, never sniffed from content (the 2026-08-23 rule): the host runs exactly the rows carrying BridgeCmd.
+                self.contacts
+                    .get(ci)
+                    .filter(|c| c.is_sibling)
+                    .map(|_| (crate::types::RefKind::BridgeCmd, 0))
             });
-        self.send_chain_message(ci, &text, false, reference);
+        self.send_chain_message(ci, &text, false, reference, None);
         if let Some(tb) = self.message_textbox.as_mut() {
             tb.clear();
         }
@@ -70,6 +78,7 @@ impl PhotonApp {
         text: &str,
         suppress_bubble: bool,
         reference: Option<(crate::types::RefKind, i64)>,
+        bridge: Option<crate::network::message_package::BridgeWire>,
     ) -> bool {
         let ci = contact_idx;
         let text = text.to_string();
@@ -113,7 +122,7 @@ impl PhotonApp {
         let eagle_time = vsf::eagle_time_oscillations();
         // A suppressed send (the hidden chain-weave probe) shows no UI — wire half only.
         if suppress_bubble {
-            return self.chain_transmit(ci, &text, eagle_time, reference);
+            return self.chain_transmit(ci, &text, eagle_time, reference, bridge.as_ref());
         }
 
         // BUBBLE FIRST, WIRE SECOND. The pending-grey bubble appears the instant the user hits send — chain_transmit does weave selection, braid advance, chains persist and PT dispatch, and running it first meant the message rendered as NOTHING for that whole stretch, then grey, then white. The user's mental model (grey immediately, everything else follows) is also the honest one: the row exists the moment they authored it; the wire is delivery, not existence.
@@ -129,7 +138,7 @@ impl PhotonApp {
 
         // The wire half is DEFERRED to the next tick (drain_pending_chain_sends): the bubble above can only reach the screen when this handler returns, so running chain_transmit inline here — crypto, chains persist, dispatch — held the frame hostage for its whole duration. Queue it and let the grey bubble present first.
         self.pending_chain_sends
-            .push((ci, text, eagle_time, reference, self.tick_serial));
+            .push((ci, text, eagle_time, reference, bridge, self.tick_serial));
         return true;
     }
 
@@ -485,15 +494,15 @@ impl PhotonApp {
         let serial = self.tick_serial;
         let (sends, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_chain_sends)
             .into_iter()
-            .partition(|(_, _, _, _, q)| q.wrapping_add(1) < serial);
+            .partition(|(_, _, _, _, _, q)| q.wrapping_add(1) < serial);
         self.pending_chain_sends = keep;
         if sends.is_empty() {
             return false;
         }
-        for (ci, text, eagle_time, reference, _) in sends {
+        for (ci, text, eagle_time, reference, bridge, _) in sends {
             let mut msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
             msg.reference = reference;
-            if !self.chain_transmit(ci, &text, eagle_time, reference) {
+            if !self.chain_transmit(ci, &text, eagle_time, reference, bridge.as_ref()) {
                 let has_fleet = self.contacts.iter().any(|c| c.is_sibling);
                 let is_friend = self.contacts.get(ci).map_or(false, |c| !c.is_sibling);
                 if !(has_fleet && is_friend) {
@@ -537,7 +546,7 @@ impl PhotonApp {
         }
         let mut sent = 0usize;
         for (text, eagle_time, reference) in &held {
-            if self.chain_transmit(ci, text, *eagle_time, *reference) {
+            if self.chain_transmit(ci, text, *eagle_time, *reference, None) {
                 sent += 1;
             }
         }
@@ -555,6 +564,7 @@ impl PhotonApp {
         text: &str,
         eagle_time: i64,
         reference: Option<(crate::types::RefKind, i64)>,
+        bridge: Option<&crate::network::message_package::BridgeWire>,
     ) -> bool {
         // Contact must be CLUTCH-Complete with a friendship chain — OR hold the sibling-replicated chains with a live lane root. Local Complete is only the ceremony OWNER's shape (§4.2 parks every other device at Pending forever), and gating on it made the owner the single writer: every other device fleet-forwarded through it, which parks messages behind a dead battery an ocean away (Nick, 2026-08-13). Per-device lanes end that: `prepare_send` mints THIS device's own lane, the friend materializes it from the wire label (`ensure_lane`), and the lane-wise CRDT merge converges every copy — so holding the root is the whole capability.
         let (friendship_id, recipient_pubkey, addr_pair, _our_handle_hash, msg_relay_to) = {
@@ -706,6 +716,7 @@ impl PhotonApp {
                 &incorporated_hp,
                 &woven_times,
                 reference.map(|(k, t)| (k as u8, t)),
+                bridge,
                 &pad,
             ) {
                 Ok(p) => p,
@@ -784,7 +795,7 @@ impl PhotonApp {
         }
         crate::log("CHAIN-PROBE: sending hidden chain-weave probe");
         // Latch `probe_sent` only on an actual dispatch — if the contact had no address yet the send is a no-op and we retry on the next Complete transition / re-arm cycle rather than stalling.
-        if self.send_chain_message(contact_idx, crate::types::CHAIN_PROBE_MARKER, true, None) {
+        if self.send_chain_message(contact_idx, crate::types::CHAIN_PROBE_MARKER, true, None, None) {
             if let Some(c) = self.contacts.get_mut(contact_idx) {
                 c.probe_sent = true;
             }
