@@ -563,7 +563,11 @@ impl PhotonApp {
                     if let Err(e) = fleet::ckpt_custody_write(&fk, &state, &kp, &hp) {
                         crate::logf!("CKPT: bootstrap custody write failed (siblings jump via ckpt_state): {}", e);
                     }
-                    crate::logf!("CKPT: fleet epoch spine {} — reservoir minted, k={} on the chain", if chain_k == 0 { "born" } else { "SUPERSEDED" }, new_k);
+                    crate::logf!(
+                        "CKPT: fleet epoch spine {} — reservoir minted, k={} on the chain",
+                        if chain_k == 0 { "born" } else { "SUPERSEDED" },
+                        new_k
+                    );
                     // No root broadcast: nobody else holds the fresh epoch seed, so siblings jump via ckpt_state/custody.
                     send(CkptOutcome::Advanced {
                         k: new_k,
@@ -685,7 +689,11 @@ impl PhotonApp {
     }
 
     /// Off-thread: a contact's fold arrived with a genesis DIFFERENT from its pinned one — probe for a succession record that traces back to the pin (docs/identity-succession.md). Fetches the (public) successor slot and runs `verify_for_pin` against `pinned_genesis` HERE, off the UI thread — only a record whose continuity egg is signed by a PREDECESSOR-chain member over the exact transition verifies, so a handle-only impostor cannot forge a re-pin. Posts `(hp, Some(new_genesis))` on success (tick migrates the pin), `(hp, None)` otherwise (tick just clears the in-flight guard so a later refresh re-probes). Results land via `successor_rx`.
-    pub(super) fn spawn_successor_check(&mut self, handle_proof: [u8; 32], pinned_genesis: [u8; 32]) {
+    pub(super) fn spawn_successor_check(
+        &mut self,
+        handle_proof: [u8; 32],
+        pinned_genesis: [u8; 32],
+    ) {
         if self.successor_tx.is_none() {
             let (tx, rx) = std::sync::mpsc::channel::<([u8; 32], Option<[u8; 32]>)>();
             self.successor_rx = Some(rx);
@@ -953,7 +961,10 @@ impl PhotonApp {
                     }
                     Err(e) => {
                         // Lost the race (or the write failed): a sibling's mint is the live key — adopt it.
-                        crate::logf!("FLEET: shrink heal — mint not ours ({}); adopting the current fan-out", e);
+                        crate::logf!(
+                            "FLEET: shrink heal — mint not ours ({}); adopting the current fan-out",
+                            e
+                        );
                         if let Ok(Some(k)) =
                             fleet::recover_fleet_key(&hp, &device_key, &identity_seed)
                         {
@@ -1375,7 +1386,9 @@ impl PhotonApp {
             let locked = self.locked_devices();
             std::thread::spawn(move || {
                 let r = (|| {
-                    let held = held.ok_or_else(|| "confirm: this device does not hold the fleet key".to_string())?;
+                    let held = held.ok_or_else(|| {
+                        "confirm: this device does not hold the fleet key".to_string()
+                    })?;
                     let members: Vec<[u8; 32]> = fleet::current_members(&hp)?
                         .into_iter()
                         .filter(|m| !locked.contains(m))
@@ -1580,7 +1593,10 @@ impl PhotonApp {
     pub(super) fn lock_out_device(&mut self, pk: [u8; 32]) {
         // PER-KEY write, never read-union-write on one blob: two devices locking DIFFERENT pubkeys concurrently each unioned old+own into the same LWW key and one lock was DROPPED — a stolen device stayed trusted on part of the fleet until someone re-locked. Distinct keys commute under merge_global_settings, so a lock can no longer lose a race.
         if !self.is_locked_device(&pk) {
-            self.settings_set(&format!("fleet.locked.{}", hex::encode(pk)), vsf::VsfType::ke(pk.to_vec()));
+            self.settings_set(
+                &format!("fleet.locked.{}", hex::encode(pk)),
+                vsf::VsfType::ke(pk.to_vec()),
+            );
         }
         self.apply_locked_set();
         // Rotation NOW, not at the next sentinel pass: the locked device holds the current fleet key until an epoch it isn't wrapped into exists.
@@ -1594,7 +1610,10 @@ impl PhotonApp {
     /// Re-admission is a GROW: the compliance rotation mints the next epoch including the freshly-eligible device; no shrink semantics involved.
     pub(super) fn unlock_fleet_device(&mut self, pk: [u8; 32], name: &str) {
         // Value-level tombstone, honestly typed: u0(false) = "not locked". It never parses as a key, so it drops out of pubkey_set_union, and LWW carries the reversal fleet-wide.
-        self.settings_set(&format!("fleet.locked.{}", hex::encode(pk)), vsf::VsfType::u0(false));
+        self.settings_set(
+            &format!("fleet.locked.{}", hex::encode(pk)),
+            vsf::VsfType::u0(false),
+        );
         self.apply_locked_set();
         self.spawn_worker_unlock_push(pk);
         self.spawn_fleet_key_grow();
@@ -1635,7 +1654,9 @@ impl PhotonApp {
         };
         fs.global
             .iter()
-            .filter(|e| !e.tombstone && crate::storage::fleet_settings::as_key32(&e.value).is_none())
+            .filter(|e| {
+                !e.tombstone && crate::storage::fleet_settings::as_key32(&e.value).is_none()
+            })
             .filter_map(|e| e.key.strip_prefix("fleet.locked."))
             .filter_map(|hexpk| {
                 let bytes = hex::decode(hexpk).ok()?;
@@ -1859,11 +1880,9 @@ impl PhotonApp {
                             &our_device,
                             &pk,
                         ),
-                        None => crate::network::status::sibling_pong_seal_key(
-                            &seed,
-                            &our_device,
-                            &pk,
-                        ),
+                        None => {
+                            crate::network::status::sibling_pong_seal_key(&seed, &our_device, &pk)
+                        }
                     };
                     keys.insert(pk, key);
                 }
@@ -1921,19 +1940,7 @@ impl PhotonApp {
             self.add_join_status = "no device key".to_string();
             return;
         };
-        // ONE IDENTITY PER DEVICE at the join door (docs/lifecycle.md D2): the direct join-mode entry (orb toggle → type handle) skips submit_handle's marker gate, and the worker's bindreq gate would only reject AFTER the words screen showed. Refuse a device bound to a different identity BEFORE any words, any beacon, any registry post.
-        if let Some(bound) = crate::storage::device_binding::bound_party_id() {
-            let typed_pid = crate::crypto::clutch::identity_party_id(
-                &crate::types::Handle::to_identity_seed(&handle),
-            );
-            if typed_pid != bound {
-                crate::log(
-                    "join: DEVICE BUSY — bound to another identity; refusing before the words",
-                );
-                self.add_join_status = "this device already carries an identity \u{2014} put it on another device first, then Remove & shred (Settings \u{2192} Security)".to_string();
-                return;
-            }
-        }
+        // ONE IDENTITY PER DEVICE at the join door (docs/lifecycle.md D2) is gated INSIDE the join thread now, after the proof — the cheap pre-proof compare that used to sit here was the same offline handle oracle as the attest gate (2026-08-23 ticket). The words still show first (they're inert without the bind request), and the gate fires before the request, the NFC serve, or any beacon.
         self.add_join_handle = Some(handle.clone());
         self.add_join_status = "Preparing\u{2026}".to_string();
         self.change_focus(None);
@@ -1945,7 +1952,10 @@ impl PhotonApp {
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         self.add_stop = Some(stop.clone());
         // LAN visibility for the sponsor: the join loop announces this device on the local network (UDP discovery, same frame the fleet uses), so the sponsor's AddDevice screen shows a tappable "nearby" row instead of demanding the words. The words remain the remote/no-LAN fallback.
-        let lan_tx = self.status_checker.as_ref().map(|c| c.lan_broadcast_handle());
+        let lan_tx = self
+            .status_checker
+            .as_ref()
+            .map(|c| c.lan_broadcast_handle());
         let lan_port = self
             .handle_query
             .as_ref()
@@ -1968,6 +1978,17 @@ impl PhotonApp {
                 vault_seed: identity_seed,
                 handle_proof,
             };
+            // The join door's DEVICE BUSY verdict (docs/lifecycle.md D2), post-proof so the marker never verifies a cheap guess (2026-08-23 oracle fix). Everything network-visible — the bind request, the NFC secret, the LAN beacon — sits below this gate; the words above are this device's own masked pubkey and bind nothing.
+            if crate::storage::device_binding::busy_for(
+                &handle_proof,
+                &crate::crypto::clutch::identity_party_id(&identity_seed),
+            ) {
+                crate::log("join: DEVICE BUSY — bound to another identity; refused post-proof");
+                let _ = tx.send(JoinUpdate::Failed(
+                    "this device already carries an identity \u{2014} put it on another device first, then Remove & shred (Settings \u{2192} Security)".to_string(),
+                ));
+                return;
+            }
             let hp = session.handle_proof;
             // NFC instant-add secret: 32 random bytes for THIS join session, served as a dumb tag over HCE (Android) while the ceremony is up. The put publishes its keyed commitment; a sponsor's tap reads S and matches it — proximity IS the selection. One S per session (the commitment re-binds each repost's fresh stamp).
             let nfc_secret: [u8; 32] = {

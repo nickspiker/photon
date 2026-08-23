@@ -2122,24 +2122,18 @@ impl FluorApp for PhotonApp {
                 if matches!(self.state, AppState::Launch(LaunchState::KnownHandle)) {
                     if hit_id == self.known_mine_hit {
                         if let Some(session) = self.probed_session.take() {
-                            // ONE IDENTITY PER DEVICE holds HERE too (docs/lifecycle.md D2): this path bypasses submit_handle's marker gate, and the worker's bindreq gate would only fire AFTER the words screen showed. A device bound to a different identity never gets to the words.
-                            {
-                                if let Some(bound) =
-                                    crate::storage::device_binding::bound_party_id()
-                                {
-                                    if crate::crypto::clutch::identity_party_id(
-                                        &session.identity_seed,
-                                    ) != bound
-                                    {
-                                        crate::log("KnownHandle: DEVICE BUSY — bound to another identity; refusing the join");
-                                        self.state = AppState::Launch(LaunchState::Error(
-                                            "this device already carries an identity \u{2014} put it on another device first, then Remove & shred (Settings \u{2192} Security)".to_string(),
-                                        ));
-                                        self.refocus_handle_select_all();
-                                        ctx.window.request_redraw();
-                                        return EventResponse::Handled;
-                                    }
-                                }
+                            // ONE IDENTITY PER DEVICE holds HERE too (docs/lifecycle.md D2): this path bypasses the probe worker's marker gate, and the worker's bindreq gate would only fire AFTER the words screen showed. The probe already paid the memory-hard proof, so the hardened compare is free — no cheap-oracle path (2026-08-23 ticket).
+                            if crate::storage::device_binding::busy_for(
+                                &session.handle_proof,
+                                &crate::crypto::clutch::identity_party_id(&session.identity_seed),
+                            ) {
+                                crate::log("KnownHandle: DEVICE BUSY — bound to another identity; refusing the join");
+                                self.state = AppState::Launch(LaunchState::Error(
+                                    "this device already carries an identity \u{2014} put it on another device first, then Remove & shred (Settings \u{2192} Security)".to_string(),
+                                ));
+                                self.refocus_handle_select_all();
+                                ctx.window.request_redraw();
+                                return EventResponse::Handled;
                             }
                             crate::log(
                                 "KnownHandle: it's-mine → pairing words (the ceremony posts NOW)",
