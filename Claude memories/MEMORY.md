@@ -97,6 +97,7 @@
 - [project_pairing_v2.md](project_pairing_v2.md) — pairing v2 REDESIGNED 2026-07-13 words-first: binding-request registry + masked words + consent-egg bilateral Add + self-departure-only Remove + two-phase; build NOT started
 - [reference_aarch64_cross_libs.md](reference_aarch64_cross_libs.md) — missing system lib for aarch64-linux cross-build: vendor the .so into cross-libs/aarch64 + mirror x11.pc
 - [reference_site_cv_pdfs.md](reference_site_cv_pdfs.md) — holdmyoscilloscope.com = /mnt/Chiton/MEGA/holdmyoscilloscope (wrangler pages); CV PDFs via about/make-cv-pdfs.sh after cv-*.html edits
+- [reference_backups.md](reference_backups.md) — MEGA mirror fixed (Harbor paths, loud fail, stamp) + PRIVATE github keys repo (push manually, --no-verify)
 - [reference_ihi_primitives.md](reference_ihi_primitives.md) — ihi has TWO one-way primitives: lossy OWF = chaos_amp/spaghettify (32-op data-dependent lossy ALU, PIPE-silicon-exact)
 - [project_token_terminology.md](project_token_terminology.md) — whakaira (ceremony) vs ihi (perceptible mana); canonical glossary = ferros/GLOSSARY.md; ira/wairua/state codes fixed
 - [project_session_registers.md](project_session_registers.md) — tohu session store = {identity_seed, vault_seed, handle_proof} registers, never the handle string; keep vault/network roots SEPARATE (security)
