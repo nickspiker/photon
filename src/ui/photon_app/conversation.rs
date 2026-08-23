@@ -942,9 +942,11 @@ impl PhotonApp {
         let mut call_signal_evt: Option<(usize, crate::call::signal::CallSignal, Option<[u8; 32]>, i64)> = None;
         let mut recv_seal_idx: Option<usize> = None;
         let mut persist_ci: Option<usize> = None;
-        // BRIDGE host: a `$ ` command arrived as an ordinary sibling message — run it + reply AFTER the chains borrow ends (needs &mut self). Deferred like sibling_push.
+        // BRIDGE host: a TYPED command arrived as an ordinary sibling message — run it + reply AFTER the chains borrow ends (needs &mut self). Deferred like sibling_push; the i64 is the command row's eagle_time (what the streamed output frames target). A Stop press defers likewise.
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-        let mut bridge_run: Option<(usize, String)> = None;
+        let mut bridge_run: Option<(usize, String, i64)> = None;
+        #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+        let mut bridge_ctl: Option<(usize, u64)> = None;
         let mut conv_state_pos: Option<usize> = None;
         let mut replays: Vec<crate::network::status::StatusUpdate> = Vec::new();
         let mut need_sync = false;
@@ -1102,6 +1104,7 @@ impl PhotonApp {
             let wire_reference: Option<(crate::types::RefKind, i64)> = pkg
                 .reference
                 .and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t)));
+            let bridge_wire = pkg.bridge;
 
             // Hidden chain-weave probe: a reserved-marker message that proves the ratchet works but must show NO chat bubble. Everything else on the receive path (chain advance, set_last_plaintext, mark_received, ACK send) still runs so the sender's chain advances and dedup works — only the UI is suppressed.
             let is_chain_probe = message_text == crate::types::CHAIN_PROBE_MARKER;
@@ -1350,25 +1353,43 @@ impl PhotonApp {
                 // Snapshot the facts the gates below need, so the &mut contact borrow ends here (the claim check walks self.contacts).
                 let contact_is_sibling = contact.is_sibling;
                 let sender_name = contact.display_name();
-                // BRIDGE host capture: a sibling conversation is a chat-as-shell, so an incoming line from a sibling is a command to run on this box (no `$` — the shell already prompts; Nick 2026-08-21) — EXCEPT a row whose TYPED reference is BridgeOut, which is a reply coming back and must NOT re-execute (else output bounces). Capture the candidate here (before message_text moves); it is promoted to an actual run ONLY if the row is NEW (is_new_row, computed below) — a re-served/duplicate/history-backfilled command must never re-execute, or a reconnect would replay the entire command history (Nick 2026-08-22).
-                // A BridgeReset row (the peer opened the bridge) drops our shell for them — hidden, never a command, never displayed.
+                // BRIDGE host capture, TYPED (2026-08-23): a row runs as a command iff it carries RefKind::BridgeCmd — the mark rides the wire's reference field, never the content (the old any-plain-sibling-row-executes gate with its stripped `$ ` prefix was content-as-trigger, the exact class the typed-reference rework exists to kill). A bare untyped sibling row still runs for ONE transition era, loudly, so a not-yet-updated client keeps its bridge until the fleet converges. Promotion to an actual run stays gated on is_new_row below — a re-served/duplicate/history-backfilled command must never re-execute (Nick 2026-08-22).
+                // A BridgeReset row (the peer opened the bridge) drops our shell for them; a BridgeCtl row is the operator's Stop press (signal number in the typed bsig field) — both hidden control rows, never commands.
                 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
                 let bridge_reset = contact_is_sibling
                     && matches!(wire_reference, Some((crate::types::RefKind::BridgeReset, _)));
                 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-                let bridge_cmd_candidate: Option<String> = if contact_is_sibling
-                    && !is_chain_probe
-                    && !matches!(
-                        wire_reference,
-                        Some((crate::types::RefKind::BridgeOut, _))
-                            | Some((crate::types::RefKind::BridgeReset, _))
-                    ) {
-                    let cmd = message_text
-                        .strip_prefix("$ ")
-                        .or_else(|| message_text.strip_prefix("$\t"))
-                        .unwrap_or(&message_text)
-                        .to_string();
-                    (!cmd.trim().is_empty()).then_some(cmd)
+                let bridge_sig: Option<u64> = if contact_is_sibling
+                    && matches!(wire_reference, Some((crate::types::RefKind::BridgeCtl, _)))
+                {
+                    Some(bridge_wire.as_ref().and_then(|b| b.sig).unwrap_or(2))
+                } else {
+                    None
+                };
+                #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+                let bridge_cmd_candidate: Option<String> = if contact_is_sibling && !is_chain_probe
+                {
+                    match wire_reference {
+                        Some((crate::types::RefKind::BridgeCmd, _)) => {
+                            (!message_text.trim().is_empty()).then(|| message_text.clone())
+                        }
+                        None => {
+                            // LEGACY transition arm: a pre-typed build's bare row (its `$ ` prefix stripped when present). Delete this arm once the fleet is past the 2026-08-23 line.
+                            let cmd = message_text
+                                .strip_prefix("$ ")
+                                .or_else(|| message_text.strip_prefix("$\t"))
+                                .unwrap_or(&message_text)
+                                .to_string();
+                            if cmd.trim().is_empty() {
+                                None
+                            } else {
+                                crate::log("BRIDGE: legacy UNTYPED command row (peer build predates RefKind::BridgeCmd) — running it; update the fleet");
+                                Some(cmd)
+                            }
+                        }
+                        // Reply/edit/react rows in a sibling conversation are annotations, not commands — the old gate ran them, which was its own quiet bug.
+                        Some(_) => None,
+                    }
                 } else {
                     None
                 };
@@ -1446,18 +1467,63 @@ impl PhotonApp {
                     .messages
                     .iter()
                     .any(|m| m.timestamp == msg.timestamp && m.content == msg.content);
-                conv.insert_message_sorted(msg.clone());
-                if !is_edit_row && is_new_row {
-                    conv.scroll_offset = 0.0; // Scroll to show new message (an edit repaints in place)
+                // BRIDGE client half (2026-08-23): streamed output REPLACES its row in place — one bubble per command, newest snapshot wins by seq — and every frame's typed locus feeds the strip above the compose box. A stale/duplicate partial is swallowed (never a second bubble); the final stamps the exit code, which ends the in-flight state and resets the Stop escalation.
+                let mut bridge_replaced = false;
+                if contact_is_sibling {
+                    if let (Some((crate::types::RefKind::BridgeOut, t)), Some(bw)) =
+                        (wire_reference, bridge_wire.as_ref())
+                    {
+                        if bw.host.is_some() || bw.cwd.is_some() {
+                            if let Some(dev) =
+                                self.contacts.get(contact_idx).map(|c| c.public_identity.key)
+                            {
+                                self.bridge_locus = Some((
+                                    dev,
+                                    bw.host.clone().unwrap_or_default(),
+                                    bw.cwd.clone().unwrap_or_default(),
+                                ));
+                            }
+                        }
+                        if let Some(seq) = bw.seq {
+                            if let Some(row) = conv.messages.iter_mut().find(|m| {
+                                !m.is_outgoing
+                                    && m.reference
+                                        == Some((crate::types::RefKind::BridgeOut, t))
+                            }) {
+                                if seq > row.bridge_seq {
+                                    row.content = msg.content.clone();
+                                    row.bridge_seq = seq;
+                                    row.bridge_exit = bw.exit;
+                                }
+                                bridge_replaced = true;
+                            } else {
+                                msg.bridge_seq = seq;
+                                msg.bridge_exit = bw.exit;
+                            }
+                            if bw.exit.is_some()
+                                && self.bridge_int.map_or(false, |(t0, _)| t0 == t)
+                            {
+                                self.bridge_int = None;
+                            }
+                        }
+                    }
+                }
+                if !bridge_replaced {
+                    conv.insert_message_sorted(msg.clone());
+                }
+                if !is_edit_row && is_new_row && !bridge_replaced {
+                    conv.scroll_offset = 0.0; // Scroll to show new message (an edit repaints in place; a bridge snapshot grows in place — never yank the reader)
                 }
                 self.scene_dirty = true;
-                // Promote a captured bridge command to an actual run ONLY on first receipt — a re-serve/duplicate/history-backfill must never re-execute (Nick 2026-08-22). A reset likewise fires once.
+                // Promote a captured bridge command to an actual run ONLY on first receipt — a re-serve/duplicate/history-backfill must never re-execute (Nick 2026-08-22). A reset likewise fires once; a Stop press signals inline (bridge_interrupt_host bypasses the executor queue by design).
                 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
                 if is_new_row {
                     if bridge_reset {
-                        bridge_run = Some((contact_idx, String::new())); // sentinel: empty cmd = reset (handled at the drain site)
+                        bridge_run = Some((contact_idx, String::new(), 0)); // sentinel: empty cmd = reset (handled at the drain site)
+                    } else if let Some(sig) = bridge_sig {
+                        bridge_ctl = Some((contact_idx, sig));
                     } else if let Some(cmd) = bridge_cmd_candidate {
-                        bridge_run = Some((contact_idx, cmd));
+                        bridge_run = Some((contact_idx, cmd, msg.timestamp));
                     }
                 }
 
@@ -1578,14 +1644,18 @@ impl PhotonApp {
         if !replays.is_empty() {
             self.chat_replay_queue.extend(replays);
         }
-        // BRIDGE host: dispatch the captured command (or a reset) LAST, past every borrow. The command's own bubble + ACK are already committed above, so the operator's row brightens (reached the terminal) before the reply lands. An empty cmd is the reset sentinel — the peer opened the bridge; drop our shell so their first command starts fresh.
+        // BRIDGE host: dispatch the captured command (or a reset) LAST, past every borrow. The command's own bubble + ACK are already committed above, so the operator's row brightens (reached the terminal) before the reply lands. An empty cmd is the reset sentinel — the peer opened the bridge; drop our shell so their first command starts fresh. A Stop press signals the in-flight job's process group directly (never thru the executor queue — a busy worker must not delay its own interrupt).
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-        if let Some((ci, cmd)) = bridge_run {
+        if let Some((ci, cmd, ts)) = bridge_run {
             if cmd.is_empty() {
                 self.reset_bridge_shell(ci);
             } else {
-                self.run_bridge_command_chat(ci, &cmd);
+                self.run_bridge_command_chat(ci, &cmd, ts);
             }
+        }
+        #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+        if let Some((ci, sig)) = bridge_ctl {
+            self.bridge_interrupt_host(ci, sig);
         }
     }
 
@@ -1901,6 +1971,8 @@ impl PhotonApp {
                         reference: row
                             .reference
                             .and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t))),
+                        bridge_seq: 0,
+                        bridge_exit: None,
                     });
                 }
                 // Deferred inserts (they'd shift indices the map holds); insert_message_sorted dedups again defensively, so a page carrying two identical rows still lands one.
@@ -1975,7 +2047,7 @@ impl PhotonApp {
                     .map(|m| (m.content.clone(), m.timestamp, m.reference))
                     .collect();
                 for (text, ts, re_ref) in fwd {
-                    if self.chain_transmit(idx, &text, ts, re_ref) {
+                    if self.chain_transmit(idx, &text, ts, re_ref, None) {
                         crate::log("CHAT: fleet-forwarded row transmitted on the local chain");
                     }
                 }

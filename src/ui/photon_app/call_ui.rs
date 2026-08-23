@@ -396,7 +396,7 @@ impl PhotonApp {
     fn send_call_signal(&mut self, ci: usize, sig: CallSignal) -> bool {
         let content = sig.to_content();
         let ts = vsf::eagle_time_oscillations();
-        let sent = self.chain_transmit(ci, &content, ts, None);
+        let sent = self.chain_transmit(ci, &content, ts, None, None);
         if sent {
             let mut row = ChatMessage::new_with_timestamp(content, true, ts);
             row.notified = true;
