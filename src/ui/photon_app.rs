@@ -598,6 +598,13 @@ impl ChainsPostDurable {
     }
 }
 
+/// The message writer's verdict for rows whose bright flip + sibling push wait on the DISK — the write-confirm-then-send law applied to the zero-remote path, where the vault IS the recipient (2026-08-21 erasure ticket: the self row rendered bright and pushed to siblings before any write, so a refused persist left a RAM ghost that looked safely stored and vanished at relaunch). `err: None` is the durable edge: the drain flips the named rows bright and releases their sibling push. `err: Some` leaves them faint with a LOUD toast — the resend pill is the retry.
+struct MessagesDurableVerdict {
+    conv_id: crate::types::friendship::FriendshipId,
+    rows: Vec<i64>,
+    err: Option<String>,
+}
+
 /// A send's braid encrypt finished OFF the UI thread. The drain CAS-commits the advance (prepare_send_commit) and rides the durable-transmit writer; `result: None` means the encrypt itself failed (lane vanished) — the drain still clears the per-friendship encrypt gate either way.
 struct BraidTxEncrypted {
     friendship_id: FriendshipId,
@@ -1319,13 +1326,19 @@ pub struct PhotonApp {
     roster_push_rx: Option<std::sync::mpsc::Receiver<()>>,
     /// A push edge fired while one was in flight — the completion drain fires ONE follow-up that snapshots the roster fresh, so every bump that landed meanwhile rides a single push.
     roster_push_queued: bool,
-    /// Message-table persist worker: conversation snapshots go over this channel to ONE background thread that coalesces (latest snapshot per conversation id wins) and writes. `save_messages` is a full encrypted table rewrite — on the UI thread it was the named 600ms–5.7s stall behind every ChatMessage/MessageAck arm; off it, an ack is a field flip.
+    /// Message-table persist worker: conversation snapshots go over this channel to ONE background thread that coalesces (latest snapshot per conversation id wins) and writes. `save_messages` is a full encrypted table rewrite — on the UI thread it was the named 600ms–5.7s stall behind every ChatMessage/MessageAck arm; off it, an ack is a field flip. Each item carries the eagle_times of rows AWAITING THE DURABLE EDGE (self rows born faint); the writer reports their verdict over `persist_done` and coalescing carries a superseded snapshot's rows onto its replacement — the newer snapshot contains them too, so one durable write answers for all.
     persist_tx: Option<
         std::sync::mpsc::Sender<(
             crate::types::Conversation,
             std::sync::Arc<crate::storage::FlatStorage>,
+            Vec<i64>,
         )>,
     >,
+    /// The message writer's durable verdicts riding back to the UI thread — drained each status pass (drain_persist_done): success flips the named rows bright + releases their sibling push; failure toasts and leaves them faint. The (tx, rx) pair lives for the whole app so a respawned writer keeps the same return path.
+    persist_done: (
+        std::sync::mpsc::Sender<MessagesDurableVerdict>,
+        std::sync::mpsc::Receiver<MessagesDurableVerdict>,
+    ),
     /// Chains persist worker: the SAME coalescing shape as `persist_tx` but for FriendshipChains, keyed by friendship id. The safe-to-delay saves (ACK pending-removal, chain-sync adopt) ride with no attachments; the two COMMIT-POINT saves ride with their gated signal attached (see ChainsPostDurable) — the writer fires the receive's ACK / the send's transmit only after the durable write lands, so persist-before-signal holds with zero encrypt+IO on the UI thread. Coalescing merges a superseded snapshot's signals into its replacement: the newest snapshot contains every advance the older one did.
     chains_persist_tx: Option<
         std::sync::mpsc::Sender<(
@@ -1698,6 +1711,7 @@ impl PhotonApp {
             peer_store_persisted_len: 0,
             zoom_saved_ru: 1.0,
             persist_tx: None,
+            persist_done: std::sync::mpsc::channel(),
             chains_persist_tx: None,
             conv_state_persist_tx: None,
             peer_persist_tx: None,

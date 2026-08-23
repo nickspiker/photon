@@ -94,20 +94,19 @@ impl PhotonApp {
             ))
         );
         if remotes == 0 {
+            // WRITE-CONFIRM-THEN-SEND holds here too (2026-08-21 erasure ticket): with zero remotes the VAULT is the recipient, so the disk write IS the delivery. The row is born faint like every other send; the writer's durable verdict (drain_persist_done) flips it bright AND releases the sibling push — the old shape set delivered=true and pushed before any write, so a refused persist left a bright RAM ghost that vanished at relaunch while siblings held a copy this device never durably owned.
             let mut msg =
                 ChatMessage::new_with_timestamp(text, true, vsf::eagle_time_oscillations());
             msg.reference = reference;
-            msg.delivered = true;
+            let ts = msg.timestamp;
             let Some(conv) = self.conv_mut_of(ci) else {
                 return false;
             };
-            conv.insert_message_sorted(msg.clone());
+            conv.insert_message_sorted(msg);
             if !is_quiet_row {
                 conv.scroll_offset = 0.0;
             }
-            self.persist_messages_async(ci);
-            // Live fleet propagation: a note typed here appears on our other devices now, not at the next sweep.
-            self.push_rows_to_siblings(ci, std::slice::from_ref(&msg), None);
+            self.persist_messages_signalled(ci, vec![ts]);
             return true;
         }
 
@@ -134,56 +133,154 @@ impl PhotonApp {
         return true;
     }
 
-    /// Persist a conversation's message table WITHOUT blocking the UI thread. Snapshots the conversation and hands it to one background writer that coalesces bursts (latest snapshot per conversation id wins — an older snapshot can never clobber a newer one because the drain keeps only the last). The write itself is the same `save_messages` full-table rewrite; only the thread changed.
+    /// Persist a conversation's message table WITHOUT blocking the UI thread — the no-signal wrapper for saves nothing waits on.
     pub(super) fn persist_messages_async(&mut self, ci: usize) {
+        self.persist_messages_signalled(ci, Vec::new());
+    }
+
+    /// Persist a conversation's message table WITHOUT blocking the UI thread. Snapshots the conversation and hands it to one background writer that coalesces bursts (latest snapshot per conversation id wins — an older snapshot can never clobber a newer one because the drain keeps only the last). The write itself is the same `save_messages` full-table rewrite; only the thread changed. `signal_rows` names rows whose bright flip + sibling push WAIT on this write (the zero-remote path): their verdict rides back over `persist_done`, and every early exit below answers it immediately — a row waiting on a write that never starts must fail LOUDLY, not sit faint forever.
+    pub(super) fn persist_messages_signalled(&mut self, ci: usize, signal_rows: Vec<i64>) {
         // BRIDGE rows are EPHEMERAL — the terminal keeps NO history at rest. Safe now because sibling frames are anchor-only (see the braid selection in send_chain_message): nothing weaves against a bridge row, so not persisting it can't produce a strand miss (the earlier ephemeral attempt DID break the braid precisely because frames still wove strands — field 2026-08-22, one reply resent 12× and never ACKed). Chain durability is untouched: lane positions, pending, and last_received_times live in friendship_chains (persisted separately), so retransmit/ACK/dedup and the is_new_row replay guard all still hold; only the display rows are transient.
         if self.contacts.get(ci).map_or(false, |c| c.is_sibling) {
+            // Only the zero-remote branch passes signal rows and a self contact is never a sibling — this line firing means a caller broke that invariant, and its rows will sit faint.
+            if !signal_rows.is_empty() {
+                crate::logf!("STORAGE: signalled persist on a SIBLING conversation ({} row(s)) — bridge rows are ephemeral by policy; rows stay faint", signal_rows.len());
+            }
             return;
         }
         // EVERY exit below is LOUD (field 2026-08-21: a run's later sends vanished at relaunch while earlier ones persisted — three silent failure modes on the one path whose failure IS data loss, and the log couldn't say which fired).
         let Some(conv) = self.conv_of(ci).cloned() else {
             crate::logf!("STORAGE: message persist SKIPPED — no conversation object resolves for contact index {} (rows live in RAM only until this is fixed)", ci);
+            if !signal_rows.is_empty() {
+                let _ = self.persist_done.0.send(MessagesDurableVerdict {
+                    conv_id: crate::types::friendship::FriendshipId([0u8; 32]),
+                    rows: signal_rows,
+                    err: Some("no conversation object resolves".to_string()),
+                });
+            }
             return;
         };
         let Some(storage) = self.storage.as_ref().cloned() else {
             crate::log("STORAGE: message persist SKIPPED — no storage (vault not open)");
+            if !signal_rows.is_empty() {
+                let _ = self.persist_done.0.send(MessagesDurableVerdict {
+                    conv_id: conv.id(),
+                    rows: signal_rows,
+                    err: Some("vault not open".to_string()),
+                });
+            }
             return;
         };
         // Storage rides WITH each snapshot (not captured once): logout/login swaps the vault, and a worker holding the first session's Arc would write a dead vault forever.
         type PersistItem = (
             crate::types::Conversation,
             std::sync::Arc<crate::storage::FlatStorage>,
+            Vec<i64>,
         );
+        let done_tx = self.persist_done.0.clone();
         let tx = self.persist_tx.get_or_insert_with(|| {
             let (tx, rx) = std::sync::mpsc::channel::<PersistItem>();
             std::thread::spawn(move || {
                 while let Ok(first) = rx.recv() {
-                    // Coalesce the burst: keep the newest snapshot per conversation.
+                    // Coalesce the burst: keep the newest snapshot per conversation — and CARRY the superseded snapshot's signal rows onto its replacement (the newer snapshot contains those rows too, so its durable write answers for them; same law as the chains writer).
                     let mut latest: Vec<PersistItem> = vec![first];
                     while let Ok(next) = rx.try_recv() {
-                        latest.retain(|(v, _)| v.id() != next.0.id());
-                        latest.push(next);
+                        let mut carried: Vec<i64> = Vec::new();
+                        latest.retain_mut(|(v, _, rows)| {
+                            if v.id() == next.0.id() {
+                                carried.append(rows);
+                                false
+                            } else {
+                                true
+                            }
+                        });
+                        let (v, st, mut rows) = next;
+                        carried.append(&mut rows);
+                        latest.push((v, st, carried));
                     }
-                    for (v, st) in latest {
+                    for (v, st, rows) in latest {
                         // catch_unwind: ONE poisoned snapshot must not kill the writer for the whole session — a dead writer silently stranded every subsequent message in RAM (they vanished at relaunch).
                         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             crate::storage::contacts::save_messages(&v, &st)
                         }));
-                        match r {
-                            Ok(Ok(())) => {}
-                            Ok(Err(e)) => crate::logf!("STORAGE: async message persist failed: {}", e),
-                            Err(_) => crate::log("STORAGE: message persist writer caught a PANIC — snapshot dropped, writer survives"),
+                        let err = match r {
+                            Ok(Ok(())) => None,
+                            Ok(Err(e)) => {
+                                let m = format!("{e}");
+                                crate::logf!("STORAGE: async message persist failed: {}", m);
+                                Some(m)
+                            }
+                            Err(_) => {
+                                crate::log("STORAGE: message persist writer caught a PANIC — snapshot dropped, writer survives");
+                                Some("writer panicked".to_string())
+                            }
+                        };
+                        if !rows.is_empty() {
+                            let _ = done_tx.send(MessagesDurableVerdict {
+                                conv_id: v.id(),
+                                rows,
+                                err,
+                            });
                         }
                     }
                 }
             });
             tx
         });
-        if tx.send((conv.clone(), storage.clone())).is_err() {
+        if tx
+            .send((conv.clone(), storage.clone(), signal_rows.clone()))
+            .is_err()
+        {
             // The writer thread is dead. Respawn and retry once — the fresh channel's receiver is alive by construction, so the retry cannot loop.
             crate::log("STORAGE: message persist writer was DEAD — respawning and retrying");
             self.persist_tx = None;
-            self.persist_messages_async(ci);
+            self.persist_messages_signalled(ci, signal_rows);
+        }
+    }
+
+    /// Apply the message writer's durable verdicts — the zero-remote commit point. The disk confirmed → the named rows flip bright, their sibling push releases, and the bright state re-persists (the ACK arm's exact discipline). The disk refused → the rows stay faint and the failure surfaces as a TOAST, not a log line (2026-08-21 erasure ticket: the silent version of this failure was indistinguishable from success until relaunch ate the rows; the faint row + resend pill are the honest state and the retry).
+    pub(super) fn drain_persist_done(&mut self) {
+        while let Ok(verdict) = self.persist_done.1.try_recv() {
+            if let Some(err) = verdict.err {
+                crate::logf!("STORAGE CRITICAL: durable write refused for {} self row(s) — staying faint, sibling push withheld: {}", verdict.rows.len(), err);
+                self.ready_toast = Some(
+                    "message NOT saved \u{2014} storage refused the write; it stays dim until a resend lands it".to_string(),
+                );
+                self.ready_toast_screen = None;
+                self.scene_dirty = true;
+                continue;
+            }
+            let Some(conv) = self
+                .conversations
+                .iter_mut()
+                .find(|v| v.id() == verdict.conv_id)
+            else {
+                continue;
+            };
+            let mut bright: Vec<ChatMessage> = Vec::new();
+            for ts in &verdict.rows {
+                if let Some(m) = conv.messages.iter_mut().find(|m| m.timestamp == *ts) {
+                    if !m.delivered {
+                        m.delivered = true;
+                        bright.push(m.clone());
+                    }
+                }
+            }
+            if bright.is_empty() {
+                continue;
+            }
+            self.scene_dirty = true;
+            let ci = (0..self.contacts.len()).find(|&i| {
+                let c = &self.contacts[i];
+                self.our_party_id(c)
+                    .is_some_and(|us| c.conversation(&us).id() == verdict.conv_id)
+            });
+            if let Some(ci) = ci {
+                // The sibling push releases HERE, after durability — a copy this device never durably owned must never replicate out (the fleet-amplification half of the erasure).
+                self.push_rows_to_siblings(ci, &bright, None);
+                // Record the bright state — un-signalled: nothing waits on the flag write, and a lost one re-converges at the next ACK-shaped persist.
+                self.persist_messages_async(ci);
+            }
         }
     }
 
@@ -330,7 +427,9 @@ impl PhotonApp {
                     if let Some(call) = self.active_call.as_mut() {
                         if call.call_id == call_id && call.offer_lane_key.is_none() {
                             call.offer_lane_key = Some(wire.expected_key);
-                            crate::log("CALL: offer lane key captured at commit — basket egg secured");
+                            crate::log(
+                                "CALL: offer lane key captured at commit — basket egg secured",
+                            );
                         }
                     }
                 }

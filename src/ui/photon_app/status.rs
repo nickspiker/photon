@@ -38,6 +38,8 @@ impl PhotonApp {
         timed_drain!("braid_rx", self.drain_braid_rx());
         // Send encrypts the workers finished — commit + hand to the durable-transmit writer.
         timed_drain!("braid_tx", self.drain_braid_tx());
+        // Durable verdicts from the message writer — self rows flip bright + release their sibling push only HERE, after the disk confirmed (the zero-remote write-confirm-then-send law, 2026-08-21 erasure ticket).
+        timed_drain!("persist_done", self.drain_persist_done());
 
         // Our OWN just-picked avatar, arriving from the off-thread set pipeline (decode ran there too): install + repaint, then drop the channel — one avatar per pick.
         if let Some(rx) = self.avatar_set_rx.as_ref() {

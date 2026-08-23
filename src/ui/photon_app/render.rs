@@ -2228,6 +2228,21 @@ impl PhotonApp {
                             };
                         // Clamp so a short window (tall header) can never invert the clip (list_top > list_bottom) — that's what made every message vanish on resize. When there's no room, list_bottom collapses to list_top and the list is simply empty rather than drawing with a negative-height (inverted) clip.
                         let list_bottom = list_bottom.max(list_top);
+                        // Status toast on the CONVERSATION screen — the Ready hint slot and the Settings pane both draw `ready_toast`, but this AppState never did, which made a refused self-row persist (its toast fires while the user is right here) invisible (2026-08-21 erasure ticket). Above the compose bar, painted early so under-blend keeps it over the list; event-shown, cleared on the next interaction via clear_toast, never time-based.
+                        if let Some(msg) = &self.ready_toast {
+                            let ts = unit * 0.72;
+                            ctx.text.draw_text_center(
+                                &mut canvas,
+                                msg,
+                                buf_w as f32 * 0.5,
+                                list_bottom - ts * 0.4,
+                                &TextStyle::new(ts, *theme::SEARCH_FOUND_COLOUR)
+                                    .weight(600)
+                                    .font("Oxanium"),
+                                None,
+                                None,
+                            );
+                        }
                         let list_clip = fluor::paint::Clip::new(
                             0,
                             list_top as usize,

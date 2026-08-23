@@ -1660,34 +1660,46 @@ impl FluorApp for PhotonApp {
                                     .map(|m| m.content.clone())
                             });
                             if let Some(text) = text_opt {
-                                let re_ref = self.conv_of(sci).and_then(|v| {
-                                    v.messages
-                                        .iter()
-                                        .find(|m| m.timestamp == ts && m.is_outgoing == out)
-                                        .and_then(|m| m.reference)
-                                });
-                                if self.chain_transmit(sci, &text, ts, re_ref) {
-                                    self.ready_toast = Some("re-sent on the chain".to_string());
+                                // A zero-remote row's delivery IS the disk write (write-confirm-then-send, 2026-08-21): resend retries the SIGNALLED persist — the verdict flips it bright or toasts the refusal again. The chain/fleet branches below never fit this row; the old fall-thru re-pushed a never-durable row to siblings, which is exactly the amplification the law forbids.
+                                if self
+                                    .contacts
+                                    .get(sci)
+                                    .map_or(false, |c| self.is_zero_remote(c))
+                                {
+                                    self.persist_messages_signalled(sci, vec![ts]);
+                                    self.ready_toast =
+                                        Some("re-writing to the vault\u{2026}".to_string());
+                                    self.ready_toast_screen = None;
                                 } else {
-                                    let row = self.conv_of(sci).and_then(|v| {
+                                    let re_ref = self.conv_of(sci).and_then(|v| {
                                         v.messages
                                             .iter()
                                             .find(|m| m.timestamp == ts && m.is_outgoing == out)
-                                            .cloned()
+                                            .and_then(|m| m.reference)
                                     });
-                                    if let Some(row) = row {
-                                        self.push_rows_to_siblings(
-                                            sci,
-                                            std::slice::from_ref(&row),
-                                            None,
-                                        );
-                                        self.ready_toast = Some(
+                                    if self.chain_transmit(sci, &text, ts, re_ref) {
+                                        self.ready_toast = Some("re-sent on the chain".to_string());
+                                    } else {
+                                        let row = self.conv_of(sci).and_then(|v| {
+                                            v.messages
+                                                .iter()
+                                                .find(|m| m.timestamp == ts && m.is_outgoing == out)
+                                                .cloned()
+                                        });
+                                        if let Some(row) = row {
+                                            self.push_rows_to_siblings(
+                                                sci,
+                                                std::slice::from_ref(&row),
+                                                None,
+                                            );
+                                            self.ready_toast = Some(
                                             "re-pushed thru the fleet (no chain on this device)"
                                                 .to_string(),
                                         );
+                                        }
                                     }
+                                    self.ready_toast_screen = None;
                                 }
-                                self.ready_toast_screen = None;
                             }
                         }
                         // SAVE / FETCH (attachments): blob held → write to Downloads; missing → ask friend + siblings over PT.
