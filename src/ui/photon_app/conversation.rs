@@ -1792,7 +1792,7 @@ impl PhotonApp {
                 continue;
             };
             // rid must match a request WE minted — a page we didn't ask for (or asked for long ago) is dropped; merging is idempotent so a raced duplicate that DOES match is harmless. A friend page must match; a sibling page without a matching rid is the live push — merge it, but leave the cursor alone.
-            // The rid registry is consulted FIRST and is authoritative: the token-resolved conversation's in_flight alone starved recovery when two contact rows resolved the same peer (the rid lived on the other row's conversation — field, 2026-08-10, every Mary page dropped for days of walk rounds). Consumed on match so the map stays bounded.
+            // The rid registry is consulted FIRST and is authoritative: the token-resolved conversation's in_flight alone starved recovery when two contact rows resolved the same peer (the rid lived on the other row's conversation — field, 2026-08-10, every Emma page dropped for days of walk rounds). Consumed on match so the map stays bounded.
             let rid_registered = self.hist_rid_map.remove(&request_id).is_some();
             let rid_matches = rid_registered || {
                 let cid = self.contacts[idx].conversation(&our_pid).id();

@@ -110,7 +110,9 @@
 - [project_two_machine_git_divergence.md](project_two_machine_git_divergence.md) — after ANY commit verify HEAD == ls-remote; "missing fgtw/fluor symbol" = stale sibling, fast-forward first
 ## MacBook corpus (kebab-case)
 
-- [Push after landing](push-after-landing.md) — push photon after commits + commit/push the memory repo (private: photon-claude-memory) after memory writes; the MacBook is never the only copy
+- [Push after landing](push-after-landing.md) — memories LIVE HERE ('Claude memories/' in the public photon repo, every machine): commit+push memory writes WITH photon; the private photon-claude-memory repo is DELETED (2026-08-23, its history carried handles) — never resurrect it
+- [MacBook trails remote](macbook-trails-remote.md) — clones there can trail the other machine with REWRITTEN history: verify local-only subjects against origin, reset --hard, and fast-forward ALL sibling path deps together (stale fluor/fgtw = 64 phantom compile errors); winit-patched is detached-vanilla, skip + don't commit its Cargo.lock drift
+- [photon not fmt-clean](photon-not-fmt-clean.md) — bare `cargo fmt` churns ~40 unrelated files; checkout-restore untouched files, separate style commit for the rest
 
 - [Per-device lanes](per-device-lanes.md) — SHIPPED 53ad8f9 2026-08-13 (unpublished): any replicated-chain device transmits on its own lane; CRDT lane merge converges
 - [Relay asymmetry + ping reflection](relay-asymmetry-ping-reflection.md) — FIXES 271c76c + 30e81b6 2026-08-13: ping reflection + reflect-beside-pings bootstrap (send side of Reflect never existed)
@@ -124,11 +126,11 @@
 - [Edges, not timers](edges-not-timers.md) — react on event edges (release/ACK/push), never timers or debounces
 - [Commit trailer](commit-trailer-built-with.md) — never "Co-Authored-By: Claude"; end commits with "Built with Claude Fable 5"
 - [Nick publishes](nick-publishes.md) — never run publish scripts; commit/push only, check only when warranted
-- [No private handles](no-private-handles.md) — public repo: field incidents in comments/commits use neutral roles + dates, never handles or "Sarah"
+- [No private handles](no-private-handles.md) — everything is public EXCEPT signing keys + handles (keys/ only): handles are keys (seed = BLAKE3(handle)), never in ANY repo, private included; committed content uses the map's stable first names as prose (never neutral roles); consult keys/claude-pseudonym-map.txt every time, never copy it into a tree
 - [Self-only removal](self-only-removal.md) — a device removes only itself, zero exceptions; stolen = lockout, never removal
 - [Re-clutch, never store](re-clutch-never-store.md) — recovery = fresh ceremony; secrets at rest only when absolutely required
 - [Messaging solidity Phase A](messaging-solidity-phase-a.md) — A + B4 done (2026-08-09, locks commute per-key); flag-day APPROVED for B2's chain op; next: B1→B3 fleet chain+eggs arc
-- [Persist findings early](persist-findings-early.md) — Nick undoes via message edits, which truncates context; write load-bearing findings to memory/docs as they land
+- [Persist findings early](persist-findings-early.md) — Nick undoes via message edits, which truncates context; write load-bearing findings to memory/docs as they land. A rewind erases CONTEXT not the REPO: check reflog/HEAD before re-implementing "lost" work
 - [UI thread snapshot+CAS](ui-thread-snapshot-cas.md) — SHIPPED 2026-08-08: workers get snapshots, commits CAS live state, writers fire ACK/transmit post-durability; garbage is fork evidence only past the CAS
 - [Lane rotation wedge heal](lane-rotation-wedge-heal.md) — SHIPPED 2026-08-09: peer-at-anchor + unlinkable exhausted pendings → rotate lane, re-serve rows at original stamps; relay legs detached (the 5-10s ACK latency)
 - [Split contacts incident](split-contacts-incident.md) — CLOSED 2026-08-11: SHADOW CONVERSATIONS — receive arms derived convs from chains.participants, loader/persist use the contact; fixed all three arms
@@ -141,6 +143,5 @@
 - [project_window_geometry_shipped.md](project_window_geometry_shipped.md) — window geometry SHIPPED 2026-08-16 thru fluor's model: apply_window_rect one placement path + once-per-gesture settle hook
 - [project_humanitys_code.md](project_humanitys_code.md) — openness doctrine: secrecy surface = handles + keys ONLY; everything else public — "this is humanity's code"
 - [settings.md](settings.md) — Nick's note: naive fixed-width unlabeled settings converted to proper VSF (the fstate v7 arc)
-- [memories-live-in-repo](push-after-landing.md) — memories LIVE HERE ('Claude memories/' in the PUBLIC photon repo, 2026-08-16): commit+push with photon; scrub names/handles ALWAYS (handles are secrets)
 - [project_voice_calls.md](project_voice_calls.md) — calls FIELD-WORKING 2026-08-19 (two-way clean): channel-aware CBR ladder 16k→128k (tier byte, AIMD, VBR permanently banned), soft duck, MEDIA fast-mixer out (vendor AEC traded), adaptive jitter; docs/calls.md
 - [project_xchacha_migration.md](project_xchacha_migration.md) — 2026-08-18 stack-wide ChaCha20→XChaCha20-Poly1305 (96→192-bit nonce) EVERYWHERE incl. chain stream layer

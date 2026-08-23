@@ -608,7 +608,7 @@ impl PhotonApp {
             return false;
         }
 
-        // IDEMPOTENT PER MESSAGE: if this eagle_time is ALREADY pending, it was sent once and is in flight — the retransmit sweep resends its FROZEN ciphertext. Re-encrypting here would mint a fresh random pad (a different plaintext_hash) AND, under advance-on-send, ratchet the lane a SECOND time — double-advancing the position and forking it, so the peer's ACK (bound to the first hash) can never clear the pending and the message retransmits forever (field, 2026-08-08: Mary re-ACKing one message every ~2s, Nick never once logging "ACK verified"). resend_held_messages re-invokes this for every undelivered row, so the guard lives here, not only at that caller.
+        // IDEMPOTENT PER MESSAGE: if this eagle_time is ALREADY pending, it was sent once and is in flight — the retransmit sweep resends its FROZEN ciphertext. Re-encrypting here would mint a fresh random pad (a different plaintext_hash) AND, under advance-on-send, ratchet the lane a SECOND time — double-advancing the position and forking it, so the peer's ACK (bound to the first hash) can never clear the pending and the message retransmits forever (field, 2026-08-08: Emma re-ACKing one message every ~2s, Nick never once logging "ACK verified"). resend_held_messages re-invokes this for every undelivered row, so the guard lives here, not only at that caller.
         if self
             .friendship_chains
             .iter()
