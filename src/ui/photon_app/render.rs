@@ -371,7 +371,9 @@ impl PhotonApp {
                 let x0 = (buf_w as f32 - bar_w) * 0.5;
                 let gap = unit * 0.5;
                 let mut status = match phase {
-                    crate::call::CallPhase::Outgoing => format!("\u{260E} calling {}\u{2026}", name),
+                    crate::call::CallPhase::Outgoing => {
+                        format!("\u{260E} calling {}\u{2026}", name)
+                    }
                     crate::call::CallPhase::Ringing => format!("\u{260E} {} calling", name),
                     crate::call::CallPhase::Active => format!("\u{260E} in call \u{2014} {}", name),
                     crate::call::CallPhase::Ended => "\u{260E} keep this recording?".to_string(),
@@ -380,7 +382,11 @@ impl PhotonApp {
                 if !direct && !matches!(phase, crate::call::CallPhase::Ended) {
                     status.push_str(" \u{26A0} no direct path");
                 }
-                let status_w = if call_two_actions { bar_w * 0.44 } else { bar_w * 0.62 };
+                let status_w = if call_two_actions {
+                    bar_w * 0.44
+                } else {
+                    bar_w * 0.62
+                };
                 let action_w = if call_two_actions {
                     (bar_w - status_w - gap * 2.) * 0.5
                 } else {
@@ -3013,7 +3019,6 @@ impl PhotonApp {
                     } // end CLUTCH-Complete gate (message list + compose box)
                 }
             }
-
         }
 
         // ── Add-device screen: this (existing) device shows the pairing secret words to type into the new device. ──
@@ -4919,7 +4924,9 @@ impl PhotonApp {
                     b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
                 }
             }
-        } else if matches!(self.state, AppState::Conversation) && call_pill_show && call_pill_enabled
+        } else if matches!(self.state, AppState::Conversation)
+            && call_pill_show
+            && call_pill_enabled
         {
             if let Some(b) = self.call_start_btn.as_ref() {
                 b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());

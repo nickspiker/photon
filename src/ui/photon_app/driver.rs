@@ -2105,8 +2105,7 @@ impl FluorApp for PhotonApp {
                 self.clear_hints();
                 // Resize edges OUTRANK widget hits — the CSD rule. The edge check used to run only on HIT_NONE, so a contact row reaching the window edge swallowed the press and the bottom edge was ungrabbable wherever content touched it (field report, 2026-08-16). The band is a thin perimeter strip (strip_height/4), so widget interiors are untouched; cursor_for gives the same band the resize cursor, so the grab matches the cue.
                 if !ctx.is_maximized {
-                    let edge =
-                        chrome::get_resize_edge(ctx.viewport, ctx.cursor_x, ctx.cursor_y);
+                    let edge = chrome::get_resize_edge(ctx.viewport, ctx.cursor_x, ctx.cursor_y);
                     if edge != ResizeEdge::None {
                         return EventResponse::StartResize(edge);
                     }
@@ -2697,7 +2696,6 @@ impl FluorApp for PhotonApp {
             }
         }
 
-
         // Point the top-left orb at the current subject (peer avatar + their presence ring in a conversation, else the Photon orb + our connectivity). Self-diffing — a no-op unless the contact / avatar / screen changed.
         self.update_orb();
 
@@ -2790,7 +2788,8 @@ impl FluorApp for PhotonApp {
         // Keep our own signed record current. Cheap no-op once published for the current address; re-fires when the address moves or when attestation finally supplies the handle_proof an earlier reflexive echo had to wait for. Timed because this edge USED to trigger the multi-second phonebook freeze (via the every-beacon persist) — if any residue survives the off-thread move, it surfaces as a PERF line here rather than a silent gap.
         {
             let t_phase = std::time::Instant::now();
-            if self.our_reflexive.is_some() && self.our_reflexive != self.self_record_published_for {
+            if self.our_reflexive.is_some() && self.our_reflexive != self.self_record_published_for
+            {
                 self.publish_self_peer_record();
                 // Our own row changed, so the persisted copy is stale. Mark it dirty — the debounce gate below writes it off-thread, coalescing with any gossip-growth edge. The phonebook is a cache, so a gossiped row we lose to a crash arrives again on the next exchange.
                 self.request_peer_persist();
@@ -2811,7 +2810,10 @@ impl FluorApp for PhotonApp {
             }
             let ms = t_phase.elapsed().as_millis();
             if ms > 50 {
-                crate::logf!("PERF: phonebook publish+persist edge took {}ms (UI thread)", ms);
+                crate::logf!(
+                    "PERF: phonebook publish+persist edge took {}ms (UI thread)",
+                    ms
+                );
             }
         }
 

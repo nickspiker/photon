@@ -39,8 +39,8 @@ use fluor::host::WakeSender;
 // The method bodies live in per-concern child modules: each is a further `impl PhotonApp` (plus the `FluorApp` trait impl in `driver`) over this same struct, glob-importing the root's items via `use super::*;`.
 mod attachments;
 mod bridge;
-mod ceremony;
 mod call_ui;
+mod ceremony;
 mod conversation;
 mod devices;
 mod driver;
@@ -677,7 +677,10 @@ fn display_content(content: &str) -> String {
             " \u{2014} tap for actions"
         };
         // Plain decimal for the size (Nick 2026-08-21: the VERSION is the only dozenal surface for now — a UI base toggle may come later, "humans are not ready for that shit").
-        format!("\u{1F4CE} {} \u{00B7} {}\u{202F}{}{}", name, units, label, state)
+        format!(
+            "\u{1F4CE} {} \u{00B7} {}\u{202F}{}{}",
+            name, units, label, state
+        )
     } else {
         // Reference rows (reply/edit/react) need no stripping: their content IS the bare body/glyph — the reference is a typed FIELD, never a string encoding.
         content.to_string()
@@ -2861,7 +2864,11 @@ pub(crate) fn contact_conn_tier(c: &crate::types::Contact) -> ConnTier {
 /// Presence-ring tier (user spec, VSF-authored in theme.rs): cyan = direct in the same room (LAN), green = direct across the WAN, amber = relay-only, grey = offline. LAN = the validated direct path is a private / link-local / ULA address; a same-site GLOBAL v6 path (e.g. two phones on one home /64) still reads green — refining that needs a same-prefix check against our own addresses, later.
 pub(crate) fn ring_tier_colour(c: &crate::types::Contact, has_remote: bool) -> u32 {
     // Zero-remote rows must come thru row_ring_tier (the sibling fold); a direct call with has_remote=false is the single-device degenerate answer.
-    let tier = if has_remote { contact_conn_tier(c) } else { ConnTier::Lan };
+    let tier = if has_remote {
+        contact_conn_tier(c)
+    } else {
+        ConnTier::Lan
+    };
     ring_colour_of(tier)
 }
 
@@ -2897,7 +2904,11 @@ pub(crate) fn ring_colour_of(tier: ConnTier) -> u32 {
 /// The transport tier of a live path as a DOT colour: LAN green (same subnet — no NAT, nothing in the middle), WAN cyan (a punched or routable direct path across the internet), relay orange (no direct path — frames ride the seed's pipe). `None` for a device that isn't reachable at all, which renders no dot.
 /// Same held-state rule the avatar ring uses: a live `validated_path` is authoritative and outranks `reached_via_relay`, because that flag tracks how the LAST frame happened to arrive and flaps every cycle for a peer reachable both ways.
 fn path_tier_colour(c: &crate::types::Contact, has_remote: bool) -> Option<u32> {
-    let tier = if has_remote { contact_conn_tier(c) } else { ConnTier::Lan };
+    let tier = if has_remote {
+        contact_conn_tier(c)
+    } else {
+        ConnTier::Lan
+    };
     match tier {
         ConnTier::Lan => Some(*theme::PATH_LAN_COLOUR),
         ConnTier::Wan => {
