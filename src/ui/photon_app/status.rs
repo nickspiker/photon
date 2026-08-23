@@ -430,31 +430,53 @@ impl PhotonApp {
                                         }
                                         // SENDER-SIDE RE-SERVE (Nick's go, 2026-08-20) — the delivery-side fix the pull-gate comment above promises. The pending list only retransmits rows it still holds; a row implied-delivered by a FLEET ack that THIS peer device never received leaves their lane wedged forever — they gap-buffer every later row (twice on 2026-08-20 that hostage was a call ANSWER). The sealed tip is per-device cryptographic testimony of what they hold contiguously, and their row_count deficit is content-level evidence they lack rows — so when WE are strictly ahead, re-serve the oldest rows above the tip from the DURABLE store at their ORIGINAL stamps (the lane-rotation flush's proven semantics). The receiver's row-store dedup absorbs anything it already had and Re-ACKs it, clearing the fresh pending; a genuinely missing row processes normally and un-jams the gap cascade.
                                         if n_rows > record.row_count {
-                                            const RESERVE_BURSTS_PER_TIP: u8 = 2;
+                                            const RESERVE_BURSTS_PER_TESTIMONY: u8 = 2;
                                             const RESERVE_ROWS_PER_BURST: usize = 8;
+                                            // Convergence rule (field 2026-08-21, the hours-long loop): bursts are spent against the peer device's EXACT testimony (tip, row_count, row_digest), and only a testimony CHANGE re-arms them — re-serving into unchanged testimony is evidence the peer already holds (and dedups) the rows, so the count deficit is a counting divergence, not a delivery hole. Device-keyed because sibling devices pong different lane views; the old fid-keyed tip slot reset on every alternation.
                                             let allowed = {
                                                 let e = self
                                                     .lane_reserve_bursts
-                                                    .entry(fid)
-                                                    .or_insert((tip, 0));
-                                                if e.0 != tip {
-                                                    *e = (tip, 0);
+                                                    .entry((fid, peer_pubkey.key))
+                                                    .or_insert((
+                                                        tip,
+                                                        record.row_count,
+                                                        record.row_digest,
+                                                        0,
+                                                    ));
+                                                if (e.0, e.1, e.2)
+                                                    != (tip, record.row_count, record.row_digest)
+                                                {
+                                                    *e = (
+                                                        tip,
+                                                        record.row_count,
+                                                        record.row_digest,
+                                                        0,
+                                                    );
                                                 }
-                                                if e.1 < RESERVE_BURSTS_PER_TIP {
-                                                    e.1 += 1;
+                                                if e.3 < RESERVE_BURSTS_PER_TESTIMONY {
+                                                    e.3 += 1;
                                                     true
                                                 } else {
+                                                    if e.3 == RESERVE_BURSTS_PER_TESTIMONY {
+                                                        e.3 += 1;
+                                                        crate::logf!("CHAT: re-serve cap spent at tip {} with peer testimony unchanged (theirs {} rows vs ours {}) — parked until their sync record moves", tip, record.row_count, n_rows);
+                                                    }
                                                     false
                                                 }
                                             };
                                             if allowed {
-                                                let pending_times: std::collections::HashSet<i64> = chains
-                                                    .pending_messages
-                                                    .iter()
-                                                    .map(|m| m.eagle_time)
-                                                    .collect();
+                                                let pending_times: std::collections::HashSet<i64> =
+                                                    chains
+                                                        .pending_messages
+                                                        .iter()
+                                                        .map(|m| m.eagle_time)
+                                                        .collect();
                                                 // Oldest-first: the OLDEST missing row is the one holding the peer's in-order gate shut; later holes fill on subsequent tip observations. Pending rows are excluded (they already retransmit); deleted and friend-recovered rows never re-serve.
-                                                let mut rows: Vec<(i64, String, Option<(crate::types::RefKind, i64)>)> = conv
+                                                let mut rows: Vec<(
+                                                    i64,
+                                                    String,
+                                                    Option<(crate::types::RefKind, i64)>,
+                                                )> = conv
                                                     .messages
                                                     .iter()
                                                     .filter(|m| {
