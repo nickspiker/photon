@@ -1013,36 +1013,8 @@ impl PhotonApp {
                 crate::logf!("CHAT: braid decrypt landed on moved lane state (era adopt / fork) — dropped; a live frame re-enters clean thru the arm");
                 break 'commit;
             }
-            // DUPLICATE (eagle_time <= last received on this lane): the sender is resending because our ACK was lost. Re-ACK STATELESSLY from THIS copy's plaintext — the decrypted duplicate IS the re-ACK anchor, so no stored row is needed. This heals the lost-ACK stall for ANY message and, crucially, closes the ephemeral-bridge seam: bridge rows don't persist, so there's no stored row to re-ACK from, but this path never needed one (Nick's "hidden anchor", realized with zero bytes kept). Never re-advances or re-runs — dedup already proved we hold it.
-            if chains.is_duplicate(&lane, timestamp) {
-                let ph = *blake3::hash(&plaintext).as_bytes();
-                let recipient_pubkey = self
-                    .contacts
-                    .get(contact_idx)
-                    .map(|c| *c.public_identity.as_bytes())
-                    .unwrap_or([0u8; 32]);
-                let relay_to = self
-                    .contacts
-                    .get(contact_idx)
-                    .map(|c| c.relay_device_list())
-                    .unwrap_or_default();
-                ack_enqueue = Some((
-                    chains.clone(),
-                    AckRequest {
-                        peer_addr: sender_addr,
-                        recipient_pubkey,
-                        conversation_token,
-                        acked_eagle_time: timestamp,
-                        plaintext_hash: ph,
-                        relay_to,
-                    },
-                ));
-                crate::logf!(
-                    "CHAT: duplicate at eagle_time {} — re-ACKing (lost-ACK heal, stateless)",
-                    timestamp
-                );
-                break 'commit;
-            }
+            // DUPLICATE STAMP (eagle_time <= last received on this lane) that nonetheless LINKED our current head (the CAS above proved it): a RE-ENCRYPT of an old row at its original stamp — a sender that re-encrypted after missing our ACK, or a re-serve. The sender's chain has PROVABLY advanced onto this frame's hash, so we must follow it: the chain mutations below run for this frame too (salt, mixing, advance, head, gap drain — minus the contiguous-tip mark, whose stamp is already covered), then the branch at the commit snapshot re-ACKs from THIS copy's plaintext (the stateless lost-ACK heal, Nick's "hidden anchor") and stops before any row/UI/bridge semantics — dedup proved we hold the content. The old early-exit here re-ACKed WITHOUT following, which forked the lane permanently: our head stayed at the original while every successor linked the re-encrypt's — "expected prev X, got Y" buffering forever (field 2026-08-23: bridge outputs #2 and #3 never displayed, wedged behind a re-encrypted output #1).
+            let is_dup_frame = chains.is_duplicate(&lane, timestamp);
             // The conversation this frame lands in — resolved THRU THE CONTACT, the same derivation the loader, the persist snapshot, the page server, and the census all use. It used to materialize from chains.participants(): whenever the chains' expression of OUR half differs from the contact path's pid (a stale-era ceremony's participant set), that minted a SHADOW conversation — live rows accumulated in an object no loader fills and no persist snapshot reads, so they rendered all session and DIED at restart (field, 2026-08-11: a device advertised 92 rows from RAM while its disk table held 7). The chains stay crypto truth; the CONTACT is conversation truth.
             let conv_pos = {
                 let conv_our_pid = if self.contacts[contact_idx].is_sibling {
@@ -1226,8 +1198,10 @@ impl PhotonApp {
                 &strand_refs,
             );
 
-            // Mark as received for deduplication (protects against UDP duplicates)
-            chains.mark_received(&lane, timestamp);
+            // Mark as received for deduplication (protects against UDP duplicates). NOT for a duplicate-stamp re-encrypt: the tip already covers its eagle_time, and writing the older stamp would REGRESS the contiguous tip — falsely advertising the rows above it as un-received (pong sync records), inviting pointless re-serves.
+            if !is_dup_frame {
+                chains.mark_received(&lane, timestamp);
+            }
 
             // Update hash chain state for next message verification
             chains.update_received_hash(&lane, msg_hp);
@@ -1265,6 +1239,37 @@ impl PhotonApp {
             let chains_commit_snapshot = chains.clone();
             // Flag to update sync records after borrow ends
             need_sync = true;
+
+            // A duplicate-stamp re-encrypt ends HERE: the chain state followed the sender (the snapshot above carries the adopted head, and the gap drain just released any successors that were wedged on it), and the re-ACK carries THIS copy's plaintext hash so it matches the sender's fresh pending. No row insert, no bubble, no bridge execution — we hold the content already.
+            if is_dup_frame {
+                let recipient_pubkey = self
+                    .contacts
+                    .get(contact_idx)
+                    .map(|c| *c.public_identity.as_bytes())
+                    .unwrap_or([0u8; 32]);
+                let relay_to = self
+                    .contacts
+                    .get(contact_idx)
+                    .map(|c| c.relay_device_list())
+                    .unwrap_or_default();
+                ack_enqueue = Some((
+                    chains_commit_snapshot.clone(),
+                    AckRequest {
+                        peer_addr: sender_addr,
+                        recipient_pubkey,
+                        conversation_token,
+                        acked_eagle_time: timestamp,
+                        plaintext_hash,
+                        relay_to,
+                    },
+                ));
+                crate::logf!(
+                    "CHAT: duplicate stamp at eagle_time {} linked the head — followed the re-encrypt (head now {}...), re-ACKing; content already held",
+                    timestamp,
+                    hex::encode(&msg_hp[..8])
+                );
+                break 'commit;
+            }
 
             // Add message to contact's message list and persist — UNLESS this is the hidden chain-weave probe, which advances/ACKs the chain but must never surface a bubble or chime. For the probe we flip `their_probe_seen` (their TX / our RX proven), PERSIST a hidden row, and try to seal the chain.
             // CALL SIGNALING (docs/calls.md): an offer/answer/hangup rides the lane as a hidden control row — persist it (re-ACK durable, the probe pattern), push it to our siblings (ring/stop fan-out), and hand it to the state machine WITH the pre-advance lane key (the basket's doomed egg, meaningful for offers).
