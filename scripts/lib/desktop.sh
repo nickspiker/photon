@@ -89,8 +89,15 @@ reload_photon() {
         open "$HOME/Applications/Photon Messenger.app"
         echo "Reload: Photon Messenger.app relaunched"
     elif [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
-        # Launch from ~, in a subshell so this script's cwd stays put — without it the relaunched photon inherits the REPO as cwd (dev.sh cd'd here) and bequeaths it to every bridge shell it spawns.
-        (cd "$HOME" && setsid "$HOME/.local/bin/$name" >/dev/null 2>&1 </dev/null &)
+        # Detach thru the systemd USER MANAGER, not a fork dance. Two field failures killed the setsid approach (2026-08-24):
+        #   1. The relaunched photon INHERITED fd 8 — flock lives on the open file description and survives fork+exec, so photon held the snapshot lock for its whole lifetime and every later dev.sh blocked forever, silently, at snapbuild_take's flock (the two 5-minute "hangs").
+        #   2. Even with the fds closed, `(setsid ... &)` sometimes left photon a direct CHILD of dev.sh, and bash sat in do_wait on it — dev.sh "hung" after printing nothing, holding the lock the whole time.
+        # systemd-run makes photon a child of the user manager: NOTHING of dev.sh's is inherited (no fds, no locks, no cwd), nothing waits on anyone. --collect so a crashed unit doesn't accumulate as "failed". Fallback keeps the old dance for a systemd-less box, with the locks explicitly closed.
+        if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --collect --quiet --working-directory="$HOME" "$HOME/.local/bin/$name" 2>/dev/null; then
+            :
+        else
+            (cd "$HOME" && setsid "$HOME/.local/bin/$name" >/dev/null 2>&1 </dev/null 8>&- 9>&- &)
+        fi
         echo "Reload: $name relaunched"
     else
         echo "Reload: skipped the relaunch — no display in this environment (the swap is installed; launch from the desktop)"
