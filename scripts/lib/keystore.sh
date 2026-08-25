@@ -25,8 +25,13 @@ if [ ! -f "$KEYSTORE_PATH" ]; then
     return 1 2>/dev/null || exit 1
 fi
 
-# Password source is per-OS: GNOME keyring via secret-tool on Linux, the macOS Keychain via security(1) on a Mac. Same service/account naming on both ('token' / 'keystore_password') so the store-once instructions below stay parallel.
-# set -e TRAP: callers source this under `set -e`, and `VAR=$(cmd)` inherits cmd's exit status — so a failing secret-tool (LOCKED keyring, missing secret) aborts the whole source AT THE ASSIGNMENT, before the fallback below ever runs. That's a silent `exit 1` with zero output — a locked login-keyring killed a deploy at "Building Android release..." with no reason given (field 2026-08-24). `|| true` keeps the assignment succeeding so emptiness is handled deliberately, and a LOCKED keyring is named distinctly from a MISSING secret (they need different fixes).
+# PASSWORD SOURCE — a FILE in the keys dir is the canonical source, NOT the OS keyring.
+# The keyring was the whole reason a deploy died silently: it locks on every autologin session (no password is typed at boot, so pam_gnome_keyring never unlocks it), and it can't be unlocked from a remote/headless bridge session — the gcr prompter pops a GUI dialog nobody can answer, and the caller hangs (field 2026-08-24, building from Germany over the bridge). The signing key TOKEN.p12 already lives in the keys dir; its password belongs right beside it, backed up and synced with everything else. Threat model is physical access to the keys dir — anyone holding it already has the raw ed25519 signing keys in the clear, so a plaintext keystore password next to the keystore changes nothing.
+# The OS keyring stays as a LAST-RESORT fallback (guarded so a locked keyring can't abort or hang the build), for a machine that hasn't got the file yet.
+if [ -z "$TOKEN_KEYSTORE_PASSWORD" ] && [ -f "$KEYS_DIR/TOKEN.p12.pass" ]; then
+    TOKEN_KEYSTORE_PASSWORD=$(cat "$KEYS_DIR/TOKEN.p12.pass")
+fi
+# set -e TRAP: callers source this under `set -e`, and `VAR=$(cmd)` inherits cmd's exit status — so a failing secret-tool (LOCKED keyring, missing secret) aborts the whole source AT THE ASSIGNMENT, before the fallback below ever runs. `|| true` keeps the assignment succeeding so emptiness is handled deliberately. NOTE: a locked keyring's secret-tool lookup can itself pop the GUI prompter — so this branch only runs when the FILE above was absent, never on Nick's machines.
 if [ -z "$TOKEN_KEYSTORE_PASSWORD" ]; then
     if command -v secret-tool >/dev/null; then
         TOKEN_KEYSTORE_PASSWORD=$(secret-tool lookup service token key keystore_password 2>/dev/null) || true
