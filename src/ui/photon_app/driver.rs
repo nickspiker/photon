@@ -2694,6 +2694,12 @@ impl FluorApp for PhotonApp {
         let mut needs_redraw = false;
         // Frame fence for the deferred send drain: entries queued during THIS tick's input pass wait until the next one, guaranteeing the pending bubble a rendered frame before the wire half runs.
         self.tick_serial = self.tick_serial.wrapping_add(1);
+        // Storage-failure latch → the amber banner. Writer threads and open paths can only set a static (no &mut self there); this mirror is how a fence error or a dead vault open reaches the screen — 1,276 of them once ran for hours as log lines while the UI claimed all was well (2026-08-24).
+        if crate::storage::vault_sick() && !self.vault_degraded {
+            self.vault_degraded = true;
+            self.scene_dirty = true;
+            needs_redraw = true;
+        }
 
         // Android foreground edges, latched by nativeSetForeground on the Activity main thread and drained here where &mut self lives (2026-08-18). Pause retracts the clearer claim (siblings may ding again — the drop-sweep at their end covers anything that crossed in flight); resume is the same human-is-here edge as a desktop focus gain. When both latched since the last tick (fast pause→resume), apply them in the order that ends at the CURRENT truth.
         #[cfg(target_os = "android")]

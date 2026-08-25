@@ -82,9 +82,21 @@ pub fn device_vault() -> Option<std::sync::Arc<FlatStorage>> {
         }
         Err(e) => {
             crate::logf!("STORAGE: device vault open failed: {}", e);
+            flag_vault_sick();
             None
         }
     }
+}
+
+/// Cross-thread storage-failure latch: writer threads and open paths set it, the UI tick mirrors it into `vault_degraded` (the amber banner). Born of the 2026-08-24 zombie boots — a vault-open death and 1,276 fence errors ran for hours as log lines while the screen claimed all was well. Sticky for the session by design: a vault that failed once is a vault to distrust until relaunch.
+static VAULT_SICK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn flag_vault_sick() {
+    VAULT_SICK.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn vault_sick() -> bool {
+    VAULT_SICK.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// A device-scope boolean flag (opt-ins/vetoes that used to be marker FILES). Present = true, absent = false; the caller owns the default polarity.

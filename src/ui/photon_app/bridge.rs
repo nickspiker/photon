@@ -610,6 +610,7 @@ impl PhotonApp {
 
     /// Turn unattended mode on/off. ON writes the marker AND (also requires background/autostart so a reboot actually relaunches photon) refreshes the capsule from the live session. OFF removes the marker and shreds the capsule.
     pub(super) fn set_unattended(&mut self, on: bool) {
+        self.unattended_on = on;
         crate::storage::set_device_flag("flags/unattended_reboot", on);
         if on {
             // Unattended only means anything if the box relaunches photon at boot — force background/autostart on.

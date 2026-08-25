@@ -217,6 +217,7 @@ impl PhotonApp {
                             Ok(Err(e)) => {
                                 let m = format!("{e}");
                                 crate::logf!("STORAGE: async message persist failed: {}", m);
+                                crate::storage::flag_vault_sick();
                                 Some(m)
                             }
                             Err(_) => {
@@ -345,6 +346,7 @@ impl PhotonApp {
                             }
                             Err(e) => {
                                 crate::logf!("STORAGE CRITICAL: chains persist failed — withholding {} gated signal(s) (ACK/transmit): {}", acts.len(), e);
+                                crate::storage::flag_vault_sick();
                             }
                         }
                     }
@@ -382,6 +384,7 @@ impl PhotonApp {
                     for (a, b, st) in latest {
                         if let Err(e) = st.write_addr(&a, &b) {
                             crate::logf!("STORAGE: async conv-state persist failed: {}", e);
+                            crate::storage::flag_vault_sick();
                         }
                     }
                 }
