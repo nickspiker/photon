@@ -9,10 +9,11 @@
 
 GH_REPO="nickspiker/photon"
 
-# ensure_release <tag> <prerelease:true|false>
+# ensure_release <tag> <prerelease:true|false> [target-commit]
 # Idempotently make sure a release exists for <tag>. Safe to call before every upload.
+# target-commit (release channel only): the exact commit the immutable v<n> tag must anchor to. gh anchors a NEW tag to the remote's default-branch HEAD by default, so without this the release tag lands on whatever was last pushed — for us the PRIOR deploy's dev-line-open commit, NOT the release commit the binaries were built from (the v64 tag pointed at the pre-deploy HEAD). The caller must have PUSHED this commit first — gh can only target a commit the remote already has.
 ensure_release() {
-    local tag="$1" prerelease="$2"
+    local tag="$1" prerelease="$2" target="$3"
     if gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
         return 0
     fi
@@ -22,7 +23,7 @@ ensure_release() {
             --title "Development (rolling)" \
             --notes "Rolling development builds. Assets are replaced in place; not for production. Every binary is Ed25519-signed and self-verifies on launch."
     else
-        gh release create "$tag" --repo "$GH_REPO" \
+        gh release create "$tag" --repo "$GH_REPO" ${target:+--target "$target"} \
             --title "$tag" \
             --notes "Photon $tag. Every binary is Ed25519-signed and self-verifies on launch."
     fi
