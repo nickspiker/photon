@@ -5,6 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: a24c64ab-95e4-4edf-8dc3-366eec9b6268
+  modified: 2026-08-25T23:32:28.771Z
 ---
 
 Architecture direction set 2026-06-28 (design only, not implemented). Full doc: [docs/peers-are-fgtw.md](/mnt/Harbor/Code/photon/docs/peers-are-fgtw.md).
@@ -12,6 +13,8 @@ Architecture direction set 2026-06-28 (design only, not implemented). Full doc: 
 **The vision:** `fgtw.org` (central bootstrap SERVER) retires; FGTW the NETWORK stays — the peers themselves ARE the FGTW. Gossip mesh now, full Kademlia DHT ("kamadilla") eventually. Two openness levels, deliberately different:
 1. **Phonebook is OPEN** — ask any peer "give me everyone who's ever attested", they hand it over. Ungated enumeration. ("I'll send you the phonebook.")
 2. **Conversation/identity is MUTUAL-CONSENT** — someone can SEND a CLUTCH but if you haven't friended them back, you ignore it ("yeahnah"). Activates only when BOTH friend each other. CLUTCH completion IS the mutual handshake. Then avatars/identity unlock.
+
+**MUTUAL-CONSENT SHIPPED 2026-08-25 @ f33ebec (the strict form, Nick's "GO!"):** adding = local-only (`Contact.consent_mutual=false`, NO keygen/offer at add); a tiny signed `friend_knock` (tok-only — the conversation token is the identity proof) travels instead of the 548KB offer, re-fired once/session per pong edge; recipient resolves by token-match against own roster (stranger = unresolvable = silent drop, remembered nowhere); matched+fold-trusted knock OR offer (old-client evidence) flips Mutual → keygen → ceremony → roster push. Absent-at-rest = Mutual (whole existing fleet/friend set grandfathered). v1 residue: consent doesn't ride the fgtw roster field set — wire it in when §4.2-A lease transfer lands (ticket note in TICKETS.md).
 
 **Already built — do NOT rebuild (the consent half is done):** ping/pong is contact-gated (`status.rs:1329-1336` drops non-contact pings silently); CLUTCH receipt contact-gated everywhere; CLUTCH is inherently two-sided (auto-offer only to saved contacts at `app.rs:2915-2919`; completion needs both offers+proofs); handle string never on wire (only handle_proof); `PeerStore::get_all_peers()` exists in-memory (`peer_store.rs:69`) but is never called; `node.rs` has real Kademlia structures but they're DEAD scaffolding (never instantiated); `FgtwMessage::Pong{peers}` is an unused ready-made gossip carrier.
 
