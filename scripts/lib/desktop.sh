@@ -63,7 +63,9 @@ build_sign_install() {
     fi
 }
 
-# Swap the live process for the build that just landed: TERM the running instance (quit is a flush edge since b58312b, so state lands), a short bounded wait, KILL any holdout, then launch the fresh install detached from this terminal. macOS launches the .app (the bundle is the stable TCC/notification identity — ~/.local/bin would be a different face); elsewhere the installed binary, skipped when no display is reachable (a headless/SSH build has nowhere to paint). Running THIS thru the bridge works — the swap completes because bash outlives its dead parent — but the command's output dies with the old process; expect silence, then the new instance's presence.
+# Swap the live process for the build that just landed: TERM the running instance (quit is a flush edge since b58312b, so state lands), a bounded wait, then launch the fresh install. macOS launches the .app (the bundle is the stable TCC/notification identity — ~/.local/bin would be a different face); elsewhere the installed binary, skipped when no display is reachable (a headless/SSH build has nowhere to paint).
+#
+# BRIDGE SUICIDE (field 2026-08-25): when dev.sh is driven over the bridge, the shell running it is a DESCENDANT of the very photon it kills (the bridge PTY is served by photon). The instant photon exits, its PTY hangs up and SIGHUPs dev.sh — so the build + the kill land (they run BEFORE photon dies) but the relaunch never fires: "nuked it, never came back". The comment that used to sit here CLAIMED "bash outlives its dead parent"; it doesn't. So on Linux the whole kill→wait→relaunch runs in a DETACHED systemd --user unit (below): a child of the user manager with zero tie to the bridge PTY, immune to photon's death. dev.sh only QUEUES it (systemd-run returns instantly, while photon is still up) and exits clean; the unit does the swap on its own. Its output goes to the journal, not the terminal.
 #
 # COMM TRUNCATION (field 2026-08-23, the stacked-instances incident): Linux clips process names to 15 chars and "photon-messenger" is 16, so an exact-name pgrep/pkill silently matches NOTHING there — the reload killed nobody, stacked a fresh instance beside the old one, and the old one kept the relay pipe (answering the bridge with code deleted hours earlier). macOS keeps full names, which is why the Mac test lied that this worked. Match BOTH spellings; each no-ops on the other platform.
 photon_alive() {
@@ -73,12 +75,13 @@ photon_signal() {
     pkill "$1" -x photon-messenger 2>/dev/null || true
     pkill "$1" -x photon-messenge 2>/dev/null || true
 }
-reload_photon() {
+
+# The reload BODY that must outlive the photon it kills. Runs as a detached systemd --user unit (or a setsid fallback), NEVER inline in dev.sh — see BRIDGE SUICIDE above. Re-sourced by that unit, so it may only lean on this file's own helpers (photon_alive / photon_signal), never on dev.sh's sourced libs.
+_reload_detached_body() {
     local name="photon-messenger"
     if photon_alive; then
-        echo "Reload: stopping the running $name..."
         photon_signal -TERM
-        # WAIT for the graceful exit — up to 60s, checked frequently, and NEVER a SIGKILL: quit flushes the vault, and a KILL landing mid-flush is exactly the mass-uncommitted-writes state that births the manifestus fence wedge (three specimens in four days once the old 3s TERM→KILL escalation started running nightly — Mac plow 422745 and 1110637, Linux 307312). A photon that won't exit in 60s is news the operator must see, not a process to shoot.
+        # WAIT for the graceful exit — up to 60s, checked frequently, and NEVER a SIGKILL: quit flushes the vault, and a KILL landing mid-flush is exactly the mass-uncommitted-writes state that births the manifestus fence wedge (three specimens in four days once the old 3s TERM→KILL escalation started running nightly — Mac plow 422745 and 1110637, Linux 307312). A photon that won't exit in 60s is news the operator must see (in the journal now), not a process to shoot.
         local i
         for i in $(seq 1 200); do
             photon_alive || break
@@ -89,20 +92,50 @@ reload_photon() {
             return 1
         fi
     fi
+    # Launch the fresh install as ITS OWN user unit, a SECOND systemd-run — NOT a plain child of this reload unit, whose cgroup teardown (KillMode=control-group) would take photon down the moment this body returns. The nested run re-parents photon straight to the manager. Fallback (systemd-less box) keeps the old setsid dance with fds 8/9 closed so photon can't inherit the snapshot flock (the 2026-08-24 "5-minute hang").
+    if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --collect --quiet --working-directory="$HOME" "$HOME/.local/bin/$name" 2>/dev/null; then
+        echo "Reload: $name relaunched"
+    else
+        (cd "$HOME" && setsid "$HOME/.local/bin/$name" >/dev/null 2>&1 </dev/null 8>&- 9>&- &)
+        echo "Reload: $name relaunched (setsid fallback)"
+    fi
+}
+
+reload_photon() {
+    local name="photon-messenger"
     if [ "$(uname -s)" = "Darwin" ]; then
+        # macOS is the on-screen dev path (no bridge), so the kill+relaunch stays inline; `open` hands the new instance to launchd, already detached.
+        if photon_alive; then
+            echo "Reload: stopping the running $name..."
+            photon_signal -TERM
+            local i
+            for i in $(seq 1 200); do
+                photon_alive || break
+                sleep 0.3
+            done
+            if photon_alive; then
+                echo "Reload: ABORTED — $name is still running 60s after TERM (mid-flush or wedged). Not killing it (a KILL mid-flush wedges the vault). Investigate, stop it yourself, then relaunch."
+                return 1
+            fi
+        fi
         open "$HOME/Applications/Photon Messenger.app"
         echo "Reload: Photon Messenger.app relaunched"
     elif [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
-        # Detach thru the systemd USER MANAGER, not a fork dance. Two field failures killed the setsid approach (2026-08-24):
-        #   1. The relaunched photon INHERITED fd 8 — flock lives on the open file description and survives fork+exec, so photon held the snapshot lock for its whole lifetime and every later dev.sh blocked forever, silently, at snapbuild_take's flock (the two 5-minute "hangs").
-        #   2. Even with the fds closed, `(setsid ... &)` sometimes left photon a direct CHILD of dev.sh, and bash sat in do_wait on it — dev.sh "hung" after printing nothing, holding the lock the whole time.
-        # systemd-run makes photon a child of the user manager: NOTHING of dev.sh's is inherited (no fds, no locks, no cwd), nothing waits on anyone. --collect so a crashed unit doesn't accumulate as "failed". Fallback keeps the old dance for a systemd-less box, with the locks explicitly closed.
-        if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --collect --quiet --working-directory="$HOME" "$HOME/.local/bin/$name" 2>/dev/null; then
-            :
+        # Hand the ENTIRE kill→wait→relaunch to a detached user unit so photon's death can't SIGHUP the swap (BRIDGE SUICIDE above). Import the display/session env from HERE — the bridge shell carries what photon was launched with — so the relaunched photon (and the nested systemd-run inside the body) can reach the X server and the user bus. Only forward vars that are actually set, so an unset WAYLAND_DISPLAY on X11 doesn't trip --setenv.
+        local lib; lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/desktop.sh"
+        local envargs=() v
+        for v in DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS; do
+            [ -n "${!v:-}" ] && envargs+=(--setenv="$v")
+        done
+        if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --collect --quiet \
+                --unit=photon-reload "${envargs[@]}" --working-directory="$HOME" \
+                bash -c 'source "$0"; _reload_detached_body' "$lib" 2>/dev/null; then
+            echo "Reload: swap handed to a detached unit (survives the bridge) — follow it with: journalctl --user -u photon-reload -f"
         else
-            (cd "$HOME" && setsid "$HOME/.local/bin/$name" >/dev/null 2>&1 </dev/null 8>&- 9>&- &)
+            # No systemd: best-effort detach. `trap '' HUP` + setsid so the bridge PTY hangup can't kill the swap; fds 8/9 closed so the reload (and the photon it spawns) can't inherit the snapshot flock.
+            ( trap '' HUP; cd "$HOME"; setsid bash -c 'source "$0"; _reload_detached_body' "$lib" >/dev/null 2>&1 </dev/null 8>&- 9>&- & )
+            echo "Reload: swap detached (setsid fallback — no systemd-run)"
         fi
-        echo "Reload: $name relaunched"
     else
         echo "Reload: skipped the relaunch — no display in this environment (the swap is installed; launch from the desktop)"
     fi
