@@ -981,14 +981,33 @@ pub fn parse_log_records(buf: &[u8]) -> (Vec<LogRecord>, usize) {
     use vsf::VsfType;
     let mut records = Vec::new();
     let mut off = 0usize;
+    // TORN-RECORD RESYNC (field 2026-08-24): a kill mid-append leaves a half-record, and stopping at it hid THREE boots of records behind one tear — the file grew while every reader called it frozen. Garbage never decodes, so a failed record skips to the next record magic and the walk continues; a genuinely incomplete TAIL has no further magic, so the pass still ends with `consumed` at the last whole record exactly as before.
+    let resync = |from: usize| -> Option<usize> {
+        buf[from..]
+            .windows(4)
+            .position(|w| w == [0x52, 0xC3, 0x85, 0x3C])
+            .map(|d| from + d)
+    };
     while off < buf.len() {
         let rest = &buf[off..];
         let Ok((header, header_end)) = VsfHeader::decode(rest) else {
-            break; // incomplete tail — stop, retry next pass
+            match resync(off + 1) {
+                Some(next) => {
+                    off = next;
+                    continue;
+                }
+                None => break, // incomplete tail — stop, retry next pass
+            }
         };
         let mut ptr = 0usize;
         let Ok(section) = VsfSection::parse(&rest[header_end..], &mut ptr) else {
-            break;
+            match resync(off + 1) {
+                Some(next) => {
+                    off = next;
+                    continue;
+                }
+                None => break,
+            }
         };
         let rec = header_end + ptr;
         if rec == 0 {
