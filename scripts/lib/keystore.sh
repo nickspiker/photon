@@ -26,11 +26,22 @@ if [ ! -f "$KEYSTORE_PATH" ]; then
 fi
 
 # Password source is per-OS: GNOME keyring via secret-tool on Linux, the macOS Keychain via security(1) on a Mac. Same service/account naming on both ('token' / 'keystore_password') so the store-once instructions below stay parallel.
+# set -e TRAP: callers source this under `set -e`, and `VAR=$(cmd)` inherits cmd's exit status — so a failing secret-tool (LOCKED keyring, missing secret) aborts the whole source AT THE ASSIGNMENT, before the fallback below ever runs. That's a silent `exit 1` with zero output — a locked login-keyring killed a deploy at "Building Android release..." with no reason given (field 2026-08-24). `|| true` keeps the assignment succeeding so emptiness is handled deliberately, and a LOCKED keyring is named distinctly from a MISSING secret (they need different fixes).
 if [ -z "$TOKEN_KEYSTORE_PASSWORD" ]; then
     if command -v secret-tool >/dev/null; then
-        TOKEN_KEYSTORE_PASSWORD=$(secret-tool lookup service token key keystore_password 2>/dev/null)
+        TOKEN_KEYSTORE_PASSWORD=$(secret-tool lookup service token key keystore_password 2>/dev/null) || true
+        # Distinguish LOCKED (secret exists, keyring sealed) from ABSENT: `search` reports a locked object where `lookup` just returns empty.
+        if [ -z "$TOKEN_KEYSTORE_PASSWORD" ] \
+           && secret-tool search --all service token 2>&1 | grep -qi "locked"; then
+            echo "The login keyring is LOCKED — the keystore password is stored but sealed." >&2
+            echo "Unlock it (any ONE):" >&2
+            echo "  • log into your GUI session (the login keyring auto-unlocks there), or" >&2
+            echo "  • run in a graphical terminal: secret-tool lookup service token key keystore_password  (it will prompt to unlock), or" >&2
+            echo "  • type the password at the prompt below to proceed this once." >&2
+            echo "" >&2
+        fi
     elif command -v security >/dev/null; then
-        TOKEN_KEYSTORE_PASSWORD=$(security find-generic-password -s token -a keystore_password -w 2>/dev/null)
+        TOKEN_KEYSTORE_PASSWORD=$(security find-generic-password -s token -a keystore_password -w 2>/dev/null) || true
     fi
     if [ -z "$TOKEN_KEYSTORE_PASSWORD" ]; then
         echo "Password not in the OS keyring. Run this once to store it:"
@@ -40,10 +51,19 @@ if [ -z "$TOKEN_KEYSTORE_PASSWORD" ]; then
             echo "  security add-generic-password -s token -a keystore_password -w"
         fi
         echo ""
+        # A non-interactive caller (deploy piped/headless) has no TTY to read from — fail LOUDLY rather than export an empty password that gradle rejects 200 lines later with an inscrutable error.
+        if [ ! -t 0 ]; then
+            echo "ERROR: no keystore password and no TTY to prompt — aborting the signed build." >&2
+            return 1 2>/dev/null || exit 1
+        fi
         echo -n "Keystore password: "
         read -s TOKEN_KEYSTORE_PASSWORD
         echo ""
     fi
+fi
+if [ -z "$TOKEN_KEYSTORE_PASSWORD" ]; then
+    echo "ERROR: keystore password is empty — refusing to build an unsigned/wrongly-signed APK." >&2
+    return 1 2>/dev/null || exit 1
 fi
 export TOKEN_KEYSTORE_PASSWORD
 export TOKEN_KEYSTORE_PATH="$KEYSTORE_PATH"
