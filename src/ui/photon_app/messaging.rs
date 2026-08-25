@@ -187,6 +187,8 @@ impl PhotonApp {
             Vec<i64>,
         );
         let done_tx = self.persist_done.0.clone();
+        // The verdict must WAKE the loop, not just queue: on an idle app nothing else pumps events, so a posted verdict sat undrained until an unrelated ping or keystroke — the field's "self-notes stick or take forever to go bright" (2026-08-25). The bridge executor learned this edge first; same law here.
+        let wake = self.event_proxy.clone();
         let tx = self.persist_tx.get_or_insert_with(|| {
             let (tx, rx) = std::sync::mpsc::channel::<PersistItem>();
             std::thread::spawn(move || {
@@ -231,6 +233,9 @@ impl PhotonApp {
                                 rows,
                                 err,
                             });
+                            if let Some(w) = wake.as_ref() {
+                                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                            }
                         }
                     }
                 }
