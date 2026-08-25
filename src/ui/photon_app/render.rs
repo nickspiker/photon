@@ -1374,12 +1374,33 @@ impl PhotonApp {
                 );
             }
 
+            // Auto-attest armed: this box will attest at boot WITHOUT a handle — a standing security posture the operator chose once and must never be allowed to forget (Nick 2026-08-25). Same persistent-band treatment as the degraded/clock indicators, stacked into the same column.
+            if self.unattended_on {
+                let band_h = ready_layout.unit_height * 1.5;
+                let cx = buf_w as f32 * 0.5;
+                let rows_below = if self.vault_degraded { 1.0 } else { 0.0 };
+                let cy = buf_h as f32 - band_h * (0.5 + rows_below);
+                let font_size = band_h * 0.6;
+                ctx.text.draw_text_center(
+                    &mut canvas,
+                    "auto-attest on reboot",
+                    cx,
+                    cy,
+                    &TextStyle::new(font_size, theme::CLOCK_TEXT)
+                        .weight(600)
+                        .font("Oxanium"),
+                    None,
+                    None,
+                );
+            }
+
             // Clock-off indicator: same amber as the degraded banner (nunc-time consensus says the system clock is grossly wrong). Warn only — Photon never corrects the clock. Stacks one band above "storage degraded" when both are showing so they don't overlap.
             if let Some(offset_secs) = self.clock_off {
                 let band_h = ready_layout.unit_height * 1.5;
                 let cx = buf_w as f32 * 0.5;
-                // Sit at the bottom; if the degraded banner is also up, lift this one band higher.
-                let rows_below = if self.vault_degraded { 1.0 } else { 0.0 };
+                // Sit at the bottom, lifted past whichever standing bands are up (storage degraded, auto-attest).
+                let rows_below = (if self.vault_degraded { 1.0 } else { 0.0 })
+                    + (if self.unattended_on { 1.0 } else { 0.0 });
                 let cy = buf_h as f32 - band_h * (0.5 + rows_below);
                 let font_size = band_h * 0.6;
                 // Human-readable magnitude + direction. ahead = system clock reads later than truth.

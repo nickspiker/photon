@@ -1592,6 +1592,8 @@ pub struct PhotonApp {
     unattended_confirm_base: HitId,
     /// Last confirm attempt mismatched — shows a red "handle didn't match" line until the next edit.
     unattended_confirm_failed: bool,
+    /// Auto-attest-on-reboot is armed — cached at construction and moved by the settings toggle, because the truth lives in a device-vault flag and the banner renders every frame (Nick 2026-08-25: a box that attests without a handle must SAY so on screen, always, or the arming gets forgotten).
+    unattended_on: bool,
     /// Desktop resident mode: close hides the window instead of exiting (`FluorApp::on_close_requested`), the process keeps serving the network, and a second launch (or a future tray click) surfaces it via the control channel. True when launched `--background` or when the autostart artifact exists; the settings toggle moves it live.
     resident_mode: bool,
     /// The tray icon exists (once per process — a re-spawn would park a second orb). Set on the resident-at-launch spawn or the first toggle-on; toggle-off leaves the icon until exit (v1 — despawn needs a service handle plumb-thru).
@@ -1722,6 +1724,7 @@ impl PhotonApp {
             unattended_confirm_tb: None,
             unattended_confirm_base: HIT_NONE,
             unattended_confirm_failed: false,
+            unattended_on: Self::unattended_enabled(),
             chrome: None,
             hit_counter: 0,
             event_proxy: None,
