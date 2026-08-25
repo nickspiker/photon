@@ -78,12 +78,16 @@ reload_photon() {
     if photon_alive; then
         echo "Reload: stopping the running $name..."
         photon_signal -TERM
+        # WAIT for the graceful exit — up to 60s, checked frequently, and NEVER a SIGKILL: quit flushes the vault, and a KILL landing mid-flush is exactly the mass-uncommitted-writes state that births the manifestus fence wedge (three specimens in four days once the old 3s TERM→KILL escalation started running nightly — Mac plow 422745 and 1110637, Linux 307312). A photon that won't exit in 60s is news the operator must see, not a process to shoot.
         local i
-        for i in 1 2 3 4 5 6 7 8 9 10; do
+        for i in $(seq 1 200); do
             photon_alive || break
             sleep 0.3
         done
-        photon_signal -KILL
+        if photon_alive; then
+            echo "Reload: ABORTED — $name is still running 60s after TERM (mid-flush or wedged). Not killing it (a KILL mid-flush wedges the vault). Investigate, stop it yourself, then relaunch."
+            return 1
+        fi
     fi
     if [ "$(uname -s)" = "Darwin" ]; then
         open "$HOME/Applications/Photon Messenger.app"
