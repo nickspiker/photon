@@ -148,6 +148,7 @@ fn contact_state_schema() -> SectionSchema {
     SectionSchema::new("contact_state")
         .field("clutch_state", TypeConstraint::AnyUnsigned)
         .field("trust_level", TypeConstraint::AnyUnsigned)
+        .field("consent", TypeConstraint::AnyUnsigned)
         .field("pubkey", TypeConstraint::Ed25519Key)
         .field("added", TypeConstraint::Any) // Eagle Time
         .field("id", TypeConstraint::AnyHash)
@@ -189,6 +190,8 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
         .set("clutch_state", clutch_state_to_u8(contact.clutch_state))
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set("trust_level", trust_level_to_u8(contact.trust_level))
+        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .set("consent", contact.consent_mutual as u8)
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set(
             "pubkey",
@@ -410,6 +413,7 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
 
     contact.clutch_state = u8_to_clutch_state(clutch_u8);
     contact.trust_level = u8_to_trust_level(trust_u8);
+    contact.consent_mutual = section.get_value::<u8>("consent").unwrap_or(1) != 0;
     contact.added = added;
     // The roster LWW clock floors at `added`; the explicit field below (if present) then raises it.
     contact.roster_updated = added;
@@ -1491,6 +1495,61 @@ mod tests {
             ([0x11; 32], vec![0xCD; 64], 2_000)
         );
         assert!(loaded.blind_deposited);
+
+        if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
+            let _ = std::fs::remove_file(primary);
+            let _ = std::fs::remove_file(shadow);
+        }
+    }
+
+    /// Consent gate persistence (2026-08-25): a WeAsked row (consent_mutual=false) survives a vault close/reopen — the gate must hold across restarts — and a PRE-FEATURE row (consent field absent) loads MUTUAL, grandfathering every existing contact.
+    #[test]
+    fn consent_state_round_trips_and_absent_loads_mutual() {
+        use crate::types::HandleText;
+
+        let device_secret = [43u8; 32];
+        let vault_seed = *ihi::handle_to_hash("me-consent-test").as_bytes();
+        crate::storage::isolate_test_storage();
+        let app = crate::storage::APP;
+
+        let mut c = Contact::new(
+            HandleText::new("erin"),
+            [0x88; 32],
+            DevicePubkey::from_bytes([0x30; 32]),
+        );
+        c.consent_mutual = false;
+
+        {
+            let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
+            save_contact_state(&c, &storage).unwrap();
+        }
+
+        let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
+        let identity = ContactIdentity {
+            handle_proof: [0x88; 32],
+            party_id: crate::crypto::clutch::identity_party_id(
+                &crate::types::Handle::to_identity_seed("erin"),
+            ),
+            avatar_pin: [0u8; 64],
+        };
+        let loaded = load_contact_state(&identity, &storage).unwrap();
+        assert!(!loaded.consent_mutual, "the WeAsked gate must survive a restart");
+
+        // Legacy shape: a state section with NO consent field (written before the feature) must read MUTUAL.
+        let legacy = contact_state_schema()
+            .build()
+            .set("clutch_state", 0u8)
+            .unwrap()
+            .encode()
+            .unwrap();
+        let mut fresh = Contact::new(
+            HandleText::new("erin"),
+            [0x88; 32],
+            DevicePubkey::from_bytes([0x30; 32]),
+        );
+        fresh.consent_mutual = false;
+        apply_contact_state(&mut fresh, &legacy).unwrap();
+        assert!(fresh.consent_mutual, "absent consent field = grandfathered mutual");
 
         if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
             let _ = std::fs::remove_file(primary);

@@ -358,6 +358,12 @@ pub enum StatusUpdate {
         active: bool,
         sender_pubkey: DevicePubkey,
     },
+    /// A FRIEND KNOCK (consent gate, 2026-08-25): someone's add-intent, resolvable only by token-match against our own roster. From a row we added = the mutuality edge; from a stranger = unresolvable, dropped un-remembered.
+    FriendKnockReceived {
+        conversation_token: [u8; 32],
+        sender_pubkey: DevicePubkey,
+        sender_addr: std::net::SocketAddr,
+    },
     /// A sibling announcing it holds fleet ATTENTION — the human's newest input is there. Newest osc wins in the drain; both ding gates require holding attention.
     AttentionReceived {
         osc: i64,
@@ -515,6 +521,9 @@ impl StatusUpdate {
             StatusUpdate::CkptRootReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::CkptReqReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FocusClaimReceived { sender_pubkey, .. } => {
+                Some(sender_pubkey.as_bytes())
+            }
+            StatusUpdate::FriendKnockReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
             }
             StatusUpdate::AttentionReceived { sender_pubkey, .. } => {
@@ -2200,6 +2209,27 @@ async fn run_checker(
                                         osc,
                                         active,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            if let Ok((token, sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_friend_knock_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::FriendKnockReceived {
+                                        conversation_token: token,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                        sender_addr: src_addr,
                                     },
                                     &event_proxy_recv,
                                 );

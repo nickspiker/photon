@@ -224,6 +224,7 @@ impl PhotonApp {
                 StatusUpdate::CkptRootReceived { .. } => "CkptRootReceived",
                 StatusUpdate::CkptReqReceived { .. } => "CkptReqReceived",
                 StatusUpdate::FocusClaimReceived { .. } => "FocusClaimReceived",
+                StatusUpdate::FriendKnockReceived { .. } => "FriendKnockReceived",
                 StatusUpdate::AttentionReceived { .. } => "AttentionReceived",
                 StatusUpdate::CkptStateReceived { .. } => "CkptStateReceived",
                 StatusUpdate::AttachBlobReceived { .. } => "AttachBlobReceived",
@@ -284,6 +285,9 @@ impl PhotonApp {
             usize,
             Vec<(i64, String, Option<(crate::types::RefKind, i64)>)>,
         )> = Vec::new();
+        // Consent gate (2026-08-25): knocks to fire and the roster ride for a Mutual flip — both need &mut self, so they wait out the drain like the jobs above.
+        let mut knock_after: Vec<crate::types::ContactId> = Vec::new();
+        let mut consent_roster_push = false;
         loop {
             // TIME BUDGET — the UI thread's stall is bounded whatever the storm size: past 250ms the rest of the backlog waits for the next tick (the channel holds it; un-replayed synthetic frames go back on chat_replay_queue below, order preserved). Unbounded, a churny catch-up pass measured 1.8s on the desktop — taps landed but nothing painted until the drain yielded (2026-08-11).
             if pass_start.elapsed().as_millis() > 250 {
@@ -767,8 +771,17 @@ impl PhotonApp {
                                 contact.clutch_offer_sent = false;
                             }
 
+                            // THE CONSENT GATE at the wire (2026-08-25): no offer — no key material at all — leaves toward a contact who hasn't added us back. The knock travels instead, fired post-drain (the presence edge is the once-per-session re-knock trigger).
+                            if is_online
+                                && !contact.consent_mutual
+                                && !contact.is_sibling
+                                && !contact.knocked_session
+                            {
+                                knock_after.push(contact.id.clone());
+                            }
                             // Send full offer when contact comes online and keys are ready Keys are pre-generated in background when contact is added Slot-based: send if Pending, have keypairs, haven't sent yet Note: ceremony_id is now computed AFTER offers are exchanged
                             if is_online
+                                && contact.consent_mutual
                                 && contact.clutch_state == ClutchState::Pending
                                 && !contact.clutch_offer_sent
                                 && !ceremony_parked_by(contact, our_device_pk, &siblings)
@@ -1498,6 +1511,24 @@ impl PhotonApp {
                             hex::encode(&self.contacts[matched_ci].public_identity.key[..4])
                         );
                         continue;
+                    }
+
+                    // OFFER AS MUTUALITY EVIDENCE (consent gate, 2026-08-25): an old client never knocks — its opening move is still the full offer. A token-matched, trust-gated offer proves the sender holds both party ids, exactly what the knock proves, so it flips a WeAsked row Mutual (persist + roster ride) before normal processing arms the ceremony.
+                    if !self.contacts[matched_ci].consent_mutual {
+                        self.contacts[matched_ci].consent_mutual = true;
+                        crate::logf!(
+                            "CONSENT: mutual add confirmed with {} via their offer — arming the ceremony",
+                            crate::fp(&self.contacts[matched_ci].handle_proof)
+                        );
+                        if let Some(storage) = self.storage.as_ref() {
+                            let snapshot = self.contacts[matched_ci].clone();
+                            if let Err(e) =
+                                crate::storage::contacts::save_contact(&snapshot, storage)
+                            {
+                                crate::logf!("CONSENT: contact save failed: {}", e);
+                            }
+                        }
+                        consent_roster_push = true;
                     }
 
                     // The payload is already parsed
@@ -3136,6 +3167,58 @@ impl PhotonApp {
                     );
                 }
 
+                StatusUpdate::FriendKnockReceived {
+                    conversation_token,
+                    sender_pubkey,
+                    sender_addr,
+                } => {
+                    // THE MUTUALITY EDGE (consent gate, 2026-08-25): a knock resolvable against OUR roster means the knocker is someone WE added — both humans have now entered each other's handles, and the ceremony may finally arm. An unmatched token is a stranger: drop silently, remember nothing (they get no storage, no reply, no evidence they were heard). The knock's whole job ends here; the ceremony pipeline from keygen onward is unchanged.
+                    let our_pid = self.session.as_ref().map(|s| {
+                        crate::crypto::clutch::identity_party_id(&s.identity_seed)
+                    });
+                    let matched = our_pid.and_then(|us| {
+                        self.contacts.iter().position(|c| {
+                            !c.is_sibling
+                                && crate::crypto::clutch::derive_conversation_token(&[
+                                    us,
+                                    c.handle_hash,
+                                ]) == conversation_token
+                        })
+                    });
+                    let Some(ci) = matched else {
+                        continue; // stranger's knock: unresolvable by construction — silence
+                    };
+                    if !self.sender_trusted_for(&self.contacts[ci], &sender_pubkey.key) {
+                        continue; // matched row but an unknown/refused device — same silence
+                    }
+                    let _ = sender_addr;
+                    if !self.contacts[ci].consent_mutual {
+                        self.contacts[ci].consent_mutual = true;
+                        crate::logf!(
+                            "CONSENT: mutual add confirmed with {} — arming the ceremony",
+                            crate::fp(&self.contacts[ci].handle_proof)
+                        );
+                        let id = self.contacts[ci].id.clone();
+                        let (Some(us), them) = (our_pid, self.contacts[ci].handle_hash) else {
+                            continue;
+                        };
+                        if self.contacts[ci].clutch_our_keypairs.is_none()
+                            && !self.contacts[ci].clutch_keygen_in_progress
+                        {
+                            self.contacts[ci].clutch_keygen_in_progress = true;
+                            self.spawn_clutch_keygen(id, us, them);
+                        }
+                        if let Some(storage) = self.storage.as_ref() {
+                            let snapshot = self.contacts[ci].clone();
+                            if let Err(e) =
+                                crate::storage::contacts::save_contact(&snapshot, storage)
+                            {
+                                crate::logf!("CONSENT: contact save failed: {}", e);
+                            }
+                        }
+                        consent_roster_push = true;
+                    }
+                }
                 // A sibling's active-clearer claim/retraction (notification design 2026-07-23): newest osc wins, so a device the user just sat down at displaces the old holder; a retraction only clears the claim it matches. Fold-trust gated like every sibling frame.
                 StatusUpdate::FocusClaimReceived {
                     conversation_token,
@@ -4128,6 +4211,16 @@ impl PhotonApp {
                     crate::fp(&self.contacts[ci].handle_proof)
                 );
             }
+        }
+
+        // Consent knocks collected on pong edges (after releasing the checker borrow), plus the roster ride for any Mutual flip this drain confirmed — siblings learn the flip so whichever device is in hand completes the handshake.
+        for id in knock_after {
+            if let Some(ci) = self.contacts.iter().position(|c| c.id == id) {
+                self.send_friend_knock(ci);
+            }
+        }
+        if consent_roster_push {
+            self.spawn_roster_push();
         }
 
         // Parked-ceremony offer re-fires collected on path-up edges (after releasing the checker borrow).
