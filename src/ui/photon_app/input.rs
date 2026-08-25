@@ -859,12 +859,164 @@ impl PhotonApp {
         self.probed_handle = None;
         self.active_conversation = None;
         self.ready_toast = None;
+        // THE RESURRECTION CLASS (field 2026-08-25, Android): the wipe deleted the vault and the FGTW backup, then the un-cleared RAM re-persisted everything — `conversations` still held every message row (a stuck un-ACK'd note came back with its attempt counter intact) and the next roster push re-uploaded the roster the wipe had just deleted. Android never re-execs, so this in-place list IS the wipe: every identity-flavoured slot below must die or the identity survives.
+        self.conversations.clear();
+        self.chat_replay_queue.clear();
+        self.pending_chain_sends.clear();
+        self.send_encrypt_busy.clear();
+        if let Ok(mut sr) = self.sync_records.lock() {
+            sr.clear(); // pong testimony of the OLD identity's rows
+        }
+        self.lane_rearm_cycles.clear();
+        self.lane_reserve_bursts.clear();
+        self.chain_pushed_osc.clear();
+        self.lane_pushed_pos.clear();
+        self.hist_rid_map.clear();
+        self.history_serve.clear();
+        self.blind_flip.clear();
+        self.attach_progress.clear();
+        self.attach_confirmed.clear();
+        // Conversation view + drafts: a composed draft is identity content too.
+        self.msg_hit_rows.clear();
+        self.selected_msg = None;
+        self.pending_delete = None;
+        self.compose_reply_to = None;
+        self.compose_edit_of = None;
+        self.compose_react_to = None;
+        self.msg_wrap = None;
+        if let Some(tb) = self.message_textbox.as_mut() {
+            tb.clear();
+        }
+        if let Some(tb) = self.contacts_textbox.as_mut() {
+            tb.clear();
+        }
+        self.search_status = None;
+        self.you_fields.clear();
+        self.you_fields_loaded = false;
+        // Avatar/orb caches beyond the device-avatar slots already cleared below.
+        self.avatar_dl_started.clear();
+        self.avatar_req_pending.clear();
+        self.avatar_probe_cache.clear();
+        self.egged_cache.clear();
+        self.orb_contact = None;
+        self.orb_key = None;
+        self.orb_had_avatar = false;
+        // Fleet plane: epochs, claims, spine machinery, roster cycle — all keyed to the old fleet.
+        self.fleet_epoch = None;
+        self.fleet_epoch_prev = None;
+        self.fleet_focus_claim = None;
+        self.fleet_attention = None;
+        self.ckpt_mint_due = false;
+        self.ckpt_spineless_holds = 0;
+        self.ckpt_rows_base = None;
+        self.ckpt_busy = false;
+        self.ckpt_rx = None;
+        self.ckpt_loaded = false;
+        self.ckpt_last_attempt = None;
+        self.roster_pull_rx = None;
+        self.roster_push_rx = None;
+        self.roster_push_queued = false;
+        self.needs_initial_roster_pull = true;
+        self.roster_pull_parked_under = None;
+        self.roster_pull_exhausted = false;
+        self.fleet_retired.clear();
+        self.fleet_release_armed = None;
+        self.fleet_lock_armed = None;
+        self.fleet_unlock_armed = None;
+        self.pending_unlock = None;
+        self.pending_lock = None;
+        self.settings_fleet_selected = None;
+        self.successor_inflight.clear();
+        self.scoped_regrant_pending.clear();
+        self.self_avatar_recover_pending = None;
+        self.fanout_grow_pending = false;
+        self.keygen_fleet_gate_holding = false;
+        self.seed_identity_count = 0;
+        self.published_bell = None;
+        // Peer registry: the old identity's mirrored phonebook slice.
+        if let Some(ps) = self.peer_store.as_ref() {
+            if let Ok(mut store) = ps.lock() {
+                *store = crate::network::fgtw::PeerStore::new();
+            }
+        }
+        self.peer_store_loaded = false;
+        self.peer_store_persisted_len = 0;
+        self.registry_converged_fold.clear();
+        self.self_record_published_for = None;
+        // Live call dies with the identity.
+        self.active_call = None;
+        // Bridge: locus/interrupt client state everywhere; host-side maps where the shell host exists.
+        self.bridge_locus = None;
+        self.bridge_int = None;
+        #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+        {
+            if let Some(p) = self.bridge_partials.as_ref() {
+                if let Ok(mut m) = p.lock() {
+                    m.clear();
+                }
+            }
+            if let Some(f) = self.bridge_fg.as_ref() {
+                if let Ok(mut m) = f.lock() {
+                    m.clear();
+                }
+            }
+        }
+        // Pairing/join machinery: stop flags signalled, channels dropped, candidates gone.
+        if let Some(stop) = self.add_device_stop.take() {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(stop) = self.add_stop.take() {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.add_device_status.clear();
+        self.add_device_candidates.clear();
+        self.add_device_bound = None;
+        self.add_device_wordcheck_text.clear();
+        self.add_device_typo = None;
+        self.add_device_checking = false;
+        self.beacon_scan_active = false;
+        self.add_device_rx = None;
+        self.add_device_tx = None;
+        self.lan_heard.clear();
+        self.add_join_status.clear();
+        self.add_join_words = None;
+        self.add_join_rx = None;
+        self.add_join_handle = None;
+        self.launch_add_mode = false;
+        self.add_in_flight = false;
+        self.joiner_selected = false;
+        // Drain every worker-result channel: an in-flight result of the OLD identity (a keygen completing, a decrypted row, a durable verdict) must not land in the NEW session.
+        while self.clutch_keygen_rx.try_recv().is_ok() {}
+        while self.clutch_kem_encap_rx.try_recv().is_ok() {}
+        while self.clutch_ceremony_rx.try_recv().is_ok() {}
+        while self.clutch_kem_decap_rx.try_recv().is_ok() {}
+        while self.avatar_dl_rx.try_recv().is_ok() {}
+        while self.attach_installed_rx.try_recv().is_ok() {}
+        while self.hist_opened_rx.try_recv().is_ok() {}
+        while self.chain_sync_opened_rx.try_recv().is_ok() {}
+        while self.braid_rx_rx.try_recv().is_ok() {}
+        while self.braid_tx_rx.try_recv().is_ok() {}
+        while self.persist_done.1.try_recv().is_ok() {}
+        while self.fleet_rotated_rx.try_recv().is_ok() {}
+        while self.inbox_check_rx.try_recv().is_ok() {}
+        if let Some(rx) = self.contact_members_rx.as_ref() {
+            while rx.try_recv().is_ok() {}
+        }
+        if let Some(rx) = self.successor_rx.as_ref() {
+            while rx.try_recv().is_ok() {}
+        }
+        if let Some(rx) = self.fleet_evt_rx.as_ref() {
+            while rx.try_recv().is_ok() {}
+        }
+        self.pb_resolve_rx = None;
+        self.pb_resolve_cursor = 0;
         self.diag_log_close();
         crate::network::status::set_profile_name(""); // pong slots: empty/zero = omitted
         crate::network::status::set_avatar_pin(&[0u8; 64]);
         self.pending_broadcast_signal = -1; // Android: drop the sticky session broadcast
         self.state = AppState::Launch(LaunchState::Fresh);
-        self.refocus_handle_select_all();
+        // A wipe is the ultimate re-proof teardown: a retained handle turned "attest fresh" into "press the button" (field 2026-08-25 — Shred left the handle sitting in the attest field).
+        self.clear_handle_for_reproof();
         crate::storage::device_binding::clear();
         crate::logf!("CLEAN: wiped {} vault file(s) + cleared session — device is a blank slate, ready to attest fresh or join another fleet", count);
         // Full process restart (desktop): the in-place reset leaves launch half-initialized (the wordmark went missing after a shred) and a wiped process still holds freed secrets in reachable memory anyway — exec into a pristine self via the same machinery a self-update uses. Android can't exec; its in-place reset stands.

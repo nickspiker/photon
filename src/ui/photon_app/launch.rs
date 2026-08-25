@@ -108,6 +108,10 @@ impl PhotonApp {
                 }
             }
             QueryResult::Success(data) => {
+                // The handle string's job ends at the proof: clear the widget buffer NOW so the secret can't linger a whole session and re-surface on any later drop back to the attest screen (the Shred field case — but this kills the CLASS, not the one path). Every teardown asks for a re-type by design.
+                if let Some(tb) = self.textbox.as_mut() {
+                    tb.clear();
+                }
                 if let Some(hq) = self.handle_query.as_ref() {
                     hq.set_handle_proof(data.handle_proof);
                 }
