@@ -290,6 +290,13 @@ echo ""
 echo "Linux ARM64, Linux x86_64, Windows x86_64, Windows ARM64, Redox, macOS Intel, macOS ARM64, Android binaries + manifest deployed to R2"
 echo "  Windows SHA256: $WINDOWS_SHA256"
 
+# R2 is fully live — the release is public and its commit (made up top, before the builds) is now PERMANENT.
+# Push it and disarm the rollback traps HERE, not 30 lines lower. Two reasons this can't wait:
+#   1. The GitHub v<n> tag below must anchor to THIS commit — gh can only --target a commit the remote already has, so the push has to happen before the mirror.
+#   2. Every step below (GitHub mirror, website, release notice, dev-line-open) is best-effort past a shipped release; a hiccup there must NEVER `git reset` a commit whose binaries are already public. Leaving the traps armed past R2-live meant a website-deploy failure would roll back a shipped release's version bump, and a Ctrl-C would too.
+git push
+trap - ERR INT TERM
+
 # Mirror the identical signed artefacts to a GitHub Release `v<n>` (redundant fallback behind R2).
 # Same bytes as R2 — never rebuild per-destination — so the Windows SHA256 patched above holds everywhere.
 # BEST-EFFORT: by this point the release is fully live on R2, so a GitHub hiccup (uploads.github.com 502s are routine; one aborted the whole v39 deploy here, 2026-07-19 — stranding the website update, release notice, and dev-line-open behind an already-shipped release) warns loudly and moves on, never aborts.
@@ -299,7 +306,7 @@ mirror() {
 }
 echo ""
 echo "Mirroring release to GitHub ($GH_TAG)..."
-if ensure_release "$GH_TAG" false; then
+if ensure_release "$GH_TAG" false "$COMMIT"; then
     mirror "photon-messenger-linux-x86_64-release"  target/release/photon-messenger
     mirror "photon-messenger-linux-arm64-release"   target/aarch64-unknown-linux-gnu/release/photon-messenger
     mirror "photon-messenger-windows-release.exe"   target/x86_64-pc-windows-gnu/release/photon-messenger.exe
@@ -324,8 +331,7 @@ echo ""
 echo "Deploying website..."
 (cd /mnt/Chiton/MEGA/holdmyoscilloscope && ./deploy.sh)
 
-# Everything succeeded — release v$SHIP_VERSION ($FULL_VERSION) is public and its commit (made up top, before the builds) is now permanent: disarm the rollback (the Ctrl-C one too — an interrupt past this point must NOT undo a published release's commit).
-trap - ERR INT TERM
+# Rollback traps were already disarmed right after R2 went live (above), where the release became permanent.
 
 # Ring the release notice: the worker broadcasts "release" over the WS hub (every RUNNING client polls the signed manifest now instead of at its 6-8h cadence) and fires the FCM `updates` topic
 # (wakes dozed Android subscribers). Advisory only — what installs is still gated by the manifest signature + stamp window — so best-effort: a failed curl just leaves everyone on the slow cadence.
