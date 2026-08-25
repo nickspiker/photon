@@ -440,12 +440,10 @@ impl PhotonApp {
                 if is_self {
                     contact.clutch_state = crate::types::ClutchState::Complete;
                 }
-                let contact_id = contact.id.clone();
-                let their_handle_hash = contact.handle_hash;
                 let their_handle_proof = contact.handle_proof;
-                // Mark keygen in flight BEFORE spawning (race guard) for non-self contacts.
+                // THE CONSENT GATE (2026-08-25): adding is a LOCAL act awaiting reciprocation — no keygen, no 548KB offer, no key material toward someone who hasn't added us back. A few-hundred-byte KNOCK announces the intent; the ceremony arms only on the mutuality edge (their knock or offer token-matching this row). Self stays immediate (consent with yourself is a given).
                 if !is_self {
-                    contact.clutch_keygen_in_progress = true;
+                    contact.consent_mutual = false;
                 }
                 crate::logf!(
                     "search-result: added contact '{}' (total: {})",
@@ -453,16 +451,12 @@ impl PhotonApp {
                     self.contacts.len() + 1
                 );
                 self.contacts.push(contact);
-                // Register the new contact (and its fleet, once refreshed) so the checker answers pings/offers from any of its devices, and kick CLUTCH keypair generation so the contact becomes offer-ready when it comes online.
+                // Register the new contact (and its fleet, once refreshed) so the checker answers pings/knocks/offers from any of its devices — receiving from someone WE added is always legitimate.
                 self.reseed_contact_pubkeys();
                 self.spawn_contact_fleet_refresh(vec![their_handle_proof]);
                 if !is_self {
-                    let our_handle_hash = self
-                        .session
-                        .as_ref()
-                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
-                        .unwrap_or([0u8; 32]);
-                    self.spawn_clutch_keygen(contact_id, our_handle_hash, their_handle_hash);
+                    let ci = self.contacts.len() - 1;
+                    self.send_friend_knock(ci);
                 }
                 if let Some(storage) = self.storage.as_ref() {
                     if let Some(c) = self.contacts.last() {

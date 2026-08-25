@@ -359,6 +359,10 @@ pub struct Contact {
     pub offer_provenances: Vec<[u8; 32]>,
 
     pub trust_level: TrustLevel,
+    /// THE CONSENT GATE (2026-08-25): false = we added them and await their reciprocal add — the ceremony must NOT arm and no key material leaves this fleet toward them. Flips true on the mutuality edge (their knock/offer token-matching our roster). ABSENT AT REST = TRUE: every pre-feature row — the whole existing fleet and friend set — is grandfathered mutual, so shipping this changes nothing for anyone already connected.
+    pub consent_mutual: bool,
+    /// Runtime only: a knock went out this session — the decay that keeps an unreciprocated add from pinging a stranger on every presence edge forever. Resets each launch (deliberately un-persisted): one knock per session per pending add.
+    pub knocked_session: bool,
     pub added: i64,
     /// Roster LWW clock: eagle time of the last change to this contact's SYNCED identity fields (published_name / avatar_pin). The fleet roster entry carries it as `updated`; a pulled entry newer than this overwrites those fields, an older one loses. Starts equal to `added`.
     pub roster_updated: i64,
@@ -524,6 +528,9 @@ impl Contact {
             completed_their_hqc_prefix: None,   // Set when CLUTCH completes, persisted
             offer_provenances: Vec::new(),      // Collected offer provenances for ceremony nonce
             trust_level: TrustLevel::Stranger,
+            // Reconstruct/materialize paths default MUTUAL (legacy grandfathering + sibling stubs, which §4.2 parking already keeps from racing the owner); the ONE local-add site flips this false explicitly.
+            consent_mutual: true,
+            knocked_session: false,
             added: vsf::eagle_time_oscillations(),
             roster_updated: vsf::eagle_time_oscillations(),
             ceremony_owner: None,

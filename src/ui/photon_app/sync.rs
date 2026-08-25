@@ -564,6 +564,64 @@ impl PhotonApp {
         }
     }
 
+    /// Send the consent KNOCK at a contact we added (2026-08-25): the few-hundred-byte signed intent frame that replaced the 548KB offer as the opening move — no key material travels until the add is reciprocated. Direct + relay like every small ceremony frame; loss is covered by the once-per-session re-knock on presence edges and, ultimately, by the peer's own add (the later adder initiates).
+    pub(super) fn send_friend_knock(&mut self, ci: usize) {
+        let (token, primary, alt, recipient, relay) = {
+            let Some(contact) = self.contacts.get(ci) else {
+                return;
+            };
+            if contact.consent_mutual || contact.is_sibling || contact.knocked_session {
+                return;
+            }
+            let Some(us) = self
+                .session
+                .as_ref()
+                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+            else {
+                return;
+            };
+            let token =
+                crate::crypto::clutch::derive_conversation_token(&[us, contact.handle_hash]);
+            // No address is no reason to hold: with no validated path the send fans out over relay_to, same as the offer re-fire below.
+            let primary = contact.ip.unwrap_or(crate::network::status::RELAY_ADDR);
+            let alt = match (contact.local_ip, contact.local_port) {
+                (Some(lan), Some(port)) => Some(std::net::SocketAddr::from((lan, port))),
+                _ => None,
+            };
+            (token, primary, alt, contact.public_identity.key, contact.relay_device_list())
+        };
+        let Some(kp) = self.device_keypair.as_ref() else {
+            return;
+        };
+        let device_pubkey = *kp.public.as_bytes();
+        let device_secret = *kp.secret.as_bytes();
+        match crate::network::fgtw::protocol::build_friend_knock_vsf(
+            &token,
+            &device_pubkey,
+            &device_secret,
+        ) {
+            Ok(bytes) => {
+                if let Some(checker) = self.status_checker.as_ref() {
+                    checker.send_history(crate::network::status::HistorySendRequest {
+                        peer_addr: primary,
+                        alt_addr: alt,
+                        recipient_pubkey: recipient,
+                        vsf_bytes: bytes,
+                        relay_to: relay,
+                    });
+                    if let Some(c) = self.contacts.get_mut(ci) {
+                        c.knocked_session = true;
+                        crate::logf!(
+                            "CONSENT: knock sent to {} — ceremony waits for their add",
+                            crate::fp(&c.handle_proof)
+                        );
+                    }
+                }
+            }
+            Err(e) => crate::logf!("CONSENT: knock build failed: {}", e),
+        }
+    }
+
     /// Re-fire our full CLUTCH offer to `self.contacts[idx]`, outside the pong-driven send block. The normal driver re-sends only when a pong flips the contact online — useless when the peer's pongs don't flow (observed: presence sat TIMEOUT for twenty minutes while punch keepalives validated a perfectly good direct path, and the ceremony stayed parked in Pending because the offer's single PT transfer had died racing a dead carrier-NAT address). `race_addrs` routes the re-send over the validated path first; the receiver's ceremony-round scoping makes a crossed duplicate free. Callers reset `clutch_offer_sent` first — this sets it back on a successful hand-off to the checker.
     pub(super) fn resend_clutch_offer(&mut self, idx: usize) {
         use crate::network::fgtw::protocol::build_clutch_offer_vsf;

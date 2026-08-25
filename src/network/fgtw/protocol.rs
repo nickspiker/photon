@@ -2200,6 +2200,39 @@ pub struct HistoryRequestPayload {
 }
 
 /// Build a signed `hist_req` frame (~200 bytes).
+/// Build a FRIEND KNOCK — the consent gate's opening move (2026-08-25): a few-hundred-byte signed "my add-intent exists", sent instead of the 548KB CLUTCH offer (eight KEM pubkeys — key material strangers must never receive). The token is the whole identity claim: only someone holding both party ids can mint it, so a recipient resolves the knocker by token-match against their own roster exactly like an offer — and a stranger's knock is unresolvable BY CONSTRUCTION, dropped un-remembered. Mutuality is discovered when a knock arrives from someone WE already added; the ceremony arms only then.
+pub fn build_friend_knock_vsf(
+    conversation_token: &[u8; 32],
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+    let mut section = VsfSection::new("friend_knock");
+    section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build friend_knock VSF: {}", e))?;
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse + verify a `friend_knock`. Returns (conversation token, sender device pubkey). The caller authorizes by token-matching its OWN roster — signature validity alone is NOT authorization, and an unmatched token is a stranger to drop silently.
+pub fn parse_friend_knock_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("friend_knock verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "friend_knock" {
+        return Err(format!("Expected 'friend_knock' section, got '{}'", section_name));
+    }
+    let token = field_hash32(&section.fields, "tok", |v| matches!(v, VsfType::hg(_)))
+        .ok_or("friend_knock missing tok")?;
+    Ok((token, sender_pubkey))
+}
+
 pub fn build_history_request_vsf(
     conversation_token: &[u8; 32],
     before_osc: i64,
@@ -3163,6 +3196,28 @@ mod history_frame_tests {
         assert_eq!(payload.before_osc, i64::MAX);
         assert_eq!(payload.limit, 50);
         assert!(payload.sent_osc > 0);
+    }
+
+    /// The consent knock: token + signer round-trip verified, and the frame stays a few hundred bytes — the whole point is that this travels where the 548KB offer no longer may.
+    #[test]
+    fn friend_knock_round_trips_and_stays_small() {
+        let (pubkey, secret) = keypair(11);
+        let tok = [0xC3u8; 32];
+        let bytes = build_friend_knock_vsf(&tok, &pubkey, &secret).unwrap();
+        assert!(bytes.len() < 1024, "knock must stay tiny, got {} bytes", bytes.len());
+        let (token, signer) = parse_friend_knock_vsf(&bytes).unwrap();
+        assert_eq!(token, tok);
+        assert_eq!(signer, pubkey);
+    }
+
+    /// A flipped payload byte must fail verification — an unsigned or tampered knock never reaches the token-match.
+    #[test]
+    fn friend_knock_tamper_rejected() {
+        let (pubkey, secret) = keypair(13);
+        let mut bytes = build_friend_knock_vsf(&[0xD4u8; 32], &pubkey, &secret).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x01;
+        assert!(parse_friend_knock_vsf(&bytes).is_err());
     }
 
     #[test]
