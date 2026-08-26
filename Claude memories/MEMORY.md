@@ -146,3 +146,4 @@
 - [settings.md](settings.md) — Nick's note: naive fixed-width unlabeled settings converted to proper VSF (the fstate v7 arc)
 - [project_voice_calls.md](project_voice_calls.md) — calls FIELD-WORKING 2026-08-19 (two-way clean): channel-aware CBR ladder 16k→128k (tier byte, AIMD, VBR permanently banned), soft duck, MEDIA fast-mixer out (vendor AEC traded), adaptive jitter; docs/calls.md
 - [project_xchacha_migration.md](project_xchacha_migration.md) — 2026-08-18 stack-wide ChaCha20→XChaCha20-Poly1305 (96→192-bit nonce) EVERYWHERE incl. chain stream layer
+- [feedback-one-build-per-check.md](feedback-one-build-per-check.md) — NEVER run dev.sh twice to read one build: capture once to scratchpad, grep the capture (battery + heat + double relaunch)
