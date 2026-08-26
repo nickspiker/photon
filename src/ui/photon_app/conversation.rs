@@ -946,7 +946,7 @@ impl PhotonApp {
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
         let mut bridge_run: Option<(usize, String, i64)> = None;
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-        let mut bridge_ctl: Option<(usize, u64)> = None;
+        let mut bridge_ctl: Option<(usize, u64, i64)> = None;
         let mut conv_state_pos: Option<usize> = None;
         let mut replays: Vec<crate::network::status::StatusUpdate> = Vec::new();
         let mut need_sync = false;
@@ -1359,10 +1359,11 @@ impl PhotonApp {
                 let bridge_reset = contact_is_sibling
                     && matches!(wire_reference, Some((crate::types::RefKind::BridgeReset, _)));
                 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-                let bridge_sig: Option<u64> = if contact_is_sibling
-                    && matches!(wire_reference, Some((crate::types::RefKind::BridgeCtl, _)))
+                let bridge_sig: Option<(u64, i64)> = if let (true, Some((crate::types::RefKind::BridgeCtl, t))) =
+                    (contact_is_sibling, wire_reference)
                 {
-                    Some(bridge_wire.as_ref().and_then(|b| b.sig).unwrap_or(2))
+                    // Carry the ctl's TARGET too: an interrupt that finds nothing in flight must still ANSWER (the operator pressed Stop and deserves a verdict either way — field 2026-08-26, "not sure it stopped and no way to tell").
+                    Some((bridge_wire.as_ref().and_then(|b| b.sig).unwrap_or(2), t))
                 } else {
                     None
                 };
@@ -1470,41 +1471,45 @@ impl PhotonApp {
                 // BRIDGE client half (2026-08-23): streamed output REPLACES its row in place — one bubble per command, newest snapshot wins by seq — and every frame's typed locus feeds the strip above the compose box. A stale/duplicate partial is swallowed (never a second bubble); the final stamps the exit code, which ends the in-flight state and resets the Stop escalation.
                 let mut bridge_replaced = false;
                 if contact_is_sibling {
-                    if let (Some((crate::types::RefKind::BridgeOut, t)), Some(bw)) =
-                        (wire_reference, bridge_wire.as_ref())
-                    {
-                        if bw.host.is_some() || bw.cwd.is_some() {
-                            if let Some(dev) =
-                                self.contacts.get(contact_idx).map(|c| c.public_identity.key)
-                            {
-                                self.bridge_locus = Some((
-                                    dev,
-                                    bw.host.clone().unwrap_or_default(),
-                                    bw.cwd.clone().unwrap_or_default(),
-                                ));
+                    if let Some((crate::types::RefKind::BridgeOut, t)) = wire_reference {
+                        if let Some(bw) = bridge_wire.as_ref() {
+                            if bw.host.is_some() || bw.cwd.is_some() {
+                                if let Some(dev) =
+                                    self.contacts.get(contact_idx).map(|c| c.public_identity.key)
+                                {
+                                    self.bridge_locus = Some((
+                                        dev,
+                                        bw.host.clone().unwrap_or_default(),
+                                        bw.cwd.clone().unwrap_or_default(),
+                                    ));
+                                }
                             }
                         }
-                        if let Some(seq) = bw.seq {
-                            if let Some(row) = conv.messages.iter_mut().find(|m| {
-                                !m.is_outgoing
-                                    && m.reference
-                                        == Some((crate::types::RefKind::BridgeOut, t))
-                            }) {
-                                if seq > row.bridge_seq {
-                                    row.content = msg.content.clone();
-                                    row.bridge_seq = seq;
-                                    row.bridge_exit = bw.exit;
+                        // ONE bubble per command, keyed by the TYPED reference alone — never by the wire extras. The host's lane-rotation re-serve rebuilds frames without the BridgeWire (chain_transmit(.., None)), and the old seq-required gate let exactly those rebuilds fall through to insert_message_sorted: the duplicate full-output bubble of field 2026-08-26 (git pull arrived twice). Any inbound row targeting t now lands on t's row or is swallowed; a missing seq is treated as a final-ish snapshot that may fill an unfinished row but never regress a finished one.
+                        let seq = bridge_wire.as_ref().and_then(|b| b.seq);
+                        let exit = bridge_wire.as_ref().and_then(|b| b.exit);
+                        if let Some(row) = conv.messages.iter_mut().find(|m| {
+                            !m.is_outgoing
+                                && m.reference == Some((crate::types::RefKind::BridgeOut, t))
+                        }) {
+                            let newer = match seq {
+                                Some(s) => s > row.bridge_seq,
+                                None => row.bridge_exit.is_none(),
+                            };
+                            if newer {
+                                row.content = msg.content.clone();
+                                if let Some(s) = seq {
+                                    row.bridge_seq = s;
                                 }
-                                bridge_replaced = true;
-                            } else {
-                                msg.bridge_seq = seq;
-                                msg.bridge_exit = bw.exit;
+                                row.bridge_exit = exit.or(row.bridge_exit);
                             }
-                            if bw.exit.is_some()
-                                && self.bridge_int.map_or(false, |(t0, _)| t0 == t)
-                            {
-                                self.bridge_int = None;
-                            }
+                            bridge_replaced = true;
+                        } else {
+                            msg.bridge_seq = seq.unwrap_or(0);
+                            msg.bridge_exit = exit;
+                        }
+                        if exit.is_some() && self.bridge_int.map_or(false, |(t0, _)| t0 == t) {
+                            self.bridge_int = None;
                         }
                     }
                 }
@@ -1520,8 +1525,8 @@ impl PhotonApp {
                 if is_new_row {
                     if bridge_reset {
                         bridge_run = Some((contact_idx, String::new(), 0)); // sentinel: empty cmd = reset (handled at the drain site)
-                    } else if let Some(sig) = bridge_sig {
-                        bridge_ctl = Some((contact_idx, sig));
+                    } else if let Some((sig, t)) = bridge_sig {
+                        bridge_ctl = Some((contact_idx, sig, t));
                     } else if let Some(cmd) = bridge_cmd_candidate {
                         bridge_run = Some((contact_idx, cmd, msg.timestamp));
                     }
@@ -1654,8 +1659,8 @@ impl PhotonApp {
             }
         }
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-        if let Some((ci, sig)) = bridge_ctl {
-            self.bridge_interrupt_host(ci, sig);
+        if let Some((ci, sig, t)) = bridge_ctl {
+            self.bridge_interrupt_host(ci, sig, t);
         }
     }
 
