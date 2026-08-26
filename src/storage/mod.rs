@@ -76,6 +76,11 @@ pub fn device_vault() -> Option<std::sync::Arc<FlatStorage>> {
     }
     match FlatStorage::open_device_shared(APP, secret) {
         Ok(v) => {
+            // A repair-open that pruned values booted the vault but LOST data — the banner must say so even though the open "succeeded".
+            if v.repaired_lost_values() > 0 {
+                crate::logf!("STORAGE: device vault opened via repair — {} value(s) lost to pruned dangling pointers", v.repaired_lost_values());
+                flag_vault_sick();
+            }
             census_sweep(&secret);
             *g = Some((secret, v.clone()));
             Some(v)
