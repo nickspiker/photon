@@ -1366,7 +1366,7 @@ impl PhotonApp {
                     "storage degraded",
                     cx,
                     cy,
-                    &TextStyle::new(font_size, theme::DEGRADED_TEXT)
+                    &TextStyle::new(font_size, *theme::DEGRADED_TEXT)
                         .weight(600)
                         .font("Oxanium"),
                     None,
@@ -1386,7 +1386,7 @@ impl PhotonApp {
                     "auto-attest on reboot",
                     cx,
                     cy,
-                    &TextStyle::new(font_size, theme::CLOCK_TEXT)
+                    &TextStyle::new(font_size, *theme::CLOCK_TEXT)
                         .weight(600)
                         .font("Oxanium"),
                     None,
@@ -1419,7 +1419,7 @@ impl PhotonApp {
                     &label,
                     cx,
                     cy,
-                    &TextStyle::new(font_size, theme::CLOCK_TEXT)
+                    &TextStyle::new(font_size, *theme::CLOCK_TEXT)
                         .weight(600)
                         .font("Oxanium"),
                     None,
