@@ -73,11 +73,20 @@ impl PeerStore {
         Ok(store)
     }
 
-    /// Binary search for handle_proof, returns index where it would be inserted
+    /// Index of the FIRST record with this handle_proof (or the sorted insertion point when absent). On a hit, binary search lands at an ARBITRARY member of the equal run — an identity with several devices IS such a run — and both dedup scans walk forward only, so any device stored before the landing point was invisible and re-inserted as a duplicate. That was THE phonebook growth disease (field 2026-08-26: +88 rows per 30s persist, 3,504 rows for a ~30-device network, ~55MB/day of vault churn feeding the fence wedges). Rewind to the run's start so the forward scan covers every device.
     fn find_position(&self, handle_proof: &[u8; 32]) -> usize {
-        self.peers
+        match self
+            .peers
             .binary_search_by(|p| p.handle_proof.cmp(handle_proof))
-            .unwrap_or_else(|i| i)
+        {
+            Ok(mut i) => {
+                while i > 0 && self.peers[i - 1].handle_proof == *handle_proof {
+                    i -= 1;
+                }
+                i
+            }
+            Err(i) => i,
+        }
     }
 
     /// Add or update a peer record If device already exists for this handle, update it Otherwise insert at sorted position
@@ -281,6 +290,51 @@ mod tests {
         r.last_seen = last_seen;
         r.sign(&sk);
         r
+    }
+
+    /// THE growth disease (field 2026-08-26, +88 rows/30s, 3,504 rows for ~30 devices): with three devices under ONE handle_proof, binary search lands mid-run and the forward-only scan missed the run's earlier devices — every re-observation of device 0 inserted a fresh duplicate, forever. Re-adding and re-merging every device any number of times must leave the count at exactly three.
+    #[test]
+    fn readding_devices_of_a_multi_device_identity_never_grows_the_store() {
+        // rec()'s loopback address is refused by add_peer's bogus-addr gate — re-sign each record onto a routable test address.
+        let rec = |handle: u8, device: u8, last_seen: i64| {
+            use ed25519_dalek::SigningKey;
+            let sk = SigningKey::from_bytes(&[device; 32]);
+            let pubkey = DevicePubkey::from_bytes(sk.verifying_key().to_bytes());
+            let mut r = PeerRecord::new([handle; 32], pubkey, "203.0.113.50:4383".parse().unwrap());
+            r.last_seen = last_seen;
+            r.sign(&sk);
+            r
+        };
+        let now = vsf::eagle_time_oscillations();
+        let mut store = PeerStore::new();
+        for d in 1..=3u8 {
+            store.add_peer(rec(9, d, now));
+        }
+        assert_eq!(store.get_all_peers().len(), 3);
+        for round in 0..5i64 {
+            for d in 1..=3u8 {
+                store.add_peer(rec(9, d, now + 200 + round));
+                store.merge_peer(rec(9, d, now + 300 + round));
+            }
+        }
+        assert_eq!(
+            store.get_all_peers().len(),
+            3,
+            "re-observed devices must UPDATE their row, never insert a duplicate"
+        );
+        // And a store poisoned by the old bug heals itself on the load path (from_vsf_bytes → add_peer): duplicates collapse to one row per device.
+        let mut poisoned = PeerStore::new();
+        for _ in 0..4 {
+            for d in 1..=3u8 {
+                poisoned.peers.push(rec(9, d, now));
+            }
+        }
+        poisoned.peers.sort_by(|a, b| a.handle_proof.cmp(&b.handle_proof));
+        let mut healed = PeerStore::new();
+        for r in poisoned.get_all_peers() {
+            healed.add_peer(r);
+        }
+        assert_eq!(healed.get_all_peers().len(), 3, "the load path dedups a poisoned store");
     }
 
     #[test]
