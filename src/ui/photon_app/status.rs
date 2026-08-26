@@ -4357,6 +4357,9 @@ impl PhotonApp {
         // History recovery: fire the next backfill page request for any contact mid-recovery (newest-first cursor; urgent jumps the trickle interval; in-flight expiry re-requests lost pages).
         self.drive_history_recovery();
 
+        // Bridge stream-loss watch: a host that went dark mid-command gets its streamed row stamped closed (idempotent — the stamp ends the in-flight state it keys on).
+        self.bridge_watch_stream_loss();
+
         // Private-identity-secret S: probe/reconstitute/deposit blinds toward whichever friends need an op (no-op at steady state).
         self.drive_blind_ops();
 

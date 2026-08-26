@@ -398,17 +398,31 @@ impl PhotonApp {
 
     /// A BridgeCtl row arrived (the operator pressed Stop): signal the in-flight command's descendant tree — never bash, so the session and its cwd survive the interrupt. A late arrival after completion finds an empty tree and is a natural no-op.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-    pub(super) fn bridge_interrupt_host(&mut self, ci: usize, sig: u64) {
+    pub(super) fn bridge_interrupt_host(&mut self, ci: usize, sig: u64, target: i64) {
         let Some(dev) = self.contacts.get(ci).map(|c| c.public_identity.key) else {
             return;
         };
-        let Some(fg) = self.bridge_fg.as_ref() else {
-            return;
-        };
-        let pid = fg.lock().unwrap().get(&dev).copied().unwrap_or(0);
+        let pid = self
+            .bridge_fg
+            .as_ref()
+            .map(|fg| fg.lock().unwrap().get(&dev).copied().unwrap_or(0))
+            .unwrap_or(0);
         let tree = if pid > 0 { bridge_child_tree(pid) } else { Vec::new() };
         if tree.is_empty() {
-            crate::log("BRIDGE: interrupt arrived with no command in flight — no-op");
+            // ANSWER the no-op (field 2026-08-26, "not sure it stopped and no way to tell"): the operator pressed Stop and this host holds nothing to signal — commonest after a host restart orphaned the stream (a self-restarting deploy). A tiny final for the target says so and ends the client's in-flight state.
+            crate::log("BRIDGE: interrupt arrived with no command in flight — answering with a no-op final");
+            // seq None on purpose: the replace arm treats a seq-less final as fill-if-unfinished — it completes a row the client still shows as running, but never clobbers one already finished (e.g. by the client's own stream-loss stamp).
+            let wire = crate::network::message_package::BridgeWire {
+                exit: Some(-1),
+                ..Default::default()
+            };
+            self.send_chain_message(
+                ci,
+                "…(stop received — nothing is running here; if a command was in flight, this host restarted and its stream was lost)",
+                false,
+                Some((crate::types::RefKind::BridgeOut, target)),
+                Some(wire),
+            );
             return;
         }
         let sig = match sig {
@@ -454,6 +468,44 @@ impl PhotonApp {
             Some((crate::types::RefKind::BridgeCtl, t)),
             Some(wire),
         );
+    }
+
+    /// CLIENT side, any platform: a command is in flight but its HOST has gone dark — stamp the streamed row closed with a loud notice, once. The deploy case (field 2026-08-26): a self-restarting command kills the host's photon, the bridge worker and its stream die with it (the command itself survives detached), and no final can ever arrive — the client sat frozen on the first seconds of output with a Stop button that no-ops. The offline verdict is the edge; stamping `bridge_exit` ends the in-flight state idempotently (the stamp itself makes the next pass a no-op).
+    pub(super) fn bridge_watch_stream_loss(&mut self) {
+        let lost: Vec<(usize, i64)> = self
+            .contacts
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.is_sibling && !c.is_online && c.presence_probed)
+            .filter_map(|(ci, _)| self.bridge_inflight_target(ci).map(|t| (ci, t)))
+            .collect();
+        for (ci, t) in lost {
+            let Some(conv) = self.conv_mut_of(ci) else {
+                continue;
+            };
+            let notice = "\n…(stream lost — the host went offline mid-command; it may still be running there. Reopen the bridge for a fresh session.)";
+            if let Some(row) = conv.messages.iter_mut().find(|m| {
+                !m.is_outgoing && m.reference == Some((crate::types::RefKind::BridgeOut, t))
+            }) {
+                row.content.push_str(notice);
+                row.bridge_exit = Some(-1);
+            } else {
+                // No output ever arrived — materialize the verdict row so the operator isn't staring at a silent faint command forever.
+                let mut msg = crate::types::ChatMessage::new_with_timestamp(
+                    notice.trim_start().to_string(),
+                    false,
+                    vsf::eagle_time_oscillations(),
+                );
+                msg.reference = Some((crate::types::RefKind::BridgeOut, t));
+                msg.bridge_exit = Some(-1);
+                conv.insert_message_sorted(msg);
+            }
+            if self.bridge_int.map_or(false, |(t0, _)| t0 == t) {
+                self.bridge_int = None;
+            }
+            self.scene_dirty = true;
+            crate::logf!("BRIDGE: host went offline with a command in flight (target {}) — stream marked lost", t);
+        }
     }
 
     /// The in-flight command, if any: the newest outgoing BridgeCmd row whose streamed output has no FINAL yet (`bridge_exit` is stamped by the replace-in-place when the exit frame lands). Drives the Stop button's visibility.
