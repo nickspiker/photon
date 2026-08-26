@@ -468,6 +468,33 @@ impl PhotonApp {
             Some((crate::types::RefKind::BridgeCtl, t)),
             Some(wire),
         );
+        // THE OPERATOR'S ESCAPE (field 2026-08-26): the KILL press releases the prompt LOCALLY, depending on nobody. The offline watcher misses a FAST-restarting host (a deploy relaunches photon before the 3-timeout offline verdict), the restarted host knows nothing of the old stream, and an old-build host answers Stop with a log line the client never sees — three presses must always get the terminal back. Edge-triggered (the press), no timer; bridge_seq goes terminal so any straggler final is swallowed, and the notice says the command may well still be running.
+        if level == 2 {
+            let Some(conv) = self.conv_mut_of(ci) else {
+                return;
+            };
+            let notice = "\n…(no response to Stop — prompt released; the command may still be running on the host)";
+            if let Some(row) = conv.messages.iter_mut().find(|m| {
+                !m.is_outgoing && m.reference == Some((crate::types::RefKind::BridgeOut, t))
+            }) {
+                row.content.push_str(notice);
+                row.bridge_exit = Some(-1);
+                row.bridge_seq = u64::MAX;
+            } else {
+                let mut msg = crate::types::ChatMessage::new_with_timestamp(
+                    notice.trim_start().to_string(),
+                    false,
+                    vsf::eagle_time_oscillations(),
+                );
+                msg.reference = Some((crate::types::RefKind::BridgeOut, t));
+                msg.bridge_exit = Some(-1);
+                msg.bridge_seq = u64::MAX;
+                conv.insert_message_sorted(msg);
+            }
+            self.bridge_int = None;
+            self.scene_dirty = true;
+            crate::log("BRIDGE: third Stop press — prompt released locally");
+        }
     }
 
     /// CLIENT side, any platform: a command is in flight but its HOST has gone dark — stamp the streamed row closed with a loud notice, once. The deploy case (field 2026-08-26): a self-restarting command kills the host's photon, the bridge worker and its stream die with it (the command itself survives detached), and no final can ever arrive — the client sat frozen on the first seconds of output with a Stop button that no-ops. The offline verdict is the edge; stamping `bridge_exit` ends the in-flight state idempotently (the stamp itself makes the next pass a no-op).
