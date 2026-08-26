@@ -13,6 +13,15 @@ impl PhotonApp {
             Some(tb) => tb.chars.iter().collect(),
             None => return,
         };
+        // THE PROMPT GATE (Nick 2026-08-26): a terminal doesn't take the next command until the prompt returns. While a bridge command is in flight (no final yet), refuse the send and KEEP the typed text — type-ahead composes, Enter waits. The gate can't wedge: the final clears it, and when a final can never come the stream-loss stamp or Stop's no-op answer does (both stamp bridge_exit). Stop itself is a control row, never gated.
+        if !text.is_empty()
+            && self.contacts.get(ci).map_or(false, |c| c.is_sibling)
+            && self.bridge_inflight_target(ci).is_some()
+        {
+            crate::log("BRIDGE: command still running — send held until the final lands (Stop to interrupt)");
+            self.scene_dirty = true;
+            return;
+        }
         if text.is_empty() {
             // Empty while a reply/edit/react is armed = cancel the arm, nothing sends (an "empty edit" is a delete's job, and probing from an armed state would be a surprise ping).
             if self.compose_reply_to.take().is_some()

@@ -66,6 +66,11 @@ impl PhotonApp {
         // The open conversation's contact row + compose gate, resolved ONCE before the chrome borrow — the borrow lives thru the whole render, so no `&self` method can run past this point.
         let active_ci = self.active_contact();
         let compose_ready = self.compose_ready();
+        // Prompt-gate snapshot (same pre-chrome discipline): bridge command in flight → the send arrow dims and submit refuses.
+        let bridge_held = active_ci.map_or(false, |ci| {
+            self.contacts.get(ci).map_or(false, |c| c.is_sibling)
+                && self.bridge_inflight_target(ci).is_some()
+        });
         // The ranked reaction strip, same pre-chrome discipline (reads fleet settings thru &self). Cheap: a prefix scan of the settings map.
         let ranked_reactions = self.ranked_reactions();
         // Title-bar text by screen, computed BEFORE the chrome borrow (peer count reads `self.handle_query` / `self.session`). Launch/attest shows the "← Network" affordance; once attested (Ready) it shows the peer count — distinct identities in the store EXCLUDING our own: peers are PEOPLE, so the FGTW seed is not a peer (the old `+1` when online) and neither are our own fleet siblings (their records ride the same store for direct routing). `set_title` only re-rasterizes chrome when the string actually changes, so this is cheap to recompute each frame.
@@ -3089,12 +3094,18 @@ impl PhotonApp {
                                         *theme::SEARCH_FOUND_COLOUR,
                                     );
                                 } else {
+                                    // THE PROMPT GATE, visually: a bridge command in flight dims the arrow (submit_message refuses the send until the final lands), same as a real terminal withholding its prompt. Friend conversations never gate. (bridge_held is the pre-chrome snapshot.)
+                                    let arrow = if bridge_held {
+                                        *theme::LABEL_COLOUR
+                                    } else {
+                                        *theme::SEND_ARROW_COLOUR
+                                    };
                                     draw_up_arrowhead(
                                         &mut canvas,
                                         btn.center_x,
                                         btn.center_y,
                                         btn.height * 0.5,
-                                        *theme::SEND_ARROW_COLOUR,
+                                        arrow,
                                     );
                                 }
                             }
