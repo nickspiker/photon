@@ -1,5 +1,7 @@
 #!/bin/bash
 set -e
+# Anchor to the repo root like dev.sh does — every source/sub-script below is repo-relative, and the bridge runs commands from wherever its shell happens to sit (field 2026-08-26: invoked from /, died at the first source).
+cd "$(dirname "$0")"
 
 source scripts/lib/github.sh
 source scripts/lib/manifest.sh
