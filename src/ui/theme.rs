@@ -125,10 +125,10 @@ pub static STATUS_TEXT_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_FF_FF_FF)
 pub const ORB_ONLINE: u32 = 0xFF_BF_1F_BF;
 /// Chrome orb ring, offline. Darkness-space, visible RGB(224, 64, 64) red; needs `fmt()` at the use site like ORB_ONLINE.
 pub const ORB_OFFLINE: u32 = 0xFF_1F_BF_BF;
-/// Degraded-vault banner text. Darkness-space, visible RGB(255, 140, 0) amber — pairs with BG_BASE_WARNING's warm background tint.
-pub const DEGRADED_TEXT: u32 = 0xFF_00_73_FF;
+/// Degraded-vault banner text: visible RGB(255, 140, 0) amber — pairs with BG_BASE_WARNING's warm background tint. Thru `c()` like every palette entry: the old hand-inverted const skipped the display-conversion + channel-order passes, so the "amber" banner shipped CYAN (raw 0x0073FF read as visible RGB — field 2026-08-25).
+pub static DEGRADED_TEXT: LazyLock<u32> = LazyLock::new(|| c(0x00_FF_8C_00));
 /// Clock-skew banner text — same amber as DEGRADED_TEXT on purpose (both are "something is off with this device" warnings), named separately so they can diverge without a hunt.
-pub const CLOCK_TEXT: u32 = DEGRADED_TEXT;
+pub static CLOCK_TEXT: LazyLock<u32> = LazyLock::new(|| c(0x00_FF_8C_00));
 /// Settings back-button idle fill (held state uses fluor::theme::BUTTON_HELD).
 pub const BACK_BUTTON_IDLE_FILL: u32 = 0x80_FF_FF_FF;
 /// Disabled pill-label ink, RAW visible grey — apply `fluor::theme::dark(fluor::theme::fmt(..))` at the use site (fmt is platform-dependent, so it cannot be precomputed here).
