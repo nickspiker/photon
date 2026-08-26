@@ -312,8 +312,9 @@ impl PhotonApp {
                             continue;
                         }
                     };
+                    // Row count beside the byte size: the 2026-08-25 field capture grew EXACTLY +19,072 bytes per 30s persist for hours (1.5MB blob, the vault-churn disease behind the fence wedge) and the byte count alone can't say whether rows multiply or rows fatten.
                     match st.write_addr(&addr, &bytes) {
-                        Ok(()) => crate::logf!("PHONEBOOK: persisted ({} bytes)", bytes.len()),
+                        Ok(()) => crate::logf!("PHONEBOOK: persisted ({} rows, {} bytes)", peers.len(), bytes.len()),
                         Err(e) => crate::logf!("PHONEBOOK: persist failed: {}", e),
                     }
                 }
