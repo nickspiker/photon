@@ -668,6 +668,26 @@ impl PhotonApp {
         // Finals sort after partials for the same command, so the durable frame is the one left standing.
         emits.sort_by_key(|e| (e.target, e.fin.is_some(), e.seq));
         for e in emits {
+            // WINDOW DISCIPLINE (field 2026-08-26, the stuck git pull): the lane's ACK window is 4 slots, one streaming burst filled it instantly, and the FINAL sat queued behind its own already-stale partials while relay-latency ACKs crawled back — done in a second host-side, invisible for minutes client-side. A partial may occupy AT MOST one slot: while the lane is busier than (command + one partial), re-park the snapshot for the next drain tick instead of sending — the slot keeps latest-wins, so what eventually goes out is newer anyway. Finals always send; held is fine for the one frame that must survive.
+            if e.fin.is_none() {
+                let busy = self
+                    .contacts
+                    .get(e.ci)
+                    .and_then(|c| c.friendship_id)
+                    .and_then(|fid| {
+                        self.friendship_chains
+                            .iter()
+                            .find(|(id, _)| *id == fid)
+                            .map(|(_, ch)| ch.pending_messages.len())
+                    })
+                    .unwrap_or(0);
+                if busy >= 2 {
+                    if let Some(slots) = self.bridge_partials.as_ref() {
+                        slots.lock().unwrap().entry(e.ci).or_insert(e);
+                    }
+                    continue;
+                }
+            }
             let wire = crate::network::message_package::BridgeWire {
                 host: (!e.host.is_empty()).then(|| e.host.clone()),
                 cwd: (!e.cwd.is_empty()).then(|| e.cwd.clone()),
