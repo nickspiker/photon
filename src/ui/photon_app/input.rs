@@ -742,7 +742,8 @@ impl PhotonApp {
                     Ok(rd) => rd,
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                     Err(e) => {
-                        eprintln!("{} WARN: read_dir {}: {}", tag, app_dir.display(), e);
+                        // logf, not eprintln: stderr dies with a .app launch, and a wipe that couldn't even LIST the dir is exactly the forensic line a submitted log must carry (the 2026-08-25 resurrection hunt had only the count).
+                        crate::logf!("{} WARN: read_dir {}: {}", tag, app_dir.display(), e);
                         continue;
                     }
                 };
@@ -755,11 +756,12 @@ impl PhotonApp {
                     };
                     match removed {
                         Ok(()) => {
-                            eprintln!("{} deleted {}", tag, p.display());
+                            crate::logf!("{} deleted {}", tag, p.display());
                             *count += 1;
                         }
                         Err(e) => {
-                            eprintln!("{} WARN: could not delete {}: {}", tag, p.display(), e)
+                            // The worst wipe outcome — a file that SURVIVED — was invisible on stderr.
+                            crate::logf!("{} WARN: could not delete {}: {}", tag, p.display(), e)
                         }
                     }
                 }
@@ -1141,7 +1143,7 @@ impl PhotonApp {
                 }
                 // Drop S too (zeroized) — the reset-recovery E2E is exactly "[]n then reconstitute from a friend's blind"; keeping it in RAM would fake the recovery.
                 self.private_s = crate::crypto::blind::PrivateS::None;
-                eprintln!(
+                crate::logf!(
                     "[]n nuked {} vault file(s); session kept (still attested)",
                     count
                 );
@@ -1154,7 +1156,7 @@ impl PhotonApp {
                 self.pending_broadcast_signal = -1; // Android: drop the sticky session broadcast.
                 self.state = AppState::Launch(LaunchState::Fresh);
                 self.clear_handle_for_reproof();
-                eprintln!("[]u de-attested; session cleared — re-type handle to re-attest");
+                crate::logf!("[]u de-attested; session cleared — re-type handle to re-attest");
             }
             'x' => {
                 // Full clean-slate reset for the dev loop: nuke the vault ([]n), clear the session ([]u), then KILL the process so the window dies and the next launch starts truly fresh — no lingering in-memory state, no half-reset UI. The disk wipe is the part that must persist; everything else dies with the process, so we exit right after.
