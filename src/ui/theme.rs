@@ -131,8 +131,6 @@ pub static DEGRADED_TEXT: LazyLock<u32> = LazyLock::new(|| c(0x00_FF_8C_00));
 pub static CLOCK_TEXT: LazyLock<u32> = LazyLock::new(|| c(0x00_FF_8C_00));
 /// Settings back-button idle fill (held state uses fluor::theme::BUTTON_HELD).
 pub const BACK_BUTTON_IDLE_FILL: u32 = 0x80_FF_FF_FF;
-/// Disabled pill-label ink, RAW visible grey — apply `fluor::theme::dark(fluor::theme::fmt(..))` at the use site (fmt is platform-dependent, so it cannot be precomputed here).
-pub const DISABLED_LABEL_RGB: u32 = 0x00_70_70_6E;
 
 /// Dim a stored α+darkness colour to ~half opacity — the undelivered-outgoing message treatment (delivered = the same colour at full α; the RGB never changes, only presence). The stored high byte is opacity, so halving it makes the glyph fainter against the background.
 pub fn dim_colour(c: u32) -> u32 {
