@@ -288,6 +288,8 @@ impl PhotonApp {
         // Consent gate (2026-08-25): knocks to fire and the roster ride for a Mutual flip — both need &mut self, so they wait out the drain like the jobs above.
         let mut knock_after: Vec<crate::types::ContactId> = Vec::new();
         let mut consent_roster_push = false;
+        // Complete-without-chains probe (field 2026-08-26, Emma's post-wipe Frankenstein): tokens whose inbound frames found NO friendship chains — checked post-drain against the contact's claimed ceremony state.
+        let mut rekey_probe: Vec<[u8; 32]> = Vec::new();
         loop {
             // TIME BUDGET — the UI thread's stall is bounded whatever the storm size: past 250ms the rest of the backlog waits for the next tick (the channel holds it; un-replayed synthetic frames go back on chat_replay_queue below, order preserved). Unbounded, a churny catch-up pass measured 1.8s on the desktop — taps landed but nothing painted until the drain yielded (2026-08-11).
             if pass_start.elapsed().as_millis() > 250 {
@@ -1173,6 +1175,10 @@ impl PhotonApp {
                             "CHAT: No friendship found for conversation_token {}...",
                             hex::encode(&conversation_token[..8])
                         );
+                        // A frame we can't even ROUTE is evidence, not just noise: if this token's contact claims the ceremony is Complete, the state is lying (chains wiped, claim resurrected) and nothing else will ever trigger the repair. Recorded here, judged post-drain.
+                        if !rekey_probe.contains(&conversation_token) {
+                            rekey_probe.push(conversation_token);
+                        }
                     }
                 }
                 StatusUpdate::MessageAck {
@@ -4210,6 +4216,48 @@ impl PhotonApp {
                     served,
                     crate::fp(&self.contacts[ci].handle_proof)
                 );
+            }
+        }
+
+        // COMPLETE-WITHOUT-CHAINS SELF-HEAL (field 2026-08-26, Emma's device after the pre-fix crypto wipe): the wipe cleared her friendship chains, the RAM resurrection restored a contact CLAIMING Complete — so every inbound frame dropped "No friendship found" forever and nothing ever triggered a repair, because the state said there was nothing to fix. The evidence is the frame we couldn't route: a probed token whose contact claims Complete while its chains are ABSENT gets the same reset the offer-while-Complete re-key path runs, and the fresh offer walks the peer through the normal accepting-re-key flow. Evidence-driven (never fires on healthy or mid-ceremony state), once per contact per session via the keygen-in-progress latch.
+        for token in rekey_probe {
+            let our_pid = self
+                .session
+                .as_ref()
+                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+            let Some(us) = our_pid else { break };
+            let Some(ci) = self.contacts.iter().position(|c| {
+                !c.is_sibling
+                    && crate::crypto::clutch::derive_conversation_token(&[us, c.handle_hash])
+                        == token
+            }) else {
+                continue;
+            };
+            let chains_present = self.contacts[ci].friendship_id.map_or(false, |fid| {
+                self.friendship_chains.iter().any(|(id, _)| *id == fid)
+            });
+            if self.contacts[ci].clutch_state != crate::types::ClutchState::Complete
+                || chains_present
+                || self.contacts[ci].clutch_keygen_in_progress
+            {
+                continue;
+            }
+            crate::logf!(
+                "CLUTCH: {} claims Complete but holds NO chains (wipe debris) — discarding the lie and re-keying",
+                crate::fp(&self.contacts[ci].handle_proof)
+            );
+            let them = self.contacts[ci].handle_hash;
+            let id = self.contacts[ci].id.clone();
+            self.contacts[ci].discard_clutch_round();
+            self.contacts[ci].friendship_id = None;
+            self.contacts[ci].init_clutch_slots(us);
+            self.contacts[ci].clutch_keygen_in_progress = true;
+            self.spawn_clutch_keygen(id, us, them);
+            if let Some(storage) = self.storage.as_ref() {
+                let snapshot = self.contacts[ci].clone();
+                if let Err(e) = crate::storage::contacts::save_contact(&snapshot, storage) {
+                    crate::logf!("CLUTCH: re-key contact save failed: {}", e);
+                }
             }
         }
 
