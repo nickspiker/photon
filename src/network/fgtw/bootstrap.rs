@@ -496,9 +496,9 @@ mod tests {
             .add_section(
                 "announce_ok",
                 vec![
-                    ("count".to_string(), VsfType::u5(count)),
+                    ("count".to_string(), VsfType::u(count as usize, false)),
                     ("ip".to_string(), VsfType::a(ip.to_string())),
-                    ("port".to_string(), VsfType::u4(port)),
+                    ("port".to_string(), VsfType::u(port as usize, false)),
                 ],
             )
             .build()
@@ -565,7 +565,7 @@ mod tests {
         use vsf::VsfType;
         let bytes = vsf::VsfBuilder::new()
             .creation_time_oscillations(vsf::eagle_time_oscillations())
-            .add_section("announce_ok", vec![("count".to_string(), VsfType::u5(3))])
+            .add_section("announce_ok", vec![("count".to_string(), VsfType::u(3, false))])
             .build()
             .expect("build unsigned");
         let schema = vsf::schema::SectionSchema::new("announce_ok")

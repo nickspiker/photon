@@ -66,7 +66,7 @@ impl PTSpec {
             .add_section(
                 "pt_spec",
                 vec![
-                    ("sid".to_string(), VsfType::u3(self.stream_id)),
+                    ("sid".to_string(), VsfType::u(self.stream_id as usize, false)),
                     (
                         "count".to_string(),
                         VsfType::u(self.total_packets as usize, false),
@@ -238,7 +238,7 @@ impl PTAck {
             .add_inline_field(
                 "pt_ack",
                 vec![
-                    VsfType::u3(self.stream_id),
+                    VsfType::u(self.stream_id as usize, false),
                     VsfType::u(self.sequence as usize, false),
                 ],
             )
@@ -384,7 +384,7 @@ impl PTControl {
             .creation_time_oscillations(vsf::eagle_time_oscillations())
             .provenance_hash(provenance)
             .provenance_only() // No signature - provenance hash provides integrity
-            .add_inline_field("pt_ctrl", vec![VsfType::u3(self.command as u8)])
+            .add_inline_field("pt_ctrl", vec![VsfType::u(self.command as usize, false)])
             .build()
             .unwrap_or_default()
     }
@@ -438,7 +438,7 @@ impl PTComplete {
             .provenance_only() // No signature - provenance hash provides integrity
             .add_inline_field(
                 "pt_done",
-                vec![VsfType::u3(if self.success { 1 } else { 0 })],
+                vec![VsfType::u(if self.success { 1 } else { 0 }, false)],
             )
             .build()
             .unwrap_or_default()

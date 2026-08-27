@@ -138,7 +138,7 @@ pub fn encode_contacts(
                     VsfType::ge(c.avatar_pin.to_vec()),
                     VsfType::x(c.published_name.clone()),
                     VsfType::ke(c.device_pubkey.to_vec()),
-                    VsfType::u3(c.trust_level),
+                    VsfType::u(c.trust_level as usize, false),
                     VsfType::e(vsf::types::EtType::e6(c.added)),
                 ],
             )
@@ -576,7 +576,7 @@ mod document_tests {
                         // The legacy row carried a petname string here — kept in the rebuilt OLD wire form.
                         VsfType::x("alice".to_string()),
                         VsfType::ke(c.device_pubkey.to_vec()),
-                        VsfType::u3(c.trust_level),
+                        VsfType::u(c.trust_level as usize, false),
                         VsfType::e(vsf::types::EtType::e6(c.added)),
                     ],
                 )

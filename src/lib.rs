@@ -545,7 +545,7 @@ fn append_log_record(level: LogLevel, msg: &str, vals: &[LogValue]) {
         let t = match v {
             LogValue::U(n) => vsf::VsfType::u(*n as usize, false),
             LogValue::Z(n) => vsf::VsfType::z(*n as usize),
-            LogValue::I(n) => vsf::VsfType::i6(*n as i64),
+            LogValue::I(n) => vsf::VsfType::i(*n as isize),
             LogValue::F(n) => vsf::VsfType::f6(*n),
             LogValue::B(b) => vsf::VsfType::u(*b as usize, false),
             LogValue::T(s) => vsf::VsfType::x(s.clone()),
@@ -1034,11 +1034,16 @@ pub fn parse_log_records(buf: &[u8]) -> (Vec<LogRecord>, usize) {
             .iter()
             .filter_map(|f| f.values.first())
             .map(|v| match v {
-                VsfType::u(n, _) => LogValue::U(*n as u128),
                 VsfType::z(n) => LogValue::Z(*n as u128),
-                VsfType::i6(n) => LogValue::I(*n as i128),
                 VsfType::f6(n) => LogValue::F(*n),
                 VsfType::x(s) => LogValue::T(s.clone()),
+                // Width-agnostic numeric arms (the doctrine, at last applied to our own log): writes auto-size, so a parsed number arrives as whatever concrete width its magnitude earned — the old exact `u(..)`/`i6` arms matched only one shape each and fell thru to the debug-string fallback for every other, including every value the auto-sizer ever shrank.
+                v if matches!(v, VsfType::u(..) | VsfType::u3(_) | VsfType::u4(_) | VsfType::u5(_) | VsfType::u6(_) | VsfType::u7(_)) => {
+                    LogValue::U(v.as_u64().unwrap_or(0) as u128)
+                }
+                v if v.as_i64().is_some() && !matches!(v, VsfType::e(_)) => {
+                    LogValue::I(v.as_i64().unwrap_or(0) as i128)
+                }
                 VsfType::v_u3(vec) if vec.data.len() == 6 || vec.data.len() == 18 => {
                     let (ip_bytes, port_bytes) = vec.data.split_at(vec.data.len() - 2);
                     let port = u16::from_le_bytes([port_bytes[0], port_bytes[1]]);
