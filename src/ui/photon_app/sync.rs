@@ -771,6 +771,7 @@ impl PhotonApp {
 
         let mut undelivered_fids: Vec<crate::types::FriendshipId> = Vec::new();
         let mut gave_up_fids: Vec<crate::types::FriendshipId> = Vec::new();
+        let mut gave_up_rows: Vec<(crate::types::FriendshipId, i64)> = Vec::new();
         for (fid, peer_addr, alt_addr, recipient_pubkey, relay_to) in routes {
             let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid)
             else {
@@ -800,6 +801,8 @@ impl PhotonApp {
                 if exhausted {
                     crate::logf!("CHAT: retransmit GAVE UP on msg eagle_time {} after {} attempts (undelivered)", eagle_time, attempts);
                     gave_up_fids.push(fid);
+                    // The give-up is a VERDICT the bridge must hear (field 2026-08-27): a wedged command from a dead session kept the prompt gate held on a "running" command whose 8 attempts had all failed — zombie in-flight forever, fresh commands gated behind ghosts. Collected here, stamped released after the loop.
+                    gave_up_rows.push((fid, eagle_time));
                 } else {
                     crate::logf!(
                         "CHAT: retransmit msg eagle_time {} (attempt {})",
@@ -812,6 +815,53 @@ impl PhotonApp {
                 undelivered_fids.push(fid);
             }
         }
+        // BRIDGE: a given-up COMMAND releases the prompt (the operator's terminal must never wait on a row the transport has formally abandoned). Chat rows are untouched — their give-up/revive dance is the durable design; only the sibling-terminal's gate semantics key off this.
+        for (fid, t) in gave_up_rows {
+            let Some(ci) = self
+                .contacts
+                .iter()
+                .position(|c| c.is_sibling && c.friendship_id == Some(fid))
+            else {
+                continue;
+            };
+            let is_cmd = self.conv_of(ci).map_or(false, |conv| {
+                conv.messages.iter().any(|m| {
+                    m.is_outgoing
+                        && m.timestamp == t
+                        && matches!(m.reference, Some((crate::types::RefKind::BridgeCmd, _)))
+                })
+            });
+            if !is_cmd {
+                continue;
+            }
+            let already_done = self.conv_of(ci).map_or(false, |conv| {
+                conv.messages.iter().any(|m| {
+                    m.reference == Some((crate::types::RefKind::BridgeOut, t))
+                        && m.bridge_exit.is_some()
+                })
+            });
+            if already_done {
+                continue;
+            }
+            if let Some(conv) = self.conv_mut_of(ci) {
+                let mut msg = crate::types::ChatMessage::new_with_timestamp(
+                    "…(command undeliverable — the host never acknowledged it; prompt released)"
+                        .to_string(),
+                    false,
+                    vsf::eagle_time_oscillations(),
+                );
+                msg.reference = Some((crate::types::RefKind::BridgeOut, t));
+                msg.bridge_exit = Some(-1);
+                msg.bridge_seq = u64::MAX;
+                conv.insert_message_sorted(msg);
+                self.scene_dirty = true;
+                crate::logf!("BRIDGE: command at eagle_time {} given up — prompt released", t);
+            }
+            if self.bridge_int.map_or(false, |(t0, _)| t0 == t) {
+                self.bridge_int = None;
+            }
+        }
+
         // A give-up's only revival is the peer's tip in a pong's sync records — and an hour-deep presence backoff sits on exactly that exchange. Giving up IS the "this contact matters right now" edge: collapse the backoff so the tip flows on the next sweep instead of next hour.
         for fid in gave_up_fids {
             if let Some(c) = self
