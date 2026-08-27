@@ -2840,10 +2840,12 @@ impl PhotonApp {
                                             more,
                                         };
                                         match seal_history_page(&page, &key).and_then(|sealed| {
+                                            let skf = u32::from_le_bytes(blake3::hash(&key).as_bytes()[..4].try_into().unwrap()) as u64;
                                             crate::network::fgtw::protocol::build_history_page_vsf(
                                                 &conversation_token,
                                                 &request_id,
                                                 serve_ek,
+                                                Some(skf),
                                                 sealed,
                                                 &device_pubkey,
                                                 &device_secret,
@@ -3461,6 +3463,7 @@ impl PhotonApp {
                     conversation_token,
                     request_id,
                     epoch_k,
+                    sealer_key_fp,
                     sealed,
                     sender_pubkey,
                     sender_addr: _,
@@ -3548,6 +3551,9 @@ impl PhotonApp {
                         let wake = self.event_proxy.clone();
                         let open_key_fp: [u8; 4] =
                             blake3::hash(&key).as_bytes()[..4].try_into().unwrap();
+                        let sealer_fp_str = sealer_key_fp
+                            .map(|f| format!("{:08x}", f as u32))
+                            .unwrap_or_else(|| "-".into());
                         queue_job(&self.seal_job_tx, move || {
                             match crate::network::history_pages::open_history_page(&sealed, &key) {
                                 Ok(page) => {
@@ -3564,12 +3570,14 @@ impl PhotonApp {
                                 }
                                 Err(e) => {
                                     // Named failure: the anonymous form of this line stalled the 2026-08-21 era-wedge diagnosis (161 drops, zero attribution). The failure ALSO rides the channel so the drain can count it toward the divergence park — silently re-requesting the same undecryptable page re-downloads 17KB per cycle forever.
+                                    // The whole era-divergence diagnosis in one line: OUR key fp vs the SEALER's declared fp (wire skf). Matching fps + still failing = corruption; differing fps = the two fleets provably derive different history keys for the same token — the 2026-08-21 wedge, finally attributed.
                                     crate::logf!(
-                                        "HISTORY: page open failed ({}) from {} token {} key#{} — dropped",
+                                        "HISTORY: page open failed ({}) from {} token {} ours key#{} theirs key#{} — dropped",
                                         e,
                                         crate::fp(&sender_pubkey.key),
                                         hex::encode(&conversation_token[..4]),
-                                        hex::encode(open_key_fp)
+                                        hex::encode(open_key_fp),
+                                        sealer_fp_str
                                     );
                                     let _ = tx.send(HistPageOpened {
                                         conversation_token,

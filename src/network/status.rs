@@ -439,6 +439,8 @@ pub enum StatusUpdate {
         conversation_token: [u8; 32],
         request_id: [u8; 32],
         epoch_k: Option<u64>,
+        /// 4-byte blake3 fingerprint of the SEALER's key (wire `skf`, optional) — turns "decrypt failed" into "theirs key#X vs ours key#Y", the attribution the 2026-08-21 era-wedge diagnosis lacked.
+        sealer_key_fp: Option<u64>,
         sealed: Vec<u8>,
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
@@ -1844,7 +1846,7 @@ async fn run_checker(
                                     }
                                     // Try to parse as history page (hist_page)
                                     else if let Ok((
-                                        (conversation_token, request_id, epoch_k, sealed),
+                                        (conversation_token, request_id, epoch_k, sealer_key_fp, sealed),
                                         sender_pubkey,
                                     )) = crate::network::fgtw::protocol::parse_history_page_vsf(
                                         &data,
@@ -1859,6 +1861,7 @@ async fn run_checker(
                                                 conversation_token,
                                                 request_id,
                                                 epoch_k,
+                                                sealer_key_fp,
                                                 sealed,
                                                 sender_pubkey: DevicePubkey::from_bytes(
                                                     sender_pubkey,
@@ -2120,7 +2123,7 @@ async fn run_checker(
                             }
                             // History page (hist_page — small pages ride this path; big ones arrive via the PT-transfer-complete branch). Same mandatory packet-ack.
                             if let Ok((
-                                (conversation_token, request_id, epoch_k, sealed),
+                                (conversation_token, request_id, epoch_k, sealer_key_fp, sealed),
                                 sender_pubkey,
                             )) =
                                 crate::network::fgtw::protocol::parse_history_page_vsf(msg_bytes)
@@ -2138,6 +2141,7 @@ async fn run_checker(
                                         conversation_token,
                                         request_id,
                                         epoch_k,
+                                        sealer_key_fp,
                                         sealed,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                         sender_addr: src_addr,

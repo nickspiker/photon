@@ -240,10 +240,12 @@ impl PhotonApp {
                     continue;
                 }
                 // Named adoption, not just a count: five field rounds of "the record is perfect but the punch never probes it" (2026-08-16) came down to guessing WHICH device/address pair actually landed on WHICH contact — this line answers it.
+                // The sib marker kills the "same line twice" illusion: a device can legitimately adopt onto BOTH its sibling row and the self/friend row, and both rows print the same handle_proof (sibling rows carry our own).
                 crate::logf!(
-                    "PHONEBOOK: adopted {} → contact {} (dev {}, lan {})",
+                    "PHONEBOOK: adopted {} → contact {}{} (dev {}, lan {})",
                     pubaddr,
                     crate::fp(&contact.handle_proof),
+                    if contact.is_sibling { " (sib row)" } else { "" },
                     crate::fp(&dev),
                     lan.map(|l| l.to_string()).unwrap_or_else(|| "-".into())
                 );

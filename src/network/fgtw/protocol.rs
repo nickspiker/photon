@@ -2318,6 +2318,7 @@ pub fn build_history_page_vsf(
     conversation_token: &[u8; 32],
     request_id: &[u8; 32],
     epoch_k: Option<u64>,
+    sealer_key_fp: Option<u64>,
     sealed_blob: Vec<u8>,
     device_pubkey: &[u8; 32],
     device_secret: &[u8; 32],
@@ -2330,6 +2331,10 @@ pub fn build_history_page_vsf(
     section.add_field("rid", VsfType::hb(request_id.to_vec()));
     if let Some(k) = epoch_k {
         section.add_field("ek", VsfType::u(k as usize, false));
+    }
+    // SEALER KEY FINGERPRINT (2026-08-26, the era-divergence diagnosis field): 4 bytes of blake3(sealing key) so an open failure can say "theirs key#X vs ours key#Y" instead of an unattributed decrypt error — the 2026-08-21 wedge burned a field round for lack of exactly this. Reveals nothing about the key; optional, unknown-field-skipped by old parsers.
+    if let Some(fp) = sealer_key_fp {
+        section.add_field("skf", VsfType::u(fp as usize, false));
     }
     let blob_len = sealed_blob.len();
     section.add_field(
@@ -2350,7 +2355,7 @@ pub fn build_history_page_vsf(
 /// Parse + verify a `hist_page` frame. Returns ((conversation_token, request_id, epoch_k, sealed_blob), sender_pubkey). The blob is opaque here; the requester opens it with the friendship history key (`ek` absent) or the epoch hist_page key (`ek` present — fleet route). A SIBLING page without `ek` is a pre-epoch build's — the receive arm drops it loudly, no tolerant branch.
 pub fn parse_history_page_vsf(
     vsf_bytes: &[u8],
-) -> Result<(([u8; 32], [u8; 32], Option<u64>, Vec<u8>), [u8; 32]), String> {
+) -> Result<(([u8; 32], [u8; 32], Option<u64>, Option<u64>, Vec<u8>), [u8; 32]), String> {
     let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
         .map_err(|e| format!("hist_page verification failed: {}", e))?;
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
@@ -2369,6 +2374,7 @@ pub fn parse_history_page_vsf(
     let request_id = field_hash32(fields, "rid", |v| matches!(v, VsfType::hb(_)))
         .ok_or("hist_page missing rid")?;
     let epoch_k = field_u64(fields, "ek");
+    let sealer_key_fp = field_u64(fields, "skf");
     let sealed = fields
         .iter()
         .find(|f| f.name == "data")
@@ -2379,7 +2385,10 @@ pub fn parse_history_page_vsf(
         })
         .ok_or("hist_page missing data")?;
 
-    Ok(((conversation_token, request_id, epoch_k, sealed), sender_pubkey))
+    Ok((
+        (conversation_token, request_id, epoch_k, sealer_key_fp, sealed),
+        sender_pubkey,
+    ))
 }
 
 /// Build a `chain_sync` frame — fleet chain-state replication ("if another device is ahead, I just catch up"). `sealed_chains` = the friendship's canonical chains VSF bytes (storage::friendship::chains_to_vsf_bytes) AEAD-sealed under the EPOCH chain_sync key (`fleet_epoch_seal_key(epoch_k, b"chain_sync")` — the B3 re-seal, 2026-08-12); `epoch_k` rides beside the blob so the receiver picks the right epoch (it accepts k and k−1 across a checkpoint crossing). The outer frame is device-signed like every sibling frame. Receiver: open, decode, adopt iff the embedded mutated_osc is NEWER than the local copy's.
@@ -3227,8 +3236,8 @@ mod history_frame_tests {
         let rid = [0xD4u8; 32];
         let blob = vec![0x5Au8; 4096];
         let bytes =
-            build_history_page_vsf(&tok, &rid, None, blob.clone(), &pubkey, &secret).unwrap();
-        let ((ptok, prid, pek, psealed), signer) = parse_history_page_vsf(&bytes).unwrap();
+            build_history_page_vsf(&tok, &rid, None, None, blob.clone(), &pubkey, &secret).unwrap();
+        let ((ptok, prid, pek, _pskf, psealed), signer) = parse_history_page_vsf(&bytes).unwrap();
         assert_eq!(signer, pubkey);
         assert_eq!(ptok, tok);
         assert_eq!(prid, rid);
@@ -3236,9 +3245,10 @@ mod history_frame_tests {
         assert_eq!(psealed, blob);
         // Fleet-route form: ek rides the frame and round-trips.
         let bytes =
-            build_history_page_vsf(&tok, &rid, Some(7), blob.clone(), &pubkey, &secret).unwrap();
-        let ((_, _, pek, _), _) = parse_history_page_vsf(&bytes).unwrap();
+            build_history_page_vsf(&tok, &rid, Some(7), Some(0xA1B2C3D4), blob.clone(), &pubkey, &secret).unwrap();
+        let ((_, _, pek, pskf, _), _) = parse_history_page_vsf(&bytes).unwrap();
         assert_eq!(pek, Some(7));
+        assert_eq!(pskf, Some(0xA1B2C3D4), "sealer key fp round-trips");
     }
 
     // Every sibling frame carrying an integer field round-trips thru a REAL encode+decode. These exist because the exact-variant `field_u64` rejected every wire `ek` (the builder's auto-sized `u` decodes as `u3`/`u4`/…): chain_sync + all three ckpt frames were silently parse-dead in the field until 2026-08-16, and no test walked the decode path.

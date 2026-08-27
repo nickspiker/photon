@@ -1122,11 +1122,13 @@ impl PhotonApp {
         let kp_sec = *kp.secret.as_bytes();
         let dispatch = checker.history_dispatch();
         queue_job(&self.seal_job_tx, move || {
+            let skf = u32::from_le_bytes(blake3::hash(&page_key).as_bytes()[..4].try_into().unwrap()) as u64;
             let vsf_bytes = match seal_history_page(&page, &page_key).and_then(|sealed| {
                 crate::network::fgtw::protocol::build_history_page_vsf(
                     &token,
                     &rid,
                     Some(epoch_k),
+                    Some(skf),
                     sealed,
                     &kp_pub,
                     &kp_sec,
@@ -1364,7 +1366,7 @@ impl PhotonApp {
         let device_pubkey = *kp.public.as_bytes();
         let device_secret = *kp.secret.as_bytes();
 
-        // Route material computed once: a sibling serves fleet-route requests, and the fleet key gates them (the sibling seals under it). NOT gated on is_online — sibling presence has been unreliable (see the pong liveness salvage), and a pull gated on it starved the fleet backfill exactly like the push did: prefer an online sibling with a direct address, else ANY addressed sibling (relay fallback riding along), else relay-only.
+        // Route material computed once: a sibling serves fleet-route requests, and the fleet key gates them (the sibling seals under it). Presence discipline (2026-08-26): prefer an online sibling with a direct address; the fallback arms accept UNPROBED siblings (a hard is_online gate starved the fleet backfill during the boot race) but exclude a POSITIVE offline verdict — the relay already said that pipe is closed, and re-asking every expiry cycle was the 497-retry storm.
         let sibling_target: Option<(
             std::net::SocketAddr,
             Option<std::net::SocketAddr>,
@@ -1386,21 +1388,28 @@ impl PhotonApp {
                     })
                 })
                 .or_else(|| {
-                    self.contacts.iter().filter(|c| c.is_sibling).find_map(|c| {
-                        c.race_addrs().map(|(p, a)| {
-                            (p, a, *c.public_identity.as_bytes(), c.relay_device_list())
+                    // Fallback arms exclude only a POSITIVE offline verdict (probed + 3-timeout), never the unprobed boot state — the ungated version picked the offline phone as the relay-only target and fired a request into its closed pipe every expiry cycle forever (497 retries + ~470 dropped 17KB frames in one 35-min field log). The came-online edge re-includes the device naturally.
+                    self.contacts
+                        .iter()
+                        .filter(|c| c.is_sibling && !(c.presence_probed && !c.is_online))
+                        .find_map(|c| {
+                            c.race_addrs().map(|(p, a)| {
+                                (p, a, *c.public_identity.as_bytes(), c.relay_device_list())
+                            })
                         })
-                    })
                 })
                 .or_else(|| {
-                    self.contacts.iter().filter(|c| c.is_sibling).find_map(|c| {
-                        let relays = c.relay_device_list();
-                        if relays.is_empty() {
-                            None
-                        } else {
-                            Some((unspecified, None, *c.public_identity.as_bytes(), relays))
-                        }
-                    })
+                    self.contacts
+                        .iter()
+                        .filter(|c| c.is_sibling && !(c.presence_probed && !c.is_online))
+                        .find_map(|c| {
+                            let relays = c.relay_device_list();
+                            if relays.is_empty() {
+                                None
+                            } else {
+                                Some((unspecified, None, *c.public_identity.as_bytes(), relays))
+                            }
+                        })
                 })
         } else {
             None
