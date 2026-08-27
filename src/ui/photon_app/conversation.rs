@@ -947,6 +947,9 @@ impl PhotonApp {
         let mut bridge_run: Option<(usize, String, i64)> = None;
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
         let mut bridge_ctl: Option<(usize, u64, i64)> = None;
+        // Non-host builds: a typed command to answer with a "no shell here" final (deferred past the conv borrow).
+        #[cfg(not(all(unix, not(target_os = "android"), not(target_os = "redox"))))]
+        let mut bridge_refuse: Option<(usize, i64)> = None;
         let mut conv_state_pos: Option<usize> = None;
         let mut replays: Vec<crate::network::status::StatusUpdate> = Vec::new();
         let mut need_sync = false;
@@ -1531,6 +1534,14 @@ impl PhotonApp {
                         bridge_run = Some((contact_idx, cmd, msg.timestamp));
                     }
                 }
+                // NON-HOST platforms (Android/Windows/redox) REFUSE a typed command instead of swallowing it: from the client a silent host is indistinguishable from a hung one (field 2026-08-26). Only TYPED BridgeCmd refuses — a legacy bare row toward a phone is just a note.
+                #[cfg(not(all(unix, not(target_os = "android"), not(target_os = "redox"))))]
+                if is_new_row
+                    && contact_is_sibling
+                    && matches!(wire_reference, Some((crate::types::RefKind::BridgeCmd, _)))
+                {
+                    bridge_refuse = Some((contact_idx, msg.timestamp));
+                }
 
                 // Persist (async — see persist_hashes)
                 persist_ci = Some(contact_idx);
@@ -1661,6 +1672,21 @@ impl PhotonApp {
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
         if let Some((ci, sig, t)) = bridge_ctl {
             self.bridge_interrupt_host(ci, sig, t);
+        }
+        #[cfg(not(all(unix, not(target_os = "android"), not(target_os = "redox"))))]
+        if let Some((ci, t)) = bridge_refuse {
+            let wire = crate::network::message_package::BridgeWire {
+                exit: Some(-1),
+                ..Default::default()
+            };
+            crate::log("BRIDGE: typed command received but this platform can't host a shell — refusing loudly");
+            self.send_chain_message(
+                ci,
+                "(no shell on this device — this platform can't host the bridge yet)",
+                false,
+                Some((crate::types::RefKind::BridgeOut, t)),
+                Some(wire),
+            );
         }
     }
 
