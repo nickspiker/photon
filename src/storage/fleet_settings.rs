@@ -258,9 +258,34 @@ impl FleetSettings {
 
 /// Persist the settings state as one vault entry (the codec's own bytes; the vault layer AEADs them).
 pub fn save_fleet_settings(fs: &FleetSettings, storage: &FlatStorage) -> Result<(), StorageError> {
+    let bytes = settings_to_bytes(&fs.global, &fs.devices);
+    // GROWTH CONFESSION (field 2026-08-28): a single 6.4MB live value was 93% of the Mac's vault, re-put in pairs every few seconds — the librarian queue behind it was the settings-open beachball and 5s waits for 53-byte puts. When this blob is fat, name WHICH key family holds the bytes (prefix before the first '.'), because the blob is opaque at every other layer.
+    if bytes.len() > 512 * 1024 {
+        let mut fams: std::collections::HashMap<&str, (usize, usize)> = Default::default();
+        for e in &fs.global {
+            let fam = e.key.split('.').next().unwrap_or("");
+            let f = fams.entry(fam).or_default();
+            f.0 += 1;
+            f.1 += e.value.flatten().len() + e.key.len();
+        }
+        let mut top: Vec<_> = fams.into_iter().collect();
+        top.sort_by_key(|(_, (_, b))| std::cmp::Reverse(*b));
+        let summary: Vec<String> = top
+            .iter()
+            .take(4)
+            .map(|(f, (n, b))| format!("{f}×{n}≈{b}B"))
+            .collect();
+        crate::logf!(
+            "SETTINGS: blob {} bytes ({} global keys, {} device sets) — top families: {}",
+            bytes.len(),
+            fs.global.len(),
+            fs.devices.len(),
+            summary.join(", ")
+        );
+    }
     storage.write_addr(
         &crate::storage::vault_key("settings", &storage.vault_seed()),
-        &settings_to_bytes(&fs.global, &fs.devices),
+        &bytes,
     )
 }
 
