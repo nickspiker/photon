@@ -81,7 +81,7 @@ pub fn build_message_package(
         .map_err(|e| e.to_string())?
         .set("ihp", VsfType::hp(incorporated_hp.to_vec()))
         .map_err(|e| e.to_string())?
-        .set("refk", VsfType::u3(reference.map(|(k, _)| k).unwrap_or(0)))
+        .set("refk", VsfType::u(reference.map(|(k, _)| k).unwrap_or(0) as usize, false))
         .map_err(|e| e.to_string())?
         .set(
             "reft",
@@ -108,17 +108,17 @@ pub fn build_message_package(
         }
         if let Some(s) = b.seq {
             builder = builder
-                .set("bseq", VsfType::u6(s))
+                .set("bseq", VsfType::u(s as usize, false))
                 .map_err(|e| e.to_string())?;
         }
         if let Some(x) = b.exit {
             builder = builder
-                .set("bexit", VsfType::i6(x))
+                .set("bexit", VsfType::i(x as isize))
                 .map_err(|e| e.to_string())?;
         }
         if let Some(s) = b.sig {
             builder = builder
-                .set("bsig", VsfType::u3(s.min(0xFF) as u8))
+                .set("bsig", VsfType::u(s as usize, false))
                 .map_err(|e| e.to_string())?;
         }
     }

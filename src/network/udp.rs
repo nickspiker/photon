@@ -214,7 +214,7 @@ pub fn build_lan_discovery(handle_proof: [u8; 32], port: u16, device_pubkey: [u8
         .add_section(
             "pt_disc",
             vec![
-                ("port".to_string(), VsfType::u4(port)),
+                ("port".to_string(), VsfType::u(port as usize, false)),
                 ("ke".to_string(), VsfType::ke(device_pubkey.to_vec())),
             ],
         )

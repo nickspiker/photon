@@ -74,17 +74,17 @@ pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<
             .map_err(|e| e.to_string())?
             .append_multi("m_text", vec![VsfType::x(row.content.clone())])
             .map_err(|e| e.to_string())?
-            .append_multi("m_out", vec![VsfType::u3(row.sender_outgoing as u8)])
+            .append_multi("m_out", vec![VsfType::u(row.sender_outgoing as usize, false)])
             .map_err(|e| e.to_string())?
-            .append_multi("m_del", vec![VsfType::u3(row.delivered as u8)])
+            .append_multi("m_del", vec![VsfType::u(row.delivered as usize, false)])
             .map_err(|e| e.to_string())?
-            .append_multi("m_tomb", vec![VsfType::u3(row.deleted as u8)])
+            .append_multi("m_tomb", vec![VsfType::u(row.deleted as usize, false)])
             .map_err(|e| e.to_string())?
-            .append_multi("m_ntf", vec![VsfType::u3(row.notified as u8)])
+            .append_multi("m_ntf", vec![VsfType::u(row.notified as usize, false)])
             .map_err(|e| e.to_string())?
             .append_multi(
                 "m_refk",
-                vec![VsfType::u3(row.reference.map(|(k, _)| k).unwrap_or(0))],
+                vec![VsfType::u(row.reference.map(|(k, _)| k).unwrap_or(0) as usize, false)],
             )
             .map_err(|e| e.to_string())?
             .append_multi(
@@ -330,7 +330,7 @@ mod tests {
             .build()
             .set("oldest", VsfType::e(vsf::types::EtType::e6(0)))
             .expect("oldest")
-            .set("more", VsfType::u3(0))
+            .set("more", VsfType::u(0, false))
             .expect("more")
             .encode()
             .expect("bare section");

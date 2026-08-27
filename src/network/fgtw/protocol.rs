@@ -254,7 +254,7 @@ impl FgtwMessage {
                 .add_section(
                     "fgtw",
                     vec![
-                        ("msg_type".to_string(), VsfType::u3(0)),
+                        ("msg_type".to_string(), VsfType::u(0, false)),
                         ("device_pubkey".to_string(), device_pubkey.to_vsf()),
                     ],
                 )
@@ -265,7 +265,7 @@ impl FgtwMessage {
             } => {
                 // One native multi-value `peer` row per record (encode_peer_field — same row shape the phonebook + worker use). No counts, no numbered names.
                 let mut section = vsf::VsfSection::new("fgtw");
-                section.add_field_multi("msg_type", vec![VsfType::u3(1)]);
+                section.add_field_multi("msg_type", vec![VsfType::u(1, false)]);
                 section.add_field_multi("device_pubkey", vec![device_pubkey.to_vsf()]);
                 for peer in peers {
                     let (_, values) = encode_peer_field(peer);
@@ -280,7 +280,7 @@ impl FgtwMessage {
                 .add_section(
                     "fgtw",
                     vec![
-                        ("msg_type".to_string(), VsfType::u3(2)),
+                        ("msg_type".to_string(), VsfType::u(2, false)),
                         (
                             "handle_proof".to_string(),
                             VsfType::hP(handle_proof.to_vec()),
@@ -292,7 +292,7 @@ impl FgtwMessage {
             FgtwMessage::FoundNodes { devices } => {
                 // One native multi-value `device` row per record (the full encode_peer_field row — this path now carries local_ip + sig too, which the prefixed form dropped).
                 let mut section = vsf::VsfSection::new("fgtw");
-                section.add_field_multi("msg_type", vec![VsfType::u3(3)]);
+                section.add_field_multi("msg_type", vec![VsfType::u(3, false)]);
                 for device in devices {
                     let (_, values) = encode_peer_field(device);
                     section.add_field_multi("device", values);
@@ -307,7 +307,7 @@ impl FgtwMessage {
                 .add_section(
                     "fgtw",
                     vec![
-                        ("msg_type".to_string(), VsfType::u3(4)),
+                        ("msg_type".to_string(), VsfType::u(4, false)),
                         (
                             "handle_proof".to_string(),
                             VsfType::hP(handle_proof.to_vec()),
@@ -324,7 +324,7 @@ impl FgtwMessage {
                 .add_section(
                     "fgtw",
                     vec![
-                        ("msg_type".to_string(), VsfType::u3(5)),
+                        ("msg_type".to_string(), VsfType::u(5, false)),
                         (
                             "handle_proof".to_string(),
                             VsfType::hP(handle_proof.to_vec()),
@@ -336,7 +336,7 @@ impl FgtwMessage {
             FgtwMessage::QueryResponse { devices } => {
                 // One native multi-value `device` row per record.
                 let mut section = vsf::VsfSection::new("fgtw");
-                section.add_field_multi("msg_type", vec![VsfType::u3(6)]);
+                section.add_field_multi("msg_type", vec![VsfType::u(6, false)]);
                 for device in devices {
                     let (_, values) = encode_peer_field(device);
                     section.add_field_multi("device", values);
@@ -1184,7 +1184,7 @@ fn add_pong_sensitive_fields(
                 VsfType::hb(record.conversation_token.to_vec()),
                 VsfType::e(vsf::types::EtType::e6(record.last_received_osc)),
                 // Anti-entropy digest (type-marker matched like the rest of the row; legacy parsers skip unknown markers): u5 row count + hg XOR-fold.
-                VsfType::u5(record.row_count),
+                VsfType::u(record.row_count as usize, false),
                 VsfType::hg(record.row_digest.to_vec()),
             ],
         );
@@ -2247,7 +2247,7 @@ pub fn build_history_request_vsf(
     let mut section = VsfSection::new("hist_req");
     section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
     section.add_field("before", VsfType::e(vsf::types::EtType::e6(before_osc)));
-    section.add_field("limit", VsfType::u5(limit));
+    section.add_field("limit", VsfType::u(limit as usize, false));
     section.add_field("rid", VsfType::hb(request_id.to_vec()));
 
     let unsigned = VsfBuilder::new()
@@ -3025,7 +3025,7 @@ fn build_blind_frame_vsf(
     section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
     section.add_field("rid", VsfType::hb(request_id.to_vec()));
     if let Some(found) = found {
-        section.add_field("found", VsfType::u3(found as u8));
+        section.add_field("found", VsfType::u(found as usize, false));
     }
     if let Some(blob) = blob {
         section.add_field(
