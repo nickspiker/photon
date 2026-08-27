@@ -5,6 +5,8 @@ cd "$(dirname "$0")"
 
 source scripts/lib/github.sh
 source scripts/lib/manifest.sh
+# ALL sources live up here, before the bump: `source` is a POSIX special builtin, so its failure aborts the shell WITHOUT running the ERR trap — a mid-script source that dies post-bump strands the release commit with no rollback banner (field 2026-08-27, the stranded v67).
+source scripts/lib/snapbuild.sh
 
 # Source-level gates FIRST — before the lock, the release bump, or any of the cross-compiles below — so a comment/parse/migration slip fails in under a second, not after the whole platform matrix has built.
 source scripts/lib/preflight.sh
@@ -73,8 +75,6 @@ R2_URL="https://brobdingnagian.holdmyoscilloscope.com/$R2_PATH"
 # SOURCE FREEZE (edit-safe release): reflink-snapshot photon + its whole path-dep closure the instant the build phase starts, then build every target from the FROZEN tree — so editing the live tree while a multi-minute cross-platform deploy runs can't tear a build (the "Read theme.rs (lines 86-89)" corruption a mid-edit deploy hit).
 # CARGO_TARGET_DIR stays the REAL ./target (snap + live units carry different unit hashes, so both coexist), so every `./target/release/...` signer call and every artefact path below is untouched.
 # Off-btrfs / any snapshot failure → SNAP_DIR stays "." and the live tree builds exactly as before.
-# Plain repo-relative: line 4 already anchored cwd to the repo root, and re-deriving from $0 here DOUBLES the path when the script was invoked by a relative path from elsewhere (field 2026-08-27: ./mnt/.../photon/deploy.sh from / resolved this to ./mnt/.../photon/mnt/.../snapbuild.sh).
-source scripts/lib/snapbuild.sh
 SNAP_DIR="."
 if snapbuild_take; then
     SNAP_DIR="$SNAPBUILD_ROOT/photon"
