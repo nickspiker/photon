@@ -536,11 +536,13 @@ impl PhotonApp {
         }
     }
 
-    /// The in-flight command, if any: the newest outgoing BridgeCmd row whose streamed output has no FINAL yet (`bridge_exit` is stamped by the replace-in-place when the exit frame lands). Drives the Stop button's visibility.
+    /// The in-flight command, if any: the newest outgoing BridgeCmd row that is DELIVERED (the ACK proves the host holds it — Nick 2026-08-27: the row's own testimony, not a guess) but has no FINAL yet. An undelivered command isn't running anywhere — it's a queued send, the give-up verdict owns its fate, and the lane's hash-chain executes commands in order regardless — so it must never hold the prompt (the zombie-gate class). Drives the Stop button's visibility.
     pub(super) fn bridge_inflight_target(&self, ci: usize) -> Option<i64> {
         let conv = self.conv_of(ci)?;
         let cmd = conv.messages.iter().rev().find(|m| {
-            m.is_outgoing && matches!(m.reference, Some((crate::types::RefKind::BridgeCmd, _)))
+            m.is_outgoing
+                && m.delivered
+                && matches!(m.reference, Some((crate::types::RefKind::BridgeCmd, _)))
         })?;
         let done = conv.messages.iter().any(|m| {
             m.reference == Some((crate::types::RefKind::BridgeOut, cmd.timestamp))
