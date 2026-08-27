@@ -31,9 +31,13 @@ cargo update --workspace --quiet 2>/dev/null || true
 git add Cargo.toml Cargo.lock
 git commit -q -m "release: v${SHIP_VERSION} (${FULL_VERSION})"
 # Any failure from here undoes ONLY the version-bump commit — the tree returns to its pre-deploy version and the next attempt re-bumps cleanly. NEVER `reset --hard`: the reflink snapshot invites editing the live tree WHILE the deploy runs, so a hard reset would silently DESTROY that in-flight work (it did — lost edits on failed deploys). `--soft` drops the commit but keeps every change; `checkout HEAD -- Cargo.toml Cargo.lock` then reverts the ONLY two files the bump touched, leaving all other edits untouched. The failing line + command is named so a multi-target deploy doesn't leave you guessing WHICH build tore (the whole phase streams; the failing line just scrolls past otherwise).
-trap 'rc=$?; echo ""; echo "DEPLOY FAILED at line $LINENO (exit $rc): ${BASH_COMMAND}"; echo "undoing the version bump (working tree preserved)."; git reset --soft HEAD~1; git checkout HEAD -- Cargo.toml Cargo.lock' ERR
-# Ctrl-C skips the ERR trap entirely (SIGINT is not a command failure), which left an unshipped release commit at HEAD — "git log shows release: vN with no dev-line-open after it" (bit us on the aborted v49, 2026-07-25). Same rollback, then exit with the conventional 130.
-trap 'echo ""; echo "DEPLOY INTERRUPTED — undoing the version bump (working tree preserved)."; git reset --soft HEAD~1; git checkout HEAD -- Cargo.toml Cargo.lock; exit 130' INT TERM
+# ONE rollback, keyed on the success flag, fired from EXIT — because the enumerate-the-failure-modes approach lost twice in one day: ERR misses explicit `exit 1` paths (exit isn't an error) and any special-builtin death; INT/TERM miss SIGHUP (a bridge shell dying under the deploy — the stranded v67, twice, 2026-08-27/28). EXIT fires on normal end, explicit exit, set -e, AND trapped signals — everything but SIGKILL. DEPLOY_SHIPPED=1 is set immediately before the success banner; any other way out rolls the bump back. NEVER `reset --hard` in the rollback: the reflink snapshot invites editing the live tree WHILE the deploy runs — `--soft` + checkout of the two bump files preserves that work.
+DEPLOY_SHIPPED=0
+BUMP_COMMIT="$(git rev-parse HEAD)"
+trap 'rc=$?; if [ "$DEPLOY_SHIPPED" != "1" ] && [ "$(git rev-parse HEAD)" = "$BUMP_COMMIT" ]; then echo ""; echo "DEPLOY DID NOT SHIP (exit $rc, last: ${BASH_COMMAND}) — undoing the version bump (working tree preserved)."; git reset --soft HEAD~1; git checkout HEAD -- Cargo.toml Cargo.lock; elif [ "$DEPLOY_SHIPPED" != "1" ]; then echo ""; echo "DEPLOY DID NOT SHIP (exit $rc) — HEAD has moved past the bump commit ($BUMP_COMMIT); NOT auto-rolling back. Inspect git log."; fi' EXIT
+# Named-line diagnostics stay on ERR (the EXIT trap knows the last command, ERR knows the LINE); signals convert to an exit so the EXIT trap runs.
+trap 'echo ""; echo "DEPLOY FAILED at line $LINENO: ${BASH_COMMAND}"' ERR
+trap 'exit 130' INT TERM HUP
 echo "Deploying version: $FULL_VERSION (was $CURRENT_VERSION)"
 
 
@@ -358,6 +362,7 @@ echo "  powershell -ExecutionPolicy Bypass -c \"irm https://brobdingnagian.holdm
 
 # The ONLY success banner. If a deploy exits before printing this, it did NOT ship — no matter how clean the last line looked (a silent Redox abort read as green all the way to "call your mum", 2026-08-13).
 # Never vouch for a release you didn't watch print this line.
+DEPLOY_SHIPPED=1
 echo ""
 echo "════════════════════════════════════════════════════════════"
 echo "  ✓ DEPLOY COMPLETE — v${SHIP_VERSION} (${FULL_VERSION}) is PUBLIC"
