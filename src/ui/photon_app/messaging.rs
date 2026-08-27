@@ -14,13 +14,31 @@ impl PhotonApp {
             None => return,
         };
         // THE PROMPT GATE (Nick 2026-08-26): a terminal doesn't take the next command until the prompt returns. While a bridge command is in flight (no final yet), refuse the send and KEEP the typed text — type-ahead composes, Enter waits. The gate can't wedge: the final clears it, and when a final can never come the stream-loss stamp or Stop's no-op answer does (both stamp bridge_exit). Stop itself is a control row, never gated.
-        if !text.is_empty()
-            && self.contacts.get(ci).map_or(false, |c| c.is_sibling)
-            && self.bridge_inflight_target(ci).is_some()
-        {
-            crate::log("BRIDGE: command still running — send held until the final lands (Stop to interrupt)");
-            self.scene_dirty = true;
-            return;
+        if !text.is_empty() && self.contacts.get(ci).map_or(false, |c| c.is_sibling) {
+            if let Some(t) = self.bridge_inflight_target(ci) {
+                // NAME THE HOSTAGE (field 2026-08-28, the gate that held after a displayed final): which command row holds the prompt, and what evidence exists about its final — an anonymous refusal made this class undiagnosable from logs.
+                let (has_out_row, out_exit) = self
+                    .conv_of(ci)
+                    .and_then(|conv| {
+                        conv.messages
+                            .iter()
+                            .find(|m| {
+                                m.reference
+                                    == Some((crate::types::RefKind::BridgeOut, t))
+                            })
+                            .map(|m| (true, m.bridge_exit))
+                    })
+                    .unwrap_or((false, None));
+                let exit_s = out_exit.map(|e| e.to_string()).unwrap_or_else(|| "-".into());
+                crate::logf!(
+                    "BRIDGE: send held — command eagle_time {} is delivered with no final (output row: {}, exit: {}); Stop to interrupt",
+                    t,
+                    if has_out_row { "present" } else { "none" },
+                    exit_s
+                );
+                self.scene_dirty = true;
+                return;
+            }
         }
         if text.is_empty() {
             // Empty while a reply/edit/react is armed = cancel the arm, nothing sends (an "empty edit" is a delete's job, and probing from an armed state would be a surprise ping).

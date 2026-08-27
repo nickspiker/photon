@@ -815,7 +815,35 @@ impl PhotonApp {
                 undelivered_fids.push(fid);
             }
         }
-        // BRIDGE: a given-up COMMAND releases the prompt (the operator's terminal must never wait on a row the transport has formally abandoned). Chat rows are untouched — their give-up/revive dance is the durable design; only the sibling-terminal's gate semantics key off this.
+        // BRIDGE: a given-up row on a TERMINAL lane also ROTATES the lane — the ephemeral-terminal doctrine's sanctioned abandon. A dead pending can't be removed alone (mid-chain hash hole), so it used to cycle give-up → re-arm forever: the field zombies survived days and every bridge reopen because they lived in whichever sibling conversation was NOT being reopened. Rotation retires the lane wholesale (pendings legally dropped — for a terminal, stale is dead by definition); the next command mints fresh. Chat lanes are untouched: their give-up/revive dance is the durable design.
+        {
+            let mut rotated: Vec<crate::types::friendship::FriendshipId> = Vec::new();
+            for (fid, _) in &gave_up_rows {
+                if rotated.contains(fid) {
+                    continue;
+                }
+                let is_sib = self
+                    .contacts
+                    .iter()
+                    .any(|c| c.is_sibling && c.friendship_id == Some(*fid));
+                if !is_sib {
+                    continue;
+                }
+                if let Some((_, chains)) = self
+                    .friendship_chains
+                    .iter_mut()
+                    .find(|(id, _)| *id == *fid)
+                {
+                    if let Some((dead, fresh, retired)) = chains.rotate_our_lane() {
+                        crate::logf!("BRIDGE: give-up on a terminal lane — rotated {}... to {}... ({} dead pending(s) dropped for good)", hex::encode(&dead[..4]), hex::encode(&fresh[..4]), retired);
+                        rotated.push(*fid);
+                    }
+                }
+            }
+            for fid in rotated {
+                self.persist_chains_async(&fid);
+            }
+        }
         for (fid, t) in gave_up_rows {
             let Some(ci) = self
                 .contacts
