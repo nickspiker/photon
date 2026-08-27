@@ -202,9 +202,10 @@ impl BridgeShell {
         });
         let sentinel = format!("__PHOTON_BRIDGE_{:016x}__", rand::random::<u64>());
         // Init: merge stderr→stdout, aliases best-effort (guarded .bashrc often skips non-interactive, so force expand_aliases + source explicitly), prompt silenced, then a bare `cd` — the spawned bash inherits PHOTON'S OWN cwd, which is whatever the launch path bequeathed (`/` from the Dock, the repo after a dev.sh reload, luck from autostart); every terminal starts at ~ and so does this one. `true` gives the priming run below a clean exit to read up to.
+        // NON-INTERACTIVE HARDENING (field 2026-08-26, the git pull that "hung"): anything that opens an editor, a pager, or a credential prompt in a shell with no terminal waits forever with zero output. git merge → editor was the live case; pagers and apt prompts are the same class. Every such tool gets told the truth: no editor, no pager, no prompts.
         writeln!(
             stdin,
-            "exec 2>&1; shopt -s expand_aliases 2>/dev/null; [ -f ~/.bashrc ] && source ~/.bashrc 2>/dev/null; [ -f ~/.bash_aliases ] && source ~/.bash_aliases 2>/dev/null; cd 2>/dev/null; PS1=''; PROMPT_COMMAND=''; true"
+            "exec 2>&1; shopt -s expand_aliases 2>/dev/null; [ -f ~/.bashrc ] && source ~/.bashrc 2>/dev/null; [ -f ~/.bash_aliases ] && source ~/.bash_aliases 2>/dev/null; cd 2>/dev/null; PS1=''; PROMPT_COMMAND=''; export GIT_TERMINAL_PROMPT=0 GIT_EDITOR=true GIT_PAGER=cat PAGER=cat EDITOR=true VISUAL=true DEBIAN_FRONTEND=noninteractive; true"
         )?;
         let mut sh = BridgeShell {
             child,
