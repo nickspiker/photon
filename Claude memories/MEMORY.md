@@ -147,3 +147,4 @@
 - [project_voice_calls.md](project_voice_calls.md) — calls FIELD-WORKING 2026-08-19 (two-way clean): channel-aware CBR ladder 16k→128k (tier byte, AIMD, VBR permanently banned), soft duck, MEDIA fast-mixer out (vendor AEC traded), adaptive jitter; docs/calls.md
 - [project_xchacha_migration.md](project_xchacha_migration.md) — 2026-08-18 stack-wide ChaCha20→XChaCha20-Poly1305 (96→192-bit nonce) EVERYWHERE incl. chain stream layer
 - [feedback-one-build-per-check.md](feedback-one-build-per-check.md) — NEVER run dev.sh twice to read one build: capture once to scratchpad, grep the capture (battery + heat + double relaunch)
+- [project-ferros-exec-naming.md](project-ferros-exec-naming.md) — ferros exec design: no ambient cwd (shell resolves, programs get identities), bind-dont-search (petname→blake3 + sig at spawn), VSF headers not #!, package roots not $0
