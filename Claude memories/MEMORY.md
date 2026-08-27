@@ -105,7 +105,7 @@
 - [project_secret_memory_hygiene.md](project_secret_memory_hygiene.md) — hot-secret RAM handling: do-now = zeroize + mlock + no-core-dumps + copy discipline; hibernation/cold-boot uncloseable in userspace (= PIPE line)
 - [reference_vsf_primary_section.md](reference_vsf_primary_section.md) — VSF readers MUST use VsfHeader::primary_section (near-form names are TOC-only, header-only sections have no body)
 - [reference_claude_unguard.md](reference_claude_unguard.md) — ~/.local/bin/claude-code-unguard FORCE-opens Claude Code's Edit read guard (patches Bun binaries); RE-RUN + RELOAD after every update; file-history → /dev/shm tmpfs
-- [feedback_vsf_readers_width_agnostic.md](feedback_vsf_readers_width_agnostic.md) — VSF readers NEVER exact-match integer widths (as_u64/as_i64/as_usize only); auto-sized writes decode concrete, so u(..)/i(..) arms never fire
+- [feedback_vsf_readers_width_agnostic.md](feedback_vsf_readers_width_agnostic.md) — VSF integers canonical BOTH ways: writers auto-size (VsfType::u/i, NEVER hand widths — truncation trap), readers widen (as_u64/as_i64, never exact-match)
 - [feedback_numbers_binary_at_rest.md](feedback_numbers_binary_at_rest.md) — THE number doctrine: binary at rest (wire/vault/log), base chosen at render edge only (dozenal glyphs UI / words read-aloud); arabic never
 - [feedback_answer_dont_act.md](feedback_answer_dont_act.md) — user asks a QUESTION → answer and stop; never take action (esp. destructive) on a verification question; do ONLY what's asked, nothing extra
 - [project_two_machine_git_divergence.md](project_two_machine_git_divergence.md) — after ANY commit verify HEAD == ls-remote; "missing fgtw/fluor symbol" = stale sibling, fast-forward first
