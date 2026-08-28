@@ -260,37 +260,50 @@ echo "BUILD PHASE complete — all 8 platforms + signed manifest built. Nothing 
 echo ""
 echo "Uploading to R2 ($R2_BUCKET/$R2_PATH)..."
 
+# TIMEOUT + RETRY on every put (field 2026-08-28): wrangler holds a dead HTTP stream FOREVER — a deploy sat 20 minutes on install-release.ps1, a few-KB text file, after all eight binaries had uploaded fine. 10 minutes covers the biggest binary on the slowest sane uplink; three attempts covers the transient-connection class; a genuinely dead network still fails LOUDLY into the trap instead of hanging.
+r2_put() {
+    local attempt
+    for attempt in 1 2 3; do
+        if timeout 600 wrangler r2 object put "$@"; then
+            return 0
+        fi
+        echo "  ⚠ upload attempt $attempt failed/timed out — retrying: $1" >&2
+    done
+    echo "  ✗ upload failed after 3 attempts: $1" >&2
+    return 1
+}
+
 # Upload all release binaries to R2 (flat naming with -release suffix)
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-linux-x86_64-release" \
+r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-linux-x86_64-release" \
     --file target/release/photon-messenger --remote
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-linux-arm64-release" \
+r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-linux-arm64-release" \
     --file target/aarch64-unknown-linux-gnu/release/photon-messenger --remote
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-windows-release.exe" \
+r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-windows-release.exe" \
     --file target/x86_64-pc-windows-gnu/release/photon-messenger.exe --remote
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-windows-arm64-release.exe" \
+r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-windows-arm64-release.exe" \
     --file target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe --remote
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-redox-release" \
+r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-redox-release" \
     --file target/x86_64-unknown-redox/release/photon-messenger --remote
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-macos-intel-release" \
+r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-macos-intel-release" \
     --file target/x86_64-apple-darwin/release/photon-messenger --remote
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-macos-arm64-release" \
+r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-macos-arm64-release" \
     --file target/aarch64-apple-darwin/release/photon-messenger --remote
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/photon-messenger-android-release.apk" \
+r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-android-release.apk" \
     --file android/app/build/outputs/apk/release/app-release.apk \
     --content-type application/vnd.android.package-archive --remote
 
 # Upload install scripts and assets
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-release.sh" \
+r2_put "$R2_BUCKET/$R2_PATH/install-release.sh" \
     --file installers/install-release.sh --content-type text/plain --remote
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/icon-1024.png" \
+r2_put "$R2_BUCKET/$R2_PATH/icon-1024.png" \
     --file assets/icon-1024.png --content-type image/png --remote
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/app.png" \
+r2_put "$R2_BUCKET/$R2_PATH/app.png" \
     --file assets/icon-256.png --content-type image/png --remote
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/install-release.ps1" \
+r2_put "$R2_BUCKET/$R2_PATH/install-release.ps1" \
     --file /tmp/install-release.ps1 --content-type text/plain --remote
 
 # Manifest LAST: publish it only after every binary it references is live, so a client that polls the fresh manifest never fetches a URL that isn't up yet.
-wrangler r2 object put "$R2_BUCKET/$R2_PATH/manifest-release.vsf" \
+r2_put "$R2_BUCKET/$R2_PATH/manifest-release.vsf" \
     --file /tmp/manifest-release.vsf --content-type application/octet-stream --remote
 
 echo ""
