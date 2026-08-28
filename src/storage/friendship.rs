@@ -289,7 +289,18 @@ pub fn load_friendship_chains(
     #[cfg(feature = "development")]
     crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "friendship/chains");
 
-    chains_from_vsf_bytes(&vsf_bytes)
+    let mut chains = chains_from_vsf_bytes(&vsf_bytes)?;
+    // LOAD-TIME SELF-HEAL for graveyard blobs minted before rotation learned to sweep (the 8.1MB / 490-lane Emma specimen, 2026-08-28): receipt-less non-active lanes are losslessly re-derivable from the root, so a poisoned blob trims here and the next persist shrinks it for good. Healthy blobs pay one cheap scan.
+    let pruned = chains.prune_retired_lanes(8);
+    if pruned > 0 {
+        crate::logf!(
+            "LANE: load-time GC pruned {} retired lane(s) from {} ({} bytes on disk before the trim)",
+            pruned,
+            hex::encode(&friendship_id.as_bytes()[..4]),
+            vsf_bytes.len()
+        );
+    }
+    Ok(chains)
 }
 
 // MIGRATION COMPLETE (v52→v56, deleted 2026-08-18 at v0.56.1): the pre-document chains fallback is gone — zero "MIGRATION: rewrote" lines across the fleet's recent submitted logs, exactly the evidence bar the block set for itself.

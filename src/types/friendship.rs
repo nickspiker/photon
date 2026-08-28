@@ -779,6 +779,49 @@ impl FriendshipChains {
         Some(self.lane_labels.len() - 1)
     }
 
+    /// RETIRED-LANE GC (field 2026-08-28, the 8.1MB chains blob): rotation mints a fresh lane and the dead one's 16KB chain stayed forever — the Emma wedge's rotate→re-serve→exhaust→rotate loop minted ~490 lanes and the blob's whole-put churn raced the vault fence into the recurring degraded banner. A lane with NO receipt ever and not currently ours is EXACTLY the state `ensure_lane` re-derives from `lane_root` + label on demand (position 0, empty plaintext, derivable anchor) — dropping it is lossless by construction. Keep the newest `keep_recent` such lanes (grace for an in-flight first frame); prune the rest. Peer lanes (any receipt) and our active lane are never touched.
+    /// Total materialized lanes (all states) — the GC bound watches this.
+    pub fn lane_count(&self) -> usize {
+        self.lane_labels.len()
+    }
+
+    pub fn prune_retired_lanes(&mut self, keep_recent: usize) -> usize {
+        let dead: Vec<usize> = (0..self.lane_labels.len())
+            .filter(|&i| {
+                self.last_received_times[i].is_none()
+                    && Some(self.lane_labels[i]) != self.our_label
+            })
+            .collect();
+        if dead.len() <= keep_recent {
+            return 0;
+        }
+        let drop_set: std::collections::HashSet<usize> =
+            dead[..dead.len() - keep_recent].iter().copied().collect();
+        let mut i = 0usize;
+        let mut dropped = 0usize;
+        let total = self.lane_labels.len();
+        let mut src = 0usize;
+        while src < total {
+            if drop_set.contains(&src) {
+                self.lane_labels.remove(i);
+                self.lane_positions.remove(i);
+                self.chains.remove(i);
+                self.last_plaintexts.remove(i);
+                self.first_message_anchors.remove(i);
+                self.last_received_hashes.remove(i);
+                self.last_received_times.remove(i);
+                dropped += 1;
+            } else {
+                i += 1;
+            }
+            src += 1;
+        }
+        if dropped > 0 {
+            self.mutated_osc = vsf::eagle_time_oscillations();
+        }
+        dropped
+    }
+
     /// OUR lane's label, minting it on first use — the one lane this device may ever advance. `None` only pre-lanes (no root).
     pub fn mint_our_lane(&mut self) -> Option<[u8; 32]> {
         if let Some(l) = self.our_label {
@@ -920,6 +963,11 @@ impl FriendshipChains {
         }
         if changed {
             self.mutated_osc = vsf::eagle_time_oscillations();
+            // A sibling still carrying a pre-GC graveyard blob must not re-infect a pruned one — sweep after every adopt, same rule as rotation and load.
+            let pruned = self.prune_retired_lanes(8);
+            if pruned > 0 {
+                crate::logf!("LANE: pruned {} retired lane(s) after sibling merge (graveyard re-import blocked)", pruned);
+            }
         }
         changed
     }
@@ -1114,6 +1162,11 @@ impl FriendshipChains {
         self.pending_messages.clear();
         self.our_label = None;
         let fresh = self.mint_our_lane()?;
+        // Every rotation sweeps its own graveyard — the Phase C GC, arrived (see prune_retired_lanes): without it a rotation loop minted 490 lanes × 16KB into one blob.
+        let pruned = self.prune_retired_lanes(8);
+        if pruned > 0 {
+            crate::logf!("LANE: pruned {} retired receipt-less lane(s) at rotation (re-derivable from the root on demand)", pruned);
+        }
         Some((dead, fresh, retired))
     }
 
@@ -1557,6 +1610,50 @@ mod tests {
         let ours = chains.mint_our_lane().unwrap();
         assert_eq!(chains.mint_our_lane().unwrap(), ours);
         assert!(chains.current_key(&ours).is_some());
+    }
+
+    /// The 8.1MB graveyard (field 2026-08-28): 490 rotations minted 490 dead 16KB lanes into one blob. Rotation now sweeps — lane count stays bounded under arbitrary rotation churn — and the prune is LOSSLESS: a pruned label re-derives from the root with the identical key, and a peer lane WITH receipts is never touched.
+    #[test]
+    fn rotation_churn_stays_bounded_and_prune_is_lossless() {
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+
+        // A peer lane with a receipt — must survive every sweep.
+        let peer_label = [9u8; 32];
+        chains.ensure_lane(&peer_label).unwrap();
+        chains.mark_received(&peer_label, 12345);
+        let peer_key_before = chains.current_key(&peer_label).copied();
+
+        chains.mint_our_lane().unwrap();
+        for _ in 0..100 {
+            chains.rotate_our_lane().unwrap();
+        }
+        assert!(
+            chains.lane_count() <= 11,
+            "100 rotations must not accumulate lanes (got {})",
+            chains.lane_count()
+        );
+        assert_eq!(
+            chains.current_key(&peer_label).copied(),            peer_key_before,
+            "a receipted peer lane survives the sweep untouched"
+        );
+
+        // Losslessness: a pruned retired label re-derives the identical lane key on demand.
+        let ghost = [0x42u8; 32];
+        chains.ensure_lane(&ghost).unwrap();
+        let ghost_key = chains.current_key(&ghost).copied();
+        for _ in 0..12 {
+            chains.rotate_our_lane().unwrap(); // push the ghost past the keep window
+        }
+        assert!(chains.lane_index(&ghost).is_none(), "the receipt-less ghost was pruned");
+        chains.ensure_lane(&ghost).unwrap();
+        assert_eq!(
+            chains.current_key(&ghost).copied(),
+            ghost_key,
+            "re-derivation from the root reproduces the pruned lane exactly"
+        );
     }
 
     #[test]
