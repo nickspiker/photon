@@ -1992,6 +1992,16 @@ impl FluorApp for PhotonApp {
                         ctx.window.request_redraw();
                     }
                 }
+                // The blinkey sleeps with the window (Nick 2026-08-28): an unfocused window can't take a keystroke, so pulsing a caret in it burns a wakeup + a damage rect every ~150ms for nobody. Logical textbox focus is KEPT — only the blink engine stops (the caret freezes at whatever phase it held, like every native app) — so refocusing the window resumes typing exactly where it was. The refocus edge restarts the timer iff a textbox actually holds focus.
+                if *focused {
+                    let tb_focused = self.textboxes_mut().any(|(_, tb)| tb.is_focused())
+                        || self.message_textbox.as_ref().map_or(false, |tb| tb.is_focused());
+                    if tb_focused {
+                        self.blink_timer.start(Instant::now());
+                    }
+                } else {
+                    self.blink_timer.stop();
+                }
                 EventResponse::Pass
             }
             Event::MouseWheel { delta } => {
