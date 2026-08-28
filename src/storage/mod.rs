@@ -190,7 +190,21 @@ pub fn vault_key(domain: &str, scope: &[u8; 32]) -> [u8; 32] {
     let mut input = Vec::with_capacity(domain.len() + 32);
     input.extend_from_slice(domain.as_bytes());
     input.extend_from_slice(scope);
-    blake3::derive_key(&format!("{}.storage.entry.v0", APP.id), &input)
+    let key = blake3::derive_key(&format!("{}.storage.entry.v0", APP.id), &input);
+    // NAMETAG AT THE MINT (dev builds, field 2026-08-28): an 8MB value at addr 920ee297 grew all day while BOTH per-blob confessions (settings, chains) stayed silent — the monster belongs to a third domain, and kete's SLOW-put line can only name the address. Log each (address, domain) pair ONCE so any addr in any log maps straight to its domain. Addresses aren't secrets (they appear in every SLOW line already); the DOMAIN string is the only new information.
+    #[cfg(feature = "development")]
+    {
+        static SEEN: std::sync::Mutex<Option<std::collections::HashSet<[u8; 4]>>> =
+            std::sync::Mutex::new(None);
+        let prefix: [u8; 4] = key[..4].try_into().unwrap();
+        if let Ok(mut g) = SEEN.lock() {
+            let set = g.get_or_insert_with(Default::default);
+            if set.insert(prefix) {
+                crate::logf!("VAULTKEY: {} = domain '{}'", hex::encode(prefix), domain);
+            }
+        }
+    }
+    key
 }
 
 /// Returns ~/.config/photon/ (or Android equivalent). All Photon files live here.
