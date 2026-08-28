@@ -56,7 +56,8 @@ echo "Binaries:"
 echo "  target/release/photon-messenger                              (x86_64)"
 echo "  target/aarch64-unknown-linux-gnu/release/photon-messenger    (arm64)"
 echo
-echo "Upload to brobdingnagian as:"
+# "Staged", not "Upload": nothing leaves this machine here — these are the slugs the deploy's publish phase (which runs only after EVERY platform builds) will upload them as. The old wording read as an in-progress upload mid-deploy (Nick, 2026-08-28).
+echo "Staged for publish as (no upload happens here):"
 echo "  photon-messenger-linux-x86_64-release"
 echo "  photon-messenger-linux-arm64-release"
 echo "completed $(date '+%F %T')"
