@@ -71,6 +71,18 @@ pub fn save_friendship_chains(
 ) -> Result<(), StorageError> {
     let friendship_id = chains.id();
     let vsf_bytes = chains_to_vsf_bytes(chains)?;
+    // GROWTH CONFESSION #2 (field 2026-08-28): the settings confession stayed SILENT while the 920ee297 monster grew 6.4→7.9MB with 6.8s puts — so the settings blob is cleared and this one is the next suspect with means (persists on every ACK — the observed put PAIRS) and motive (gap_buffer grows on every "buffering (ahead of us)" frame, and wedge-era lanes buffer forever). Name the component that holds the bytes.
+    if vsf_bytes.len() > 512 * 1024 {
+        crate::logf!(
+            "CHAINS: blob for {} is {} bytes — {} pending, {} gap-buffered, {} lane(s), {} plaintext(s)",
+            hex::encode(&friendship_id.as_bytes()[..4]),
+            vsf_bytes.len(),
+            chains.pending_messages.len(),
+            chains.gap_buffer_count(),
+            chains.lane_heads().len(),
+            chains.last_plaintexts().len()
+        );
+    }
     storage.write_addr(&chains_key(&friendship_id), &vsf_bytes)
 }
 
