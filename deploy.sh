@@ -7,6 +7,8 @@ source scripts/lib/github.sh
 source scripts/lib/manifest.sh
 # ALL sources live up here, before the bump: `source` is a POSIX special builtin, so its failure aborts the shell WITHOUT running the ERR trap — a mid-script source that dies post-bump strands the release commit with no rollback banner (field 2026-08-27, the stranded v67).
 source scripts/lib/snapbuild.sh
+# The release git flow (provenance-by-tag preflight/tag/advance) — a plain `git push` of an hour-old bump commit is rejected the instant another device pushed to main during the build (field 2026-08-28, five dead deploys). See the lib header; proven by scripts/test/release-git-test.sh.
+source scripts/lib/release-git.sh
 
 # Source-level gates FIRST — before the lock, the release bump, or any of the cross-compiles below — so a comment/parse/migration slip fails in under a second, not after the whole platform matrix has built.
 source scripts/lib/preflight.sh
@@ -22,6 +24,8 @@ if [ -n "$(git status --porcelain)" ]; then
     git status --short | head -20
     exit 1
 fi
+# Make local main identical to origin BEFORE bumping — a release commit built on a stale base can never fast-forward, and the tag/advance flow below assumes the bump sits on the shared tip. Behind → fast-forwards; diverged (un-pushed local work) → refuses. This is the gate whose absence let five deploys build for an hour and then die at the push (2026-08-28).
+release_git_preflight main
 CURRENT_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')
 MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
 SHIP_VERSION=$(( $(echo "$CURRENT_VERSION" | cut -d. -f2) + 1 ))   # the MINOR is the deploy counter / dozenal cue
@@ -310,23 +314,22 @@ echo ""
 echo "Linux ARM64, Linux x86_64, Windows x86_64, Windows ARM64, Redox, macOS Intel, macOS ARM64, Android binaries + manifest deployed to R2"
 echo "  Windows SHA256: $WINDOWS_SHA256"
 
-# R2 is fully live — the release is public and its commit (made up top, before the builds) is now PERMANENT.
-# Push it and disarm the rollback traps HERE, not 30 lines lower. Two reasons this can't wait:
-#   1. The GitHub v<n> tag below must anchor to THIS commit — gh can only --target a commit the remote already has, so the push has to happen before the mirror.
-#   2. Every step below (GitHub mirror, website, release notice, dev-line-open) is best-effort past a shipped release; a hiccup there must NEVER `git reset` a commit whose binaries are already public. Leaving the traps armed past R2-live meant a website-deploy failure would roll back a shipped release's version bump, and a Ctrl-C would too.
-git push
-trap - ERR INT TERM
+# R2 is fully live — the release is public. Its provenance is the built commit $COMMIT: the hash build.rs baked into every binary (PHOTON_GIT_COMMIT) and the SHA the signed manifest stamped. Pin it with the IMMUTABLE v<n> tag and push THAT — the commit rides along with its hash intact, even though main has moved past its parent during the ~1h build. This is NOT a branch push (a plain `git push` of the hour-old bump is rejected non-fast-forward the moment any device touched main during the build — five deploys died exactly here, 2026-08-28). main itself only ever gets the fast-forwarding dev-line bump, further down.
+# Disarm the signal/error rollback traps the instant provenance is on GitHub: the release is now permanent, and every step below (mirror, website, notice, dev-line) is best-effort — a hiccup there must NEVER roll back a shipped release. (The EXIT trap stays armed but is gated by DEPLOY_SHIPPED, and every best-effort step below is `|| echo`-guarded so set -e can't fire in this zone.)
+GH_TAG="v$SHIP_VERSION"
+release_publish_tag "$GH_TAG" "$COMMIT"
+trap - ERR INT TERM HUP
 
 # Mirror the identical signed artefacts to a GitHub Release `v<n>` (redundant fallback behind R2).
 # Same bytes as R2 — never rebuild per-destination — so the Windows SHA256 patched above holds everywhere.
 # BEST-EFFORT: by this point the release is fully live on R2, so a GitHub hiccup (uploads.github.com 502s are routine; one aborted the whole v39 deploy here, 2026-07-19 — stranding the website update, release notice, and dev-line-open behind an already-shipped release) warns loudly and moves on, never aborts.
-GH_TAG="v$SHIP_VERSION"
 mirror() {
     publish_github "$GH_TAG" "$1" "$2" || echo "WARNING: GitHub mirror of $1 failed — continuing (R2 is authoritative and live)"
 }
 echo ""
 echo "Mirroring release to GitHub ($GH_TAG)..."
-if ensure_release "$GH_TAG" false "$COMMIT"; then
+# The tag already exists on origin (pushed above at $COMMIT), so ensure_release just attaches a Release to it — no --target.
+if ensure_release "$GH_TAG" false; then
     mirror "photon-messenger-linux-x86_64-release"  target/release/photon-messenger
     mirror "photon-messenger-linux-arm64-release"   target/aarch64-unknown-linux-gnu/release/photon-messenger
     mirror "photon-messenger-windows-release.exe"   target/x86_64-pc-windows-gnu/release/photon-messenger.exe
@@ -349,7 +352,8 @@ echo "Updated website: Version $DOZENAL_VERSION, Date $DEPLOY_DATE"
 # Deploy website to Cloudflare Pages
 echo ""
 echo "Deploying website..."
-(cd /mnt/Chiton/MEGA/holdmyoscilloscope && ./deploy.sh)
+# Guarded: past the provenance tag the release is permanent, so a website hiccup must not abort into the EXIT trap.
+(cd /mnt/Chiton/MEGA/holdmyoscilloscope && ./deploy.sh) || echo "WARNING: website deploy failed (non-fatal — the release is live; re-deploy the site when convenient)."
 
 # Rollback traps were already disarmed right after R2 went live (above), where the release became permanent.
 
@@ -359,14 +363,12 @@ echo ""
 echo "Sending release notice (hub + FCM topic)..."
 curl -s "https://fgtw.org/admin/release-notice?auth=f6d46fc44bd35b1b7204640d8cade6b2d01ef5e6ba96261200bcb728003c2724" || echo "release notice failed (non-fatal)"
 
-# OPEN THE DEV LINE (2026-07-17): the tree must never rest at X.Y.0 — patch 0 IS the release marker,
-# so a local dev build compiled from a .0 tree would masquerade as the release ("already on latest release" on a dev build, observed live). The release artifacts above embedded .0; from this commit on, every build is ≥ .1, and the next dev publish SHIPS .1 (publish-current-then-bump — see scripts/lib/manifest.sh).
+# OPEN THE DEV LINE (2026-07-17): main must never rest at X.Y.0 — patch 0 IS the release marker, so a dev build compiled from a .0 tree masquerades as the release ("already on latest release" on a dev build, observed live). With provenance-by-tag, main never even HOLDS the .0 commit (that lives only as the tag); it advances straight to the .1 dev line. advance_main crafts that Cargo.toml-only bump on the FRESHEST origin tip inside a throwaway worktree, so it fast-forwards no matter what moved on main during the build, and never touches the live working tree. Best-effort: the release already shipped via the tag.
 DEV_OPEN="${MAJOR}.${SHIP_VERSION}.1"
-sed_i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${DEV_OPEN}\"/" Cargo.toml
-cargo update --workspace --quiet 2>/dev/null || true
-git add Cargo.toml Cargo.lock
-git commit -q -m "dev line open: v${DEV_OPEN} (release v${SHIP_VERSION} shipped at .0)"
-git push
+release_advance_main main "$DEV_OPEN" "dev line open: v${DEV_OPEN} (release v${SHIP_VERSION} shipped at .0, tag ${GH_TAG})" \
+    || echo "WARNING: dev-line-open failed — main still at its pre-release tip; bump it manually. The release itself is LIVE (tag ${GH_TAG})."
+# The built .0 commit was LOCAL-ONLY (its provenance is the tag). Bring local onto the new origin tip so the next release's preflight sees no divergence — preserving any edits made during the build.
+release_sync_to_origin main || echo "WARNING: could not sync local to origin/main — run 'git fetch && git checkout -B main origin/main' when convenient."
 
 echo ""
 echo "Install with:"

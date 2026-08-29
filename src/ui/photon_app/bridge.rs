@@ -282,7 +282,11 @@ impl BridgeShell {
             body.push_str(&line);
             body.push('\n');
             if body.len() > Self::MAX_OUT {
-                let cut = body.len() - Self::MAX_OUT;
+                let mut cut = body.len() - Self::MAX_OUT;
+                // MAX_OUT is a byte budget but body is UTF-8 — a raw byte cut can land inside a multibyte char and panic String::drain on is_char_boundary (field 2026-08-28: wrangler's ⛅️✨🌎 overflowed a bridge deploy, the cut split an emoji, photon panicked mid-`git push` and took the bridge — and the deploy — down, then a hard-crash-mid-write left the vault degraded). Snap the cut UP to the next char boundary so the retained tail stays ≤ MAX_OUT.
+                while cut < body.len() && !body.is_char_boundary(cut) {
+                    cut += 1;
+                }
                 body.drain(..cut);
                 dropped = true;
             }
