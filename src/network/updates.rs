@@ -345,13 +345,31 @@ fn download_verified(
     Ok(())
 }
 
+/// current_exe(), made trustworthy for the self-updater — treat the OS answer as a hint, not gospel.
+/// current_exe() lies in platform-specific ways once the running binary is replaced IN PLACE: Linux/Redox read /proc/self/exe and return "<path> (deleted)" verbatim; macOS's _NSGetExecutablePath can hand back a stale path after a move; only Windows is safe (a running .exe is locked, so it can't reach this state). Trusting it raw is exactly what made the updater stage, swap, and re-exec a literal "photon-messenger (deleted)" sibling — and, because each relaunch was itself on a deleted inode, re-arm the bug on every update (field 2026-08-29; a dev.sh stage-then-rename under a running photon is the usual trigger). Strip the Linux/Redox suffix, then REQUIRE the result to be a real file on disk, so a genuinely-missing install fails LOUDLY ("reinstall") instead of silently writing to a garbage name.
+fn installed_exe_path() -> Result<PathBuf, String> {
+    let raw = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let path = match raw.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
+        Some(real) => PathBuf::from(real),
+        None => raw,
+    };
+    if !path.exists() {
+        return Err(format!(
+            "cannot locate my own install path ({}) — the running binary was replaced or removed out from under this process; reinstall from the website",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
 /// Desktop one-click apply: download next to the current exe, verify (hash + appended signature), swap atomically. Returns the exe path for the caller to re-exec into. Unix: rename() over the path is atomic and the running process keeps its open inode. Windows: the running exe is locked against overwrite but CAN be renamed aside — shuffle to .old (deleted on some future launch), place the new exe, done.
 #[cfg(not(target_os = "android"))]
 pub fn apply_desktop_blocking(
     row: &ManifestRow,
     progress: &dyn Fn(u64, u64),
 ) -> Result<PathBuf, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    // Resolve to the REAL install path (never a "(deleted)" ghost) so the swap + re-exec land on the actual binary, not a garbage-named sibling.
+    let exe = installed_exe_path()?;
     let staged = exe.with_extension("update-staged");
     download_verified(row, &staged, true, progress)?;
     #[cfg(unix)]
@@ -382,12 +400,24 @@ pub fn apply_desktop_blocking(
     Ok(exe)
 }
 
-/// Sweep a leftover `.old` from a prior Windows swap (call once at startup; no-op elsewhere/absent).
+/// Sweep swap leftovers at startup (best-effort, each remove independent):
+///   * the Windows `.old` shuffle,
+///   * a stray `.update-staged` (a swap that tore between download and rename),
+///   * the "(deleted)"-suffixed garbage the PRE-FIX updater created when it trusted current_exe() verbatim on a replaced-in-place binary — a literal "photon-messenger (deleted)" sibling and its own .update-staged.
+/// So a tree already carrying that litter self-heals on the next launch. Uses installed_exe_path() so it targets the REAL binary even when this very process is running from a deleted inode.
 pub fn sweep_old_binary() {
-    if let Ok(exe) = std::env::current_exe() {
-        let old = exe.with_extension("old");
-        if old.exists() {
-            let _ = std::fs::remove_file(&old);
+    let Ok(exe) = installed_exe_path() else { return };
+    for junk in [exe.with_extension("old"), exe.with_extension("update-staged")] {
+        if junk.exists() {
+            let _ = std::fs::remove_file(&junk);
+        }
+    }
+    if let Some(s) = exe.to_str() {
+        for name in [format!("{s} (deleted)"), format!("{s} (deleted).update-staged")] {
+            let p = PathBuf::from(&name);
+            if p.exists() {
+                let _ = std::fs::remove_file(&p);
+            }
         }
     }
 }
