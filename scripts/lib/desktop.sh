@@ -40,6 +40,15 @@ build_sign_install() {
     mv -f "$dir/photon-messenger.new" "$dir/photon-messenger"
     echo "Installed to $dir/photon-messenger"
 
+    # Resilient-launch layout (docs/resilient-launch.md): a SECOND independent copy under a different XDG root (a different mount on a multi-disk box) + the verify-and-fallback shim, so a nuked or corrupt ~/.local/bin still launches. Both copies are the SAME signed binary (sign_binary ran above). Stage-then-rename each, same running-inode reason as above.
+    local dirB="$HOME/.local/share/photon"
+    mkdir -p "$dirB"
+    install -m755 "target/$prof_dir/photon-messenger" "$dirB/photon-messenger.new"
+    mv -f "$dirB/photon-messenger.new" "$dirB/photon-messenger"
+    install -m755 "installers/photon-launch.sh" "$dir/photon-launch.new"
+    mv -f "$dir/photon-launch.new" "$dir/photon-launch"
+    echo "Installed copy B to $dirB/photon-messenger + shim to $dir/photon-launch"
+
     # macOS: refresh the .app bundle too, because that is what the Dock, Spotlight and Finder launch.
     # Installing only to ~/.local/bin meant a dev build was built, signed, "installed" -- and every relaunch from the Dock kept running whatever the last RELEASE install or in-app update left behind. That cost a full debugging round: two fixes were reported as still-broken by testing a binary that had neither.
     #
@@ -93,11 +102,14 @@ _reload_detached_body() {
         fi
     fi
     # Launch the fresh install as ITS OWN user unit, a SECOND systemd-run — NOT a plain child of this reload unit, whose cgroup teardown (KillMode=control-group) would take photon down the moment this body returns. The nested run re-parents photon straight to the manager. Fallback (systemd-less box) keeps the old setsid dance with fds 8/9 closed so photon can't inherit the snapshot flock (the 2026-08-24 "5-minute hang").
-    if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --collect --quiet --working-directory="$HOME" "$HOME/.local/bin/$name" 2>/dev/null; then
-        echo "Reload: $name relaunched"
+    # Prefer the resilient-launch shim (verify + fall back to copy B) when installed, else the binary directly — so every dev reload dogfoods the exact path a user's .desktop takes. The shim execs into photon-messenger, so photon_alive/pgrep still match the final process.
+    local launch="$HOME/.local/bin/$name"
+    [ -x "$HOME/.local/bin/photon-launch" ] && launch="$HOME/.local/bin/photon-launch"
+    if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --collect --quiet --working-directory="$HOME" "$launch" 2>/dev/null; then
+        echo "Reload: relaunched via $(basename "$launch")"
     else
-        (cd "$HOME" && setsid "$HOME/.local/bin/$name" >/dev/null 2>&1 </dev/null 8>&- 9>&- &)
-        echo "Reload: $name relaunched (setsid fallback)"
+        (cd "$HOME" && setsid "$launch" >/dev/null 2>&1 </dev/null 8>&- 9>&- &)
+        echo "Reload: relaunched via $(basename "$launch") (setsid fallback)"
     fi
 }
 

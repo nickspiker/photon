@@ -57,19 +57,29 @@ fn main() {
 
     // BRIDGE needs no host opt-in (Nick's ruling 2026-08-21): the fold-verified, non-locked sibling gate IS the authorization — the old --enable/--disable-remote-terminal flag pair is gone (its census-wiped marker had silently darkened every host: the Europe incident's second half). A locked-out device is the one thing the bridge refuses.
 
-    // Verify binary signature matches fractaldecoder (Ed25519 cryptographic signature)
-    let signature_hex = match self_verify::verify_binary_hash() {
-        Ok(sig) => sig,
-        Err(e) => {
-            photon_messenger::logf!("BINARY INTEGRITY CHECK FAILED: {}", e);
-            photon_messenger::log("");
-            photon_messenger::log("This usually means:");
-            photon_messenger::log("  - Download was corrupted or incomplete");
-            photon_messenger::log("  - Storage failure (bad sectors, bit flips)");
-            photon_messenger::log("  - Binary was modified or tampered with");
-            photon_messenger::log("");
-            photon_messenger::log("Try reinstalling from: https://holdmyoscilloscope.com/photon");
-            std::process::exit(1);
+    // Resilient-launch handoff (docs/resilient-launch.md): the launch shim already ran `photon verify` on THIS exact file microseconds ago, so it relaunched us with PHOTON_LAUNCH_VERIFIED set — skip the redundant startup self-check so EXACTLY ONE validation runs per launch. CONSUME it immediately: photon inherits its environment into child processes (the self-update re-exec among them, which runs a freshly-downloaded binary), and this skip must never leak past the single shim→photon hop, or an update would install and run unverified.
+    let launcher_prevalidated = std::env::var_os("PHOTON_LAUNCH_VERIFIED").is_some();
+    if launcher_prevalidated {
+        std::env::remove_var("PHOTON_LAUNCH_VERIFIED");
+    }
+
+    // Verify binary signature matches fractaldecoder (Ed25519 cryptographic signature) — unless the shim already did, and this isn't an explicit `verify` request (which must ALWAYS check, it IS the shim's check).
+    let signature_hex = if launcher_prevalidated && !verify_only {
+        "(verified by launch shim)".to_string()
+    } else {
+        match self_verify::verify_binary_hash() {
+            Ok(sig) => sig,
+            Err(e) => {
+                photon_messenger::logf!("BINARY INTEGRITY CHECK FAILED: {}", e);
+                photon_messenger::log("");
+                photon_messenger::log("This usually means:");
+                photon_messenger::log("  - Download was corrupted or incomplete");
+                photon_messenger::log("  - Storage failure (bad sectors, bit flips)");
+                photon_messenger::log("  - Binary was modified or tampered with");
+                photon_messenger::log("");
+                photon_messenger::log("Try reinstalling from: https://holdmyoscilloscope.com/photon");
+                std::process::exit(1);
+            }
         }
     };
 
