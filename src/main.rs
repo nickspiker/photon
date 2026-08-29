@@ -10,6 +10,9 @@ fn main() {
     // FIRST log line: which build is this? Every submitted log now self-identifies its version + commit.
     photon_messenger::log_version();
 
+    // Sweep any swap leftovers from a prior update — the Windows .old shuffle, a torn .update-staged, and the "(deleted)"-suffixed litter the pre-fix updater could leave — so a mis-installed tree self-heals on launch (this was defined but never called before).
+    photon_messenger::network::updates::sweep_old_binary();
+
     // Set up panic hook to log panics to file (critical for debugging Windows GUI crashes)
     std::panic::set_hook(Box::new(|panic_info| {
         let msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
