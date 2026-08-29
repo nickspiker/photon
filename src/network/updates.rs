@@ -362,7 +362,64 @@ fn installed_exe_path() -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Desktop one-click apply: download next to the current exe, verify (hash + appended signature), swap atomically. Returns the exe path for the caller to re-exec into. Unix: rename() over the path is atomic and the running process keeps its open inode. Windows: the running exe is locked against overwrite but CAN be renamed aside — shuffle to .old (deleted on some future launch), place the new exe, done.
+/// The canonical install copies for this platform, launch priority first — the updater writes ALL of them so the resilient-launch shim always has a good one (docs/resilient-launch.md). Kept in sync with the installers.
+#[cfg(not(target_os = "android"))]
+fn resilient_copies() -> Vec<PathBuf> {
+    #[allow(unused_variables)]
+    let home = dirs::home_dir().unwrap_or_default();
+    #[cfg(target_os = "linux")]
+    let copies = vec![
+        home.join(".local/bin/photon-messenger"),
+        home.join(".local/share/photon/photon-messenger"),
+    ];
+    #[cfg(target_os = "macos")]
+    let copies = vec![
+        home.join("Applications/Photon Messenger.app/Contents/MacOS/photon-messenger"),
+        home.join(".local/bin/photon-messenger"),
+    ];
+    #[cfg(target_os = "windows")]
+    let copies = {
+        let local = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        vec![
+            local.join(r"Programs\PhotonMessenger\photon-messenger.exe"),
+            local.join(r"PhotonMessenger\photon-messenger.exe"),
+        ]
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    let copies: Vec<PathBuf> = vec![];
+    copies
+}
+
+/// The re-exec target after an update: the resilient-launch shim on Linux (so the relaunch takes the verify-and-fallback path), else None → re-exec the running copy directly. macOS re-execs the bundle so the TCC identity is preserved; Windows re-execs the .exe (its shim is a .cmd, spawned only by the Start-menu shortcut).
+#[cfg(target_os = "linux")]
+fn launch_shim() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".local/bin/photon-launch"))
+}
+#[cfg(all(not(target_os = "linux"), not(target_os = "android")))]
+fn launch_shim() -> Option<PathBuf> {
+    None
+}
+
+/// Atomically place a copy of `src` at `dest` (stage-then-rename in dest's dir, parents created). Mirrors the freshly-verified binary into the second install location — never the running process, so no lock/inode concerns.
+#[cfg(not(target_os = "android"))]
+fn mirror_into(src: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    }
+    let tmp = dest.with_extension("update-staged");
+    std::fs::copy(src, &tmp).map_err(|e| format!("copy: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
+    }
+    std::fs::rename(&tmp, dest).map_err(|e| format!("rename: {e}"))?;
+    Ok(())
+}
+
+/// Desktop one-click apply: download next to the current exe, verify (hash + appended signature), swap atomically, then mirror the verified binary into the OTHER install copies. Returns the re-exec target (the shim where present, else the swapped exe). Unix: rename() over the path is atomic and the running process keeps its open inode. Windows: the running exe is locked against overwrite but CAN be renamed aside — shuffle to .old (deleted on some future launch), place the new exe, done.
 #[cfg(not(target_os = "android"))]
 pub fn apply_desktop_blocking(
     row: &ManifestRow,
@@ -397,7 +454,27 @@ pub fn apply_desktop_blocking(
         row.version_string(),
         hex::encode(&row.commit)
     );
-    Ok(exe)
+
+    // Mirror the verified new binary into the OTHER canonical copies (dual-install resilience, docs/resilient-launch.md). Best-effort per copy: a sibling that fails to update never fails the release — the running copy is already swapped and about to re-exec, and the launch shim simply prefers whichever copy verifies. These are never the running process, so no lock/inode concerns even on Windows.
+    let exe_canon = std::fs::canonicalize(&exe).unwrap_or_else(|_| exe.clone());
+    for dest in resilient_copies() {
+        let is_running_copy = std::fs::canonicalize(&dest)
+            .map(|d| d == exe_canon)
+            .unwrap_or(false);
+        if is_running_copy {
+            continue;
+        }
+        match mirror_into(&exe, &dest) {
+            Ok(()) => crate::logf!("UPDATE: mirrored to {}", dest.display()),
+            Err(e) => {
+                crate::logf!("UPDATE: sibling copy {} not updated: {} (non-fatal)", dest.display(), e)
+            }
+        }
+    }
+
+    // Re-exec through the shim where installed (Linux), so the relaunch takes the verify-and-fallback path; else the swapped binary directly.
+    let target = launch_shim().filter(|p| p.exists()).unwrap_or(exe);
+    Ok(target)
 }
 
 /// Sweep swap leftovers at startup (best-effort, each remove independent):
