@@ -85,6 +85,31 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=.git/HEAD");
 
+    // The DERIVED patch (Nick 2026-08-30): dev builds increment the patch per publish, but bump commits are gone (tags are the version authority), so the patch is computed — commits since the last release tag. Same HEAD ⇒ same version on every machine, zero tree churn, and 0.70.1 vs 0.70.9 is now legible at a glance instead of hash archaeology. Releases build from a snapshot (PHOTON_STAMP_COMMIT set, often not even a git repo) and keep the injected Cargo.toml patch (0 — reserved for releases); any git failure falls back to Cargo.toml too.
+    let derived_patch = if std::env::var("PHOTON_STAMP_COMMIT").is_ok() {
+        None
+    } else {
+        std::process::Command::new("git")
+            .args(["describe", "--tags", "--abbrev=0", "--match", "v*"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .and_then(|tag| {
+                std::process::Command::new("git")
+                    .args(["rev-list", "--count", &format!("{tag}..HEAD")])
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            })
+            .filter(|n| n.parse::<u64>().is_ok())
+    };
+    println!(
+        "cargo:rustc-env=PHOTON_VERSION_PATCH={}",
+        derived_patch.unwrap_or_else(|| env::var("CARGO_PKG_VERSION_PATCH").unwrap_or_else(|_| "0".into()))
+    );
+
     // The update stamp window's FLOOR (docs/updates.md): the moment THIS binary was built, in eagle-time oscillations. The automatic path accepts a manifest iff floor < manifest_stamp ≤ now — below the floor is a replay/downgrade, above now is forward-dated ("not yet"). The floor advances only by exec'ing into a newer build: it's compiled in, never mutable stored state. Refreshes only when the crate actually rebuilds (build.rs doesn't rerun on a no-op build), so binary identity ⇒ stamp identity.
     println!(
         "cargo:rustc-env=PHOTON_BUILD_STAMP={}",

@@ -61,7 +61,7 @@ pub fn our_version() -> (usize, usize, usize) {
     (
         env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap_or(0),
         env!("CARGO_PKG_VERSION_MINOR").parse().unwrap_or(0),
-        env!("CARGO_PKG_VERSION_PATCH").parse().unwrap_or(0),
+        env!("PHOTON_VERSION_PATCH").parse().unwrap_or(0),
     )
 }
 
