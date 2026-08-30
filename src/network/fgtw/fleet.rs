@@ -19,8 +19,9 @@ const CURRENT_VERSION: (usize, usize, usize) = (
     parse_u(env!("CARGO_PKG_VERSION_MINOR")),
     parse_u(env!("CARGO_PKG_VERSION_PATCH")),
 );
-/// Releases bump the MINOR (deploy.sh), so this is ~twelve releases past 0.58.0. A knob — bump it only after a conscious "the fleet's v2 migration isn't done yet" decision.
-const V1_FLEET_VERIFY_SUNSET: (usize, usize, usize) = (0, 70, 0);
+/// Releases bump the MINOR (deploy.sh), so each sunset is ~twelve releases out. A knob — bump it only after a conscious "the fleet's v2 migration isn't done yet" decision.
+/// CONSCIOUS BUMP 2026-08-30 (0,70,0 → 0,82,0), the v70 deploy tripped it: the v2 precondition cannot be met yet — a chain goes v2 only thru the succession re-pin flow, whose EMIT side is still unwired, so no chain anywhere has ever been re-founded; Daniel's device is also still pre-flag-day. Deleting v1 verify today would break folding every real chain. Next firing should find succession emit wired and the re-pin actually run fleet-wide — then delete, don't bump.
+const V1_FLEET_VERIFY_SUNSET: (usize, usize, usize) = (0, 82, 0);
 /// Flip to `false` in the SAME change that deletes the v1 fleet-op verify path from fgtw/src/fleet.rs.
 const V1_FLEET_VERIFY_PRESENT: bool = true;
 const fn ver_ge(a: (usize, usize, usize), b: (usize, usize, usize)) -> bool {
