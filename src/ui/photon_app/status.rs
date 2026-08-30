@@ -326,6 +326,7 @@ impl PhotonApp {
                     display_name,
                     avatar_pin,
                     locked_reports,
+                    about,
                 } => {
                     // Stall recovery (runs EVERY ping that carries sync records, not just the offline→online edge): each record advertises the peer's contiguous head. Re-arm any pending of ours newer than the head for OUR lane AND already given up (exhausted attempts) — so a gap-filler the sender abandoned gets resent and a receiver stuck behind a permanently-lost message un-sticks. The staleness gate stays (a fresh send is left to normal backoff; only a given-up one is revived), which keeps a pong that merely raced ahead of the ACK from double-sending. collect_due_retransmits (the tick path) then actually sends the revived messages.
                     let now_osc = vsf::eagle_time_oscillations();
@@ -652,6 +653,13 @@ impl PhotonApp {
                                 }
                             }
 
+                            // Per-device About off the sealed tail: what build the RESPONDING device runs — the fleet page's row detail. Runtime-only, every contact kind (sibling rows ARE the fleet page).
+                            if let Some(a) = about.as_ref() {
+                                if contact.device_about.as_deref() != Some(a.as_str()) {
+                                    contact.device_about = Some(a.clone());
+                                    changed = true;
+                                }
+                            }
                             // Always-granted name slot off the pong: adopt the friend's chosen display name. Persisted below via the state-save the name-change marks.
                             if let Some(name) = display_name.as_ref() {
                                 if !contact.is_sibling && contact.published_name != *name {

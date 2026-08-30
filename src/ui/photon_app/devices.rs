@@ -1415,7 +1415,7 @@ impl PhotonApp {
     #[allow(clippy::type_complexity)]
     pub(super) fn fleet_device_rows(
         &mut self,
-    ) -> Vec<([u8; 32], bool, bool, bool, String, String, Option<u32>)> {
+    ) -> Vec<([u8; 32], bool, bool, bool, String, String, Option<u32>, String)> {
         use crate::network::fgtw::fleet::device_name_default;
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return Vec::new();
@@ -1432,6 +1432,7 @@ impl PhotonApp {
                 device_name_default(&me, &seed),
                 String::new(),
                 None,
+                crate::about_string(),
             ));
         }
         // The egged probe remembered (the Fleet page gathers rows per FRAME; a vault read per sibling per frame is a librarian round trip for an answer that only changes at ceremony completion, which clears its entry).
@@ -1459,6 +1460,7 @@ impl PhotonApp {
                 link,
                 // A sibling is another physical device — always a remote participant.
                 path_tier_colour(c, true),
+                c.device_about.clone().unwrap_or_default(),
             ));
         }
         self.egged_cache = egged_cache;
@@ -1471,6 +1473,7 @@ impl PhotonApp {
                 device_name_default(pk, &seed),
                 String::new(),
                 None,
+                String::new(),
             ));
         }
         rows
