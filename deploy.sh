@@ -117,8 +117,18 @@ fi
 # Every build's stderr is TEE'd: streamed live to the terminal (nothing hidden) AND captured so warnings can be counted. Cargo only re-emits warnings for crates it recompiles, so a warm-cache deploy would otherwise look pristine while the tree carries lint (2026-08-13: 11 workspace warnings invisible across a 6-target run).
 # DEPLOY_WARNINGS accumulates the count across every target for the end-of-deploy summary.
 DEPLOY_WARNINGS=0
+# Per-build wall-clock ledger, printed in the success banner — every snap_cargo names its target from its own args; the two script-driven builds (native Linux, Android) ride the `timed` wrapper.
+DEPLOY_T0=$SECONDS
+BUILD_TIMES=""
+note_time() { BUILD_TIMES="${BUILD_TIMES}$(printf '  %-22s %dm%02ds' "$1" $(($2 / 60)) $(($2 % 60)))
+"; }
+timed() { local l="$1" t0=$SECONDS; shift; "$@"; local rc=$?; note_time "$l" $((SECONDS - t0)); return $rc; }
 snap_cargo() {
     local errlog rc; errlog="$(mktemp)"
+    # Name this build for the time ledger: its --target, else "tools/native".
+    local label="tools/native" prev=""
+    for a in "$@"; do [ "$prev" = "--target" ] && label="$a"; prev="$a"; done
+    local t0=$SECONDS
     # Foreground tee — a pipeline member the shell WAITS on, so the diagnostic can never be lost. The old `2> >(tee …)` process substitution raced the exiting ERR trap and ate the ENTIRE cargo error plus the marker below (2026-08-14: the v54 orb-include failure printed nothing but a line number).
     # cargo emits diagnostics and progress on stderr and nothing meaningful on stdout, so merging the streams keeps the live scroll identical; tee's own (always-0) status would mask the failure under plain set -e, so cargo's verdict comes back via PIPESTATUS.
     # MEMORY FENCE (the 22:55 freeze, 2026-08-29): 62G RAM + zram-only swap means a full-LTO multi-target build can thrash the whole box into a silent livelock — the journal stopped mid-sentence, no OOM, no panic, hard reset required. A systemd scope caps the BUILD at 48G so the kernel kills cargo instead of the desktop; a killed deploy is now free (tag-authority: zero git residue, rerun ships the same number). Plain cargo if systemd-run is absent (macOS runners, containers).
@@ -139,6 +149,7 @@ snap_cargo() {
     DEPLOY_WARNINGS=$(( DEPLOY_WARNINGS + n ))
     [ "$n" -gt 0 ] && echo "  ⚠ cargo $* — $n warning(s) this build (running total: $DEPLOY_WARNINGS)" >&2
     rm -f "$errlog"
+    note_time "$label" $((SECONDS - t0))
 }
 
 # Lint gate: report the TRUE warning state of the tree up front, cache or no cache. The per-build tallies below only catch what each target recompiles; a fully warm cache re-emits nothing, so this cache-fresh check is the one place the deploy always names how much lint the release is shipping. Advisory (never aborts) — surfacing the count is the point, not gating on it.
@@ -160,7 +171,7 @@ snap_cargo build --release --bin photon-signature-signer --bin photon-manifest
 
 # Build and sign Linux x86_64 (native). SNAP_DIR is exported so build-release.sh builds from the frozen tree too.
 export SNAP_DIR
-./build-release.sh
+timed "linux-x86_64 (native)" ./build-release.sh
 
 # Build Linux ARM64 (cross-compile)
 echo ""
@@ -256,7 +267,7 @@ apple_sign target/aarch64-apple-darwin/release/photon-messenger
 # Build Android APK
 echo ""
 echo "Building Android release..."
-./scripts/android/build.sh
+timed "android-arm64" ./scripts/android/build.sh
 
 # Every binary exists + is signed. Read the Windows hash (for the .ps1 installer) and BUILD the signed manifest now — it only reads local files + hashes them, so it belongs in the build phase. Publishing it is the last upload in the publish phase, so a running client never sees a manifest whose binaries aren't up yet.
 WINDOWS_SHA256=$(cat target/x86_64-pc-windows-gnu/release/photon-messenger.exe.sha256)
@@ -415,5 +426,9 @@ if [ "${LINT_COUNT:-0}" -gt 0 ]; then
 else
     echo "  ✓ lint-clean"
 fi
+echo "  build times:"
+printf '%s' "$BUILD_TIMES"
+DEPLOY_ELAPSED=$((SECONDS - DEPLOY_T0))
+printf '  %-22s %dm%02ds\n' "TOTAL deploy" $((DEPLOY_ELAPSED / 60)) $((DEPLOY_ELAPSED % 60))
 echo "════════════════════════════════════════════════════════════"
 echo "completed $(date '+%F %T')"
