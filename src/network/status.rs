@@ -1974,30 +1974,12 @@ async fn run_checker(
                                             crate::log("PT: avatar response REJECTED (bad signature)");
                                         }
                                     } else {
-                                        // BOUNDARY CAPTURE (the large-frame ticket): these bytes are PT-hash-verified, so the receiver provably holds EXACTLY what the sender framed — a frame no parser claims is version skew, a dispatcher gap, or sender-side garbage, never reassembly corruption. Name the evidence in one line: length, whether the VSF header even opens (version + declared length + TOC names if it does), and both ends in hex, so a single submitted log convicts the layer.
-                                        let probe = {
-                                            use vsf::file_format::VsfHeader;
-                                            match VsfHeader::decode(&data) {
-                                                Ok((h, _)) => format!(
-                                                    "VSF opens: z{} L{} toc [{}]",
-                                                    h.version,
-                                                    h.file_length,
-                                                    h.fields
-                                                        .iter()
-                                                        .map(|f| f.name.as_str())
-                                                        .collect::<Vec<_>>()
-                                                        .join(" ")
-                                                ),
-                                                Err(e) => {
-                                                    format!("VSF header does NOT decode ({})", e)
-                                                }
-                                            }
-                                        };
+                                        // BOUNDARY CAPTURE (the large-frame ticket): these bytes are PT-hash-verified, so the receiver provably holds EXACTLY what the sender framed — a frame no parser claims is version skew, a dispatcher gap, or sender-side garbage, never reassembly corruption. Name the evidence in one line: length, magic verdict, and both ends in hex — the head dump CONTAINS the wire header (magic ‖ z ‖ y ‖ b ‖ L lead it), so version and declared length read straight off the hex with no unverified VSF decode at this trust boundary (the gate is right: forensics don't get to parse either).
                                         crate::logf!(
-                                            "PT: verified {}B frame from {} claimed by NO parser — {} | head {} | tail {}",
+                                            "PT: verified {}B frame from {} claimed by NO parser — magic {} | head {} | tail {}",
                                             data.len(),
                                             src_addr,
-                                            probe,
+                                            if data.len() >= 4 && &data[..3] == "RÅ".as_bytes() && data[3] == b'<' { "ok" } else { "BAD" },
                                             hex::encode(&data[..data.len().min(64)]),
                                             hex::encode(&data[data.len().saturating_sub(64)..])
                                         );
