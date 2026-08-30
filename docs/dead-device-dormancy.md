@@ -27,6 +27,15 @@ One authenticated frame from the device — a pong, a beacon, any signed row —
 - Consent model: no one signed anything on the dead device's behalf; dormancy is each live device's OWN routing judgement, independently reached and locally held.
 - Lockout: orthogonal — lockout is a security act against a device presumed hostile; dormancy is an economy act against a device presumed gone. A device can be both.
 
+## The clamshell test (why a false-ish positive is harmless)
+
+A MacBook closed for a week earns the same verdict as the ocean phone — same evidence, and that is correct, not a false positive.
+The verdict must be cheap to earn BECAUSE it is instant to shed and costs the sleeper nothing, which rests on two invariants:
+- DURABILITY INVARIANT: dormancy skips transmission, never obligation. A skipped leg is never marked delivered; every row a dormant device missed stays owed and reachable thru the history sweep + chain replication on wake. Dormancy changes who pays for the silence, not what the device is owed.
+- ADOPTION INVARIANT: ceremonies exclude dormant members from their roster (a dead member otherwise parks every ceremony at n/12 forever — the ocean phone's 6/12), and a member that wakes ADOPTS the completed result (fleet-first, adopt-iff-newer), never re-litigates its own missing leg.
+Waking is seconds: the sleeper speaks first (beacon, relay connect, pong), any authenticated frame voids the verdict, and the sweep refills it.
+Same verdict, opposite outcomes — the Mac sheds it at lid-open, the ocean phone holds it forever — and no code anywhere has to guess which kind of device it is looking at.
+
 ## Sync of the verdict
 
 Each device reaches the verdict independently from its own refusal counts — no gossip needed for correctness, so no new consensus surface.
