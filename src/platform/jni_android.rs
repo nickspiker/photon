@@ -1437,3 +1437,168 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeClearS
         info!("Session broadcast cleared");
     }
 }
+
+// ============================================================================ Wi-Fi Direct bridge — the PhotonWifiDirect Kotlin object (WifiP2pManager DNS-SD + group formation), docs/offgrid.md.
+// Same lifecycle pattern as PhotonBeacon: Kotlin registers at nativeInit, Rust drives the radio thru the global ref, Kotlin's callbacks come down via nativeOnServiceFound / nativeOnGroupChanged and queue as wfd::WfdEvent for the UI drain.
+// ============================================================================
+
+#[cfg(target_os = "android")]
+static WFD_BRIDGE: std::sync::OnceLock<(jni::JavaVM, jni::objects::GlobalRef)> =
+    std::sync::OnceLock::new();
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonWifiDirect_nativeInit(
+    env: JNIEnv<'_>,
+    this: JObject<'_>,
+) {
+    match (env.get_java_vm(), env.new_global_ref(&this)) {
+        (Ok(vm), Ok(obj)) => {
+            let _ = WFD_BRIDGE.set((vm, obj));
+            info!("PhotonWifiDirect: bridge registered");
+        }
+        (vm, obj) => error!(
+            "PhotonWifiDirect nativeInit failed (vm ok: {}, ref ok: {})",
+            vm.is_ok(),
+            obj.is_ok()
+        ),
+    }
+}
+
+/// Kotlin DNS-SD response → Rust: the raw TXT token blob a nearby device advertised. Matching against provisioned friends happens on the UI thread (it holds the contacts).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonWifiDirect_nativeOnServiceFound(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    txt: JByteArray<'_>,
+) {
+    if let Ok(bytes) = env.convert_byte_array(&txt) {
+        crate::network::wfd::push_event(crate::network::wfd::WfdEvent::ServiceFound(bytes));
+    }
+}
+
+/// Kotlin connection-changed → Rust: group formation state with the interface addresses (dotted-quad strings; unparsable = 0.0.0.0, which the drain treats as absent).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonWifiDirect_nativeOnGroupChanged(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    formed: jni::sys::jboolean,
+    is_go: jni::sys::jboolean,
+    our_ip: jni::objects::JString<'_>,
+    go_ip: jni::objects::JString<'_>,
+) {
+    let parse = |env: &mut JNIEnv, s: &jni::objects::JString| -> std::net::Ipv4Addr {
+        env.get_string(s)
+            .ok()
+            .and_then(|j| j.to_str().ok().map(str::to_owned))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED)
+    };
+    let our = parse(&mut env, &our_ip);
+    let go = parse(&mut env, &go_ip);
+    crate::network::wfd::push_event(crate::network::wfd::WfdEvent::GroupChanged {
+        formed: formed != 0,
+        is_go: is_go != 0,
+        our_ip: our,
+        go_ip: go,
+    });
+}
+
+#[cfg(target_os = "android")]
+fn wfd_call(method: &str) {
+    let Some((vm, obj)) = WFD_BRIDGE.get() else {
+        error!("wfd_call({method}): bridge not registered");
+        return;
+    };
+    match vm.attach_current_thread() {
+        Ok(mut env) => {
+            if env.call_method(obj.as_obj(), method, "()V", &[]).is_err() {
+                let _ = env.exception_clear();
+                error!("wfd_call({method}) failed");
+            }
+        }
+        Err(e) => error!("wfd_call({method}): JVM attach failed: {e:?}"),
+    }
+}
+
+#[cfg(target_os = "android")]
+fn wfd_call_bytes(method: &str, a: &[u8]) {
+    let Some((vm, obj)) = WFD_BRIDGE.get() else {
+        error!("wfd_call_bytes({method}): bridge not registered");
+        return;
+    };
+    match vm.attach_current_thread() {
+        Ok(mut env) => {
+            let Ok(arr) = env.byte_array_from_slice(a) else {
+                return;
+            };
+            if env
+                .call_method(obj.as_obj(), method, "([B)V", &[(&arr).into()])
+                .is_err()
+            {
+                let _ = env.exception_clear();
+                error!("wfd_call_bytes({method}) failed");
+            }
+        }
+        Err(e) => error!("wfd_call_bytes({method}): JVM attach failed: {e:?}"),
+    }
+}
+
+#[cfg(target_os = "android")]
+fn wfd_call_strings(method: &str, a: &str, b: &str) {
+    let Some((vm, obj)) = WFD_BRIDGE.get() else {
+        error!("wfd_call_strings({method}): bridge not registered");
+        return;
+    };
+    match vm.attach_current_thread() {
+        Ok(mut env) => {
+            let (Ok(ja), Ok(jb)) = (env.new_string(a), env.new_string(b)) else {
+                return;
+            };
+            if env
+                .call_method(
+                    obj.as_obj(),
+                    method,
+                    "(Ljava/lang/String;Ljava/lang/String;)V",
+                    &[(&ja).into(), (&jb).into()],
+                )
+                .is_err()
+            {
+                let _ = env.exception_clear();
+                error!("wfd_call_strings({method}) failed");
+            }
+        }
+        Err(e) => error!("wfd_call_strings({method}): JVM attach failed: {e:?}"),
+    }
+}
+
+/// The Android WfdPlatform: every method is a Kotlin down-call thru the bridge.
+#[cfg(target_os = "android")]
+struct AndroidWfd;
+
+#[cfg(target_os = "android")]
+impl crate::network::wfd::WfdPlatform for AndroidWfd {
+    fn start(&mut self, txt_tokens: &[u8]) {
+        wfd_call_bytes("startAdvertise", txt_tokens);
+        wfd_call("startDiscovery");
+    }
+    fn stop(&mut self) {
+        wfd_call("stopAll");
+    }
+    fn create_group(&mut self, ssid: &str, psk: &str) {
+        wfd_call_strings("createGroup", ssid, psk);
+    }
+    fn connect_group(&mut self, ssid: &str, psk: &str) {
+        wfd_call_strings("connectGroup", ssid, psk);
+    }
+    fn remove_group(&mut self) {
+        wfd_call("removeGroup");
+    }
+}
+
+#[cfg(target_os = "android")]
+pub fn android_wfd_platform() -> Box<dyn crate::network::wfd::WfdPlatform> {
+    Box::new(AndroidWfd)
+}

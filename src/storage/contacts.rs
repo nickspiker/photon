@@ -177,6 +177,10 @@ fn contact_state_schema() -> SectionSchema {
         .field("refused_device", TypeConstraint::AnyHash) // multi: friend devices refused via the reported-stolen signal. Absent = none.
         .field("identity_superseded", TypeConstraint::AnyUnsigned) // bool: a different-genesis chain claimed this name — a stranger. Absent = false.
         .field("unread", TypeConstraint::AnyUnsigned) // u32: inbound messages not yet seen (conversation wasn't the active view when they landed). Absent = 0 (legacy contacts load as read).
+        .field("wfd_go", TypeConstraint::Ed25519Key) // Wi-Fi Direct pre-provisioned credential (docs/offgrid.md): the designated group owner device. Absent = no credential yet.
+        .field("wfd_ssid", TypeConstraint::AnyString) // The group SSID (DIRECT-ph-…). Safe at rest like the relationship seed — the vault is sealed.
+        .field("wfd_psk", TypeConstraint::AnyString) // The group passphrase.
+        .field("wfd_epoch", TypeConstraint::AnyUnsigned) // Monotonic credential epoch — newer replaces older on both sides.
 }
 
 /// Save contact state (mutable data) with schema validation
@@ -240,6 +244,17 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
                 "completed_their_hqc_prefix",
                 VsfType::hb(hqc_prefix.to_vec()),
             )
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    if let Some(cred) = &contact.wfd_cred {
+        builder = builder
+            .set("wfd_go", VsfType::ke(cred.go.to_vec()))
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .set("wfd_ssid", VsfType::x(cred.ssid.clone()))
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .set("wfd_psk", VsfType::x(cred.psk.clone()))
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .set("wfd_epoch", VsfType::u(cred.epoch as usize, false))
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
     if contact.chain_woven {
@@ -460,6 +475,20 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
         contact.probe_sent = true;
         contact.their_probe_seen = true;
         contact.chain_advanced_by_ack = true;
+    }
+    // Wi-Fi Direct pre-provisioned credential — all four fields or nothing (a partial record is a corrupt write, dropped whole).
+    if let (Ok(go), Ok(ssid), Ok(psk), Ok(epoch)) = (
+        section.get_value::<[u8; 32]>("wfd_go"),
+        section.get_value::<String>("wfd_ssid"),
+        section.get_value::<String>("wfd_psk"),
+        section.get_value::<u64>("wfd_epoch"),
+    ) {
+        contact.wfd_cred = Some(crate::network::wfd::WfdCred {
+            go,
+            ssid,
+            psk,
+            epoch,
+        });
     }
     // (hist_oldest / hist_complete / unread are conversation state now — `load_legacy_conv_state` reads them from old records when no conversation-state record exists yet.)
     // Friend-side blind deposits: (device ke, blob tensor, at e6) per multi-value field.

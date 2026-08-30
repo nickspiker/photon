@@ -17,6 +17,8 @@ pub enum CandidateKind {
     HostV6,
     /// A usable IPv4 LAN address (a peer's `local_ip`) — for same-subnet / hairpin reach.
     HostV4Lan,
+    /// A Wi-Fi Direct group address (192.168.49.x) — group membership vouches reachability, so it skips the foreign-LAN `/24` gate; below LAN (infra WiFi is cheaper) but above the punched WAN path when we're stranded.
+    HostV4P2p,
     /// A reflexive address (our own learned public address, or a peer's public address from the phonebook) — reached by hole-punch.
     Reflexive,
 }
@@ -45,6 +47,7 @@ pub fn priority(kind: CandidateKind, addr: &SocketAddr) -> u32 {
         CandidateKind::HostV6 => 100,
         CandidateKind::Reflexive if addr.is_ipv6() => 80,
         CandidateKind::HostV4Lan => 60,
+        CandidateKind::HostV4P2p => 50,
         CandidateKind::Reflexive => 40, // v4 reflexive
     }
 }
@@ -168,6 +171,13 @@ mod tests {
         set.add(Candidate::new(a("203.0.113.7:4383"), CandidateKind::HostV6)); // same addr, higher kind
         assert_eq!(set.sorted().len(), 1);
         assert_eq!(set.sorted()[0].kind, CandidateKind::HostV6);
+    }
+
+    #[test]
+    fn p2p_sits_between_lan_and_v4_reflexive() {
+        let p2p = priority(CandidateKind::HostV4P2p, &a("192.168.49.5:4383"));
+        assert!(priority(CandidateKind::HostV4Lan, &a("192.168.1.2:4383")) > p2p);
+        assert!(p2p > priority(CandidateKind::Reflexive, &a("203.0.113.7:4383")));
     }
 
     #[test]

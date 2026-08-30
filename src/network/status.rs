@@ -282,6 +282,8 @@ pub struct ClutchCompleteRequest {
 pub struct LanBroadcastRequest {
     pub our_handle_proof: [u8; 32],
     pub our_port: u16, // Port we're listening on
+    /// When set, the pt_disc frame is sent UNICAST to this address only (no multicast/broadcast legs). The Wi-Fi Direct group-up exchange uses this: multicast on the p2p interface is OEM-flaky and unnecessary — after group formation both sides know the subnet, so the joiner beacons the GO directly and the GO beacons back at the observed source.
+    pub unicast: Option<SocketAddr>,
 }
 
 /// Request to clear pending PT sends for a peer (e.g., when CLUTCH completes) Prevents wasteful retransmission of offers/KEM responses after ceremony is done.
@@ -509,6 +511,22 @@ pub enum StatusUpdate {
         peer_pubkey: DevicePubkey,
         remote: SocketAddr,
     },
+    /// Wi-Fi Direct service discovery heard a provisioned friend's rotating token nearby (docs/offgrid.md). The app decides group formation: if OUR device is the credential's designated GO, create the group; else connect toward the GO.
+    WfdFriendNearby { device_pubkey: [u8; 32] },
+    /// A Wi-Fi Direct group formed (platform up-call): we hold `our_ip` on the p2p interface; `go_ip` is the group owner's address (ourselves when `is_go`). The app fires the unicast pt_disc exchange so both sides learn each other's p2p socket, then normal punch validation adopts the path.
+    WfdGroupUp {
+        is_go: bool,
+        our_ip: Ipv4Addr,
+        go_ip: Ipv4Addr,
+    },
+    /// The Wi-Fi Direct group tore down (out of range, platform removal). The app clears every contact's `p2p_addr` and any `validated_path` inside 192.168.49/24 so sends fall back instead of black-holing.
+    WfdGroupDown,
+    /// A friend's pre-provisioned Wi-Fi Direct credential arrived (sealed blob — only the pair's wfd seal key opens it; the app matches by token, opens, adopts iff epoch newer, persists).
+    WfdCredReceived {
+        conversation_token: [u8; 32],
+        sealed: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+    },
 }
 
 impl StatusUpdate {
@@ -560,6 +578,7 @@ impl StatusUpdate {
             StatusUpdate::ClutchKemResponseReceived { sender_pubkey, .. } => Some(sender_pubkey),
             StatusUpdate::ClutchCompleteReceived { sender_pubkey, .. } => Some(sender_pubkey),
             StatusUpdate::PathValidated { peer_pubkey, .. } => Some(peer_pubkey.as_bytes()),
+            StatusUpdate::WfdCredReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             _ => None,
         }
     }
@@ -941,6 +960,16 @@ impl StatusChecker {
         let _ = self.lan_broadcast_sender.send(LanBroadcastRequest {
             our_handle_proof,
             our_port,
+            unicast: None,
+        });
+    }
+
+    /// Send ONE pt_disc frame unicast to `target` (the Wi-Fi Direct group-up exchange — see LanBroadcastRequest::unicast).
+    pub fn send_lan_unicast(&self, our_handle_proof: [u8; 32], our_port: u16, target: SocketAddr) {
+        let _ = self.lan_broadcast_sender.send(LanBroadcastRequest {
+            our_handle_proof,
+            our_port,
+            unicast: Some(target),
         });
     }
 
@@ -1537,6 +1566,7 @@ async fn run_checker(
                 match tokio_tungstenite::connect_async(&url).await {
                     Ok((ws_stream, _)) => {
                         crate::log("PIPE: connected — relay is a live socket now");
+                        crate::network::wfd::set_relay_reachable(true);
                         // KEEPALIVE, because a dead pipe is SILENT: dropping the write half meant no client ping ever went out, so a NAT idle-drop or a sleep/wake killed the TCP underneath and `read.next()` blocked forever — one desktop sat 52 minutes "relay: recipient offline" to every peer while believing it was connected (live fleet, 2026-08-05). A ping every 45s keeps carrier NAT mappings warm (cellular drops idle TCP in minutes); 120s of total silence (pongs count) declares the socket dead and reconnects.
                         let (mut write, mut read) = ws_stream.split();
                         let mut last_inbound = tokio::time::Instant::now();
@@ -1595,6 +1625,8 @@ async fn run_checker(
                         crate::logf!("PIPE: connect failed: {} — retrying", e);
                     }
                 }
+                // Either arm landing here means the pipe is down — feed the WFD stranded edge until the next successful connect.
+                crate::network::wfd::set_relay_reachable(false);
                 // Reconnect: hold the pipe open for the life of the session so a relay-only peer stays reachable.
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
@@ -2349,6 +2381,28 @@ async fn run_checker(
                                     &status_tx_recv,
                                     StatusUpdate::AttachHaveReceived {
                                         content_hash,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            // Wi-Fi Direct credential provisioning (docs/offgrid.md) — a small signed frame with a pair-sealed blob; same mandatory packet-ack.
+                            if let Ok(((conversation_token, sealed), sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_wfd_cred_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::WfdCredReceived {
+                                        conversation_token,
+                                        sealed,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                     },
                                     &event_proxy_recv,
@@ -3963,6 +4017,15 @@ async fn run_checker(
         while let Ok(request) = lan_broadcast_rx.try_recv() {
             let packet =
                 udp::build_lan_discovery(request.our_handle_proof, request.our_port, our_device_pk);
+
+            // Unicast form (Wi-Fi Direct group-up exchange): one targeted frame, no multicast/broadcast legs.
+            if let Some(target) = request.unicast {
+                if let Ok(sock) = UdpSocket::bind("0.0.0.0:0") {
+                    let _ = udp::send_sync(&sock, &packet, target);
+                    crate::logf!("LAN: unicast pt_disc {} bytes to {}", packet.len(), target);
+                }
+                continue;
+            }
 
             // IPv4 multicast: 239.104.199.144 (from random entropy 0x68C790)
             let mcast_v4 = SocketAddr::new(

@@ -253,6 +253,23 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         }
     }
 
+    // Wi-Fi Direct permissions (docs/offgrid.md): NEARBY_WIFI_DEVICES on 33+, fine location before. Requested lazily by PhotonWifiDirect when a start call finds them missing; on grant the pending advertise/discovery re-runs.
+    private val wfdPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        if (grants.values.all { it }) {
+            PhotonWifiDirect.onPermissionsGranted()
+        } else {
+            PhotonLog.w("WFD", "Wi-Fi Direct permissions denied")
+        }
+    }
+
+    fun requestWfdPermissions() {
+        val p = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.NEARBY_WIFI_DEVICES
+                else Manifest.permission.ACCESS_FINE_LOCATION
+        wfdPermissionLauncher.launch(arrayOf(p))
+    }
+
     // Image picker for avatar selection — passes RAW FILE BYTES to Rust. We do NOT decode in Android because BitmapFactory destroys ICC profiles and mangles colors; Rust handles proper color management via XYZ.
     private val imagePickerLauncher = registerForActivityResult(
         ActivityResultContracts.GetContent()
@@ -312,6 +329,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         // screen can ask the radio for anything (docs/pairing-v2.md).
         PhotonBeacon.init(this)
         PhotonNfc.init(this)
+        // Wi-Fi Direct bearer bridge (docs/offgrid.md): same lifecycle as the beacon — register before any screen can ask for the radio.
+        PhotonWifiDirect.init(this)
 
         // Create custom SurfaceView with InputConnection for IME text input
         val container = FrameLayout(this)

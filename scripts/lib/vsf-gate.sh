@@ -27,6 +27,7 @@ vsf_gate() {
         "src/network/peer_updates.rs=1"
         "src/network/pt/mod.rs=3"
         "src/network/status.rs=2"
+        "src/network/wfd.rs=1"  # open_cred's inner `wfdcred` section parse runs AFTER kete AEAD open under the pair seal key — authenticated, the same post-AEAD-inner class as open_pong_sensitive (protocol.rs baseline)
         "src/network/udp.rs=2"
         "src/storage/contacts.rs=6"  # +1 (2026-08-02): load_legacy_conv_state re-parses the SAME own-vault contact record the audited apply_contact_state read covers — a self-terminating migration fallback, deleted with it; shrink back to 5 then.
         "src/storage/friendship.rs=1"

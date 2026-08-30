@@ -2,36 +2,62 @@
 
 ## The insight
 
-Link-layer pairing exists to bootstrap trust between strangers; photon already carries its own trust (CLUTCH, sealed frames, handle_proof beacons).
-So every radio below is used UNAUTHENTICATED at the link layer — the radio is just a byte pipe, and the sealed VSF frames ride it unchanged.
-Architecturally each bearer is one new injection arm into the existing receive pipeline, the exact precedent the relay pipe set (frames injected into the select! as datagrams tagged with a sentinel source).
-The durable re-serve machinery makes every bearer delay-tolerant for free: undelivered rows flow whenever a peer walks into range.
+Link-layer pairing exists to bootstrap trust between strangers; photon already carries its own trust (CLUTCH, sealed frames, keyed tokens).
+So every radio below is used with pre-shared or zero link-layer trust — the radio is just a byte pipe, and the sealed frames ride it unchanged.
 iOS is OUT OF SCOPE by decision (2026-08-30): sideloading requires a tethered developer identity, and this app doesn't do gatekeepers.
+BLE is DEMOTED to device pairing only (decision 2026-08-30): the friend channel pre-provisions everything a Wi-Fi Direct meetup needs, so no bootstrap radio is required.
 
-## The tier ladder (per-pair capability negotiation, same shape as the punch tiers)
+## The tier ladder (decision 2026-08-30)
 
-1. BLE coded advertisements — the universal discovery floor + last-resort data path.
-2. Best mutual WiFi rung for the data path: Wi-Fi Aware > BLE-bootstrapped hotspot > platform-specific (below).
-3. A Linux laptop as the long-range node: raw 802.11 tricks phones can't do.
+All traffic is ciphertext end-to-end, so tiering is pure cost/availability, never security:
+1. LAN — same network, existing multicast discovery + direct UDP. Cheapest, full throughput.
+2. WAN — punched direct path (the traverse candidate machinery).
+3. Wi-Fi Direct — infrastructureless group when no shared network exists.
+4. Relay — last resort, as today.
+HARD CONSTRAINT: bringing up any off-grid bearer must NEVER disconnect the device's infrastructure WiFi. Android's STA+P2P concurrency carries this; the GO uses BAND_AUTO so the framework co-channels with the STA link.
 
-## BLE (all platforms)
+## Wi-Fi Direct design (BUILT 2026-08-30, v1 slice: Android↔Android)
 
-- Pairing is optional in BLE: extended advertisements (~255B connectionless — enough for the LAN-discovery beacon shape: handle_proof + device key) and unauthenticated GATT connections.
-- Range: 1M PHY ~10-30m indoors / ~100m open; LE Coded PHY (S=8) 125kbps nominal, 300m-1km+ line of sight — texts at ~10-40kbps effective, a chat frame is nothing, a 573KB offer is minutes.
-- Coded PHY support: common on recent Android; desktop radios vary (BlueZ exposes it on Linux where the chip does; WinRT likewise; macOS CoreBluetooth does not expose PHY selection).
+### No new transport
+Once a P2P group forms, both sides hold real IPs on the p2p interface (GO 192.168.49.1, client DHCP'd), so frames ride the EXISTING wildcard-bound UDP socket — no select! arm, no sentinel, no inject channel.
+The bearer is only: discovery, group bring-up, address registration.
+Multicast on the p2p iface is OEM-flaky and unnecessary: after group-up the joiner sends the existing pt_disc beacon UNICAST to the GO (LanBroadcastRequest::unicast); the GO learns the joiner from the frame source and beacons back on the learn edge (self-quenching).
+The 192.168.49.x address lands in `Contact.p2p_addr` (never `local_ip` — it must not hit the foreign-/24 gate or survive teardown), enters candidate gathering as `HostV4P2p` (priority 50: below infra LAN 60, above punched WAN 40), and normal punch validation adopts the path.
 
-## WiFi per platform, zero-intervention tricks
+### Credentials: pre-provisioned per-pair over the normal sealed channel
+`wfd_cred` record per friend pair: `go` (designated group owner = lexicographically-LOWER device pubkey — deterministic, zero negotiation), `ssid` (DIRECT-ph-…), `psk`, `epoch` (monotonic, newer replaces older).
+Minted by the elected-GO side on the friend's came-online edge (once per session — a lost frame self-heals next session; receiver adopts idempotently by epoch), sealed under `wfd_seal_key = keyed_hash(relationship_seed, domain)`, carried in a signed `wfd_cred` frame, persisted in contact state.
+So an offline meetup needs ZERO bootstrap radio — both phones already hold the group credentials.
+Connect is dialog-free both directions on API 29+ (pre-shared WifiP2pConfig skips WPS).
 
-- Android: Wi-Fi Aware (NAN) — programmatic discovery + direct encrypted datapath, no AP, no dialog. Fallback: LocalOnlyHotspot (app-created, random SSID/PSK) with the credentials carried over the unpaired BLE channel sealed to the friend's keys, peer auto-joins via WifiNetworkSpecifier.
-- Windows: no public Wi-Fi Aware. WinRT WiFiDirect API for direct links; Mobile-Hotspot via NetworkOperatorTetheringManager + BLE-carried credentials as the fallback; BLE GATT always.
-- macOS: no public Aware/AWDL access; Multipeer Connectivity covers mac↔mac. Otherwise CoreWLAN can JOIN a network programmatically (location permission), so the BLE-bootstrapped hotspot works with a mac as the JOINER; macs can't raise a hotspot programmatically.
-- Linux: everything — 802.11s mesh mode (a real multi-hop mesh between laptops), IBSS ad-hoc, hostapd-raised AP + BLE bootstrap, and monitor-mode injection for the truly connectionless km-class directional-antenna case. The backpack relay node.
-- Redox: whatever the driver story becomes; the bearer abstraction keeps it a later arm, not a redesign.
+### Discovery: DNS-SD service frames, no BLE
+`_photon._udp` local service; the TXT record carries rotating friend-recognizable tokens: `keyed_hash(pairwise_token_key, device_pubkey ‖ coarse_hour)` truncated to 16B, one per provisioned friend, hourly rotation (+previous hour matched for skew) so strangers can't track; instance name random per boot.
+Fully dialog-free; NEARBY_WIFI_DEVICES (33+) / fine-location (older) runtime permission with the pending-grant re-run pattern.
 
-## The endgame for miles, not meters
+### Edges, not timers
+- STRANDED-ENTER (evaluated on the ping cadence): a provisioned friend has no validated path and is offline AND the relay pipe is down (`wfd::RELAY_REACHABLE`, set by the pipe task's connect/liveness transitions) → start advertise + discovery.
+- FRIEND-HEARD: a TXT token matches a provisioned friend with no path → the credential's GO creates the group, the other side connects.
+- GROUP-UP: platform up-call → unicast pt_disc exchange → punch validation → normal traffic.
+- STRANDED-EXIT: paths recover or the relay returns → stop advertise + discovery.
+- DRAINED: group up but every p2p peer went silent (failed-ping hysteresis) → removeGroup.
+- IFACE-LOST: platform reports the group gone → clear every `p2p_addr` + any validated path inside 192.168.49/24 (no black-holing).
 
-LoRa: 2-15km at bytes-per-second on unlicensed spectrum, texts only, proven by Meshtastic — a hardware dongle story that fits the PIPE direction, not a phone-radio one.
+### The pieces
+- src/network/wfd.rs — tokens, credential mint/seal/open, GO tie-break, bearer state machine (Idle→Stranded→Forming→Up), platform trait, event queue, relay-reachability flag.
+- src/network/traverse/candidate.rs `HostV4P2p`; gather.rs feeds `Contact.p2p_addr` + exempts the WFD subnet from the foreign-LAN filter.
+- src/ui/photon_app/status.rs — event→StatusUpdate conversion, WfdCredReceived/WfdFriendNearby/WfdGroupUp/WfdGroupDown arms, LanPeerDiscovered p2p routing; sync.rs — provisioning + stranded driver.
+- android PhotonWifiDirect.kt + jni_android.rs bridge (PhotonBeacon lifecycle pattern).
 
-## Status
+## Later rungs
 
-Design only — nothing built. First build slice: BLE extended-advertisement discovery beacons (the existing LAN beacon shape over a new radio) + unauthenticated GATT frame exchange, Android + Linux first; then the Aware datapath; then the BLE→hotspot bootstrap for Windows/macOS coverage.
+- Linux: wpa_supplicant P2PDevice D-Bus (zbus), feature-gated `wfd-linux`, NM-unmanaged p2p ifaces — implements the same WfdPlatform trait. The Android↔laptop rung.
+- Windows: WinRT WiFiDirect; macOS: no public P2P — Multipeer covers mac↔mac someday. Stubs (NullWfd) until then.
+- Wi-Fi Aware (NAN) as an alternative Android datapath if Direct proves flaky in the field.
+- LoRa for miles-not-meters: 2-15km at bytes/s, texts only, a hardware-dongle story that fits the PIPE direction.
+
+## Field verification (pending)
+
+- Two phones on the same AP: WFD never engages (LAN wins), infra WiFi never drops.
+- Woods test (no AP): STRANDED fires, DNS-SD hears the friend, dialog-free group forms, chat round-trips, PathValidated logs a 192.168.49.x remote.
+- Concurrency: one phone on infra keeps internet while the group runs; group frequency matches the STA channel.
+- Teardown: walk out of range → hysteresis → removeGroup; return → rediscovery.
