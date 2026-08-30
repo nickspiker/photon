@@ -958,23 +958,27 @@ impl FluorApp for PhotonApp {
                     .as_ref()
                     .map(|tb| tb.chars.iter().collect())
                     .unwrap_or_default();
-                let typed_seed = crate::types::Handle::to_identity_seed(&typed);
-                let live_seed = self.session.as_ref().map(|s| s.identity_seed);
-                if Some(typed_seed) == live_seed {
-                    let target_on = self.unattended_confirm.take().unwrap_or(false);
-                    self.set_unattended(target_on);
-                    if let Some(cb) = self.settings_unattended_check.as_mut() {
-                        cb.set_checked(target_on);
-                    }
-                    self.change_focus(None);
-                    self.ready_toast = Some(if target_on {
-                        "Unattended auto-attest ARMED — this box reboots as you".to_string()
-                    } else {
-                        "Unattended auto-attest disarmed".to_string()
+                // Verify the re-typed handle by its ~1s MEMORY-HARD proof, NOT the microsecond identity seed — arming "this box becomes you" must not be a cheap brute-force oracle. The proof runs OFF the UI thread (spawned here, verdict drained in tick) so the app doesn't freeze for the second; re-clicks are ignored while one is in flight. The verdict compares against the session's stored handle_proof (the same public artifact the attest lock/unlock gates on).
+                if self.unattended_verify.is_none() {
+                    let target_on = self.unattended_confirm.unwrap_or(false);
+                    let live_proof = self.session.as_ref().map(|s| s.handle_proof);
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let wake = self.event_proxy.clone();
+                    std::thread::spawn(move || {
+                        let ok = match live_proof {
+                            Some(lp) => crate::types::Handle::username_to_handle_proof(&typed) == lp,
+                            None => false,
+                        };
+                        let _ = tx.send(ok);
+                        #[cfg(not(target_os = "android"))]
+                        if let Some(w) = wake.as_ref() {
+                            let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                        }
+                        #[cfg(target_os = "android")]
+                        let _ = wake;
                     });
-                    self.ready_toast_screen = None;
-                } else {
-                    self.unattended_confirm_failed = true;
+                    self.unattended_verify = Some((rx, target_on));
+                    self.unattended_confirm_failed = false;
                 }
                 self.scene_dirty = true;
                 ctx.window.request_redraw();
@@ -3086,6 +3090,32 @@ impl FluorApp for PhotonApp {
         // Self-update: drain check/apply results, then re-exec if a verified swap landed. The exec MUST happen here on the main thread, outside every borrow — the process image is replaced in place (unix) or handed off (windows), so nothing after it runs.
         // Update events (progress bar, channel states, status lines) are all page CONTENT — without scene_dirty the redraw runs but the dirty-gated content pass skips the page, so the bar painted its empty track once and froze (observed).
         if self.drain_update_events() {
+            self.scene_dirty = true;
+            needs_redraw = true;
+        }
+        // Auto-attest arm/disarm: apply the off-thread handle-proof verdict (spawned on the confirm click). Done here on the main thread so set_unattended's vault write, the checkbox, and focus stay UI-thread. Compute the verdict first so `self` isn't borrowed while we mutate it.
+        let unattended_verdict = self
+            .unattended_verify
+            .as_ref()
+            .and_then(|(rx, t)| rx.try_recv().ok().map(|ok| (ok, *t)));
+        if let Some((ok, target_on)) = unattended_verdict {
+            self.unattended_verify = None;
+            if ok {
+                self.unattended_confirm = None;
+                self.set_unattended(target_on);
+                if let Some(cb) = self.settings_unattended_check.as_mut() {
+                    cb.set_checked(target_on);
+                }
+                self.change_focus(None);
+                self.ready_toast = Some(if target_on {
+                    "Unattended auto-attest ARMED — this box reboots as you".to_string()
+                } else {
+                    "Unattended auto-attest disarmed".to_string()
+                });
+                self.ready_toast_screen = None;
+            } else {
+                self.unattended_confirm_failed = true;
+            }
             self.scene_dirty = true;
             needs_redraw = true;
         }
