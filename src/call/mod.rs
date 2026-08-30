@@ -62,6 +62,15 @@ pub enum CallPhase {
     Ended,
 }
 
+/// Silences the desktop ring loop when dropped (or explicitly). The loop thread replays the relationship ring cadence (`chirp::Chirp::ring_from_hash`) until this flag flips; holding the guard inside [`ActiveCall`] makes every teardown edge — decline, sibling answer, caller hangup, call overwrite — a ring-stop edge for free, honoring the no-timers rule (the flag IS an edge).
+pub struct RingGuard(pub std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for RingGuard {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// The one live call (v1: singular — a second inbound offer during any phase gets an automatic `Busy`).
 pub struct ActiveCall {
     pub call_id: [u8; 16],
@@ -83,4 +92,6 @@ pub struct ActiveCall {
     pub engine: Option<engine::EngineHandle>,
     /// The recording's keep/delete material (Active → Ended). Dropping it undecided IS the shred — the key lives nowhere else.
     pub spool: Option<spool::SpoolTicket>,
+    /// Desktop ring-loop stopper (Ringing phase only; `None` on Android — Kotlin owns playback there). Dropped or cleared = ring stops at the next cadence boundary.
+    pub ring: Option<RingGuard>,
 }

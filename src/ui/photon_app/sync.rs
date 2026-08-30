@@ -1392,6 +1392,48 @@ impl PhotonApp {
     }
 
     /// Fleet history sweep: (re-)arm history recovery for every friend/self conversation so the driver walks each one from the head — served by a sibling when the friend can't. Early-stop makes a re-sweep of an already-complete conversation cost ONE page (zero new rows → complete again), so this fires freely on sibling-online edges and roster merges; conversations mid-walk are left alone.
+    /// DURABLE FLEET-FORWARD (the clamshell lesson, 2026-08-30): the live push in `drain_pending_chain_sends` is one shot into possibly-dead pipes — a sibling asleep thru the relay delivery never sees the row, and a chainless origin has no retransmit ladder of its own (chain_transmit never ran), so the message sat undelivered forever while the log said "delivered". Re-offer every outgoing undelivered row to the fleet on the backstop + sibling-online edges until some device transmits and the delivered upgrade replicates back. Receiving siblings dedup known rows (the merge is (timestamp, content)-keyed and only FRESH rows drain to the wire), so a re-push is merge-noise at worst.
+    pub(super) fn reserve_fleet_forwards(&self) {
+        const FWD_BURST: usize = 8; // oldest-first, same burst shape as the friend re-serve
+        if !self.contacts.iter().any(|c| c.is_sibling && !c.locked_out) {
+            return;
+        }
+        for ci in 0..self.contacts.len() {
+            let c = &self.contacts[ci];
+            if c.is_sibling {
+                continue;
+            }
+            // A device that can transmit itself owns delivery thru its own retransmit ladder — re-serving to siblings is the CHAINLESS origin's only path.
+            if c.chain_woven || self.lane_transmit_capable(ci) {
+                continue;
+            }
+            let Some(conv) = self.conv_of(ci) else { continue };
+            let mut rows: Vec<crate::types::ChatMessage> = conv
+                .messages
+                .iter()
+                // Same sendable shape as resend_held_messages: a reaction RETRACT is a legal empty-content row; a plain empty row stays filtered.
+                .filter(|m| {
+                    m.is_outgoing
+                        && !m.delivered
+                        && !m.deleted
+                        && (!m.content.is_empty() || m.reference.is_some())
+                })
+                .cloned()
+                .collect();
+            if rows.is_empty() {
+                continue;
+            }
+            rows.sort_by_key(|m| m.timestamp);
+            rows.truncate(FWD_BURST);
+            crate::logf!(
+                "FLEET-HIST: re-serving {} undelivered forward(s) for {} (chainless origin)",
+                rows.len(),
+                crate::fp(&c.handle_proof)
+            );
+            self.push_rows_to_siblings(ci, &rows, None);
+        }
+    }
+
     pub(super) fn kick_fleet_history_sweep(&mut self, reason: &str) {
         let mut kicked = 0usize;
         for ci in 0..self.contacts.len() {
