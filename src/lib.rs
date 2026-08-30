@@ -1094,7 +1094,7 @@ pub fn log_structured(_level: LogLevel, _template: &str, _vals: Vec<LogValue>) {
 pub fn log_version() {
     let major: u64 = env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap_or(0);
     let minor: u64 = env!("CARGO_PKG_VERSION_MINOR").parse().unwrap_or(0);
-    let patch: u64 = env!("CARGO_PKG_VERSION_PATCH").parse().unwrap_or(0);
+    let patch: u64 = env!("PHOTON_VERSION_PATCH").parse().unwrap_or(0);
     log_structured(
         LogLevel::Info,
         "photon v{}.{}.{} \u{00b7} commit {}",
@@ -1111,8 +1111,10 @@ pub fn log_version() {
 pub fn about_string() -> String {
     let commit = env!("PHOTON_GIT_COMMIT");
     format!(
-        "v{} · {} · {} {}",
-        env!("CARGO_PKG_VERSION"),
+        "v{}.{}.{} · {} · {} {}",
+        env!("CARGO_PKG_VERSION_MAJOR"),
+        env!("CARGO_PKG_VERSION_MINOR"),
+        env!("PHOTON_VERSION_PATCH"),
         &commit[..commit.len().min(12)],
         std::env::consts::OS,
         std::env::consts::ARCH

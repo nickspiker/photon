@@ -64,7 +64,7 @@ fn deploy_version() -> u32 {
 
 /// Dev-publish patch counter — 0 on a release build (`X.Y.0`), ≥1 on any published dev build.
 fn dev_patch() -> u32 {
-    env!("CARGO_PKG_VERSION_PATCH").parse().unwrap_or(0)
+    env!("PHOTON_VERSION_PATCH").parse().unwrap_or(0)
 }
 
 /// A manifest version tuple in dozenal glyphs: major omitted while 0, `.patch` only when ≥1 — the same omissions the wire uses.
