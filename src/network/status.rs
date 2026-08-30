@@ -309,6 +309,8 @@ pub enum StatusUpdate {
         avatar_pin: Option<[u8; 64]>,
         /// The peer fleet's REPORTED-STOLEN devices, from the sealed pong tail (empty on legacy/tail-less pongs). The UI thread applies the two-distinct-reporters threshold before refusing anything.
         locked_reports: Vec<[u8; 32]>,
+        /// The responding DEVICE's build self-description ("v0.69.1 · abc · linux x86_64") from the sealed tail — the fleet page's per-device About. None on legacy/tail-less pongs.
+        about: Option<String>,
     },
     // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived See docs/clutch.md Section 4.2 for the slot-based ceremony protocol.
     /// Encrypted chat message received (CHAIN format)
@@ -2531,6 +2533,7 @@ async fn run_checker(
                                             display_name: None,
                                             avatar_pin: None,
                                             locked_reports: Vec::new(),
+                                            about: None,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -2646,7 +2649,7 @@ async fn run_checker(
                                                             crate::network::fgtw::protocol::open_pong_sensitive(blob, &k).ok()
                                                         })
                                                     })
-                                                    .map(|(recs, _, _, _)| recs)
+                                                    .map(|(recs, _, _, _, _)| recs)
                                                     .unwrap_or_default();
                                                 crate::logf!("Status: unmatched pong from {} ({}) — liveness + {} sync record(s) (late/twin; no addr adoption)", crate::fp(responder_pubkey.as_bytes()), src_addr, salvaged.len());
                                                 send_status_update(
@@ -2659,6 +2662,7 @@ async fn run_checker(
                                                         display_name: None,
                                                         avatar_pin: None,
                                                         locked_reports: Vec::new(),
+                                                        about: None,
                                                     },
                                                     &event_proxy_recv,
                                                 );
@@ -2697,7 +2701,7 @@ async fn run_checker(
                                                         crate::network::fgtw::protocol::open_pong_sensitive(blob, &k).ok()
                                                     })
                                                 })
-                                                .map(|(recs, _, _, _)| recs)
+                                                .map(|(recs, _, _, _, _)| recs)
                                                 .unwrap_or_default();
                                             crate::logf!("Status: pong answered by {} but we pinged {} — responder counted alive + {} sync record(s), ping re-armed for its recipient", crate::fp(responder_pubkey.as_bytes()), crate::fp(pending_ping.recipient_pubkey.as_bytes()), salvaged.len());
                                             send_status_update(
@@ -2710,6 +2714,7 @@ async fn run_checker(
                                                     display_name: None,
                                                     avatar_pin: None,
                                                     locked_reports: Vec::new(),
+                                                    about: None,
                                                 },
                                                 &event_proxy_recv,
                                             );
@@ -2755,7 +2760,7 @@ async fn run_checker(
                                     }
 
                                     // Sensitive tail: an updated peer sends it ONLY sealed — open with the RESPONDING device's pairwise key (the signer, verified just above). A failed open (key not seeded yet, or a stale key across their re-attest) degrades to a tail-less pong: presence still lands, name/pin/sync simply wait for keys — and it logs once per device, not per pong. A legacy peer still sends the plaintext fields; keep honouring them until it updates.
-                                    let (sync_records, display_name, avatar_pin, locked_reports) =
+                                    let (sync_records, display_name, avatar_pin, locked_reports, about) =
                                         match sealed {
                                             Some(blob) => {
                                                 let key = {
@@ -2792,13 +2797,13 @@ async fn run_checker(
                                                                 &event_proxy_recv,
                                                             );
                                                         }
-                                                        (Vec::new(), None, None, Vec::new())
+                                                        (Vec::new(), None, None, Vec::new(), None)
                                                     }
                                                 }
                                             }
                                             // Legacy plaintext pong: no sealed tail, so no reported-stolen signal either — the report is trusted only under the pairwise seal.
                                             None => {
-                                                (sync_records, display_name, avatar_pin, Vec::new())
+                                                (sync_records, display_name, avatar_pin, Vec::new(), None)
                                             }
                                         };
 
@@ -2813,6 +2818,7 @@ async fn run_checker(
                                             display_name,
                                             avatar_pin,
                                             locked_reports,
+                                            about,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -2883,6 +2889,7 @@ async fn run_checker(
                                             display_name: None,
                                             avatar_pin: None,
                                             locked_reports: Vec::new(),
+                                            about: None,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -3476,6 +3483,7 @@ async fn run_checker(
                             display_name: None,
                             avatar_pin: None,
                             locked_reports: Vec::new(),
+                            about: None,
                         },
                         &event_proxy,
                     );

@@ -342,6 +342,8 @@ pub struct Contact {
     pub clutch_proof_retry_lifetime: u16,
     /// Consecutive SAME-ROUND proof-value mismatches (runtime only). Deterministic stable inputs can't produce a persistent same-round mismatch between the two real ceremony parties — a streak means a COMPETING INSTANCE (a third device muxing the shared slots computed different eggs under the same round: the 11/12 deadlock, field 2026-08-30, MacBook vs 8c4f6bee/60842217). At the cap the AwaitingProof side YIELDS its round (chain replication or the next single-owner claimed round converges); the Complete side just stops re-arming. Reset on any verified proof.
     pub clutch_mismatch_streak: u16,
+    /// The responding device's build self-description off the sealed pong tail ("v0.69.1 · abc · linux x86_64") — the fleet page's per-device About. Runtime-only; None until a tailed pong lands.
+    pub device_about: Option<String>,
     /// Latched once proof retransmission gave up (lifetime cap hit) — the peer answered but can never place our proof (token mismatch: a stale-identity ghost, or an interrupted re-genesis). Freezes the resend storm; the UI reads it as "can't complete — remove and re-add". Runtime-only; a fresh session re-tries once (the peer may have re-attested correctly).
     pub clutch_proof_gave_up: bool,
     /// When we last DISCARDED our round to adopt a peer's fresh-keyed mid-ceremony offer (§4.2 wholesale adoption). Rate-limits adoption: a peer that can't hear our responses (one-way reachability — live pair 2026-07-25) re-offers with new keys every ~25s, and unthrottled adoption re-ran keygen+encap on the UI thread each time (a hitch storm). While the last adoption is fresh we hold our round and ignore further re-offers; the peer only needs ONE of our responses to land. Runtime-only, never persisted.
@@ -526,6 +528,7 @@ impl Contact {
             clutch_proof_resends_left: 0, // Bounded proof-retransmit budget (runtime only)
             clutch_proof_retry_lifetime: 0, // Lifetime re-arm counter (runtime only)
             clutch_mismatch_streak: 0, // Same-round mismatch streak (runtime only)
+            device_about: None,        // Learned from the sealed pong tail (runtime only)
             clutch_proof_gave_up: false, // Latched when the lifetime cap is hit (runtime only)
             clutch_last_adoption: None,
             clutch_claim_deferred: None,

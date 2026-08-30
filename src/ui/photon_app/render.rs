@@ -3807,7 +3807,7 @@ impl PhotonApp {
                             None,
                         );
                     }
-                    for (i, (pk, is_self, online, retired, name, link, tier)) in
+                    for (i, (pk, is_self, online, retired, name, link, tier, about)) in
                         devices.iter().take(6).enumerate()
                     {
                         let row = rows[1 + i];
@@ -3877,6 +3877,18 @@ impl PhotonApp {
                             None,
                             None,
                         );
+                        // Per-device About under the name — what that device is RUNNING (version · commit · os arch, off its sealed pong tail; this row's own build for self). The "did the deploy ship?" answer without a bridge session; a stale version here IS the not-yet-updated indicator.
+                        if !about.is_empty() {
+                            ctx.text.draw_text_center(
+                                &mut canvas,
+                                about,
+                                cols[1].center_x(),
+                                cols[1].center_y() + hspan2 * 0.85,
+                                &TextStyle::new(hspan2 * 0.62, *theme::LABEL_COLOUR).font("Oxanium"),
+                                None,
+                                None,
+                            );
+                        }
                         restamp_hit_rect(
                             &mut chrome.hit_test_map,
                             buf_w,

@@ -1214,6 +1214,8 @@ fn add_pong_sensitive_fields(
     for dev in locked_devices {
         section.add_field_multi("lockd", vec![VsfType::hb(dev.to_vec())]);
     }
+    // Per-device About — this build's version · commit · os arch, so the fleet page can answer "what is that device running?" without a bridge session. A NEW typed field: legacy parsers skip it, so no flag day; sealed with the rest of the tail because a build fingerprint is targeting information.
+    section.add_field_multi("abt", vec![VsfType::x(crate::about_string())]);
 }
 
 /// Build + AEAD-seal a pong's sensitive tail under the PAIRWISE pong key: the per-conversation sync rows (who-talks-to-whom metadata), the display name, and the 64-byte avatar pin (a bearer capability). Plaintext is an inner `pongsec` VSF section (encode_encrypted — the headerless form made for exactly this), sealed with kete ChaCha20-Poly1305 like history pages and the log seal. The key comes from the caller's PongSealKeys map, derived on the UI thread — this codec never sees an identity seed.
@@ -1245,6 +1247,7 @@ pub fn open_pong_sensitive(
         Option<String>,
         Option<[u8; 64]>,
         Vec<[u8; 32]>,
+        Option<String>,
     ),
     String,
 > {
@@ -1270,11 +1273,21 @@ pub fn open_pong_sensitive(
             _ => None,
         })
         .collect();
+    // Per-device About (new optional field — absent from legacy tails).
+    let about = section
+        .get_fields("abt")
+        .first()
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::x(s) => Some(s.clone()),
+            _ => None,
+        });
     Ok((
         sync_records,
         extract_pong_name(&fields),
         extract_pong_apin(&fields),
         locked,
+        about,
     ))
 }
 
@@ -3585,7 +3598,7 @@ mod pong_seal_tests {
                 assert!(avatar_pin.is_none());
                 assert_eq!(observed_addr, Some("203.0.113.9:4383".parse().unwrap()));
                 // The right pairwise key recovers everything.
-                let (rec, dn, ap, _lockd) =
+                let (rec, dn, ap, _lockd, _about) =
                     open_pong_sensitive(&sealed.expect("sealed tail present"), &key)
                         .expect("open with right key");
                 assert_eq!(rec, records);

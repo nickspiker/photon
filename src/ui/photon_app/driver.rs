@@ -1232,7 +1232,7 @@ impl FluorApp for PhotonApp {
                         // Locked sibling row's "Unlock" pill (two-tap): the owner's deliberate reversal. Same handle-confirmation shape as the lock — the confirm de-attests, the unlock fires only inside the next successful attest (pending_unlock), so it is proof-of-owner, and the handle is typed only on the standard attest screen.
                         let idx = (slot - 40) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((pk, false, _, false, name, _, _)) = devices.get(idx).cloned() {
+                        if let Some((pk, false, _, false, name, _, _, _)) = devices.get(idx).cloned() {
                             if self.fleet_unlock_armed == Some(pk) {
                                 self.fleet_unlock_armed = None;
                                 if let Some(hp) = self.session.as_ref().map(|s| s.handle_proof) {
@@ -1255,7 +1255,7 @@ impl FluorApp for PhotonApp {
                         // Live sibling row's "Lock out" pill (two-tap): treat-as-stolen. The chain is untouched — the fleet-synced locked set + key rotation do all the work.
                         let idx = (slot - 32) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((pk, false, _, false, name, _, _)) = devices.get(idx).cloned() {
+                        if let Some((pk, false, _, false, name, _, _, _)) = devices.get(idx).cloned() {
                             if self.fleet_lock_armed == Some(pk) {
                                 self.fleet_lock_armed = None;
                                 // The confirm DE-ATTESTS this device; the lock executes only inside the next successful attest (see pending_lock). Owner knows the handle and sails through; a thief just signed themselves out of the one device they held. Same session teardown as Security's "Lock".
@@ -1263,7 +1263,7 @@ impl FluorApp for PhotonApp {
                                     // Locking the LAST other live device leaves this one alone holding the fleet — if it is then lost while the lock stands, no member can ever sign the unlock (custodian supersession is the only exit, and it isn't built). Say so at the confirmation.
                                     let other_live = devices
                                         .iter()
-                                        .filter(|(rpk, is_self, _, retired, _, _, _)| {
+                                        .filter(|(rpk, is_self, _, retired, _, _, _, _)| {
                                             !*is_self
                                                 && !*retired
                                                 && *rpk != pk
@@ -1294,7 +1294,7 @@ impl FluorApp for PhotonApp {
                         // Retired row's "Release" pill (two-tap): the OWNER frees the departed device's hardware brand — the second signature of the two-signature retire (the first was that device signing itself out). On success the pubkey joins the fleet-synced `fleet.released` setting so the row drops off every device; the chain rows themselves are permanent testimony, untouched.
                         let idx = (slot - 24) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((pk, _, _, true, name, _, _)) = devices.get(idx).cloned() {
+                        if let Some((pk, _, _, true, name, _, _, _)) = devices.get(idx).cloned() {
                             if self.fleet_release_armed == Some(pk) {
                                 self.fleet_release_armed = None;
                                 let hp = self.our_handle_proof();
@@ -1328,7 +1328,7 @@ impl FluorApp for PhotonApp {
                         // Device-row tap → copy that device's name to the clipboard.
                         let idx = (slot - 16) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((_pk, _is_self, _online, _retired, name, _link, _tier)) =
+                        if let Some((_pk, _is_self, _online, _retired, name, _link, _tier, _about)) =
                             devices.get(idx)
                         {
                             let name = name.clone();
@@ -1340,7 +1340,7 @@ impl FluorApp for PhotonApp {
                         // Bridge pill on an online sibling row → open a command conversation with THAT device (chat-as-shell: type `$ cmd`).
                         let idx = (slot - 8) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((pk, _, _, _, _, _, _)) = devices.get(idx).cloned() {
+                        if let Some((pk, _, _, _, _, _, _, _)) = devices.get(idx).cloned() {
                             self.open_bridge_conversation(pk);
                         }
                     } else {

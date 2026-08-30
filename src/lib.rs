@@ -1106,6 +1106,18 @@ pub fn log_version() {
     );
 }
 
+/// This build's one-line self-description — "v0.69.1 · 61040fe53ad8 · linux x86_64" — for the fleet page's per-device About. Rides the sealed pong tail (typed optional field, unknown-field-skip, no flag day), so any fleet row answers "what is that device running?" without a bridge session — the hole that burned a week in Europe and an hour of "did the deploy ship?" (ticket 2026-08-28).
+pub fn about_string() -> String {
+    let commit = env!("PHOTON_GIT_COMMIT");
+    format!(
+        "v{} · {} · {} {}",
+        env!("CARGO_PKG_VERSION"),
+        &commit[..commit.len().min(12)],
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    )
+}
+
 /// format!-shaped structured log at Info: `logf!("RX {} bytes from {}", n, addr)` — the template stores as pure text, `n`/`addr` as typed fields.
 #[macro_export]
 macro_rules! logf {
