@@ -105,6 +105,14 @@ check "  local main now == origin dev-open tip" "[ \"\$(git rev-parse HEAD)\" = 
 check "  next preflight sees no divergence" "release_git_preflight main >/dev/null 2>&1"
 check "  operator's in-build edit was preserved" "[ -f operator_note.txt ] && grep -q 'operator tweak' operator_note.txt"
 
+echo "== tag-authority version derivation (numbers earned at publish, never leaked) =="
+# The suite has already minted v69 above; a leaked bump commit must not influence the count.
+check "next minor = latest tag + 1" "[ \"\$(release_next_minor)\" = \"70\" ]"
+git tag v70 >/dev/null 2>&1
+check "  after v70 ships, next = 71" "[ \"\$(release_next_minor)\" = \"71\" ]"
+git tag weird-tag v69 >/dev/null 2>&1; git tag v7-bad >/dev/null 2>&1
+check "  non-vN tags never count" "[ \"\$(release_next_minor)\" = \"71\" ]"
+
 echo ""
 echo "==== $PASS passed, $FAIL failed ===="
 [ "$FAIL" -eq 0 ]
