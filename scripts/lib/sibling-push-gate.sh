@@ -20,6 +20,11 @@ sibling_push_check() {
             echo "SEAM: $name has $ahead commit(s) no remote holds — every other machine is blind to them. Push: git -C $r push" >&2
             bad=1
         fi
+        # Dirty counts too — the actual 2026-08-30 shape was ring_from_hash sitting UNCOMMITTED in chirp, which the unpushed check alone never sees. Photon itself is exempt here (its own build/deploy flows already gate dirt with better context).
+        if [ "$r" != "$root" ] && [ -n "$(git -C "$r" status --porcelain 2>/dev/null)" ]; then
+            echo "SEAM: $name has uncommitted changes — work only this machine can see. Commit+push: git -C $r add -A && git -C $r commit && git -C $r push" >&2
+            bad=1
+        fi
     done
     if [ "$bad" = "1" ] && [ -n "$strict" ]; then
         echo "SEAM: refusing — push the repo(s) above first (a deploy from un-pushed sibling state strands every other machine)." >&2
