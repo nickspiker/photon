@@ -58,10 +58,6 @@
 //
 // bin/  — photon-keygen.rs (signing-key gen), photon-signature-signer.rs (binary signing), test-device-key.rs (device-key diagnostic), photonlog.rs (VSF log reader).
 
-// Global debug flag - can be toggled at runtime with Ctrl+D
-use std::sync::atomic::AtomicBool;
-pub static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
-
 /// Photon network ports - used for ALL network communication UDP: peer-to-peer status pings, CLUTCH ceremony, chat messages TCP: large payloads (full CLUTCH offers ~548KB, KEM responses ~17KB) FGTW: handle registration and peer discovery announcements Primary: 4383, Fallback: 3546 (both IANA unassigned)
 pub const PHOTON_PORT: u16 = 4383;
 pub const PHOTON_PORT_FALLBACK: u16 = 3546;
@@ -77,23 +73,6 @@ pub const PEER_EXPIRY_OSC: i64 = 604_800 * OSC_PER_SEC;
 
 /// K-bucket stale entry eviction: 1 hour
 pub const KBUCKET_STALE_OSC: i64 = 3_600 * OSC_PER_SEC;
-
-// Debug print macro - only prints if DEBUG_ENABLED is true Compiled out entirely in release builds
-#[cfg(debug_assertions)]
-#[macro_export]
-macro_rules! debug_println {
-    ($($arg:tt)*) => {
-        if $crate::DEBUG_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
-            println!($($arg)*);
-        }
-    };
-}
-
-#[cfg(not(debug_assertions))]
-#[macro_export]
-macro_rules! debug_println {
-    ($($arg:tt)*) => {};
-}
 
 // Logging - feature-gated, compiles to nothing without --features logging
 // - Android: log::info!

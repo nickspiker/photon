@@ -1038,7 +1038,7 @@ impl PhotonApp {
             'h' => {
                 self.show_hitmask = !self.show_hitmask;
                 paint::DEBUG_SHOW_HITMASK.store(self.show_hitmask, Ordering::Relaxed);
-                eprintln!("[]h hitmask = {}", self.show_hitmask);
+                crate::logf!("[]h hitmask = {}", self.show_hitmask);
                 if self.show_hitmask {
                     // xorshift32 seeded from process nanos → 256 random opaque RGBs stored in α + darkness. Fresh palette every toggle so distinct IDs always pop visually.
                     let seed = (std::time::SystemTime::now()
@@ -1071,7 +1071,7 @@ impl PhotonApp {
             'p' => {
                 let cur = paint::DEBUG_SKIP_PREMULT.load(Ordering::Relaxed);
                 paint::DEBUG_SKIP_PREMULT.store(!cur, Ordering::Relaxed);
-                eprintln!("[]p skip-premult = {}", !cur);
+                crate::logf!("[]p skip-premult = {}", !cur);
             }
             'a' => {
                 // Cycle: off (0) → grayscale (1) → force-opaque (2) → off.
@@ -1083,7 +1083,7 @@ impl PhotonApp {
                     1 => "grayscale",
                     _ => "force-opaque",
                 };
-                eprintln!("[]a show-alpha = {} ({})", next, label);
+                crate::logf!("[]a show-alpha = {} ({})", next, label);
             }
             'c' => {
                 let cur = paint::DEBUG_SKIP_CHROME.load(Ordering::Relaxed);
@@ -1091,7 +1091,7 @@ impl PhotonApp {
                 if let Some(chrome) = self.chrome.as_mut() {
                     chrome.invalidate_chrome();
                 }
-                eprintln!("[]c skip-chrome = {}", !cur);
+                crate::logf!("[]c skip-chrome = {}", !cur);
             }
             'l' => {
                 let cur = paint::DEBUG_SKIP_CONTROLS.load(Ordering::Relaxed);
@@ -1099,34 +1099,34 @@ impl PhotonApp {
                 if let Some(chrome) = self.chrome.as_mut() {
                     chrome.invalidate_chrome();
                 }
-                eprintln!("[]l skip-controls = {}", !cur);
+                crate::logf!("[]l skip-controls = {}", !cur);
             }
             'r' => {
                 if let Some(chrome) = self.chrome.as_mut() {
                     chrome.invalidate_bg();
                     chrome.invalidate_chrome();
                 }
-                eprintln!("[]r force-redraw");
+                crate::logf!("[]r force-redraw");
             }
             'f' => {
                 let cur = paint::DEBUG_SHOW_FPS.load(Ordering::Relaxed);
                 paint::DEBUG_SHOW_FPS.store(!cur, Ordering::Relaxed);
-                eprintln!("[]f fps-strip = {}", !cur);
+                crate::logf!("[]f fps-strip = {}", !cur);
             }
             'w' => {
                 let cur = paint::DEBUG_SHOW_DAMAGE.load(Ordering::Relaxed);
                 paint::DEBUG_SHOW_DAMAGE.store(!cur, Ordering::Relaxed);
-                eprintln!("[]w damage-outline = {}", !cur);
+                crate::logf!("[]w damage-outline = {}", !cur);
             }
             'd' => {
                 let cur = paint::DEBUG_SHOW_FADE.load(Ordering::Relaxed);
                 paint::DEBUG_SHOW_FADE.store(!cur, Ordering::Relaxed);
-                eprintln!("[]d screen-decay = {}", !cur);
+                crate::logf!("[]d screen-decay = {}", !cur);
             }
             'b' => {
                 let cur = paint::DEBUG_SHOW_OPAQUE_SCAN.load(Ordering::Relaxed);
                 paint::DEBUG_SHOW_OPAQUE_SCAN.store(!cur, Ordering::Relaxed);
-                eprintln!("[]b opaque-scan tint = {}", !cur);
+                crate::logf!("[]b opaque-scan tint = {}", !cur);
             }
             'n' => {
                 // Nuke the local VAULT only — wipes every .vsf in the Photon app dirs (contacts, CLUTCH slots, ephemeral keypairs, friendship chains; also catches old-path strays and derivation-change orphans). Deliberately does NOT touch the tohu session: the identity_seed/vault_seed/handle_proof stay in memory + cache, so you remain attested on Ready with a freshly-empty vault. To clear the identity itself, use []u (de-attest). Only fires in development builds.
