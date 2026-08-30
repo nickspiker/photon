@@ -2440,6 +2440,7 @@ impl PhotonApp {
                                                 hex::encode(&our_proof[..8])
                                             );
                                             contact.clutch_state = ClutchState::Complete;
+                                            contact.clutch_mismatch_streak = 0;
                                             contact.clutch_completed_at =
                                                 Some(std::time::Instant::now()); // arm the post-completion re-key cooldown (before the ~1s-later weave)
                                                                                  // Fresh ceremony = fresh chain: void any prior weave seal so the probe refires (see the twin reset at the Early-proof-verified site for the full deadlock story).
@@ -2488,7 +2489,17 @@ impl PhotonApp {
                                         } else {
                                             // Proof mismatch — NEVER panic; not an attack signal (a forged proof can't pass the read_verified gate). We NO LONGER torch here — the clutch does not rotate (see the matching handler in check_clutch_ceremonies). Torching re-keyed → new time-based provenance → new ceremony_id the peer chased, and over the relay both sides torched faster than the round-trip, staying one generation apart forever. With the clutch pinned, reaching here means a TRANSIENT (eggs computed before the full KEM exchange, or a proof crossed in flight). Keep every ceremony input; the resend redelivers and the next completion recomputes matching eggs from the stable slots.
                                             crate::logf!("CLUTCH: ⚠ PROOF MISMATCH with {} (same round) ours={}... theirs={}... — NOT re-keying (clutch pinned); awaiting their correct proof", crate::fp(&contact.handle_proof), hex::encode(&our_proof[..8]), hex::encode(&payload.eggs_proof[..8]));
-                                            // Discard their mismatched proof (transient — crossed in flight, or computed before the full stable exchange). Keep OUR proof + all pinned inputs and STAY AwaitingProof: we keep re-sending our stable proof; theirs matches once the exchange completes. Deterministic stable inputs can't produce a persistent mismatch — if one survives, the log surfaces the real bug instead of a re-key spiral.
+                                            // One crossed-in-flight proof is a transient; a STREAK of same-round mismatches is a COMPETING INSTANCE — a third device muxing the shared slots computed different eggs under this round (the 11/12 deadlock: each side reads the other's re-sent foreign proof as "my ClutchComplete was lost" and they re-arm each other forever). §4.2 arbitration: the in-flight side YIELDS — discard this round and stand down for one TTL, so chain replication (adopt-iff-newer) or the next single-owner claimed round converges the friendship. A completed instance always outranks an in-flight one; simultaneous double-yield lands both in Pending where the ceremony-claim LWW serializes the re-run.
+                                            contact.clutch_mismatch_streak += 1;
+                                            const MISMATCH_YIELD_STREAK: u16 = 3;
+                                            if contact.clutch_mismatch_streak >= MISMATCH_YIELD_STREAK {
+                                                crate::logf!("CLUTCH: competing ceremony instance with {} ({} same-round mismatches) — yielding this round; replication or a fresh claimed round converges", crate::fp(&contact.handle_proof), contact.clutch_mismatch_streak);
+                                                contact.clutch_mismatch_streak = 0;
+                                                contact.discard_clutch_round();
+                                                // Stand down for one round TTL: the yield exists to make room for adoption, not to race a fresh keygen into the same collision.
+                                                contact.clutch_round_started =
+                                                    Some(vsf::eagle_time_oscillations());
+                                            }
                                             changed = true;
                                         }
                                     } else {
@@ -2515,6 +2526,12 @@ impl PhotonApp {
                                         crate::logf!("CLUTCH: Ignoring duplicate proof from {} — chain already woven, rebroadcast retired", crate::fp(&contact.handle_proof));
                                     } else if contact.clutch_proof_gave_up {
                                         // We already gave up on this peer (lifetime cap): a mismatched ghost re-sending its proof forever must NOT re-arm us — that's the mirror of the AwaitingProof storm and the whole reason for the cap. Swallow it silently (no relay spew back).
+                                    } else if contact
+                                        .clutch_our_eggs_proof
+                                        .is_some_and(|ours| ours != payload.eggs_proof)
+                                    {
+                                        // A completed ceremony's verified proof EQUALS ours ("both parties computed same eggs") — so a duplicate carrying a DIFFERENT value is not our lost ClutchComplete, it's a COMPETING INSTANCE (a third device's eggs under the muxed slots: the 11/12 deadlock's Complete half). Re-arming answers a foreign instance forever; refuse instead. The completed instance outranks — the sender yields on its own mismatch streak and converges via replication or a fresh claimed round.
+                                        crate::logf!("CLUTCH: proof from {} belongs to a competing instance (ours={}... theirs={}...) — Complete stands, not re-arming", crate::fp(&contact.handle_proof), hex::encode(&contact.clutch_our_eggs_proof.unwrap()[..8]), hex::encode(&payload.eggs_proof[..8]));
                                     } else if contact.clutch_our_eggs_proof.is_some()
                                         && contact.ceremony_id.is_some()
                                     {

@@ -1135,6 +1135,7 @@ impl PhotonApp {
                             hex::encode(&result.eggs_proof[..8])
                         );
                         contact.clutch_state = ClutchState::Complete;
+                        contact.clutch_mismatch_streak = 0;
                         contact.clutch_completed_at = Some(std::time::Instant::now()); // arm the post-completion re-key cooldown (before the ~1s-later weave)
                                                                                        // A FRESH ceremony just completed = a brand-new chain — any prior weave seal is void. Reset the double-toggle state so the hidden probe REFIRES for this chain. Without this, a peer that client-reset and re-CLUTCHed hits a deadlock: our persisted chain_woven=true (load latches all probe flags true) suppresses our probe, the reset peer waits forever for it ("weaving the chain"), and we dismiss their re-sent proofs as woven-duplicates. First-ceremony case: flags already false, no-op.
                         contact.chain_woven = false;
