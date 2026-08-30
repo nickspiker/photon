@@ -2882,9 +2882,9 @@ pub(crate) fn contact_conn_tier(c: &crate::types::Contact) -> ConnTier {
     if !c.is_online {
         return ConnTier::Offline;
     }
-    if let Some((addr, _)) = c.validated_path.as_ref() {
-        // is_private_addr, not a hand-rolled check: a dual-stack socket validates LAN paths in the V4-MAPPED-v6 form (::ffff:192.168.x.y), which a bare V6-segment test reads as WAN — one side of a same-room pair showed LAN while the other showed WAN (field 2026-08-20, Emma↔1). The helper unmaps before classifying.
-        return if is_private_addr(&addr.ip()) {
+    if c.validated_path.is_some() {
+        // The same-LAN verdict was judged ONCE at the validation edge (status.rs punch-ack arm: private AND on our own subnet / WFD group). Re-deriving from the address here called every RFC-private address "same room" — and carrier CGNAT hands cellular devices 10.x, so a Verizon-internal path to a peer hundreds of miles away rang cyan (field 2026-08-30). Private-but-foreign is a real direct path: WAN.
+        return if c.validated_path_lan {
             ConnTier::Lan
         } else {
             ConnTier::Wan

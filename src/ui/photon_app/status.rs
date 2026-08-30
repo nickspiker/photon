@@ -4290,6 +4290,13 @@ impl PhotonApp {
                         contact.reached_via_relay = false;
                         // Reachability clock: a signed punch ack = the guard's eyes are open.
                         contact.last_heard = Some(now);
+                        // The same-LAN judgment, made ONCE here at the edge (get_local_ip binds a socket — never per frame): private address on OUR subnet (or WFD group) = LAN; private-but-foreign (carrier CGNAT 10.x, colliding home /24s) = a real direct path that is NOT "same room" (the 2026-08-30 cyan lie: a Verizon-CGNAT path to a peer hundreds of miles away rang LAN). Canonical form first — punch acks arrive v4-mapped (::ffff:a.b.c.d).
+                        let canon = crate::network::udp::canon_socketaddr(remote);
+                        let remote_is_lan = crate::ui::photon_app::is_private_addr(&canon.ip())
+                            && !crate::network::traverse::gather::is_foreign_peer_lan(
+                                &canon,
+                                crate::network::udp::get_local_ip(),
+                            );
                         match contact.validated_path {
                             None => {
                                 crate::logf!(
@@ -4298,6 +4305,7 @@ impl PhotonApp {
                                     remote
                                 );
                                 contact.validated_path = Some((remote, now));
+                                contact.validated_path_lan = remote_is_lan;
                                 // Path-up EDGE doubles as the parked ceremony's second chance: the one offer send may have raced only dead records (carrier-NAT LAN + a stale registry address) before this path proved out — and the pong-driven re-send never fires for a peer whose pongs don't flow. Only when the peer's own offer hasn't arrived either (a present offer means the exchange is moving; duplicates would just burn a half-MB transfer).
                                 if !contact.is_sibling
                                     && contact.clutch_state == crate::types::ClutchState::Pending
@@ -4310,14 +4318,13 @@ impl PhotonApp {
                                 }
                             }
                             Some((existing, _)) if existing == remote => {
-                                // Keepalive ack for the current path — refresh liveness.
+                                // Keepalive ack for the current path — refresh liveness (the LAN judgment stands; same address, same verdict).
                                 contact.validated_path = Some((remote, now));
                             }
                             Some((existing, _))
-                                if is_private_addr(&remote.ip())
-                                    && !is_private_addr(&existing.ip()) =>
+                                if remote_is_lan && !is_private_addr(&existing.ip()) =>
                             {
-                                // A LAN path acked while we're pinned to a public/cell one — UPGRADE. First-wins normally holds, but a private-subnet path is categorically better than a carrier one: it never rotates (the cell IPv6 privacy address churns — five in one field log — and each rotation strands the pinned path until TTL), no NAT, lowest latency. Two devices on one LAN must ride the LAN, not race a dying cell mapping. (Only LAN-supplants-public; a second public path never displaces the first-won.)
+                                // A LAN path acked while we're pinned to a public/cell one — UPGRADE. First-wins normally holds, but a genuinely-OUR-subnet path is categorically better than a carrier one: it never rotates (the cell IPv6 privacy address churns — five in one field log — and each rotation strands the pinned path until TTL), no NAT, lowest latency. Two devices on one LAN must ride the LAN, not race a dying cell mapping. Gated on the same-LAN judgment, not bare is_private (a foreign CGNAT 10.x acking must NOT displace a working public path — 2026-08-30). (Only LAN-supplants-public; a second public path never displaces the first-won.)
                                 crate::logf!(
                                     "TRAVERSE: {} LAN path {} supplants pinned public {}",
                                     crate::fp(&contact.handle_proof).as_str(),
@@ -4325,6 +4332,7 @@ impl PhotonApp {
                                     existing
                                 );
                                 contact.validated_path = Some((remote, now));
+                                contact.validated_path_lan = true;
                             }
                             Some(_) => { /* a different candidate acked; keep the first-won path */
                             }
