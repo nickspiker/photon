@@ -78,6 +78,17 @@ Write-Host ""
 Write-Host "[OK] Binary installed to $installDir" -ForegroundColor Green
 Write-Host ""
 
+# Resilient launch (docs/resilient-launch.md): a SECOND copy under a different LOCALAPPDATA root, so a nuked or corrupt primary still leaves a good binary. The updater keeps both fresh; the verify-and-fallback launch shim is Linux-first (Windows keeps launching the primary directly for now). Best-effort — a failed second copy never fails the install.
+$copyBDir = "$env:LOCALAPPDATA\PhotonMessenger"
+try {
+    New-Item -ItemType Directory -Path $copyBDir -Force | Out-Null
+    Copy-Item -Path $binaryPath -Destination "$copyBDir\photon-messenger.exe" -Force
+    Write-Host "[OK] Second copy installed to $copyBDir" -ForegroundColor Green
+    Write-Host ""
+} catch {
+    Write-Host "  (second copy not installed: $_)" -ForegroundColor Yellow
+}
+
 # Add to PATH
 Write-Host "Adding to PATH..." -ForegroundColor Yellow
 
