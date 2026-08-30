@@ -432,13 +432,23 @@ impl PhotonApp {
             || sibling_sendable
     }
 
-    /// The conversation for `self.contacts[ci]`, materialized empty on first touch — so no caller ever branches on "does it exist yet". `None` only before the session is up.
+    /// The conversation for `self.contacts[ci]`, materialized on first touch — so no caller ever branches on "does it exist yet". `None` only before the session is up.
+    /// Materialize LOADS the durable table right here (load-before-use): the old empty materialize was the 2026-08-21 erasure's opening move — a receive could touch the conversation before the boot loader reached it, and the persist that followed carried only the fresh rows. One vault read, once per conversation lifetime; a failed load leaves it un-hydrated and the persist gate holds every write until a load succeeds.
     pub(super) fn conv_mut_of(&mut self, ci: usize) -> Option<&mut crate::types::Conversation> {
         let c = self.contacts.get(ci)?;
-        let fresh = c.conversation(&self.our_party_id(c)?);
+        let mut fresh = c.conversation(&self.our_party_id(c)?);
         let id = fresh.id();
         if let Some(pos) = self.conversations.iter().position(|v| v.id() == id) {
             return self.conversations.get_mut(pos);
+        }
+        if let Some(storage) = self.storage.as_ref() {
+            if let Err(e) = crate::storage::contacts::load_messages(&mut fresh, storage) {
+                crate::logf!(
+                    "STORAGE: materialize could not hydrate conversation {}: {} (stays un-hydrated; persists refused until a load succeeds)",
+                    hex::encode(&id.as_bytes()[..4]),
+                    e
+                );
+            }
         }
         self.conversations.push(fresh);
         self.conversations.last_mut()

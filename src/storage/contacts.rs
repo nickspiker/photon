@@ -893,6 +893,17 @@ pub fn save_messages(
     let table = *conv.id().as_bytes();
 
     let mut db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
+    // SHRINK TRIPWIRE (the 2026-08-21 erasure, honest version): this write is upsert-only, so it can never remove a composite row — but a snapshot holding FEWER rows than the durable table means RAM is missing rows the vault has (a load that never ran, a read-cache that served empty, a phantom conv id), and that is exactly the forensic fact a submitted log must carry. Deletions don't shrink the table (a deleted row is a kept tombstone), so any deficit is suspicious. Log loudly and proceed; the legacy sweep below is timestamp-matched so the un-put rows survive.
+    if let Ok(existing) = db.list_in(&table) {
+        if existing.len() > conv.messages.len() {
+            crate::logf!(
+                "STORAGE: persist snapshot has {} row(s) but the durable table holds {} for conversation {} — RAM is missing rows the vault has (writing anyway; upserts can't erase)",
+                conv.messages.len(),
+                existing.len(),
+                hex::encode(&conv.id().as_bytes()[..4])
+            );
+        }
+    }
     for msg in conv.messages.iter() {
         // Key each row by the message's eagle_time, NOT a local enumerate index. eagle_time is monotonic (a clock) so it's stable + shared across both devices (the renumber-on-insert hazard of an index key is gone), it's the braid's weave reference, and Pk::Int encodes big-endian so key order == chronological. eagle_time is i64 but always positive (oscillations since Apollo 11), so `as u64` is safe and order-preserving. `content_hash` = blake3 of the message text, stored so the braid's eagle_time->text weave lookup has an integrity/tiebreak check (the adversarial multi-device-same-tick case).
         let content_hash = blake3::hash(msg.content.as_bytes());
@@ -931,11 +942,18 @@ pub fn save_messages(
         )
         .map_err(|e| StorageError::Vault(e.to_string()))?;
     }
-    // Self-terminating key migration: every row was just re-put under its composite key, so any legacy bare-Int keys left in the table are stale twins — delete them or the table doubles (load would dedup by row identity, but the vault must not carry the ghosts).
+    // Self-terminating key migration: a legacy bare-Int key whose row was just re-put under its composite key is a stale twin — delete it or the table doubles. TIMESTAMP-MATCHED, never a blanket sweep: the old "delete every Int key" form assumed the snapshot held the whole table, and a persist that fired from a not-yet-loaded conversation re-put only its few RAM rows and then deleted every legacy row it never carried — the 2026-08-21 relaunch erasure (rows gone locally, the Mac re-serving them). An Int key with no matching re-put row is NOT ours to touch.
+    let reput_times: std::collections::HashSet<u64> = conv
+        .messages
+        .iter()
+        .map(|m| m.timestamp as u64)
+        .collect();
     if let Ok(pks) = db.list_in(&table) {
         for pk in pks {
-            if matches!(pk, Pk::Int(_)) {
-                let _ = db.delete_row_in(&table, pk);
+            if let Pk::Int(t) = pk {
+                if reput_times.contains(&t) {
+                    let _ = db.delete_row_in(&table, pk);
+                }
             }
         }
     }
@@ -1006,6 +1024,9 @@ pub fn load_messages(
             bridge_exit: None,
         });
     }
+
+    // RAM now reflects disk (an empty table included) — this is what licenses a later persist. Every failure path above returned Err, so a load that couldn't read leaves the conversation un-hydrated and the persist gate refuses it.
+    conv.hydrated = true;
 
     #[cfg(feature = "development")]
     crate::logf!(

@@ -42,6 +42,8 @@ pub struct Conversation {
     pub history_recovery: Option<HistoryRecovery>,
     /// Cached anti-entropy digest `(count, digest)` — invalidated (set `None`) on any message-set mutation and recomputed lazily by `anti_entropy_digest`. Runtime-only: it is recomputed on load. Stops the digest being re-folded over EVERY row on every sync-record build (it was an O(rows) blake3 pass per call, on the render thread).
     digest_cache: Option<(u32, [u8; 32])>,
+    /// TRUE only after `load_messages` successfully read this conversation's durable table into `messages` (an empty table counts — success means "RAM now reflects disk"). Runtime-only, default FALSE: a conversation materialized empty (lazy conv_mut_of, a load that errored) holds rows the vault may still have, and a persist from that state is how the 2026-08-21 relaunch erasure happened — so the persist path REFUSES until this is set.
+    pub hydrated: bool,
 }
 
 impl Conversation {
@@ -59,6 +61,7 @@ impl Conversation {
             scroll_offset: 0.0,
             history_recovery: None,
             digest_cache: None,
+            hydrated: false,
         }
     }
 
