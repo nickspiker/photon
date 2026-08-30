@@ -2103,7 +2103,7 @@ impl PhotonApp {
                     let bridge_strip_txt: Option<String> = if contact.is_sibling {
                         self.bridge_locus
                             .as_ref()
-                            .filter(|(d, _, _)| *d == contact.public_identity.key)
+                            .filter(|(d, _, _)| Some(*d) == contact.device_key())
                             .map(|(_, h, c)| format!("{h}:{c}"))
                     } else {
                         None

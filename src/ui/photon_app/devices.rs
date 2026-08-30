@@ -287,6 +287,9 @@ impl PhotonApp {
             .iter()
             .filter(|c| c.is_sibling && !c.locked_out)
         {
+            let Some(sib_key) = sib.device_key() else {
+                continue; // a sibling row always carries its key; never fabricate one
+            };
             let (primary, alt, relay_to) = match sib.race_addrs() {
                 Some((p, a)) => (
                     p,
@@ -304,7 +307,7 @@ impl PhotonApp {
             let _ = dispatch.send(crate::network::status::HistorySendRequest {
                 peer_addr: primary,
                 alt_addr: alt,
-                recipient_pubkey: *sib.public_identity.as_bytes(),
+                recipient_pubkey: sib_key,
                 relay_to,
                 vsf_bytes: frame.clone(),
             });
@@ -753,7 +756,7 @@ impl PhotonApp {
             if self
                 .contacts
                 .iter()
-                .any(|c| c.is_sibling && c.public_identity.key == *device)
+                .any(|c| c.is_sibling && c.device_key() == Some(*device))
             {
                 continue;
             }
@@ -778,7 +781,7 @@ impl PhotonApp {
         // Drop de-folded members (device removed from OUR chain).
         let mut removed: Vec<crate::types::Contact> = Vec::new();
         self.contacts.retain(|c| {
-            if c.is_sibling && !members.contains(&c.public_identity.key) {
+            if c.is_sibling && c.device_key().is_some_and(|k| !members.contains(&k)) {
                 removed.push(c.clone());
                 false
             } else {
@@ -788,12 +791,12 @@ impl PhotonApp {
         for c in &removed {
             crate::logf!(
                 "SIBLING: reconciled -1 (device {} left the fold)",
-                hex::encode(&c.public_identity.key[..4])
+                hex::encode(&c.device_key().unwrap_or_default()[..4])
             );
             changed = true;
             if let Some(storage) = self.storage.as_ref() {
                 if let Err(e) =
-                    crate::storage::contacts::delete_sibling(&c.public_identity.key, storage)
+                    crate::storage::contacts::delete_sibling(&c.device_key().unwrap_or_default(), storage)
                 {
                     crate::logf!("SIBLING: failed to delete sibling state: {}", e);
                 }
@@ -1087,7 +1090,8 @@ impl PhotonApp {
             .map(|c| RosterEntry {
                 handle_proof: c.handle_proof,
                 handle_hash: c.handle_hash,
-                public_identity: *c.public_identity.as_bytes(),
+                // Wire slot is fixed [u8;32]; zero = "no device key learned" at this ONE boundary, decoded back to None on the read side. RosterEntry itself is on the zero-sentinel follow-up list.
+                public_identity: c.device_key().unwrap_or([0u8; 32]),
                 published_name: c.published_name.clone(),
                 avatar_pin: c.avatar_pin,
                 added: c.added,
@@ -1222,7 +1226,9 @@ impl PhotonApp {
                     continue;
                 }
             }
-            let device_pubkey = crate::types::DevicePubkey::from_bytes(e.public_identity);
+            // The roster wire slot's zero means "no device key learned" — decode it back to honest absence, never let it live on as a pingable key.
+            let device_pubkey = (e.public_identity != [0u8; 32])
+                .then(|| crate::types::DevicePubkey::from_bytes(e.public_identity));
             let mut contact = crate::types::Contact::from_pin(
                 e.avatar_pin,
                 e.handle_proof,
@@ -1431,7 +1437,9 @@ impl PhotonApp {
         // The egged probe remembered (the Fleet page gathers rows per FRAME; a vault read per sibling per frame is a librarian round trip for an answer that only changes at ceremony completion, which clears its entry).
         let mut egged_cache = std::mem::take(&mut self.egged_cache);
         for c in self.contacts.iter().filter(|c| c.is_sibling) {
-            let pk = c.public_identity.key;
+            let Some(pk) = c.device_key() else {
+                continue;
+            };
             // Egged = a completed CLUTCH minted this pair's fan-out secret; until then the device gets no wrap and holds no fleet key.
             let egged = *egged_cache.entry(pk).or_insert_with(|| {
                 matches!((ours, self.storage.as_ref()), (Some(me), Some(st))
@@ -1531,7 +1539,7 @@ impl PhotonApp {
         if !unlocked.is_empty() {
             let mut cleared: Vec<usize> = Vec::new();
             for (i, c) in self.contacts.iter_mut().enumerate() {
-                if c.is_sibling && c.locked_out && unlocked.contains(c.public_identity.as_bytes()) {
+                if c.is_sibling && c.locked_out && c.device_key().is_some_and(|k| unlocked.contains(&k)) {
                     c.locked_out = false;
                     cleared.push(i);
                 }
@@ -1541,7 +1549,7 @@ impl PhotonApp {
                     for &i in &cleared {
                         crate::logf!(
                             "FLEET: {} is UNLOCKED — the fleet trusts it again",
-                            crate::fp(&self.contacts[i].public_identity.key)
+                            crate::fp(&self.contacts[i].device_key().unwrap_or_default())
                         );
                         let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
                     }
@@ -1555,8 +1563,10 @@ impl PhotonApp {
             .iter()
             .filter(|c| c.is_sibling && c.locked_out)
         {
-            if !locked.contains(c.public_identity.as_bytes()) {
-                locked.push(*c.public_identity.as_bytes());
+            if let Some(k) = c.device_key() {
+                    if !locked.contains(&k) {
+                        locked.push(k);
+                    }
             }
         }
         // The relay-layer refusal list rides every application of the set — including the empty one at boot, so a stale static from a prior identity can't linger.
@@ -1568,7 +1578,7 @@ impl PhotonApp {
         }
         let mut changed_rows: Vec<usize> = Vec::new();
         for (i, c) in self.contacts.iter_mut().enumerate() {
-            if c.is_sibling && !c.locked_out && locked.contains(c.public_identity.as_bytes()) {
+            if c.is_sibling && !c.locked_out && c.device_key().is_some_and(|k| locked.contains(&k)) {
                 c.locked_out = true;
                 changed_rows.push(i);
             }
@@ -1578,7 +1588,7 @@ impl PhotonApp {
                 for &i in &changed_rows {
                     crate::logf!(
                         "FLEET: {} is LOCKED OUT — frames refused, key rotating away",
-                        crate::fp(&self.contacts[i].public_identity.key)
+                        crate::fp(&self.contacts[i].device_key().unwrap_or_default())
                     );
                     let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
                 }

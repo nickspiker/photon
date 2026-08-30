@@ -107,10 +107,10 @@ impl PhotonApp {
                         return AvatarPlan::LocalCached { ci };
                     }
                     if c.is_mutual() {
-                        if let Some((addr, _alt)) = c.race_addrs() {
+                        if let (Some((addr, _alt)), Some(recipient_key)) = (c.race_addrs(), c.device_key()) {
                             return AvatarPlan::P2pThenFgtw {
                                 peer_addr: addr,
-                                recipient_pubkey: *c.public_identity.as_bytes(),
+                                recipient_pubkey: recipient_key,
                                 ci,
                             };
                         }
@@ -861,7 +861,7 @@ impl PhotonApp {
                                                     peer_addr: primary,
                                                     alt_addr: alt,
                                                     vsf_bytes,
-                                                    recipient_pubkey: contact.public_identity.key,
+                                                    recipient_pubkey: contact.device_key().unwrap_or_default(), // unreachable-zero: this arm answers a frame-verified peer; Option-izing the request API is the follow-up
                                                     relay_to: contact.relay_device_list(),
                                                 });
                                                 contact.clutch_offer_sent = true;
@@ -901,7 +901,7 @@ impl PhotonApp {
                                         primary,
                                         alt,
                                         contact.display_name(),
-                                        *contact.public_identity.as_bytes(),
+                                        contact.device_key().unwrap_or_default(), // unreachable-zero: retransmit targets a woven friend
                                         last_received,
                                     ));
                                 }
@@ -1050,7 +1050,7 @@ impl PhotonApp {
                                 .and_then(|ack| {
                                     self.contacts
                                         .get(contact_idx)
-                                        .map(|c| (ack, *c.public_identity.as_bytes()))
+                                        .and_then(|c| c.device_key().map(|k| (ack, k)))
                                 });
                             if let Some((ph, recipient_pubkey)) = stored {
                                 if let Some(ref checker) = self.status_checker {
@@ -1514,7 +1514,7 @@ impl PhotonApp {
                             hex::encode(&their_handle_hash[..8]),
                             crate::fp(&self.contacts[matched_ci].handle_proof).as_str(),
                             self.contacts[matched_ci].is_sibling,
-                            hex::encode(&self.contacts[matched_ci].public_identity.key[..4])
+                            hex::encode(&self.contacts[matched_ci].device_key().unwrap_or_default()[..4])
                         );
                         continue;
                     }
@@ -1833,7 +1833,7 @@ impl PhotonApp {
                                                 peer_addr: sender_addr,
                                                 alt_addr: alt,
                                                 vsf_bytes,
-                                                recipient_pubkey: contact.public_identity.key,
+                                                recipient_pubkey: contact.device_key().unwrap_or_default(), // unreachable-zero: this arm answers a frame-verified peer; Option-izing the request API is the follow-up
                                                 relay_to: contact.relay_device_list(),
                                             });
                                             contact.clutch_offer_sent = true;
@@ -1929,7 +1929,7 @@ impl PhotonApp {
                                                 .expect("device_keypair set in init")
                                                 .secret
                                                 .as_bytes(),
-                                            recipient_pubkey: contact.public_identity.key,
+                                            recipient_pubkey: contact.device_key().unwrap_or_default(), // unreachable-zero: this arm answers a frame-verified peer; Option-izing the request API is the follow-up
                                             relay_to: contact.relay_device_list(),
                                         });
                                         crate::logf!(
@@ -2496,9 +2496,13 @@ impl PhotonApp {
                                                 crate::logf!("CLUTCH: competing ceremony instance with {} ({} same-round mismatches) — yielding this round; replication or a fresh claimed round converges", crate::fp(&contact.handle_proof), contact.clutch_mismatch_streak);
                                                 contact.clutch_mismatch_streak = 0;
                                                 contact.discard_clutch_round();
-                                                // Stand down for one round TTL: the yield exists to make room for adoption, not to race a fresh keygen into the same collision.
+                                                // Stand down for a JITTERED slice of the round TTL (50-100%): the yield exists to make room for adoption, not to race a fresh keygen into the same collision — and two devices yielding on identical fixed timers would re-collide on the same beat forever.
                                                 contact.clutch_round_started =
-                                                    Some(vsf::eagle_time_oscillations());
+                                                    Some(vsf::eagle_time_oscillations()
+                                                        - super::CLUTCH_ROUND_TTL_OSC
+                                                        + crate::jitter(
+                                                            super::CLUTCH_ROUND_TTL_OSC,
+                                                        ));
                                             }
                                             changed = true;
                                         }

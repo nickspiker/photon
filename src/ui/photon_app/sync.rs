@@ -21,7 +21,8 @@ impl PhotonApp {
             let entry = crate::network::fgtw::fleet::RosterEntry {
                 handle_proof: c.handle_proof,
                 handle_hash: c.handle_hash,
-                public_identity: *c.public_identity.as_bytes(),
+                // A tombstone carries no identity payload (see the blanked fields below) — the roster keys on handle_hash, so a never-keyed contact tombstones with the wire slot's blank. RosterEntry itself is on the zero-sentinel follow-up list.
+                public_identity: c.device_key().unwrap_or([0u8; 32]),
                 published_name: String::new(),
                 avatar_pin: [0u8; 64],
                 added: 0,
@@ -305,6 +306,10 @@ impl PhotonApp {
             }
         }
         for contact in due.iter().filter_map(|&i| self.contacts.get(i)) {
+            // No device key ever learned = nothing to ping BY: presence pings track the pinged DEVICE, and the old zero placeholder here is exactly what scheduled pings at "00000000" and then marked "0000000000000000 offline" (field, MacBook 2026-08-30). Per-device endpoint pings below don't apply either (endpoints carry their own pubkeys but arrive only after a key is known); the contact simply isn't presence-pingable yet.
+            let Some(primary_dev) = contact.public_identity.clone() else {
+                continue;
+            };
             // Ping the LAN address AND the public address (when both are known) rather than preferring LAN and never falling back. Two devices that once shared a LAN have a stored `local_ip`; the moment one moves to a different network (e.g. phone → cellular) that LAN address is stale and unreachable, but the public address in the registry is correct — pinging only LAN strands them offline forever. Each ping is tracked by a unique provenance hash and a single pong clears the whole per-contact failure counter (see status.rs StatusPong handler), so the unreachable address simply times out harmlessly while the reachable one keeps the contact online. On-LAN the LAN ping wins (no router hairpin / AP isolation); off-LAN the public ping wins.
             let lan_addr = match (contact.local_ip, contact.local_port) {
                 (Some(ip), Some(port)) => {
@@ -354,7 +359,7 @@ impl PhotonApp {
                 if Some(vpath) != lan_addr && Some(vpath) != contact.ip {
                     checker.ping(
                         vpath,
-                        contact.public_identity.clone(),
+                        primary_dev.clone(),
                         std::mem::take(&mut punch),
                         std::mem::take(&mut relay_ping),
                     );
@@ -364,7 +369,7 @@ impl PhotonApp {
             if let Some(addr) = lan_addr {
                 checker.ping(
                     addr,
-                    contact.public_identity.clone(),
+                    primary_dev.clone(),
                     std::mem::take(&mut punch),
                     std::mem::take(&mut relay_ping),
                 );
@@ -375,7 +380,7 @@ impl PhotonApp {
                 if Some(public) != lan_addr {
                     checker.ping(
                         public,
-                        contact.public_identity.clone(),
+                        primary_dev.clone(),
                         std::mem::take(&mut punch),
                         std::mem::take(&mut relay_ping),
                     );
@@ -386,7 +391,7 @@ impl PhotonApp {
             if !relay_ping.is_empty() {
                 checker.ping(
                     crate::network::status::RELAY_ADDR,
-                    contact.public_identity.clone(),
+                    primary_dev.clone(),
                     Vec::new(),
                     std::mem::take(&mut relay_ping),
                 );
@@ -398,7 +403,7 @@ impl PhotonApp {
             // PER-DEVICE presence: every OTHER fleet device with a discovered endpoint gets its own ping at ITS OWN address(es), tracked by ITS pubkey — so each device answers for itself and the identity ring is "any device up". (The contact-level pings above already cover the active/first-met device; skip its endpoint to avoid a doubled ping.)
             for ep in &contact.device_endpoints {
                 if Some(ep.pubkey) == contact.active_device
-                    || ep.pubkey == contact.public_identity.key
+                    || Some(ep.pubkey) == contact.device_key()
                 {
                     continue;
                 }
@@ -531,6 +536,10 @@ impl PhotonApp {
             let Some((primary, alt)) = contact.race_addrs() else {
                 continue;
             };
+            // A proof retransmit is addressed to a DEVICE; a contact whose key was never learned has nowhere to send one (and can't have a proof in flight anyway).
+            let Some(recipient_key) = contact.device_key() else {
+                continue;
+            };
             // Party-id seam: sibling tokens derive from the device pids, not the shared seed.
             let our_pid = if contact.is_sibling {
                 crate::crypto::clutch::sibling_party_id(&device_pubkey)
@@ -546,7 +555,7 @@ impl PhotonApp {
                 payload: ClutchCompletePayload { eggs_proof },
                 device_pubkey,
                 device_secret,
-                recipient_pubkey: contact.public_identity.key,
+                recipient_pubkey: recipient_key,
                 relay_to: contact.relay_device_list(),
             });
             contact.clutch_proof_resends_left -= 1;
@@ -582,13 +591,17 @@ impl PhotonApp {
             };
             let token =
                 crate::crypto::clutch::derive_conversation_token(&[us, contact.handle_hash]);
+            // A knock is addressed to the peer's known device; with no key ever learned there is no one to knock yet.
+            let Some(recipient_key) = contact.device_key() else {
+                return;
+            };
             // No address is no reason to hold: with no validated path the send fans out over relay_to, same as the offer re-fire below.
             let primary = contact.ip.unwrap_or(crate::network::status::RELAY_ADDR);
             let alt = match (contact.local_ip, contact.local_port) {
                 (Some(lan), Some(port)) => Some(std::net::SocketAddr::from((lan, port))),
                 _ => None,
             };
-            (token, primary, alt, contact.public_identity.key, contact.relay_device_list())
+            (token, primary, alt, recipient_key, contact.relay_device_list())
         };
         let Some(kp) = self.device_keypair.as_ref() else {
             return;
@@ -662,6 +675,10 @@ impl PhotonApp {
             return;
         };
         let contact = &mut self.contacts[idx];
+        // An offer re-fire is addressed to the peer's known device; keyless = no one to re-fire at yet.
+        let Some(recipient_key) = contact.device_key() else {
+            return;
+        };
         let Some(ref keypairs) = contact.clutch_our_keypairs else {
             // Keygen hasn't (re)filled the ephemerals — the serialized keygen worker will, and its own completion path sends the offer.
             return;
@@ -697,7 +714,7 @@ impl PhotonApp {
                     peer_addr: primary,
                     alt_addr: alt,
                     vsf_bytes,
-                    recipient_pubkey: contact.public_identity.key,
+                    recipient_pubkey: recipient_key,
                     relay_to: contact.relay_device_list(),
                 });
                 contact.clutch_offer_sent = true;
@@ -736,6 +753,8 @@ impl PhotonApp {
             .iter()
             .filter_map(|c| {
                 let fid = c.friendship_id?;
+                // The wire recipient is a DEVICE key; a Complete contact always has one, but never fabricate for a keyless row.
+                let recipient_key = c.device_key()?;
                 let (mut primary, mut alt) = c.race_addrs()?;
                 // Drop a FOREIGN peer LAN — a peer's private address on a subnet that isn't ours, which PT retransmits into a black hole forever. If the primary is foreign, promote a reachable alt into its place; if both are foreign, this route has NO direct target and survives ONLY on the relay fan-out below (relay_to). A same-subnet peer LAN is kept — that's a real fast path.
                 use crate::network::traverse::gather::is_foreign_peer_lan;
@@ -750,7 +769,7 @@ impl PhotonApp {
                                 return None;
                             }
                             // peer_addr is unused for delivery here (both direct addrs were foreign); hand the sentinel so the send drain UDP-sends nowhere harmlessly and the relay_to carries it.
-                            return Some((fid, crate::network::status::RELAY_ADDR, None, *c.public_identity.as_bytes(), relay_to));
+                            return Some((fid, crate::network::status::RELAY_ADDR, None, recipient_key, relay_to));
                         }
                     }
                 } else if alt.map_or(false, |a| is_foreign_peer_lan(&a, our_lan_v4)) {
@@ -758,7 +777,7 @@ impl PhotonApp {
                 }
                 // No direct path → carry the peer's relay device list so the retransmit also rides the pipe.
                 let relay_to = c.relay_device_list();
-                Some((fid, primary, alt, *c.public_identity.as_bytes(), relay_to))
+                Some((fid, primary, alt, recipient_key, relay_to))
             })
             .collect();
         if routes.is_empty() {
@@ -1019,6 +1038,9 @@ impl PhotonApp {
             .iter()
             .filter(|c| c.is_sibling && !c.locked_out)
         {
+            let Some(sib_key) = sib.device_key() else {
+                continue; // a sibling row always carries its key; never fabricate one
+            };
             let (primary, alt, relay_to) = match sib.race_addrs() {
                 Some((p, a)) => (
                     p,
@@ -1033,7 +1055,7 @@ impl PhotonApp {
                     (unspecified, None, relays)
                 }
             };
-            targets.push((primary, alt, *sib.public_identity.as_bytes(), relay_to));
+            targets.push((primary, alt, sib_key, relay_to));
         }
         let kp_pub = *kp.public.as_bytes();
         let kp_sec = *kp.secret.as_bytes();
@@ -1164,7 +1186,10 @@ impl PhotonApp {
             .iter()
             .filter(|c| c.is_sibling && !c.locked_out)
         {
-            if exclude_device.is_some_and(|d| *sib.public_identity.as_bytes() == d) {
+            let Some(sib_key) = sib.device_key() else {
+                continue; // a sibling row always carries its key; never fabricate one
+            };
+            if exclude_device == Some(sib_key) {
                 continue;
             }
             let (primary, alt, relay_to) = match sib.race_addrs() {
@@ -1183,7 +1208,7 @@ impl PhotonApp {
                     (unspecified, None, relays)
                 }
             };
-            targets.push((primary, alt, *sib.public_identity.as_bytes(), relay_to));
+            targets.push((primary, alt, sib_key, relay_to));
         }
         // ALWAYS log, zero included — a silently-no-op fleet push is exactly how this path shipped broken.
         crate::logf!(
@@ -1306,14 +1331,15 @@ impl PhotonApp {
                 &device_sec,
             ) {
                 Ok(vsf_bytes) => {
-                    if let (Some(checker), Some((primary, alt))) = (
+                    if let (Some(checker), Some((primary, alt)), Some(recipient_key)) = (
                         self.status_checker.as_ref(),
                         self.contacts[idx].race_addrs(),
+                        self.contacts[idx].device_key(),
                     ) {
                         checker.send_history(crate::network::status::HistorySendRequest {
                             peer_addr: primary,
                             alt_addr: alt,
-                            recipient_pubkey: *self.contacts[idx].public_identity.as_bytes(),
+                            recipient_pubkey: recipient_key,
                             relay_to: if self.contacts[idx].validated_path.is_none() {
                                 self.contacts[idx].relay_device_list()
                             } else {
@@ -1498,13 +1524,13 @@ impl PhotonApp {
                 .iter()
                 .filter(|c| c.is_sibling && c.is_online)
                 .find_map(|c| {
-                    c.race_addrs().map(|(p, a)| {
-                        (
+                    c.race_addrs().and_then(|(p, a)| {
+                        Some((
                             p,
                             a,
-                            *c.public_identity.as_bytes(),
+                            c.device_key()?,
                             relay_unless_direct_trusted(&c, crate::network::udp::get_local_ip()),
-                        )
+                        ))
                     })
                 })
                 .or_else(|| {
@@ -1513,8 +1539,8 @@ impl PhotonApp {
                         .iter()
                         .filter(|c| c.is_sibling && !(c.presence_probed && !c.is_online))
                         .find_map(|c| {
-                            c.race_addrs().map(|(p, a)| {
-                                (p, a, *c.public_identity.as_bytes(), c.relay_device_list())
+                            c.race_addrs().and_then(|(p, a)| {
+                                Some((p, a, c.device_key()?, c.relay_device_list()))
                             })
                         })
                 })
@@ -1527,7 +1553,7 @@ impl PhotonApp {
                             if relays.is_empty() {
                                 None
                             } else {
-                                Some((unspecified, None, *c.public_identity.as_bytes(), relays))
+                                Some((unspecified, None, c.device_key()?, relays))
                             }
                         })
                 })
@@ -1579,7 +1605,7 @@ impl PhotonApp {
                                         chains.conversation_token,
                                         primary,
                                         alt,
-                                        *c.public_identity.as_bytes(),
+                                        c.device_key()?,
                                         relay_to,
                                     ));
                                 }
@@ -1738,6 +1764,10 @@ impl PhotonApp {
             let Some((primary, alt)) = contact.race_addrs() else {
                 continue;
             };
+            // Blind frames are addressed to the peer's known device; keyless = no blind exchange possible yet.
+            let Some(recipient_key) = contact.device_key() else {
+                continue;
+            };
             // Party-id seam: sibling tokens derive from the device pids (fleet weave), friend tokens from the identity PARTY IDS — the same inputs the peer derives with. (Was the raw seed: my {seed, their_pid} vs their {their_seed, my_pid} never agreed, so every blind put/get bounced off the peer's unknown-token gate — the exact seam class that hung chat/CLUTCH/history.)
             let our_pid = if contact.is_sibling {
                 crate::crypto::clutch::sibling_party_id(&device_pubkey)
@@ -1783,7 +1813,7 @@ impl PhotonApp {
                     checker.send_history(crate::network::status::HistorySendRequest {
                         peer_addr: primary,
                         alt_addr: alt,
-                        recipient_pubkey: *contact.public_identity.as_bytes(),
+                        recipient_pubkey: recipient_key,
                         relay_to: contact.relay_device_list(),
                         vsf_bytes,
                     });
@@ -1861,7 +1891,10 @@ impl PhotonApp {
             };
             let relay_to =
                 relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip());
-            checker.ping(ip, contact.public_identity.clone(), punch, relay_to);
+            // A presence ping tracks the pinged DEVICE — keyless contacts aren't presence-pingable (the "00000000" class).
+            if let Some(dev) = contact.public_identity.clone() {
+                checker.ping(ip, dev, punch, relay_to);
+            }
         }
     }
 }

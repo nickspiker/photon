@@ -708,7 +708,7 @@ impl FluorApp for PhotonApp {
                                     " [id {} hash {} first-met {} {:?}{}]",
                                     hex::encode(&c.id.as_bytes()[..4]),
                                     hex::encode(&c.handle_hash[..4]),
-                                    hex::encode(&c.public_identity.key[..4]),
+                                    hex::encode(&c.device_key().unwrap_or_default()[..4]),
                                     c.clutch_state,
                                     if c.is_sibling { " sibling" } else { "" }
                                 );

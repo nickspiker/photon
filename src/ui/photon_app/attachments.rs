@@ -63,7 +63,7 @@ impl PhotonApp {
         let is_sib = self
             .contacts
             .iter()
-            .any(|c| c.is_sibling && c.public_identity.key == *device);
+            .any(|c| c.is_sibling && c.device_key() == Some(*device));
         if is_sib {
             return self.fleet_key_cached();
         }
@@ -104,7 +104,10 @@ impl PhotonApp {
                 return;
             };
             let relay_to = relay_unless_direct_trusted(&c, crate::network::udp::get_local_ip());
-            (c.public_identity.key, c.race_addrs(), relay_to, token)
+            let Some(recipient_key) = c.device_key() else {
+                return; // nowhere to send a blob without a known device
+            };
+            (recipient_key, c.race_addrs(), relay_to, token)
         };
         let Some((peer_addr, alt_addr)) = addr_pair else {
             return;
@@ -185,7 +188,9 @@ impl PhotonApp {
             }
             if let Some((a, alt)) = c.race_addrs() {
                 let relay = relay_unless_direct_trusted(&c, crate::network::udp::get_local_ip());
-                targets.push((a, alt, c.public_identity.key, relay));
+                if let Some(k) = c.device_key() {
+                    targets.push((a, alt, k, relay));
+                }
             }
         }
         for (peer_addr, alt_addr, recipient_pubkey, relay_to) in targets {

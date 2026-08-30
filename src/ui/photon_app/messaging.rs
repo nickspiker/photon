@@ -626,9 +626,14 @@ impl PhotonApp {
             // No direct path → also relay this message over the pipe.
             // CHAT joins the ACKs' rule: ALWAYS carry the relay copy. The direct-trust heuristic starved every shape of one-way reachability the field produced (a validated path to the wrong device, an AP that began isolating clients, a peer that left the LAN mid-session — messages gave up after 8 attempts while the always-relayed ACKs sailed through, 2026-08-05). Receivers dedup by eagle_time, the well expires unclaimed copies, and a few hundred relayed bytes per message is nothing against a retransmit ladder burning minutes.
             let relay_to = contact.relay_device_list();
+            // The wire recipient is a DEVICE key; a sendable contact always has one, but never fabricate for a keyless row.
+            let Some(recipient_key) = contact.device_key() else {
+                crate::log("CHAT: cannot send — no device key for contact");
+                return false;
+            };
             (
                 fid,
-                contact.public_identity.key,
+                recipient_key,
                 contact.race_addrs(),
                 our_pid,
                 relay_to,
