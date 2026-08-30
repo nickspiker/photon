@@ -410,6 +410,8 @@ pub struct Contact {
     pub chain_advanced_by_ack: bool,
     /// Runtime-only: a punch-validated direct path to this contact `(remote_addr, last_confirmed)`, set when a hole-punch round-trips (see [`crate::network::traverse`]). `race_addrs` prefers it as the primary send address, keeping the public/LAN as the alternate so PT still races if the NAT mapping went stale. Each keepalive ack refreshes `last_confirmed`; once it exceeds the traversal TTL with no ack the path is cleared and re-punched. `Instant` (not eagle-time) because it's never persisted — a resumed session re-punches.
     pub validated_path: Option<(SocketAddr, std::time::Instant)>,
+    /// Runtime-only, judged ONCE at the validation edge: the validated path is genuinely OUR LAN (private address on our own subnet, or a live WFD group) — not merely RFC-private. Carrier-grade NAT hands out 10.x to cellular devices, and a validated 10.x path across Verizon's CGNAT round-trips fine while being nothing like "same room" (field 2026-08-30: the cyan ring for a peer hundreds of miles away). Render reads this flag; it never re-derives from the address.
+    pub validated_path_lan: bool,
     /// Runtime-only graceful-failure counter: consecutive ping cycles where an ONLINE contact was punched but never validated a direct path (the symmetric↔symmetric case). Past [`PUNCH_UNREACHABLE_THRESHOLD`] the peer is treated as direct-unreachable — the hook the relay milestone (M2) reads, and the seed-registry resolve's "this contact needs fresh addresses" signal. Reset to 0 on any validation.
     pub punch_unvalidated_cycles: u8,
     /// Runtime-only reachability clock (docs/reachability-doorbell.md): the last time ANY signed traffic from this contact's devices reached us — pong, punch ack, chat frame. "The guard's eyes are open." `None` since boot = never heard. Drives the dozed classification: silence past the dozed threshold plus undeliverable traffic = ring the doorbell.
@@ -573,6 +575,7 @@ impl Contact {
             their_probe_ceremony: None,   // …and so no ceremony to attribute one to
             chain_advanced_by_ack: false, // Our TX chain not yet ACK-advanced
             validated_path: None,         // No punch-validated direct path yet
+            validated_path_lan: false,    // …so no same-LAN judgment either
             punch_unvalidated_cycles: 0,  // No failed punch cycles yet
             clutch_offer_stall_cycles: 0, // No stalled-offer cycles yet
             last_heard: None,             // No signed traffic from them yet this session

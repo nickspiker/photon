@@ -66,9 +66,9 @@ pub static SEARCH_RELAY_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_FF_B0_00
 /// Add-friend result text + the in-flight hourglass: green on success, red on not-found/error.
 pub static SEARCH_FOUND_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_40_E0_40));
 pub static SEARCH_FAIL_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_E0_40_40));
-/// Transport tier of a live path, shown as a dot beside a device or contact: LAN green (same subnet — no NAT, no server), WAN cyan (a punched or routable direct path across the internet), relay orange (no direct path; frames ride the seed's pipe). The three read at a glance as "best / good / borrowed".
-pub static PATH_LAN_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_40_E0_40));
-pub static PATH_WAN_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_00_D0_E0));
+/// Transport tier of a live path, shown as a dot beside a device or contact — SAME semantics as the presence ring above (one language: cyan = LAN/same room, green = direct WAN, orange = relay). The dot and ring shipped INVERTED for weeks (dot green=LAN/cyan=WAN) and the field caught it as "fleet page cyan, bridge green, same peer, same moment" (2026-08-30).
+pub static PATH_LAN_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_00_D0_E0));
+pub static PATH_WAN_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_40_E0_40));
 pub static PATH_RELAY_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_FF_A5_00));
 
 /// Hourglass tint while the search is in flight (orange).
