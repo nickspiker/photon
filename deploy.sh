@@ -12,7 +12,7 @@ source scripts/lib/release-git.sh
 
 # Source-level gates FIRST — before the lock, the release bump, or any of the cross-compiles below — so a comment/parse/migration slip fails in under a second, not after the whole platform matrix has built.
 source scripts/lib/preflight.sh
-preflight_gates
+SEAM_STRICT=1 preflight_gates
 
 # Version scheme (2026-07-16): major.minor.patch. THIS SCRIPT does the release increment: whatever the tree holds (X.Y.0 fresh, or X.Y.P after dev publishes), the release ships X.(Y+1).0 — minor bumped, patch zeroed (patch 0 is RESERVED for releases; dev publishes bump the patch ≥1 and reach clients via the dev manifest).
 # Ordering discipline (same as the dev publishes): refuse a dirty tree, bump, COMMIT THE BUMP FIRST — so every built binary embeds the actual release commit (no "+dirty") and the signed manifest stamps the same HEAD. A failure anywhere rolls that one commit back (trap below), leaving the tree exactly as it started.
