@@ -121,7 +121,12 @@ snap_cargo() {
     local errlog rc; errlog="$(mktemp)"
     # Foreground tee — a pipeline member the shell WAITS on, so the diagnostic can never be lost. The old `2> >(tee …)` process substitution raced the exiting ERR trap and ate the ENTIRE cargo error plus the marker below (2026-08-14: the v54 orb-include failure printed nothing but a line number).
     # cargo emits diagnostics and progress on stderr and nothing meaningful on stdout, so merging the streams keeps the live scroll identical; tee's own (always-0) status would mask the failure under plain set -e, so cargo's verdict comes back via PIPESTATUS.
-    ( cd "$SNAP_DIR" && cargo "$@" ) 2>&1 | tee "$errlog" >&2
+    # MEMORY FENCE (the 22:55 freeze, 2026-08-29): 62G RAM + zram-only swap means a full-LTO multi-target build can thrash the whole box into a silent livelock — the journal stopped mid-sentence, no OOM, no panic, hard reset required. A systemd scope caps the BUILD at 48G so the kernel kills cargo instead of the desktop; a killed deploy is now free (tag-authority: zero git residue, rerun ships the same number). Plain cargo if systemd-run is absent (macOS runners, containers).
+    if command -v systemd-run >/dev/null 2>&1; then
+        ( cd "$SNAP_DIR" && systemd-run --user --quiet --scope -p MemoryMax=48G -p MemorySwapMax=2G cargo "$@" ) 2>&1 | tee "$errlog" >&2
+    else
+        ( cd "$SNAP_DIR" && cargo "$@" ) 2>&1 | tee "$errlog" >&2
+    fi
     rc=${PIPESTATUS[0]}
     if [ "$rc" -ne 0 ]; then
         # cargo's real diagnostic (the error[...] block) has already streamed to stderr above — this only names WHICH invocation tore so it isn't lost in the scroll. Read the cargo error above, not this line.
