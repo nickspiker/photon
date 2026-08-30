@@ -84,6 +84,13 @@ pub fn gather_peer_candidates_from(
         }
     }
 
+    // A live Wi-Fi Direct group address: membership vouches reachability, so no /24 gate applies.
+    if let Some(p2p) = contact.p2p_addr {
+        if !is_bogus_addr(&p2p) {
+            set.add(Candidate::new(p2p, CandidateKind::HostV4P2p));
+        }
+    }
+
     set
 }
 
@@ -118,6 +125,11 @@ pub fn gather_peer_candidates(contact: &Contact) -> CandidateSet {
             }
         }
     }
+    if let Some(p2p) = contact.p2p_addr {
+        if !is_bogus_addr(&p2p) {
+            set.add(Candidate::new(p2p, CandidateKind::HostV4P2p));
+        }
+    }
     set
 }
 
@@ -126,11 +138,19 @@ pub fn gather_peer_candidates(contact: &Contact) -> CandidateSet {
 /// A public/global v4 is never foreign (returns false).
 pub fn is_foreign_peer_lan(peer: &SocketAddr, our_v4: Option<std::net::Ipv4Addr>) -> bool {
     match peer.ip() {
+        // The reserved Wi-Fi Direct subnet: a peer address here only enters our state via a live group-up (and is cleared at teardown), so it is vouched by group membership, not by sharing our infra /24. A home router that happens to hand out 192.168.49.x would slip this filter, but punch validation still gates the actual path adoption.
+        IpAddr::V4(v4) if is_wfd_subnet(v4) => false,
         IpAddr::V4(v4) if crate::network::udp::is_private_ipv4(v4) => {
             !peer_lan_reachable(v4, our_v4)
         }
         _ => false,
     }
+}
+
+/// The Wi-Fi Direct group subnet Android's GO always uses (192.168.49.0/24).
+pub fn is_wfd_subnet(v4: Ipv4Addr) -> bool {
+    let o = v4.octets();
+    o[0] == 192 && o[1] == 168 && o[2] == 49
 }
 
 /// Our own addresses to advertise so a peer can punch back at us: our learned reflexive address (public, from peer-echoed reflection) and our LAN address on the port we listen on.

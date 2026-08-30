@@ -309,6 +309,12 @@ pub struct Contact {
     pub ip: Option<SocketAddr>, // The ACTIVE device's public IP:port (see `active_device`) — the primary TX target
     pub local_ip: Option<Ipv4Addr>, // The ACTIVE device's LAN IP (hairpin NAT workaround)
     pub local_port: Option<u16>, // The ACTIVE device's LAN port
+    /// Runtime-only: this contact's address inside a live Wi-Fi Direct group (192.168.49.x). Kept SEPARATE from `local_ip` so a p2p address never hits the foreign-LAN `/24` gate — group membership itself vouches reachability. Cleared on group teardown (IFACE-LOST edge) so sends fall back instead of black-holing.
+    pub p2p_addr: Option<SocketAddr>,
+    /// PERSISTED: the pair's pre-provisioned Wi-Fi Direct group credential (docs/offgrid.md) — minted by the lexicographically-lower device, exchanged sealed over the normal channel while online, so an offline meetup needs zero bootstrap radio.
+    pub wfd_cred: Option<crate::network::wfd::WfdCred>,
+    /// Runtime-only: the GO-side credential offer fired this session (once per session; a lost frame self-heals next session, the receiver adopts idempotently by epoch).
+    pub wfd_cred_sent: bool,
     /// Per-device address table (runtime only, rediscovered every session): one entry per fleet device we've heard from, keyed by device pubkey. Pongs/peer-rows update the SENDER's entry here — never the contact-level `ip` slot directly — so a friend's three devices each keep their own address and presence instead of thrashing one slot (the flip-flop that broke presence AND cancelled mid-flight CLUTCH offers).
     pub device_endpoints: Vec<DeviceEndpoint>,
     /// Which fleet device owns the contact-level `ip`/`local_*` slot: the device we last received DATA from (chat / CLUTCH — the docs/fleet rule: reply-TX to the device in their hand), adopted from the first pong when unset. Only THIS device's address updates move the contact-level slot.
@@ -510,6 +516,9 @@ impl Contact {
             ip: None,
             local_ip: None,   // Discovered via LAN broadcast
             local_port: None, // Discovered via LAN broadcast
+            p2p_addr: None,   // Set on Wi-Fi Direct group-up, cleared on teardown
+            wfd_cred: None,   // Provisioned over the friend channel post-CLUTCH
+            wfd_cred_sent: false,
             device_endpoints: Vec::new(),
             active_device: None,
             relationship_seed: None,

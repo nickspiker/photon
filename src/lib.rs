@@ -27,6 +27,7 @@
 //   tcp.rs          — TCP fallback for large payloads: send, recv.
 //   traverse/       — NAT traversal (reflexive discovery so far): reflexive.rs (ReflexiveState, quorum-adopted public addr from pong observed_addr + ReflectResponse).
 //   udp.rs          — UDP socket utilities: send/send_sync, canon_socketaddr (::ffff:→v4), get_local_ip, get_broadcast_addr.
+//   wfd.rs          — Wi-Fi Direct bearer (docs/offgrid.md): WfdCred mint/seal/open (per-pair pre-provisioned group credential, elect_go lower-pubkey tie-break), rotating DNS-SD friend tokens (wfd_token/build_txt_tokens/match_txt_tokens), WfdBearer state machine (Idle→Stranded→Forming→Up) + WfdPlatform trait (AndroidWfd via JNI, NullWfd elsewhere), platform event queue (push_event/drain_events), RELAY_REACHABLE flag fed by the pipe task. Frames ride the main UDP socket — this module is discovery + group bring-up only.
 //
 // platform/  — mod.rs (platform detection), jni_android.rs (Android JNI bridge), autostart.rs (desktop login-item write/read/remove: HKCU Run / LaunchAgent plist / XDG autostart), control.rs (second-launch "show yourself" handoff channel for resident mode), desktop_notify.rs (generic "New message" system notification, hidden/unfocused-gated).
 //

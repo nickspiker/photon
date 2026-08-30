@@ -421,6 +421,9 @@ impl PhotonApp {
             checker.send_lan_broadcast(session.handle_proof, hq.port());
         }
 
+        // Wi-Fi Direct STRANDED evaluation rides the ping cadence (the same edges that change reachability land here): the radio spins up only when a provisioned friend is unreachable AND the relay pipe is down — truly off-grid. Also the DRAINED teardown check for a live group whose peers all went silent.
+        self.drive_wfd_stranded();
+
         // Bell publish (Android only — desktops don't doze, so they publish nothing and are never rung): once Kotlin has handed over the FCM token, publish `fcm:<project>:<token>` under OUR handle_proof, and re-publish whenever the token rotates. Piggybacks the ping cadence so a late token or a rotation heals without dedicated machinery.
         #[cfg(target_os = "android")]
         if let Some((project, token)) = crate::platform::jni_android::fcm_bell() {
@@ -1894,6 +1897,126 @@ impl PhotonApp {
             // A presence ping tracks the pinged DEVICE — keyless contacts aren't presence-pingable (the "00000000" class).
             if let Some(dev) = contact.public_identity.clone() {
                 checker.ping(ip, dev, punch, relay_to);
+            }
+        }
+    }
+
+    /// Wi-Fi Direct STRANDED/DRAINED driver (docs/offgrid.md), riding the ping cadence. Advertise + discovery run only while some provisioned friend has no path AND the relay pipe is down (we are truly off-grid); they stop the moment either recovers. A live group whose p2p peers have all gone silent (the failed-ping hysteresis marked them offline) is DRAINED — removed so the radio quiets.
+    pub(super) fn drive_wfd_stranded(&self) {
+        let Some(kp) = self.device_keypair.as_ref() else {
+            return;
+        };
+        let our_dev = *kp.public.as_bytes();
+        let mut entries: Vec<([u8; 32], [u8; 32])> = Vec::new();
+        let mut any_stranded = false;
+        let mut any_p2p = false;
+        let mut any_p2p_online = false;
+        for c in &self.contacts {
+            if c.is_sibling || c.wfd_cred.is_none() {
+                continue;
+            }
+            let Some(seed) = c.relationship_seed.as_ref() else {
+                continue;
+            };
+            entries.push((*seed.as_bytes(), our_dev));
+            if c.validated_path.is_none() && !c.is_online {
+                any_stranded = true;
+            }
+            if c.p2p_addr.is_some() {
+                any_p2p = true;
+                if c.is_online {
+                    any_p2p_online = true;
+                }
+            }
+        }
+        if crate::network::wfd::bearer_state() == crate::network::wfd::WfdState::Up
+            && any_p2p
+            && !any_p2p_online
+        {
+            crate::network::wfd::drained();
+            return;
+        }
+        crate::network::wfd::eval_stranded(
+            any_stranded && !crate::network::wfd::relay_reachable(),
+            &entries,
+        );
+    }
+
+    /// Wi-Fi Direct credential provisioning (docs/offgrid.md), fired on the friend's came-online edge. The lexicographically-lower device pubkey of the pair is the designated group owner AND the minter; it sends the (existing or freshly minted) credential sealed under the pair's wfd seal key over the normal channel. The non-GO side sends nothing — it adopts from the received frame. Once per session per contact (`wfd_cred_sent`).
+    pub(super) fn provision_wfd_cred(&mut self, id: crate::types::ContactId) {
+        let Some(ci) = self.contacts.iter().position(|c| c.id == id) else {
+            return;
+        };
+        let (Some(kp), Some(checker)) = (self.device_keypair.clone(), self.status_checker.as_ref())
+        else {
+            return;
+        };
+        let Some(our_hh) = self
+            .session
+            .as_ref()
+            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        else {
+            return;
+        };
+        let our_dev = *kp.public.as_bytes();
+        let contact = &mut self.contacts[ci];
+        let (Some(their_dev), Some(seed)) = (contact.device_key(), contact.relationship_seed.clone())
+        else {
+            return;
+        };
+        // One attempt per session either way: the non-GO side has nothing to send, and the GO side's lost frame self-heals next session.
+        contact.wfd_cred_sent = true;
+        if crate::network::wfd::elect_go(&our_dev, &their_dev) != our_dev {
+            return;
+        }
+        // Mint on first provisioning; afterwards re-offer the held credential (idempotent adopt by epoch on the far side). Rotation mints a NEW epoch on the rotate edges (post-teardown / friendship re-key), which land here as a cleared wfd_cred.
+        let cred = match &contact.wfd_cred {
+            Some(c) => c.clone(),
+            None => {
+                let minted = crate::network::wfd::mint_cred(&our_dev, &their_dev, 1);
+                contact.wfd_cred = Some(minted.clone());
+                minted
+            }
+        };
+        let sealed = match crate::network::wfd::seal_cred(&cred, seed.as_bytes()) {
+            Ok(s) => s,
+            Err(e) => {
+                crate::logf!("WFD: cred seal failed: {}", e);
+                return;
+            }
+        };
+        let token = crate::crypto::clutch::derive_conversation_token(&[our_hh, contact.handle_hash]);
+        let (primary, alt) = match contact.race_addrs() {
+            Some(pa) => pa,
+            None => (crate::network::status::RELAY_ADDR, None), // relay-only friend: the relay copy below is the real path
+        };
+        match crate::network::fgtw::protocol::build_wfd_cred_vsf(
+            &token,
+            sealed,
+            kp.public.as_bytes(),
+            kp.secret.as_bytes(),
+        ) {
+            Ok(vsf_bytes) => {
+                crate::logf!(
+                    "WFD: offering group credential (epoch {}) to {}",
+                    cred.epoch,
+                    crate::fp(&contact.handle_proof).as_str()
+                );
+                checker.send_history(crate::network::status::HistorySendRequest {
+                    peer_addr: primary,
+                    alt_addr: alt,
+                    recipient_pubkey: their_dev,
+                    vsf_bytes,
+                    relay_to: vec![their_dev],
+                });
+            }
+            Err(e) => crate::logf!("WFD: cred frame build failed: {}", e),
+        }
+        // Persist the minted credential so the woods meetup survives a relaunch.
+        if let Some(storage) = self.storage.as_ref() {
+            let snapshot = self.contacts[ci].clone();
+            if let Err(e) = crate::storage::contacts::save_contact_state(&snapshot, storage) {
+                crate::logf!("WFD: cred persist failed: {}", e);
             }
         }
     }

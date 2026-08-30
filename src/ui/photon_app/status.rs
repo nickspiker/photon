@@ -213,6 +213,51 @@ impl PhotonApp {
         let mut replay_queue: std::collections::VecDeque<StatusUpdate> =
             std::mem::take(&mut self.chat_replay_queue);
 
+        // Wi-Fi Direct platform events (Kotlin/D-Bus up-calls, queued off-thread): converted here to StatusUpdates so they ride the same arms as everything else. Token matching happens here because it needs the contacts.
+        for ev in crate::network::wfd::drain_events() {
+            match ev {
+                crate::network::wfd::WfdEvent::ServiceFound(txt) => {
+                    for c in &self.contacts {
+                        if c.is_sibling || c.wfd_cred.is_none() {
+                            continue;
+                        }
+                        let Some(seed) = c.relationship_seed.as_ref() else {
+                            continue;
+                        };
+                        let mut devs = c.fleet_members.clone();
+                        if let Some(d) = c.device_key() {
+                            devs.push(d);
+                        }
+                        if let Some(dev) = crate::network::wfd::match_txt_tokens(
+                            &txt,
+                            seed.as_bytes(),
+                            &devs,
+                        ) {
+                            replay_queue
+                                .push_back(StatusUpdate::WfdFriendNearby { device_pubkey: dev });
+                            break;
+                        }
+                    }
+                }
+                crate::network::wfd::WfdEvent::GroupChanged {
+                    formed,
+                    is_go,
+                    our_ip,
+                    go_ip,
+                } => {
+                    replay_queue.push_back(if formed {
+                        StatusUpdate::WfdGroupUp {
+                            is_go,
+                            our_ip,
+                            go_ip,
+                        }
+                    } else {
+                        StatusUpdate::WfdGroupDown
+                    });
+                }
+            }
+        }
+
         // Per-ARM stall attribution. PERF already showed check_status_updates blocking the UI thread for seconds, but not WHICH update type — this names it. Timed from loop top to loop top (arms `continue`, so an end-of-body probe would be skipped); the post-loop check closes the last iteration.
         fn arm_label(u: &StatusUpdate) -> &'static str {
             match u {
@@ -246,6 +291,10 @@ impl PhotonApp {
                 StatusUpdate::OurLanAddrObserved { .. } => "OurLanAddrObserved",
                 StatusUpdate::ReflexiveLearned { .. } => "ReflexiveLearned",
                 StatusUpdate::PathValidated { .. } => "PathValidated",
+                StatusUpdate::WfdFriendNearby { .. } => "WfdFriendNearby",
+                StatusUpdate::WfdGroupUp { .. } => "WfdGroupUp",
+                StatusUpdate::WfdGroupDown => "WfdGroupDown",
+                StatusUpdate::WfdCredReceived { .. } => "WfdCredReceived",
             }
         }
         {
@@ -287,6 +336,10 @@ impl PhotonApp {
         )> = Vec::new();
         // Consent gate (2026-08-25): knocks to fire and the roster ride for a Mutual flip — both need &mut self, so they wait out the drain like the jobs above.
         let mut knock_after: Vec<crate::types::ContactId> = Vec::new();
+        // Wi-Fi Direct credential provisioning, collected on came-online edges (after releasing the checker borrow): the elected-GO side mints/re-offers the pair's group credential once per session (docs/offgrid.md).
+        let mut wfd_provision_after: Vec<crate::types::ContactId> = Vec::new();
+        // Wi-Fi Direct beacon answer-back target, collected on the p2p learn edge (the reply teaches the peer OUR group address).
+        let mut wfd_beacon_reply: Option<std::net::SocketAddr> = None;
         let mut consent_roster_push = false;
         // Complete-without-chains probe (field 2026-08-26, Emma's post-wipe Frankenstein): tokens whose inbound frames found NO friendship chains — checked post-drain against the contact's claimed ceremony state.
         let mut rekey_probe: Vec<[u8; 32]> = Vec::new();
@@ -886,6 +939,15 @@ impl PhotonApp {
                                 }
                             }
 
+                            // Wi-Fi Direct credential provisioning EDGE: the friend came online, the ceremony is complete, and this session hasn't offered the pair credential yet — the elected-GO side mints (or re-offers the held) credential over the normal channel. Once per session: a lost frame self-heals next session; the receive side adopts idempotently by epoch.
+                            if came_online
+                                && !contact.is_sibling
+                                && contact.clutch_state == ClutchState::Complete
+                                && contact.relationship_seed.is_some()
+                                && !contact.wfd_cred_sent
+                            {
+                                wfd_provision_after.push(contact.id.clone());
+                            }
                             // Queue retransmit of pending messages only on the offline→online EDGE (not every online update) — otherwise every received chat would re-trigger a full pending resend.
                             if came_online {
                                 if let (Some(fid), Some((primary, alt))) =
@@ -2611,11 +2673,32 @@ impl PhotonApp {
                         }
                     }
                     // Find contact by handle_proof and store their LAN IP + port. Siblings AND the self-contact are skipped — an own-hp broadcast carries only (hp, port) with no device disambiguation, so it can't say WHICH of our devices it came from; sibling addresses flow via FGTW peer rows + pong source addresses instead.
+                    // A source inside the Wi-Fi Direct group subnet routes to `p2p_addr`, NOT `local_ip` — a p2p address must never masquerade as an infra-LAN address (it would hit the foreign-/24 gate and vanish, or survive teardown as a black hole).
+                    let is_p2p = crate::network::traverse::gather::is_wfd_subnet(local_ip);
                     for (idx, contact) in self.contacts.iter_mut().enumerate() {
                         if !contact.is_sibling
                             && contact.remote_count(&our_handle_hash) > 0
                             && contact.handle_proof == handle_proof
                         {
+                            if is_p2p {
+                                let addr = std::net::SocketAddr::new(
+                                    std::net::IpAddr::V4(local_ip),
+                                    port,
+                                );
+                                if contact.p2p_addr != Some(addr) {
+                                    crate::logf!(
+                                        "WFD: {} on the group at {}",
+                                        crate::fp(&contact.handle_proof),
+                                        addr
+                                    );
+                                    contact.p2p_addr = Some(addr);
+                                    lan_ping_indices.push(idx);
+                                    changed = true;
+                                    // Answer-back: our reply beacon teaches THEM our group address. Gated on the learn edge (a repeat beacon changes nothing), which quenches the beacon ping-pong after one round trip each way.
+                                    wfd_beacon_reply = Some(addr);
+                                }
+                                break;
+                            }
                             let old_local = contact.local_ip;
                             let old_port = contact.local_port;
                             contact.local_ip = Some(local_ip);
@@ -4190,6 +4273,138 @@ impl PhotonApp {
                         offer_refire_indices.push(idx);
                     }
                 }
+                StatusUpdate::WfdCredReceived {
+                    conversation_token,
+                    sealed,
+                    sender_pubkey,
+                } => {
+                    // Match the friendship by token (same walk as the offer arm), gate on the sender being a known device of THAT contact, open with the pair's seal key (AEAD failure = drop), adopt iff epoch newer, persist.
+                    let our_hh = match self
+                        .session
+                        .as_ref()
+                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                    {
+                        Some(h) => h,
+                        None => continue,
+                    };
+                    let Some(ci) = self.contacts.iter().position(|c| {
+                        !c.is_sibling
+                            && crate::crypto::clutch::derive_conversation_token(&[
+                                our_hh,
+                                c.handle_hash,
+                            ]) == conversation_token
+                    }) else {
+                        continue;
+                    };
+                    if !self.contacts[ci].knows_device(&sender_pubkey.key) {
+                        crate::logf!(
+                            "WFD: cred frame from unknown device {} for {} — dropped",
+                            crate::fp(&sender_pubkey.key),
+                            crate::fp(&self.contacts[ci].handle_proof).as_str()
+                        );
+                        continue;
+                    }
+                    let Some(seed) = self.contacts[ci].relationship_seed.clone() else {
+                        continue;
+                    };
+                    match crate::network::wfd::open_cred(&sealed, seed.as_bytes()) {
+                        Ok(cred) => {
+                            let cur_epoch =
+                                self.contacts[ci].wfd_cred.as_ref().map_or(0, |c| c.epoch);
+                            if cred.epoch > cur_epoch {
+                                crate::logf!(
+                                    "WFD: adopted group credential epoch {} from {} (GO {})",
+                                    cred.epoch,
+                                    crate::fp(&self.contacts[ci].handle_proof).as_str(),
+                                    crate::fp(&cred.go)
+                                );
+                                self.contacts[ci].wfd_cred = Some(cred);
+                                if let Some(storage) = self.storage.as_ref() {
+                                    let snapshot = self.contacts[ci].clone();
+                                    if let Err(e) = crate::storage::contacts::save_contact_state(
+                                        &snapshot, storage,
+                                    ) {
+                                        crate::logf!("WFD: cred persist failed: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            crate::logf!("WFD: cred open failed ({}) — dropped", e);
+                        }
+                    }
+                }
+                StatusUpdate::WfdFriendNearby { device_pubkey } => {
+                    // FRIEND-HEARD edge: a provisioned friend's token is in the air and we hold no path to them — form the group (the bearer decides create-vs-connect from the credential's designated GO).
+                    crate::logf!(
+                        "WFD: provisioned friend device {} heard nearby",
+                        crate::fp(&device_pubkey)
+                    );
+                    if let Some(kp) = self.device_keypair.as_ref() {
+                        let our_dev = *kp.public.as_bytes();
+                        if let Some(c) = self
+                            .contacts
+                            .iter()
+                            .find(|c| !c.is_sibling && c.knows_device(&device_pubkey))
+                        {
+                            if c.validated_path.is_none() {
+                                if let Some(cred) = c.wfd_cred.as_ref() {
+                                    crate::network::wfd::friend_heard(&our_dev, cred);
+                                }
+                            }
+                        }
+                    }
+                }
+                StatusUpdate::WfdGroupUp {
+                    is_go,
+                    our_ip,
+                    go_ip,
+                } => {
+                    crate::logf!(
+                        "WFD: group up — we are {} (our {} / GO {})",
+                        if is_go { "GO" } else { "client" },
+                        our_ip,
+                        go_ip
+                    );
+                    crate::network::wfd::group_up();
+                    // The joiner beacons the GO unicast with the existing pt_disc shape; the GO learns the joiner from that frame's source and beacons back (both land in the LanPeerDiscovered arm, which routes 192.168.49/24 sources into p2p_addr).
+                    if !is_go {
+                        if let (Some(session), Some(hq), Some(checker)) = (
+                            self.session.as_ref(),
+                            self.handle_query.as_ref(),
+                            self.status_checker.as_ref(),
+                        ) {
+                            checker.send_lan_unicast(
+                                session.handle_proof,
+                                hq.port(),
+                                std::net::SocketAddr::new(
+                                    std::net::IpAddr::V4(go_ip),
+                                    crate::PHOTON_PORT,
+                                ),
+                            );
+                        }
+                    }
+                }
+                StatusUpdate::WfdGroupDown => {
+                    crate::network::wfd::iface_lost();
+                    // Clear every p2p address AND any validated path inside the group subnet so sends fall back immediately instead of black-holing (same lesson as is_bogus_addr).
+                    let mut cleared = 0;
+                    for c in self.contacts.iter_mut() {
+                        if c.p2p_addr.take().is_some() {
+                            cleared += 1;
+                        }
+                        if let Some((addr, _)) = c.validated_path {
+                            if let std::net::IpAddr::V4(v4) = addr.ip() {
+                                if crate::network::traverse::gather::is_wfd_subnet(v4) {
+                                    c.validated_path = None;
+                                }
+                            }
+                        }
+                    }
+                    if cleared > 0 {
+                        crate::logf!("WFD: group down — cleared {} p2p address(es)", cleared);
+                    }
+                }
             }
         }
         close_arm_timer!();
@@ -4296,6 +4511,20 @@ impl PhotonApp {
                     crate::logf!("CLUTCH: re-key contact save failed: {}", e);
                 }
             }
+        }
+
+        // Wi-Fi Direct credential offers collected on came-online edges (after releasing the checker borrow).
+        for id in wfd_provision_after {
+            self.provision_wfd_cred(id);
+        }
+        // Wi-Fi Direct beacon answer-back (the group-up pt_disc exchange's second leg).
+        if let (Some(target), Some(session), Some(hq), Some(checker)) = (
+            wfd_beacon_reply,
+            self.session.as_ref(),
+            self.handle_query.as_ref(),
+            self.status_checker.as_ref(),
+        ) {
+            checker.send_lan_unicast(session.handle_proof, hq.port(), target);
         }
 
         // Consent knocks collected on pong edges (after releasing the checker borrow), plus the roster ride for any Mutual flip this drain confirmed — siblings learn the flip so whichever device is in hand completes the handshake.

@@ -17,6 +17,7 @@ pub mod tcp;
 pub mod traverse;
 pub mod udp;
 pub mod updates;
+pub mod wfd;
 
 pub use clock_check::spawn_clock_check;
 pub use clock_check::{ClockCheckResult, ClockJumpDetector, ClockWake};

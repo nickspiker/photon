@@ -2089,6 +2089,7 @@ impl PhotonApp {
                     let _ = tx.send(crate::network::status::LanBroadcastRequest {
                         our_handle_proof: hp,
                         our_port: lan_port,
+                        unicast: None,
                     });
                 }
                 // Genesis re-checked on EVERY fetch, not just the probe: a relay that served the real chain once must not be able to swap in a structurally-valid foreign chain mid-ceremony and have this loop adopt its members (the probe-time-only TOCTOU — docs/pairing-v2.md).

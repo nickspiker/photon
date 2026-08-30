@@ -61,6 +61,7 @@
 - [project_fgtw_migration_state.md](project_fgtw_migration_state.md) — FGTW substrate extracted into the fgtw crate through M3 (keys/fleet/fanout/fstate/pair/client); photon rides it via thin re-export wrappers
 - [project_fgtw_nostd_deferred.md](project_fgtw_nostd_deferred.md) — fgtw crate stays std until ferros; move code verbatim (no alloc::/no_std refactors), fanout feature keeps crypto deps off the worker base
 - [project_peers_are_fgtw.md](project_peers_are_fgtw.md) — decentralize FGTW: fgtw.org retires, peers = the trust web; MUTUAL-CONSENT clutch SHIPPED f33ebec 2026-08-25 (knock replaces offer); OPEN phonebook still ahead
+- [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT 2026-08-30 (LAN→WAN→WFD→relay, BLE=pairing-only, never drop infra WiFi); frames ride main UDP socket, per-pair wfd_cred pre-provisioned; field test + Linux rung PENDING
 - [project_party_colour_perceptual.md](project_party_colour_perceptual.md) — Conversation party colours are placeholder; swap to perceptual L≈50% via vsf spectral/LMS
 - [project_presence_vs_online.md](project_presence_vs_online.md) — presence ≠ online (online = avatar ring, always); "show my presence" = busy/song/mood broadcast, DEFAULTS OFF
 - [project_theme_rec2020.md](project_theme_rec2020.md) — fluor+photon theme.rs colours = VSF RGB lazily passed thru; convert via vsf_rgb_to_bt2020 + target Rec.2020 output on ALL platforms
