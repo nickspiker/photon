@@ -88,6 +88,7 @@
 - [feedback_no_comment_wraps.md](feedback_no_comment_wraps.md) — Don't hard-wrap comments/docstrings/markdown; one sentence per line, however long (RECURRING "line wrap virus" — user deletes files over it; content is fine, wrapping is not)
 - [feedback_direct_pixel_no_floaters.md](feedback_direct_pixel_no_floaters.md) — rendering is DIRECT PIXEL ACCESS ONLY; no GPU shaders/vertex triangles/float pipeline ("no floaters"); wgpu renderer is suspect
 - [project_textbox_one_registry.md](project_textbox_one_registry.md) — adding a textbox = register in TWO walks only (visit_app_widgets + textboxes_mut); hover/damage/I-beam/gestures inherit — never hand-list per concern
+- [project_zero_sentinel_purge.md](project_zero_sentinel_purge.md) — zero-sentinel purge SHIPPED f1d28b3 (Option device keys); RELAY_ADDR/RosterEntry/ACK-API sentinels remain — convert when touched
 - [project_arabic_indexing_fixits.md](project_arabic_indexing_fixits.md) — FIX-IT LIST: decimal-indexed VSF field names (pong sync_{i}_*, peer_{i}, profile.addrN → native multi-value fields)
 - [feedback_commit_attribution.md](feedback_commit_attribution.md) — Built-With: Claude Opus <version> trailer is wanted; never Co-Authored-By Claude (tool, not author)
 - [feedback_spelling.md](feedback_spelling.md) — thru/thruout/altho, and colour spelled British; the rest United Statesian
