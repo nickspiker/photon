@@ -1592,6 +1592,8 @@ pub struct PhotonApp {
     unattended_confirm_base: HitId,
     /// Last confirm attempt mismatched — shows a red "handle didn't match" line until the next edit.
     unattended_confirm_failed: bool,
+    /// In-flight arm/disarm handle-proof check: the ~1s MEMORY-HARD proof runs OFF the UI thread (spawned on the confirm click), and this carries (verdict receiver, target_on) until `tick` drains it. `Some` = verifying (re-clicks ignored). Matching the microsecond identity SEED here — as it did before — made "make this box become you" a cheap brute-force oracle; the proof is memory-hard on purpose.
+    unattended_verify: Option<(std::sync::mpsc::Receiver<bool>, bool)>,
     /// Auto-attest-on-reboot is armed — cached at construction and moved by the settings toggle, because the truth lives in a device-vault flag and the banner renders every frame (Nick 2026-08-25: a box that attests without a handle must SAY so on screen, always, or the arming gets forgotten).
     unattended_on: bool,
     /// Desktop resident mode: close hides the window instead of exiting (`FluorApp::on_close_requested`), the process keeps serving the network, and a second launch (or a future tray click) surfaces it via the control channel. True when launched `--background` or when the autostart artifact exists; the settings toggle moves it live.
@@ -1724,6 +1726,7 @@ impl PhotonApp {
             unattended_confirm_tb: None,
             unattended_confirm_base: HIT_NONE,
             unattended_confirm_failed: false,
+            unattended_verify: None,
             unattended_on: Self::unattended_enabled(),
             chrome: None,
             hit_counter: 0,
