@@ -15,4 +15,6 @@ preflight_gates() {
     arch_gate || exit 1
     source "$d/artifact-gate.sh"
     artifact_gate || exit 1
+    source "$d/sibling-push-gate.sh"
+    sibling_push_check --strict || exit 1
 }
