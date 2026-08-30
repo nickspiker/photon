@@ -181,7 +181,7 @@ impl PhotonApp {
                 || self
                     .contacts
                     .iter()
-                    .any(|c| c.is_sibling && c.public_identity.key == *sender_pubkey)
+                    .any(|c| c.is_sibling && c.device_key() == Some(*sender_pubkey))
         } else {
             contact.knows_device(sender_pubkey)
         }
@@ -508,7 +508,7 @@ impl PhotonApp {
             let we_initiate = if c.is_sibling {
                 self.device_keypair
                     .as_ref()
-                    .is_some_and(|kp| kp.public.as_bytes() < &c.public_identity.key)
+                    .zip(c.device_key()).is_some_and(|(kp, k)| *kp.public.as_bytes() < k)
             } else {
                 self.our_party_id(c).is_some_and(|us| us < c.handle_hash)
             };
@@ -818,7 +818,10 @@ impl PhotonApp {
             return;
         };
         let (hp, party_id, avatar_pin) = (c.handle_proof, c.handle_hash, c.avatar_pin);
-        let their_device = *c.public_identity.as_bytes();
+        // No device key = no one to request the avatar from yet (the FGTW fallback still runs elsewhere).
+        let Some(their_device) = c.device_key() else {
+            return;
+        };
         if self.avatar_dl_started.contains(&hp) {
             return;
         }
@@ -1251,8 +1254,8 @@ impl PhotonApp {
                 let recipient_pubkey = self
                     .contacts
                     .get(contact_idx)
-                    .map(|c| *c.public_identity.as_bytes())
-                    .unwrap_or([0u8; 32]);
+                    .and_then(|c| c.device_key())
+                    .unwrap_or([0u8; 32]); // zero unreachable in practice (we just received their frame); ACK request API is on the zero-sentinel follow-up list
                 let relay_to = self
                     .contacts
                     .get(contact_idx)
@@ -1478,7 +1481,7 @@ impl PhotonApp {
                         if let Some(bw) = bridge_wire.as_ref() {
                             if bw.host.is_some() || bw.cwd.is_some() {
                                 if let Some(dev) =
-                                    self.contacts.get(contact_idx).map(|c| c.public_identity.key)
+                                    self.contacts.get(contact_idx).and_then(|c| c.device_key())
                                 {
                                     self.bridge_locus = Some((
                                         dev,
@@ -1596,8 +1599,8 @@ impl PhotonApp {
             let recipient_pubkey = self
                 .contacts
                 .get(contact_idx)
-                .map(|c| *c.public_identity.as_bytes())
-                .unwrap_or([0u8; 32]);
+                .and_then(|c| c.device_key())
+                .unwrap_or([0u8; 32]); // zero unreachable in practice (we just received their frame); ACK request API is on the zero-sentinel follow-up list
             // The re-ACK source is the per-message ack_hash persisted on the stored ChatMessage (see the duplicate handler above + with_ack_hash below), which heals a lost ACK for ANY message — not just the most recent. ACK always rides the relay alongside any direct leg — see the re-ACK site above for the field-observed one-directional case this closes.
             let relay_to = self
                 .contacts

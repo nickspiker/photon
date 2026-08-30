@@ -638,7 +638,7 @@ impl StatusChecker {
             .map_err(|e| format!("Failed to set non-blocking: {}", e))?;
 
         // Get local IP for TCP listener (and LAN discovery) Use connect-to-external trick to find actual LAN IP (not 0.0.0.0)
-        let local_ip = udp::get_local_ip().unwrap_or(Ipv4Addr::new(0, 0, 0, 0));
+        let local_ip = udp::get_local_ip();
 
         let thread_body = move || {
             crate::log("Status: Background thread started");
@@ -753,7 +753,7 @@ impl StatusChecker {
             .map_err(|e| format!("Failed to set non-blocking: {}", e))?;
 
         // Get local IP for TCP listener (and LAN discovery)
-        let local_ip = udp::get_local_ip().unwrap_or(Ipv4Addr::new(0, 0, 0, 0));
+        let local_ip = udp::get_local_ip();
 
         let thread_body = move || {
             crate::log("Status: Background thread started");
@@ -1011,7 +1011,7 @@ async fn run_checker(
     std_socket: Arc<UdpSocket>,
     keypair: crate::network::fgtw::Keypair,
     our_pubkey: DevicePubkey,
-    local_ip: Ipv4Addr,
+    local_ip: Option<Ipv4Addr>,
     ping_rx: Receiver<PingRequest>,
     // NOTE: clutch_rx removed - legacy v1 CLUTCH no longer used
     message_rx: Receiver<MessageRequest>,
@@ -1074,7 +1074,8 @@ async fn run_checker(
             }
             Err(_) => {
                 // Fall back to IPv4 only
-                let tcp_addr_v4 = SocketAddr::new(std::net::IpAddr::V4(local_ip), udp_port);
+                // No learned LAN address is a WILDCARD bind (0.0.0.0 = all interfaces) — the one place unspecified is a real meaning, stated here instead of minted upstream.
+                let tcp_addr_v4 = SocketAddr::new(std::net::IpAddr::V4(local_ip.unwrap_or(Ipv4Addr::UNSPECIFIED)), udp_port);
                 match tokio::net::TcpListener::bind(tcp_addr_v4).await {
                     Ok(listener) => {
                         crate::logf!("Status: TCP listening on {} (IPv4 only)", tcp_addr_v4);

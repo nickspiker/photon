@@ -2174,9 +2174,12 @@ impl PhotonApp {
                 self.storage.as_ref(),
             ) {
                 for c in self.contacts.iter().filter(|c| !c.is_sibling) {
+                    let Some(their_dev) = c.device_key() else {
+                        continue;
+                    };
                     if let Some(ps) = crate::storage::fanout_pairs::load(
                         &ours,
-                        c.public_identity.as_bytes(),
+                        &their_dev,
                         storage,
                     ) {
                         r.push(ps);
@@ -2757,7 +2760,7 @@ fn sibling_presence_snapshot(contacts: &[crate::types::Contact]) -> Vec<SiblingP
     contacts
         .iter()
         .filter(|c| c.is_sibling)
-        .map(|c| (c.public_identity.key, c.is_online, c.presence_probed))
+        .filter_map(|c| c.device_key().map(|k| (k, c.is_online, c.presence_probed)))
         .collect()
 }
 

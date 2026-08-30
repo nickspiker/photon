@@ -97,7 +97,7 @@ impl PhotonApp {
                         }
                         if let Some(rec) = recs.iter().find(|r| {
                             r.handle_proof == contact.handle_proof
-                                && r.device_pubkey.as_bytes() == contact.public_identity.as_bytes()
+                                && Some(*r.device_pubkey.as_bytes()) == contact.device_key()
                         }) {
                             // Same refusal as the phonebook drain: a record signed before the bogus-address guard existed (or by a since-retired device that will never republish) can carry the unspecified address forever — adopting it points every send at 0.0.0.0 and the contact reads permanently offline.
                             if crate::network::traverse::gather::is_bogus_addr(&rec.ip) {

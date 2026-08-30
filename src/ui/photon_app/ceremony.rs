@@ -652,14 +652,14 @@ impl PhotonApp {
                                             }
                                         }
 
-                                        if let Some(ref checker) = self.status_checker {
+                                        if let (Some(ref checker), Some(recipient_key)) = (self.status_checker.as_ref(), contact.device_key()) {
                                             let (primary, alt) =
                                                 contact.race_addrs().unwrap_or((ip, None));
                                             checker.send_offer(ClutchOfferRequest {
                                                 peer_addr: primary,
                                                 alt_addr: alt,
                                                 vsf_bytes,
-                                                recipient_pubkey: contact.public_identity.key,
+                                                recipient_pubkey: recipient_key,
                                                 // CEREMONY frames always carry the FULL relay fan-out, never the direct-trust heuristic: a validated path proves ONE device of the identity is reachable, but the ceremony's owner can be a different device with no direct path at all — the reply rode direct to the reachable sibling, the relay stayed suppressed, and the owner starved awaiting it (live pair, 2026-08-05). Ceremony frames are rare; receivers dedup; the relay copy is cheap insurance that the one device that NEEDS the frame gets it.
                                                 relay_to: contact.relay_device_list(),
                                             });
@@ -901,7 +901,7 @@ impl PhotonApp {
                     }
 
                     // Send the KEM response
-                    if let Some(ref checker) = self.status_checker {
+                    if let (Some(ref checker), Some(recipient_key)) = (self.status_checker.as_ref(), contact.device_key()) {
                         let (primary, alt) =
                             contact.race_addrs().unwrap_or((result.peer_addr, None));
                         checker.send_kem_response(ClutchKemResponseRequest {
@@ -912,7 +912,7 @@ impl PhotonApp {
                             payload: result.kem_response,
                             device_pubkey,
                             device_secret,
-                            recipient_pubkey: contact.public_identity.key,
+                            recipient_pubkey: recipient_key,
                             relay_to: contact.relay_device_list(),
                         });
                         crate::logf!(
@@ -1013,7 +1013,7 @@ impl PhotonApp {
                 .contacts
                 .iter()
                 .find(|c| c.id == result.contact_id)
-                .map(|c| (*c.public_identity.as_bytes(), c.is_sibling));
+                .and_then(|c| c.device_key().map(|k| (k, c.is_sibling)));
             if let (Some((their_device, is_sibling)), Some(storage)) = (peer, self.storage.as_ref())
             {
                 match crate::storage::fanout_pairs::store(
@@ -1083,7 +1083,7 @@ impl PhotonApp {
                 let their_early_proof = contact.clutch_their_eggs_proof;
 
                 // The ClutchComplete proof rides the chains writer as a gated signal: it leaves the machine only after the chains that back it are durable (the same persist-before-signal the save-then-send inline order used to give). The retransmit ladder (clutch_proof_resends_left, ping cadence) arms immediately — its earliest re-fire trails the writer's ms-scale write by seconds, and losing that race costs one recoverable re-offer.
-                if let Some(ref checker) = self.status_checker {
+                if let (Some(ref checker), Some(recipient_key)) = (self.status_checker.as_ref(), contact.device_key()) {
                     let payload = ClutchCompletePayload {
                         eggs_proof: result.eggs_proof,
                     };
@@ -1099,7 +1099,7 @@ impl PhotonApp {
                             payload,
                             device_pubkey,
                             device_secret,
-                            recipient_pubkey: contact.public_identity.key,
+                            recipient_pubkey: recipient_key,
                             relay_to: contact.relay_device_list(),
                         },
                     ));
@@ -1249,10 +1249,18 @@ impl PhotonApp {
         // Pseudonymous log label (see the ceremony-completion twin above).
         let contact_handle = crate::fp(&contact.handle_proof);
         // The eggs bind a device-pubkey pair: use the device that SIGNED their offer (the ceremony's actual participant), never the pinned public_identity — pongs re-elect the pin, so a multi-device friend answering from an unpinned device desynced one egg and the proofs mismatched on a perfect round (live pair 2026-07-24). Legacy-persisted slots lack the signer → fall back to the pin, which is exact for single-device friends.
-        let their_device_pub = contact
+        let Some(their_device_pub) = contact
             .get_slot(&contact.handle_hash)
             .and_then(|s| s.offer_device)
-            .unwrap_or(*contact.public_identity.as_bytes());
+            .or_else(|| contact.device_key())
+        else {
+            // No signer on the slot AND no pinned key: nothing real to bind the eggs to — a zero here would mint eggs bound to a fictional device (the sentinel class), so refuse the ceremony round instead.
+            crate::logf!(
+                "CLUTCH: no device key for {} — ceremony round refused (eggs need a real device pair)",
+                crate::fp(&contact.handle_proof)
+            );
+            return;
+        };
 
         // Extract all needed data from slots (cloning to release borrow)
         let our_slot = match contact.get_slot(&our_handle_hash) {

@@ -55,7 +55,8 @@ pub struct CloudContact {
     pub avatar_pin: [u8; 64],
     /// The friend's published display name. This blob is the WIPE-RECOVERY path, so whatever it omits comes back blank: when the petname column was removed (2026-08-01) nothing replaced it, and a wiped device restored every contact with its avatar but no name — all of them reading "Pending…" while the pictures showed instantly. The pin was here and the name was not.
     pub published_name: String,
-    pub device_pubkey: [u8; 32],
+    /// `None` = no device key ever learned for this contact. ABSENCE IS OMITTED on the wire (the second `ke` simply isn't written — VSF reads by type marker and order, so one `ke` = party id only), never a zero fill: a zero key restored from backup used to ping "00000000" and collide ContactIds.
+    pub device_pubkey: Option<[u8; 32]>,
     pub trust_level: u8,
     pub added: i64,
 }
@@ -67,7 +68,7 @@ impl From<&Contact> for CloudContact {
             party_id: c.handle_hash,
             avatar_pin: c.avatar_pin,
             published_name: c.published_name.clone(),
-            device_pubkey: *c.public_identity.as_bytes(),
+            device_pubkey: c.device_key(),
             trust_level: trust_level_to_u8(c.trust_level),
             added: c.added,
         }
@@ -129,19 +130,20 @@ pub fn encode_contacts(
         .map_err(|e| CloudError::Parse(e.to_string()))?;
 
     for c in contacts {
+        let mut row = vec![
+            VsfType::hP(c.handle_proof.to_vec()),
+            VsfType::ke(c.party_id.to_vec()),
+            VsfType::ge(c.avatar_pin.to_vec()),
+            VsfType::x(c.published_name.clone()),
+        ];
+        // An absent device key is OMITTED, never zero-filled — one `ke` in the row = party id only, the reader's order rule handles both shapes.
+        if let Some(dk) = c.device_pubkey {
+            row.push(VsfType::ke(dk.to_vec()));
+        }
+        row.push(VsfType::u(c.trust_level as usize, false));
+        row.push(VsfType::e(vsf::types::EtType::e6(c.added)));
         builder = builder
-            .append_multi(
-                "contact",
-                vec![
-                    VsfType::hP(c.handle_proof.to_vec()),
-                    VsfType::ke(c.party_id.to_vec()),
-                    VsfType::ge(c.avatar_pin.to_vec()),
-                    VsfType::x(c.published_name.clone()),
-                    VsfType::ke(c.device_pubkey.to_vec()),
-                    VsfType::u(c.trust_level as usize, false),
-                    VsfType::e(vsf::types::EtType::e6(c.added)),
-                ],
-            )
+            .append_multi("contact", row)
             .map_err(|e| CloudError::Parse(e.to_string()))?;
     }
 
@@ -229,9 +231,9 @@ fn decode_contact_rows<'a>(
             }
         }
 
-        // A row is only a contact if every identifying part is present. Old 5-value handle-bearing rows are flag-day dead and simply never fill these.
-        let (Some(handle_proof), Some(party_id), Some(device_pubkey), Some(avatar_pin)) =
-            (handle_proof, party_id, device_pubkey, avatar_pin)
+        // A row is only a contact if every identifying part is present — the device key is NOT identifying (party id is): a row without one restores name + pin and the key arrives when it's learned. Old 5-value handle-bearing rows are flag-day dead and simply never fill these.
+        let (Some(handle_proof), Some(party_id), Some(avatar_pin)) =
+            (handle_proof, party_id, avatar_pin)
         else {
             continue;
         };
@@ -257,7 +259,7 @@ impl CloudContact {
             self.avatar_pin,
             self.handle_proof,
             self.party_id,
-            DevicePubkey::from_bytes(self.device_pubkey),
+            self.device_pubkey.map(DevicePubkey::from_bytes),
         );
         contact.published_name = self.published_name.clone();
         contact.trust_level = u8_to_trust_level(self.trust_level);
@@ -415,7 +417,7 @@ mod tests {
                 party_id: [0xA1u8; 32],
                 avatar_pin: [0xA2u8; 64],
                 published_name: "Chosen".to_string(),
-                device_pubkey: [2u8; 32],
+                device_pubkey: Some([2u8; 32]),
                 trust_level: 1,
                 added: 1234567890,
             },
@@ -424,7 +426,7 @@ mod tests {
                 party_id: [0xB1u8; 32],
                 avatar_pin: [0xB2u8; 64],
                 published_name: "Chosen".to_string(),
-                device_pubkey: [4u8; 32],
+                device_pubkey: Some([4u8; 32]),
                 trust_level: 2,
                 added: 1234567891,
             },
@@ -446,7 +448,7 @@ mod tests {
             party_id: [0xA1u8; 32],
             avatar_pin: [0xA2u8; 64],
             published_name: "Chosen".to_string(),
-            device_pubkey: [2u8; 32],
+            device_pubkey: Some([2u8; 32]),
             trust_level: 1,
             added: 1234567890,
         }];
@@ -472,7 +474,7 @@ mod document_tests {
                 party_id: [0x22; 32],
                 avatar_pin: [0x33; 64],
                 published_name: "Chosen".to_string(),
-                device_pubkey: [0x44; 32],
+                device_pubkey: Some([0x44; 32]),
                 trust_level: 2,
                 added: 1234567890,
             },
@@ -481,7 +483,7 @@ mod document_tests {
                 party_id: [0x66; 32],
                 avatar_pin: [0u8; 64],
                 published_name: "Chosen".to_string(),
-                device_pubkey: [0x77; 32],
+                device_pubkey: Some([0x77; 32]),
                 trust_level: 0,
                 added: -42,
             },
@@ -575,7 +577,7 @@ mod document_tests {
                         VsfType::ge(c.avatar_pin.to_vec()),
                         // The legacy row carried a petname string here — kept in the rebuilt OLD wire form.
                         VsfType::x("alice".to_string()),
-                        VsfType::ke(c.device_pubkey.to_vec()),
+                        VsfType::ke(c.device_pubkey.unwrap_or_default().to_vec()),
                         VsfType::u(c.trust_level as usize, false),
                         VsfType::e(vsf::types::EtType::e6(c.added)),
                     ],
@@ -598,6 +600,6 @@ mod document_tests {
         let blob = encode_contacts(&sample(), &key).expect("encode");
         let back = decode_contacts(&blob, &key).expect("decode");
         assert_eq!(back[0].party_id, [0x22; 32]);
-        assert_eq!(back[0].device_pubkey, [0x44; 32]);
+        assert_eq!(back[0].device_pubkey, Some([0x44; 32]));
     }
 }

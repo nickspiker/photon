@@ -192,12 +192,14 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
         .set("trust_level", trust_level_to_u8(contact.trust_level))
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set("consent", contact.consent_mutual as u8)
-        .map_err(|e| StorageError::Parse(e.to_string()))?
-        .set(
-            "pubkey",
-            contact.public_identity.to_vsf(), // Ed25519 (ke)
-        )
-        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .map_err(|e| StorageError::Parse(e.to_string()))?;
+    // An absent device key is OMITTED, never zero-filled (the zero-sentinel purge): the reader treats a missing "pubkey" as None and the id keys on the party id.
+    if let Some(pk) = contact.public_identity.as_ref() {
+        builder = builder
+            .set("pubkey", pk.to_vsf()) // Ed25519 (ke)
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    builder = builder
         .set("added", VsfType::e(vsf::types::EtType::e6(contact.added)))
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set("id", VsfType::hb(contact.id.as_bytes().to_vec()))
@@ -358,13 +360,12 @@ pub fn load_contact_state(
     let vsf_bytes = match storage.read_addr(&contact_key(&their_identity_seed, "state"))? {
         Some(b) => b,
         None => {
-            // No state yet - return contact with just identity info
-            let pubkey = DevicePubkey::from_bytes([0u8; 32]); // placeholder
+            // No state yet — identity info only, and honestly NO device key (the old zero placeholder here pinged "00000000" and collided every stateless contact onto one blake3(zeros) ContactId).
             let contact = Contact::from_pin(
                 identity.avatar_pin,
                 identity.handle_proof,
                 identity.party_id,
-                pubkey,
+                None,
             );
             return Ok(contact);
         }
@@ -386,13 +387,14 @@ pub fn load_contact_state(
 }
 
 /// Extract just the device pubkey from an encoded contact-state blob (needed before the Contact can be constructed).
-fn state_pubkey(vsf_bytes: &[u8]) -> Result<DevicePubkey, StorageError> {
+fn state_pubkey(vsf_bytes: &[u8]) -> Result<Option<DevicePubkey>, StorageError> {
     let section = SectionBuilder::parse(contact_state_schema(), vsf_bytes)
         .map_err(|e| StorageError::Parse(format!("Contact state parse: {}", e)))?;
-    let pubkey_bytes: [u8; 32] = section
+    // A missing "pubkey" field is a contact whose device key was never learned — honest absence, not an error.
+    Ok(section
         .get_value::<[u8; 32]>("pubkey")
-        .map_err(|_| StorageError::Parse("Missing pubkey".into()))?;
-    Ok(DevicePubkey::from_bytes(pubkey_bytes))
+        .ok()
+        .map(DevicePubkey::from_bytes))
 }
 
 /// Apply a parsed contact-state blob onto a freshly-constructed Contact (friend via `Contact::new`, sibling via `Contact::new_sibling`). Shared by both loaders so the field set can't drift between them.
@@ -670,10 +672,13 @@ pub fn save_contact(contact: &Contact, storage: &FlatStorage) -> Result<(), Stor
     save_contact_state(contact, storage)?;
 
     if contact.is_sibling {
-        let mut list = load_sibling_list(storage).unwrap_or_default();
-        if !list.contains(&contact.public_identity.key) {
-            list.push(contact.public_identity.key);
-            save_sibling_list(&list, storage)?;
+        // A sibling row always carries its device key (new_sibling requires one) — but never index a keyless row rather than fabricate a zero entry.
+        if let Some(key) = contact.device_key() {
+            let mut list = load_sibling_list(storage).unwrap_or_default();
+            if !list.contains(&key) {
+                list.push(key);
+                save_sibling_list(&list, storage)?;
+            }
         }
         return Ok(());
     }
@@ -1428,7 +1433,7 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         let l = &loaded[0];
         assert!(l.is_sibling);
-        assert_eq!(l.public_identity.key, sib_device);
+        assert_eq!(l.device_key(), Some(sib_device));
         assert_eq!(
             l.handle_hash,
             crate::crypto::clutch::sibling_party_id(&sib_device),

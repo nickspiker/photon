@@ -339,7 +339,7 @@ impl PhotonApp {
         let idx = self
             .contacts
             .iter()
-            .position(|c| c.is_sibling && c.public_identity.key == device);
+            .position(|c| c.is_sibling && c.device_key() == Some(device));
         let Some(ci) = idx else {
             self.ready_toast = Some("That device isn't paired as a sibling yet.".to_string());
             self.ready_toast_screen = None;
@@ -392,7 +392,7 @@ impl PhotonApp {
     /// HOST role, chat transport: a NEW command arrived as an ordinary chat message in the sibling `ci`'s conversation — dispatch it to the OFF-THREAD bridge executor, which runs it in that sibling's PERSISTENT shell and posts the raw output back for `drain_bridge_output` to reply with (typed RefKind::BridgeOut so it renders but never re-runs). Running the shell inline froze the host's event loop for the command's whole duration, stalling the ACK it owes the operator (field 2026-08-22). ONE shell per sibling, spawned on first command and reused after so `cd`/env/state persist like a real session; the executor thread OWNS the shells so nothing blocks the UI.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     pub(super) fn run_bridge_command_chat(&mut self, ci: usize, cmd: &str, cmd_ts: i64) {
-        let Some(dev) = self.contacts.get(ci).map(|c| c.public_identity.key) else {
+        let Some(dev) = self.contacts.get(ci).and_then(|c| c.device_key()) else {
             return;
         };
         self.ensure_bridge_exec();
@@ -404,7 +404,7 @@ impl PhotonApp {
     /// A BridgeCtl row arrived (the operator pressed Stop): signal the in-flight command's descendant tree — never bash, so the session and its cwd survive the interrupt. A late arrival after completion finds an empty tree and is a natural no-op.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     pub(super) fn bridge_interrupt_host(&mut self, ci: usize, sig: u64, target: i64) {
-        let Some(dev) = self.contacts.get(ci).map(|c| c.public_identity.key) else {
+        let Some(dev) = self.contacts.get(ci).and_then(|c| c.device_key()) else {
             return;
         };
         let pid = self
@@ -569,7 +569,7 @@ impl PhotonApp {
     /// Host received a BridgeReset (the peer opened the bridge) → drop that sibling's shell so the next command respawns fresh.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     pub(super) fn reset_bridge_shell(&mut self, ci: usize) {
-        let Some(dev) = self.contacts.get(ci).map(|c| c.public_identity.key) else {
+        let Some(dev) = self.contacts.get(ci).and_then(|c| c.device_key()) else {
             return;
         };
         // Symmetric with the client's open: abandon any stale in-flight OUTPUT frames via lane rotation (NEVER a bare pending clear — that leaves a mid-chain hash hole the peer buffers behind forever; see open_bridge_conversation). Replies from the prior session stop retransmitting into the freshly-wiped screen.

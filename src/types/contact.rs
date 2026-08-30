@@ -286,7 +286,8 @@ pub struct Contact {
     pub handle_proof: [u8; 32], // Cached handle_proof (expensive to compute - ~1 second) - PUBLIC
     /// The PARTY ID: the friend's pinned identity PUBKEY (device-derived pid for siblings). Every ceremony/braid derivation keys on this opaque 32-byte id; it holds no signing power. (Pre-pin-set this was BLAKE3(handle) — the friend's identity SEED.)
     pub handle_hash: [u8; 32],
-    pub public_identity: DevicePubkey,
+    /// The first-met/pinned device key — `None` until a real key is learned (a stateless load, a cloud-restored row from a pre-ke blob). ABSENCE IS ABSENT (the zero-sentinel purge, 2026-08-30): this was a zero-filled placeholder that leaked into ping scheduling ("pinged 00000000"), relay lists, and ContactId derivation (every stateless contact collided on blake3(zeros)).
+    pub public_identity: Option<DevicePubkey>,
     /// The friend's CURRENT fleet device set, folded from their public membership chain (`fleet::current_members` by `handle_proof`). A contact is an IDENTITY, not a device: pings/pongs/offers/messages are honoured from ANY member here, not just `public_identity` (which is only the device we happened to meet first). Empty until the first refresh; refreshed on load and on a `fleet` bump for this contact. Now persisted alongside `fleet_folded_once` / `fleet_members_ts` so a restart resumes fold-respecting trust immediately instead of a trust-nobody gap while the re-fold is in flight.
     pub fleet_members: Vec<[u8; 32]>,
     /// True once this contact's fleet chain has SUCCESSFULLY folded at least once. Arms the fold-respecting trust rule in `knows_device`: once armed, only current folded members are trusted, and `public_identity` loses its unconditional pass if the fold excluded it (that device was removed). A fold FAILURE never arms it — only a real adopted fold does — so a network outage never flips a healthy contact to trust-nobody. Siblings never fold (their proof routes to `reconcile_fleet_siblings`), so this stays false for them and they keep the bootstrap path.
@@ -472,7 +473,7 @@ impl Contact {
         let seed = crate::types::Handle::to_identity_seed(handle.as_str());
         let handle_hash = crate::crypto::clutch::identity_party_id(&seed);
         // NO handle-derived avatar pin: that made the avatar readable by anyone who knew the handle (docs/identity-profile.md). A fresh contact starts UNPINNED (zero) — its real pin (random key ‖ lookup) arrives over an authenticated pong once the friendship is mutual, exactly like the published name. Until then the gradient avatar renders.
-        Self::from_pin([0u8; 64], handle_proof, handle_hash, public_identity)
+        Self::from_pin([0u8; 64], handle_proof, handle_hash, Some(public_identity))
     }
 
     /// PIN-SET constructor: reconstruct a contact from stored/synced material (vault rows, roster entries) — no handle anywhere.
@@ -480,10 +481,14 @@ impl Contact {
         avatar_pin: [u8; 64],
         handle_proof: [u8; 32],
         party_id: [u8; 32],
-        public_identity: DevicePubkey,
+        public_identity: Option<DevicePubkey>,
     ) -> Self {
         Self {
-            id: ContactId::from_pubkey(&public_identity),
+            // No device key yet → the id keys on the PARTY id, the durable identity (the same doctrine as new_sibling). The old zero-placeholder derivation collided every device-less contact onto blake3(zeros) — one id, first-match-by-id roulette.
+            id: match &public_identity {
+                Some(pk) => ContactId::from_pubkey(pk),
+                None => ContactId::from_bytes(party_id),
+            },
             published_name: String::new(),
             published_name_dirty: false,
             avatar_pin_dirty: false,
@@ -580,7 +585,7 @@ impl Contact {
     /// Construct a fleet-sibling contact: one of our OWN devices, discovered from our folded membership chain. Party id (in `handle_hash`) is device-derived so the ceremony machinery can't collide with the self/friend id space; `handle_proof` is OUR OWN so `refresh_contact_addrs_from_peers` matches the sibling's FGTW peer row (keyed hp + device pubkey — no handle string needed). Trust is implicit — the pubkey came from our own fold.
     pub fn new_sibling(our_handle_proof: [u8; 32], sibling_device: DevicePubkey) -> Self {
         let party_id = crate::crypto::clutch::sibling_party_id(&sibling_device.key);
-        let mut c = Self::from_pin([0u8; 64], our_handle_proof, party_id, sibling_device);
+        let mut c = Self::from_pin([0u8; 64], our_handle_proof, party_id, Some(sibling_device));
         // The id keys on the SIBLING pid (domain-separated), never from_pin's blake3(pubkey): that derivation collides with any non-sibling row pinned to the same device — the notes row first-met on device X and the sibling row FOR device X shared one id, and the keygen drain's first-match-by-id installed the sibling's re-key onto the notes row, which then offered 573KB at our own fleet on the self-pair token forever (field, 2026-08-13).
         c.id = ContactId::from_bytes(party_id);
         c.is_sibling = true;
@@ -666,7 +671,7 @@ impl Contact {
     /// Returns the (primary, alternate) address pair for racing a transfer across the reachable paths. A punch-validated direct path (from NAT traversal) wins as primary when present, with the public/LAN kept as the alternate so PT still races if the validated mapping went stale. Otherwise: primary is the LAN address (preferred — no router hairpin, no AP isolation), alternate is the public address; and when no LAN address is known, primary is the public address and alternate is `None`. PT sends the SPEC to both and locks onto whichever ACKs first (see [`crate::network::pt::PtManager::send_with_pubkey_and_alt`]).
     /// Every device pubkey we know for this contact: the first-met identity device, EVERY folded fleet member, and every discovered endpoint. Used to address a RELAY forward — the relay routes by device pubkey and needs NO endpoint, so a member we've folded but never learned an address for is exactly the device that DEPENDS on the relay copy. Keying only on cached `device_endpoints` here silently dropped a folded-but-endpoint-less sibling from the fan-out, so a message landed on the peer's other devices and never on that one — it stayed stuck at the anchor forever, buffering every later frame (field, 2026-08-08: Emma's 1be949c1 never in Nick's relay list). Fold-first, per fleet-sync.md §7. Deduplicated.
     pub fn relay_device_list(&self) -> Vec<[u8; 32]> {
-        let mut out = vec![self.public_identity.key];
+        let mut out: Vec<[u8; 32]> = self.device_key().into_iter().collect();
         for m in &self.fleet_members {
             if !out.contains(m) {
                 out.push(*m);
@@ -732,7 +737,7 @@ impl Contact {
     pub fn knows_device(&self, device_pubkey: &[u8; 32]) -> bool {
         // A SIBLING contact knows exactly its ONE device — by contract its fleet_members stays EMPTY and the fold flags never apply. Enforce that here: a stray fold that marked a sibling folded_once turned the membership check into always-false and BLACK-HOLED every fleet frame from that device (the 2026-07-26 self-sync black hole: the desktop dropping its own phone's pages as "not a fold-trusted sibling").
         if self.is_sibling {
-            return self.public_identity.key == *device_pubkey;
+            return self.device_key() == Some(*device_pubkey);
         }
         // The refusal outranks the fold: a refused device is still a chain member (removal is self-signed only), but its owner's fleet reported it stolen and two distinct devices vouched — so nothing it sends is honoured, which is what starves a ghost that the fold alone can never shed.
         if self.refused_devices.contains(device_pubkey) {
@@ -741,7 +746,7 @@ impl Contact {
         if self.fleet_folded_once {
             self.fleet_members.contains(device_pubkey)
         } else {
-            self.public_identity.key == *device_pubkey || self.fleet_members.contains(device_pubkey)
+            self.device_key() == Some(*device_pubkey) || self.fleet_members.contains(device_pubkey)
         }
     }
 
@@ -760,11 +765,13 @@ impl Contact {
                 .collect()
         } else {
             let mut v = Vec::with_capacity(self.fleet_members.len() + 1);
-            if keep(&self.public_identity.key) {
-                v.push(self.public_identity.key);
+            if let Some(k0) = self.device_key() {
+                if keep(&k0) {
+                    v.push(k0);
+                }
             }
             for m in &self.fleet_members {
-                if *m != self.public_identity.key && keep(m) {
+                if self.device_key() != Some(*m) && keep(m) {
                     v.push(*m);
                 }
             }
@@ -803,6 +810,11 @@ impl Contact {
             self.their_probe_seen = false;
             self.their_probe_ceremony = None;
         }
+    }
+
+    /// The pinned device key bytes, if a real key was ever learned. THE way to read `public_identity` — every consumer decides explicitly what absence means for it (skip the leg, hold the send, log and move on), instead of inheriting a zero key that pings "00000000".
+    pub fn device_key(&self) -> Option<[u8; 32]> {
+        self.public_identity.as_ref().map(|p| p.key)
     }
 
     pub fn discard_clutch_round(&mut self) {
@@ -1053,7 +1065,7 @@ mod fold_honour_tests {
         );
         // ContactId keys on the sibling pid — two siblings of one handle never collide, AND a sibling never shares an id with a non-sibling row pinned to the same device (from_pin's blake3(pubkey) id — the notes-row keygen misroute, 2026-08-13).
         assert_eq!(sib.id, ContactId::from_bytes(sib.handle_hash));
-        assert_ne!(sib.id, ContactId::from_pubkey(&sib.public_identity));
+        assert_ne!(sib.id, ContactId::from_pubkey(sib.public_identity.as_ref().unwrap()));
         // knows_device answers ONLY that one device (empty fleet_members is load-bearing for first-match routing).
         assert!(sib.knows_device(&sib_device));
         assert!(!sib.knows_device(&[6u8; 32]));
