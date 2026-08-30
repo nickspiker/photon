@@ -184,6 +184,30 @@ impl PhotonApp {
             }
             return;
         }
+        // LATE HYDRATION RESCUE: an un-hydrated conversation (the boot loader hit a load error, or the vault opened after materialize) re-attempts the load here and merges the disk rows UNDER the RAM rows via the (timestamp, content) collapse — a transient vault error costs one retry, not a whole session of refused persists whose RAM rows would then die at relaunch.
+        if self.conv_of(ci).is_some_and(|v| !v.hydrated) {
+            if let Some(storage) = self.storage.as_ref().cloned() {
+                if let Some(conv) = self.conv_mut_of(ci) {
+                    if !conv.hydrated {
+                        let mut fresh =
+                            crate::types::Conversation::new(conv.participants().iter().copied());
+                        if crate::storage::contacts::load_messages(&mut fresh, &storage).is_ok() {
+                            let disk_rows = fresh.messages.len();
+                            for m in conv.messages.drain(..) {
+                                fresh.insert_message_sorted(m);
+                            }
+                            conv.messages = std::mem::take(&mut fresh.messages);
+                            conv.hydrated = true;
+                            crate::logf!(
+                                "STORAGE: late hydration merged {} disk row(s) under the RAM rows for conversation {}",
+                                disk_rows,
+                                hex::encode(&conv.id().as_bytes()[..4])
+                            );
+                        }
+                    }
+                }
+            }
+        }
         // EVERY exit below is LOUD (field 2026-08-21: a run's later sends vanished at relaunch while earlier ones persisted — three silent failure modes on the one path whose failure IS data loss, and the log couldn't say which fired).
         let Some(conv) = self.conv_of(ci).cloned() else {
             crate::logf!("STORAGE: message persist SKIPPED — no conversation object resolves for contact index {} (rows live in RAM only until this is fixed)", ci);
@@ -196,6 +220,18 @@ impl PhotonApp {
             }
             return;
         };
+        // HYDRATION GATE (the 2026-08-21 relaunch erasure): a conversation that never successfully loaded its durable table holds a partial (often empty) row set, and persisting that snapshot re-puts only what RAM has — which the legacy sweep then treated as the whole table. Refuse until load_messages has succeeded for this conversation; the rows stay in RAM and the next hydrated persist carries them.
+        if !conv.hydrated {
+            crate::logf!("STORAGE: message persist REFUSED for conversation {} — never hydrated from the vault (a write now could shadow durable rows); rows stay in RAM", hex::encode(&conv.id().as_bytes()[..4]));
+            if !signal_rows.is_empty() {
+                let _ = self.persist_done.0.send(MessagesDurableVerdict {
+                    conv_id: conv.id(),
+                    rows: signal_rows,
+                    err: Some("conversation not hydrated".to_string()),
+                });
+            }
+            return;
+        }
         let Some(storage) = self.storage.as_ref().cloned() else {
             crate::log("STORAGE: message persist SKIPPED — no storage (vault not open)");
             if !signal_rows.is_empty() {
