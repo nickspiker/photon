@@ -39,6 +39,7 @@
 - [project_chain_replication.md](project_chain_replication.md) — chain replication SHIPPED @ 2dfe7ed: chains sync fleet-wide (mutated_osc v7, adopt-iff-newer), adopting device flips sendable
 - [project_avatar_bearer_pin_gap.md](project_avatar_bearer_pin_gap.md) — CLOSED: pin-rotate on membership shrink shipped in removal-rotates step 1 (2026-07-23); avatar = 64-byte bearer pin (key‖lookup)
 - [project_clutch_token_asymmetry.md](project_clutch_token_asymmetry.md) — "unknown conversation_token" = §4.2 competing ceremony instances
+- [project_call_no_ring_incident.md](project_call_no_ring_incident.md) — 2026-08-29 no-ring call CONVICTED: offer delivered, dropped "No friendship found" — identity-era split (phone re-attested cacbc223/proof 7ff3835f, rosters stale 1be949c1, desktop CLUTCHes own sibling)
 - [project_clutch_offer_deadlock.md](project_clutch_offer_deadlock.md) — CLUTCH offer-loss deadlock generations; FIXED @7d5e356 (retries=no-progress, path-up/stall offer re-fire, pong-drop torches); OPEN: one peer's pongs never arrive
 - [project_clutch_ui_thread_hitch.md](project_clutch_ui_thread_hitch.md) — FIXED @c48b0e1 2026-08-15: KEM decap = 4th job stage (HQC-prefix CAS drain), duplicate-KEM short-circuit, proof rides durable chains writer; phone E2E pending
 - [project_nat_traversal_relay_gap.md](project_nat_traversal_relay_gap.md) — punch tiers + LIVE relay pipe shipped 2026-07-22: per-recipient Cloudflare DO (PipeHub)

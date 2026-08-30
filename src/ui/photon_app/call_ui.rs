@@ -102,6 +102,7 @@ impl PhotonApp {
             secret: None,
             engine: None,
             spool: None,
+            ring: None,
         });
         if contact_validated {
             crate::logf!("CALL: dialing {} (id {})", crate::fp(&peer), hex::encode(&call_id[..4]));
@@ -148,6 +149,7 @@ impl PhotonApp {
             call.phase_osc = vsf::eagle_time_oscillations();
             call.engine = engine;
             call.spool = spool;
+            call.ring = None; // Ringing → Active keeps the ActiveCall, so the guard needs an explicit stop here
         }
         crate::logf!("CALL: answered (id {})", hex::encode(&call_id[..4]));
         self.scene_dirty = true;
@@ -250,6 +252,7 @@ impl PhotonApp {
                             secret: None,
                             engine: None,
                             spool: None,
+                            ring: None,
                         });
                         self.ring_alert(ci);
                         crate::logf!(
@@ -472,7 +475,9 @@ impl PhotonApp {
         self.scene_dirty = true;
     }
 
-    /// The ring alert: platform notification + the relationship chirp — the same song as their messages, so ears know who's calling before eyes do. Deliberately BYPASSES the will_ding gates: a call is the one always-ring event (design decision 2026-08-18).
+    /// The ring alert: platform notification + the relationship RING — the identity chirp's instrument conjugated into a call phrase (`chirp::Chirp::ring_from_hash`: 2×9 jittered hits, τ/3 envelopes), so ears know who's calling before eyes do. Deliberately BYPASSES the will_ding gates: a call is the one always-ring event (design decision 2026-08-18).
+    ///
+    /// Desktop loops the cadence until the [`crate::call::RingGuard`] stored on the ActiveCall flips — every teardown edge stops it (no timers). Android posts one cadence per offer; looping there is Kotlin's to own (tracked in docs/calls.md).
     fn ring_alert(&mut self, ci: usize) {
         let Some(contact) = self.contacts.get(ci) else {
             return;
@@ -485,7 +490,7 @@ impl PhotonApp {
         let digest = relationship_digest(&from_hh, &us);
         let ring_hp = *blake3::hash(&digest).as_bytes();
         #[cfg(target_os = "android")]
-        crate::platform::jni_android::notify_new_message(
+        crate::platform::jni_android::notify_incoming_call(
             &ring_hp,
             &digest,
             &sender_name,
@@ -493,16 +498,33 @@ impl PhotonApp {
         );
         #[cfg(not(any(target_os = "android", target_os = "redox")))]
         {
+            use std::sync::atomic::{AtomicBool, Ordering};
             crate::platform::desktop_notify::notify_new_message(
                 &ring_hp,
                 &sender_name,
                 "\u{260E} incoming call",
             );
+            let stop = std::sync::Arc::new(AtomicBool::new(false));
+            let flag = stop.clone();
             std::thread::spawn(move || {
-                chirp::Chirp::from_hash(digest)
-                    .play_blocking()
-                    .unwrap_or_else(|e| crate::logf!("CALL ring chirp: {}", e));
+                let ring = chirp::Chirp::ring_from_hash(digest);
+                while !flag.load(Ordering::Relaxed) {
+                    if let Err(e) = ring.clone().play_blocking() {
+                        crate::logf!("CALL ring chirp: {}", e);
+                        break;
+                    }
+                    // Gap between cadences, polled so a stop edge lands within ~50 ms of flipping.
+                    for _ in 0..24 {
+                        if flag.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                }
             });
+            if let Some(call) = self.active_call.as_mut() {
+                call.ring = Some(crate::call::RingGuard(stop));
+            }
         }
     }
 

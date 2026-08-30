@@ -53,6 +53,19 @@ static LAST_NOTIFIED_MSG: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex:
 /// Kotlin decides visibility/foreground suppression. No-op if the service never registered. Callable from any thread — attaches to the JVM as needed.
 #[cfg(target_os = "android")]
 pub fn notify_new_message(msg_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str, text: &str) {
+    // The chirp seed IS the relationship digest, passed in verbatim — identical to the desktop in-app chirp's seed, so one sender = one song across every device and platform (seeding from the per-device pinned pubkey made one sender sound different everywhere).
+    notify_with_chirp(msg_hp, chirp::Chirp::from_hash(*chirp_seed), sender, text)
+}
+
+/// The call flavor of [`notify_new_message`]: same relationship digest, but rendered as the RING — the identity instrument struck in the call phrase (`chirp::Chirp::ring_from_hash`) instead of the one-shot ding. One cadence per posted offer; looping until answer is Kotlin's to own (docs/calls.md).
+#[cfg(target_os = "android")]
+pub fn notify_incoming_call(ring_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str, text: &str) {
+    notify_with_chirp(ring_hp, chirp::Chirp::ring_from_hash(*chirp_seed), sender, text)
+}
+
+/// Shared body: dedup on the hash pointer, render the given chirp to WAV + haptic, post to Kotlin.
+#[cfg(target_os = "android")]
+fn notify_with_chirp(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, text: &str) {
     // Dedup: skip if this is the same message we most recently notified for (a retransmit).
     {
         let mut last = LAST_NOTIFIED_MSG.lock().unwrap();
@@ -65,8 +78,7 @@ pub fn notify_new_message(msg_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str
         return;
     };
 
-    // The chirp seed IS the relationship digest, passed in verbatim — identical to the desktop in-app chirp's seed, so one sender = one song across every device and platform (seeding from the per-device pinned pubkey made one sender sound different everywhere). 60 Hz bins the envelope into ~16.7ms steps.
-    let chirp = chirp::Chirp::from_hash(*chirp_seed);
+    // 60 Hz bins the haptic envelope into ~16.7ms steps.
     let wav = chirp.to_wav();
     let (timings, amplitudes) = chirp.haptic_waveform(60);
 

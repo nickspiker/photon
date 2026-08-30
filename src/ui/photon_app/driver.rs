@@ -2854,6 +2854,7 @@ impl FluorApp for PhotonApp {
             if due {
                 self.last_fleet_sweep = Some(now);
                 self.kick_fleet_history_sweep("periodic backstop");
+                self.reserve_fleet_forwards();
             }
         }
 
