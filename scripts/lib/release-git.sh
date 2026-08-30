@@ -13,9 +13,17 @@
 #   up-to-date  → proceed
 #   behind      → fast-forward up (origin is a strict descendant)
 #   ahead/diverged → REFUSE: local carries commit(s) not on origin, which a release must not bury under its own history. Push or reconcile them first.
+# TAG-AUTHORITY VERSIONING (2026-08-30, born from the leaked v67/v68/v70): a version number is EARNED at publish, never allocated at start. The shipped set IS the vN tags, so the next number derives from them — a deploy that dies anywhere before the tag leaves zero git residue and can never strand a number; the next run recomputes the same number and ships it for real. A stale local tag set can only under-count (never skip), and the preflight's tag fetch closes even that.
+release_next_minor() {
+    local last
+    last="$(git tag -l 'v[0-9]*' | sed 's/^v//' | grep -E '^[0-9]+$' | sort -n | tail -1)"
+    echo $(( ${last:-0} + 1 ))
+}
+
 release_git_preflight() {
     local branch="${1:-main}"
-    git fetch --quiet origin "$branch" || { echo "ERROR: git fetch origin $branch failed — cannot verify the branch is current before a release."; return 1; }
+    # --tags because the tag set is the version authority (release_next_minor) — a machine that never deployed must still see every shipped number.
+    git fetch --quiet --tags origin "$branch" || { echo "ERROR: git fetch origin $branch failed — cannot verify the branch is current before a release."; return 1; }
     local local_head remote_head base
     local_head="$(git rev-parse HEAD)"
     remote_head="$(git rev-parse "origin/$branch")"
@@ -43,7 +51,12 @@ release_publish_tag() {
     if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
         echo "ERROR: tag $tag already exists on origin — release-number reuse."; return 1
     fi
-    git tag "$tag" "$commit" || { echo "ERROR: could not create tag $tag at $commit."; return 1; }
+    # Annotated when a message is given (tag-authority: the tagged tip's Cargo.toml holds the PRE-release version, so the tag message is where the shipped version is recorded); lightweight otherwise.
+    if [ -n "${3:-}" ]; then
+        git tag -a "$tag" "$commit" -m "$3" || { echo "ERROR: could not create tag $tag at $commit."; return 1; }
+    else
+        git tag "$tag" "$commit" || { echo "ERROR: could not create tag $tag at $commit."; return 1; }
+    fi
     # Push the tag ref explicitly (refs/tags/…:refs/tags/…) so nothing else rides along; the commit object travels with it.
     git push origin "refs/tags/$tag" || { echo "ERROR: pushing tag $tag failed."; git tag -d "$tag" >/dev/null 2>&1; return 1; }
     echo "Provenance: tag $tag → ${commit:0:12} pushed (the built commit, hash intact)."

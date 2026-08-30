@@ -26,23 +26,20 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 # Make local main identical to origin BEFORE bumping — a release commit built on a stale base can never fast-forward, and the tag/advance flow below assumes the bump sits on the shared tip. Behind → fast-forwards; diverged (un-pushed local work) → refuses. This is the gate whose absence let five deploys build for an hour and then die at the push (2026-08-28).
 release_git_preflight main
+# TAG-AUTHORITY VERSIONING (2026-08-30): the shipped set IS the vN tags, so the next number derives from them — never from the mutable Cargo.toml counter, which leaked v67/v68/v70 when a deploy died between bump and publish. No bump commit exists at all now: the version is injected into the BUILD TREE only (the frozen snapshot, below), and the number is EARNED when release_publish_tag lands after R2 is live. A deploy that dies anywhere leaves ZERO git residue — the failure state IS the clean state, so no rollback has to work (the old EXIT-trap rollback failed twice in different ways; SIGKILL beat it by design).
 CURRENT_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')
 MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
-SHIP_VERSION=$(( $(echo "$CURRENT_VERSION" | cut -d. -f2) + 1 ))   # the MINOR is the deploy counter / dozenal cue
+SHIP_VERSION=$(release_next_minor)
 FULL_VERSION="${MAJOR}.${SHIP_VERSION}.0"
-sed_i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${FULL_VERSION}\"/" Cargo.toml
-cargo update --workspace --quiet 2>/dev/null || true
-git add Cargo.toml Cargo.lock
-git commit -q -m "release: v${SHIP_VERSION} (${FULL_VERSION})"
-# Any failure from here undoes ONLY the version-bump commit — the tree returns to its pre-deploy version and the next attempt re-bumps cleanly. NEVER `reset --hard`: the reflink snapshot invites editing the live tree WHILE the deploy runs, so a hard reset would silently DESTROY that in-flight work (it did — lost edits on failed deploys). `--soft` drops the commit but keeps every change; `checkout HEAD -- Cargo.toml Cargo.lock` then reverts the ONLY two files the bump touched, leaving all other edits untouched. The failing line + command is named so a multi-target deploy doesn't leave you guessing WHICH build tore (the whole phase streams; the failing line just scrolls past otherwise).
-# ONE rollback, keyed on the success flag, fired from EXIT — because the enumerate-the-failure-modes approach lost twice in one day: ERR misses explicit `exit 1` paths (exit isn't an error) and any special-builtin death; INT/TERM miss SIGHUP (a bridge shell dying under the deploy — the stranded v67, twice, 2026-08-27/28). EXIT fires on normal end, explicit exit, set -e, AND trapped signals — everything but SIGKILL. DEPLOY_SHIPPED=1 is set immediately before the success banner; any other way out rolls the bump back. NEVER `reset --hard` in the rollback: the reflink snapshot invites editing the live tree WHILE the deploy runs — `--soft` + checkout of the two bump files preserves that work.
+# The provenance tip: the commit every binary embeds (PHOTON_STAMP_COMMIT overrides build.rs's probe, so the snapshot's injected version can't read "+dirty") and the commit the tag will pin. HEAD never moves during the deploy now.
+TIP_COMMIT="$(git rev-parse HEAD)"
+export PHOTON_STAMP_COMMIT="$(git rev-parse --short=12 HEAD)"
 DEPLOY_SHIPPED=0
-BUMP_COMMIT="$(git rev-parse HEAD)"
-trap 'rc=$?; if [ "$DEPLOY_SHIPPED" != "1" ] && [ "$(git rev-parse HEAD)" = "$BUMP_COMMIT" ]; then echo ""; echo "DEPLOY DID NOT SHIP (exit $rc, last: ${BASH_COMMAND}) — undoing the version bump (working tree preserved)."; git reset --soft HEAD~1; git checkout HEAD -- Cargo.toml Cargo.lock; elif [ "$DEPLOY_SHIPPED" != "1" ]; then echo ""; echo "DEPLOY DID NOT SHIP (exit $rc) — HEAD has moved past the bump commit ($BUMP_COMMIT); NOT auto-rolling back. Inspect git log."; fi' EXIT
+trap 'rc=$?; if [ "$DEPLOY_SHIPPED" != "1" ]; then echo ""; echo "DEPLOY DID NOT SHIP (exit $rc, last: ${BASH_COMMAND}) — no git residue to undo (tag-authority: the number was never allocated)."; fi' EXIT
 # Named-line diagnostics stay on ERR (the EXIT trap knows the last command, ERR knows the LINE); signals convert to an exit so the EXIT trap runs.
 trap 'echo ""; echo "DEPLOY FAILED at line $LINENO: ${BASH_COMMAND}"' ERR
 trap 'exit 130' INT TERM HUP
-echo "Deploying version: $FULL_VERSION (was $CURRENT_VERSION)"
+echo "Deploying version: $FULL_VERSION (tag-derived; tree was $CURRENT_VERSION) from tip ${PHOTON_STAMP_COMMIT}"
 
 
 # Convert to dozenal names for display
@@ -88,6 +85,22 @@ if snapbuild_take; then
     SNAP_DIR="$SNAPBUILD_ROOT/photon"
     export CARGO_TARGET_DIR="$(pwd)/target"
     echo "Source frozen (reflink snapshot) — edit away, this deploy builds from the frozen tree"
+fi
+# VERSION INJECTION (tag-authority): the ship version lands in the BUILD TREE only — the snapshot when it took, else the live files with a guaranteed restore. No commit either way; the number is earned at the tag. Cargo.lock gets the same surgical awk as release_advance_main (network-free, deterministic).
+inject_version() {
+    ( cd "$1" \
+        && sed -i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${FULL_VERSION}\"/" Cargo.toml \
+        && awk -v v="$FULL_VERSION" '
+            /^name = "photon-messenger"$/ { print; getline; sub(/^version = "[^"]*"/, "version = \"" v "\""); print; next }
+            { print }
+        ' Cargo.lock > Cargo.lock.new && mv Cargo.lock.new Cargo.lock )
+}
+if [ "$SNAP_DIR" != "." ]; then
+    inject_version "$SNAP_DIR" || { echo "ERROR: version injection into the snapshot failed"; exit 1; }
+else
+    # Live-tree fallback (snapshot didn't take): patch the two files and ALWAYS restore them at exit — success included, since main's version advances only via release_advance_main after the tag.
+    inject_version "." || { echo "ERROR: version injection failed"; exit 1; }
+    trap 'rc=$?; git checkout HEAD -- Cargo.toml Cargo.lock 2>/dev/null; if [ "$DEPLOY_SHIPPED" != "1" ]; then echo ""; echo "DEPLOY DID NOT SHIP (exit $rc, last: ${BASH_COMMAND}) — injected version restored; no git residue (tag-authority)."; fi' EXIT
 fi
 # Run a cargo build from the frozen source (falls back to the live tree if the snapshot didn't take).
 # Env vars set inline by the caller (cross sysroots, osxcross wrappers) pass through the subshell unchanged.
@@ -239,7 +252,7 @@ echo ""
 echo "Building signed release manifest..."
 MANIFEST_TOOL=target/release/photon-manifest
 b3() { b3sum "$1" | cut -d' ' -f1; }
-COMMIT=$(git rev-parse HEAD)
+COMMIT="$TIP_COMMIT"
 "$MANIFEST_TOOL" --channel release --out /tmp/manifest-release.vsf \
     --artefact Linux   x86_64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-linux-x86_64-release"  "$(b3 target/release/photon-messenger)" "$(manifest_size target/release/photon-messenger)" \
     --artefact Linux   arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-linux-arm64-release"   "$(b3 target/aarch64-unknown-linux-gnu/release/photon-messenger)" "$(manifest_size target/aarch64-unknown-linux-gnu/release/photon-messenger)" \
@@ -320,7 +333,7 @@ echo "  Windows SHA256: $WINDOWS_SHA256"
 # R2 is fully live — the release is public. Its provenance is the built commit $COMMIT: the hash build.rs baked into every binary (PHOTON_GIT_COMMIT) and the SHA the signed manifest stamped. Pin it with the IMMUTABLE v<n> tag and push THAT — the commit rides along with its hash intact, even though main has moved past its parent during the ~1h build. This is NOT a branch push (a plain `git push` of the hour-old bump is rejected non-fast-forward the moment any device touched main during the build — five deploys died exactly here, 2026-08-28). main itself only ever gets the fast-forwarding dev-line bump, further down.
 # Disarm the signal/error rollback traps the instant provenance is on GitHub: the release is now permanent, and every step below (mirror, website, notice, dev-line) is best-effort — a hiccup there must NEVER roll back a shipped release. (The EXIT trap stays armed but is gated by DEPLOY_SHIPPED, and every best-effort step below is `|| echo`-guarded so set -e can't fire in this zone.)
 GH_TAG="v$SHIP_VERSION"
-release_publish_tag "$GH_TAG" "$COMMIT"
+release_publish_tag "$GH_TAG" "$COMMIT" "release v${SHIP_VERSION} (${FULL_VERSION}, ${DOZENAL_VERSION}) — version injected at build (tag-authority), source tip ${PHOTON_STAMP_COMMIT}"
 trap - ERR INT TERM HUP
 
 # Mirror the identical signed artefacts to a GitHub Release `v<n>` (redundant fallback behind R2).
