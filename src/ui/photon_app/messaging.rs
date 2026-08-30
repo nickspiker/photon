@@ -155,6 +155,11 @@ impl PhotonApp {
         // BUBBLE FIRST, WIRE SECOND. The pending-grey bubble appears the instant the user hits send — chain_transmit does weave selection, braid advance, chains persist and PT dispatch, and running it first meant the message rendered as NOTHING for that whole stretch, then grey, then white. The user's mental model (grey immediately, everything else follows) is also the honest one: the row exists the moment they authored it; the wire is delivery, not existence.
         let mut msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
         msg.reference = reference;
+        // The row carries its OWN wire truth (the stop-hang conviction, 2026-08-30): a re-serve rebuilds frames from this row, and a BridgeOut final rebuilt without its seq/exit delivers text the client's gate can never release on ("output row: present, exit: -" — the prompt held forever). Stamp them here so bridge_wire_for_row can resurrect the wire at any re-serve site.
+        if let Some(bw) = bridge.as_ref() {
+            msg.bridge_seq = bw.seq.unwrap_or(0);
+            msg.bridge_exit = bw.exit;
+        }
         if let Some(conv) = self.conv_mut_of(ci) {
             conv.insert_message_sorted(msg.clone());
             if !is_quiet_row {
@@ -595,6 +600,28 @@ impl PhotonApp {
         true
     }
 
+    /// Resurrect the BridgeWire a re-serve must carry for a bridge output/control row — from the row's own stamped seq/exit (see the stamp in send_chain_message). Host/cwd stay None (the locus strip just doesn't refresh); a None here means the row is not a bridge frame or carries nothing to resurrect. Without this, every rebuilt final arrived wireless: the client painted the text but bridge_exit never stamped, the prompt gate held, and Stop hung the session (field thru 2026-08-30).
+    pub(super) fn bridge_wire_for_row(
+        &self,
+        ci: usize,
+        ts: i64,
+    ) -> Option<crate::network::message_package::BridgeWire> {
+        let conv = self.conv_of(ci)?;
+        let m = conv.messages.iter().find(|m| m.is_outgoing && m.timestamp == ts)?;
+        match m.reference {
+            Some((crate::types::RefKind::BridgeOut, _)) => {
+                Some(crate::network::message_package::BridgeWire {
+                    host: None,
+                    cwd: None,
+                    seq: (m.bridge_seq > 0).then_some(m.bridge_seq),
+                    exit: m.bridge_exit,
+                    sig: None,
+                })
+            }
+            _ => None,
+        }
+    }
+
     /// Send every outgoing row this contact still holds as undelivered — the rows `drain_pending_chain_sends` HELD because no chain existed yet (typically a re-key in flight). Original timestamps are preserved, so the row identity is unchanged and the friend dedups anything it already has; a row that still can't go out simply stays held for the next attempt.
     pub(super) fn resend_held_messages(&mut self, ci: usize) {
         let held: Vec<(String, i64, Option<(crate::types::RefKind, i64)>)> = match self.conv_of(ci)
@@ -617,7 +644,8 @@ impl PhotonApp {
         }
         let mut sent = 0usize;
         for (text, eagle_time, reference) in &held {
-            if self.chain_transmit(ci, text, *eagle_time, *reference, None) {
+            let bw = self.bridge_wire_for_row(ci, *eagle_time);
+            if self.chain_transmit(ci, text, *eagle_time, *reference, bw.as_ref()) {
                 sent += 1;
             }
         }

@@ -4521,7 +4521,8 @@ impl PhotonApp {
         for (ci, rows) in reserve_jobs {
             let mut served = 0usize;
             for (ts, content, reference) in rows {
-                if self.chain_transmit(ci, &content, ts, reference, None) {
+                let bw = self.bridge_wire_for_row(ci, ts);
+                if self.chain_transmit(ci, &content, ts, reference, bw.as_ref()) {
                     served += 1;
                 }
             }

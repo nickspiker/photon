@@ -2091,7 +2091,8 @@ impl PhotonApp {
                     .map(|m| (m.content.clone(), m.timestamp, m.reference))
                     .collect();
                 for (text, ts, re_ref) in fwd {
-                    if self.chain_transmit(idx, &text, ts, re_ref, None) {
+                    let bw = self.bridge_wire_for_row(idx, ts);
+                    if self.chain_transmit(idx, &text, ts, re_ref, bw.as_ref()) {
                         crate::log("CHAT: fleet-forwarded row transmitted on the local chain");
                     }
                 }

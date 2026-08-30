@@ -1690,7 +1690,8 @@ impl FluorApp for PhotonApp {
                                             .find(|m| m.timestamp == ts && m.is_outgoing == out)
                                             .and_then(|m| m.reference)
                                     });
-                                    if self.chain_transmit(sci, &text, ts, re_ref, None) {
+                                    let bw = self.bridge_wire_for_row(sci, ts);
+                                    if self.chain_transmit(sci, &text, ts, re_ref, bw.as_ref()) {
                                         self.ready_toast = Some("re-sent on the chain".to_string());
                                     } else {
                                         let row = self.conv_of(sci).and_then(|v| {
