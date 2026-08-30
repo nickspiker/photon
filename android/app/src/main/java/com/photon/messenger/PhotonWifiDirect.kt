@@ -40,6 +40,7 @@ object PhotonWifiDirect {
     private external fun nativeInit()
     private external fun nativeOnServiceFound(txt: ByteArray)
     private external fun nativeOnGroupChanged(formed: Boolean, isGo: Boolean, ourIp: String, goIp: String)
+    private external fun nativeOnOpenHouseFound(ssid: String, psk: String)
 
     /** Called once from PhotonActivity.onCreate (after loadLibrary). */
     fun init(a: PhotonActivity) {
@@ -156,6 +157,13 @@ object PhotonWifiDirect {
             { _, _, _ -> /* service name alone carries nothing — tokens ride the TXT record */ },
             { fullDomain, txt, _ ->
                 if (!fullDomain.startsWith("ph-") && !fullDomain.contains("_photon._udp")) return@setDnsSdResponseListeners
+                // OPEN HOUSE carrier: cleartext group creds published by a device in add-a-friend mode. Rust gates on whether OUR open house is armed too.
+                val ss = txt["ss"]
+                val pk = txt["pk"]
+                if (!ss.isNullOrEmpty() && !pk.isNullOrEmpty()) {
+                    nativeOnOpenHouseFound(ss, pk)
+                    return@setDnsSdResponseListeners
+                }
                 val b64 = txt.entries.filter { it.key.startsWith("t") }
                     .sortedBy { it.key.removePrefix("t").toIntOrNull() ?: 0 }
                     .joinToString("") { it.value }
@@ -233,6 +241,31 @@ object PhotonWifiDirect {
         } catch (e: SecurityException) {
             PhotonLog.e("WFD", "connect SecurityException: ${e.message}")
         }
+    }
+
+    /** OPEN HOUSE (add-a-friend nearby): raise the group AND publish its credentials in the clear in the TXT record, plus run discovery so a peer's open house is heard too. The group is a byte pipe — trust is CLUTCH — so cleartext creds are coffee-shop-WiFi exposure, armed only during the deliberate add flow. */
+    fun startOpenHouse(ssid: String, psk: String) {
+        if (!hasPerm()) {
+            PhotonLog.i("WFD", "open house waiting on permission")
+            activity?.requestWfdPermissions()
+            return
+        }
+        val m = mgr() ?: return
+        val ch = channel ?: return
+        createGroup(ssid, psk)
+        val txt = mapOf("ss" to ssid, "pk" to psk)
+        val instance = "ph-" + java.util.UUID.randomUUID().toString().substring(0, 8)
+        val info = WifiP2pDnsSdServiceInfo.newInstance(instance, "_photon._udp", txt)
+        try {
+            m.clearLocalServices(ch, null)
+            m.addLocalService(ch, info, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() { PhotonLog.i("WFD", "open house advertising ($ssid)") }
+                override fun onFailure(code: Int) { PhotonLog.e("WFD", "open house advertise failed, code $code") }
+            })
+        } catch (e: SecurityException) {
+            PhotonLog.e("WFD", "open house SecurityException: ${e.message}")
+        }
+        startDiscovery()
     }
 
     fun removeGroup() {
