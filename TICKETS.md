@@ -28,7 +28,7 @@ Conventions live in [AGENT.md](AGENT.md) (+ `../fluor/AGENT.md`); build via `./s
 
 ## WAITING ON A FIELD ROUND (nothing to build first)
 
-- **Bridge Phase 1 + 2 field verify** (Nick drives): streaming output, locus strip, Stop pill, prompt gate, three-press escape — between the Mac and leviathan once both run ≥v67.
+- **Bridge Phase 1 + 2 field verify — CORE VERIFIED 2026-08-30**: multi-command sessions work Mac guest → leviathan (the stop-hang killed at 889a13a: re-served finals arrived wireless, exit never stamped; masked in the field by a host that silently never rebuilt). Residue to exercise: three-press escape, Stop against a genuinely long command, locus strip across a `cd`, and the known cosmetic gap — a re-served frame doesn't refresh host/cwd.
 - **Consent gate live test**: add one-way, verify the other end sees *nothing*; add back, verify the knock completes the ceremony. Friend-fleet only — siblings don't exercise it.
 - **Blind ops (private identity S) E2E**: probe → generate → deposit → ack → recover has never run end to end across real devices since the party-id token seam was fixed (2026-07-16).
 - **Fleet message sync E2E**: send on A / watch B, fresh-join backfill, delivered-tick propagation (shipped @c6d6285, never live-tested).
