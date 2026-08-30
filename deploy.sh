@@ -19,10 +19,18 @@ preflight_gates
 # The publish lock keeps a dev-*.sh from bumping the version mid-deploy (and vice versa) — the same race that mis-stamped a dev manifest row on 2026-07-16.
 manifest_take_publish_lock
 if [ -n "$(git status --porcelain)" ]; then
-    echo "ERROR: working tree is dirty — a release stamps HEAD into every binary + the signed manifest."
-    echo "       Commit (or stash) first."
-    git status --short | head -20
-    exit 1
+    # A diff confined to Cargo.lock is DETERMINISTIC BOOKKEEPING, not dirt: sibling path-dep crates bump their own versions and every cargo run lazily re-locks the next one (kete→manifestus→spirix in one evening, each blocking a deploy). Absorb it as its own commit so HEAD still matches the built tree exactly; anything else stays a hard refusal.
+    if [ -z "$(git status --porcelain | grep -vE '^.M Cargo\.lock$')" ]; then
+        git add Cargo.lock
+        git commit -q -m "lock: sibling path-dep re-lock (deploy preflight auto-absorb)"
+        git push -q origin main || { echo "ERROR: could not push the lock re-lock commit — reconcile main first."; exit 1; }
+        echo "Cargo.lock-only drift absorbed (sibling path-dep versions moved) — committed + pushed."
+    else
+        echo "ERROR: working tree is dirty — a release stamps HEAD into every binary + the signed manifest."
+        echo "       Commit (or stash) first."
+        git status --short | head -20
+        exit 1
+    fi
 fi
 # Make local main identical to origin BEFORE bumping — a release commit built on a stale base can never fast-forward, and the tag/advance flow below assumes the bump sits on the shared tip. Behind → fast-forwards; diverged (un-pushed local work) → refuses. This is the gate whose absence let five deploys build for an hour and then die at the push (2026-08-28).
 release_git_preflight main
