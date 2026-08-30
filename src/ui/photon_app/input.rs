@@ -324,6 +324,29 @@ impl PhotonApp {
             return;
         }
 
+        // OFF-GRID add (docs/offgrid.md open house): the registry is unreachable (the relay pipe's liveness flag is the offline proxy — both are fgtw.org), so the registry's job is done by proximity instead. Arm the open house (group + cleartext creds in the TXT beacon — a deliberate, mode-gated act) and derive the handle's proof off-thread; the peer's pt_disc beacon matching that proof CREATES the contact with the beacon's device key + address, and the ceremony rides the group.
+        if !crate::network::wfd::relay_reachable() {
+            crate::logf!("add-friend: OFF-GRID — open house armed, listening for {} nearby", handle);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let h = handle.clone();
+            std::thread::spawn(move || {
+                // ~1s memory-hard PoW (ihi::handle_to_proof) — never on the UI thread.
+                let hp = crate::types::Handle::username_to_handle_proof(&h);
+                let _ = tx.send((h, hp));
+            });
+            self.woods_add_rx = Some(rx);
+            crate::network::wfd::start_open_house();
+            self.search_status = Some((
+                "off-grid: listening nearby...".to_string(),
+                *theme::SEARCH_FOUND_COLOUR,
+            ));
+            if let Some(tb) = self.contacts_textbox.as_mut() {
+                tb.clear();
+            }
+            self.change_focus(None);
+            return;
+        }
+
         if let Some(hq) = self.handle_query.as_ref() {
             crate::log("add-friend: searching FGTW");
             hq.search(handle);

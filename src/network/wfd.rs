@@ -229,6 +229,8 @@ pub trait WfdPlatform: Send {
     fn connect_group(&mut self, ssid: &str, psk: &str);
     /// Tear the group down (DRAINED+SILENT edge).
     fn remove_group(&mut self);
+    /// OPEN HOUSE (add-a-friend nearby): create the group AND publish its credentials in the clear in the DNS-SD TXT record, plus run discovery — so two strangers both in this mode find each other with zero prior state.
+    fn open_house(&mut self, ssid: &str, psk: &str);
 }
 
 /// The everywhere-else default: the tier never engages.
@@ -240,6 +242,7 @@ impl WfdPlatform for NullWfd {
     fn create_group(&mut self, _ssid: &str, _psk: &str) {}
     fn connect_group(&mut self, _ssid: &str, _psk: &str) {}
     fn remove_group(&mut self) {}
+    fn open_house(&mut self, _ssid: &str, _psk: &str) {}
 }
 
 /// The bearer: current state + the platform bridge. Owned by the app (UI thread), driven by its drain on the documented edges.
@@ -324,6 +327,8 @@ pub enum WfdEvent {
         our_ip: std::net::Ipv4Addr,
         go_ip: std::net::Ipv4Addr,
     },
+    /// A nearby device is in OPEN HOUSE (add-a-friend) mode and published its group credentials in the clear (docs/offgrid.md): the group is just a byte pipe — a hostile joiner sees only ciphertext and the consent gate ignores its knocks — so cleartext creds are the coffee-shop-WiFi trust level, which is all any bearer ever has.
+    OpenHouseHeard { ssid: String, psk: String },
 }
 
 static EVENTS: std::sync::Mutex<Vec<WfdEvent>> = std::sync::Mutex::new(Vec::new());
@@ -379,6 +384,76 @@ pub fn drained() {
 
 pub fn iface_lost() {
     with_bearer(|b| b.iface_lost());
+}
+
+// ---------------------------------------------------------------------------
+// OPEN HOUSE — the add-a-friend-nearby mode (docs/offgrid.md). Deliberate-action-gated: it only arms when the user submits an add while off-grid, because its beacon is a trackable "photon user here" (unlike the rotating tokens). The group credentials ride the TXT record in the clear — the group is a byte pipe, trust is CLUTCH, a hostile joiner sees ciphertext and unresolvable knocks.
+// ---------------------------------------------------------------------------
+
+/// Our live open-house credentials while the mode is armed (we created a group with these).
+static OPEN_HOUSE: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+/// The live group's shape from the platform's last GroupChanged: (is_go, our_ip, go_ip). Feeds the joiner's ping-cadence unicast beacon (a contact added AFTER group-up still gets announced).
+static CURRENT_GROUP: std::sync::Mutex<Option<(bool, std::net::Ipv4Addr, std::net::Ipv4Addr)>> =
+    std::sync::Mutex::new(None);
+
+pub fn note_group(g: Option<(bool, std::net::Ipv4Addr, std::net::Ipv4Addr)>) {
+    *CURRENT_GROUP.lock().unwrap() = g;
+}
+
+pub fn current_group() -> Option<(bool, std::net::Ipv4Addr, std::net::Ipv4Addr)> {
+    *CURRENT_GROUP.lock().unwrap()
+}
+
+pub fn open_house_active() -> bool {
+    OPEN_HOUSE.lock().unwrap().is_some()
+}
+
+/// Arm open house: mint ephemeral group credentials, create the group, publish the creds. Idempotent — re-arming keeps the existing group.
+pub fn start_open_house() {
+    let mut oh = OPEN_HOUSE.lock().unwrap();
+    if oh.is_some() {
+        return;
+    }
+    // Reuse the credential minter for the random ssid/psk; the go/epoch fields are meaningless here (the group is ours by construction).
+    let c = mint_cred(&[0u8; 32], &[1u8; 32], 0);
+    crate::logf!("WFD: open house armed — group {} published in the clear", c.ssid);
+    *oh = Some((c.ssid.clone(), c.psk.clone()));
+    drop(oh);
+    with_bearer(|b| b.platform.open_house(&c.ssid, &c.psk));
+}
+
+/// Quiet the open-house beacon (stop advertising the creds), optionally tearing the group down too. `keep_group` = the found-them edge (the ceremony still needs the pipe; DRAINED handles the group later); `!keep_group` = the user walked away with nobody found.
+pub fn stop_open_house(keep_group: bool) {
+    let was = OPEN_HOUSE.lock().unwrap().take();
+    if was.is_none() {
+        return;
+    }
+    crate::logf!(
+        "WFD: open house disarmed ({})",
+        if keep_group { "group stays for the ceremony" } else { "group removed" }
+    );
+    with_bearer(|b| {
+        b.platform.stop();
+        if !keep_group {
+            b.platform.remove_group();
+        }
+    });
+}
+
+/// A nearby open house was heard. Only meaningful while OURS is armed too (both people deliberately adding); the tie-break is lexicographic on SSID — the lower SSID stays GO, the higher tears its own group down and joins. Deterministic and symmetric, zero negotiation.
+pub fn open_house_join(ssid: &str, psk: &str) {
+    let ours = OPEN_HOUSE.lock().unwrap().clone();
+    let Some((our_ssid, _)) = ours else {
+        return; // not adding anyone — a stranger's open house is noise
+    };
+    if our_ssid.as_str() <= ssid {
+        return; // we win the tie-break; they will join us
+    }
+    crate::logf!("WFD: open house tie-break lost to {} — joining their group", ssid);
+    with_bearer(|b| {
+        b.platform.remove_group();
+        b.platform.connect_group(ssid, psk);
+    });
 }
 
 #[cfg(test)]

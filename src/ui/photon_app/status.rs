@@ -255,6 +255,19 @@ impl PhotonApp {
                         StatusUpdate::WfdGroupDown
                     });
                 }
+                crate::network::wfd::WfdEvent::OpenHouseHeard { ssid, psk } => {
+                    // Gated + tie-broken inside (only meaningful while OUR open house is armed too).
+                    crate::network::wfd::open_house_join(&ssid, &psk);
+                }
+            }
+        }
+
+        // Off-thread woods-add PoW finished → arm the beacon matcher.
+        if let Some(rx) = self.woods_add_rx.as_ref() {
+            if let Ok((handle, hp)) = rx.try_recv() {
+                crate::logf!("add-friend: proof derived for the off-grid add of {}", handle);
+                self.pending_woods_add = Some((handle, hp));
+                self.woods_add_rx = None;
             }
         }
 
@@ -2672,6 +2685,54 @@ impl PhotonApp {
                             }
                         }
                     }
+                    // WOODS ADD (docs/offgrid.md open house): a pending off-grid add whose derived proof matches this beacon — the beacon IS the registry record (hp in the provenance, device key in `ke`, address in the source). Create the contact and the normal machinery takes over: ping → pong → CLUTCH over the group.
+                    if let Some((handle, want_hp)) = self.pending_woods_add.as_ref() {
+                        if *want_hp == handle_proof
+                            && !self.contacts.iter().any(|c| c.handle_proof == handle_proof)
+                        {
+                            if let Some(dk) = device_pubkey {
+                                let handle = handle.clone();
+                                crate::logf!(
+                                    "add-friend: {} found NEARBY (off-grid) — contact created from the beacon",
+                                    handle
+                                );
+                                let ht = crate::types::HandleText::new(&handle);
+                                let mut contact = crate::types::Contact::new(
+                                    ht,
+                                    handle_proof,
+                                    crate::types::DevicePubkey::from_bytes(dk),
+                                );
+                                let addr = std::net::SocketAddr::new(
+                                    std::net::IpAddr::V4(local_ip),
+                                    port,
+                                );
+                                if crate::network::traverse::gather::is_wfd_subnet(local_ip) {
+                                    contact.p2p_addr = Some(addr);
+                                } else {
+                                    contact.local_ip = Some(local_ip);
+                                    contact.local_port = Some(port);
+                                }
+                                self.contacts.push(contact);
+                                if let (Some(storage), Some(c)) =
+                                    (self.storage.as_ref(), self.contacts.last())
+                                {
+                                    if let Err(e) =
+                                        crate::storage::contacts::save_contact(c, storage)
+                                    {
+                                        crate::logf!("add-friend: woods contact save failed: {}", e);
+                                    }
+                                }
+                                self.ready_toast = Some(format!("found {handle} nearby"));
+                                self.pending_woods_add = None;
+                                // Found them: quiet the cleartext beacon; the group stays for the ceremony (DRAINED tears it down later).
+                                crate::network::wfd::stop_open_house(true);
+                                lan_ping_indices.push(self.contacts.len() - 1);
+                                wfd_beacon_reply = Some(addr);
+                                changed = true;
+                                continue;
+                            }
+                        }
+                    }
                     // Find contact by handle_proof and store their LAN IP + port. Siblings AND the self-contact are skipped — an own-hp broadcast carries only (hp, port) with no device disambiguation, so it can't say WHICH of our devices it came from; sibling addresses flow via FGTW peer rows + pong source addresses instead.
                     // A source inside the Wi-Fi Direct group subnet routes to `p2p_addr`, NOT `local_ip` — a p2p address must never masquerade as an infra-LAN address (it would hit the foreign-/24 gate and vanish, or survive teardown as a black hole).
                     let is_p2p = crate::network::traverse::gather::is_wfd_subnet(local_ip);
@@ -4367,6 +4428,7 @@ impl PhotonApp {
                         go_ip
                     );
                     crate::network::wfd::group_up();
+                    crate::network::wfd::note_group(Some((is_go, our_ip, go_ip)));
                     // The joiner beacons the GO unicast with the existing pt_disc shape; the GO learns the joiner from that frame's source and beacons back (both land in the LanPeerDiscovered arm, which routes 192.168.49/24 sources into p2p_addr).
                     if !is_go {
                         if let (Some(session), Some(hq), Some(checker)) = (
@@ -4387,6 +4449,7 @@ impl PhotonApp {
                 }
                 StatusUpdate::WfdGroupDown => {
                     crate::network::wfd::iface_lost();
+                    crate::network::wfd::note_group(None);
                     // Clear every p2p address AND any validated path inside the group subnet so sends fall back immediately instead of black-holing (same lesson as is_bogus_addr).
                     let mut cleared = 0;
                     for c in self.contacts.iter_mut() {

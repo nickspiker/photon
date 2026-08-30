@@ -34,6 +34,16 @@ Connect is dialog-free both directions on API 29+ (pre-shared WifiP2pConfig skip
 `_photon._udp` local service; the TXT record carries rotating friend-recognizable tokens: `keyed_hash(pairwise_token_key, device_pubkey ‖ coarse_hour)` truncated to 16B, one per provisioned friend, hourly rotation (+previous hour matched for skew) so strangers can't track; instance name random per boot.
 Fully dialog-free; NEARBY_WIFI_DEVICES (33+) / fine-location (older) runtime permission with the pending-grant re-run pattern.
 
+### Open house — adding a NEW friend in the woods (BUILT 2026-08-30)
+The per-pair tokens/credentials only serve EXISTING friends; two strangers meeting off-grid have neither.
+The magic ID insight: the `_photon._udp` service type already is the universal marker — so the add flow uses it directly.
+Submitting an add while the registry is unreachable (relay-pipe-down proxy) arms OPEN HOUSE: mint an ephemeral group, createGroup, and publish the SSID+PSK IN THE CLEAR in the TXT record (`ss`/`pk` keys).
+Cleartext creds are coffee-shop-WiFi exposure — the group is a byte pipe, trust is CLUTCH, a hostile joiner sees only ciphertext and unresolvable knocks — and the trackable "photon user here" beacon exists only during the deliberate add flow.
+Both people add each other (mutual consent is required anyway); when both open houses hear each other, the lexicographically-lower SSID stays GO and the other tears down and joins (deterministic, symmetric).
+The typed handle's proof derives locally (~1s memory-hard PoW, off-thread); the peer's pt_disc beacon matching that proof IS the registry record — hp in the provenance, device key in `ke`, address in the source — so the contact is created from the beacon and ping → pong → CLUTCH ride the group.
+On find: the cleartext beacon quiets (stop_open_house keeps the group for the ceremony); leaving the add flow with nobody found disarms everything, group included.
+The joiner also unicasts its pt_disc at the GO each ping cadence, so a contact added AFTER group-up still gets announced.
+
 ### Edges, not timers
 - STRANDED-ENTER (evaluated on the ping cadence): a provisioned friend has no validated path and is offline AND the relay pipe is down (`wfd::RELAY_REACHABLE`, set by the pipe task's connect/liveness transitions) → start advertise + discovery.
 - FRIEND-HEARD: a TXT token matches a provisioned friend with no path → the credential's GO creates the group, the other side connects.

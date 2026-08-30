@@ -1506,6 +1506,28 @@ pub extern "C" fn Java_com_photon_messenger_PhotonWifiDirect_nativeOnGroupChange
     });
 }
 
+/// Kotlin DNS-SD TXT with cleartext group creds → Rust: a nearby OPEN HOUSE (add-a-friend mode).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonWifiDirect_nativeOnOpenHouseFound(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    ssid: jni::objects::JString<'_>,
+    psk: jni::objects::JString<'_>,
+) {
+    let get = |env: &mut JNIEnv, s: &jni::objects::JString| -> Option<String> {
+        env.get_string(s)
+            .ok()
+            .and_then(|j| j.to_str().ok().map(str::to_owned))
+    };
+    if let (Some(ssid), Some(psk)) = (get(&mut env, &ssid), get(&mut env, &psk)) {
+        crate::network::wfd::push_event(crate::network::wfd::WfdEvent::OpenHouseHeard {
+            ssid,
+            psk,
+        });
+    }
+}
+
 #[cfg(target_os = "android")]
 fn wfd_call(method: &str) {
     let Some((vm, obj)) = WFD_BRIDGE.get() else {
@@ -1595,6 +1617,9 @@ impl crate::network::wfd::WfdPlatform for AndroidWfd {
     }
     fn remove_group(&mut self) {
         wfd_call("removeGroup");
+    }
+    fn open_house(&mut self, ssid: &str, psk: &str) {
+        wfd_call_strings("startOpenHouse", ssid, psk);
     }
 }
 

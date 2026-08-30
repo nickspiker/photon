@@ -419,9 +419,18 @@ impl PhotonApp {
         // LAN broadcast for same-network local-IP discovery (hairpin-NAT workaround).
         if let (Some(session), Some(hq)) = (self.session.as_ref(), self.handle_query.as_ref()) {
             checker.send_lan_broadcast(session.handle_proof, hq.port());
+            // Live Wi-Fi Direct group, we're the CLIENT: also unicast the beacon at the GO each cadence — a contact added AFTER group-up (the woods-add flow) still gets announced, and multicast on the p2p iface can't be trusted to carry the broadcast above.
+            if let Some((false, _our, go)) = crate::network::wfd::current_group() {
+                checker.send_lan_unicast(
+                    session.handle_proof,
+                    hq.port(),
+                    std::net::SocketAddr::new(std::net::IpAddr::V4(go), crate::PHOTON_PORT),
+                );
+            }
         }
 
         // Wi-Fi Direct STRANDED evaluation rides the ping cadence (the same edges that change reachability land here): the radio spins up only when a provisioned friend is unreachable AND the relay pipe is down — truly off-grid. Also the DRAINED teardown check for a live group whose peers all went silent.
+        self.cancel_woods_add_if_left();
         self.drive_wfd_stranded();
 
         // Bell publish (Android only — desktops don't doze, so they publish nothing and are never rung): once Kotlin has handed over the FCM token, publish `fcm:<project>:<token>` under OUR handle_proof, and re-publish whenever the token rotates. Piggybacks the ping cadence so a late token or a rotation heals without dedicated machinery.
@@ -1902,7 +1911,28 @@ impl PhotonApp {
     }
 
     /// Wi-Fi Direct STRANDED/DRAINED driver (docs/offgrid.md), riding the ping cadence. Advertise + discovery run only while some provisioned friend has no path AND the relay pipe is down (we are truly off-grid); they stop the moment either recovers. A live group whose p2p peers have all gone silent (the failed-ping hysteresis marked them offline) is DRAINED — removed so the radio quiets.
+    /// The woods-add abandon edge: the user left the add flow (Ready/Searching are where the contacts search box lives) while an open house or a pending proof-match was still armed — disarm everything, group included, because nobody was found. A COMPLETED find already cleared all of this (stop_open_house(true) kept the group for the ceremony), so this is a no-op then.
+    pub(super) fn cancel_woods_add_if_left(&mut self) {
+        let armed = self.pending_woods_add.is_some()
+            || self.woods_add_rx.is_some()
+            || crate::network::wfd::open_house_active();
+        if !armed {
+            return;
+        }
+        if matches!(self.state, AppState::Ready | AppState::Searching) {
+            return;
+        }
+        crate::log("add-friend: left the add flow with the open house armed — disarming");
+        self.pending_woods_add = None;
+        self.woods_add_rx = None;
+        crate::network::wfd::stop_open_house(false);
+    }
+
     pub(super) fn drive_wfd_stranded(&self) {
+        // Open house outranks the stranded evaluation: the user is deliberately adding someone, so the radio stays up whatever the relay says. (The cancel edge lives in cancel_woods_add_if_left, driven from the tick.)
+        if crate::network::wfd::open_house_active() {
+            return;
+        }
         let Some(kp) = self.device_keypair.as_ref() else {
             return;
         };
