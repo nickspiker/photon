@@ -80,6 +80,15 @@ Small and contained:
 - Installer: write both copies, plus the shim and the launcher entry (`.desktop` / shortcut / bundle) pointing at the shim; detect a second mount for copy B where available.
 - Updater (`apply_desktop_blocking`): stage-then-rename into BOTH copy paths, not one; the re-exec target is the shim (or copy A). This builds on the canonical-path fix (`installed_exe_path`), so `current_exe()` is never the install target.
 
+## Implementation status
+
+- Linux: FULL — two copies (`~/.local/bin` + `~/.local/share/photon`), the shim, `.desktop` → shim, updater dual-install + re-exec via shim, dev.sh dogfoods it. Shipped.
+- macOS: dual-copy only — the installer already writes two copies (`~/.local/bin` + the `.app` bundle) and the updater keeps both fresh, but the Dock still launches the bundle directly (no shim) pending the TCC decision above.
+- Windows: dual-copy only — the installer writes a second copy under `%LOCALAPPDATA%\PhotonMessenger` and the updater keeps both fresh, but the Start-menu shortcut still launches the primary directly (a no-console .vbs/.cmd shim is the remaining piece, and it needs a real Windows box to test).
+- Android: n/a (system-managed).
+
+So auto-fallback-on-corruption is live on Linux; macOS and Windows get redundancy (survive a nuked/corrupt copy via the other, kept fresh by the updater) but launch the primary directly until their shims are built and tested on-device.
+
 ## Threat model, stated plainly
 
 - Defends: corruption, bit-rot, a torn update write, one folder/disk gone.

@@ -7,10 +7,13 @@ A="${PHOTON_COPY_A:-$HOME/.local/bin/photon-messenger}"
 B="${PHOTON_COPY_B:-$HOME/.local/share/photon/photon-messenger}"
 T="${PHOTON_VERIFY_TIMEOUT:-8}"
 
+# `timeout` bounds the one corruption shape running-it can't report cleanly: a copy that HANGS. Stock macOS ships no `timeout`; there we run the verify unbounded (a hang is far rarer than a nuke or bit-flip, which the signature check still catches).
+if command -v timeout >/dev/null 2>&1; then VERIFY="timeout $T"; else VERIFY=""; fi
+
 for c in "$A" "$B"; do
     [ -x "$c" ] || continue
-    # `photon verify` reads the file, checks its own appended signature, and exits 0 (valid) / non-zero (invalid) doing nothing else. `timeout` covers the one corruption shape running-it can't report cleanly: a copy that HANGS instead of crashing or failing the check.
-    if timeout "$T" "$c" verify >/dev/null 2>&1; then
+    # `photon verify` reads the file, checks its own appended signature, and exits 0 (valid) / non-zero (invalid) doing nothing else.
+    if $VERIFY "$c" verify >/dev/null 2>&1; then
         # Exactly one validation: hand off with PHOTON_LAUNCH_VERIFIED so the launched copy skips its now-redundant startup self-check (it consumes the flag so it can't leak onward). `exec` so no launcher process lingers under the app.
         PHOTON_LAUNCH_VERIFIED=1 exec "$c" "$@"
     fi

@@ -299,6 +299,9 @@ r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-android-release.apk" \
 # Upload install scripts and assets
 r2_put "$R2_BUCKET/$R2_PATH/install-release.sh" \
     --file installers/install-release.sh --content-type text/plain --remote
+# The resilient-launch shim (docs/resilient-launch.md): the installer fetches this to $HOME/.local/bin/photon-launch and points the .desktop at it.
+r2_put "$R2_BUCKET/$R2_PATH/photon-launch.sh" \
+    --file installers/photon-launch.sh --content-type text/plain --remote
 r2_put "$R2_BUCKET/$R2_PATH/icon-1024.png" \
     --file assets/icon-1024.png --content-type image/png --remote
 r2_put "$R2_BUCKET/$R2_PATH/app.png" \

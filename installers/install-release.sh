@@ -94,6 +94,31 @@ fi
 echo "✓ Binary installed"
 echo ""
 
+# Resilient launch (docs/resilient-launch.md): install a SECOND copy under a different XDG root + the verify-and-fallback shim, and point the launcher entry at the shim — so a nuked or corrupt ~/.local/bin still launches. macOS already installs two copies (~/.local/bin + the .app bundle below); its Dock keeps launching the bundle directly for TCC identity, so no shim there yet.
+EXEC_TARGET="$INSTALL_DIR/$BINARY_NAME"
+if [ "$OS" = "Linux" ]; then
+    COPY_B_DIR="$HOME/.local/share/photon"
+    mkdir -p "$COPY_B_DIR"
+    cp "$INSTALL_DIR/$BINARY_NAME" "$COPY_B_DIR/$BINARY_NAME"
+    chmod +x "$COPY_B_DIR/$BINARY_NAME"
+    SHIM_URL="https://brobdingnagian.holdmyoscilloscope.com/photon/photon-launch.sh"
+    SHIM_OK=""
+    if command -v curl >/dev/null 2>&1; then
+        curl -sSfL "$SHIM_URL" -o "$INSTALL_DIR/photon-launch" 2>/dev/null && SHIM_OK=1 || true
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q "$SHIM_URL" -O "$INSTALL_DIR/photon-launch" 2>/dev/null && SHIM_OK=1 || true
+    fi
+    if [ -n "$SHIM_OK" ] && [ -s "$INSTALL_DIR/photon-launch" ]; then
+        chmod +x "$INSTALL_DIR/photon-launch"
+        EXEC_TARGET="$INSTALL_DIR/photon-launch"
+        echo "✓ Resilient launch installed (second copy + verify-and-fallback shim)"
+    else
+        rm -f "$INSTALL_DIR/photon-launch" 2>/dev/null || true
+        echo "  (launch shim unavailable — launching the binary directly; second copy still installed)"
+    fi
+    echo ""
+fi
+
 # Create macOS .app bundle for Finder/Dock/Launchpad
 if [ "$OS" = "Darwin" ]; then
     echo "Creating macOS app bundle..."
@@ -236,7 +261,7 @@ Version=1.0
 Type=Application
 Name=Photon Messenger
 Comment=Decentralized secure messaging with passless authentication
-Exec=$INSTALL_DIR/$BINARY_NAME
+Exec=$EXEC_TARGET
 Icon=photon-messenger
 Terminal=false
 Categories=Network;InstantMessaging;
