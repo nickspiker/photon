@@ -258,7 +258,6 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeAudioC
     _class: JClass<'_>,
     samples: jni::objects::JShortArray<'_>,
 ) {
-    let mut env = env;
     let len = env.get_array_length(&samples).unwrap_or(0) as usize;
     if len == 0 {
         return;
@@ -276,7 +275,6 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeAudioN
     env: JNIEnv<'a>,
     _class: JClass<'a>,
 ) -> jni::objects::JShortArray<'a> {
-    let mut env = env;
     let frame = crate::platform::audio::pull_render();
     match env.new_short_array(frame.len() as i32) {
         Ok(arr) => {
@@ -470,7 +468,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnTouch(
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetDisplayColorSpace(
-    mut env: JNIEnv<'_>,
+    env: JNIEnv<'_>,
     _class: JClass<'_>,
     rgb_to_xyz: jni::objects::JFloatArray<'_>,
     primaries: jni::objects::JFloatArray<'_>,
@@ -774,7 +772,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnScale(
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetAvatarFromFile(
-    mut env: JNIEnv<'_>,
+    env: JNIEnv<'_>,
     _class: JClass<'_>,
     context_ptr: jlong,
     file_bytes: JByteArray<'_>,
@@ -912,7 +910,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonBeacon_nativeInit(
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonBeacon_nativeOnBeaconHeard(
-    mut env: JNIEnv<'_>,
+    env: JNIEnv<'_>,
     _this: JObject<'_>,
     frame: JByteArray<'_>,
 ) {
@@ -949,7 +947,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonNfc_nativeInit(
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonNfc_nativeOnNfcSecret(
-    mut env: JNIEnv<'_>,
+    env: JNIEnv<'_>,
     _obj: jni::objects::JObject<'_>,
     bytes: jni::objects::JByteArray<'_>,
 ) {
@@ -1386,7 +1384,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeGetDev
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeRestoreSessionFromVsf(
-    mut env: JNIEnv<'_>,
+    env: JNIEnv<'_>,
     _class: JClass<'_>,
     vsf_bytes: JByteArray<'_>,
 ) -> jint {
@@ -1543,7 +1541,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonWifiDirect_nativeInit(
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonWifiDirect_nativeOnServiceFound(
-    mut env: JNIEnv<'_>,
+    env: JNIEnv<'_>,
     _this: JObject<'_>,
     txt: JByteArray<'_>,
 ) {

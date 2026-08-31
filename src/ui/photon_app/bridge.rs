@@ -303,16 +303,7 @@ impl BridgeShell {
         Self::line_is_job_notice(line)
     }
 
-    /// Kill the SESSION: the foreground command's whole descendant tree first (bash's death alone orphans it — exactly the invisible-deploy failure this replaces), then bash.
-    fn kill(&mut self) {
-        for pid in bridge_child_tree(self.child.id() as i32) {
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-            }
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
+    // (The old whole-session `kill` — SIGKILL the descendant tree then bash — is deleted: nothing called it since the Stop ladder took over per-command signalling (SIGINT→TERM→KILL against the job's own process group), which is strictly better — the session and its cwd survive a stopped command.)
 }
 
 #[cfg(all(test, unix, not(target_os = "android"), not(target_os = "redox")))]

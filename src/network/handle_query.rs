@@ -17,6 +17,8 @@ use std::time::Duration;
 // Desktop-only imports
 #[cfg(not(target_os = "android"))]
 use crate::ui::PhotonEvent;
+// Desktop-only: the WakeSender-carrying constructors/workers are all cfg(not(android)) — the UI-wake proxy has no Android counterpart (the JNI service tick drives instead).
+#[cfg(not(target_os = "android"))]
 use fluor::host::WakeSender;
 
 /// Data loaded during attestation (all blocking work done in background)

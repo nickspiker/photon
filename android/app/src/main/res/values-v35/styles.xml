@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 15 ENFORCES edge-to-edge at targetSdk 35: the surface suddenly drew under the status + nav bars and trampled them (field: first phone build after the SDK-35 bump, 2026-08-30). Photon's whole layout + IME model (adjustNothing + nativeImeInset) is built on the classic windowed insets, so opt out explicitly. The attribute only exists from v35, hence this qualified overlay; deprecated-but-supported per Google, revisit only when photon draws its own inset-aware chrome. -->
+<resources>
+    <style name="AppTheme" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+    </style>
+</resources>

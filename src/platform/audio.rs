@@ -340,7 +340,7 @@ mod desktop {
             let fmt = sc.sample_format();
             crate::logf!(
                 "AUDIO: capture on '{}' @ {}Hz x{}ch {} → 48k mono",
-                dev.name().unwrap_or_else(|_| "?".into()),
+                dev.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "?".into()),
                 src_rate,
                 channels,
                 format!("{:?}", fmt)
@@ -362,7 +362,7 @@ mod desktop {
 
         // ---- output (speaker) ----
         let out_stream = host.default_output_device().and_then(|dev| {
-            let name = dev.name().unwrap_or_else(|_| "?".into());
+            let name = dev.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "?".into());
             *ROUTE.lock().unwrap() = sniff_route(&name);
             let sc = dev.default_output_config().ok()?;
             let dst_rate = sc.sample_rate();
