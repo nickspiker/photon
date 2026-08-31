@@ -395,6 +395,16 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
+    /// A sibling asking for a friendship's chain state (Complete contact, no chains — the fresh-device join). Answer = clear push watermarks (chain_sync re-push) or a ChainPullMiss.
+    ChainPullReceived {
+        conversation_token: [u8; 32],
+        sender_pubkey: DevicePubkey,
+    },
+    /// A sibling's negative answer to our chain_pull: it holds no chains for this token either. All live siblings missing = the fleet truly has nothing, re-key is legitimate.
+    ChainPullMissReceived {
+        conversation_token: [u8; 32],
+        sender_pubkey: DevicePubkey,
+    },
     /// A sibling's whole epoch state (k ‖ epoch ‖ prev), fleet-key-sealed — the UI thread adopts it if it is ahead of the local spine.
     CkptStateReceived {
         k: u64,
@@ -559,6 +569,10 @@ impl StatusUpdate {
             StatusUpdate::ChainSyncReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::CkptRootReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::CkptReqReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::ChainPullReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::ChainPullMissReceived { sender_pubkey, .. } => {
+                Some(sender_pubkey.as_bytes())
+            }
             StatusUpdate::FocusClaimReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
             }
@@ -2316,6 +2330,47 @@ async fn run_checker(
                                     &status_tx_recv,
                                     StatusUpdate::AttentionReceived {
                                         osc,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            // Fleet chain-pull request/miss (a fresh sibling asking before it re-keys). Same mandatory packet-ack.
+                            if let Ok((conversation_token, sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_chain_pull_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::ChainPullReceived {
+                                        conversation_token,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            if let Ok((conversation_token, sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_chain_pull_miss_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::ChainPullMissReceived {
+                                        conversation_token,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                     },
                                     &event_proxy_recv,

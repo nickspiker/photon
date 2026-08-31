@@ -281,6 +281,8 @@ impl PhotonApp {
                 StatusUpdate::ChainSyncReceived { .. } => "ChainSyncReceived",
                 StatusUpdate::CkptRootReceived { .. } => "CkptRootReceived",
                 StatusUpdate::CkptReqReceived { .. } => "CkptReqReceived",
+                StatusUpdate::ChainPullReceived { .. } => "ChainPullReceived",
+                StatusUpdate::ChainPullMissReceived { .. } => "ChainPullMissReceived",
                 StatusUpdate::FocusClaimReceived { .. } => "FocusClaimReceived",
                 StatusUpdate::FriendKnockReceived { .. } => "FriendKnockReceived",
                 StatusUpdate::AttentionReceived { .. } => "AttentionReceived",
@@ -349,6 +351,9 @@ impl PhotonApp {
         )> = Vec::new();
         // Consent gate (2026-08-25): knocks to fire and the roster ride for a Mutual flip — both need &mut self, so they wait out the drain like the jobs above.
         let mut knock_after: Vec<crate::types::ContactId> = Vec::new();
+        // chain_pull request/miss events, deferred past the checker borrow (their handling mutates watermarks / re-keys).
+        let mut chain_pull_reqs_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
+        let mut chain_pull_misses_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
         // Wi-Fi Direct credential provisioning, collected on came-online edges (after releasing the checker borrow): the elected-GO side mints/re-offers the pair's group credential once per session (docs/offgrid.md).
         let mut wfd_provision_after: Vec<crate::types::ContactId> = Vec::new();
         // Wi-Fi Direct beacon answer-back target, collected on the p2p learn edge (the reply teaches the peer OUR group address).
@@ -3475,6 +3480,27 @@ impl PhotonApp {
                 }
 
                 // A sibling's catch-up ask: serve our whole spine state fleet-key-sealed if we are ahead — the fgtw-independent jump path.
+                StatusUpdate::ChainPullReceived {
+                    conversation_token,
+                    sender_pubkey,
+                } => {
+                    // Sibling authorization, exactly the ckpt_req gate; the serve/miss work mutates watermarks so it defers past the checker borrow.
+                    if self.contacts.iter().any(|c| {
+                        c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
+                    }) {
+                        chain_pull_reqs_after.push((conversation_token, sender_pubkey.key));
+                    }
+                }
+                StatusUpdate::ChainPullMissReceived {
+                    conversation_token,
+                    sender_pubkey,
+                } => {
+                    if self.contacts.iter().any(|c| {
+                        c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
+                    }) {
+                        chain_pull_misses_after.push((conversation_token, sender_pubkey.key));
+                    }
+                }
                 StatusUpdate::CkptReqReceived {
                     have_k,
                     sender_pubkey,
@@ -4568,23 +4594,123 @@ impl PhotonApp {
             {
                 continue;
             }
+            // ASK THE FLEET FIRST (field 2026-08-31, Nick's device add): on a freshly-added device this exact state — roster says Complete, chains not yet replicated — is EXPECTED for every friend, and friend traffic reliably beats the sibling join-edge re-push. Declaring wipe debris here mass-re-keyed the whole roster, and the fresh chains then clobbered the fleet's established ones via adopt-iff-newer. So with any live sibling, fire ONE chain_pull (per token per session) and hold; a sibling holding the chains re-pushes (watermark clear), and the re-key runs only on the true-negative edge — every live sibling answered miss (drained in ChainPullMissReceived). No siblings = the original Emma single-device wipe, heal immediately.
+            let have_live_sibling = self
+                .contacts
+                .iter()
+                .any(|c| c.is_sibling && !c.locked_out);
+            if have_live_sibling {
+                if self.chain_pull_sent.insert(token) {
+                    crate::logf!(
+                        "CLUTCH: {} claims Complete but holds NO chains — asking the fleet (chain_pull) before any re-key",
+                        crate::fp(&self.contacts[ci].handle_proof)
+                    );
+                    if let Some(kp) = self.device_keypair.as_ref() {
+                        if let Ok(frame) = crate::network::fgtw::protocol::build_chain_pull_vsf(
+                            &token,
+                            kp.public.as_bytes(),
+                            kp.secret.as_bytes(),
+                        ) {
+                            self.dispatch_frame_to_siblings(frame);
+                        }
+                    }
+                }
+                continue;
+            }
             crate::logf!(
-                "CLUTCH: {} claims Complete but holds NO chains (wipe debris) — discarding the lie and re-keying",
+                "CLUTCH: {} claims Complete but holds NO chains and there are no siblings to ask (wipe debris) — discarding the lie and re-keying",
                 crate::fp(&self.contacts[ci].handle_proof)
             );
-            let them = self.contacts[ci].handle_hash;
-            let id = self.contacts[ci].id.clone();
-            self.contacts[ci].discard_clutch_round();
-            self.contacts[ci].friendship_id = None;
-            self.contacts[ci].init_clutch_slots(us);
-            self.contacts[ci].clutch_keygen_in_progress = true;
-            self.spawn_clutch_keygen(id, us, them);
-            if let Some(storage) = self.storage.as_ref() {
-                let snapshot = self.contacts[ci].clone();
-                if let Err(e) = crate::storage::contacts::save_contact(&snapshot, storage) {
-                    crate::logf!("CLUTCH: re-key contact save failed: {}", e);
+            self.rekey_without_chains(ci);
+        }
+
+        // chain_pull serves (deferred past the checker borrow): a sibling asked for chains it lacks. Holding them = clear this friendship's push watermarks so drive_chain_replication re-pushes every lane checkpoint fleet-wide (the asker adopts, everyone else no-ops). Not holding them = answer miss.
+        for (token, sender_key) in chain_pull_reqs_after {
+            let us = self
+                .session
+                .as_ref()
+                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+            let have_fid = us.and_then(|us| {
+                self.contacts
+                    .iter()
+                    .find(|c| {
+                        !c.is_sibling
+                            && crate::crypto::clutch::derive_conversation_token(&[
+                                us,
+                                c.handle_hash,
+                            ]) == token
+                    })
+                    .and_then(|c| c.friendship_id)
+                    .filter(|fid| self.friendship_chains.iter().any(|(id, _)| id == fid))
+            });
+            if let Some(fid) = have_fid {
+                let fb = *fid.as_bytes();
+                self.chain_pushed_osc.remove(&fb);
+                self.lane_pushed_pos.retain(|k, _| k[..32] != fb);
+                crate::logf!(
+                    "CHAIN-PULL: sibling {} lacks chains for a friendship we hold — watermarks cleared, full re-push next tick",
+                    crate::fp(&sender_key)
+                );
+            } else if let Some(kp) = self.device_keypair.as_ref() {
+                if let Ok(frame) = crate::network::fgtw::protocol::build_chain_pull_miss_vsf(
+                    &token,
+                    kp.public.as_bytes(),
+                    kp.secret.as_bytes(),
+                ) {
+                    self.dispatch_frame_to_siblings(frame);
                 }
             }
+        }
+        // chain_pull miss verdicts (deferred): re-key ONLY when every live sibling contact has answered miss AND the evidence still stands. Offline siblings never answer, so the hold persists until one wakes — correct, its chains would have been clobbered by a premature re-key.
+        for (token, sender_key) in chain_pull_misses_after {
+            // Only meaningful if WE asked (the miss broadcast reaches every sibling; non-askers drop here).
+            if !self.chain_pull_sent.contains(&token) {
+                continue;
+            }
+            self.chain_pull_misses
+                .entry(token)
+                .or_default()
+                .insert(sender_key);
+            let all_missed = {
+                let misses = &self.chain_pull_misses[&token];
+                self.contacts
+                    .iter()
+                    .filter(|c| c.is_sibling && !c.locked_out)
+                    .all(|c| misses.iter().any(|d| c.knows_device(d)))
+            };
+            if !all_missed {
+                continue;
+            }
+            let us = self
+                .session
+                .as_ref()
+                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+            let Some(ci) = us.and_then(|us| {
+                self.contacts.iter().position(|c| {
+                    !c.is_sibling
+                        && crate::crypto::clutch::derive_conversation_token(&[us, c.handle_hash])
+                            == token
+                })
+            }) else {
+                continue;
+            };
+            // Re-verify the evidence still stands — a chain_sync may have raced the misses in.
+            let chains_present = self.contacts[ci].friendship_id.map_or(false, |fid| {
+                self.friendship_chains.iter().any(|(id, _)| *id == fid)
+            });
+            if self.contacts[ci].clutch_state != crate::types::ClutchState::Complete
+                || chains_present
+                || self.contacts[ci].clutch_keygen_in_progress
+            {
+                self.chain_pull_misses.remove(&token);
+                continue;
+            }
+            crate::logf!(
+                "CLUTCH: {} — every live sibling answered chain_pull_miss; the fleet holds no chains (wipe debris confirmed) — re-keying",
+                crate::fp(&self.contacts[ci].handle_proof)
+            );
+            self.chain_pull_misses.remove(&token);
+            self.rekey_without_chains(ci);
         }
 
         // Wi-Fi Direct credential offers collected on came-online edges (after releasing the checker borrow).

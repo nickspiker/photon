@@ -109,7 +109,7 @@ Conventions live in [AGENT.md](AGENT.md) (+ `../fluor/AGENT.md`); build via `./s
 
 ## SHELF — small, low priority
 
-- **Background doesn't scroll with Conversation or Contacts** (Nick 2026-08-23): Settings is the reference — each pane's scroll drives its background half. Feed conv `scroll_offset` / `contacts_scroll` into the bg translation the same way (render.rs ~:237 even promises it).
+- **Background doesn't scroll with Conversation or Contacts** (Nick 2026-08-23): Settings is the reference — each pane's scroll drives its background half. Feed conv `scroll_offset` / `contacts_scroll` into the bg translation the same way (render.rs ~:237 even promises it). Moving background with foreground makes it so scrolling is simply a memcopy rather than a complete redraw, thus requiring only the top smidge to get drawn when scrolling down and the bottom smidge to get drawn when scrolling up rather than redrawing the entire surface before the window edge mask and clip.
 - **Contacts search-box focus glow damage**: stale glow lingers/clips on deselect — the bg pass's dirty gating skips the glow bbox.
 - **Copy doesn't always reach the clipboard** (field 2026-08-21, intermittent): the write silently no-ops. When it recurs, log the clipboard set result + backend and confirm the copy path holds selection ownership past the event.
 - **Dock/taskbar click sends photon BEHIND the other app and the click falls through** (field 2026-08-22, Linux): the resident-surface path doesn't claim focus/stacking atomically. Needs explicit raise + request-attention + focus in the right WM order. Cousin of the macOS multi-monitor vanish.

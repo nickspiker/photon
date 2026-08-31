@@ -2187,6 +2187,75 @@ pub fn parse_friend_knock_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32]), 
     Ok((token, sender_pubkey))
 }
 
+/// Build a `chain_pull` — a sibling-to-sibling ASK for a friendship's chain state, fired by a device holding a Complete contact with NO chains (the freshly-added-device case) BEFORE it may declare wipe debris and re-key. A sibling holding the chains answers by clearing its push watermarks for that friendship (the normal chain_sync re-push serves everyone); a sibling without them answers `chain_pull_miss`.
+pub fn build_chain_pull_vsf(
+    conversation_token: &[u8; 32],
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+    let mut section = VsfSection::new("chain_pull");
+    section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build chain_pull VSF: {}", e))?;
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse + verify a `chain_pull`. Returns (conversation token, sender device pubkey). The receiver authorizes by sibling membership (knows_device), exactly like ckpt_req.
+pub fn parse_chain_pull_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("chain_pull verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "chain_pull" {
+        return Err(format!("Expected 'chain_pull' section, got '{}'", section_name));
+    }
+    let token = field_hash32(&section.fields, "tok", |v| matches!(v, VsfType::hg(_)))
+        .ok_or("chain_pull missing tok")?;
+    Ok((token, sender_pubkey))
+}
+
+/// Build a `chain_pull_miss` — the negative answer to a `chain_pull`: this sibling holds NO chains for the token. The requester re-keys only when EVERY live sibling has answered miss; a sibling that has the chains never sends this (it re-pushes instead).
+pub fn build_chain_pull_miss_vsf(
+    conversation_token: &[u8; 32],
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+    let mut section = VsfSection::new("chain_pull_miss");
+    section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build chain_pull_miss VSF: {}", e))?;
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse + verify a `chain_pull_miss`. Returns (conversation token, sender device pubkey).
+pub fn parse_chain_pull_miss_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("chain_pull_miss verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "chain_pull_miss" {
+        return Err(format!(
+            "Expected 'chain_pull_miss' section, got '{}'",
+            section_name
+        ));
+    }
+    let token = field_hash32(&section.fields, "tok", |v| matches!(v, VsfType::hg(_)))
+        .ok_or("chain_pull_miss missing tok")?;
+    Ok((token, sender_pubkey))
+}
+
 pub fn build_history_request_vsf(
     conversation_token: &[u8; 32],
     before_osc: i64,
