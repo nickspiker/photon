@@ -1870,6 +1870,14 @@ impl PhotonApp {
     /// Rebuild the pairwise pong-seal key map from the same contact walk as `reseed_contact_pubkeys` — one entry per answerable DEVICE pubkey, so the checker can seal a pong to whichever fleet device pinged. Friends: one key per friendship off the static identity DH ([`crate::crypto::clutch::identity_friendship_secret`]), inserted under each of their devices. Siblings — including a self-contact, whose party id IS our own — share the identity seed instead (their party ids aren't curve points, so the DH would come back None anyway) and key per sorted device pair. Runs on the UI thread only: the checker receives finished keys, never the seed.
     pub(super) fn reseed_pong_seal_keys(&self) {
         use zeroize::Zeroize;
+        // Same walk publishes the About audience (fleet siblings only — Nick's disclosure ruling 2026-08-31): this is the one place that reads chain-built is_sibling, and it already runs on every membership/spine edge, so the status thread's copy tracks the fold with zero extra edges.
+        let sibs: Vec<[u8; 32]> = self
+            .contacts
+            .iter()
+            .filter(|c| c.is_sibling && !c.locked_out)
+            .flat_map(|c| c.answerable_pubkeys())
+            .collect();
+        crate::network::status::set_sibling_devices(sibs);
         let Ok(mut keys) = self.pong_seal_keys.lock() else {
             return;
         };

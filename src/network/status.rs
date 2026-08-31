@@ -139,6 +139,22 @@ fn locked_report() -> Vec<[u8; 32]> {
     LOCKED_REPORT.lock().map(|l| l.clone()).unwrap_or_default()
 }
 
+/// Our fleet's SIBLING device pubkeys — the audience the per-device About is disclosed to (Nick's ruling 2026-08-31: a build fingerprint is fleet-internal; an authenticated friend is outside it). Written by the UI thread's reseed walk (the one place that reads chain-built is_sibling), read by the status thread when it decides whether a pong tail says `abt`. Empty until the first reseed = About withheld, the safe direction.
+static SIBLING_DEVICES: std::sync::Mutex<Vec<[u8; 32]>> = std::sync::Mutex::new(Vec::new());
+
+pub fn set_sibling_devices(devices: Vec<[u8; 32]>) {
+    if let Ok(mut s) = SIBLING_DEVICES.lock() {
+        *s = devices;
+    }
+}
+
+fn is_sibling_device(pk: &[u8; 32]) -> bool {
+    SIBLING_DEVICES
+        .lock()
+        .map(|s| s.iter().any(|d| d == pk))
+        .unwrap_or(false)
+}
+
 fn avatar_pin() -> Option<[u8; 64]> {
     AVATAR_PIN
         .lock()
@@ -2612,11 +2628,15 @@ async fn run_checker(
                                             let records = sync_records_recv.lock().unwrap();
                                             records.clone()
                                         };
+                                        // About only to fleet siblings (disclosure policy, not crypto — the pairwise seal already bounds readers; this bounds what we SAY to a friend).
+                                        let about = is_sibling_device(sender_pubkey.as_bytes())
+                                            .then(crate::about_string);
                                         match crate::network::fgtw::protocol::seal_pong_sensitive(
                                             &records,
                                             profile_name().as_deref(),
                                             avatar_pin().as_ref(),
                                             &locked_report(),
+                                            about.as_deref(),
                                             &key,
                                         ) {
                                             Ok(blob) => Some(blob),
@@ -3445,11 +3465,14 @@ async fn run_checker(
                     };
                     let sealed = seal_key.and_then(|key| {
                         let records = { sync_records_provider.lock().unwrap().clone() };
+                        let about = is_sibling_device(request.peer_pubkey.as_bytes())
+                            .then(crate::about_string);
                         crate::network::fgtw::protocol::seal_pong_sensitive(
                             &records,
                             profile_name().as_deref(),
                             avatar_pin().as_ref(),
                             &locked_report(),
+                            about.as_deref(),
                             &key,
                         )
                         .ok()

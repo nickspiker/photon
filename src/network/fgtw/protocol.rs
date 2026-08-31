@@ -1175,6 +1175,7 @@ fn add_pong_sensitive_fields(
     display_name: Option<&str>,
     avatar_pin: Option<&[u8; 64]>,
     locked_devices: &[[u8; 32]],
+    about: Option<&str>,
 ) {
     // One native multi-value `sync` row per conversation record — (hb token, e6 last_received). No counts, no numbered names.
     for record in sync_records {
@@ -1214,8 +1215,10 @@ fn add_pong_sensitive_fields(
     for dev in locked_devices {
         section.add_field_multi("lockd", vec![VsfType::hb(dev.to_vec())]);
     }
-    // Per-device About — this build's version · commit · os arch, so the fleet page can answer "what is that device running?" without a bridge session. A NEW typed field: legacy parsers skip it, so no flag day; sealed with the rest of the tail because a build fingerprint is targeting information.
-    section.add_field_multi("abt", vec![VsfType::x(crate::about_string())]);
+    // Per-device About — this build's version · commit · os arch, so the fleet page can answer "what is that device running?" without a bridge session. FLEET-INTERNAL by disclosure policy (Nick 2026-08-31): the caller passes Some only when the recipient is a chain-verified sibling — a build fingerprint is targeting information, and an authenticated FRIEND is still outside its audience. Sealing already bounds who can read; this bounds what we say.
+    if let Some(a) = about {
+        section.add_field_multi("abt", vec![VsfType::x(a.to_string())]);
+    }
 }
 
 /// Build + AEAD-seal a pong's sensitive tail under the PAIRWISE pong key: the per-conversation sync rows (who-talks-to-whom metadata), the display name, and the 64-byte avatar pin (a bearer capability). Plaintext is an inner `pongsec` VSF section (encode_encrypted — the headerless form made for exactly this), sealed with kete ChaCha20-Poly1305 like history pages and the log seal. The key comes from the caller's PongSealKeys map, derived on the UI thread — this codec never sees an identity seed.
@@ -1224,6 +1227,7 @@ pub fn seal_pong_sensitive(
     display_name: Option<&str>,
     avatar_pin: Option<&[u8; 64]>,
     locked_devices: &[[u8; 32]],
+    about: Option<&str>,
     key: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
     let mut inner = vsf::VsfSection::new("pongsec");
@@ -1233,6 +1237,7 @@ pub fn seal_pong_sensitive(
         display_name,
         avatar_pin,
         locked_devices,
+        about,
     );
     kete::encrypt_bytes(&inner.encode_encrypted(), key)
 }
@@ -3547,12 +3552,29 @@ mod pong_seal_tests {
     }
 
     #[test]
+    fn about_is_disclosed_only_when_the_caller_grants_it() {
+        // The disclosure policy (Nick 2026-08-31): About is fleet-internal. The builder writes `abt` iff the caller passed Some — a friend-bound tail (None) carries NO about field at all, and the sealed blob must not even contain the string.
+        let key = [0x24u8; 32];
+        let about = "v0.70.12 \u{b7} deadbeef1234 \u{b7} linux x86_64";
+        let with = seal_pong_sensitive(&sample_records(), None, None, &[], Some(about), &key).unwrap();
+        let without = seal_pong_sensitive(&sample_records(), None, None, &[], None, &key).unwrap();
+        let (_, _, _, _, got) = open_pong_sensitive(&with, &key).unwrap();
+        assert_eq!(got.as_deref(), Some(about), "granted about must round-trip");
+        let (_, _, _, _, none) = open_pong_sensitive(&without, &key).unwrap();
+        assert!(none.is_none(), "ungranted about must be ABSENT, not empty");
+        assert!(
+            !without.windows(about.len()).any(|w| w == about.as_bytes()),
+            "ungranted blob must not contain the fingerprint even sealed"
+        );
+    }
+
+    #[test]
     fn sealed_pong_round_trips_and_wire_never_leaks() {
         let key = [0x42u8; 32];
         let records = sample_records();
         let name = "Ada Lovelace";
         let pin = [0x77u8; 64];
-        let blob = seal_pong_sensitive(&records, Some(name), Some(&pin), &[], &key).unwrap();
+        let blob = seal_pong_sensitive(&records, Some(name), Some(&pin), &[], Some("v0.0.0 \u{b7} test \u{b7} os arch"), &key).unwrap();
         let bytes = sealed_pong(Some(blob)).to_vsf_bytes();
         assert!(!bytes.is_empty());
 
@@ -3605,6 +3627,7 @@ mod pong_seal_tests {
             Some("Ada"),
             Some(&[0x77u8; 64]),
             &[],
+            None,
             &[0x42u8; 32],
         )
         .unwrap();
@@ -3651,7 +3674,7 @@ mod pong_seal_tests {
         let records = sample_records();
         let pin = [0x66u8; 64];
         let mut section = vsf::VsfSection::new("pong");
-        add_pong_sensitive_fields(&mut section, &records, Some("Grace"), Some(&pin), &[]);
+        add_pong_sensitive_fields(&mut section, &records, Some("Grace"), Some(&pin), &[], None);
         let bytes = vsf::VsfBuilder::new()
             .creation_time_oscillations(44_444)
             .provenance_hash([0xCCu8; 32])
