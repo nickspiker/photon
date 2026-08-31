@@ -152,7 +152,14 @@ impl PhotonApp {
             call.ring = None; // Ringing → Active keeps the ActiveCall, so the guard needs an explicit stop here
         }
         crate::logf!("CALL: answered (id {})", hex::encode(&call_id[..4]));
+        Self::stop_ring_alert_platform();
         self.scene_dirty = true;
+    }
+
+    /// Ring-stop edge, platform half: tear down the Android call-class notification (it's ongoing — never auto-cancels). Desktop's chirp loop stops via the RingGuard on ActiveCall teardown.
+    fn stop_ring_alert_platform() {
+        #[cfg(target_os = "android")]
+        crate::platform::jni_android::cancel_call_notification();
     }
 
     /// Decline the ringing call.
@@ -281,6 +288,7 @@ impl PhotonApp {
                     if call.phase == CallPhase::Ringing && call.callee_nonce != Some(nonce) {
                         crate::log("CALL: a sibling answered — ring stops here");
                         self.active_call = None;
+                        Self::stop_ring_alert_platform();
                         self.scene_dirty = true;
                     }
                     return;
@@ -335,6 +343,7 @@ impl PhotonApp {
                     // Our sibling declined for the fleet — ring stops silently here.
                     if call.phase == CallPhase::Ringing {
                         self.active_call = None;
+                        Self::stop_ring_alert_platform();
                         self.scene_dirty = true;
                     }
                     return;
@@ -443,6 +452,7 @@ impl PhotonApp {
             }
         }
         crate::platform::audio::stop();
+        Self::stop_ring_alert_platform();
         let peer = self.active_call.as_ref().map(|c| c.peer_handle_hash);
         let was_caller = self.active_call.as_ref().map(|c| c.we_are_caller).unwrap_or(false);
         let keep_pending = self
@@ -490,12 +500,19 @@ impl PhotonApp {
         let digest = relationship_digest(&from_hh, &us);
         let ring_hp = *blake3::hash(&digest).as_bytes();
         #[cfg(target_os = "android")]
-        crate::platform::jni_android::notify_incoming_call(
-            &ring_hp,
-            &digest,
-            &sender_name,
-            "\u{260E} incoming call",
-        );
+        {
+            // App on screen → the full-screen ring panel IS the alert (and the in-process chirp below rings) — posting the notification too was the double-alert whose heads-up banner covered the old top-bar Answer button. Backgrounded/locked → the CALL-CLASS notification (fullScreenIntent + Answer/Decline actions) is the whole surface.
+            if crate::platform::jni_android::app_in_foreground() {
+                crate::platform::jni_android::play_ring_chirp(&digest);
+            } else {
+                crate::platform::jni_android::notify_incoming_call(
+                    &ring_hp,
+                    &digest,
+                    &sender_name,
+                    "\u{260E} incoming call",
+                );
+            }
+        }
         #[cfg(not(any(target_os = "android", target_os = "redox")))]
         {
             use std::sync::atomic::{AtomicBool, Ordering};

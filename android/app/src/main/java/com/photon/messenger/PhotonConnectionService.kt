@@ -44,6 +44,9 @@ class PhotonConnectionService : Service() {
         const val CHANNEL_ID = "photon_connection_quiet"
         const val NOTIFICATION_ID = 1001
         const val MESSAGE_NOTIFICATION_ID = 1002
+        const val CALL_NOTIFICATION_ID = 1003
+        const val ACTION_ANSWER_CALL = "com.photon.ANSWER_CALL"
+        const val ACTION_DECLINE_CALL = "com.photon.DECLINE_CALL"
         private const val TAG = "PhotonService"
         private const val POLL_INTERVAL_MS = 1000L // 1 second network polling
         const val SESSION_ACTION = "com.photon.SESSION"
@@ -101,6 +104,7 @@ class PhotonConnectionService : Service() {
     // Seeds never leave Rust — nativeSendSessionBroadcast reads tohu::session() internally.
     private external fun nativeSendSessionBroadcast(context: android.content.Context)
     private external fun nativeClearSessionBroadcast(context: android.content.Context)
+    private external fun nativeCallAction(answer: Boolean)  // Answer/Decline from the call notification → Rust's pending-action latch (the app tick drains it)
 
 
     // Held for the service's whole life: Android DROPS WiFi multicast in the radio firmware unless
@@ -165,6 +169,19 @@ class PhotonConnectionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Answer/Decline pressed ON the call notification (docs/calls.md redesign 2026-08-30): hand the verdict to Rust (the app tick drains it into answer/decline on the UI thread), drop the notification, and — on answer — bring the Activity forward so the call screen is in hand.
+        when (intent?.action) {
+            ACTION_ANSWER_CALL, ACTION_DECLINE_CALL -> {
+                val answer = intent.action == ACTION_ANSWER_CALL
+                nativeCallAction(answer)
+                cancelCallNotification()
+                if (answer) {
+                    startActivity(Intent(this, PhotonActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                }
+                requestServiceTick()
+                return START_STICKY
+            }
+        }
         // Extract fingerprint and data dirs from intent. shadowDir is "" if getExternalFilesDir returned null on the Activity side — Rust treats empty as "fall back to dataDir with shadow-suffix filename".
         val fingerprint = intent?.getByteArrayExtra("fingerprint")
         val dataDir = intent?.getStringExtra("dataDir")
@@ -473,6 +490,67 @@ class PhotonConnectionService : Service() {
      *  forget on the service's own thread; any failure (no output route, malformed clip) is logged, never
      *  fatal — a missing sound must not take the service down. The 44-byte WAV header is skipped; the rest
      *  is streamed as PCM16. Sample rate is read from the header so it tracks the chirp crate's rate. */
+    /** Foreground ring (called from Rust): the full-screen in-app ring panel is on screen, so ONLY the relationship ring chirp + haptic play — no notification (a heads-up banner used to cover the old top-bar Answer button). */
+    fun playRingAlert(wav: ByteArray, timings: LongArray, amplitudes: IntArray) {
+        playChirp(wav)
+        vibrateChirp(timings, amplitudes)
+    }
+
+    /** Backgrounded/locked ring (called from Rust): the OS's blessed incoming-call surface — CATEGORY_CALL, fullScreenIntent (locked phone launches straight into the in-app ring panel), Answer/Decline actions ON the notification so nothing can cover them, ongoing (only a stop edge cancels it — see cancelCallNotification). */
+    fun postCallNotification(wav: ByteArray, timings: LongArray, amplitudes: IntArray, sender: String, text: String) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                PhotonActivity.CHANNEL_ID,
+                PhotonActivity.CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Photon message notifications"
+                setSound(null, null)
+                enableVibration(false)
+            }
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
+        val fullScreen = PendingIntent.getActivity(
+            this,
+            1,
+            Intent(this, PhotonActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_IMMUTABLE
+        )
+        val answer = PendingIntent.getService(
+            this,
+            2,
+            Intent(this, PhotonConnectionService::class.java).setAction(ACTION_ANSWER_CALL),
+            PendingIntent.FLAG_IMMUTABLE
+        )
+        val decline = PendingIntent.getService(
+            this,
+            3,
+            Intent(this, PhotonConnectionService::class.java).setAction(ACTION_DECLINE_CALL),
+            PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(this, PhotonActivity.CHANNEL_ID)
+            .setContentTitle(sender)
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.sym_action_call)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setContentIntent(fullScreen)
+            .setFullScreenIntent(fullScreen, true)
+            .addAction(0, "Decline", decline)
+            .addAction(0, "Answer", answer)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(CALL_NOTIFICATION_ID, notification)
+        playChirp(wav)
+        vibrateChirp(timings, amplitudes)
+    }
+
+    /** Ring-stop edge (answered anywhere, declined, caller hangup): tear the ongoing call notification down. */
+    fun cancelCallNotification() {
+        getSystemService(NotificationManager::class.java).cancel(CALL_NOTIFICATION_ID)
+    }
+
     private fun playChirp(wav: ByteArray) {
         if (wav.size <= 44) return
         try {

@@ -1676,6 +1676,8 @@ pub struct PhotonApp {
     pub pending_clipboard_copy: Option<String>,
     /// OFF-GRID add-a-friend (docs/offgrid.md open house): the typed handle + its derived handle_proof, armed by an add submitted while the registry is unreachable. The pt_disc beacon that matches this proof CREATES the contact (device key + address from the beacon) — the registry's job, done by proximity. Cleared on match or on leaving the flow.
     pub pending_woods_add: Option<(String, [u8; 32])>,
+    /// Ring-panel avatar cache: the caller's avatar (or gradient) pre-scaled to the full-screen panel diameter — the list-size `avatar_scaled` is far too small to blit large. (diameter, pixels); rebuilt when the panel diameter changes, dropped when no call is ringing.
+    pub ring_avatar_scaled: Option<(usize, Vec<u8>)>,
     /// The off-thread handle_proof derivation for the pending woods add (the ~1s memory-hard PoW never runs on the UI thread).
     pub woods_add_rx: Option<std::sync::mpsc::Receiver<(String, [u8; 32])>>,
     /// Rubber-band scroll extents, measured by the last render (the extents live in render-side geometry — text metrics, dynamic row counts — so render publishes them and the wheel handler + tick() read last frame's value; geometry is stable frame-to-frame). `tick()` relaxes any out-of-range scroll back to [0, extent] thru these.
@@ -2078,6 +2080,7 @@ impl PhotonApp {
             pending_clipboard_copy: None,
             pending_woods_add: None,
             woods_add_rx: None,
+            ring_avatar_scaled: None,
             settings_rail_extent: 0.0,
             settings_content_extent: 0.0,
             msg_max_scroll: 0.0,
