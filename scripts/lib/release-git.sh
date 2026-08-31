@@ -23,7 +23,8 @@ release_next_minor() {
 release_git_preflight() {
     local branch="${1:-main}"
     # --tags because the tag set is the version authority (release_next_minor) — a machine that never deployed must still see every shipped number.
-    git fetch --quiet --tags origin "$branch" || { echo "ERROR: git fetch origin $branch failed — cannot verify the branch is current before a release."; return 1; }
+    # --force because the rolling `dev` prerelease tag moves on EVERY dev publish (publish_github_dev re-points it), and a non-force --tags fetch refuses to clobber the stale local copy — which failed this whole preflight the first time a dev publish happened on another view of the repo (field 2026-08-31). The v<n> release tags are immutable so force is a no-op for them.
+    git fetch --quiet --force --tags origin "$branch" || { echo "ERROR: git fetch origin $branch failed — cannot verify the branch is current before a release."; return 1; }
     local local_head remote_head base
     local_head="$(git rev-parse HEAD)"
     remote_head="$(git rev-parse "origin/$branch")"
