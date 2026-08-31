@@ -249,6 +249,8 @@ strip = "none"             # Keep symbols + the line tables above (dev's strip=t
 softbuffer = { git = "https://github.com/nickspiker/softbuffer", branch = "main" }
 # Vendored winit with the Windows dark-mode integration NEUTRALIZED (src/platform_impl/windows/dark_mode.rs): stock winit fires SetWindowTheme + the undocumented SetWindowCompositionAttribute/uxtheme-ordinal calls on every window creation and OS theme change, and that family corrupted testers' system dark-theme Search text (white-on-white until a light/dark toggle rebuilt it — reproduced on two machines). fluor owns every pixel and has no non-client area, so photon wants ZERO Windows theme reads or writes. The patch resolves workspace-wide, so fluor's winit rides it too.
 winit = { git = "https://github.com/nickspiker/winit", branch = "photon-patched" }
+# Opus static-link fix: upstream audiopus_sys searches only <build>/lib, but GNUInstallDirs installs to lib64 on Fedora-family systems — every vendored-static build there died at link. One-line fork adds the lib64 search path. Rides with the [env] OPUS_NO_PKG/OPUS_STATIC pair in .cargo/config.toml: photon ALWAYS builds opus from vendored source, statically, on every platform.
+audiopus_sys = { git = "https://github.com/nickspiker/audiopus_sys", branch = "photon-patched" }
 
 [profile.release]
 lto = true                 # Full LTO for final builds

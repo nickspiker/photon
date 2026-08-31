@@ -35,6 +35,9 @@ rustflags = ["-C", "link-arg=-lm"]
 # setting it here makes the fix automatic for dev + deploy, not just deploy.sh. The aarch64 Windows build uses
 # clang and takes compat.h's __clang__ branch, so it needs no shim.
 [env]
+# Opus: ALWAYS the vendored static build, NEVER the system library. audiopus_sys otherwise probes pkg-config first, so the link depended on distro state — a box with opus headers but no lib died at `-lopus` (field: first outside builder, 2026-08-30), and a box with the lib silently linked libopus.so and shipped a runtime dep. NO_PKG skips the probe, STATIC compiles the vendored C source (CMake) into the binary on every target, same as Android/Redox always did.
+OPUS_NO_PKG = "1"
+OPUS_STATIC = "1"
 CFLAGS_x86_64_pc_windows_gnu = "-I/mnt/Harbor/Code/photon/cross-libs/gcc-noglibc-shim"
 # Redox has its OWN (musl-derived) features.h that its system headers need — but it lacks __GNUC_PREREQ,
 # which pqcrypto-mlkem's compat.h requires. So the redox shim #include_next's the real one (dir FIRST on -I)
