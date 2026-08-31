@@ -69,3 +69,4 @@ android log.txt
 
 node_modules/
 tools/arch-gate
+android/build/
