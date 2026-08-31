@@ -1,7 +1,7 @@
 #!/bin/bash
 # Provision a fresh Linux x86_64 box as a photon build machine (Android + Linux targets).
 #
-# WHY THIS EXISTS: photon is not self-contained — it needs ELEVEN sibling repos as `../` path dependencies, one of which (winit-patched) is NOT published anywhere. A `git clone photon && cargo build` on a fresh box fails immediately. This script reproduces the whole tree, which is what a desktop accumulates by hand over months.
+# WHY THIS EXISTS: photon is not self-contained — it needs ELEVEN sibling repos as `../` path dependencies. A `git clone photon && cargo build` on a fresh box fails immediately. This script reproduces the whole tree, which is what a desktop accumulates by hand over months. (winit and softbuffer patches resolve on their own now — Cargo.toml points them at git forks.)
 #
 # WHAT THIS DOES NOT DO: no signing keys, no publishing. It produces UNSIGNED artefacts. The Ed25519 signing key, the Apple codesign cert and the TOKEN APK keystore stay wherever you keep them; see the notes at the end for what a real publish additionally needs.
 #
@@ -18,12 +18,12 @@ GH="https://github.com/nickspiker"
 NDK_VERSION="25.2.9519653"
 CMDLINE_TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
 
-# Sibling repos pinned to the commits verified to compile against photon @ cd3aa3f (2026-07-27). Pinning matters: cloning everything at main HEAD produced 22 type errors on the first attempt (RosterEntry/BindRequest drift in fgtw, VsfHeader in vsf). Bump these deliberately, not by accident.
+# Sibling repos pinned to the commits verified to compile against photon @ af2465a (2026-08-30, full signed Android build + desktop tests green on this exact set). Pinning matters: cloning everything at main HEAD produced 22 type errors on the first attempt (RosterEntry/BindRequest drift in fgtw, VsfHeader in vsf). Bump these deliberately, not by accident.
 declare -A SIBLINGS=(
-  [vsf]=2b21b06        [fgtw]=bb77b6f       [tohu]=6abc42d
-  [fluor]=77a5787      [chirp]=a994427      [kete]=f4437ff
-  [manifestus]=56bde9a [nunc]=deb3884       [ihi]=ac72c54
-  [rarangi]=7b8ed0d    [spirix]=54dd3cd
+  [vsf]=6669859        [fgtw]=9b30baf       [tohu]=f8c3a95
+  [fluor]=d9e3ba9      [chirp]=8d4f657      [kete]=2f4ef92
+  [manifestus]=5c1b214 [nunc]=f1dbc6b       [ihi]=ac72c54
+  [rarangi]=8bd3fc7    [spirix]=af8e00e
 )
 
 say() { printf '\n\033[1;36m══ %s\033[0m\n' "$*"; }
@@ -38,13 +38,13 @@ if command -v apt-get >/dev/null; then
     build-essential clang cmake pkg-config mold git curl unzip zip \
     libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev \
     libwayland-dev libasound2-dev libssl-dev \
-    openjdk-17-jdk b3sum
+    openjdk-21-jdk b3sum
 elif command -v dnf >/dev/null; then
   sudo dnf install -y -q \
     gcc gcc-c++ clang cmake pkgconf-pkg-config mold git curl unzip zip \
     libX11-devel libXcursor-devel libXrandr-devel libXi-devel libxkbcommon-devel \
     wayland-devel alsa-lib-devel openssl-devel \
-    java-17-openjdk-devel b3sum
+    java-21-openjdk-devel b3sum
 else
   warn "Unknown package manager — install the build deps manually (see apt list above)."
 fi
@@ -77,32 +77,7 @@ clone_at() {  # clone_at <name> <commit>
 [ -d photon/.git ] || git clone --quiet "$GH/photon.git" photon
 for name in "${!SIBLINGS[@]}"; do clone_at "$name" "${SIBLINGS[$name]}"; done
 
-# winit-patched: a vendored fork of winit 0.30.13 that is NOT published to GitHub. photon's [patch.crates-io] points every winit resolution at it, workspace-wide, so the build cannot proceed without it. The single documented change is neutralizing the Windows dark-mode integration (see photon's Cargo.toml): stock winit fires SetWindowTheme and the undocumented SetWindowCompositionAttribute/uxtheme ordinals on window creation and OS theme change, which corrupted testers' system dark-theme Search text. fluor owns every pixel and has no non-client area, so photon wants zero Windows theme reads/writes.
-#
-# NOTE: this reconstruction is only known-good for NON-Windows targets, where platform_impl/windows/ is not compiled at all. It is byte-for-byte irrelevant to the Linux and Android builds this box does. Do NOT ship a Windows release built from this without diffing against the real vendored copy on the desktop.
-say "winit-patched (reconstructed from winit v0.30.13)"
-if [ ! -d winit-patched/.git ]; then
-  git clone --quiet --depth 1 --branch v0.30.13 \
-    https://github.com/rust-windowing/winit.git winit-patched
-fi
-DARK_MODE="winit-patched/src/platform_impl/windows/dark_mode.rs"
-if [ -f "$DARK_MODE" ] && ! grep -q "PHOTON: neutralized" "$DARK_MODE"; then
-  cat > "$DARK_MODE" <<'RS'
-//! PHOTON: neutralized. Stock winit's dark-mode integration calls SetWindowTheme and the undocumented SetWindowCompositionAttribute/uxtheme ordinals, which corrupted testers' system dark-theme Search text (white-on-white until a light/dark toggle rebuilt it).
-//! fluor owns every pixel and has no non-client area, so photon wants zero Windows theme reads or writes. Every entry point below is a no-op preserving the original signature.
-use windows_sys::Win32::Foundation::HWND;
-use crate::window::Theme;
-
-pub fn try_theme(_hwnd: HWND, preferred_theme: Option<Theme>) -> Theme {
-    preferred_theme.unwrap_or(Theme::Light)
-}
-pub fn allow_dark_mode_for_window(_hwnd: HWND, _is_dark_mode: bool) {}
-pub fn allow_dark_mode_for_app(_is_dark_mode: bool) {}
-pub fn refresh_titlebar_theme_color(_hwnd: HWND, _is_dark_mode: bool) {}
-pub fn should_apps_use_dark_mode() -> bool { false }
-RS
-  echo "  dark_mode.rs neutralized (Windows-only; not compiled for Linux/Android)"
-fi
+# winit-patched: RETIRED 2026-08-30. The vendored winit (Windows dark-mode integration neutralized) now lives at github.com/nickspiker/winit branch photon-patched, and photon's [patch.crates-io] points there — cargo resolves it with no sibling directory. The old reconstruct-from-upstream block that lived here is gone with it.
 
 # ─────────────────────────────────────────────────────────────────────────────
 say "Android SDK + NDK $NDK_VERSION"
