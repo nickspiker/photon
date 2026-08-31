@@ -10,6 +10,8 @@
 
     <!-- Notifications (Android 13+ requires runtime permission) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Incoming-call notification: fullScreenIntent launches the in-app ring panel on a locked phone (docs/calls.md redesign 2026-08-30) -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <!-- Brief wakelock so the RX worker can run a headless protocol tick when a packet arrives

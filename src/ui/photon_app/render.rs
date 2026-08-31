@@ -215,24 +215,55 @@ impl PhotonApp {
             .map_or(false, |c| {
                 !c.is_sibling && c.is_online && (c.chain_woven || c.friendship_id.is_some())
             });
-        let call_overlay: Option<(crate::call::CallPhase, String, bool)> =
+        let call_overlay: Option<(crate::call::CallPhase, String, bool, Option<usize>)> =
             self.active_call.as_ref().map(|c| {
-                let peer = self
+                let pi = self
                     .contacts
                     .iter()
-                    .find(|k| k.handle_hash == c.peer_handle_hash);
+                    .position(|k| k.handle_hash == c.peer_handle_hash);
+                let peer = pi.map(|i| &self.contacts[i]);
                 let name = peer.map(|k| k.display_name()).unwrap_or_else(|| "?".into());
                 // LIVE direct-path check, recomputed every frame: relay-only media does not exist yet, so a call with no validated direct path may sit Active-and-silent — the bar says so, and the warning self-clears the instant a punch validates (the engine bootstraps from the peer's first authenticated packet). No stored flag to go stale.
                 let direct = peer.map_or(false, |k| k.validated_path.is_some());
-                (c.phase, name, direct)
+                (c.phase, name, direct, pi)
             });
         // Ringing / Ended show a SECOND action (Decline / Delete) beside the primary — hoisted so the end-of-frame hit re-stamp agrees with the early paint without re-deriving the phase.
-        let call_two_actions = call_overlay.as_ref().map_or(false, |(p, _, _)| {
+        let call_two_actions = call_overlay.as_ref().map_or(false, |(p, _, _, _)| {
             matches!(
                 p,
                 crate::call::CallPhase::Ringing | crate::call::CallPhase::Ended
             )
         });
+        // Ringing takes the WHOLE surface (redesign 2026-08-30): the bar squeezed Answer/Decline under the title band, exactly where Android's heads-up notification drops — the buttons were literally covered on every ring. Full-screen panel: caller avatar + name centred, pulse rings in the party colour, actions bottom-anchored where nothing can sit on top of them.
+        let call_fullscreen = matches!(
+            call_overlay.as_ref().map(|(p, _, _, _)| *p),
+            Some(crate::call::CallPhase::Ringing)
+        );
+        // Ring-panel avatar: pre-scale the caller's avatar (or the identity gradient) to the panel diameter — done HERE (before the canvas borrows) because it needs &mut self. Cache keyed by diameter; dropped when nothing rings.
+        if call_fullscreen {
+            let unit_now = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
+            let diameter = ((unit_now * 7.0) as usize).max(2);
+            let stale = self
+                .ring_avatar_scaled
+                .as_ref()
+                .map_or(true, |(d, _)| *d != diameter);
+            if stale {
+                if let Some((_, _, _, Some(pi))) = &call_overlay {
+                    let c = &self.contacts[*pi];
+                    let px = match c.avatar_pixels.as_ref() {
+                        Some(base) => crate::ui::avatar_render::update_avatar_scaled(
+                            base,
+                            crate::ui::avatar::AVATAR_SIZE,
+                            diameter,
+                        ),
+                        None => gradient_avatar_rgb(proof_gradient_seed(&c.handle_proof), diameter),
+                    };
+                    self.ring_avatar_scaled = Some((diameter, px));
+                }
+            }
+        } else if self.ring_avatar_scaled.is_some() {
+            self.ring_avatar_scaled = None;
+        }
 
         let Some(chrome) = self.chrome.as_mut() else {
             return;
@@ -370,7 +401,105 @@ impl PhotonApp {
             let pill_h = unit * 2.; // a comfortable tap target, two lines tall
             let cy = y0 + pill_h * 0.5; // Buttons take a CENTRE; the row is one pill tall
             let call_font = unit * 0.55; // button-text scale, proportional to the pill so it tracks zoom
-            if let Some((phase, name, direct)) = &call_overlay {
+            if call_fullscreen {
+                // ── FULL-SCREEN RING PANEL ── painted over whatever screen was up; every element scales off `unit` (zoom-honest, no fixed pixels).
+                let (name, direct, pi) = match &call_overlay {
+                    Some((_, n, d, p)) => (n.clone(), *d, *p),
+                    None => (String::from("?"), false, None),
+                };
+                let w = buf_w as f32;
+                let h = buf_h as f32;
+                // Dark wash: α+darkness format (α 0xC8, darkness 0xFF ⇒ deep translucent black) — the screen below stays faintly present, the panel owns attention.
+                paint::fill_rect(
+                    &mut canvas,
+                    0,
+                    0,
+                    buf_w as isize,
+                    buf_h as isize,
+                    0xC8FFFFFF,
+                    None,
+                    None,
+                );
+                let colour = pi
+                    .and_then(|i| {
+                        let c = &self.contacts[i];
+                        self.session.as_ref().map(|s| {
+                            party_colour(&relationship_digest(
+                                &c.handle_hash,
+                                &crate::crypto::clutch::identity_party_id(&s.identity_seed),
+                            ))
+                        })
+                    })
+                    .unwrap_or(*theme::STATUS_TEXT_COLOUR);
+                let (acx, acy) = (w * 0.5, h * 0.36);
+                let avatar_r = unit * 3.5;
+                // Pulse rings — the visual ring, expanding from the avatar in the relationship colour. Phase is a pure function of now (~1.4s cycle, matching the chirp cadence's feel); the tick keeps frames coming while Ringing (wake_at), so this animates without any stored state. Three staggered translucent discs, oldest largest and popping.
+                let cycle = (vsf::eagle_time_oscillations() as f64
+                    / (1.4 * vsf::OSCILLATIONS_PER_SECOND as f64))
+                    .fract() as f32;
+                for k in 0..3 {
+                    let t = (cycle + k as f32 / 3.0).fract();
+                    let r = avatar_r * (1.05 + 1.15 * t);
+                    // Fade with expansion: α walks 0x38 → 0 as the disc grows.
+                    let a = ((1.0 - t) * 0x38 as f32) as u32;
+                    paint::draw_circle(
+                        &mut canvas,
+                        acx,
+                        acy,
+                        r,
+                        (a << 24) | (colour & 0x00FF_FFFF),
+                        None,
+                    );
+                }
+                if let Some((diam, px)) = self.ring_avatar_scaled.as_ref() {
+                    crate::ui::avatar_render::draw_avatar(
+                        &mut canvas, acx, acy, avatar_r, px, *diam, None,
+                    );
+                }
+                // Name in the relationship colour, large; the phase line beneath in the status grey.
+                ctx.text.draw_text_center(
+                    &mut canvas,
+                    &name,
+                    acx,
+                    acy + avatar_r + unit * 1.1,
+                    &TextStyle::new(unit * 1.05, colour),
+                    None,
+                    None,
+                );
+                let status_line = if direct {
+                    "\u{260E} incoming call".to_string()
+                } else {
+                    "\u{260E} incoming call \u{2014} \u{26A0} no direct path".to_string()
+                };
+                ctx.text.draw_text_center(
+                    &mut canvas,
+                    &status_line,
+                    acx,
+                    acy + avatar_r + unit * 2.2,
+                    &TextStyle::new(unit * 0.6, *theme::STATUS_TEXT_COLOUR),
+                    None,
+                    None,
+                );
+                // Actions: bottom third, thumb-reach, decline LEFT answer RIGHT with a generous gap — and bottom-anchored so an Android heads-up banner (which owns the top) can never cover them.
+                let bw = w * 0.34;
+                let bh = unit * 2.4;
+                let by = h - bh * 0.5 - unit * 1.5;
+                let bfont = unit * 0.75;
+                if let Some(b) = self.call_decline_btn.as_mut() {
+                    b.set_rect(w * 0.5 - bw * 0.5 - unit * 0.75, by, bw, bh);
+                    b.set_font_size(bfont);
+                    b.set_label("Decline");
+                    let id = b.hit_id();
+                    b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                }
+                if let Some(b) = self.call_action_btn.as_mut() {
+                    b.set_rect(w * 0.5 + bw * 0.5 + unit * 0.75, by, bw, bh);
+                    b.set_font_size(bfont);
+                    b.set_label("Answer");
+                    let id = b.hit_id();
+                    b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                }
+            } else if let Some((phase, name, direct, _pi)) = &call_overlay {
                 let phase = *phase;
                 let bar_w = buf_w as f32 * 0.9; // window-relative width — a bar spans the window
                 let x0 = (buf_w as f32 - bar_w) * 0.5;
@@ -5043,6 +5172,19 @@ impl PhotonApp {
 
         // Re-stamp the call overlay's hit rects LAST: screens re-stamp their own regions of the shared hit_test_map every frame, which would otherwise wipe the top-of-screen call bar's clickable area. Pixels were painted early (under-blend keeps them on top); only the hit rects need re-asserting after every screen has stamped. Each Button stamps its OWN rect (set in the early paint), so the two passes can never disagree. Visibility mirrors `visit_app_widgets` exactly: action always when a call is live, decline in ringing/ended, start only when a callable convo enables it (a dimmed pill must not dispatch a dead tap). The status chip is a label — never stamped.
         if call_overlay.is_some() {
+            // Full-screen ring panel is MODAL: wipe the whole map first so the screen's own widgets (stamped above) can't be tapped through the wash — then the two call buttons are the only live targets.
+            if call_fullscreen {
+                restamp_hit_rect(
+                    &mut chrome.hit_test_map,
+                    buf_w,
+                    buf_h,
+                    0,
+                    0,
+                    buf_w as isize,
+                    buf_h as isize,
+                    HIT_NONE,
+                );
+            }
             if let Some(b) = self.call_action_btn.as_ref() {
                 b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
             }

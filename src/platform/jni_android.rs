@@ -60,12 +60,86 @@ pub fn notify_new_message(msg_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str
 /// The call flavor of [`notify_new_message`]: same relationship digest, but rendered as the RING — the identity instrument struck in the call phrase (`chirp::Chirp::ring_from_hash`) instead of the one-shot ding. One cadence per posted offer; looping until answer is Kotlin's to own (docs/calls.md).
 #[cfg(target_os = "android")]
 pub fn notify_incoming_call(ring_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str, text: &str) {
-    notify_with_chirp(ring_hp, chirp::Chirp::ring_from_hash(*chirp_seed), sender, text)
+    notify_with_chirp_via(
+        ring_hp,
+        chirp::Chirp::ring_from_hash(*chirp_seed),
+        sender,
+        text,
+        // CALL-CLASS notification (CATEGORY_CALL + fullScreenIntent + Answer/Decline actions) — the OS's blessed incoming-call surface for a backgrounded/locked app.
+        "postCallNotification",
+    )
+}
+
+/// Foreground ring: the full-screen panel is on screen, so play the relationship ring chirp + haptic WITHOUT posting any notification (the heads-up banner used to cover the answer button).
+#[cfg(target_os = "android")]
+pub fn play_ring_chirp(chirp_seed: &[u8; 32]) {
+    let Some((vm, svc)) = MESSAGE_NOTIFIER.get() else {
+        return;
+    };
+    let chirp = chirp::Chirp::ring_from_hash(*chirp_seed);
+    let wav = chirp.to_wav();
+    let (timings, amplitudes) = chirp.haptic_waveform(60);
+    if let Ok(mut env) = vm.attach_current_thread() {
+        let (Ok(wav_arr), Ok(t_arr), Ok(a_arr)) = (
+            env.byte_array_from_slice(&wav),
+            env.new_long_array(timings.len() as i32),
+            env.new_int_array(amplitudes.len() as i32),
+        ) else {
+            return;
+        };
+        let t_i64: Vec<i64> = timings.iter().map(|&t| t as i64).collect();
+        let a_i32: Vec<i32> = amplitudes.iter().map(|&a| a as i32).collect();
+        let _ = env.set_long_array_region(&t_arr, 0, &t_i64);
+        let _ = env.set_int_array_region(&a_arr, 0, &a_i32);
+        if env
+            .call_method(
+                svc.as_obj(),
+                "playRingAlert",
+                "([B[J[I)V",
+                &[(&wav_arr).into(), (&t_arr).into(), (&a_arr).into()],
+            )
+            .is_err()
+        {
+            let _ = env.exception_clear();
+        }
+    }
+}
+
+/// Tear the call notification down on any ring-stop edge (answered here, answered/declined by a sibling, caller hangup) — an ongoing CATEGORY_CALL notification never auto-cancels.
+#[cfg(target_os = "android")]
+pub fn cancel_call_notification() {
+    let _ = call_service_void("cancelCallNotification");
+}
+
+/// Answer/Decline pressed ON the notification (backgrounded ring): Kotlin's action intents land here; the app's tick drains it into answer_call/decline_call on the UI thread.
+#[cfg(target_os = "android")]
+static PENDING_CALL_ACTION: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
+
+#[cfg(target_os = "android")]
+pub fn take_call_action() -> Option<bool> {
+    PENDING_CALL_ACTION.lock().unwrap().take()
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeCallAction(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    answer: jni::sys::jboolean,
+) {
+    *PENDING_CALL_ACTION.lock().unwrap() = Some(answer != 0);
+    info!("call action from notification: {}", if answer != 0 { "answer" } else { "decline" });
 }
 
 /// Shared body: dedup on the hash pointer, render the given chirp to WAV + haptic, post to Kotlin.
 #[cfg(target_os = "android")]
 fn notify_with_chirp(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, text: &str) {
+    notify_with_chirp_via(msg_hp, chirp, sender, text, "postMessageNotification")
+}
+
+/// Shared marshal for both notification flavors — `method` names the Kotlin post entry point (message vs call class).
+#[cfg(target_os = "android")]
+fn notify_with_chirp_via(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, text: &str, method: &str) {
     // Dedup: skip if this is the same message we most recently notified for (a retransmit).
     {
         let mut last = LAST_NOTIFIED_MSG.lock().unwrap();
@@ -133,7 +207,7 @@ fn notify_with_chirp(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, text:
             if env
                 .call_method(
                     svc.as_obj(),
-                    "postMessageNotification",
+                    method,
                     "([B[J[ILjava/lang/String;Ljava/lang/String;)V",
                     &[
                         (&wav_arr).into(),

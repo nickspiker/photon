@@ -2676,7 +2676,12 @@ impl FluorApp for PhotonApp {
         let animating = matches!(
             self.state,
             AppState::Launch(LaunchState::Attesting) | AppState::Searching
-        ) || self.add_in_flight;
+        ) || self.add_in_flight
+            // The full-screen ring panel's pulse rings animate every frame while a call is Ringing (phase is a pure function of now; the wakeup is what keeps frames coming).
+            || self
+                .active_call
+                .as_ref()
+                .map_or(false, |c| c.phase == crate::call::CallPhase::Ringing);
         let anim = animating.then(Instant::now);
         // Next background presence sweep — keeps online/offline rings refreshing while idle (no input/network). Only on Ready; first sweep is due immediately if never run. Interval tapers with idle time, so as the user stays away the scheduled wake naturally pushes further out.
         let presence = matches!(self.state, AppState::Ready).then(|| {
@@ -2995,6 +3000,27 @@ impl FluorApp for PhotonApp {
             self.hourglass_rng ^= self.hourglass_rng << 17;
             let wobble = (self.hourglass_rng % 26) as f32 - 12.0; // −12..+13
             self.hourglass_angle = (self.hourglass_angle + wobble).rem_euclid(360.0);
+            needs_redraw = true;
+        }
+
+        // Answer/Decline pressed on the Android call notification (backgrounded ring): the action intent latched a flag on the service thread; drain it here on the UI thread that owns the call state.
+        #[cfg(target_os = "android")]
+        if let Some(answer) = crate::platform::jni_android::take_call_action() {
+            if answer {
+                self.answer_call();
+            } else {
+                self.decline_call();
+            }
+            needs_redraw = true;
+        }
+
+        // Full-screen ring panel: the pulse rings are a pure function of now, so a ringing call just needs the frame to repaint fully (the panel covers the whole surface; partial damage would leave stale pulse arcs).
+        if self
+            .active_call
+            .as_ref()
+            .map_or(false, |c| c.phase == crate::call::CallPhase::Ringing)
+        {
+            self.scene_dirty = true;
             needs_redraw = true;
         }
 
