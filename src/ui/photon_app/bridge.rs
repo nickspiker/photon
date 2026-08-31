@@ -106,7 +106,8 @@ fn spawn_bridge_worker(
                         last_cwd = cwd.clone();
                         let trimmed = body.trim_end_matches('\n');
                         let text = if trimmed.is_empty() {
-                            if code == 0 { "(no output)".to_string() } else { format!("(no output, exit {code})") }
+                            // Clean silent success (cd, touch, a green build with -q) sends an EMPTY final — the client stamps the exit on the command row itself and shows NO bubble (Nick 2026-08-31: the ACK + the Stop pill clearing is the whole story). A silent FAILURE still says so; silence must never eat a non-zero exit.
+                            if code == 0 { String::new() } else { format!("(no output, exit {code})") }
                         } else if code != 0 {
                             format!("{trimmed}\n[exit {code}]")
                         } else {

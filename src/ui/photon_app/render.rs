@@ -3173,31 +3173,28 @@ impl PhotonApp {
                                 );
                             }
                             if bridge_inflight {
-                                let label = "stop";
-                                let style =
-                                    TextStyle::new(msg_size * 0.85, *theme::ERROR_TEXT_COLOUR)
-                                        .weight(700)
-                                        .font("Oxanium");
-                                let w = ctx.text.measure_text(label, &style);
-                                let sx = buf_w as f32 - pad_x - w;
-                                ctx.text.draw_text_left(
-                                    &mut canvas,
-                                    label,
-                                    sx,
-                                    strip_y,
-                                    &style,
-                                    None,
-                                    None,
+                                // A REAL pill (Nick 2026-08-31: "make that stop an actual button, not just text") — the shared fluor renderer, red fill from the destructiveness ramp; hover/press come free, hit-stamped shape-accurate by fluor itself.
+                                let pill_h = unit * 1.15;
+                                let pill_w = unit * 3.2;
+                                let rect = fluor::region::Region::new(
+                                    buf_w as f32 - pad_x - pill_w,
+                                    strip_y - pill_h * 0.62,
+                                    pill_w,
+                                    pill_h,
                                 );
-                                restamp_hit_rect(
+                                draw_stub_pill_filled(
+                                    &mut canvas,
+                                    ctx.text,
                                     &mut chrome.hit_test_map,
                                     buf_w,
                                     buf_h,
-                                    (sx - unit * 0.5) as isize,
-                                    (strip_y - unit * 0.7) as isize,
-                                    (sx + w + unit * 0.5) as isize,
-                                    (strip_y + unit * 0.4) as isize,
+                                    rect,
+                                    "stop",
                                     self.msg_action_base.wrapping_add(5),
+                                    ctx.pressed_hit,
+                                    true,
+                                    Some(*theme::PILL_RED),
+                                    "Oxanium",
                                 );
                             }
                         }

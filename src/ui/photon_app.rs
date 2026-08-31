@@ -702,6 +702,10 @@ fn chat_row_visible(raw: &[crate::types::ChatMessage], m: &crate::types::ChatMes
     ) {
         return false;
     }
+    // A silent-success bridge final (cd, touch — exit 0, no output) is a durable EMPTY BridgeOut row: it must exist (it carries the exit that releases the prompt gate, and the held-row re-serve rebuilds from it) but never draws — the command's ACK plus the Stop pill clearing is the whole story (Nick 2026-08-31).
+    if m.content.is_empty() && matches!(m.reference, Some((crate::types::RefKind::BridgeOut, _))) {
+        return false;
+    }
     if let Some((crate::types::RefKind::Edit, t)) = m.reference {
         return !raw.iter().any(|x| {
             x.timestamp == t
