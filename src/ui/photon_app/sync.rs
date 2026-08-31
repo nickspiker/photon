@@ -988,6 +988,30 @@ impl PhotonApp {
         })
     }
 
+    /// The COMPLETE-WITHOUT-CHAINS re-key: discard the lying Complete state and open a fresh ceremony. Two callers, both evidence-gated: the no-siblings immediate heal (single-device wipe), and the all-live-siblings-answered-miss verdict from chain_pull (the fleet truly holds nothing). Callers log the WHY; this is the mechanism only.
+    pub(super) fn rekey_without_chains(&mut self, ci: usize) {
+        let Some(us) = self
+            .session
+            .as_ref()
+            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        else {
+            return;
+        };
+        let them = self.contacts[ci].handle_hash;
+        let id = self.contacts[ci].id.clone();
+        self.contacts[ci].discard_clutch_round();
+        self.contacts[ci].friendship_id = None;
+        self.contacts[ci].init_clutch_slots(us);
+        self.contacts[ci].clutch_keygen_in_progress = true;
+        self.spawn_clutch_keygen(id, us, them);
+        if let Some(storage) = self.storage.as_ref() {
+            let snapshot = self.contacts[ci].clone();
+            if let Err(e) = crate::storage::contacts::save_contact(&snapshot, storage) {
+                crate::logf!("CLUTCH: re-key contact save failed: {}", e);
+            }
+        }
+    }
+
     /// Fleet chain replication, the PUSH half ("if another device is ahead, I just catch up" — the catch-up is the ChainSyncReceived adopt arm). Per tick: any FRIEND chain whose mutated_osc is newer than the last push ships to EVERY sibling as a fleet-sealed chain_sync frame (canonical chains VSF bytes, kete-sealed under the fleet key, device-signed). Sibling 1:1 chains never replicate (device-pair-local by definition). The receiving sibling adopts iff the stamp is newer than its copy — so after any device advances a friendship (send ACK, receive), the whole fleet converges on the new head within transport latency, and any device can transmit next. Concurrent same-instant sends from two devices can still fork the braid (the §14 linearizer is the real serializer); catch-up shrinks that window to transport latency, and the fork-repair machinery (reset + re-key streak) is the backstop.
     pub(super) fn drive_chain_replication(&mut self) {
         // The B3 re-seal: chain_sync frames seal under the EPOCH chain_sync key, never the raw fleet key. No spine yet = the bounded bootstrap window — hold the push (the lane re-pushes the moment it next advances) rather than fork the seal.
