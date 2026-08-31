@@ -1221,14 +1221,55 @@ impl FluorApp for PhotonApp {
             }
             if self.settings_btn_base != HIT_NONE
                 && hit_id >= self.settings_btn_base
-                // 48, not 32: the Fleet page's slot map grew a fourth and fifth band — 16+ row tap-copy, 24+ Release pills, 32+ Lock-out pills, 40+ Unlock pills (six rows each). The old cap ate every Lock-out release: the pill painted its press (hit map stamped at draw) but the id fell outside this window, so the action never dispatched.
-                && hit_id < self.settings_btn_base.wrapping_add(48)
+                // 56: the Fleet page's slot map bands — 16+ row tap-copy, 24+ Release, 32+ Lock-out, 40+ Unlock, 48+ Approve-sign-out (six rows each). A pill whose id falls outside this window paints its press but never dispatches — bump the cap with every new band.
+                && hit_id < self.settings_btn_base.wrapping_add(56)
             {
                 let slot = hit_id - self.settings_btn_base;
                 if page == SettingsPage::Fleet {
                     if slot == 0 {
                         // "Add device" pill → the pairing-words flow.
                         self.open_add_device_flow();
+                    } else if slot >= 48 {
+                        // "Approve sign-out" (two-tap): the CONSENT half of the bilateral removal — countersign the leaver's departure request and publish the consented Remove. The leaver completes its side when it observes itself de-folded.
+                        let idx = (slot - 48) as usize;
+                        let devices = self.fleet_device_rows();
+                        if let Some((pk, false, _, false, name, _, _, _)) = devices.get(idx).cloned() {
+                            let matches_pending = self
+                                .pending_depart_req
+                                .as_ref()
+                                .is_some_and(|(d, _, _)| *d == pk);
+                            if !matches_pending {
+                                // Stale pill (request cleared between paint and tap) — disarm and ignore.
+                                self.fleet_approve_armed = None;
+                            } else if self.fleet_approve_armed == Some(pk) {
+                                self.fleet_approve_armed = None;
+                                let Some((_, t, sig)) = self.pending_depart_req.clone() else {
+                                    return EventResponse::Handled;
+                                };
+                                let hp = self.our_handle_proof();
+                                if let (Some(hp), Some(kp)) = (hp, self.device_keypair.clone()) {
+                                    match crate::network::fgtw::fleet::depart_device_consented(
+                                        &kp, &hp, &pk, t, &sig,
+                                    ) {
+                                        Ok(()) => {
+                                            crate::logf!("FLEET: countersigned {}'s departure — consented Remove published", name);
+                                            self.pending_depart_req = None;
+                                            self.ready_toast = Some(format!("{name} signed out of the fleet."));
+                                            // Adopt the shrink immediately (rotation sentinel + row drop) instead of waiting for the next poll.
+                                            if let Some(our_hp) = self.our_handle_proof() {
+                                                self.spawn_contact_fleet_refresh(vec![our_hp]);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            crate::logf!("FLEET: consented remove failed ({}) — request kept", e);
+                                            self.ready_toast = Some("Couldn't publish the sign-out — check connection and retry.".to_string());
+                                        }
+                                    }
+                                }
+                            } else {
+                                self.fleet_approve_armed = Some(pk);
+                            }
+                        }
                     } else if slot >= 40 {
                         // Locked sibling row's "Unlock" pill (two-tap): the owner's deliberate reversal. Same handle-confirmation shape as the lock — the confirm de-attests, the unlock fires only inside the next successful attest (pending_unlock), so it is proof-of-owner, and the handle is typed only on the standard attest screen.
                         let idx = (slot - 40) as usize;
@@ -1372,102 +1413,21 @@ impl FluorApp for PhotonApp {
                             self.settings_remove_armed = false;
                         }
                     } else if slot == 3 {
-                        // "Remove & shred" → UNSIGN (self-departure from the fleet chain — the only chain remove that exists, self-signed + idempotent), THEN crypto-wipe. Two-tap confirm. The wipe is GATED on the departure landing: if the signed remove can't publish (offline, races exhausted), nothing is wiped — otherwise the fleet would forever list a device whose keys are gone. Plain Shred (orange) remains the wipe-without-departing path.
+                        // "Remove & shred" → the BILATERAL departure request, wipe-on-completion flavor. Two-tap confirm. The wipe is GATED on observing our own de-fold (a sibling approved + published): nothing is wiped while the request is pending — otherwise the fleet would forever list a device whose keys are gone. Plain Shred (orange) remains the wipe-without-departing path.
                         if self.settings_removeshred_armed {
                             self.settings_removeshred_armed = false;
-                            let hp = self.our_handle_proof();
-                            // LAST-MEMBER GATE (identity never dies — supersedes lifecycle D3's LastRites): the fleet's final member cannot sign out, full stop. There is no terminal op — an identity always lives somewhere (the worker refuses zero-member folds too, so this isn't just UI courtesy). Want out of this hardware? Add another device first, then retire this one. A fetch failure counts as last (fail toward refusal, never past it).
-                            if let Some(ref hp_v) = hp {
-                                let last = match crate::network::fgtw::fleet::current_members(hp_v)
-                                {
-                                    Ok(m) => m.len() <= 1,
-                                    Err(e) => {
-                                        crate::logf!("SECURITY: member count fetch failed ({}) — treating as last device", e);
-                                        true
-                                    }
-                                };
-                                if last {
-                                    crate::log("SECURITY: last member — sign-out refused (an identity must live somewhere)");
-                                    self.ready_toast = Some("This is your identity's last device — it can't sign out. Add another device first, then retire this one.".to_string());
-                                    self.scene_dirty = true;
-                                    ctx.window.request_redraw();
-                                    return EventResponse::Handled;
-                                }
-                            }
-                            if let (Some(hp), Some(kp)) = (hp, self.device_keypair.clone()) {
-                                match crate::network::fgtw::fleet::depart_device(&kp, &hp) {
-                                    Ok(()) => {
-                                        crate::log("SECURITY: departed the fleet chain (self-signed remove) — wiping");
-                                        self.clean_device_for_reuse();
-                                    }
-                                    Err(e) => {
-                                        crate::logf!(
-                                            "SECURITY: fleet departure failed ({}) — NOT wiping",
-                                            e
-                                        );
-                                        self.ready_toast = Some("Couldn't sign out of the fleet — nothing wiped. Check connection and retry.".to_string());
-                                    }
-                                }
-                            } else {
-                                crate::log(
-                                    "SECURITY: no session/keypair to depart with — NOT wiping",
-                                );
-                                self.ready_toast = Some(
-                                    "No signed-in identity to remove — use Shred instead."
-                                        .to_string(),
-                                );
-                            }
+                            self.request_fleet_departure(true);
                         } else {
                             self.settings_removeshred_armed = true;
                             self.settings_shred_armed = false;
                             self.settings_remove_armed = false;
                         }
                     } else {
-                        // Slot 1 "Remove this device from fleet" → self-signed departure WITHOUT the wipe (loaner doctrine: de-attest keeps the vault's claims dormant on disk). Two-tap confirm; same last-member gate as Remove & shred (identity never dies); the de-attest is GATED on the departure landing — offline = nothing changes, retry.
+                        // Slot 1 "Remove this device from fleet" → the BILATERAL departure request, keep-vault flavor (loaner doctrine: the completion de-attests but leaves the vault's claims dormant on disk). Two-tap confirm; last-member gate inside request_fleet_departure.
                         if self.settings_remove_armed {
                             self.settings_remove_armed = false;
-                            let hp = self.our_handle_proof();
-                            if let Some(ref hp_v) = hp {
-                                let last = match crate::network::fgtw::fleet::current_members(hp_v)
-                                {
-                                    Ok(m) => m.len() <= 1,
-                                    Err(e) => {
-                                        crate::logf!("SECURITY: member count fetch failed ({}) — treating as last device", e);
-                                        true
-                                    }
-                                };
-                                if last {
-                                    crate::log("SECURITY: last member — sign-out refused (an identity must live somewhere)");
-                                    self.ready_toast = Some("This is your identity's last device — it can't sign out. Add another device first, then retire this one.".to_string());
-                                    self.scene_dirty = true;
-                                    ctx.window.request_redraw();
-                                    return EventResponse::Handled;
-                                }
-                            }
-                            if let (Some(hp), Some(kp)) = (hp, self.device_keypair.clone()) {
-                                match crate::network::fgtw::fleet::depart_device(&kp, &hp) {
-                                    Ok(()) => {
-                                        crate::log("SECURITY: departed the fleet chain (self-signed remove) — session cleared, vault kept on disk");
-                                        tohu::clear_session();
-                                        self.session = None;
-                                        self.private_s = crate::crypto::blind::PrivateS::None;
-                                        self.pending_broadcast_signal = -1;
-                                        self.state = AppState::Launch(LaunchState::Fresh);
-                                        self.clear_handle_for_reproof();
-                                    }
-                                    Err(e) => {
-                                        crate::logf!(
-                                            "SECURITY: fleet departure failed ({}) — still signed in",
-                                            e
-                                        );
-                                        self.ready_toast = Some("Couldn't sign out of the fleet — nothing changed. Check connection and retry.".to_string());
-                                    }
-                                }
-                            } else {
-                                crate::log("SECURITY: no session/keypair to depart with");
-                                self.ready_toast =
-                                    Some("No signed-in identity to remove.".to_string());
-                            }
+                            // BILATERAL: this fires the signed departure REQUEST at the siblings; a surviving member approves on their screen, and the keep-vault de-attest runs when we observe ourselves de-folded. Why not unilateral: whoever briefly holds one unlocked device could sign it out — forcing a key rotation and laundering the hardware into their own fleet.
+                            self.request_fleet_departure(false);
                         } else {
                             self.settings_remove_armed = true;
                             self.settings_shred_armed = false;

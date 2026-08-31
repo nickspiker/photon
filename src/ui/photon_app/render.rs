@@ -4051,13 +4051,41 @@ impl PhotonApp {
                                 "Oxanium",
                             );
                         } else if !*is_self {
-                            // Live sibling: the RIGHT column carries Bridge and the row's state pill side by side — Lock out on a trusted row, Unlock on a locked one.
+                            // Live sibling: the RIGHT column carries Bridge and the row's state pill side by side — Lock out on a trusted row, Unlock on a locked one. A row with a PENDING departure request replaces the state pill with "Approve sign-out" (the bilateral removal's consent step).
+                            let departing = self
+                                .pending_depart_req
+                                .as_ref()
+                                .is_some_and(|(d, _, _)| d == pk);
                             let halves = cols[2].split_h([1.0, 1.0]);
-                            let (bridge_pill, lock_pill, unlock_pill) = if row_locked {
-                                (halves[0].center_h(0.9), None, Some(halves[1].center_h(0.9)))
+                            let (bridge_pill, lock_pill, unlock_pill, approve_pill) = if departing {
+                                (halves[0].center_h(0.9), None, None, Some(halves[1].center_h(0.9)))
+                            } else if row_locked {
+                                (halves[0].center_h(0.9), None, Some(halves[1].center_h(0.9)), None)
                             } else {
-                                (halves[0].center_h(0.9), Some(halves[1].center_h(0.9)), None)
+                                (halves[0].center_h(0.9), Some(halves[1].center_h(0.9)), None, None)
                             };
+                            if let Some(pill) = approve_pill {
+                                let armed = self.fleet_approve_armed.as_ref() == Some(pk);
+                                let label = if armed {
+                                    "Approve sign-out \u{2014} sure?"
+                                } else {
+                                    "Approve sign-out"
+                                };
+                                draw_stub_pill_filled(
+                                    &mut canvas,
+                                    ctx.text,
+                                    &mut chrome.hit_test_map,
+                                    buf_w,
+                                    buf_h,
+                                    pill,
+                                    label,
+                                    btn_base.wrapping_add(48 + i as HitId),
+                                    ctx.pressed_hit,
+                                    true,
+                                    Some(if armed { *theme::PILL_RED } else { *theme::PILL_YELLOW }),
+                                    "Oxanium",
+                                );
+                            }
                             // Bridge on ANY sibling (not just confirmed-online): the send reports "no address yet" if truly unreachable, which is clearer than a missing button. Green when online, dimmed grey when offline so it still reads as "reachable-ish".
                             let fill = if *online {
                                 Some(*theme::PILL_GREEN)

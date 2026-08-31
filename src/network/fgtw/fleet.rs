@@ -146,9 +146,27 @@ pub fn bind_device(
     fgtw::client::bind_device(&PhotonTransport, member_key, handle_proof, req)
 }
 
-/// This device's own self-signed departure — the only chain remove that exists. Not yet wired to UI (self-retire arrives with the device-trust bundle).
+/// This device's own self-signed departure. RETIRED as a publish path (the worker refuses bare removes since the bilateral cutover) — kept only so old call sites fail with the worker's clear message instead of a missing symbol.
 pub fn depart_device(device_key: &Keypair, handle_proof: &[u8; 32]) -> Result<(), String> {
     fgtw::client::depart_device(&PhotonTransport, device_key, handle_proof)
+}
+
+/// APPROVER half of the bilateral removal: countersign a sibling's departure request and publish the consented Remove. The mirror of the add ceremony's sponsor step.
+pub fn depart_device_consented(
+    approver_key: &Keypair,
+    handle_proof: &[u8; 32],
+    leaving: &[u8; 32],
+    consent_t: i64,
+    consent_sig: &[u8],
+) -> Result<(), String> {
+    fgtw::client::depart_device_consented(
+        &PhotonTransport,
+        approver_key,
+        handle_proof,
+        leaving,
+        consent_t,
+        consent_sig,
+    )
 }
 
 /// Devices the chain shows were once ours but are no longer current members — signed out, hardware brand still held (brands survive departure; identity never dies). The chain is the only truth source the client has: a brand the owner already released still lists here, and re-releasing it is an idempotent ack — so these rows are "retired" whether or not the registry claim is technically gone.

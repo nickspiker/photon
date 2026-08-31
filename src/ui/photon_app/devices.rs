@@ -276,6 +276,51 @@ impl PhotonApp {
     }
 
     /// Ship one fleet-scoped frame to every non-locked sibling (direct legs race, relay covers the rest) — the ckpt frames' transport, same targeting as the chain_sync push.
+    /// REQUESTER half of the bilateral removal: sign our departure request and hand it to every sibling (the mirror of a joiner posting its binding request). No chain op happens here — a surviving member's user approves on THEIR screen, that device countersigns and publishes, and we complete when we observe our own key de-folded (`depart_request_t` + the member-adopt drain). `wipe_after` = Remove & shred's flavor: wipe on completion instead of the keep-vault de-attest.
+    pub(super) fn request_fleet_departure(&mut self, wipe_after: bool) {
+        let hp = self.our_handle_proof();
+        // LAST-MEMBER GATE (identity never dies): the final member cannot sign out — and structurally, a consented removal needs a SECOND device to approve, so a one-device fleet could never complete anyway. Fail toward refusal on a fetch error.
+        if let Some(ref hp_v) = hp {
+            let last = match crate::network::fgtw::fleet::current_members(hp_v) {
+                Ok(m) => m.len() <= 1,
+                Err(e) => {
+                    crate::logf!("SECURITY: member count fetch failed ({}) — treating as last device", e);
+                    true
+                }
+            };
+            if last {
+                crate::log("SECURITY: last member — sign-out refused (an identity must live somewhere)");
+                self.ready_toast = Some("This is your identity's last device — it can't sign out. Add another device first, then retire this one.".to_string());
+                return;
+            }
+        }
+        let (Some(hp), Some(kp)) = (hp, self.device_keypair.clone()) else {
+            crate::log("SECURITY: no session/keypair to request departure with");
+            self.ready_toast = Some("No signed-in identity to remove.".to_string());
+            return;
+        };
+        let t = vsf::eagle_time_oscillations();
+        let me = kp.public.to_bytes();
+        let msg = fgtw::fleet::departreq_signing_bytes(&hp, &me, t);
+        let sig = kp.sign(&msg).to_bytes().to_vec();
+        match crate::network::fgtw::protocol::build_depart_req_vsf(t, &sig, &me, kp.secret.as_bytes()) {
+            Ok(frame) => {
+                self.dispatch_frame_to_siblings(frame);
+                self.depart_request_t = Some(t);
+                self.depart_wipe_after = wipe_after;
+                crate::logf!(
+                    "SECURITY: departure requested (bilateral) — awaiting a sibling's approval{}",
+                    if wipe_after { "; will WIPE on completion" } else { "; vault kept on completion" }
+                );
+                self.ready_toast = Some("Sign-out requested — approve it from another of your devices (Settings → Fleet).".to_string());
+            }
+            Err(e) => {
+                crate::logf!("SECURITY: departure request build failed: {}", e);
+                self.ready_toast = Some("Couldn't build the sign-out request — retry.".to_string());
+            }
+        }
+    }
+
     pub(super) fn dispatch_frame_to_siblings(&self, frame: Vec<u8>) {
         let Some(checker) = self.status_checker.as_ref() else {
             return;
@@ -776,6 +821,30 @@ impl PhotonApp {
             self.contacts.push(sib);
             changed = true;
             added_sibling = true;
+        }
+
+        // BILATERAL DEPARTURE COMPLETION: our own request was approved — a sibling countersigned and published, and this fold no longer contains us. Finish the local half now: wipe (Remove & shred) or keep-vault de-attest (Remove). Gated on depart_request_t so a removal we never asked for (impossible today — expulsion doesn't exist) can't trigger a silent wipe.
+        if let (Some(kp), Some(_t)) = (self.device_keypair.as_ref(), self.depart_request_t) {
+            if !members.contains(&kp.public.to_bytes()) {
+                let wipe = self.depart_wipe_after;
+                self.depart_request_t = None;
+                self.depart_wipe_after = false;
+                crate::logf!(
+                    "SECURITY: departure approved by a sibling — we are de-folded; {}",
+                    if wipe { "wiping" } else { "de-attesting, vault kept" }
+                );
+                if wipe {
+                    self.clean_device_for_reuse();
+                } else {
+                    tohu::clear_session();
+                    self.session = None;
+                    self.private_s = crate::crypto::blind::PrivateS::None;
+                    self.pending_broadcast_signal = -1;
+                    self.state = AppState::Launch(LaunchState::Fresh);
+                    self.clear_handle_for_reproof();
+                }
+                return;
+            }
         }
 
         // Drop de-folded members (device removed from OUR chain).
