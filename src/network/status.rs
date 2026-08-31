@@ -405,6 +405,12 @@ pub enum StatusUpdate {
         conversation_token: [u8; 32],
         sender_pubkey: DevicePubkey,
     },
+    /// A sibling requesting its own removal from the fleet (bilateral removal): consent stamp + its signature over the departure request. This device's user approves; then this device countersigns and publishes the consented Remove.
+    DepartReqReceived {
+        consent_t: i64,
+        consent_sig: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+    },
     /// A sibling's whole epoch state (k ‖ epoch ‖ prev), fleet-key-sealed — the UI thread adopts it if it is ahead of the local spine.
     CkptStateReceived {
         k: u64,
@@ -571,6 +577,9 @@ impl StatusUpdate {
             StatusUpdate::CkptReqReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::ChainPullReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::ChainPullMissReceived { sender_pubkey, .. } => {
+                Some(sender_pubkey.as_bytes())
+            }
+            StatusUpdate::DepartReqReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
             }
             StatusUpdate::FocusClaimReceived { sender_pubkey, .. } => {
@@ -2351,6 +2360,28 @@ async fn run_checker(
                                     &status_tx_recv,
                                     StatusUpdate::ChainPullReceived {
                                         conversation_token,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            // Bilateral removal: a sibling's departure request. Same mandatory packet-ack.
+                            if let Ok((consent_t, consent_sig, sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_depart_req_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::DepartReqReceived {
+                                        consent_t,
+                                        consent_sig,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                     },
                                     &event_proxy_recv,

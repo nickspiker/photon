@@ -1703,6 +1703,14 @@ pub struct PhotonApp {
     settings_shred_armed: bool,
     /// Two-tap confirm armed for the Security page's "Remove this device from fleet" (self-departure WITHOUT the wipe — vault stays, claims dormant). Mutually exclusive with the two wipers; cleared on any page switch.
     settings_remove_armed: bool,
+    /// Our outstanding departure request's consent stamp (bilateral removal): Some = we asked the fleet to sign us out and await a sibling's approval. Completion = observing our own key de-folded from the adopted member set. RAM-only; a relaunch just re-requests.
+    depart_request_t: Option<i64>,
+    /// The pending departure completes as a WIPE (Remove & shred) instead of the keep-vault de-attest. Dies with the process — a relaunch mid-ceremony safely degrades to keep-vault (the user can Shred manually).
+    depart_wipe_after: bool,
+    /// A sibling's inbound departure request awaiting THIS user's approval: (leaving device pubkey, consent_t, consent_sig). One at a time — a second request overwrites (latest wins; the earlier requester just re-taps).
+    pending_depart_req: Option<([u8; 32], i64, Vec<u8>)>,
+    /// Two-tap arm for the fleet page's "Approve sign-out" pill, keyed by the leaving device pubkey.
+    fleet_approve_armed: Option<[u8; 32]>,
     /// Two-tap confirm armed for the Security page's "Remove & shred" (self-departure from the fleet chain, then crypto-wipe). Mutually exclusive with `settings_shred_armed`; cleared on any page switch, like every destructive arm.
     settings_removeshred_armed: bool,
     /// About page: false = show the version as dozenal GLYPHS (the default — proper rendered dozenal, never arabic); true = the version tapped, spell it out in voca words. Toggles on each tap of the version row.
@@ -2109,6 +2117,10 @@ impl PhotonApp {
             contacts_scroll_extent: 0,
             settings_shred_armed: false,
             settings_remove_armed: false,
+            depart_request_t: None,
+            depart_wipe_after: false,
+            pending_depart_req: None,
+            fleet_approve_armed: None,
             settings_removeshred_armed: false,
             about_version_spelled: false,
         }

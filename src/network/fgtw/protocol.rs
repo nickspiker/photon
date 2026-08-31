@@ -2220,6 +2220,59 @@ pub fn parse_chain_pull_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32]), St
     Ok((token, sender_pubkey))
 }
 
+/// Build a `depart_req` — the LEAVING device's sibling-to-sibling removal request (bilateral removal, the mirror of the add ceremony). Carries the departure stamp `t` and the device's signature over `fgtw::fleet::departreq_signing_bytes(hp, device, t)`; the frame itself is signed by the same device key, so the receiver's sibling gate + the consent verify both pin the same identity. A surviving member's user approves on their screen; that device countersigns and publishes the consented Remove chain op.
+pub fn build_depart_req_vsf(
+    t_osc: i64,
+    consent_sig: &[u8],
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+    let mut section = VsfSection::new("depart_req");
+    section.add_field("t", VsfType::e(vsf::types::EtType::e6(t_osc)));
+    section.add_field("cs", VsfType::ge(consent_sig.to_vec()));
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build depart_req VSF: {}", e))?;
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+/// Parse + verify a `depart_req`. Returns (consent_t, consent_sig, sender device pubkey = the leaving device).
+pub fn parse_depart_req_vsf(vsf_bytes: &[u8]) -> Result<(i64, Vec<u8>, [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("depart_req verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "depart_req" {
+        return Err(format!("Expected 'depart_req' section, got '{}'", section_name));
+    }
+    let t = section
+        .fields
+        .iter()
+        .find(|f| f.name == "t")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::e(vsf::types::EtType::e6(t)) => Some(*t),
+            _ => None,
+        })
+        .ok_or("depart_req missing t")?;
+    let cs = section
+        .fields
+        .iter()
+        .find(|f| f.name == "cs")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::ge(s) => Some(s.clone()),
+            _ => None,
+        })
+        .ok_or("depart_req missing cs")?;
+    Ok((t, cs, sender_pubkey))
+}
+
 /// Build a `chain_pull_miss` — the negative answer to a `chain_pull`: this sibling holds NO chains for the token. The requester re-keys only when EVERY live sibling has answered miss; a sibling that has the chains never sends this (it re-pushes instead).
 pub fn build_chain_pull_miss_vsf(
     conversation_token: &[u8; 32],

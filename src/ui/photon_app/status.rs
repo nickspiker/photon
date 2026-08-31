@@ -283,6 +283,7 @@ impl PhotonApp {
                 StatusUpdate::CkptReqReceived { .. } => "CkptReqReceived",
                 StatusUpdate::ChainPullReceived { .. } => "ChainPullReceived",
                 StatusUpdate::ChainPullMissReceived { .. } => "ChainPullMissReceived",
+                StatusUpdate::DepartReqReceived { .. } => "DepartReqReceived",
                 StatusUpdate::FocusClaimReceived { .. } => "FocusClaimReceived",
                 StatusUpdate::FriendKnockReceived { .. } => "FriendKnockReceived",
                 StatusUpdate::AttentionReceived { .. } => "AttentionReceived",
@@ -354,6 +355,8 @@ impl PhotonApp {
         // chain_pull request/miss events, deferred past the checker borrow (their handling mutates watermarks / re-keys).
         let mut chain_pull_reqs_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
         let mut chain_pull_misses_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
+        // Sibling departure requests (bilateral removal), deferred past the checker borrow.
+        let mut depart_reqs_after: Vec<(i64, Vec<u8>, [u8; 32])> = Vec::new();
         // Wi-Fi Direct credential provisioning, collected on came-online edges (after releasing the checker borrow): the elected-GO side mints/re-offers the pair's group credential once per session (docs/offgrid.md).
         let mut wfd_provision_after: Vec<crate::types::ContactId> = Vec::new();
         // Wi-Fi Direct beacon answer-back target, collected on the p2p learn edge (the reply teaches the peer OUR group address).
@@ -3501,6 +3504,18 @@ impl PhotonApp {
                         chain_pull_misses_after.push((conversation_token, sender_pubkey.key));
                     }
                 }
+                StatusUpdate::DepartReqReceived {
+                    consent_t,
+                    consent_sig,
+                    sender_pubkey,
+                } => {
+                    // Sibling gate: only a live member of OUR fleet may ask us to countersign its exit.
+                    if self.contacts.iter().any(|c| {
+                        c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
+                    }) {
+                        depart_reqs_after.push((consent_t, consent_sig, sender_pubkey.key));
+                    }
+                }
                 StatusUpdate::CkptReqReceived {
                     have_k,
                     sender_pubkey,
@@ -4711,6 +4726,34 @@ impl PhotonApp {
             );
             self.chain_pull_misses.remove(&token);
             self.rekey_without_chains(ci);
+        }
+
+        // Sibling departure requests (deferred): verify the leaver's signature over its own departure request, then surface the approval to THIS user (fleet page pill + toast). The countersign happens only on the human's two-tap approve — never automatically, that's the whole point of bilateral.
+        for (t, sig, leaver) in depart_reqs_after {
+            let Some(hp) = self.our_handle_proof() else { continue };
+            let msg = fgtw::fleet::departreq_signing_bytes(&hp, &leaver, t);
+            let valid = ed25519_dalek::VerifyingKey::from_bytes(&leaver)
+                .ok()
+                .and_then(|vk| {
+                    let s: [u8; 64] = sig.as_slice().try_into().ok()?;
+                    use ed25519_dalek::Verifier;
+                    vk.verify(&msg, &ed25519_dalek::Signature::from_bytes(&s)).ok()
+                })
+                .is_some();
+            if !valid {
+                crate::logf!("SECURITY: depart_req from {} carries an INVALID request signature — dropped", crate::fp(&leaver));
+                continue;
+            }
+            let name = self
+                .contacts
+                .iter()
+                .find(|c| c.is_sibling && c.knows_device(&leaver))
+                .map(|c| c.display_name())
+                .unwrap_or_else(|| "a device".to_string());
+            crate::logf!("SECURITY: {} requests removal from the fleet — approve on the Fleet page", name);
+            self.pending_depart_req = Some((leaver, t, sig));
+            self.ready_toast = Some(format!("{name} asks to sign out of your fleet — approve it in Settings → Fleet."));
+            changed = true;
         }
 
         // Wi-Fi Direct credential offers collected on came-online edges (after releasing the checker borrow).
