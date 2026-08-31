@@ -299,13 +299,25 @@ impl PhotonApp {
             }
         }
         // Stamp before sending: a contact is "pinged this round" whether or not the send succeeds, or an unreachable address would be retried at the floor rate forever.
+        // Same pass decides the boot ANNOUNCE (once per sibling device per launch, consumed here so the borrow-free ping loop below just reads a flag): the unsolicited pong that carries our About to the peer — see PingRequest::announce.
+        let mut announce_flags: Vec<bool> = Vec::with_capacity(due.len());
         for &i in &due {
+            let mut announce = false;
             if let Some(c) = self.contacts.get_mut(i) {
                 c.last_pinged = Some(now);
                 c.ping_backoff = c.ping_backoff.saturating_add(1).min(PING_BACKOFF_MAX);
+                if c.is_sibling {
+                    if let Some(dev) = c.public_identity.as_ref() {
+                        announce = self.announced_devices.insert(*dev.as_bytes());
+                    }
+                }
             }
+            announce_flags.push(announce);
         }
-        for contact in due.iter().filter_map(|&i| self.contacts.get(i)) {
+        for (&di, mut announce) in due.iter().zip(announce_flags) {
+            let Some(contact) = self.contacts.get(di) else {
+                continue;
+            };
             // No device key ever learned = nothing to ping BY: presence pings track the pinged DEVICE, and the old zero placeholder here is exactly what scheduled pings at "00000000" and then marked "0000000000000000 offline" (field, MacBook 2026-08-30). Per-device endpoint pings below don't apply either (endpoints carry their own pubkeys but arrive only after a key is known); the contact simply isn't presence-pingable yet.
             let Some(primary_dev) = contact.public_identity.clone() else {
                 continue;
@@ -362,6 +374,7 @@ impl PhotonApp {
                         primary_dev.clone(),
                         std::mem::take(&mut punch),
                         std::mem::take(&mut relay_ping),
+                        std::mem::take(&mut announce),
                     );
                     sent = true;
                 }
@@ -372,6 +385,7 @@ impl PhotonApp {
                     primary_dev.clone(),
                     std::mem::take(&mut punch),
                     std::mem::take(&mut relay_ping),
+                    std::mem::take(&mut announce),
                 );
                 sent = true;
             }
@@ -383,6 +397,7 @@ impl PhotonApp {
                         primary_dev.clone(),
                         std::mem::take(&mut punch),
                         std::mem::take(&mut relay_ping),
+                        std::mem::take(&mut announce),
                     );
                     sent = true;
                 }
@@ -394,6 +409,7 @@ impl PhotonApp {
                     primary_dev.clone(),
                     Vec::new(),
                     std::mem::take(&mut relay_ping),
+                    std::mem::take(&mut announce),
                 );
                 sent = true;
             }
@@ -409,7 +425,7 @@ impl PhotonApp {
                 }
                 let dev = crate::types::DevicePubkey::from_bytes(ep.pubkey);
                 for addr in [ep.lan, ep.public].into_iter().flatten() {
-                    checker.ping(addr, dev.clone(), Vec::new(), Vec::new());
+                    checker.ping(addr, dev.clone(), Vec::new(), Vec::new(), false);
                 }
             }
         }
@@ -1916,7 +1932,7 @@ impl PhotonApp {
                 relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip());
             // A presence ping tracks the pinged DEVICE — keyless contacts aren't presence-pingable (the "00000000" class).
             if let Some(dev) = contact.public_identity.clone() {
-                checker.ping(ip, dev, punch, relay_to);
+                checker.ping(ip, dev, punch, relay_to, false);
             }
         }
     }

@@ -155,6 +155,8 @@ pub struct PingRequest {
     pub punch_candidates: Vec<SocketAddr>,
     /// Peer device keys to also send this ping to over the relay pipe (empty = direct only). Set to the peer's device list when no direct path is proven, so PRESENCE rides the relay: the peer receives the ping over its pipe, pongs back over ITS pipe, and each side flips the other online (reached_via_relay → lime-yellow). This is the presence keepalive for a relay-only contact.
     pub relay_to: Vec<[u8; 32]>,
+    /// ANNOUNCE (2026-08-31, the stale-About lag): also send one UNSOLICITED pong (zero provenance, full sealed tail) beside this ping. The pong tail is the only carrier of per-device About — so a freshly booted/updated device that only PINGS teaches its peers nothing about itself, and they sit on ping backoff (up to ~an hour) showing the old version. The receive side already ingests unmatched pongs (the "pinged 00000000" arm: tail processed, responder counted alive), so one announce per sibling per boot closes the lag with zero cadence change.
+    pub announce: bool,
 }
 
 // NOTE: ClutchRequest and ClutchRequestType REMOVED Full 8-primitive CLUTCH uses ClutchOfferRequest and ClutchKemResponseRequest which are handled via build_clutch_offer_vsf() and build_clutch_kem_response_vsf() See docs/clutch.md Section 4.2 for the slot-based ceremony protocol.
@@ -861,12 +863,14 @@ impl StatusChecker {
         peer_pubkey: DevicePubkey,
         punch_candidates: Vec<SocketAddr>,
         relay_to: Vec<[u8; 32]>,
+        announce: bool,
     ) {
         let _ = self.ping_sender.send(PingRequest {
             peer_addr,
             peer_pubkey,
             punch_candidates,
             relay_to,
+            announce,
         });
     }
 
@@ -1146,8 +1150,8 @@ async fn run_checker(
     let status_tx_recv = status_tx.clone();
     let contacts_recv = contacts.clone();
     let sync_records_recv = sync_records_provider.clone();
-    // Both uses of the seal-key map live in the receiver task (pongs are BUILT there answering pings, and OPENED there parsing answers), so the map moves in whole — the `_recv` name just keeps the capture-list idiom.
-    let pong_seal_keys_recv = pong_seal_keys;
+    // The receiver task builds pongs answering pings and opens pong answers; the SEND loop now also needs the map for the boot ANNOUNCE (the unsolicited pong beside the first ping — see PingRequest::announce), so it clones instead of moving.
+    let pong_seal_keys_recv = pong_seal_keys.clone();
     let event_proxy_recv = event_proxy.clone();
     let pt_recv = pt.clone();
     let failed_pings_recv = failed_pings.clone();
@@ -2704,9 +2708,10 @@ async fn run_checker(
                                                             crate::network::fgtw::protocol::open_pong_sensitive(blob, &k).ok()
                                                         })
                                                     })
-                                                    .map(|(recs, _, _, _, _)| recs)
+                                                    .map(|(recs, _, _, _, about)| (recs, about))
                                                     .unwrap_or_default();
-                                                crate::logf!("Status: unmatched pong from {} ({}) — liveness + {} sync record(s) (late/twin; no addr adoption)", crate::fp(responder_pubkey.as_bytes()), src_addr, salvaged.len());
+                                                let (salvaged, about) = salvaged;
+                                                crate::logf!("Status: unmatched pong from {} ({}) — liveness + {} sync record(s) (late/twin/announce; no addr adoption)", crate::fp(responder_pubkey.as_bytes()), src_addr, salvaged.len());
                                                 send_status_update(
                                                     &status_tx_recv,
                                                     StatusUpdate::Online {
@@ -2717,7 +2722,8 @@ async fn run_checker(
                                                         display_name: None,
                                                         avatar_pin: None,
                                                         locked_reports: Vec::new(),
-                                                        about: None,
+                                                        // The About IS adopted here (unlike name/pin/locked, which wait for a matched pong): it's the responder's own sealed self-description, and the boot ANNOUNCE (an unsolicited pong) is exactly how a fresh build reaches the fleet page without waiting out ping backoff (2026-08-31).
+                                                        about,
                                                     },
                                                     &event_proxy_recv,
                                                 );
@@ -2756,8 +2762,9 @@ async fn run_checker(
                                                         crate::network::fgtw::protocol::open_pong_sensitive(blob, &k).ok()
                                                     })
                                                 })
-                                                .map(|(recs, _, _, _, _)| recs)
+                                                .map(|(recs, _, _, _, about)| (recs, about))
                                                 .unwrap_or_default();
+                                            let (salvaged, about) = salvaged;
                                             crate::logf!("Status: pong answered by {} but we pinged {} — responder counted alive + {} sync record(s), ping re-armed for its recipient", crate::fp(responder_pubkey.as_bytes()), crate::fp(pending_ping.recipient_pubkey.as_bytes()), salvaged.len());
                                             send_status_update(
                                                 &status_tx_recv,
@@ -2769,7 +2776,7 @@ async fn run_checker(
                                                     display_name: None,
                                                     avatar_pin: None,
                                                     locked_reports: Vec::new(),
-                                                    about: None,
+                                                    about,
                                                 },
                                                 &event_proxy_recv,
                                             );
@@ -3423,6 +3430,56 @@ async fn run_checker(
                     let reflect_bytes = reflect.to_vsf_bytes();
                     if !reflect_bytes.is_empty() {
                         udp::send(&socket, &reflect_bytes, request.peer_addr).await;
+                    }
+                }
+
+                // BOOT ANNOUNCE (see PingRequest::announce): one unsolicited pong beside the first ping to each sibling — the pong's sealed tail is the ONLY carrier of per-device About, so without this a freshly updated device teaches its peers nothing until THEIR backoff (up to ~an hour) next pings us (field 2026-08-31: fleet page showed 71.0 for a host running 71.1 until the guest restarted). Zero provenance is the established unmatched-pong shape — the peer's "pinged 00000000" arm ingests the tail, counts us alive, and re-arms its own ping.
+                if request.announce {
+                    let a_prov = [0u8; 32];
+                    let a_sig = keypair.sign(&a_prov);
+                    let mut a_sig_bytes = [0u8; 64];
+                    a_sig_bytes.copy_from_slice(&a_sig.to_bytes());
+                    let seal_key = {
+                        let keys = pong_seal_keys.lock().unwrap();
+                        keys.get(request.peer_pubkey.as_bytes()).copied()
+                    };
+                    let sealed = seal_key.and_then(|key| {
+                        let records = { sync_records_provider.lock().unwrap().clone() };
+                        crate::network::fgtw::protocol::seal_pong_sensitive(
+                            &records,
+                            profile_name().as_deref(),
+                            avatar_pin().as_ref(),
+                            &locked_report(),
+                            &key,
+                        )
+                        .ok()
+                    });
+                    let announce = FgtwMessage::StatusPong {
+                        timestamp: eagle_time_now(),
+                        responder_pubkey: our_pubkey.clone(),
+                        provenance_hash: a_prov,
+                        signature: a_sig_bytes,
+                        sync_records: Vec::new(),
+                        observed_addr: None,
+                        display_name: None,
+                        avatar_pin: None,
+                        sealed,
+                    };
+                    let a_bytes = announce.to_vsf_bytes();
+                    if !a_bytes.is_empty() {
+                        if !crate::network::traverse::gather::is_bogus_addr(&request.peer_addr) {
+                            udp::send(&socket, &a_bytes, request.peer_addr).await;
+                        }
+                        for dev in &request.relay_to {
+                            let kp = keypair.clone();
+                            let dev = *dev;
+                            let bytes = a_bytes.clone();
+                            tokio::spawn(async move {
+                                let _ =
+                                    crate::network::fgtw::relay::send_via_relay(&kp, &dev, &bytes)
+                                        .await;
+                            });
+                        }
                     }
                 }
 
