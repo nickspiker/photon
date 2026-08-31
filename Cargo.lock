@@ -398,8 +398,7 @@ dependencies = [
 [[package]]
 name = "audiopus_sys"
 version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62314a1546a2064e033665d658e88c620a62904be945f8147e6b16c3db9f8651"
+source = "git+https://github.com/nickspiker/audiopus_sys?branch=photon-patched#1b9aac825b34690416b44c7d48057dae51834492"
 dependencies = [
  "cmake",
  "log",

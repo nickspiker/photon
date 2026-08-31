@@ -236,7 +236,9 @@ done
 cd photon
 ```
 
-(`winit` and `softbuffer` are patched via git URLs in Cargo.toml and resolve on their own.)
+(`winit`, `softbuffer` and `audiopus_sys` are patched via git URLs in Cargo.toml and resolve on their own.)
+
+System deps: a C toolchain plus **CMake** — the Opus voice codec is compiled from vendored source into the binary (no libopus install, no runtime dependency). On Linux you'll also want the usual X11/Wayland/ALSA dev headers (see [scripts/provision-builder.sh](scripts/provision-builder.sh) for the exact package lists).
 
 **Desktop dev build** (the normal from-source path — no signing keys needed; development builds waive the startup self-verify when unsigned):
 ```bash
