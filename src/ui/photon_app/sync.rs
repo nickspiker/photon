@@ -1497,6 +1497,7 @@ impl PhotonApp {
                 urgent: false, // background catch-up rides the trickle
                 was_complete_before,
                 decrypt_fail_streak: 0,
+                    expire_streak: 0,
                 parked_key_fp: None,
             });
             kicked += 1;
@@ -1531,10 +1532,11 @@ impl PhotonApp {
             [u8; 32],
             Vec<[u8; 32]>,
         )> = if self.fleet_key_cached().is_some() {
+            // EVERY arm excludes a locked-out sibling: the lockout also stops pings, so the ghost never earns the probed-offline verdict the fallback arms key on — the pre-fix phone selected its own locked dead desktop as the fleet-history target forever (7,458 requests + 7,316 expiry re-requests + 5,700 dropped relay frames in ONE submitted log, 2026-08-31 — the "abnormally long log").
             let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
             self.contacts
                 .iter()
-                .filter(|c| c.is_sibling && c.is_online)
+                .filter(|c| c.is_sibling && !c.locked_out && c.is_online)
                 .find_map(|c| {
                     c.race_addrs().and_then(|(p, a)| {
                         Some((
@@ -1549,7 +1551,7 @@ impl PhotonApp {
                     // Fallback arms exclude only a POSITIVE offline verdict (probed + 3-timeout), never the unprobed boot state — the ungated version picked the offline phone as the relay-only target and fired a request into its closed pipe every expiry cycle forever (497 retries + ~470 dropped 17KB frames in one 35-min field log). The came-online edge re-includes the device naturally.
                     self.contacts
                         .iter()
-                        .filter(|c| c.is_sibling && !(c.presence_probed && !c.is_online))
+                        .filter(|c| c.is_sibling && !c.locked_out && !(c.presence_probed && !c.is_online))
                         .find_map(|c| {
                             c.race_addrs().and_then(|(p, a)| {
                                 Some((p, a, c.device_key()?, c.relay_device_list()))
@@ -1559,7 +1561,7 @@ impl PhotonApp {
                 .or_else(|| {
                     self.contacts
                         .iter()
-                        .filter(|c| c.is_sibling && !(c.presence_probed && !c.is_online))
+                        .filter(|c| c.is_sibling && !c.locked_out && !(c.presence_probed && !c.is_online))
                         .find_map(|c| {
                             let relays = c.relay_device_list();
                             if relays.is_empty() {
@@ -1676,11 +1678,20 @@ impl PhotonApp {
                     hex::encode(parked)
                 );
             }
-            // Expire a lost in-flight request so the walk resumes.
+            // Expire a lost in-flight request so the walk resumes — with a DOUBLING wait per consecutive expiry (capped at 32x trickle): an unanswered route is a black hole, and re-requesting at full cadence into it was 7,316 log lines in one field night. Any page arriving clears the streak (see the page arm).
             if let Some((_, sent_osc, _)) = rec.in_flight {
                 if now_osc.saturating_sub(sent_osc) > HIST_INFLIGHT_TIMEOUT_OSC {
-                    crate::log("HISTORY: in-flight request expired — re-requesting");
                     rec.in_flight = None;
+                    rec.expire_streak = rec.expire_streak.saturating_add(1);
+                    let backoff_mult = 1i64 << rec.expire_streak.min(5);
+                    rec.next_request_osc = now_osc + HIST_TRICKLE_OSC * backoff_mult;
+                    rec.urgent = false;
+                    crate::logf!(
+                        "HISTORY: in-flight request expired (streak {}) — next attempt {}x trickle out",
+                        rec.expire_streak,
+                        backoff_mult
+                    );
+                    continue;
                 } else {
                     continue; // one request at a time per conversation
                 }

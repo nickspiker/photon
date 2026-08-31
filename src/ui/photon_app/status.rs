@@ -497,6 +497,7 @@ impl PhotonApp {
                                                     urgent: true,
                                                     was_complete_before: false,
                                                     decrypt_fail_streak: 0,
+                    expire_streak: 0,
                                                     parked_key_fp: None,
                                                 });
                                         }
@@ -1186,6 +1187,7 @@ impl PhotonApp {
                                         urgent: true,
                                         was_complete_before: false,
                                         decrypt_fail_streak: 0,
+                    expire_streak: 0,
                                         parked_key_fp: None,
                                     });
                                 }
