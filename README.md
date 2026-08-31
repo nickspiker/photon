@@ -184,8 +184,9 @@ Every binary self-verifies its Ed25519 signature on launch regardless of where i
 | Linux | x86_64 | `photon-messenger-linux-x86_64-release` |
 | Linux | ARM64 (aarch64) | `photon-messenger-linux-arm64-release` |
 | Windows | x86_64 | `photon-messenger-windows-release.exe` |
-| macOS Intel | x86_64 | `photon-messenger-macos-intel-release` |
-| macOS Apple Silicon | ARM64 (aarch64) | `photon-messenger-macos-arm64-release` |
+| Windows | ARM64 (aarch64) | `photon-messenger-windows-arm64-release.exe` |
+| macOS | x86_64 | `photon-messenger-macos-intel-release` |
+| macOS | ARM64 (aarch64) | `photon-messenger-macos-arm64-release` |
 | Redox | x86_64 | `photon-messenger-redox-release` |
 | Android | ARM64 (aarch64) | `photon-messenger-android-release.apk` |
 
@@ -206,8 +207,9 @@ chmod +x photon-messenger
 | Linux | x86_64 | `photon-messenger-linux-x86_64-development` |
 | Linux | ARM64 (aarch64) | `photon-messenger-linux-arm64-development` |
 | Windows | x86_64 | `photon-messenger-windows-development.exe` |
-| macOS Intel | x86_64 | `photon-messenger-macos-intel-development` |
-| macOS Apple Silicon | ARM64 (aarch64) | `photon-messenger-macos-arm64-development` |
+| Windows | ARM64 (aarch64) | `photon-messenger-windows-arm64-development.exe` |
+| macOS | x86_64 | `photon-messenger-macos-intel-development` |
+| macOS | ARM64 (aarch64) | `photon-messenger-macos-arm64-development` |
 | Android | ARM64 (aarch64) | `photon-messenger-android-development.apk` |
 
 ```bash

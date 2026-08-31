@@ -3,7 +3,8 @@
 #
 # Three Windows paths, don't confuse them:
 #   scripts/build-windows.sh        (this) build + sign locally; copy the .exe over yourself.
-#   scripts/publish/dev-windows.sh  build + sign + UPLOAD to the R2 dev channel + inject the binary's SHA256 into the PowerShell installer.
+#   scripts/publish/dev-windows-x86.sh   build + sign + UPLOAD to the R2 dev channel + inject the binary's SHA256 into the PowerShell installer.
+#   scripts/publish/dev-windows-arm64.sh same for the ARM64 flavor (aarch64-pc-windows-gnullvm via llvm-mingw, binary-only).
 #   deploy.sh                       full release: every target, signed, uploaded, version-bumped.
 #
 # The Ed25519 signature appended to the .exe is the trust check — the binary self-verifies it at every launch (the "SIGNATURE CHECK PASSED" line).

@@ -24,6 +24,10 @@ pub const fn our_platform() -> (&'static str, &'static str) {
     {
         ("Windows", "x86_64")
     }
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    {
+        ("Windows", "arm64")
+    }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         ("macOS", "arm64")
@@ -41,7 +45,10 @@ pub const fn our_platform() -> (&'static str, &'static str) {
             target_os = "linux",
             any(target_arch = "x86_64", target_arch = "aarch64")
         ),
-        all(target_os = "windows", target_arch = "x86_64"),
+        all(
+            target_os = "windows",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
         target_os = "macos",
         target_os = "android"
     )))]

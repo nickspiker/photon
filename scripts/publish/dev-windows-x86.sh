@@ -1,5 +1,6 @@
 #!/bin/bash
-# Publish a Windows dev build (cross-compiled from Linux, logging on) to the R2 dev channel:
+# Publish a Windows x86_64 dev build (cross-compiled from Linux via mingw-w64, logging on) to the R2 dev channel:
+# Companion: dev-windows-arm64.sh covers the aarch64-pc-windows-gnullvm flavor (binary-only).
 # build -> sign -> upload .exe + the PowerShell installer with the binary's SHA256 injected.
 set -e
 cd "$(dirname "$0")/../.."
@@ -11,7 +12,7 @@ source scripts/lib/manifest.sh
 # Refuse-dirty + patch-bump + commit BEFORE the build, so the binary embeds a clean HEAD whose commit is exactly what the signed manifest claims (docs/updates.md).
 manifest_begin_dev_publish "windows-x86_64"
 
-echo "Building Windows development binary..."
+echo "Building Windows x86_64 development binary..."
 cargo build --target x86_64-pc-windows-gnu --features development
 sign_binary debug x86_64-pc-windows-gnu
 
@@ -31,7 +32,7 @@ echo "Mirroring to GitHub Releases (dev)..."
 publish_github_dev "photon-messenger-windows-development.exe" target/x86_64-pc-windows-gnu/debug/photon-messenger.exe
 
 echo ""
-echo "Windows dev published (SHA256 $sha):"
+echo "Windows x86_64 dev published (SHA256 $sha):"
 echo "  $R2_BASE_URL/photon-messenger-windows-development.exe"
 echo "  Install: powershell -ExecutionPolicy Bypass -c \"irm $R2_BASE_URL/install-development.ps1 | iex\""
 
