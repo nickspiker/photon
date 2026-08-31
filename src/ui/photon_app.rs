@@ -1701,6 +1701,8 @@ pub struct PhotonApp {
     msg_max_scroll: f32,
     contacts_scroll_extent: isize,
     settings_shred_armed: bool,
+    /// Two-tap confirm armed for the Security page's "Remove this device from fleet" (self-departure WITHOUT the wipe — vault stays, claims dormant). Mutually exclusive with the two wipers; cleared on any page switch.
+    settings_remove_armed: bool,
     /// Two-tap confirm armed for the Security page's "Remove & shred" (self-departure from the fleet chain, then crypto-wipe). Mutually exclusive with `settings_shred_armed`; cleared on any page switch, like every destructive arm.
     settings_removeshred_armed: bool,
     /// About page: false = show the version as dozenal GLYPHS (the default — proper rendered dozenal, never arabic); true = the version tapped, spell it out in voca words. Toggles on each tap of the version row.
@@ -2106,6 +2108,7 @@ impl PhotonApp {
             msg_max_scroll: 0.0,
             contacts_scroll_extent: 0,
             settings_shred_armed: false,
+            settings_remove_armed: false,
             settings_removeshred_armed: false,
             about_version_spelled: false,
         }

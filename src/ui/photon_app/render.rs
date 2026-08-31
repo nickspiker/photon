@@ -4197,6 +4197,11 @@ impl PhotonApp {
                         Some(*theme::PILL_GREEN),
                         "Open Sans",
                     );
+                    let remove_label = if self.settings_remove_armed {
+                        "Remove from fleet — tap again to confirm"
+                    } else {
+                        "Remove this device from fleet"
+                    };
                     draw_stub_pill_filled(
                         &mut canvas,
                         ctx.text,
@@ -4204,11 +4209,15 @@ impl PhotonApp {
                         buf_w,
                         buf_h,
                         rows[4].center_h(pillf(0.55)),
-                        "Remove this device from fleet",
+                        remove_label,
                         btn_base.wrapping_add(1),
                         ctx.pressed_hit,
                         true,
-                        Some(*theme::PILL_YELLOW),
+                        Some(if self.settings_remove_armed {
+                            *theme::PILL_RED
+                        } else {
+                            *theme::PILL_YELLOW
+                        }),
                         "Open Sans",
                     );
                     let shred_label = if self.settings_shred_armed {

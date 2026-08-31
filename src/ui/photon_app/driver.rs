@@ -1192,6 +1192,7 @@ impl FluorApp for PhotonApp {
                     if *p != SettingsPage::Security {
                         self.settings_removeshred_armed = false;
                         self.settings_shred_armed = false;
+                        self.settings_remove_armed = false;
                         // A stranded unattended-confirm modal must not survive navigating away.
                         self.unattended_confirm = None;
                         self.unattended_confirm_failed = false;
@@ -1352,6 +1353,7 @@ impl FluorApp for PhotonApp {
                         // "Lock" → clear session only (de-attest); vault kept, re-unlock by re-typing your handle. Works on Android (the -1 broadcast drops Kotlin's sticky session).
                         self.settings_shred_armed = false;
                         self.settings_removeshred_armed = false;
+                        self.settings_remove_armed = false;
                         tohu::clear_session();
                         self.session = None;
                         self.private_s = crate::crypto::blind::PrivateS::None;
@@ -1367,6 +1369,7 @@ impl FluorApp for PhotonApp {
                         } else {
                             self.settings_shred_armed = true;
                             self.settings_removeshred_armed = false;
+                            self.settings_remove_armed = false;
                         }
                     } else if slot == 3 {
                         // "Remove & shred" → UNSIGN (self-departure from the fleet chain — the only chain remove that exists, self-signed + idempotent), THEN crypto-wipe. Two-tap confirm. The wipe is GATED on the departure landing: if the signed remove can't publish (offline, races exhausted), nothing is wiped — otherwise the fleet would forever list a device whose keys are gone. Plain Shred (orange) remains the wipe-without-departing path.
@@ -1417,12 +1420,59 @@ impl FluorApp for PhotonApp {
                         } else {
                             self.settings_removeshred_armed = true;
                             self.settings_shred_armed = false;
+                            self.settings_remove_armed = false;
                         }
                     } else {
-                        // Slot 1 "Remove this device from fleet" (self-removal WITHOUT the wipe) is deferred.
-                        self.settings_shred_armed = false;
-                        self.settings_removeshred_armed = false;
-                        crate::log("settings-stub: self-fleet-removal deferred");
+                        // Slot 1 "Remove this device from fleet" → self-signed departure WITHOUT the wipe (loaner doctrine: de-attest keeps the vault's claims dormant on disk). Two-tap confirm; same last-member gate as Remove & shred (identity never dies); the de-attest is GATED on the departure landing — offline = nothing changes, retry.
+                        if self.settings_remove_armed {
+                            self.settings_remove_armed = false;
+                            let hp = self.our_handle_proof();
+                            if let Some(ref hp_v) = hp {
+                                let last = match crate::network::fgtw::fleet::current_members(hp_v)
+                                {
+                                    Ok(m) => m.len() <= 1,
+                                    Err(e) => {
+                                        crate::logf!("SECURITY: member count fetch failed ({}) — treating as last device", e);
+                                        true
+                                    }
+                                };
+                                if last {
+                                    crate::log("SECURITY: last member — sign-out refused (an identity must live somewhere)");
+                                    self.ready_toast = Some("This is your identity's last device — it can't sign out. Add another device first, then retire this one.".to_string());
+                                    self.scene_dirty = true;
+                                    ctx.window.request_redraw();
+                                    return EventResponse::Handled;
+                                }
+                            }
+                            if let (Some(hp), Some(kp)) = (hp, self.device_keypair.clone()) {
+                                match crate::network::fgtw::fleet::depart_device(&kp, &hp) {
+                                    Ok(()) => {
+                                        crate::log("SECURITY: departed the fleet chain (self-signed remove) — session cleared, vault kept on disk");
+                                        tohu::clear_session();
+                                        self.session = None;
+                                        self.private_s = crate::crypto::blind::PrivateS::None;
+                                        self.pending_broadcast_signal = -1;
+                                        self.state = AppState::Launch(LaunchState::Fresh);
+                                        self.clear_handle_for_reproof();
+                                    }
+                                    Err(e) => {
+                                        crate::logf!(
+                                            "SECURITY: fleet departure failed ({}) — still signed in",
+                                            e
+                                        );
+                                        self.ready_toast = Some("Couldn't sign out of the fleet — nothing changed. Check connection and retry.".to_string());
+                                    }
+                                }
+                            } else {
+                                crate::log("SECURITY: no session/keypair to depart with");
+                                self.ready_toast =
+                                    Some("No signed-in identity to remove.".to_string());
+                            }
+                        } else {
+                            self.settings_remove_armed = true;
+                            self.settings_shred_armed = false;
+                            self.settings_removeshred_armed = false;
+                        }
                     }
                 } else if page == SettingsPage::You {
                     if slot == 0 {
