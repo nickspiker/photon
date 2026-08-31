@@ -49,6 +49,23 @@ fn bridge_child_tree(root: i32) -> Vec<i32> {
     all
 }
 
+/// Wire-frame body cap (Nick's redesign 2026-08-31): a terminal shows a SCREEN, not a scrollback — every streamed frame carries at most this many trailing bytes, so an hour-long deploy's updates stay single-datagram-sized instead of growing into 100KB multi-packet PT transfers (the livelock class: the transfer layer's ACK path is exactly what fails on hard links). The full output lives on the host; `tail`/`grep` reaches the rest.
+#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+const BRIDGE_BODY_CAP: usize = 8192;
+
+/// Keep the LAST `cap` bytes of `s` (char-boundary-safe), prefixed with an elision note naming what stayed behind.
+#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+fn bridge_cap_tail(s: &str, cap: usize) -> String {
+    if s.len() <= cap {
+        return s.to_string();
+    }
+    let mut start = s.len() - cap;
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("… ({} earlier bytes on the host)\n{}", start, &s[start..])
+}
+
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 fn bridge_wake(w: &Option<std::sync::Arc<dyn WakeSender<PhotonEvent>>>) {
     if let Some(w) = w {
@@ -95,7 +112,7 @@ fn spawn_bridge_worker(
                     let fresh = partials
                         .lock()
                         .unwrap()
-                        .insert(ci, BridgeEmit { ci, target: ts, seq, body: snap.to_string(), fin: None, host: host.clone(), cwd: cwd0.clone() })
+                        .insert(ci, BridgeEmit { ci, target: ts, seq, body: bridge_cap_tail(snap, BRIDGE_BODY_CAP), fin: None, host: host.clone(), cwd: cwd0.clone() })
                         .is_none();
                     if fresh {
                         bridge_wake(&wake);
@@ -109,9 +126,9 @@ fn spawn_bridge_worker(
                             // Clean silent success (cd, touch, a green build with -q) sends an EMPTY final — the client stamps the exit on the command row itself and shows NO bubble (Nick 2026-08-31: the ACK + the Stop pill clearing is the whole story). A silent FAILURE still says so; silence must never eat a non-zero exit.
                             if code == 0 { String::new() } else { format!("(no output, exit {code})") }
                         } else if code != 0 {
-                            format!("{trimmed}\n[exit {code}]")
+                            format!("{}\n[exit {code}]", bridge_cap_tail(trimmed, BRIDGE_BODY_CAP))
                         } else {
-                            trimmed.to_string()
+                            bridge_cap_tail(trimmed, BRIDGE_BODY_CAP)
                         };
                         let _ = fin_tx.send(BridgeEmit { ci, target: ts, seq: seq + 1, body: text, fin: Some(code), host, cwd });
                         bridge_wake(&wake);
@@ -669,6 +686,11 @@ impl PhotonApp {
         for e in emits {
             // WINDOW DISCIPLINE (field 2026-08-26, the stuck git pull): the lane's ACK window is 4 slots, one streaming burst filled it instantly, and the FINAL sat queued behind its own already-stale partials while relay-latency ACKs crawled back — done in a second host-side, invisible for minutes client-side. A partial may occupy AT MOST one slot: while the lane is busier than (command + one partial), re-park the snapshot for the next drain tick instead of sending — the slot keeps latest-wins, so what eventually goes out is newer anyway. Finals always send; held is fine for the one frame that must survive.
             if e.fin.is_none() {
+                // THE ONE TIMER (Nick's grant, 2026-08-31): partials reach the wire at most once per second per conversation — the latest-wins slot already collapses bursts, this paces the send so a chatty build is a steady 1Hz screen update, never a s-t-r-e-a-m of frames. Finals are never paced.
+                let recently = self
+                    .bridge_partial_sent
+                    .get(&e.ci)
+                    .map_or(false, |t| t.elapsed() < std::time::Duration::from_secs(1));
                 let busy = self
                     .contacts
                     .get(e.ci)
@@ -680,12 +702,13 @@ impl PhotonApp {
                             .map(|(_, ch)| ch.pending_messages.len())
                     })
                     .unwrap_or(0);
-                if busy >= 2 {
+                if recently || busy >= 2 {
                     if let Some(slots) = self.bridge_partials.as_ref() {
                         slots.lock().unwrap().entry(e.ci).or_insert(e);
                     }
                     continue;
                 }
+                self.bridge_partial_sent.insert(e.ci, std::time::Instant::now());
             }
             let wire = crate::network::message_package::BridgeWire {
                 host: (!e.host.is_empty()).then(|| e.host.clone()),
