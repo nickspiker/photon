@@ -2,14 +2,14 @@
 #
 # mold: Fast linker for native Linux builds (default)
 # Redox: Cross-compilation support when explicitly targeting x86_64-unknown-redox
-# macOS: osxcross for Intel and Apple Silicon
+# macOS: osxcross for x86_64 and ARM64
 
 # Linux ARM64 cross-compilation (from x86_64 host)
 [target.aarch64-unknown-linux-gnu]
 linker = "aarch64-linux-gnu-gcc"
 rustflags = ["-C", "link-arg=--sysroot=/usr/aarch64-redhat-linux/sys-root/fc42", "-C", "link-arg=-L/mnt/Harbor/Code/photon/cross-libs/aarch64", "-C", "link-arg=-Wl,-rpath-link,/mnt/Harbor/Code/photon/cross-libs/aarch64"]
 
-# macOS Intel cross-compilation via osxcross
+# macOS x86_64 cross-compilation via osxcross
 [target.x86_64-apple-darwin]
 linker = "/mnt/Harbor/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper"
 

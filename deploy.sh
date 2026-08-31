@@ -241,9 +241,9 @@ apple_sign() {
         "$1"
 }
 
-# Build macOS Intel
+# Build macOS x86_64
 echo ""
-echo "Building macOS Intel release..."
+echo "Building macOS x86_64 release..."
 CC_x86_64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
 CXX_x86_64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
 OSXCROSS_TRIPLE=x86_64-apple-darwin \
@@ -251,7 +251,7 @@ CMAKE_TOOLCHAIN_FILE_x86_64_apple_darwin="$(pwd)/scripts/lib/osxcross-cmake.tool
 snap_cargo build --release --target x86_64-apple-darwin
 
 echo ""
-echo "Signing macOS Intel binary (Apple identity, then photon Ed25519)..."
+echo "Signing macOS x86_64 binary (Apple identity, then photon Ed25519)..."
 apple_sign target/x86_64-apple-darwin/release/photon-messenger
 ./target/release/photon-signature-signer target/x86_64-apple-darwin/release/photon-messenger
 
@@ -288,7 +288,7 @@ COMMIT="$TIP_COMMIT"
     --artefact Linux   arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-linux-arm64-release"   "$(b3 target/aarch64-unknown-linux-gnu/release/photon-messenger)" "$(manifest_size target/aarch64-unknown-linux-gnu/release/photon-messenger)" \
     --artefact Windows x86_64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-windows-release.exe"   "$(b3 target/x86_64-pc-windows-gnu/release/photon-messenger.exe)" "$(manifest_size target/x86_64-pc-windows-gnu/release/photon-messenger.exe)" \
     --artefact Windows arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-windows-arm64-release.exe" "$(b3 target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe)" "$(manifest_size target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe)" \
-    --artefact macOS   x86_64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-macos-intel-release"   "$(b3 target/x86_64-apple-darwin/release/photon-messenger)" "$(manifest_size target/x86_64-apple-darwin/release/photon-messenger)" \
+    --artefact macOS   x86_64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-macos-x86_64-release"   "$(b3 target/x86_64-apple-darwin/release/photon-messenger)" "$(manifest_size target/x86_64-apple-darwin/release/photon-messenger)" \
     --artefact macOS   arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-macos-arm64-release"   "$(b3 target/aarch64-apple-darwin/release/photon-messenger)" "$(manifest_size target/aarch64-apple-darwin/release/photon-messenger)" \
     --artefact Android arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-android-release.apk"   "$(b3 android/app/build/outputs/apk/release/app-release.apk)" "$(manifest_size android/app/build/outputs/apk/release/app-release.apk)"
 
@@ -331,7 +331,7 @@ r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-windows-arm64-release.exe" \
     --file target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe --remote
 r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-redox-release" \
     --file target/x86_64-unknown-redox/release/photon-messenger --remote
-r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-macos-intel-release" \
+r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-macos-x86_64-release" \
     --file target/x86_64-apple-darwin/release/photon-messenger --remote
 r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-macos-arm64-release" \
     --file target/aarch64-apple-darwin/release/photon-messenger --remote
@@ -357,7 +357,7 @@ r2_put "$R2_BUCKET/$R2_PATH/manifest-release.vsf" \
     --file /tmp/manifest-release.vsf --content-type application/octet-stream --remote
 
 echo ""
-echo "Linux ARM64, Linux x86_64, Windows x86_64, Windows ARM64, Redox, macOS Intel, macOS ARM64, Android binaries + manifest deployed to R2"
+echo "Linux ARM64, Linux x86_64, Windows x86_64, Windows ARM64, Redox, macOS x86_64, macOS ARM64, Android binaries + manifest deployed to R2"
 echo "  Windows SHA256: $WINDOWS_SHA256"
 
 # R2 is fully live — the release is public. Its provenance is the built commit $COMMIT: the hash build.rs baked into every binary (PHOTON_GIT_COMMIT) and the SHA the signed manifest stamped. Pin it with the IMMUTABLE v<n> tag and push THAT — the commit rides along with its hash intact, even though main has moved past its parent during the ~1h build. This is NOT a branch push (a plain `git push` of the hour-old bump is rejected non-fast-forward the moment any device touched main during the build — five deploys died exactly here, 2026-08-28). main itself only ever gets the fast-forwarding dev-line bump, further down.
@@ -381,7 +381,7 @@ if ensure_release "$GH_TAG" false; then
     mirror "photon-messenger-windows-release.exe"   target/x86_64-pc-windows-gnu/release/photon-messenger.exe
     mirror "photon-messenger-windows-arm64-release.exe" target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe
     mirror "photon-messenger-redox-release"         target/x86_64-unknown-redox/release/photon-messenger
-    mirror "photon-messenger-macos-intel-release"   target/x86_64-apple-darwin/release/photon-messenger
+    mirror "photon-messenger-macos-x86_64-release"   target/x86_64-apple-darwin/release/photon-messenger
     mirror "photon-messenger-macos-arm64-release"   target/aarch64-apple-darwin/release/photon-messenger
     mirror "photon-messenger-android-release.apk"   android/app/build/outputs/apk/release/app-release.apk
 else

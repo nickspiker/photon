@@ -1,6 +1,5 @@
 #!/bin/bash
 # Publish a macOS x86_64 dev build (cross-compiled from Linux via osxcross, logging on) to the R2 dev channel: build -> sign -> upload binary.
-# NOTE: the published artefact keeps its historical "macos-intel" object name — the URL is load-bearing (installers, README, existing manifests); only the script/flavor naming moved to x86_64.
 # The osxcross clang-wrapper env mirrors deploy.sh's release recipe for the x86_64-apple-darwin target.
 # Binary-only, like the other dev-* scripts; dev-linux.sh publishes the arch-agnostic install-development.sh.
 set -e
@@ -22,17 +21,17 @@ CMAKE_TOOLCHAIN_FILE_x86_64_apple_darwin="$(pwd)/scripts/lib/osxcross-cmake.tool
 sign_binary debug x86_64-apple-darwin
 
 echo "Uploading to R2 (primary)..."
-publish_r2 "photon-messenger-macos-intel-development" target/x86_64-apple-darwin/debug/photon-messenger
+publish_r2 "photon-messenger-macos-x86_64-development" target/x86_64-apple-darwin/debug/photon-messenger
 
 echo "Publishing dev manifest row..."
-manifest_publish_dev_row "macOS" "x86_64" "photon-messenger-macos-intel-development" target/x86_64-apple-darwin/debug/photon-messenger
+manifest_publish_dev_row "macOS" "x86_64" "photon-messenger-macos-x86_64-development" target/x86_64-apple-darwin/debug/photon-messenger
 
 echo "Mirroring to GitHub Releases (dev)..."
-publish_github_dev "photon-messenger-macos-intel-development" target/x86_64-apple-darwin/debug/photon-messenger
+publish_github_dev "photon-messenger-macos-x86_64-development" target/x86_64-apple-darwin/debug/photon-messenger
 
 echo ""
 echo "macOS x86_64 dev published:"
-echo "  $R2_BASE_URL/photon-messenger-macos-intel-development"
+echo "  $R2_BASE_URL/photon-messenger-macos-x86_64-development"
 echo "  Install: curl -sSfL $R2_BASE_URL/install-development.sh | sh"
 
 # Publish landed — bump the patch + commit, opening the next dev line (publish-current-then-bump).

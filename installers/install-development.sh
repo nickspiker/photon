@@ -22,11 +22,11 @@ case "$OS" in
         INSTALL_DIR="$HOME/.local/bin"
         ;;
     Darwin*)
-        # macOS has separate binaries for Intel and Apple Silicon
+        # macOS has separate binaries per arch (x86_64 and arm64)
         if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
             PLATFORM="macos-arm64"
         else
-            PLATFORM="macos-intel"
+            PLATFORM="macos-x86_64"
         fi
         BINARY_NAME="photon-messenger"
         INSTALL_DIR="$HOME/.local/bin"
