@@ -67,3 +67,5 @@ fi
 # Divergent-CMake-cache guard (scripts/lib/cmake-scrub.sh): every Android build path sources this file, so scrub here — a cache configured under a different NDK/toolchain vintage re-configures mid-build with the install prefix reset to /usr/local (field 2026-08-31).
 source "$(dirname "${BASH_SOURCE[0]}")/cmake-scrub.sh"
 scrub_divergent_cmake_caches "target/aarch64-linux-android" "$ANDROID_NDK_HOME"
+# Same CMake-4 floor as desktop.sh: vendored deps still declare <3.5 minimums, and the scrub above guarantees fresh configures that would hard-fail on a current CMake without it.
+export CMAKE_POLICY_VERSION_MINIMUM=3.5

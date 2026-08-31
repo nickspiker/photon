@@ -7,6 +7,9 @@ build_sign_install() {
     local profile="$1"
     local prof_dir
 
+    # CMake ≥4 removed compatibility with the <3.5 minimums that vendored deps (opus via audiopus_sys) still declare — a fresh configure (exactly what cmake-scrub forces) then hard-fails on any machine with a current CMake while older installs sail thru (field 2026-08-31: Mac CMake 4 vs leviathan's older one). This floor is read by CMake itself and ignored by versions that don't need it.
+    export CMAKE_POLICY_VERSION_MINIMUM=3.5
+
     # All the cheap source-level ratchets (vsf raw-parse, expired-migration, wrapped-comment, no-python, cpu-feature) in ONE list, run before the build — see scripts/lib/preflight.sh. The same set every publish runs via manifest_begin_dev_publish, so a slip fails identically here and there.
     source "$(dirname "${BASH_SOURCE[0]}")/preflight.sh"
     preflight_gates
