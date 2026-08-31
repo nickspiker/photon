@@ -45,6 +45,8 @@ fn main() {
 
     // Last run's crash, if any, folded into this run's log so it rides the next submission.
     photon_messenger::report_prior_crash();
+    // Native faults (access violation / SIGSEGV / stack overflow) bypass the panic hook on every OS — this writes the same sidecar so they ride the next submission too.
+    photon_messenger::platform::crash_native::install();
 
     // Check for verify argument (used by install script to validate binary)
     let verify_only = std::env::args().any(|arg| arg == "verify");
