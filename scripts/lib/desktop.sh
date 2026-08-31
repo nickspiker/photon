@@ -11,6 +11,11 @@ build_sign_install() {
     source "$(dirname "${BASH_SOURCE[0]}")/preflight.sh"
     preflight_gates
 
+    # Divergent-CMake-cache guard (see cmake-scrub.sh): host builds check compiler existence only — the danger case is a vendored dep's cache pointing at a toolchain that moved (field 2026-08-31, the /usr/local install-prefix reset).
+    source "$(dirname "${BASH_SOURCE[0]}")/cmake-scrub.sh"
+    scrub_divergent_cmake_caches "target/debug"
+    scrub_divergent_cmake_caches "target/release"
+
     # Source freeze: reflink-snapshot photon + its path-dep closure THIS instant and build from the frozen copy — edits made while the build runs can't tear it. Off-btrfs (or any snapshot failure) builds the live tree exactly as before. Target stays the real ./target (see snapbuild.sh for why that's cache-coherent), so sign + install below are untouched.
     source "$(dirname "${BASH_SOURCE[0]}")/snapbuild.sh"
     local build_dir="."

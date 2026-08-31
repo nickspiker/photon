@@ -14,6 +14,12 @@ source scripts/lib/release-git.sh
 source scripts/lib/preflight.sh
 SEAM_STRICT=1 preflight_gates
 
+# Divergent-CMake-cache guard across the whole platform matrix (see cmake-scrub.sh): a vendored dep's cache configured under an older toolchain vintage re-configures mid-build with the install prefix reset to /usr/local (field 2026-08-31). Existence-check every triple here; the Android-specific NDK match runs again inside android-env.sh.
+source scripts/lib/cmake-scrub.sh
+for t in target/release target/debug target/*-*/release target/*-*/debug; do
+    scrub_divergent_cmake_caches "$t"
+done
+
 # Version scheme (2026-07-16): major.minor.patch. THIS SCRIPT does the release increment: whatever the tree holds (X.Y.0 fresh, or X.Y.P after dev publishes), the release ships X.(Y+1).0 — minor bumped, patch zeroed (patch 0 is RESERVED for releases; dev publishes bump the patch ≥1 and reach clients via the dev manifest).
 # Ordering discipline (same as the dev publishes): refuse a dirty tree, bump, COMMIT THE BUMP FIRST — so every built binary embeds the actual release commit (no "+dirty") and the signed manifest stamps the same HEAD. A failure anywhere rolls that one commit back (trap below), leaving the tree exactly as it started.
 # The publish lock keeps a dev-*.sh from bumping the version mid-deploy (and vice versa) — the same race that mis-stamped a dev manifest row on 2026-07-16.
