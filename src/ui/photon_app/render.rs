@@ -575,6 +575,9 @@ impl PhotonApp {
             }
         }
 
+        // DISTINCT SCREEN while ringing (2026-08-31): the full-screen ring panel is opaque and modal, so painting the underlying screen is pure waste — at full frame rate (the pulse animation), during the one moment the radio + speaker are also busy. Every per-screen body below is skipped; the panel, chrome flatten, joiner flood and the endgame hit re-stamp (which wipes the map modal anyway) still run. Screen-side frame bookkeeping (scroll extents, textbox geometry, hit stamps) goes stale for the ring's duration by design — the drain repaints fully on every ring edge, so the first non-ringing frame rebuilds it all.
+        if !call_fullscreen {
+
         // Launch-screen widgets paint UNDER the chord hint (so the hint always wins over the textbox) and OVER chrome (so the pill sits on top of the spectrum strip / wordmark). Same target buffer as the chord hint; widgets stamp their hit IDs into chrome's shared `hit_test_map`. Only paint when the launch screen is the active state — Ready/Searching/Conversation get their own widgets later.
         if let AppState::Launch(launch_state) = &self.state {
             let layout =
@@ -5130,6 +5133,8 @@ impl PhotonApp {
                 }
             }
         }
+
+        } // end !call_fullscreen — per-screen bodies skipped while the ring panel owns the surface
 
         // JOINER SELECTED — the green flood (docs/lifecycle.md): this device is bound and waiting on the sponsor's human to confirm "yes, it's green and says Selected". A HOLD, not an interstitial — stray taps must not kill a ceremony mid-confirm, so presses are simply ignored while it's up (the poller or a relaunch are the exits).
         if self.joiner_selected {
