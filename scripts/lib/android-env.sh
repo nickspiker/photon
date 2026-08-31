@@ -63,3 +63,7 @@ else
         export CXXFLAGS_aarch64_apple_darwin="-isysroot $_macos_sdk"
     fi
 fi
+
+# Divergent-CMake-cache guard (scripts/lib/cmake-scrub.sh): every Android build path sources this file, so scrub here — a cache configured under a different NDK/toolchain vintage re-configures mid-build with the install prefix reset to /usr/local (field 2026-08-31).
+source "$(dirname "${BASH_SOURCE[0]}")/cmake-scrub.sh"
+scrub_divergent_cmake_caches "target/aarch64-linux-android" "$ANDROID_NDK_HOME"
