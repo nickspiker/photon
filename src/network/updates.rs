@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use vsf::VsfType;
 
-/// This build's platform + arch — the manifest section keys. ARM is split per-arch (linux/arm64 ≠ linux/x86_64, mac intel ≠ apple silicon): every section names exactly one artefact.
+/// This build's platform + arch — the manifest section keys. every OS is split per-arch (linux/arm64 ≠ linux/x86_64, macos/x86_64 ≠ macos/arm64): every section names exactly one artefact.
 pub const fn our_platform() -> (&'static str, &'static str) {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {

@@ -125,7 +125,7 @@ Photon is a peer-to-peer messenger. Your identity is a handle you own, derived f
 | Linux x86_64 | ✅ Working | wgpu/Vulkan, X11/Wayland |
 | Linux ARM64 | ✅ Working | wgpu/Vulkan (Asahi etc.) |
 | Windows | ✅ Working | GDI |
-| macOS Intel | ✅ Working | wgpu/Metal |
+| macOS x86_64 | ✅ Working | wgpu/Metal |
 | macOS Apple Silicon | ✅ Working | wgpu/Metal |
 | Android | ✅ Working | ARM64, tested on device |
 | Redox | 🟡 Compiles | Orbital, untested |
@@ -185,7 +185,7 @@ Every binary self-verifies its Ed25519 signature on launch regardless of where i
 | Linux | ARM64 (aarch64) | `photon-messenger-linux-arm64-release` |
 | Windows | x86_64 | `photon-messenger-windows-release.exe` |
 | Windows | ARM64 (aarch64) | `photon-messenger-windows-arm64-release.exe` |
-| macOS | x86_64 | `photon-messenger-macos-intel-release` |
+| macOS | x86_64 | `photon-messenger-macos-x86_64-release` |
 | macOS | ARM64 (aarch64) | `photon-messenger-macos-arm64-release` |
 | Redox | x86_64 | `photon-messenger-redox-release` |
 | Android | ARM64 (aarch64) | `photon-messenger-android-release.apk` |
@@ -208,7 +208,7 @@ chmod +x photon-messenger
 | Linux | ARM64 (aarch64) | `photon-messenger-linux-arm64-development` |
 | Windows | x86_64 | `photon-messenger-windows-development.exe` |
 | Windows | ARM64 (aarch64) | `photon-messenger-windows-arm64-development.exe` |
-| macOS | x86_64 | `photon-messenger-macos-intel-development` |
+| macOS | x86_64 | `photon-messenger-macos-x86_64-development` |
 | macOS | ARM64 (aarch64) | `photon-messenger-macos-arm64-development` |
 | Android | ARM64 (aarch64) | `photon-messenger-android-development.apk` |
 
