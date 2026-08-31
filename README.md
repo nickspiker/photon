@@ -224,30 +224,42 @@ chmod +x photon-messenger
 
 ### Building from Source
 
-**⚠️ Warning**: Building from source requires generating your own signing keys. Use the installer unless you have specific reasons to build yourself.
+**⚠️ Warning**: release binaries self-verify an Ed25519 signature, so a from-source release build requires generating your own signing keys. Use the installer, or build the **dev profile** (no signing) unless you have specific reasons to do otherwise.
 
-If needed:
+Photon rides a family of sibling crates by **path dependency** — they must be cloned **side by side** in one parent directory:
+
 ```bash
-git clone https://github.com/nickspiker/photon
+mkdir Code && cd Code
+for r in photon chirp fgtw fluor ihi kete manifestus nunc rarangi spirix tohu vsf; do
+    git clone https://github.com/nickspiker/$r
+done
 cd photon
-
-# Generate signing keys (edit src/bin/photon-keygen.rs for key path)
-cargo run --bin photon-keygen
-
-# Update public key in src/self_verify.rs with your generated key
-
-# Build and sign
-cargo build --release
-./sign-after-build.sh release
 ```
 
-See [src/self_verify.rs](src/self_verify.rs) for complete signing documentation.
+(`winit` and `softbuffer` are patched via git URLs in Cargo.toml and resolve on their own.)
 
-**Android:**
+**Desktop dev build** (unsigned, the normal from-source path):
+```bash
+cargo build --features development
+./target/debug/photon-messenger
+```
+
+**Desktop release build** (self-verifying — needs your own keys):
+```bash
+# Generate signing keys (see src/bin/photon-keygen.rs), put your public key in src/self_verify.rs, then:
+./scripts/dev.sh          # build + sign + install, dev profile
+# or the release path the deploy uses:
+PHOTON_ALLOW_RELEASE=1 cargo build --release
+```
+
+See [src/self_verify.rs](src/self_verify.rs) for the signing documentation.
+
+**Android** (arm64): needs the Android SDK + NDK, **JDK 17 or 21**, and Gradle provisions itself via the wrapper:
 ```bash
 rustup target add aarch64-linux-android
-cargo build --target aarch64-linux-android --release
-./sign-after-build.sh release aarch64-linux-android
+./scripts/android/build.sh          # signed release APK (needs your keystore env)
+# or a dev APK straight onto a connected phone:
+./scripts/android/dev-adb.sh
 ```
 
 ---
