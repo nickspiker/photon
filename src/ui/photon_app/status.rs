@@ -720,8 +720,8 @@ impl PhotonApp {
                                 }
                             }
 
-                            // Per-device About off the sealed tail: what build the RESPONDING device runs — the fleet page's row detail. Runtime-only, every contact kind (sibling rows ARE the fleet page).
-                            if let Some(a) = about.as_ref() {
+                            // Per-device About off the sealed tail — SIBLINGS ONLY, both directions (Nick's disclosure ruling 2026-08-31): we don't say it to friends, and we don't ADOPT it from a non-sibling either — a modified friend client volunteering an abt field changes nothing here.
+                            if let Some(a) = about.as_ref().filter(|_| contact.is_sibling) {
                                 if contact.device_about.as_deref() != Some(a.as_str()) {
                                     contact.device_about = Some(a.clone());
                                     changed = true;
