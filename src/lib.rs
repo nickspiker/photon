@@ -29,7 +29,7 @@
 //   udp.rs          — UDP socket utilities: send/send_sync, canon_socketaddr (::ffff:→v4), get_local_ip, get_broadcast_addr.
 //   wfd.rs          — Wi-Fi Direct bearer (docs/offgrid.md): WfdCred mint/seal/open (per-pair pre-provisioned group credential, elect_go lower-pubkey tie-break), rotating DNS-SD friend tokens (wfd_token/build_txt_tokens/match_txt_tokens), WfdBearer state machine (Idle→Stranded→Forming→Up) + WfdPlatform trait (AndroidWfd via JNI, NullWfd elsewhere), platform event queue (push_event/drain_events), RELAY_REACHABLE flag fed by the pipe task. Frames ride the main UDP socket — this module is discovery + group bring-up only.
 //
-// platform/  — mod.rs (platform detection), jni_android.rs (Android JNI bridge), autostart.rs (desktop login-item write/read/remove: HKCU Run / LaunchAgent plist / XDG autostart), control.rs (second-launch "show yourself" handoff channel for resident mode), desktop_notify.rs (generic "New message" system notification, hidden/unfocused-gated).
+// platform/  — mod.rs (platform detection), jni_android.rs (Android JNI bridge), autostart.rs (desktop login-item write/read/remove: HKCU Run / LaunchAgent plist / XDG autostart), control.rs (second-launch "show yourself" handoff channel for resident mode), desktop_notify.rs (generic "New message" system notification, hidden/unfocused-gated), crash_native.rs (native-fault catcher: SEH filter / unix signal handlers write the panic hook's crash sidecar so segfaults ride the next log submission).
 //
 // storage/ — ONE device vault via the kete crate; conversation content in the rarangi crate. The vault opens from the device secret alone at first launch (device scope: hash(thing|device) — binding, flags, capsule) and gains the identity scope at attest (hash(thing|device|person)). Every entry is addressed by a flat 32-byte key vault_key(domain, scope) = blake3_kdf("photon.storage.entry.v0", domain||scope), never a path — domain is a plain word ("avatar","state","chains",...), scope is the 32-byte identity the entry is about. Blobs are vault values at identity-keyed addresses (blob_store/load/present/delete). NO migration/import layer — the fleet is the backup (chain replication + history sync fill a fresh vault); every file in the primary/secondary photon dirs that isn't `<device token>.vsf`/the log is deleted at first vault open (census_sweep), the legacy `Photon/` sibling dirs wholesale with them.
 //   mod.rs        — kete re-exports (FlatStorage, StorageError, encrypt/decrypt_bytes, App, APP, android_vault_dirs), open_session_vault (THE session open), device_vault + install_device_secret + device_flag/set_device_flag (pre-identity device scope), vault_key, blob_* (vault-backed), runtime_dir/runtime_artifact (lock + control socket), raw file helpers, photon_config_dir, isolate_test_storage.
@@ -363,7 +363,7 @@ pub fn set_android_log_dir(dir: String) {
 
 /// Directory the VSF log file lives in. Android prefers the JNI-set external dir (pullable); everything else uses `photon_config_dir`.
 #[cfg(feature = "logging")]
-fn log_dir() -> Option<std::path::PathBuf> {
+pub(crate) fn log_dir() -> Option<std::path::PathBuf> {
     // Android stays on the external files dir: apps get no tmpfs (cacheDir is the SAME flash, so zero wear saved) and adb-readability on release APKs is load-bearing for diagnostics.
     #[cfg(target_os = "android")]
     if let Some(d) = ANDROID_LOG_DIR.get() {
@@ -1229,6 +1229,8 @@ pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut std::os::raw::c_void)
 
     // Last run's crash, if any, folded into this run's log so it rides the next submission.
     report_prior_crash();
+    // Native faults (SIGSEGV etc.) write the same sidecar the panic hook does — a fold-in next run instead of a silent tombstone.
+    platform::crash_native::install();
 
     // Hand tohu the JavaVM so its device oracle can read Settings.Secure.ANDROID_ID itself (via ActivityThread.currentApplication()). Done here because JNI_OnLoad is where the vm is handed to us; the actual fetch happens later, once the Application exists.
     tohu::device::android_init(vm);
