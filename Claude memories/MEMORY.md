@@ -131,7 +131,7 @@
 - [Commit trailer](commit-trailer-built-with.md) — never "Co-Authored-By: Claude"; end commits with "Built with Claude Fable 5"
 - [Nick publishes](nick-publishes.md) — never run publish scripts; commit/push only, check only when warranted
 - [No private handles](no-private-handles.md) — everything is public EXCEPT signing keys + handles (keys/ only): handles are keys (seed = BLAKE3(handle)), never in ANY repo, private included; committed content uses the map's stable first names as prose (never neutral roles); consult keys/claude-pseudonym-map.txt every time, never copy it into a tree
-- [Self-only removal](self-only-removal.md) — a device removes only itself, zero exceptions; stolen = lockout, never removal
+- [Bilateral removal](self-only-removal.md) — SHIPPED 2026-08-31: departure = leaver's signed request + surviving member's countersign (mirror of add); expulsion never; stolen = lockout, never removal
 - [Re-clutch, never store](re-clutch-never-store.md) — recovery = fresh ceremony; secrets at rest only when absolutely required
 - [Messaging solidity Phase A](messaging-solidity-phase-a.md) — A + B4 done (2026-08-09, locks commute per-key); flag-day APPROVED for B2's chain op; next: B1→B3 fleet chain+eggs arc
 - [Persist findings early](persist-findings-early.md) — Nick undoes via message edits, which truncates context; write load-bearing findings to memory/docs as they land. A rewind erases CONTEXT not the REPO: check reflog/HEAD before re-implementing "lost" work
