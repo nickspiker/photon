@@ -163,6 +163,8 @@ pub struct HistoryRecovery {
     pub decrypt_fail_streak: u32,
     /// Divergence park: fp of the history key that kept failing. While the CURRENT key still fingerprints the same, the walk stays parked — re-requesting just re-downloads 17KB of undecryptable page per cycle forever (field 2026-08-21: 161 pages in 35 min, both fleets). The moment the key CHANGES (re-key completed, era adopted) the fingerprint differs and the walk resumes — an edge expressed as state, no timer.
     pub parked_key_fp: Option<[u8; 4]>,
+    /// Consecutive in-flight requests that EXPIRED unanswered (transport black hole, not decrypt). Each one doubles the trickle wait (capped) — a dead route degrades to a slow heartbeat instead of a re-request storm (field 2026-08-31: 7,316 expiry re-requests in one log). Cleared by any page arriving.
+    pub expire_streak: u32,
 }
 
 /// A handle name stored as VSF text (normalized Unicode, unambiguous) Wrapper around String that represents a VSF x-type text value

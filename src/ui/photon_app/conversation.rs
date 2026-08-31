@@ -1190,6 +1190,7 @@ impl PhotonApp {
                         urgent: true,
                         was_complete_before: false,
                         decrypt_fail_streak: 0,
+                    expire_streak: 0,
                         parked_key_fp: None,
                     });
                 }
@@ -1892,6 +1893,7 @@ impl PhotonApp {
                     .and_then(|v| v.history_recovery.as_mut())
                 {
                     rec.in_flight = None;
+                    rec.expire_streak = 0; // the page ARRIVED — transport is alive; only the decrypt failed
                     rec.decrypt_fail_streak = rec.decrypt_fail_streak.saturating_add(1);
                     if rec.decrypt_fail_streak >= 4 && rec.parked_key_fp.is_none() {
                         rec.parked_key_fp = Some(open_key_fp);
@@ -2033,9 +2035,10 @@ impl PhotonApp {
                 if rid_matches {
                     if let Some(rec) = conv.history_recovery.as_mut() {
                         rec.in_flight = None;
-                        // A page that OPENS clears the divergence evidence — the failing key era is behind us.
+                        // A page that OPENS clears the divergence evidence — the failing key era is behind us. The transport streak clears too: the route answered.
                         rec.decrypt_fail_streak = 0;
                         rec.parked_key_fp = None;
+                        rec.expire_streak = 0;
                         if page.oldest_osc < rec.oldest_recovered_osc {
                             rec.oldest_recovered_osc = page.oldest_osc;
                         }

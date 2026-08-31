@@ -409,14 +409,14 @@ impl PhotonApp {
                 };
                 let w = buf_w as f32;
                 let h = buf_h as f32;
-                // Dark wash: α+darkness format (α 0xC8, darkness 0xFF ⇒ deep translucent black) — the screen below stays faintly present, the panel owns attention.
+                // OPAQUE background: α+darkness (α 0xFF, darkness 0xFF ⇒ solid black) — the screen underneath must NOT show through (field 2026-08-31: the translucent wash left the contact list ghosting behind the ring panel). The panel is background + its own elements, nothing else.
                 paint::fill_rect(
                     &mut canvas,
                     0,
                     0,
                     buf_w as isize,
                     buf_h as isize,
-                    0xC8FFFFFF,
+                    0xFFFFFFFF,
                     None,
                     None,
                 );
