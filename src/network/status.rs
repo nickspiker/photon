@@ -292,8 +292,7 @@ pub struct ClearPtSendsRequest {
     pub peer_addr: SocketAddr,
 }
 
-// Use global PHOTON_PORT for all network communication
-use crate::PHOTON_PORT;
+// PHOTON_PORT is referenced qualified (crate::PHOTON_PORT) — its only use here sits in the desktop-only TCP block, and a bare import warned as unused on the Android target.
 
 /// Status update from the checker
 #[derive(Clone, Debug)]
@@ -1038,6 +1037,8 @@ fn send_status_update(
 }
 
 /// Main checker loop running in tokio
+// `local_ip` feeds only the desktop TCP listener bind below — live on every target but Android (whose TCP fallback is cfg'd out), so the unused-variable lint is scoped there rather than renaming a genuinely-used parameter.
+#[cfg_attr(target_os = "android", allow(unused_variables))]
 async fn run_checker(
     std_socket: Arc<UdpSocket>,
     keypair: crate::network::fgtw::Keypair,
@@ -1092,7 +1093,7 @@ async fn run_checker(
         let udp_port = std_socket
             .local_addr()
             .map(|a| a.port())
-            .unwrap_or(PHOTON_PORT);
+            .unwrap_or(crate::PHOTON_PORT);
         // Try IPv6 dual-stack first (accepts both IPv4 and IPv6 on most systems)
         let tcp_addr_v6 = SocketAddr::new(
             std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),

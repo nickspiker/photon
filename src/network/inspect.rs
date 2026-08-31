@@ -79,6 +79,7 @@ pub fn vsf_inspect(data: &[u8], transport: &str, direction: &str, addr: &str) ->
     result
 }
 /// Noisy packet types that should be filtered from inspection logs These match VSF header label names (e.g., `(ping)`) and section names
+#[cfg(feature = "development")] // every consumer (is_noisy_packet <- vsf_inspect) is development-gated; ungated this warned dead on non-development builds
 const NOISY_SECTION_NAMES: &[&str] = &[
     "ping",
     "pong",

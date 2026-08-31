@@ -1972,71 +1972,7 @@ pub fn parse_clutch_kem_response_vsf_without_recipient_check(
     Ok((payload, sender_pubkey, ceremony_id, conversation_token))
 }
 
-// Helper functions for extracting VSF key types
-
-fn extract_kx(fields: &[(String, VsfType)], key: &str) -> Result<[u8; 32], String> {
-    match get_field(fields, key) {
-        Some(VsfType::kx(bytes)) if bytes.len() == 32 => {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(bytes);
-            Ok(arr)
-        }
-        _ => Err(format!("Missing or invalid kx field: {}", key)),
-    }
-}
-
-fn extract_kp(fields: &[(String, VsfType)], key: &str) -> Result<Vec<u8>, String> {
-    match get_field(fields, key) {
-        Some(VsfType::kp(bytes)) => Ok(bytes.clone()),
-        _ => Err(format!("Missing or invalid kp field: {}", key)),
-    }
-}
-
-fn extract_kk(fields: &[(String, VsfType)], key: &str) -> Result<Vec<u8>, String> {
-    match get_field(fields, key) {
-        Some(VsfType::kk(bytes)) => Ok(bytes.clone()),
-        _ => Err(format!("Missing or invalid kk field: {}", key)),
-    }
-}
-
-fn extract_kf(fields: &[(String, VsfType)], key: &str) -> Result<Vec<u8>, String> {
-    match get_field(fields, key) {
-        Some(VsfType::kf(bytes)) => Ok(bytes.clone()),
-        _ => Err(format!("Missing or invalid kf field: {}", key)),
-    }
-}
-
-fn extract_kn(fields: &[(String, VsfType)], key: &str) -> Result<Vec<u8>, String> {
-    match get_field(fields, key) {
-        Some(VsfType::kn(bytes)) => Ok(bytes.clone()),
-        _ => Err(format!("Missing or invalid kn field: {}", key)),
-    }
-}
-
-fn extract_kl(fields: &[(String, VsfType)], key: &str) -> Result<Vec<u8>, String> {
-    match get_field(fields, key) {
-        Some(VsfType::kl(bytes)) => Ok(bytes.clone()),
-        _ => Err(format!("Missing or invalid kl field: {}", key)),
-    }
-}
-
-fn extract_kh(fields: &[(String, VsfType)], key: &str) -> Result<Vec<u8>, String> {
-    match get_field(fields, key) {
-        Some(VsfType::kh(bytes)) => Ok(bytes.clone()),
-        _ => Err(format!("Missing or invalid kh field: {}", key)),
-    }
-}
-
-fn extract_v(fields: &[(String, VsfType)], key: &str, expected_tag: u8) -> Result<Vec<u8>, String> {
-    match get_field(fields, key) {
-        Some(VsfType::v(tag, bytes)) if *tag == expected_tag => Ok(bytes.clone()),
-        Some(VsfType::v(tag, _)) => Err(format!(
-            "Wrong tag for {}: expected '{}', got '{}'",
-            key, expected_tag as char, *tag as char
-        )),
-        _ => Err(format!("Missing or invalid v field: {}", key)),
-    }
-}
+// (The legacy per-type extract_* helpers that lived here — pre-canonical-scheme frame parsing — are deleted; every live parser reads via field_hash32/get_field/SectionBuilder.)
 
 // ============================================================================= CLUTCH COMPLETE (Proof Exchange) =============================================================================
 

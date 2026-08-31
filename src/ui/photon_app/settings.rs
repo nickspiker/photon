@@ -283,6 +283,7 @@ impl PhotonApp {
                     self.update_progress = Some((done, total));
                     self.update_status = None; // the bar IS the status while a download runs
                 }
+                #[cfg(not(target_os = "android"))]
                 UpdateEvent::Applied(exe) => {
                     self.update_busy = false;
                     self.update_progress = None;
@@ -640,7 +641,6 @@ impl PhotonApp {
                 field_id: id.to_string(),
                 label: label.to_string(),
                 tier,
-                custom: false,
                 tb,
                 tag_tb,
                 share_cb: None,
@@ -673,7 +673,6 @@ impl PhotonApp {
                 field_id: id,
                 label,
                 tier: "custom",
-                custom: true,
                 tb,
                 tag_tb: None,
                 share_cb: None,
@@ -758,7 +757,6 @@ impl PhotonApp {
                     field_id: id,
                     label: format!("{base_label} {n}"),
                     tier,
-                    custom: false,
                     tb,
                     tag_tb,
                     share_cb: None,
@@ -807,7 +805,6 @@ impl PhotonApp {
                         field_id: id,
                         label: format!("{base_label} {n}"),
                         tier,
-                        custom: false,
                         tb,
                         tag_tb,
                         share_cb: None,
@@ -943,7 +940,6 @@ impl PhotonApp {
             field_id: id,
             label: label.clone(),
             tier: "custom",
-            custom: true,
             tb,
             tag_tb: None,
             share_cb: None,

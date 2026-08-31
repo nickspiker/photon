@@ -455,7 +455,7 @@ impl FluorApp for PhotonApp {
                 {
                     let fingerprint = get_machine_fingerprint()
                         .expect("device-key derivation: machine fingerprint unavailable");
-                    derive_device_keypair(&fingerprint)
+                    crate::network::fgtw::derive_device_keypair(&fingerprint)
                 }
                 #[cfg(target_os = "android")]
                 {

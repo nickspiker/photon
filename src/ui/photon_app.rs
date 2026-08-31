@@ -11,7 +11,7 @@ use super::theme;
 use super::PhotonEvent;
 #[cfg(not(target_os = "android"))]
 use crate::network::fgtw::get_machine_fingerprint;
-use crate::network::fgtw::{derive_device_keypair, PeerStore};
+use crate::network::fgtw::PeerStore;
 use crate::network::{
     ClutchCeremonyResult, ClutchKemEncapResult, ClutchKeygenResult, HandleQuery, QueryResult,
 };
@@ -851,8 +851,8 @@ enum TextboxRole {
 struct ProfileField {
     field_id: String,
     label: String,
+    // Custom-ness is carried by `tier == "custom"` (what the renderer groups on) — a separate bool was write-only redundancy.
     tier: &'static str,
-    custom: bool,
     tb: Textbox,
     /// Companion tag box (phone instances: home / work / custom, free text). Persisted as `profile.<id>_label`. `None` for untagged fields.
     tag_tb: Option<Textbox>,
@@ -1599,6 +1599,7 @@ pub struct PhotonApp {
     /// Desktop resident mode: close hides the window instead of exiting (`FluorApp::on_close_requested`), the process keeps serving the network, and a second launch (or a future tray click) surfaces it via the control channel. True when launched `--background` or when the autostart artifact exists; the settings toggle moves it live.
     resident_mode: bool,
     /// The tray icon exists (once per process — a re-spawn would park a second orb). Set on the resident-at-launch spawn or the first toggle-on; toggle-off leaves the icon until exit (v1 — despawn needs a service handle plumb-thru).
+    #[cfg(not(target_os = "android"))]
     tray_spawned: bool,
     /// The bell string this session last published to the worker (Android: `fcm:<project>:<token>`), so the ping-cycle publish is a no-op until the token rotates. `None` = nothing published yet. Read+written only on Android (the doorbell publish is `#[cfg(target_os = "android")]`); the field exists on every platform to keep the struct shape uniform.
     #[allow(dead_code)]
@@ -1725,6 +1726,7 @@ impl PhotonApp {
             start_in_background,
             resident_mode,
             published_bell: None,
+            #[cfg(not(target_os = "android"))]
             tray_spawned: false,
             settings_background_check: None,
             settings_unattended_check: None,
@@ -2722,6 +2724,7 @@ enum UpdateEvent {
     /// Download progress for the in-flight apply: (bytes done, total bytes; total 0 = length unknown). Throttled to whole-percent changes by the sender.
     Progress(u64, u64),
     /// Desktop: the binary swap completed and verified — re-exec into this path.
+    #[cfg(not(target_os = "android"))]
     Applied(std::path::PathBuf),
     /// Android: the APK downloaded + hash-verified — hand to the system installer.
     #[cfg(target_os = "android")]
