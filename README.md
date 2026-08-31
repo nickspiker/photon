@@ -238,17 +238,17 @@ cd photon
 
 (`winit` and `softbuffer` are patched via git URLs in Cargo.toml and resolve on their own.)
 
-**Desktop dev build** (unsigned, the normal from-source path):
+**Desktop dev build** (the normal from-source path — no signing keys needed; development builds waive the startup self-verify when unsigned):
 ```bash
+./scripts/dev.sh          # build + install to ~/.local/bin + launch, for the host OS
+# or manually:
 cargo build --features development
 ./target/debug/photon-messenger
 ```
 
 **Desktop release build** (self-verifying — needs your own keys):
 ```bash
-# Generate signing keys (see src/bin/photon-keygen.rs), put your public key in src/self_verify.rs, then:
-./scripts/dev.sh          # build + sign + install, dev profile
-# or the release path the deploy uses:
+# Generate signing keys (see src/bin/photon-keygen.rs), put your public key in src/crypto/self_verify.rs, then:
 PHOTON_ALLOW_RELEASE=1 cargo build --release
 ```
 

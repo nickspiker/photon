@@ -37,7 +37,13 @@ pub fn verify_binary_hash() -> Result<String, String> {
     // Read our own executable
     let exe_path =
         std::env::current_exe().map_err(|e| format!("Failed to get executable path: {}", e))?;
-    verify_file(&exe_path)
+    let result = verify_file(&exe_path);
+    // DEVELOPMENT builds waive the SELF-check: an outside builder (clone + `cargo build --features development`) has no signing key, and hard-exiting on the missing signature made from-source photon unrunnable without editing this file (field: first outside builder, 2026-08-30). The waiver is self-only and dev-only — `verify_file` stays strict for everyone (it gates update installs), and release builds (which the update channel ships) never carry the development feature, so the distribution trust story is unchanged. A dev build that IS signed still reports its real signature.
+    #[cfg(feature = "development")]
+    if result.is_err() {
+        return Ok("(unsigned development build — self-verify waived)".to_string());
+    }
+    result
 }
 
 /// Verify an arbitrary ON-DISK binary's appended Ed25519 signature WITHOUT executing it — the update path's gate (docs/updates.md: verify before exec; running a downloaded file to "self-verify" would be executing the very thing being checked).

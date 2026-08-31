@@ -58,11 +58,19 @@ sign_binary() {
     fi
     if [ ! -f "$signer" ]; then
         echo "Building signature signer (one-time)..."
-        cargo build --release --bin photon-signature-signer
+        # The allow flag is for THIS helper tool only, not a photon release: build.rs refuses any bare --release, and on an outside builder's box that refusal would kill the whole dev run before the graceful no-key skip below could.
+        PHOTON_ALLOW_RELEASE=1 cargo build --release --bin photon-signature-signer || true
         signer="target/release/photon-signature-signer"
     fi
 
     echo "Signing $bin..."
-    "$signer" "$bin"
-    echo "✓ Signed"
+    if "$signer" "$bin"; then
+        echo "✓ Signed"
+    elif [ "$profile" = "release" ]; then
+        echo "ERROR: signing failed — a release binary must carry the Ed25519 signature (self_verify hard-gates it)."
+        exit 1
+    else
+        # An outside builder has no signing key; dev builds waive the self-check (src/crypto/self_verify.rs), so an unsigned dev binary runs fine.
+        echo "! Signing skipped (no signing key on this box) — unsigned DEVELOPMENT build, self-verify waived."
+    fi
 }
