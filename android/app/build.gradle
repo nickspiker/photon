@@ -24,12 +24,13 @@ def gitCommitCount = {
 
 android {
     namespace 'com.photon.messenger'
-    compileSdk 34
+    compileSdk 35
 
     defaultConfig {
         applicationId "com.photon.messenger"
         minSdk 26  // API 26 for IMEI access and modern features
-        targetSdk 34
+        // 35 = current Play/OS expectation. Android 15 ENFORCES edge-to-edge at targetSdk 35 — photon draws every pixel on a full SurfaceView and mirrors IME insets natively (adjustNothing + nativeImeInset), so it should be unaffected, but the first phone build on this target must verify the keyboard model; the manifest opt-out is windowOptOutEdgeToEdgeEnforcement if it regresses.
+        targetSdk 35
         versionCode gitCommitCount
         versionName cargoVersion
 
@@ -64,12 +65,12 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
 
     kotlinOptions {
-        jvmTarget = '1.8'
+        jvmTarget = '17'
     }
 
     // Native libraries location
@@ -82,8 +83,8 @@ android {
 
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
-    implementation 'androidx.core:core-ktx:1.12.0'
-    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.core:core-ktx:1.15.0'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
 
     // Firebase
     implementation platform('com.google.firebase:firebase-bom:34.6.0')
