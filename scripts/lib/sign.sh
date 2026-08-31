@@ -10,9 +10,9 @@ sign_binary() {
     local profile="$1" target="$2" bin
     if [ -n "$target" ]; then
         bin="target/$target/$profile/photon-messenger"
-        if [ "$target" = "x86_64-pc-windows-gnu" ]; then
-            bin="$bin.exe"
-        fi
+        case "$target" in
+            *-windows-*) bin="$bin.exe" ;;
+        esac
     else
         bin="target/$profile/photon-messenger"
         # A no-target build is a HOST build, so on macOS it is an apple-darwin build — say so, or the codesign case below never matches. It didn't: `dev.sh` -> `desktop.sh` calls `sign_binary <profile>`
