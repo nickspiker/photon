@@ -24,13 +24,22 @@ sed_i() {
 }
 
 # A publish stamps HEAD's commit into the manifest — a dirty tree has no honest commit to claim, so refuse outright (agreed 2026-07-16).
+# ONE exception, same as deploy's preflight (2026-08-30): Cargo.lock-ONLY dirt. Sibling path-dep crates re-lock lazily — the first cargo touch after another machine's push (whose lock was written against ITS sibling checkouts) rewrites the lock to match the local tree, and that mechanical re-lock blocked every publish right after a pull (field 2026-08-31). Absorb it as its own commit + push; anything else stays a hard refusal.
 manifest_refuse_dirty() {
-    if [ -n "$(git status --porcelain)" ]; then
-        echo "ERROR: working tree is dirty — a publish stamps HEAD into the signed manifest, and a dirty build has no honest commit to claim."
-        echo "       Commit (or stash) first."
-        git status --short | head -20
-        exit 1
+    local dirt
+    dirt="$(git status --porcelain)"
+    [ -z "$dirt" ] && return 0
+    if [ -z "$(echo "$dirt" | grep -vE '^.M Cargo\.lock$')" ]; then
+        git add Cargo.lock
+        git commit -q -m "lock: sibling path-dep re-lock (publish preflight auto-absorb)"
+        git push -q || { echo "ERROR: lock-absorb push failed — reconcile with origin first."; exit 1; }
+        echo "Cargo.lock-only drift absorbed (sibling path-dep versions moved) — committed + pushed."
+        return 0
     fi
+    echo "ERROR: working tree is dirty — a publish stamps HEAD into the signed manifest, and a dirty build has no honest commit to claim."
+    echo "       Commit (or stash) first."
+    git status --short | head -20
+    exit 1
 }
 
 # One publish at a time per box. Without this, a second dev-*.sh started while the first still builds bumps the version mid-run, and the FIRST run's manifest row — which re-read the tree at row time — stamps the SECOND run's version+commit onto its own artefact (happened 2026-07-16: the v0.36.11 android APK published as v0.36.12 + the macos bump commit, so updating installed "12" that self-reports 11). fd 9 stays open for the sourcing script's lifetime; the kernel releases the lock when the script exits, success or failure.
