@@ -4637,9 +4637,11 @@ impl PhotonApp {
             }) else {
                 continue;
             };
-            let chains_present = self.contacts[ci].friendship_id.map_or(false, |fid| {
-                self.friendship_chains.iter().any(|(id, _)| *id == fid)
-            });
+            // TOKEN-matched, not fid-matched (2026-09-01, Emma's era-split residue): her contact held A chain — the stale-era one — so the fid check said "chains present" and the heal never fired, while every current-era frame bounced off "no chain for token" forever. The evidence that matters is a chain FOR THIS TOKEN.
+            let chains_present = self
+                .friendship_chains
+                .iter()
+                .any(|(_, c)| c.conversation_token == token);
             if self.contacts[ci].clutch_state != crate::types::ClutchState::Complete
                 || chains_present
                 || self.contacts[ci].clutch_keygen_in_progress
@@ -4678,23 +4680,12 @@ impl PhotonApp {
 
         // chain_pull serves (deferred past the checker borrow): a sibling asked for chains it lacks. Holding them = clear this friendship's push watermarks so drive_chain_replication re-pushes every lane checkpoint fleet-wide (the asker adopts, everyone else no-ops). Not holding them = answer miss.
         for (token, sender_key) in chain_pull_reqs_after {
-            let us = self
-                .session
-                .as_ref()
-                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
-            let have_fid = us.and_then(|us| {
-                self.contacts
-                    .iter()
-                    .find(|c| {
-                        !c.is_sibling
-                            && crate::crypto::clutch::derive_conversation_token(&[
-                                us,
-                                c.handle_hash,
-                            ]) == token
-                    })
-                    .and_then(|c| c.friendship_id)
-                    .filter(|fid| self.friendship_chains.iter().any(|(id, _)| id == fid))
-            });
+            // TOKEN-matched (same 2026-09-01 rule as the heal): serve iff we hold a chain FOR THIS TOKEN — a stale-era chain under the same contact must answer miss, or the asking sibling re-keys against a chain we can't actually give it.
+            let have_fid = self
+                .friendship_chains
+                .iter()
+                .find(|(_, c)| c.conversation_token == token)
+                .map(|(id, _)| *id);
             if let Some(fid) = have_fid {
                 let fb = *fid.as_bytes();
                 self.chain_pushed_osc.remove(&fb);
@@ -4747,9 +4738,11 @@ impl PhotonApp {
                 continue;
             };
             // Re-verify the evidence still stands — a chain_sync may have raced the misses in.
-            let chains_present = self.contacts[ci].friendship_id.map_or(false, |fid| {
-                self.friendship_chains.iter().any(|(id, _)| *id == fid)
-            });
+            // TOKEN-matched, not fid-matched (2026-09-01, Emma's era-split residue): her contact held A chain — the stale-era one — so the fid check said "chains present" and the heal never fired, while every current-era frame bounced off "no chain for token" forever. The evidence that matters is a chain FOR THIS TOKEN.
+            let chains_present = self
+                .friendship_chains
+                .iter()
+                .any(|(_, c)| c.conversation_token == token);
             if self.contacts[ci].clutch_state != crate::types::ClutchState::Complete
                 || chains_present
                 || self.contacts[ci].clutch_keygen_in_progress
