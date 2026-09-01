@@ -1735,8 +1735,8 @@ pub struct PhotonApp {
     settings_removeshred_armed: bool,
     /// About page: false = show the version as dozenal GLYPHS (the default — proper rendered dozenal, never arabic); true = the version tapped, spell it out in voca words. Toggles on each tap of the version row.
     about_version_spelled: bool,
-    /// Lifetime tap count on the About version row this session — at forty-two taps (dozenal three-dozen-six) the page reveals the custodian riddle easter egg, permanently for the session. The answer was always going to be forty-two.
-    about_version_taps: u32,
+    /// One tap on the version reveals the dozenal index; ONE tap within the index reveals the custodian riddle easter egg beneath it (session-permanent once found, hidden with the index when the version collapses).
+    about_riddle_revealed: bool,
 
     /// This node's own reflexive (public) address, learned via peer-echoed reflection (see [`crate::network::traverse::reflexive`]). `None` until the first signed pong / `ReflectResponse` echo. Fed forward to candidate gathering and the FGTW announce so our published address is the one seen on the live UDP data socket — not fgtw.org's TLS-flow `cf-connecting-ip`, which is only right for cone NATs.
     our_reflexive: Option<std::net::SocketAddr>,
@@ -2158,7 +2158,7 @@ impl PhotonApp {
             fleet_approve_armed: None,
             settings_removeshred_armed: false,
             about_version_spelled: false,
-            about_version_taps: 0,
+            about_riddle_revealed: false,
         }
     }
 

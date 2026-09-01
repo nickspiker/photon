@@ -1556,9 +1556,8 @@ impl FluorApp for PhotonApp {
                     }
                 } else if page == SettingsPage::About {
                     if slot == 3 {
-                        // Version row tapped → toggle dozenal glyphs ↔ spelled-out voca words. The tap counter feeds the forty-two easter egg (render side).
+                        // Version row tapped → toggle dozenal glyphs ↔ spelled-out voca words (+ the dozenal index).
                         self.about_version_spelled = !self.about_version_spelled;
-                        self.about_version_taps = self.about_version_taps.saturating_add(1);
                     } else if slot == 4 {
                         // The passless weblink → system browser. Desktop-only for now (Android needs an Intent through Kotlin — follow-up).
                         #[cfg(all(
@@ -1585,6 +1584,9 @@ impl FluorApp for PhotonApp {
                                 .spawn();
                         }
                         crate::log("ABOUT: passless.org link tapped");
+                    } else if slot == 5 {
+                        // A tap anywhere within the revealed dozenal index → the custodian riddle appears beneath it. One tap; session-permanent once found.
+                        self.about_riddle_revealed = true;
                     }
                 } else {
                     crate::logf!(
