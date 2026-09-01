@@ -68,6 +68,10 @@ pub static SEARCH_RELAY_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_FF_B0_00
 /// Add-friend result text + the in-flight hourglass: green on success, red on not-found/error.
 pub static SEARCH_FOUND_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_40_E0_40));
 pub static SEARCH_FAIL_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_E0_40_40));
+/// The "why you decimal!!!" scold text — Zila red, Zil.lun green, Zil blue: the primary VSF orange (1.0, 0.6doz=0.5, 0.0), channels authored in dozenal per the house joke.
+pub static DOZENAL_SCOLD_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_FF_80_00));
+/// The unticked dozenal checkbox's shame fill — Zil.lun red (half-intensity, dozenal 0;6): red enough to disapprove, dark enough to stay a box.
+pub static DOZENAL_SCOLD_BOX: LazyLock<u32> = LazyLock::new(|| c(0x00_80_00_00));
 /// Transport tier of a live path, shown as a dot beside a device or contact — SAME semantics as the presence ring above (one language: cyan = LAN/same room, green = direct WAN, orange = relay). The dot and ring shipped INVERTED for weeks (dot green=LAN/cyan=WAN) and the field caught it as "fleet page cyan, bridge green, same peer, same moment" (2026-08-30).
 pub static PATH_LAN_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_00_D0_E0));
 pub static PATH_WAN_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_40_E0_40));
