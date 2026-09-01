@@ -152,8 +152,8 @@ impl PhotonApp {
             let content_rows_h = if page == SettingsPage::You {
                 sl.content_line_h() * you_rows_plan(&self.you_fields).len() as Coord
             } else if page == SettingsPage::About {
-                // Logo(4) + gap + killswitch + passless + link + version + dozenal-toggle ≈ 9.8 rows collapsed; the reveal adds the spelled line + "dozenal" header + 6 cheat rows ≈ 8.4.
-                let rows = 9.8 + if self.about_version_spelled { 8.4 } else { 0.0 };
+                // Logo(4) + gap + killswitch + passless + link + no-servers prose(8×0.8) + consent block + TOKEN block + version + toggle + why-dozenal rant ≈ 37 rows collapsed (each prose line 0.8, three 1-row section headers, inter-block gaps); the version reveal adds the spelled line + "dozenal" header + 6 cheat rows ≈ 8.4.
+                let rows = 37.0 + if self.about_version_spelled { 8.4 } else { 0.0 };
                 sl.content_line_h() * rows
             } else if page == SettingsPage::Diagnostics && self.diag_log_view {
                 let n = match &self.diag_log_inspect {
@@ -5222,7 +5222,98 @@ impl PhotonApp {
                         (y + line_h) as isize,
                         btn_base.wrapping_add(4),
                     );
-                    y += line_h * 1.2;
+                    y += line_h * 1.4;
+                    // The no-servers pitch — what passless actually buys you. Deletion parity with speech: with genuinely two ends and no third copy, mutual deletion is total and silent while unilateral deletion is cryptographically loud (the chain breaks and the other side sees it) — tamper-evidence and consensual ephemerality aren't in tension.
+                    let prose_style = TextStyle::new(hspan2 * 0.75, *theme::LABEL_COLOUR)
+                        .weight(400)
+                        .font("Oxanium");
+                    for line in [
+                        "no accounts, no passwords, no servers",
+                        "your handle is the key — typed, used, never stored",
+                        "words land only on the devices in the conversation",
+                        "no third copy exists, because none was ever made",
+                        "so deletion is real: both sides agree, both burn, gone —",
+                        "the way a spoken conversation is gone",
+                        "delete alone and the chain breaks, loudly, for the other side",
+                        "agreement is silent; betrayal is evident",
+                    ] {
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            line,
+                            cx,
+                            y + line_h * 0.4,
+                            &prose_style,
+                            None,
+                            None,
+                        );
+                        y += line_h * 0.8;
+                    }
+                    y += line_h * 0.6;
+                    // CONSENT — the third pillar: every lifecycle edge is bilateral (mutual-consent clutch, two-signature add/depart, no expulsion), so nothing happens to an identity without its own key signing.
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        "consent",
+                        cx,
+                        y + line_h * 0.5,
+                        &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
+                            .weight(600)
+                            .font("Oxanium"),
+                        None,
+                        None,
+                    );
+                    y += line_h;
+                    for line in [
+                        "everything here is bilateral",
+                        "a friendship starts with two signatures and ends with two",
+                        "a device joins your fleet only when both sides say so",
+                        "deletion is mutual, or it is loud — never silent and alone",
+                        "no expulsion, no takedown, no admin",
+                        "nothing happens to your identity without your key",
+                    ] {
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            line,
+                            cx,
+                            y + line_h * 0.4,
+                            &prose_style,
+                            None,
+                            None,
+                        );
+                        y += line_h * 0.8;
+                    }
+                    y += line_h * 0.6;
+                    // TOKEN — the recovery story, mirroring the Recovery page's anti-collusion prose so the pitch and the tick box tell one tale.
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        "TOKEN",
+                        cx,
+                        y + line_h * 0.5,
+                        &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
+                            .weight(600)
+                            .font("Oxanium"),
+                        None,
+                        None,
+                    );
+                    y += line_h;
+                    for line in [
+                        "lose every device and your friends bring you back",
+                        "chosen custodians hold sealed pieces of your recovery",
+                        "no custodian learns whose recovery they hold",
+                        "and no owner learns which friends hold theirs",
+                        "what can't be named can't be pressured — or collude",
+                    ] {
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            line,
+                            cx,
+                            y + line_h * 0.4,
+                            &prose_style,
+                            None,
+                            None,
+                        );
+                        y += line_h * 0.8;
+                    }
+                    y += line_h * 0.6;
                     // Version — dozenal glyphs (weight 400 → the Oxanium +glyphs face draws the reserved control bytes as dozenal digits), NEVER arabic. Tap toggles the reveal (spelled form + cheat sheet). Whole row is the tap target (btn_base + 3).
                     let ver = format!("Version {}", version_dozenal_glyphs());
                     ctx.text.draw_text_center(
@@ -5327,6 +5418,39 @@ impl PhotonApp {
                             None,
                             Some(&mut chrome.hit_test_map),
                         );
+                    }
+                    y += line_h * 1.4;
+                    // The dozenal rant — why the toggle above defaults ON. Kept playful on purpose: decimal is an anatomical accident, not a design, and the page should own that opinion out loud.
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        "why dozenal",
+                        cx,
+                        y + line_h * 0.5,
+                        &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
+                            .weight(600)
+                            .font("Oxanium"),
+                        None,
+                        None,
+                    );
+                    y += line_h;
+                    for line in [
+                        "ten is an accident of anatomy — we count on our fingers",
+                        "twelve splits evenly by two, three, four, and six",
+                        "ten splits by two and five, and five never comes up",
+                        "a third in decimal repeats forever; in dozenal it lands clean",
+                        "halves, thirds, quarters, sixths — exact, no remainder",
+                        "you can still count in decimal above, with our condolences",
+                    ] {
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            line,
+                            cx,
+                            y + line_h * 0.4,
+                            &prose_style,
+                            None,
+                            None,
+                        );
+                        y += line_h * 0.8;
                     }
                     let _ = tspan;
                 }
