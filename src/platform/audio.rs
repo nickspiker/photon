@@ -41,6 +41,25 @@ const JITTER_DECAY_FRAMES: usize = 500; // ~5s of clean playback before shrinkin
 static JITTER_TARGET: AtomicUsize = AtomicUsize::new(JITTER_FLOOR);
 static JITTER_PRIMING: AtomicBool = AtomicBool::new(true);
 static JITTER_CLEAN_STREAK: AtomicUsize = AtomicUsize::new(0);
+// STANDING-DEPTH TRIM (2026-09-01 Emma/Nick field call): depth acquired during a transient (slow-start's 4-frame floor bursts, a recv-path stall) is PERMANENT without this — the DAC drains at exactly realtime, so excess queue = mouth-to-ear latency for the rest of the call. Target decay alone never sheds it (it only matters at a re-prime). When the queue sits above target+1 for a full clean second, drop ONE frame (10ms) and re-observe — sheds a standing 40ms in ~4s, inaudible against speech.
+const TRIM_OVER_SLACK: usize = 1; // frames above target that count as "standing over"
+const TRIM_OBSERVE_FRAMES: usize = 100; // 1s of consecutive over-depth before each single-frame drop
+static TRIM_OVER_STREAK: AtomicUsize = AtomicUsize::new(0);
+// Telemetry — the numbers that turn "latency feels a little off" into a diagnosis (peak standing depth vs target vs trims). Reset per call in clear_queues, logged by the engine at teardown.
+static JITTER_UNDERRUNS: AtomicUsize = AtomicUsize::new(0);
+static JITTER_DEPTH_PEAK: AtomicUsize = AtomicUsize::new(0);
+static JITTER_TRIMS: AtomicUsize = AtomicUsize::new(0);
+
+/// Per-call jitter diagnostics: (target_frames, current_depth, underruns, peak_depth, trims). 10ms per frame.
+pub fn jitter_stats() -> (usize, usize, usize, usize, usize) {
+    (
+        JITTER_TARGET.load(Ordering::Relaxed),
+        PLAYBACK_Q.lock().unwrap().len(),
+        JITTER_UNDERRUNS.load(Ordering::Relaxed),
+        JITTER_DEPTH_PEAK.load(Ordering::Relaxed),
+        JITTER_TRIMS.load(Ordering::Relaxed),
+    )
+}
 
 /// Peak-held mean |sample| of what the device is rendering (~80ms decay) — the engine's soft duck reads this as the far-end activity signal, covering the device-buffer + acoustic lag without sample-accurate alignment.
 static FAR_LEVEL: AtomicUsize = AtomicUsize::new(0);
@@ -91,6 +110,7 @@ pub fn queue_playback(frame: Vec<i16>) {
         q.pop_front();
     }
     q.push_back(frame);
+    JITTER_DEPTH_PEAK.fetch_max(q.len(), Ordering::Relaxed);
 }
 
 /// Frames currently queued for render — the engine's jitter-buffer depth signal.
@@ -143,6 +163,17 @@ fn next_render_frame() -> Vec<i16> {
                         JITTER_TARGET.store(target - 1, Ordering::Relaxed);
                         JITTER_CLEAN_STREAK.store(0, Ordering::Relaxed);
                     }
+                    // Standing-depth trim (see the consts): a queue persistently above target is latency, not safety — after a full second of over-depth, drop one frame to close the gap.
+                    if q.len() > target + TRIM_OVER_SLACK {
+                        let over = TRIM_OVER_STREAK.fetch_add(1, Ordering::Relaxed) + 1;
+                        if over >= TRIM_OBSERVE_FRAMES {
+                            q.pop_front();
+                            JITTER_TRIMS.fetch_add(1, Ordering::Relaxed);
+                            TRIM_OVER_STREAK.store(0, Ordering::Relaxed);
+                        }
+                    } else {
+                        TRIM_OVER_STREAK.store(0, Ordering::Relaxed);
+                    }
                     f
                 }
                 None => {
@@ -151,6 +182,7 @@ fn next_render_frame() -> Vec<i16> {
                     JITTER_TARGET.store((target + JITTER_GROW).min(JITTER_CAP), Ordering::Relaxed);
                     JITTER_CLEAN_STREAK.store(0, Ordering::Relaxed);
                     JITTER_PRIMING.store(true, Ordering::Relaxed);
+                    JITTER_UNDERRUNS.fetch_add(1, Ordering::Relaxed);
                     silence()
                 }
             }
@@ -171,7 +203,19 @@ fn next_render_frame() -> Vec<i16> {
 }
 
 /// Reset all queues — session start/stop hygiene so a new call never hears the last call's tail.
+/// Logs the session's jitter diagnostics FIRST (this runs at both start and stop; the stop edge is the one whose numbers matter, and a start against zeroed stats logs nothing).
 fn clear_queues() {
+    let (target, depth, underruns, peak, trims) = jitter_stats();
+    if underruns > 0 || peak > 0 || trims > 0 {
+        crate::logf!(
+            "CALL: jitter — target {} depth {} peak {} underruns {} trims {} (frames, 10ms each)",
+            target,
+            depth,
+            peak,
+            underruns,
+            trims
+        );
+    }
     CAPTURE_Q.lock().unwrap().clear();
     PLAYBACK_Q.lock().unwrap().clear();
     RENDER_REF.lock().unwrap().clear();
@@ -179,6 +223,10 @@ fn clear_queues() {
     JITTER_TARGET.store(JITTER_FLOOR, Ordering::Relaxed);
     JITTER_PRIMING.store(true, Ordering::Relaxed);
     JITTER_CLEAN_STREAK.store(0, Ordering::Relaxed);
+    TRIM_OVER_STREAK.store(0, Ordering::Relaxed);
+    JITTER_UNDERRUNS.store(0, Ordering::Relaxed);
+    JITTER_DEPTH_PEAK.store(0, Ordering::Relaxed);
+    JITTER_TRIMS.store(0, Ordering::Relaxed);
     FAR_LEVEL.store(0, Ordering::Relaxed);
 }
 

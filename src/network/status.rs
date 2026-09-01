@@ -1722,6 +1722,11 @@ async fn run_checker(
                         crate::call::deliver_media(msg_bytes, src_addr);
                         continue;
                     }
+                    // EXPRESS CALL SIGNALS (signal.rs): same fast-path treatment as media — the sealed out-of-band offer/answer copy that beats the ordered lane. Parked raw; the UI tick trial-opens against its friendship keys.
+                    if crate::call::signal::is_express_frame(msg_bytes) {
+                        crate::call::deliver_express(msg_bytes, src_addr);
+                        continue;
+                    }
 
                     // Check for PT DATA packets first (start with 'd') NOTE: Individual DATA packets not logged - only completion/failure
                     if is_pt_data(msg_bytes) {

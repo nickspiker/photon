@@ -34,6 +34,23 @@ pub fn deliver_media(bytes: &[u8], src: SocketAddr) {
     }
 }
 
+/// Express-signal ingress (signal.rs EXPRESS frames): the recv worker parks magic-matched datagrams here raw; the UI tick drains + trial-opens them against its friendships (it owns the keys). Bounded — signals are rare, and anything beyond the cap is flood noise.
+static EXPRESS_RX: Mutex<Vec<(Vec<u8>, SocketAddr)>> = Mutex::new(Vec::new());
+const EXPRESS_RX_CAP: usize = 32;
+
+/// Recv-worker side: park one express frame for the UI drain. Cheap, lock-push-unlock.
+pub fn deliver_express(bytes: &[u8], src: SocketAddr) {
+    let mut q = EXPRESS_RX.lock().unwrap();
+    if q.len() < EXPRESS_RX_CAP {
+        q.push((bytes.to_vec(), src));
+    }
+}
+
+/// UI-tick side: take everything parked since the last drain.
+pub fn take_express_frames() -> Vec<(Vec<u8>, SocketAddr)> {
+    std::mem::take(&mut *EXPRESS_RX.lock().unwrap())
+}
+
 /// Media EGRESS: packets must leave from the MAIN UDP socket (the port the peer's NAT knows), so the engine hands them to a dedicated tokio forwarder inside the network runtime — installed once at checker startup.
 static MEDIA_TX: Mutex<Option<tokio::sync::mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>>> =
     Mutex::new(None);
@@ -98,4 +115,6 @@ pub struct ActiveCall {
     pub spool: Option<spool::SpoolTicket>,
     /// Desktop ring-loop stopper (Ringing phase only; `None` on Android — Kotlin owns playback there). Dropped or cleared = ring stops at the next cadence boundary.
     pub ring: Option<RingGuard>,
+    /// The source address the peer's most recent EXPRESS signal arrived from — the freshest known direct path to the device actually driving this call. Express replies target it first (answer rides back the offer's path), beside the contact's validated path.
+    pub express_addr: Option<SocketAddr>,
 }

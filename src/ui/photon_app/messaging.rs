@@ -506,14 +506,27 @@ impl PhotonApp {
             }
             // CALL basket capture (docs/calls.md): the offer's send COMMIT is where the CALLER sees the lane key its offer sealed under — the basket's doomed egg (the callee captures the same value at decrypt, pre-advance). Matched by content: salt_text IS the row text.
             if let Ok(text) = std::str::from_utf8(&done.salt_text) {
-                if let Some(crate::call::signal::CallSignal::Offer { call_id, .. }) =
+                if let Some(sig @ crate::call::signal::CallSignal::Offer { call_id, .. }) =
                     crate::call::signal::CallSignal::parse(text)
                 {
+                    let mut captured = false;
                     if let Some(call) = self.active_call.as_mut() {
                         if call.call_id == call_id && call.offer_lane_key.is_none() {
                             call.offer_lane_key = Some(wire.expected_key);
+                            captured = true;
                             crate::log(
                                 "CALL: offer lane key captured at commit — basket egg secured",
+                            );
+                        }
+                    }
+                    // The offer's EXPRESS copy fires HERE, not at send: only the commit knows the lane key, and the express payload carries it as the callee's basket egg (signal.rs). ts = the row's own eagle stamp, so offer_osc and the stale-offer gate agree on both ends whichever copy lands first.
+                    if captured {
+                        if let Some(ci) = contact_idx {
+                            self.send_express_signal(
+                                ci,
+                                &sig,
+                                done.eagle_time,
+                                Some(wire.expected_key),
                             );
                         }
                     }

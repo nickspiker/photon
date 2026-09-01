@@ -205,6 +205,7 @@ impl PhotonApp {
             engine: None,
             spool: None,
             ring: None,
+            express_addr: None,
         });
         if contact_validated {
             crate::logf!("CALL: dialing {} (id {})", crate::fp(&peer), hex::encode(&call_id[..4]));
@@ -367,6 +368,7 @@ impl PhotonApp {
                             engine: None,
                             spool: None,
                             ring: None,
+                            express_addr: None,
                         });
                         self.ring_alert(ci);
                         crate::logf!(
@@ -524,8 +526,107 @@ impl PhotonApp {
             }
             self.persist_messages_async(ci);
             self.push_rows_to_siblings(ci, std::slice::from_ref(&row), None);
+            // EXPRESS copy for everything except the offer — the offer must wait for its lane-key capture at the send commit (messaging.rs), because the express payload carries the doomed egg.
+            if !matches!(sig, CallSignal::Offer { .. }) {
+                self.send_express_signal(ci, &sig, ts, None);
+            }
         }
         sent
+    }
+
+    /// Fire the EXPRESS out-of-band copy of a signal (signal.rs) at the peer's freshest direct paths: the address their last express signal arrived from (the answer rides back the offer's path), then the contact's punch-validated path. Fire-and-forget — the ordered lane row remains the canonical, retransmitted copy; this one just beats it past any chain gap. `lane_key` rides on offers only (the callee's basket egg).
+    pub(super) fn send_express_signal(
+        &self,
+        ci: usize,
+        sig: &CallSignal,
+        ts: i64,
+        lane_key: Option<[u8; 32]>,
+    ) {
+        let Some(contact) = self.contacts.get(ci) else {
+            return;
+        };
+        let Some(fid) = contact.friendship_id else {
+            return;
+        };
+        let Some((_, chains)) = self.friendship_chains.iter().find(|(id, _)| *id == fid) else {
+            return;
+        };
+        let (Some(lane_root), Some(history_key)) = (chains.lane_root(), chains.history_key())
+        else {
+            return;
+        };
+        let key = crate::call::signal::express_key(lane_root, history_key);
+        let Some(frame) = crate::call::signal::seal_express(&key, ts, lane_key.as_ref(), sig)
+        else {
+            return;
+        };
+        let mut targets: Vec<std::net::SocketAddr> = Vec::new();
+        if let Some(call) = self.active_call.as_ref() {
+            if call.peer_handle_hash == contact.handle_hash {
+                if let Some(a) = call.express_addr {
+                    targets.push(a);
+                }
+            }
+        }
+        if let Some((a, _)) = contact.validated_path {
+            if !targets.contains(&a) {
+                targets.push(a);
+            }
+        }
+        if targets.is_empty() {
+            crate::logf!("CALL: express {} skipped — no direct path known (lane only)", sig.kind());
+            return;
+        }
+        for a in &targets {
+            let _ = crate::call::send_media(frame.clone(), *a);
+        }
+        crate::logf!("CALL: express {} fired → {} path(s)", sig.kind(), targets.len());
+    }
+
+    /// Drain express frames the recv worker parked: trial-open against every friendship (a wrong key just fails the AEAD tag), dispatch as a direct non-merge signal, and remember the source address as the call's freshest direct path. Idempotent against the lane copy arriving later — dup call_ids are no-ops in `on_call_signal`.
+    pub(super) fn drain_express_signals(&mut self) {
+        let frames = crate::call::take_express_frames();
+        for (bytes, src) in frames {
+            let mut opened: Option<(usize, i64, Option<[u8; 32]>, CallSignal)> = None;
+            for (fid, chains) in &self.friendship_chains {
+                let (Some(lane_root), Some(history_key)) =
+                    (chains.lane_root(), chains.history_key())
+                else {
+                    continue;
+                };
+                let key = crate::call::signal::express_key(lane_root, history_key);
+                if let Some((ts, lane_key, sig)) =
+                    crate::call::signal::open_express(&key, &bytes)
+                {
+                    if let Some(ci) = self
+                        .contacts
+                        .iter()
+                        .position(|c| c.friendship_id == Some(*fid) && !c.is_sibling)
+                    {
+                        opened = Some((ci, ts, lane_key, sig));
+                    }
+                    break;
+                }
+            }
+            let Some((ci, ts, lane_key, sig)) = opened else {
+                crate::log("CALL: express frame opened by no friendship — dropped");
+                continue;
+            };
+            crate::logf!(
+                "CALL: express {} from {} (jumped the lane)",
+                sig.kind(),
+                crate::fp(&self.contacts[ci].handle_hash)
+            );
+            self.on_call_signal(ci, sig, lane_key, ts, false, false);
+            // Remember the reply path — but never the relay-injection sentinel (that's the pipe, not a route).
+            if src != crate::network::status::RELAY_ADDR {
+                if let Some(call) = self.active_call.as_mut() {
+                    if call.call_id == *sig.call_id() {
+                        call.express_addr = Some(src);
+                    }
+                }
+            }
+        }
     }
 
     /// The basket, assembled (docs/calls.md, call/keys.rs): lane_root + history_key from the friendship, the offer's doomed lane key, the id, both nonces.
