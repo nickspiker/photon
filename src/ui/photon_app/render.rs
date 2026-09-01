@@ -215,7 +215,8 @@ impl PhotonApp {
             .map_or(false, |c| {
                 !c.is_sibling && c.is_online && (c.chain_woven || c.friendship_id.is_some())
             });
-        let call_overlay: Option<(crate::call::CallPhase, String, bool, Option<usize>)> =
+        // Live call-duration seconds, computed here (a per-frame recompute from the frozen osc stamps — no stored timer): Active counts up from `phase_osc` (re-stamped at answer); Ended freezes at `final_osc - phase_osc`; other phases show 0. Carried in the overlay tuple so the panel + strip render it via the base-aware `fmt_duration`.
+        let call_overlay: Option<(crate::call::CallPhase, String, bool, Option<usize>, i64)> =
             self.active_call.as_ref().map(|c| {
                 let pi = self
                     .contacts
@@ -225,20 +226,37 @@ impl PhotonApp {
                 let name = peer.map(|k| k.display_name()).unwrap_or_else(|| "?".into());
                 // LIVE direct-path check, recomputed every frame: relay-only media does not exist yet, so a call with no validated direct path may sit Active-and-silent — the bar says so, and the warning self-clears the instant a punch validates (the engine bootstraps from the peer's first authenticated packet). No stored flag to go stale.
                 let direct = peer.map_or(false, |k| k.validated_path.is_some());
-                (c.phase, name, direct, pi)
+                let ops = vsf::OSCILLATIONS_PER_SECOND as i64;
+                let dur = match c.phase {
+                    crate::call::CallPhase::Active => {
+                        (vsf::eagle_time_oscillations() - c.phase_osc).max(0) / ops
+                    }
+                    crate::call::CallPhase::Ended => {
+                        (c.final_osc.unwrap_or(c.phase_osc) - c.phase_osc).max(0) / ops
+                    }
+                    _ => 0,
+                };
+                (c.phase, name, direct, pi, dur)
             });
         // Ringing / Ended show a SECOND action (Decline / Delete) beside the primary — hoisted so the end-of-frame hit re-stamp agrees with the early paint without re-deriving the phase.
-        let call_two_actions = call_overlay.as_ref().map_or(false, |(p, _, _, _)| {
+        let call_two_actions = call_overlay.as_ref().map_or(false, |(p, _, _, _, _)| {
             matches!(
                 p,
                 crate::call::CallPhase::Ringing | crate::call::CallPhase::Ended
             )
         });
-        // Ringing takes the WHOLE surface (redesign 2026-08-30): the bar squeezed Answer/Decline under the title band, exactly where Android's heads-up notification drops — the buttons were literally covered on every ring. Full-screen panel: caller avatar + name centred, pulse rings in the party colour, actions bottom-anchored where nothing can sit on top of them.
-        let call_fullscreen = matches!(
-            call_overlay.as_ref().map(|(p, _, _, _)| *p),
-            Some(crate::call::CallPhase::Ringing)
-        );
+        // Full-screen call panel: Ringing (redesign 2026-08-30 — the compact bar squeezed Answer/Decline under the title band where Android's heads-up notification drops), Ended (the roomy Keep/Delete/Play decision), and Active UNLESS minimized (the in-call screen: timer + speaker/end/add/back). Minimized Active yields to the screen underneath (Phase 3 strip / the compact bar), so messaging + navigation stay live.
+        let call_minimized = self.call_minimized;
+        let call_fullscreen = match call_overlay.as_ref().map(|(p, _, _, _, _)| *p) {
+            Some(crate::call::CallPhase::Ringing) | Some(crate::call::CallPhase::Ended) => true,
+            Some(crate::call::CallPhase::Active) => !call_minimized,
+            _ => false,
+        };
+        // Duration string hoisted BEFORE the chrome borrow (`fmt_duration` reads `&self`; the `&mut self.chrome` borrow below would otherwise block it). Used by the full-screen timer + the Ended summary.
+        let call_dur_str = call_overlay
+            .as_ref()
+            .map(|t| self.fmt_duration(t.4))
+            .unwrap_or_default();
         // Ring-panel avatar: pre-scale the caller's avatar (or the identity gradient) to the panel diameter — done HERE (before the canvas borrows) because it needs &mut self. Cache keyed by diameter; dropped when nothing rings.
         if call_fullscreen {
             let unit_now = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
@@ -248,7 +266,7 @@ impl PhotonApp {
                 .as_ref()
                 .map_or(true, |(d, _)| *d != diameter);
             if stale {
-                if let Some((_, _, _, Some(pi))) = &call_overlay {
+                if let Some((_, _, _, Some(pi), _)) = &call_overlay {
                     let c = &self.contacts[*pi];
                     let px = match c.avatar_pixels.as_ref() {
                         Some(base) => crate::ui::avatar_render::update_avatar_scaled(
@@ -411,10 +429,15 @@ impl PhotonApp {
             let cy = y0 + pill_h * 0.5; // Buttons take a CENTRE; the row is one pill tall
             let call_font = unit * 0.55; // button-text scale, proportional to the pill so it tracks zoom
             if call_fullscreen {
-                // ── FULL-SCREEN RING PANEL ── painted over whatever screen was up; every element scales off `unit` (zoom-honest, no fixed pixels).
-                let (name, direct, pi) = match &call_overlay {
-                    Some((_, n, d, p)) => (n.clone(), *d, *p),
-                    None => (String::from("?"), false, None),
+                // ── FULL-SCREEN CALL PANEL ── Ringing / Active / Ended, painted over whatever screen was up; every element scales off `unit` (zoom-honest, no fixed pixels).
+                let (phase, name, direct, pi) = match &call_overlay {
+                    Some((ph, n, d, p, _)) => (*ph, n.clone(), *d, *p),
+                    None => (
+                        crate::call::CallPhase::Ringing,
+                        String::from("?"),
+                        false,
+                        None,
+                    ),
                 };
                 let w = buf_w as f32;
                 let h = buf_h as f32;
@@ -431,23 +454,25 @@ impl PhotonApp {
                     .unwrap_or(*theme::STATUS_TEXT_COLOUR);
                 let (acx, acy) = (w * 0.5, h * 0.36);
                 let avatar_r = unit * 3.5;
-                // Pulse rings — the visual ring, expanding from the avatar in the relationship colour. Phase is a pure function of now (~1.4s cycle, matching the chirp cadence's feel); the tick keeps frames coming while Ringing (wake_at), so this animates without any stored state. Three staggered translucent discs, oldest largest and popping.
-                let cycle = (vsf::eagle_time_oscillations() as f64
-                    / (1.4 * vsf::OSCILLATIONS_PER_SECOND as f64))
-                    .fract() as f32;
-                for k in 0..3 {
-                    let t = (cycle + k as f32 / 3.0).fract();
-                    let r = avatar_r * (1.05 + 1.15 * t);
-                    // Fade with expansion: α walks 0x38 → 0 as the disc grows.
-                    let a = ((1.0 - t) * 0x38 as f32) as u32;
-                    paint::draw_circle(
-                        &mut canvas,
-                        acx,
-                        acy,
-                        r,
-                        (a << 24) | (colour & 0x00FF_FFFF),
-                        None,
-                    );
+                // Pulse rings — ONLY while Ringing (the attention cue); Active/Ended sit calm. Pure function of now (~1.4s cycle, matching the chirp cadence); the tick keeps frames coming while Ringing (wake_at), so it animates without stored state. Three staggered translucent discs, oldest largest and popping.
+                if matches!(phase, crate::call::CallPhase::Ringing) {
+                    let cycle = (vsf::eagle_time_oscillations() as f64
+                        / (1.4 * vsf::OSCILLATIONS_PER_SECOND as f64))
+                        .fract() as f32;
+                    for k in 0..3 {
+                        let t = (cycle + k as f32 / 3.0).fract();
+                        let r = avatar_r * (1.05 + 1.15 * t);
+                        // Fade with expansion: α walks 0x38 → 0 as the disc grows.
+                        let a = ((1.0 - t) * 0x38 as f32) as u32;
+                        paint::draw_circle(
+                            &mut canvas,
+                            acx,
+                            acy,
+                            r,
+                            (a << 24) | (colour & 0x00FF_FFFF),
+                            None,
+                        );
+                    }
                 }
                 if let Some((diam, px)) = self.ring_avatar_scaled.as_ref() {
                     crate::ui::avatar_render::draw_avatar(
@@ -464,17 +489,33 @@ impl PhotonApp {
                     None,
                     None,
                 );
-                let status_line = if direct {
-                    "\u{260E} incoming call".to_string()
-                } else {
-                    "\u{260E} incoming call \u{2014} \u{26A0} no direct path".to_string()
+                // Status / timer line beneath the name. Active shows the LIVE call timer (per-frame recompute from phase_osc); Ended a frozen call summary; Ringing the incoming cue. Oxanium so the base-aware `fmt_duration` (Phase 4 dozenal) resolves its glyphs.
+                let status_line = match phase {
+                    crate::call::CallPhase::Ringing => {
+                        if direct {
+                            "\u{260E} incoming call".to_string()
+                        } else {
+                            "\u{260E} incoming call \u{2014} \u{26A0} no direct path".to_string()
+                        }
+                    }
+                    crate::call::CallPhase::Active => {
+                        if direct {
+                            format!("\u{260E} {}", call_dur_str)
+                        } else {
+                            format!("\u{260E} {} \u{2014} \u{26A0} no direct path", call_dur_str)
+                        }
+                    }
+                    crate::call::CallPhase::Ended => {
+                        format!("\u{260E} call \u{2014} {}", call_dur_str)
+                    }
+                    crate::call::CallPhase::Outgoing => format!("\u{260E} calling {}\u{2026}", name),
                 };
                 ctx.text.draw_text_center(
                     &mut canvas,
                     &status_line,
                     acx,
                     acy + avatar_r + unit * 2.2,
-                    &TextStyle::new(unit * 0.6, *theme::STATUS_TEXT_COLOUR),
+                    &TextStyle::new(unit * 0.62, *theme::STATUS_TEXT_COLOUR).font("Oxanium"),
                     None,
                     None,
                 );
@@ -483,19 +524,84 @@ impl PhotonApp {
                 let bh = unit * 2.4;
                 let by = h - bh * 0.5 - unit * 1.5;
                 let bfont = unit * 0.75;
-                if let Some(b) = self.call_decline_btn.as_mut() {
-                    b.set_rect(w * 0.5 - bw * 0.5 - unit * 0.75, by, bw, bh);
-                    b.set_font_size(bfont);
-                    b.set_label("Decline");
-                    let id = b.hit_id();
-                    b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                }
-                if let Some(b) = self.call_action_btn.as_mut() {
-                    b.set_rect(w * 0.5 + bw * 0.5 + unit * 0.75, by, bw, bh);
-                    b.set_font_size(bfont);
-                    b.set_label("Answer");
-                    let id = b.hit_id();
-                    b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                match phase {
+                    crate::call::CallPhase::Ringing => {
+                        // Decline LEFT, Answer RIGHT — the incoming-call decision.
+                        if let Some(b) = self.call_decline_btn.as_mut() {
+                            b.set_rect(w * 0.5 - bw * 0.5 - unit * 0.75, by, bw, bh);
+                            b.set_font_size(bfont);
+                            b.set_label("Decline");
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
+                        if let Some(b) = self.call_action_btn.as_mut() {
+                            b.set_rect(w * 0.5 + bw * 0.5 + unit * 0.75, by, bw, bh);
+                            b.set_font_size(bfont);
+                            b.set_label("Answer");
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
+                    }
+                    crate::call::CallPhase::Ended => {
+                        // The save/discard decision reuses this full-screen panel: Play (preview) centred above, Delete LEFT, Keep RIGHT.
+                        if let Some(b) = self.call_play_btn.as_mut() {
+                            b.set_rect(w * 0.5, by - bh - unit * 0.6, w * 0.4, bh * 0.85);
+                            b.set_font_size(bfont);
+                            b.set_label("\u{25B6} Play");
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
+                        if let Some(b) = self.call_decline_btn.as_mut() {
+                            b.set_rect(w * 0.5 - bw * 0.5 - unit * 0.75, by, bw, bh);
+                            b.set_font_size(bfont);
+                            b.set_label("Delete");
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
+                        if let Some(b) = self.call_action_btn.as_mut() {
+                            b.set_rect(w * 0.5 + bw * 0.5 + unit * 0.75, by, bw, bh);
+                            b.set_font_size(bfont);
+                            b.set_label("Keep");
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
+                    }
+                    _ => {
+                        // Active in-call screen: a secondary row (Speaker / +Handle / ‹ Contact) above the primary End call. Speaker + Add-handle are stubs; ‹ Contact minimizes.
+                        let sw = w * 0.29;
+                        let sh = unit * 2.0;
+                        let sfont = unit * 0.58;
+                        let sy = by - bh - unit * 0.6;
+                        let spk_on = self.call_speaker_on;
+                        if let Some(b) = self.call_speaker_btn.as_mut() {
+                            b.set_rect(w * 0.5 - sw - unit * 0.4, sy, sw, sh);
+                            b.set_font_size(sfont);
+                            b.set_label(if spk_on { "\u{1F50A} On" } else { "\u{1F50A} Speaker" });
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
+                        if let Some(b) = self.call_addhandle_btn.as_mut() {
+                            b.set_rect(w * 0.5, sy, sw, sh);
+                            b.set_font_size(sfont);
+                            b.set_label("+ Handle");
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
+                        if let Some(b) = self.call_back_btn.as_mut() {
+                            b.set_rect(w * 0.5 + sw + unit * 0.4, sy, sw, sh);
+                            b.set_font_size(sfont);
+                            b.set_label("\u{2039} Contact");
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
+                        if let Some(b) = self.call_action_btn.as_mut() {
+                            b.set_rect(w * 0.5, by, w * 0.5, bh);
+                            b.set_font_size(bfont);
+                            b.set_label("End call");
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
+                    }
                 }
                 // OPAQUE background LAST: fluor composes later paints UNDER earlier ones, so the backdrop must follow the panel's own elements or it covers them — painting it FIRST produced a solid-black dead screen on desktop (field 2026-08-31, the very first Linux ring after the redesign). Painted last it slots exactly one layer beneath the pulse/avatar/name/buttons and still blots out whatever screen was up (α 0xFF, darkness 0xFF ⇒ solid black; the translucent-wash ghosting fix holds).
                 paint::fill_rect(
@@ -508,7 +614,7 @@ impl PhotonApp {
                     None,
                     None,
                 );
-            } else if let Some((phase, name, direct, _pi)) = &call_overlay {
+            } else if let Some((phase, name, direct, _pi, _dur)) = &call_overlay {
                 let phase = *phase;
                 let bar_w = buf_w as f32 * 0.9; // window-relative width — a bar spans the window
                 let x0 = (buf_w as f32 - bar_w) * 0.5;
@@ -574,8 +680,12 @@ impl PhotonApp {
                 // The ☎ start pill — top-right of the conversation, mirroring the "‹ Contacts" back arrow on the left; sized off `unit` so it matches the back arrow at every zoom. Shown for any friend convo (discoverable), dimmed (disabled) until the friend is reachable — the disabled label dim reads as "can't call yet".
                 let pill_w = unit * 5.;
                 let px = buf_w as f32 - pill_w - unit; // top-right, one unit of margin from the edge
+                // Sit on the SAME vertical as the back arrow (`buf_h·0.06 + unit`) — lower than the old pinned `cy` — and slide up-under with the message scroll (`conv_topbar_off`) exactly like the back arrow, so the whole top bar is one browser-toolbar band. When it scrolls above the top its hit rect leaves the surface with it (no ghost taps).
+                let bar_h = buf_h as f32 * 0.06 + unit + pill_h;
+                let bar_off = self.conv_topbar_off.min(bar_h);
+                let call_cy = buf_h as f32 * 0.06 + unit - bar_off;
                 if let Some(b) = self.call_start_btn.as_mut() {
-                    b.set_rect(px + pill_w * 0.5, cy, pill_w, pill_h);
+                    b.set_rect(px + pill_w * 0.5, call_cy, pill_w, pill_h);
                     b.set_font_size(call_font);
                     b.set_enabled(call_pill_enabled);
                     let id = b.hit_id();
@@ -5242,6 +5352,29 @@ impl PhotonApp {
             if call_two_actions {
                 if let Some(b) = self.call_decline_btn.as_ref() {
                     b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
+                }
+            }
+            // Full-screen-only controls, phase-gated (the modal wipe above cleared the map, so these must re-assert): Active in-call = speaker / +handle / ‹ contact; Ended = play preview.
+            if call_fullscreen {
+                match call_overlay.as_ref().map(|t| t.0) {
+                    Some(crate::call::CallPhase::Active) => {
+                        for b in [
+                            self.call_speaker_btn.as_ref(),
+                            self.call_addhandle_btn.as_ref(),
+                            self.call_back_btn.as_ref(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        {
+                            b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
+                        }
+                    }
+                    Some(crate::call::CallPhase::Ended) => {
+                        if let Some(b) = self.call_play_btn.as_ref() {
+                            b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
+                        }
+                    }
+                    _ => {}
                 }
             }
         } else if matches!(self.state, AppState::Conversation)

@@ -50,7 +50,32 @@ static FAR_LEVEL: AtomicUsize = AtomicUsize::new(0);
 pub enum AudioRoute {
     Headset,
     Builtin,
+    /// Loudspeaker — the speaker-toggle target. Falls into the "ducks" bucket like Builtin (only `Headset` bypasses the echo layers).
+    Speaker,
+    /// Earpiece (phone receiver) — the speaker-toggle's off state on a handset.
+    Earpiece,
     Unknown,
+}
+
+/// Requested output-route override (the speaker toggle). `None` = follow the sniffed device route. v1 is a pure INTENT seam: desktop records the state + logs (real device switching is a later layer); Android-future flips `AudioManager.setSpeakerphoneOn` from here.
+static ROUTE_OVERRIDE: Mutex<Option<AudioRoute>> = Mutex::new(None);
+
+/// Speaker-toggle intent. Stores the requested route (observable via [`route_override`]); no real device switch in v1.
+pub fn set_route(r: AudioRoute) {
+    *ROUTE_OVERRIDE.lock().unwrap() = Some(r);
+    let name = match r {
+        AudioRoute::Headset => "headset",
+        AudioRoute::Builtin => "builtin",
+        AudioRoute::Speaker => "speaker",
+        AudioRoute::Earpiece => "earpiece",
+        AudioRoute::Unknown => "unknown",
+    };
+    crate::logf!("AUDIO: route intent = {} (stub — no device switch yet)", name);
+}
+
+/// The current route override, if the speaker toggle set one.
+pub fn route_override() -> Option<AudioRoute> {
+    *ROUTE_OVERRIDE.lock().unwrap()
 }
 
 /// Drain every captured frame since the last call (10ms 48kHz mono each). Engine-side, any thread.

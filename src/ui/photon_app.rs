@@ -659,10 +659,10 @@ struct AttachInstalled {
 
 /// Greedy word-wrap for the message list: split `s` into lines that each measure ≤ `max_w` under `style`. Word widths are measured individually and summed (kerning across a space is negligible at chat sizes), so the cost is O(words), not O(words²) re-shapes. A single word wider than the line hard-breaks by chars — a pasted URL/hash must wrap, not vanish off-screen. Empty input yields one empty line so the row keeps its height.
 /// Bubble DISPLAY text for a row: attachment rows render as a pill line — paperclip, name, dozenal size, and an actions hint while the blob isn't held locally. Everything else passes thru. The raw marker string never reaches a glyph.
-/// The starter reaction vocabulary, default order — the strip re-ranks by fleet-wide usage on top of this (stable sort, so ties keep this order). Emoji-as-text is the proven path (the paperclip pill); the heart carries VS16 so it renders emoji-style, not text-style.
+/// The starter reaction vocabulary, default order — the strip re-ranks by fleet-wide usage on top of this (stable sort, so ties keep this order). Emoji-as-text is the proven path (the paperclip pill). The heart is BARE U+2764 (no VS16): fluor's per-codepoint text path renders the trailing U+FE0F variation-selector as a `.notdef` tofu box beside the heart, and the reaction is stored/compared bare anyway (see `current_reaction` tests), so the selector only ever hurt.
 const DEFAULT_REACTIONS: [&str; 5] = [
     "\u{1F44D}",
-    "\u{2764}\u{FE0F}",
+    "\u{2764}",
     "\u{1F602}",
     "\u{1F62E}",
     "\u{1F44E}",
@@ -1311,6 +1311,17 @@ pub struct PhotonApp {
     call_start_btn: Option<Button>,
     call_action_btn: Option<Button>,
     call_decline_btn: Option<Button>,
+    /// In-call full-screen (Active) + end-screen (Ended) controls — same retained-Button pattern as the four above. `call_speaker_btn` = speaker toggle (stubbed route intent); `call_addhandle_btn` = add-a-handle (stubbed no-op); `call_back_btn` = minimize ("back to contact"); `call_play_btn` = preview/play the recording (Ended, and the history rows).
+    call_speaker_btn: Option<Button>,
+    call_addhandle_btn: Option<Button>,
+    call_back_btn: Option<Button>,
+    call_play_btn: Option<Button>,
+    /// The Active call is minimized to a strip (Phase 3) / compact bar — the full-screen call panel yields to the screen underneath so messaging + navigation stay live. Reset on every phase start and forced false on Ringing/Ended (always full-screen).
+    call_minimized: bool,
+    /// Speaker-toggle visual state (stub — no real device route switch in v1).
+    call_speaker_on: bool,
+    /// Live recording-playback handle (end-screen preview + history rows). Held so the worker keeps running (dropping the handle stops it); a new play or a starting call replaces/stops it.
+    call_playback: Option<crate::call::playback::PlaybackHandle>,
     /// Runtime-only stuck-tip ledger per friendship: (the peer's advertised head for OUR lane, exhaust→re-arm ladders seen at exactly that head). The anchor-wedge detector needs tip 0; a NONZERO head that never moves while our exhausted pendings re-arm and exhaust again is the same dead lane in disguise (the peer holds those rows as forwards it can never re-ACK) — two full ladders at one head trips the rotation.
     lane_rearm_cycles: std::collections::HashMap<crate::types::friendship::FriendshipId, (i64, u8)>,
     /// Runtime-only re-serve cap, keyed per (friendship, peer DEVICE): the record's evidence tuple (tip for OUR lane, peer row_count, peer row_digest) plus ROWS ACTUALLY TRANSMITTED against exactly that testimony (2026-09-01: was bursts ATTEMPTED — the serial-send gate let ~1 row out per burst, so 2 attempted bursts spent the cap having served ~2 rows and a deeper hole parked forever; counting transmitted rows keeps the anti-loop convergence while letting the whole deficit drain). Device-keyed because each peer device pongs its OWN lane view — a fid-keyed slot flip-flopped between two devices' tips and reset the cap every cycle (the hours-long 8-rows-per-pong loop, field 2026-08-21). ANY change in the peer's testimony is the new-evidence edge that re-arms the cap; a peer that holds the rows but counts them differently (deleted/edit/reaction rows) goes quiet after the cap instead of bursting forever.
@@ -1664,6 +1675,9 @@ pub struct PhotonApp {
     /// Self-update state (docs/updates.md): off-thread check/apply results drain here. tx kept so both channel checks + an apply share ONE receiver.
     update_rx: Option<std::sync::mpsc::Receiver<UpdateEvent>>,
     update_tx: Option<std::sync::mpsc::Sender<UpdateEvent>>,
+    /// Keep-transcode results (worker → UI): a finished N-channel recording posts here for the `call.audio` row mint. Lazily created on first keep (see `call_keep_sender`).
+    call_keep_rx: Option<std::sync::mpsc::Receiver<call_ui::CallKeepResult>>,
+    call_keep_tx: Option<std::sync::mpsc::Sender<call_ui::CallKeepResult>>,
     /// Per-channel manifest state, populated by the auto-check on each Updates-page open — drives each button's label (target version, dozenal), colour, and enabled-ness.
     update_release: ChannelCheck,
     update_dev: ChannelCheck,
@@ -1964,6 +1978,13 @@ impl PhotonApp {
             call_start_btn: None,
             call_action_btn: None,
             call_decline_btn: None,
+            call_speaker_btn: None,
+            call_addhandle_btn: None,
+            call_back_btn: None,
+            call_play_btn: None,
+            call_minimized: false,
+            call_speaker_on: false,
+            call_playback: None,
             lane_rearm_cycles: std::collections::HashMap::new(),
             lane_reserve_bursts: std::collections::HashMap::new(),
             pb_resolve_cursor: 0,
@@ -2095,6 +2116,8 @@ impl PhotonApp {
             pending_lock: None,
             update_rx: None,
             update_tx: None,
+            call_keep_rx: None,
+            call_keep_tx: None,
             update_release: ChannelCheck::Idle,
             update_dev: ChannelCheck::Idle,
             update_checked: false,
@@ -2519,20 +2542,39 @@ impl PhotonApp {
     /// Every APP widget (NOT chrome) active on the current screen, yielded to `f` — the single per-widget registry (see [`Container::visit`]). Screen-gated: an off-screen widget is neither dispatched to, tab-focusable, hover-lit, nor damage-claimed. An inherent method (not part of `Container`) so hover/damage passes can call it directly.
     fn visit_app_widgets(&mut self, f: &mut dyn FnMut(&mut dyn Widget)) {
         // Call controls ride EVERY screen (a ring must be answerable from wherever the user is — docs/calls.md), so they're yielded BEFORE the per-state matches — hover/press/dispatch/apply_pressed/overlay-tint all walk this one registry. The status chip is NOT yielded (non-interactive label). Visibility mirrors the render gate exactly: a live call yields the action (+ decline in ringing/ended); an open callable conversation with no call yields the ☎ start pill. A dimmed (not-yet-reachable) start pill is drawn but withheld here so a dead tap can't dispatch.
-        if self.active_call.is_some() {
-            let two_actions = self.active_call.as_ref().map_or(false, |c| {
-                matches!(
-                    c.phase,
-                    crate::call::CallPhase::Ringing | crate::call::CallPhase::Ended
-                )
-            });
+        if let Some(phase) = self.active_call.as_ref().map(|c| c.phase) {
+            use crate::call::CallPhase;
+            // The action button is live in EVERY phase (Answer / End call / Hang up / Keep).
             if let Some(b) = self.call_action_btn.as_mut() {
                 f(b);
             }
-            if two_actions {
-                if let Some(b) = self.call_decline_btn.as_mut() {
-                    f(b);
+            match phase {
+                CallPhase::Ringing => {
+                    if let Some(b) = self.call_decline_btn.as_mut() {
+                        f(b);
+                    }
                 }
+                CallPhase::Ended => {
+                    if let Some(b) = self.call_decline_btn.as_mut() {
+                        f(b);
+                    }
+                    if let Some(b) = self.call_play_btn.as_mut() {
+                        f(b);
+                    }
+                }
+                // Active full-screen in-call controls; a minimized Active call yields only the action (the strip / compact bar's End).
+                CallPhase::Active if !self.call_minimized => {
+                    if let Some(b) = self.call_speaker_btn.as_mut() {
+                        f(b);
+                    }
+                    if let Some(b) = self.call_addhandle_btn.as_mut() {
+                        f(b);
+                    }
+                    if let Some(b) = self.call_back_btn.as_mut() {
+                        f(b);
+                    }
+                }
+                _ => {}
             }
         } else if matches!(self.state, AppState::Conversation) {
             let callable = self
