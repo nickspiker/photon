@@ -41,12 +41,33 @@ object PhotonWifiDirect {
     private external fun nativeOnServiceFound(txt: ByteArray)
     private external fun nativeOnGroupChanged(formed: Boolean, isGo: Boolean, ourIp: String, goIp: String)
     private external fun nativeOnOpenHouseFound(ssid: String, psk: String)
+    private external fun nativeOnMetered(metered: Boolean)
 
     /** Called once from PhotonActivity.onCreate (after loadLibrary). */
     fun init(a: PhotonActivity) {
         appContext = a.applicationContext
         activity = a
         nativeInit()
+        watchMetered()
+    }
+
+    /** Mirror the default network's metered-ness into native (edge-driven: capability-change callbacks only). Metered-only connectivity widens the WFD trigger — a co-located friend should ride the direct radio, not the tower. */
+    private fun watchMetered() {
+        val ctx = appContext ?: return
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager ?: return
+        try {
+            cm.registerDefaultNetworkCallback(object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) {
+                    nativeOnMetered(!caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED))
+                }
+                override fun onLost(network: android.net.Network) {
+                    // No default network at all: not metered — the STRANDED edge covers this case.
+                    nativeOnMetered(false)
+                }
+            })
+        } catch (e: Exception) {
+            android.util.Log.w("PhotonWFD", "metered watch unavailable: $e")
+        }
     }
 
     fun onPermissionsGranted() {

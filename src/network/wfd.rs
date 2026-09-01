@@ -18,6 +18,17 @@ pub fn set_relay_reachable(up: bool) {
     RELAY_REACHABLE.store(up, Ordering::Relaxed);
 }
 
+/// The device's default network is METERED (cellular, tethered hotspot) — mirrored from Android's ConnectivityManager on capability-change edges. A metered-only reachable friend widens the bearer trigger: co-located peers should ride the direct radio, not the tower. The wins stack — zero data cost, single radio hop instead of phone→tower→core→tower→phone (a call RTT drops from ~50-100ms to ~2-5ms, and measured P2P throughput runs ~8× a congested cellular uplink), and for a sustained call the radio power is comparable while the latency/cost win is total.
+pub static NET_METERED: AtomicBool = AtomicBool::new(false);
+
+pub fn net_metered() -> bool {
+    NET_METERED.load(Ordering::Relaxed)
+}
+
+pub fn set_net_metered(metered: bool) {
+    NET_METERED.store(metered, Ordering::Relaxed);
+}
+
 /// The Android group-owner address inside every Wi-Fi Direct group.
 pub const WFD_GO_IP: std::net::Ipv4Addr = std::net::Ipv4Addr::new(192, 168, 49, 1);
 

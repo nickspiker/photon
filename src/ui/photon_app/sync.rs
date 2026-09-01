@@ -1990,6 +1990,7 @@ impl PhotonApp {
         let our_dev = *kp.public.as_bytes();
         let mut entries: Vec<([u8; 32], [u8; 32])> = Vec::new();
         let mut any_stranded = false;
+        let mut any_metered = false;
         let mut any_p2p = false;
         let mut any_p2p_online = false;
         for c in &self.contacts {
@@ -2002,6 +2003,12 @@ impl PhotonApp {
             entries.push((*seed.as_bytes(), our_dev));
             if c.validated_path.is_none() && !c.is_online {
                 any_stranded = true;
+            }
+            // METERED WIDENING: the friend may be reachable, but every path we have rides the tower — no LAN path (a validated LAN path means the AP hop is free and WFD buys nothing but battery). Co-located peers should hear each other over the direct radio: zero data cost, ~2-5ms instead of ~50-100ms RTT, and ~8× the throughput of a congested cellular uplink for a live call. Discovery only runs on this edge (metered + provisioned friend + no LAN), so the battery cost is bounded to exactly the situations where WFD wins. Unlike the stranded case this does NOT require the relay to be down — the relay works fine over cellular, it's just the expensive way to reach someone at arm's length.
+            if crate::network::wfd::net_metered()
+                && !(c.validated_path.is_some() && c.validated_path_lan)
+            {
+                any_metered = true;
             }
             if c.p2p_addr.is_some() {
                 any_p2p = true;
@@ -2018,7 +2025,7 @@ impl PhotonApp {
             return;
         }
         crate::network::wfd::eval_stranded(
-            any_stranded && !crate::network::wfd::relay_reachable(),
+            (any_stranded && !crate::network::wfd::relay_reachable()) || any_metered,
             &entries,
         );
     }
