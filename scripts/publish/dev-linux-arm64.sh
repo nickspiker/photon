@@ -13,7 +13,8 @@ source scripts/lib/manifest.sh
 manifest_begin_dev_publish "linux-arm64"
 
 echo "Building Linux ARM64 development binary..."
-CFLAGS_aarch64_unknown_linux_gnu="--sysroot=/usr/aarch64-redhat-linux/sys-root/fc42" \
+# -isystem beside --sysroot: Fedora's glibc-less cross-gcc ships a limits.h that never include_next-chains into the sysroot's, so MB_LEN_MAX falls back to 1 and glibc's _FORTIFY_SOURCE wctomb assert kills any TU that includes <limits.h> before <stdlib.h> — which vendored opus does (first hit: the v0.71.0 deploy, 2026-09-01). -isystem puts the sysroot glibc headers ahead of gcc's internal dir, restoring the proper chain.
+CFLAGS_aarch64_unknown_linux_gnu="--sysroot=/usr/aarch64-redhat-linux/sys-root/fc42 -isystem /usr/aarch64-redhat-linux/sys-root/fc42/usr/include" \
 CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
 PKG_CONFIG_ALLOW_CROSS=1 \
 PKG_CONFIG_PATH_aarch64_unknown_linux_gnu=/mnt/Harbor/Code/photon/cross-libs/aarch64/pkgconfig \
