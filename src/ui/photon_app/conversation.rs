@@ -574,10 +574,14 @@ impl PhotonApp {
         // §4.2 one-CLUTCH-per-friendship: a friend claimed by ANOTHER of our devices PARKS here — its ceremony is the fleet's ceremony (see ceremony_parked_by for the full rules incl. the woven guard and the probed-before-takeover boot-race fix). An owner that is PROBED-offline is presence-driven takeover: the contact re-enters the queue and the pickup below re-claims it. Sibling weaves are per-device-pair by design — never parked.
         let siblings = sibling_presence_snapshot(&self.contacts);
         // FLEET-FIRST REJOIN (the re-clutch storm fix): while ANY fleet sibling still lacks a presence VERDICT (pong or 3-timeout — an evidence edge, never a timer), FRIEND keygens hold. A wiped device's restored contacts arrive Pending+keyless and the old code fired ceremonies at every friend within milliseconds — seconds before chain replication from an online sibling would have flipped them all Complete with no ceremony at all. Once every sibling is probed: online siblings ⇒ chains arrive and adoption drains the queue; all-offline ⇒ this is the identity's only live device and clutching is legitimately ours. Sibling PAIR-WEAVES are exempt — they are the very channel the chains replicate over.
-        let sibling_probe_pending = self
-            .contacts
-            .iter()
-            .any(|s| s.is_sibling && !s.locked_out && !s.presence_probed);
+        // Only siblings the CURRENT fold vouches for may hold the gate (2026-09-01, the ocean-phone ghost): a stale-era or keyless sibling row can never be probed — no address, no pong, no timeout verdict — and one such corpse held 8-9 friend keygens hostage on two devices. The fold is the membership authority; when we hold one, an un-folded sibling's probe status is meaningless. Empty fold (pre-first-adopt) keeps the old behaviour — fail toward holding, never toward a re-clutch storm.
+        let fold = &self.registry_converged_fold;
+        let sibling_probe_pending = self.contacts.iter().any(|s| {
+            s.is_sibling
+                && !s.locked_out
+                && !s.presence_probed
+                && (fold.is_empty() || s.device_key().is_some_and(|k| fold.contains(&k)))
+        });
         // A conversation with no remote participants has nothing to exchange, so it never enters the queue. (This replaces a comparison against the raw identity SEED that could never match a pid — self was excluded from keygen only because something else forced its state Complete.)
         let next_idx = self.contacts.iter().position(|c| {
             self.has_remote(c)

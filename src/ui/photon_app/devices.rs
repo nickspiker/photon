@@ -847,10 +847,10 @@ impl PhotonApp {
             }
         }
 
-        // Drop de-folded members (device removed from OUR chain).
+        // Drop de-folded members (device removed from OUR chain) — AND keyless sibling rows (2026-09-01, the ocean-phone ghost): a sibling contact whose device key is None (or stale-era) can never be pinged, never earns a presence verdict, and the old is_some_and kept it forever — where it wedged the fleet-first keygen gate for every friend ceremony. The fold is the authority; a sibling row it can't vouch for is debris.
         let mut removed: Vec<crate::types::Contact> = Vec::new();
         self.contacts.retain(|c| {
-            if c.is_sibling && c.device_key().is_some_and(|k| !members.contains(&k)) {
+            if c.is_sibling && c.device_key().map_or(true, |k| !members.contains(&k)) {
                 removed.push(c.clone());
                 false
             } else {
