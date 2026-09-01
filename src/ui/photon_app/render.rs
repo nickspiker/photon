@@ -2782,12 +2782,15 @@ impl PhotonApp {
                                 } else {
                                     format!("{}s ago", crate::fmt_num(secs as u32))
                                 };
+                                // The delivery ladder (sending → replicated ∥ delivered): "delivered" = the friend's fleet ACKed (the line — nothing beyond it exists, ever; "seen" is only a human's explicit reaction); "replicated" = our own fleet holds it but their ACK hasn't landed yet.
                                 let mut detail = if msg.is_outgoing {
                                     format!(
                                         "sent · {} · {}",
                                         age,
                                         if msg.delivered {
                                             "delivered"
+                                        } else if msg.replicated {
+                                            "replicated"
                                         } else {
                                             "sending"
                                         }

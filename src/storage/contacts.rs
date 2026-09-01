@@ -1050,6 +1050,7 @@ pub fn load_messages(
             reference: record_reference(&rec),
             notified: rec.uint("unnotified").unwrap_or(0) == 0,
             bridge_seq: 0,
+            replicated: false,
             bridge_exit: None,
         });
     }
@@ -1274,6 +1275,7 @@ pub fn load_message_page_before(
             reference: record_reference(&rec),
             notified: rec.uint("unnotified").unwrap_or(0) == 0,
             bridge_seq: 0,
+            replicated: false,
             bridge_exit: None,
         });
         taken += 1;
@@ -1387,6 +1389,7 @@ mod tests {
                 reference: None,
                 notified: true,
                 bridge_seq: 0,
+                replicated: false,
                 bridge_exit: None,
             },
             ChatMessage {
@@ -1400,6 +1403,7 @@ mod tests {
                 reference: None,
                 notified: true,
                 bridge_seq: 0,
+                replicated: false,
                 bridge_exit: None,
             },
             ChatMessage {
@@ -1413,6 +1417,7 @@ mod tests {
                 reference: None,
                 notified: true,
                 bridge_seq: 0,
+                replicated: false,
                 bridge_exit: None,
             },
         ];
@@ -1696,6 +1701,7 @@ mod tests {
             reference: None,
             notified: true,
             bridge_seq: 0,
+            replicated: false,
             bridge_exit: None,
         };
         let newer: Vec<ChatMessage> = (61..=120).map(make).collect();

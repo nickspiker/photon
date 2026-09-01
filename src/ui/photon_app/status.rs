@@ -479,6 +479,22 @@ impl PhotonApp {
                                     {
                                         // SAME digest the producer publishes — the cached, order-dependent rolling hash (Conversation::anti_entropy_digest). Both sides MUST compute it identically or every comparison false-mismatches.
                                         let (n_rows, digest) = conv.anti_entropy_digest();
+                                        // REPLICATED edge (delivery ladder): a SIBLING pong whose (count, digest) EXACTLY matches ours is testimony that device holds every syncable row of this conversation — flip the fleet-replication tick on our outgoing rows. Runtime state; delivered outranks it, and a friend's matching pong proves nothing about our fleet so it's sibling-gated.
+                                        if n_rows == record.row_count
+                                            && digest == record.row_digest
+                                            && self.contacts.iter().any(|c| {
+                                                c.is_sibling
+                                                    && c.device_key() == Some(peer_pubkey.key)
+                                            })
+                                        {
+                                            for m in conv
+                                                .messages
+                                                .iter_mut()
+                                                .filter(|m| m.is_outgoing && !m.replicated)
+                                            {
+                                                m.replicated = true;
+                                            }
+                                        }
                                         // A history walk PULLS rows FROM the peer, so it can only help when the peer has rows WE lack. When we already hold MORE than the peer (n_rows > theirs), a pull returns 0 new every time — it cannot deliver our extra row to THEM. That was a permanent loop: one undelivered message we hold (a lane wedged at the peer's anchor) kept ours = theirs+1 forever, re-walking every 120s and decrypting pages on the UI thread (the 2026-08-08 typing lag). Only walk when the peer is at-least-even (they may have rows we're missing, or an equal-count content divergence a walk can reconcile). When we're strictly ahead the fix is on the delivery side (re-serve / lane repair), not a pull.
                                         let we_might_be_behind = record.row_count >= n_rows;
                                         let mismatch = (n_rows != record.row_count
