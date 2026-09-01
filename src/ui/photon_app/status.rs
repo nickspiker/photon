@@ -4545,9 +4545,9 @@ impl PhotonApp {
                     served += 1;
                 }
             }
-            // Charge the cap for what actually LEFT — attempts the serial-send gate swallowed cost nothing, so the deficit keeps draining across pongs instead of parking two rows in.
+            // Charge the cap for what actually LEFT — attempts the serial-send gate swallowed cost nothing, so the deficit keeps draining across pongs instead of parking two rows in. A ZERO-served burst still charges 1: chain_transmit refusing every row (no chain / no address / stale-era token lane) repeated forever otherwise — the tip-0 're-serving 8' spam every ~45s, 2026-09-01 — and a lane that cannot transmit at all is exactly what the park exists for.
             if let Some(e) = self.lane_reserve_bursts.get_mut(&cap_key) {
-                e.3 = e.3.saturating_add(served as u8);
+                e.3 = e.3.saturating_add((served as u8).max(1));
             }
             if served > 0 {
                 crate::logf!(

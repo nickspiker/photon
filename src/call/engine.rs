@@ -46,13 +46,23 @@ const fn tier_window_bytes(tier: usize) -> usize {
     TIER_FRAMES[tier] * tier_slot(tier)
 }
 
-// SOFT ENERGY DUCK (echo layer 2, docs/calls.md) — built but DISARMED (Nick, 2026-08-19): the first field passes run STRICT CLEAN echo-prone audio to hear the raw truth. Two reasons: the peak-hold far_level (~80ms hang) smears the gate's timing, which is exactly what clips double-talk and pumps; and Android capture still runs VOICE_COMMUNICATION, whose vendor mic-side AEC may or may not already cancel against the MEDIA-path output (device-dependent) — the raw run reveals which.
-// While disarmed the trigger is still MEASURED: far-active frames (what the duck WOULD have gated) are counted into the engine-down log, so the raw run quantifies both the echo and the would-be gate before any audio is touched. Flip DUCK_ENABLED to re-arm the glide.
-const DUCK_ENABLED: bool = false;
-const DUCK_FAR_LEVEL: u32 = 200;
-const DUCK_GAIN_FLOOR: f32 = 0.1;
-const DUCK_ATTACK: f32 = 0.5;
-const DUCK_RELEASE: f32 = 0.05;
+// INLINE PID LEVEL + DUCK (echo layer 2 + level management in ONE loop — Nick's call 2026-09-01: "auto ducking, level management we can do with a PID loop in line, basically another 1ms for the adjustment pass"; actual cost is microseconds per 20ms frame). Replaces the disarmed two-coefficient glide, whose peak-hold trigger smeared timing and clipped double-talk.
+// The loop tracks ONE target gain per frame: AGC term (mic mean-|sample| toward TX_TARGET_LEVEL in the log domain — quiet talkers lift, shouters trim, error is symmetrical in dB) × duck term (far-end energy squashes the target continuously — no binary gate, so double-talk dips instead of chopping). PID output slews the applied gain; the integrator is clamped (anti-windup) so a long silence doesn't bank gain and blast the first syllable.
+const PID_DUCK_ENABLED: bool = true;
+/// Mic AGC setpoint: mean |sample| of a talking frame lands here (~-18 dBFS of i16 — comfortable headroom above the floor window's repair math, below clipping).
+const TX_TARGET_LEVEL: f32 = 4000.0;
+/// Far-end energy that squashes the duck term to half — continuous, not a threshold.
+const DUCK_FAR_HALF: f32 = 400.0;
+/// Hard floor so the duck never fully mutes the mic (double-talk stays audible under echo).
+const DUCK_GAIN_FLOOR: f32 = 0.15;
+/// PID gains on the log2-domain level error, per 20ms tick. Conservative: proportional carries the loop, integral trims steady-state (clamped ±2 octaves), derivative damps onset pump.
+const PID_KP: f32 = 0.20;
+const PID_KI: f32 = 0.02;
+const PID_KD: f32 = 0.08;
+const PID_I_CLAMP: f32 = 2.0;
+/// Applied-gain bounds: ±3 octaves of AGC authority.
+const GAIN_MIN: f32 = 0.125;
+const GAIN_MAX: f32 = 8.0;
 
 pub struct EngineParams {
     pub secret: [u8; 32],
@@ -159,8 +169,10 @@ fn run(
     let mut pending_tier: usize = 0;
     let mut clean_rx_windows: u32 = 0;
     let (mut tier_ups, mut tier_downs) = (0u32, 0u32);
-    // Duck state: current gain glides between 1.0 and the floor; route is cached at engine start (Headset = no acoustic path = never duck; Unknown ducks, the safe default).
+    // PID state: applied gain + (integral, last-error) on the log2 level error; route is cached at engine start (Headset = no acoustic path = never duck; Unknown ducks, the safe default).
     let mut duck_gain: f32 = 1.0;
+    let mut pid_i: f32 = 0.0;
+    let mut pid_last_e: f32 = 0.0;
     let mut ducked_frames: u64 = 0;
     let mut far_active_frames: u64 = 0;
     let route_ducks = !matches!(
@@ -189,12 +201,12 @@ fn run(
         TIER_RATES[0] / 1000,
         TIER_FRAMES[0],
         REPAIR_PACKETS,
-        if !DUCK_ENABLED {
+        if !PID_DUCK_ENABLED {
             "disarmed (raw echo run)"
         } else if route_ducks {
-            "armed"
+            "PID (level+duck inline)"
         } else {
-            "bypassed (headset)"
+            "PID (level only — headset)"
         }
     );
 
@@ -212,20 +224,44 @@ fn run(
             // Mic health level BEFORE the duck, so a heavy duck never reads as a dead mic in the tally.
             tx_energy += frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>();
             tx_frames += 1;
-            // Duck trigger — measured always, APPLIED only when armed (see the DUCK_ENABLED block: first field passes run raw echo-prone audio and just count what the duck would have gated).
+            // PID level+duck (see the PID_DUCK_ENABLED consts): one inline loop regulates mic level toward the setpoint and squashes it under far-end energy.
             let mut frame = frame;
-            let far_active = route_ducks && crate::platform::audio::far_level() > DUCK_FAR_LEVEL;
-            if far_active {
+            let far = crate::platform::audio::far_level() as f32;
+            if route_ducks && far > DUCK_FAR_HALF {
                 far_active_frames += 1;
             }
-            if DUCK_ENABLED {
-                let target = if far_active { DUCK_GAIN_FLOOR } else { 1.0 };
-                let coef = if target < duck_gain { DUCK_ATTACK } else { DUCK_RELEASE };
-                duck_gain += (target - duck_gain) * coef;
-                if duck_gain < 0.995 {
-                    ducked_frames += 1;
+            if PID_DUCK_ENABLED {
+                // Frame mean |sample| — the level the AGC regulates. Silence (below a hair above the noise floor) freezes the loop: regulating silence toward TX_TARGET_LEVEL is how AGCs learn to amplify room hiss.
+                let mean = frame.iter().map(|s| s.unsigned_abs() as u32).sum::<u32>() as f32
+                    / frame.len().max(1) as f32;
+                // Continuous duck term: far-end energy squashes the target multiplicatively (half at DUCK_FAR_HALF), floored so double-talk survives. Headset route never ducks.
+                let duck_term = if route_ducks {
+                    (1.0 / (1.0 + far / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
+                } else {
+                    1.0
+                };
+                if mean > 40.0 {
+                    // Log2-domain level error toward the setpoint, PID'd, then the duck term scales the RESULT — level management and echo duck in the one inline loop (+~µs per 20ms frame).
+                    let e = (TX_TARGET_LEVEL / (mean / duck_gain).max(1.0)).log2().clamp(-4.0, 4.0);
+                    pid_i = (pid_i + e * PID_KI).clamp(-PID_I_CLAMP, PID_I_CLAMP);
+                    let d = e - pid_last_e;
+                    pid_last_e = e;
+                    let target = (PID_KP * e + pid_i + PID_KD * d).exp2().clamp(GAIN_MIN, GAIN_MAX)
+                        * duck_term;
+                    // Slew toward the PID target (one step per frame keeps onsets pump-free).
+                    duck_gain += (target - duck_gain) * 0.35;
+                } else {
+                    // Silence: hold gain, bleed the derivative memory, still honour the duck squash.
+                    pid_last_e = 0.0;
+                    duck_gain += (duck_gain.min(duck_gain * duck_term) - duck_gain) * 0.35;
+                }
+                duck_gain = duck_gain.clamp(GAIN_MIN * DUCK_GAIN_FLOOR, GAIN_MAX);
+                if (duck_gain - 1.0).abs() > 0.005 {
+                    if duck_gain < 1.0 {
+                        ducked_frames += 1;
+                    }
                     for s in frame.iter_mut() {
-                        *s = (*s as f32 * duck_gain) as i16;
+                        *s = (*s as f32 * duck_gain).clamp(-32768.0, 32767.0) as i16;
                     }
                 }
             }
@@ -446,7 +482,7 @@ fn run(
         TIER_RATES[tier] / 1000,
         tier_ups,
         tier_downs,
-        if DUCK_ENABLED { "armed" } else { "disarmed" },
+        if PID_DUCK_ENABLED { "PID" } else { "disarmed" },
         ducked_frames,
         far_active_frames,
         tx_frames
