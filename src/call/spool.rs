@@ -72,12 +72,11 @@ impl SpoolWriter {
     }
 }
 
-/// KEEP: decrypt the spool into the container and store it as a content-addressed blob (sealed at rest under the device blob key like any attachment). Returns (content_hash, size). Consumes the ticket; the spool file is removed after a successful store. A truncated tail record (engine mid-write at the stop edge) ends the read — one lost frame, never an error.
-pub fn finalize(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Option<([u8; 32], u64)> {
+/// Decrypt the spool into its raw records `[(channel, osc, opus)…]` in write order (`channel` is the old `dir` byte — 0=local mic, 1=remote, generalizing to a per-participant index). A truncated/corrupt tail record (engine mid-write at the stop edge) ends the read — at most one lost frame, never an error. Shared by [`finalize`] (the PHCALL1 packer) and the N-channel transcode in [`crate::call::record`], so the decrypt/nonce discipline lives in exactly one place.
+pub(crate) fn drain_records(ticket: &SpoolTicket) -> Option<Vec<(u8, i64, Vec<u8>)>> {
     let cipher = XChaCha20Poly1305::new_from_slice(&ticket.key).ok()?;
     let bytes = std::fs::read(&ticket.path).ok()?;
-    let mut container = Vec::with_capacity(bytes.len() + 8);
-    container.extend_from_slice(CONTAINER_MAGIC);
+    let mut out = Vec::new();
     let mut off = 0usize;
     let mut counter = 0u64;
     while off + 2 <= bytes.len() {
@@ -96,10 +95,23 @@ pub fn finalize(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Option<([u8; 3
         if plain.len() < 9 {
             continue;
         }
-        container.extend_from_slice(&plain[..1]); // dir
-        container.extend_from_slice(&plain[1..9]); // osc
-        container.extend_from_slice(&((plain.len() - 9) as u16).to_le_bytes());
-        container.extend_from_slice(&plain[9..]);
+        let channel = plain[0];
+        let osc = i64::from_le_bytes(plain[1..9].try_into().unwrap());
+        out.push((channel, osc, plain[9..].to_vec()));
+    }
+    Some(out)
+}
+
+/// KEEP into the flat PHCALL1 container (one segment, records `[dir][osc][len][opus]`), stored as a content-addressed blob. Returns (content_hash, size); consumes the ticket; the spool file is removed after a successful store. This is the raw (untranscoded) keep — [`crate::call::record::finalize_nchannel`] is the current keep path (a true N-channel audio file); `finalize` stays for the KAT / any consumer that wants the bare spool packed 1:1.
+pub fn finalize(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Option<([u8; 32], u64)> {
+    let records = drain_records(&ticket)?;
+    let mut container = Vec::with_capacity(CONTAINER_MAGIC.len() + records.len() * 32);
+    container.extend_from_slice(CONTAINER_MAGIC);
+    for (dir, osc, opus) in &records {
+        container.push(*dir);
+        container.extend_from_slice(&osc.to_le_bytes());
+        container.extend_from_slice(&(opus.len() as u16).to_le_bytes());
+        container.extend_from_slice(opus);
     }
     if container.len() <= CONTAINER_MAGIC.len() {
         shred(ticket);
