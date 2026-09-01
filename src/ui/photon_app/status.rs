@@ -25,6 +25,8 @@ impl PhotonApp {
         // Region attribution (2026-08-15 field log): the OUTER timer showed 400-1794ms while the pass profile (>200ms) stayed SILENT — the cost lives outside the arm loop, in the pre-loop drains or the post-loop deferred section, which nothing named. Two coarse region timers pin the side; the guilty region gets fine-grained timers next round.
         let preloop_t = std::time::Instant::now();
         // Peer avatars: install any completed downloads, then kick a fetch (once/session/handle) for any contact still without one. Cache-first + dedup'd by avatar_dl_started, so this is cheap to run every tick — it spawns at most one thread per peer per session.
+        // Express call signals FIRST — a doorbell outranks every other drain on the tick (rare + tiny; empty = one mutex).
+        timed_drain!("call_express", self.drain_express_signals());
         timed_drain!("avatar", self.drain_avatar_downloads());
         timed_drain!("attach", self.drain_attach_installed());
         // History pages the decrypt workers finished since last tick — merge before the arm loop so a walk's next request goes out on this tick's sweep, not the next.
