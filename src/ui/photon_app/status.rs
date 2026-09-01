@@ -3064,9 +3064,41 @@ impl PhotonApp {
                                 }
                             });
                         } else {
-                            crate::log(
-                                "HISTORY: request rejected (no key / unknown device / not mutual)",
-                            );
+                            // WHICH gate refused (2026-09-01: 528 collapsed rejections in Emma's log couldn't say) — walk the same conditions and name the first failure + the asking device, so a field log convicts the era-split/consent lesion directly.
+                            let why = {
+                                let by_token = self
+                                    .friendship_chains
+                                    .iter()
+                                    .find(|(_, c)| c.conversation_token == conversation_token);
+                                match by_token {
+                                    None => "no chain for token".to_string(),
+                                    Some((_, c)) if c.history_key().is_none() => {
+                                        "chain has no history key".to_string()
+                                    }
+                                    Some(_) => {
+                                        let holder = self.contacts.iter().find(|c| {
+                                            !c.is_sibling && c.knows_device(&sender_pubkey.key)
+                                        });
+                                        match holder {
+                                            None => format!(
+                                                "device {} unknown to every friend contact (stale fold / era split)",
+                                                crate::fp(&sender_pubkey.key)
+                                            ),
+                                            Some(c) if !c.is_mutual() => format!(
+                                                "device {} belongs to {} but the contact is NOT mutual",
+                                                crate::fp(&sender_pubkey.key),
+                                                crate::fp(&c.handle_proof)
+                                            ),
+                                            Some(c) => format!(
+                                                "device {} known to {} but not bound to this token's chain",
+                                                crate::fp(&sender_pubkey.key),
+                                                crate::fp(&c.handle_proof)
+                                            ),
+                                        }
+                                    }
+                                }
+                            };
+                            crate::logf!("HISTORY: request rejected — {}", why);
                         }
                     }
                 }
