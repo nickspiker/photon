@@ -359,7 +359,6 @@ impl PhotonApp {
         // Sibling departure requests (bilateral removal), deferred past the checker borrow.
         let mut depart_reqs_after: Vec<(i64, Vec<u8>, [u8; 32])> = Vec::new();
         // Wi-Fi Direct credential provisioning, collected on came-online edges (after releasing the checker borrow): the elected-GO side mints/re-offers the pair's group credential once per session (docs/offgrid.md).
-        let mut wfd_provision_after: Vec<crate::types::ContactId> = Vec::new();
         // Wi-Fi Direct beacon answer-back target, collected on the p2p learn edge (the reply teaches the peer OUR group address).
         let mut wfd_beacon_reply: Option<std::net::SocketAddr> = None;
         let mut consent_roster_push = false;
@@ -964,15 +963,6 @@ impl PhotonApp {
                                 }
                             }
 
-                            // Wi-Fi Direct credential provisioning EDGE: the friend came online, the ceremony is complete, and this session hasn't offered the pair credential yet — the elected-GO side mints (or re-offers the held) credential over the normal channel. Once per session: a lost frame self-heals next session; the receive side adopts idempotently by epoch.
-                            // No relationship_seed condition here: the seed DERIVES from the chain history key now (wfd_relationship_seed) — the stored-field gate was the silent kill switch that kept WFD provisioning from ever firing (nothing minted it). provision_wfd_cred logs its own bail if derivation fails too.
-                            if came_online
-                                && !contact.is_sibling
-                                && contact.clutch_state == ClutchState::Complete
-                                && !contact.wfd_cred_sent
-                            {
-                                wfd_provision_after.push(contact.id.clone());
-                            }
                             // Queue retransmit of pending messages only on the offline→online EDGE (not every online update) — otherwise every received chat would re-trigger a full pending resend.
                             if came_online {
                                 if let (Some(fid), Some((primary, alt))) =
@@ -4420,68 +4410,9 @@ impl PhotonApp {
                         offer_refire_indices.push(idx);
                     }
                 }
-                StatusUpdate::WfdCredReceived {
-                    conversation_token,
-                    sealed,
-                    sender_pubkey,
-                } => {
-                    // Match the friendship by token (same walk as the offer arm), gate on the sender being a known device of THAT contact, open with the pair's seal key (AEAD failure = drop), adopt iff epoch newer, persist.
-                    let our_hh = match self
-                        .session
-                        .as_ref()
-                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
-                    {
-                        Some(h) => h,
-                        None => continue,
-                    };
-                    let Some(ci) = self.contacts.iter().position(|c| {
-                        !c.is_sibling
-                            && crate::crypto::clutch::derive_conversation_token(&[
-                                our_hh,
-                                c.handle_hash,
-                            ]) == conversation_token
-                    }) else {
-                        continue;
-                    };
-                    if !self.contacts[ci].knows_device(&sender_pubkey.key) {
-                        crate::logf!(
-                            "WFD: cred frame from unknown device {} for {} — dropped",
-                            crate::fp(&sender_pubkey.key),
-                            crate::fp(&self.contacts[ci].handle_proof).as_str()
-                        );
-                        continue;
-                    }
-                    // Derived seed (wfd_relationship_seed) — same rule as the send side; the stored-field bail here was the receiver half of the dark bearer.
-                    let Some(seed) = self.wfd_relationship_seed(ci) else {
-                        crate::logf!("WFD: cred from {} but no relationship seed derivable — dropped", crate::fp(&self.contacts[ci].handle_proof).as_str());
-                        continue;
-                    };
-                    match crate::network::wfd::open_cred(&sealed, &seed) {
-                        Ok(cred) => {
-                            let cur_epoch =
-                                self.contacts[ci].wfd_cred.as_ref().map_or(0, |c| c.epoch);
-                            if cred.epoch > cur_epoch {
-                                crate::logf!(
-                                    "WFD: adopted group credential epoch {} from {} (GO {})",
-                                    cred.epoch,
-                                    crate::fp(&self.contacts[ci].handle_proof).as_str(),
-                                    crate::fp(&cred.go)
-                                );
-                                self.contacts[ci].wfd_cred = Some(cred);
-                                if let Some(storage) = self.storage.as_ref() {
-                                    let snapshot = self.contacts[ci].clone();
-                                    if let Err(e) = crate::storage::contacts::save_contact_state(
-                                        &snapshot, storage,
-                                    ) {
-                                        crate::logf!("WFD: cred persist failed: {}", e);
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            crate::logf!("WFD: cred open failed ({}) — dropped", e);
-                        }
-                    }
+                StatusUpdate::WfdCredReceived { .. } => {
+                    // RETIRED (universal-token mode, 2026-09-01): per-pair provisioned credentials are gone — discovery rides blake3("Photon WiFi direct v0") and cleartext open-house creds; auth is the chain layer. An old build's cred frame is harmless noise.
+                    crate::log("WFD: per-pair cred frame from an old build — retired, dropped");
                 }
                 StatusUpdate::WfdFriendNearby { device_pubkey } => {
                     // FRIEND-HEARD edge: a provisioned friend's token is in the air and we hold no path to them — form the group (the bearer decides create-vs-connect from the credential's designated GO).
@@ -4790,10 +4721,6 @@ impl PhotonApp {
             changed = true;
         }
 
-        // Wi-Fi Direct credential offers collected on came-online edges (after releasing the checker borrow).
-        for id in wfd_provision_after {
-            self.provision_wfd_cred(id);
-        }
         // Wi-Fi Direct beacon answer-back (the group-up pt_disc exchange's second leg).
         if let (Some(target), Some(session), Some(hq), Some(checker)) = (
             wfd_beacon_reply,
