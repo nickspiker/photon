@@ -1997,6 +1997,21 @@ impl PhotonApp {
         crate::network::wfd::stop_open_house(false);
     }
 
+    /// The pairwise WFD seed, DERIVED from the friendship's history key — both sides already hold it and it rotates on re-key, which is exactly the cred-rotation edge the design wanted. Derivation over storage because nothing ever MINTED the stored `relationship_seed` (`with_seed` has zero callers) — every friendship carried None, provisioning silently bailed before its first log line, and the whole WFD bearer sat dark in the field (Emma's disconnected-wifi test, 2026-09-01: zero WFD lines on any device). The stored field still wins when present (a future explicit mint path stays honoured).
+    pub(super) fn wfd_relationship_seed(&self, ci: usize) -> Option<[u8; 32]> {
+        let c = self.contacts.get(ci)?;
+        if let Some(s) = c.relationship_seed.as_ref() {
+            return Some(*s.as_bytes());
+        }
+        let fid = c.friendship_id?;
+        let (_, chains) = self.friendship_chains.iter().find(|(id, _)| *id == fid)?;
+        let hk = chains.history_key()?;
+        let mut h = blake3::Hasher::new();
+        h.update(b"PHOTON_WFD_RELSEED_v1");
+        h.update(hk);
+        Some(*h.finalize().as_bytes())
+    }
+
     pub(super) fn drive_wfd_stranded(&self) {
         // Open house outranks the stranded evaluation: the user is deliberately adding someone, so the radio stays up whatever the relay says. (The cancel edge lives in cancel_woods_add_if_left, driven from the tick.)
         if crate::network::wfd::open_house_active() {
@@ -2011,14 +2026,16 @@ impl PhotonApp {
         let mut any_metered = false;
         let mut any_p2p = false;
         let mut any_p2p_online = false;
-        for c in &self.contacts {
+        for ci in 0..self.contacts.len() {
+            let c = &self.contacts[ci];
             if c.is_sibling || c.wfd_cred.is_none() {
                 continue;
             }
-            let Some(seed) = c.relationship_seed.as_ref() else {
+            let Some(seed) = self.wfd_relationship_seed(ci) else {
                 continue;
             };
-            entries.push((*seed.as_bytes(), our_dev));
+            let c = &self.contacts[ci];
+            entries.push((seed, our_dev));
             if c.validated_path.is_none() && !c.is_online {
                 any_stranded = true;
             }
@@ -2065,9 +2082,14 @@ impl PhotonApp {
             return;
         };
         let our_dev = *kp.public.as_bytes();
+        // Derived seed (see wfd_relationship_seed) — the silent bail on the never-minted stored field is what kept the whole bearer dark. Bails are LOUD now: a field log must convict its own gate.
+        let Some(seed) = self.wfd_relationship_seed(ci) else {
+            crate::logf!("WFD: no relationship seed derivable for {} (no chain history key yet) — cred not offered", crate::fp(&self.contacts[ci].handle_proof));
+            return;
+        };
         let contact = &mut self.contacts[ci];
-        let (Some(their_dev), Some(seed)) = (contact.device_key(), contact.relationship_seed.clone())
-        else {
+        let Some(their_dev) = contact.device_key() else {
+            crate::logf!("WFD: no device key for {} — cred not offered", crate::fp(&contact.handle_proof));
             return;
         };
         // One attempt per session either way: the non-GO side has nothing to send, and the GO side's lost frame self-heals next session.
@@ -2084,7 +2106,7 @@ impl PhotonApp {
                 minted
             }
         };
-        let sealed = match crate::network::wfd::seal_cred(&cred, seed.as_bytes()) {
+        let sealed = match crate::network::wfd::seal_cred(&cred, &seed) {
             Ok(s) => s,
             Err(e) => {
                 crate::logf!("WFD: cred seal failed: {}", e);
