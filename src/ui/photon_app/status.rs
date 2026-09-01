@@ -965,10 +965,10 @@ impl PhotonApp {
                             }
 
                             // Wi-Fi Direct credential provisioning EDGE: the friend came online, the ceremony is complete, and this session hasn't offered the pair credential yet — the elected-GO side mints (or re-offers the held) credential over the normal channel. Once per session: a lost frame self-heals next session; the receive side adopts idempotently by epoch.
+                            // No relationship_seed condition here: the seed DERIVES from the chain history key now (wfd_relationship_seed) — the stored-field gate was the silent kill switch that kept WFD provisioning from ever firing (nothing minted it). provision_wfd_cred logs its own bail if derivation fails too.
                             if came_online
                                 && !contact.is_sibling
                                 && contact.clutch_state == ClutchState::Complete
-                                && contact.relationship_seed.is_some()
                                 && !contact.wfd_cred_sent
                             {
                                 wfd_provision_after.push(contact.id.clone());
@@ -4451,10 +4451,12 @@ impl PhotonApp {
                         );
                         continue;
                     }
-                    let Some(seed) = self.contacts[ci].relationship_seed.clone() else {
+                    // Derived seed (wfd_relationship_seed) — same rule as the send side; the stored-field bail here was the receiver half of the dark bearer.
+                    let Some(seed) = self.wfd_relationship_seed(ci) else {
+                        crate::logf!("WFD: cred from {} but no relationship seed derivable — dropped", crate::fp(&self.contacts[ci].handle_proof).as_str());
                         continue;
                     };
-                    match crate::network::wfd::open_cred(&sealed, seed.as_bytes()) {
+                    match crate::network::wfd::open_cred(&sealed, &seed) {
                         Ok(cred) => {
                             let cur_epoch =
                                 self.contacts[ci].wfd_cred.as_ref().map_or(0, |c| c.epoch);

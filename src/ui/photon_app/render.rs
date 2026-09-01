@@ -265,6 +265,15 @@ impl PhotonApp {
             self.ring_avatar_scaled = None;
         }
 
+        // Content-scroll → background offset (hoisted before the chrome borrow, which takes `&mut self`). The background noise translates WITH the foreground content so the whole scene is one rigid vertical shift on scroll — the bg tracks whatever you're reading, and (once the host learns to scroll-copy) a scroll becomes a memcopy of the prior frame plus a repaint of just the newly-exposed slice instead of a full redraw. Sign matches the foreground pixel motion: Contacts moves rows UP as `contacts_scroll` grows (`row_top = … − contacts_scroll`) → texture shifts by `−contacts_scroll`; Conversation moves messages DOWN as `scroll_offset` grows (`y = … + scroll`) → texture shifts by `+scroll_offset`. Settings/ContactPanel keep the split-pane path below. `scroll_offset` is clamped elsewhere (tick clamps the stored conversation offset; contacts_scroll is clamped in the render block), so reading it raw here matches what the foreground draws.
+        let content_bg_scroll: isize = match self.state {
+            AppState::Ready => -self.contacts_scroll,
+            AppState::Conversation => self
+                .active_conversation
+                .and_then(|id| self.conversations.iter().find(|v| v.id() == id))
+                .map_or(0, |v| v.scroll_offset.round() as isize),
+            _ => 0,
+        };
         let Some(chrome) = self.chrome.as_mut() else {
             return;
         };
@@ -273,7 +282,7 @@ impl PhotonApp {
         // Bg noise. `shimmer` is driven by `bg_scroll` and mixes into each row's starting colour — so the noise colour bias cycles as you scroll without changing the underlying pattern topology. `scroll_offset` is per-screen: Launch/Attest gets `0` (no vertical movement on the attest screen — shimmer only); future screens (Ready, Searching, Conversation) will pass `bg_scroll` so the noise pattern also translates with their page-scroll content. Phase 2+ branches on AppState to pick which.
         let bg_scroll = self.bg_scroll;
         let shimmer = bg_scroll as usize;
-        let scroll_offset = 0; // Launch only for now.
+        let scroll_offset = content_bg_scroll; // 0 on Launch/Searching; Contacts/Conversation translate the texture with their content (see the hoist above).
                                // Background texture origin + per-half scroll. On Settings the noise mirror-axis sits ON the rail|content divider (1/3 width), and each half scrolls with ITS pane — rail-scroll drives the left half, content-scroll the right — so the background tracks the scroll of whatever you're reading. Every other screen keeps the centred origin with both halves locked together (unified scroll).
         let (bg_split_x, bg_left_scroll, bg_right_scroll) = if matches!(
             self.state,
@@ -1325,7 +1334,8 @@ impl PhotonApp {
             let avatar_cx = rows.x0 as f32 + avatar_r * 1.5;
             let text_x = avatar_cx + avatar_r * 1.5;
             let text_size = row_h as f32 * 0.5;
-            let ring_thickness = (avatar_r * 0.0375).max(1.0);
+            // +1 on top of the proportional thickness so the presence/online ring keeps a visible annulus at small avatar sizes (where `avatar_r * 0.0375` floors at the 1px min and the ring all but vanishes). One extra pixel is imperceptible on large avatars, load-bearing on tiny ones.
+            let ring_thickness = (avatar_r * 0.0375).max(1.0) + 1.0;
             // Handle names render in each contact's relationship colour (spaghettify per visible row is microseconds; revisit with a cache if contact lists ever get huge). `our_handle_hash` is bound above the sort — one derivation for the ordering and the rows.
             for (vis, &ci) in matching.iter().enumerate() {
                 // Use the SAME `scroll` snapshot the avatar / hint / search box / separator read (captured up top, before the down-scroll clamp below mutated `self.contacts_scroll`). Reading the live field here made the rows lag the rest of the block by the clamp delta: on an up-scroll past rest the avatar + textbox dragged with the rubber-band overshoot (they read the snapshot) but the names sat still (they read the post-clamp value). One block, one offset.
@@ -1810,7 +1820,8 @@ impl PhotonApp {
                             &mut canvas,
                             cx,
                             cy,
-                            avatar_r + (avatar_r * 0.0375).max(1.0),
+                            // +1 keeps the presence ring visible at small avatar sizes (see the contacts-row `ring_thickness`).
+                            avatar_r + (avatar_r * 0.0375).max(1.0) + 1.0,
                             ring,
                             Some(content_clip),
                         );
@@ -2304,7 +2315,8 @@ impl PhotonApp {
                                 );
                             }
                             let ring = conv_ring;
-                            let ring_thick = (avatar_r * 0.0375).max(1.0);
+                            // +1 keeps the presence ring visible at small avatar sizes (see the contacts-row `ring_thickness`).
+                            let ring_thick = (avatar_r * 0.0375).max(1.0) + 1.0;
                             paint::draw_circle(
                                 canvas,
                                 avatar_cx,
