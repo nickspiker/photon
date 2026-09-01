@@ -2911,6 +2911,8 @@ fn contact_status_line(
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ConnTier {
     Lan,
+    /// Wi-Fi Direct group path (192.168.49/24) — radio-direct with no infrastructure at all; outranks even LAN in the display because it means the phones are talking to each other, not to a router.
+    Wfd,
     Wan,
     Relay,
     Offline,
@@ -2921,7 +2923,13 @@ pub(crate) fn contact_conn_tier(c: &crate::types::Contact) -> ConnTier {
     if !c.is_online {
         return ConnTier::Offline;
     }
-    if c.validated_path.is_some() {
+    if let Some((addr, _)) = c.validated_path {
+        // WFD subnet check IS address-shape-safe here (unlike the LAN verdict below): 192.168.49/24 is the P2P group's fixed subnet, carrier CGNAT never hands it out.
+        if let std::net::IpAddr::V4(v4) = addr.ip() {
+            if crate::network::traverse::gather::is_wfd_subnet(v4) {
+                return ConnTier::Wfd;
+            }
+        }
         // The same-LAN verdict was judged ONCE at the validation edge (status.rs punch-ack arm: private AND on our own subnet / WFD group). Re-deriving from the address here called every RFC-private address "same room" — and carrier CGNAT hands cellular devices 10.x, so a Verizon-internal path to a peer hundreds of miles away rang cyan (field 2026-08-30). Private-but-foreign is a real direct path: WAN.
         return if c.validated_path_lan {
             ConnTier::Lan
@@ -2971,6 +2979,7 @@ pub(crate) fn row_ring_tier_in(
 pub(crate) fn ring_colour_of(tier: ConnTier) -> u32 {
     match tier {
         ConnTier::Lan => *theme::RING_LAN_COLOUR,
+        ConnTier::Wfd => *theme::RING_WFD_COLOUR,
         ConnTier::Wan => *theme::RING_ONLINE_COLOUR,
         ConnTier::Relay => *theme::RING_RELAY_COLOUR,
         ConnTier::Offline => *theme::RING_OFFLINE_COLOUR,
@@ -2987,6 +2996,8 @@ fn path_tier_colour(c: &crate::types::Contact, has_remote: bool) -> Option<u32> 
     };
     match tier {
         ConnTier::Lan => Some(*theme::PATH_LAN_COLOUR),
+        // One display language, ring and dot alike: WFD = the VSF primary blue.
+        ConnTier::Wfd => Some(*theme::RING_WFD_COLOUR),
         ConnTier::Wan => {
             // A validated path earns WAN; online with no proven direct path yet rides the relay — say so rather than promising a direct path we don't have.
             if c.validated_path.is_some() {

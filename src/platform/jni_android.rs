@@ -1601,6 +1601,16 @@ pub extern "C" fn Java_com_photon_messenger_PhotonWifiDirect_nativeOnOpenHouseFo
 }
 
 #[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonWifiDirect_nativeOnMetered(
+    _env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    metered: jni::sys::jboolean,
+) {
+    crate::network::wfd::set_net_metered(metered != 0);
+}
+
+#[cfg(target_os = "android")]
 fn wfd_call(method: &str) {
     let Some((vm, obj)) = WFD_BRIDGE.get() else {
         error!("wfd_call({method}): bridge not registered");
