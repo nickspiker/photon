@@ -380,6 +380,48 @@ impl FluorApp for PhotonApp {
             12.,
             true,
         ));
+        // Dozenal is the house base — default ON; the About-page toggle flips to decimal for the arabic-inclined. Initial state re-syncs from `display.dozenal` when fleet settings load.
+        self.settings_dozenal_check = Some(fluor::widgets::Checkbox::new(
+            &mut self.hit_counter,
+            "Dozenal numbers (base twelve)",
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            true,
+        ));
+        // The message-vibrate + call-alert pair (defaults ON — a phone that neither rings nor buzzes is a missed call). Android enforcement rides Kotlin; the settings persist fleet-wide now.
+        self.settings_vibrate_msg_check = Some(fluor::widgets::Checkbox::new(
+            &mut self.hit_counter,
+            "Vibrate on new message",
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            true,
+        ));
+        self.settings_ring_call_check = Some(fluor::widgets::Checkbox::new(
+            &mut self.hit_counter,
+            "Ring on incoming call",
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            true,
+        ));
+        self.settings_vibrate_call_check = Some(fluor::widgets::Checkbox::new(
+            &mut self.hit_counter,
+            "Vibrate on incoming call",
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            true,
+        ));
         // DEFAULTS OFF (user mandate): "presence" is the rich self-disclosure broadcast (busy, now-playing, mood) — NOT the online indicator, which is the avatar ring and is never gated by this. Deliberate disclosure is opt-in.
         self.settings_presence_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
@@ -894,6 +936,7 @@ impl FluorApp for PhotonApp {
                                     let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
                                         owner: None,
                                         pixels,
+                                        name: None, // seed-keyed local decode — the name lives in fstate on this path
                                     });
                                 });
                                 // Decode failure (poisoned bytes) arms the FGTW recovery in the drain — never here, or the tick would race the in-flight decode into a pointless network fetch every boot.
@@ -1515,6 +1558,32 @@ impl FluorApp for PhotonApp {
                     if slot == 3 {
                         // Version row tapped → toggle dozenal glyphs ↔ spelled-out voca words.
                         self.about_version_spelled = !self.about_version_spelled;
+                    } else if slot == 4 {
+                        // The passless weblink → system browser. Desktop-only for now (Android needs an Intent through Kotlin — follow-up).
+                        #[cfg(all(
+                            unix,
+                            not(target_os = "android"),
+                            not(target_os = "redox"),
+                            not(target_os = "macos")
+                        ))]
+                        {
+                            let _ = std::process::Command::new("xdg-open")
+                                .arg("https://passless.org/")
+                                .spawn();
+                        }
+                        #[cfg(target_os = "macos")]
+                        {
+                            let _ = std::process::Command::new("open")
+                                .arg("https://passless.org/")
+                                .spawn();
+                        }
+                        #[cfg(target_os = "windows")]
+                        {
+                            let _ = std::process::Command::new("cmd")
+                                .args(["/C", "start", "https://passless.org/"])
+                                .spawn();
+                        }
+                        crate::log("ABOUT: passless.org link tapped");
                     }
                 } else {
                     crate::logf!(

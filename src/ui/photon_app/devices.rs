@@ -1416,7 +1416,7 @@ impl PhotonApp {
             storage,
             kp.public.to_bytes(),
         ));
-        self.apply_settings_to_ui();
+        self.apply_settings_to_ui(); // also syncs the render-edge dozenal mirror
         self.publish_profile_name();
         self.publish_avatar_pin();
         true

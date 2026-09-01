@@ -141,6 +141,7 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Notifications => {
+                    // Rows: 0 title · 1 chime · 2 vibrate-msg · 3 ring-call · 4 vibrate-call · 5 per-contact note · 6 background · 7 blank. Presence is COMMENTED OUT (Nick 2026-09-01) — the field + dispatch stay compiled for a one-line restore.
                     let rows = layout
                         .content_scrolled(8, settings_content_scroll)
                         .split_v([1.0; 8]);
@@ -149,13 +150,23 @@ impl PhotonApp {
                         cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
                         cb.set_font_size(ctrl_font);
                     }
-                    if let Some(cb) = self.settings_presence_check.as_mut() {
+                    if let Some(cb) = self.settings_vibrate_msg_check.as_mut() {
+                        let r = rows[2];
+                        cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
+                        cb.set_font_size(ctrl_font);
+                    }
+                    if let Some(cb) = self.settings_ring_call_check.as_mut() {
                         let r = rows[3];
                         cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
                         cb.set_font_size(ctrl_font);
                     }
+                    if let Some(cb) = self.settings_vibrate_call_check.as_mut() {
+                        let r = rows[4];
+                        cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
+                        cb.set_font_size(ctrl_font);
+                    }
                     if let Some(cb) = self.settings_background_check.as_mut() {
-                        let r = rows[5];
+                        let r = rows[6];
                         cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
                         cb.set_font_size(ctrl_font);
                     }

@@ -691,6 +691,13 @@ impl PhotonApp {
         };
         let secret = kp.secret.clone();
         let identity_seed = session.identity_seed;
+        // Our current preferred name rides the wall blob beside the pixels (same pin) — read it here so the upload half can publish it; the download half symmetrically RECOVERS it (the reinstall heal: fstate lost the name but the wall copy still carries it).
+        let our_name = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("profile.name"))
+            .and_then(crate::storage::fleet_settings::as_text)
+            .filter(|n| !n.is_empty());
         let tx = self.avatar_dl_tx.clone();
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
@@ -701,19 +708,21 @@ impl PhotonApp {
                 &identity_seed,
                 &avatar_pin,
                 Some(&handle_proof),
+                our_name.as_deref(),
                 &storage,
             );
             match result {
-                AvatarSyncResult::ServerNewer => {
-                    // FGTW had a newer copy — it's now re-cached; load it and push to the UI.
+                AvatarSyncResult::ServerNewer(recovered_name) => {
+                    // FGTW had a newer copy — it's now re-cached; load it and push to the UI, with any name the wall blob carried (the drain writes it into fstate when local profile.name is blank).
                     crate::log("Avatar: FGTW copy newer — adopted it (startup sync)");
                     let pixels =
                         crate::ui::avatar::load_cached_avatar_from_seed(&identity_seed, &storage)
                             .map(|(_, p)| p);
-                    if pixels.is_some() {
+                    if pixels.is_some() || recovered_name.is_some() {
                         let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
                             owner: None, // self
                             pixels,
+                            name: recovered_name,
                         });
                         #[cfg(not(target_os = "android"))]
                         if let Some(p) = proxy.as_ref() {
@@ -863,6 +872,8 @@ impl PhotonApp {
                 .read_addr(&crate::storage::vault_key("avatar", &party_id))
                 .ok()
                 .flatten();
+            // The friend's PREFERRED NAME rides the pinned VSF beside the pixels (same pin) — collected wherever we decode that form so the drain can adopt it into published_name.
+            let mut peer_name: Option<String> = None;
             let mut pixels = cached.as_ref().and_then(|bytes| {
                 crate::ui::avatar::decode_avatar_av1_to_display(bytes)
                     .map(|(_, px)| px)
@@ -871,6 +882,7 @@ impl PhotonApp {
                             .then(|| {
                                 let mut key = [0u8; 32];
                                 key.copy_from_slice(&avatar_pin[..32]);
+                                peer_name = crate::ui::avatar::avatar_name_with_key(bytes, &key);
                                 crate::ui::avatar::load_avatar_from_bytes_with_key(bytes, &key)
                                     .map(|(_, px)| px)
                             })
@@ -904,7 +916,10 @@ impl PhotonApp {
                                     &avatar_pin,
                                     &storage,
                                 )
-                                .map(|(_, p)| p)
+                                .map(|(_, p, name)| {
+                                    peer_name = name;
+                                    p
+                                })
                             })
                             .flatten()
                     });
@@ -912,6 +927,7 @@ impl PhotonApp {
             let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
                 owner: Some(hp),
                 pixels,
+                name: peer_name,
             });
             #[cfg(not(target_os = "android"))]
             if let Some(p) = proxy.as_ref() {
@@ -2194,9 +2210,41 @@ impl PhotonApp {
 
     pub(super) fn drain_avatar_downloads(&mut self) {
         while let Ok(result) = self.avatar_dl_rx.try_recv() {
+            // PREFERRED-NAME adoption first (independent of pixels — a blob can carry a name while the picture fails to decode). Self: the wall blob is the reinstall heal — write the recovered name into fstate iff local profile.name is BLANK (a set name always outranks the recovered copy; never clobber). Contact: the name came sealed under the pin THEY handed us, so adopt it into published_name like the pong slot does.
+            if let Some(name) = result.name.clone().filter(|n| !n.is_empty()) {
+                match result.owner {
+                    None => {
+                        let blank = self
+                            .fleet_settings
+                            .as_ref()
+                            .and_then(|fs| fs.effective("profile.name"))
+                            .and_then(crate::storage::fleet_settings::as_text)
+                            .map_or(true, |n| n.is_empty());
+                        if blank {
+                            crate::logf!("Avatar: preferred name recovered from the wall blob (\"{}\") — restoring into fstate", name);
+                            self.settings_set("profile.name", vsf::VsfType::x(name));
+                            self.publish_profile_name();
+                            self.scene_dirty = true;
+                        }
+                    }
+                    Some(owner_hp) => {
+                        if let Some(pos) = self
+                            .contacts
+                            .iter()
+                            .position(|c| !c.is_sibling && c.handle_proof == owner_hp)
+                        {
+                            if self.contacts[pos].published_name != name {
+                                self.contacts[pos].published_name = name;
+                                self.contacts[pos].published_name_dirty = true;
+                                self.scene_dirty = true;
+                            }
+                        }
+                    }
+                }
+            }
             let Some(vsf_rgb) = result.pixels else {
                 // Own-avatar decode failed (poisoned vault bytes) — arm the FGTW recovery the old synchronous load fired inline. Only the boot decode worker sends owner-None with no pixels (the recover worker sends success only), so this can't loop.
-                if result.owner.is_none() {
+                if result.owner.is_none() && result.name.is_none() {
                     if let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) {
                         self.self_avatar_recover_pending = Some(seed);
                     }
@@ -2337,12 +2385,13 @@ impl PhotonApp {
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
         std::thread::spawn(move || {
-            let pixels =
+            let (pixels, name) =
                 crate::ui::avatar::recover_own_avatar_from_wall(&identity_seed, &pin, &storage);
-            if pixels.is_some() {
+            if pixels.is_some() || name.is_some() {
                 let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
                     owner: None, // self
                     pixels,
+                    name,
                 });
                 #[cfg(not(target_os = "android"))]
                 if let Some(p) = proxy.as_ref() {
