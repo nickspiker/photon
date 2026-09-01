@@ -1097,12 +1097,15 @@ pub fn log_version() {
     let patch: u64 = env!("PHOTON_VERSION_PATCH").parse().unwrap_or(0);
     log_structured(
         LogLevel::Info,
-        "photon v{}.{}.{} \u{00b7} commit {}",
+        "photon v{}.{}.{} \u{00b7} commit {} \u{00b7} {} \u{00b7} {}",
         vec![
             LogValue::Z(major as u128),
             LogValue::Z(minor as u128),
             LogValue::Z(patch as u128),
             LogValue::T(env!("PHOTON_GIT_COMMIT").to_string()),
+            // Platform/arch as the manifest keys spell them, plus the raw OS family — one file is one device+build, so this per-file banner (with the device fp already in the submission filename) gives every record its provenance without repeating bytes per record (binary-at-rest: no per-entry duplication).
+            LogValue::T(network::updates::platform_id()),
+            LogValue::T(format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)),
         ],
     );
 }

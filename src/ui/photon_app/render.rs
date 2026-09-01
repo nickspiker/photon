@@ -409,17 +409,6 @@ impl PhotonApp {
                 };
                 let w = buf_w as f32;
                 let h = buf_h as f32;
-                // OPAQUE background: α+darkness (α 0xFF, darkness 0xFF ⇒ solid black) — the screen underneath must NOT show through (field 2026-08-31: the translucent wash left the contact list ghosting behind the ring panel). The panel is background + its own elements, nothing else.
-                paint::fill_rect(
-                    &mut canvas,
-                    0,
-                    0,
-                    buf_w as isize,
-                    buf_h as isize,
-                    0xFFFFFFFF,
-                    None,
-                    None,
-                );
                 let colour = pi
                     .and_then(|i| {
                         let c = &self.contacts[i];
@@ -499,6 +488,17 @@ impl PhotonApp {
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                 }
+                // OPAQUE background LAST: fluor composes later paints UNDER earlier ones, so the backdrop must follow the panel's own elements or it covers them — painting it FIRST produced a solid-black dead screen on desktop (field 2026-08-31, the very first Linux ring after the redesign). Painted last it slots exactly one layer beneath the pulse/avatar/name/buttons and still blots out whatever screen was up (α 0xFF, darkness 0xFF ⇒ solid black; the translucent-wash ghosting fix holds).
+                paint::fill_rect(
+                    &mut canvas,
+                    0,
+                    0,
+                    buf_w as isize,
+                    buf_h as isize,
+                    0xFFFFFFFF,
+                    None,
+                    None,
+                );
             } else if let Some((phase, name, direct, _pi)) = &call_overlay {
                 let phase = *phase;
                 let bar_w = buf_w as f32 * 0.9; // window-relative width — a bar spans the window
