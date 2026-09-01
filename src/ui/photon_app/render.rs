@@ -153,7 +153,10 @@ impl PhotonApp {
                 sl.content_line_h() * you_rows_plan(&self.you_fields).len() as Coord
             } else if page == SettingsPage::About {
                 // Logo(4) + gap + killswitch + passless + link + no-servers prose(8×0.8) + consent block + TOKEN block + version + toggle + why-dozenal rant ≈ 37 rows collapsed (each prose line 0.8, three 1-row section headers, inter-block gaps); the version reveal adds the spelled line + "dozenal" header + 6 cheat rows ≈ 8.4.
-                let rows = 37.0 + if self.about_version_spelled { 8.4 } else { 0.0 };
+                let rows = 37.0
+                    + if self.about_version_spelled { 8.4 } else { 0.0 }
+                    + if !crate::dozenal_ui() { 1.8 } else { 0.0 }
+                    + if self.about_version_taps >= 42 { 7.8 } else { 0.0 };
                 sl.content_line_h() * rows
             } else if page == SettingsPage::Diagnostics && self.diag_log_view {
                 let n = match &self.diag_log_inspect {
@@ -5410,13 +5413,32 @@ impl PhotonApp {
                     }
                     // Fleet-wide base toggle (display.dozenal — linked, so a preference follows the identity). Rect set inline off the same y cursor (this page is a card, not equal rows).
                     y += line_h * 0.4;
+                    let mut decimal_mode = false;
                     if let Some(cb) = self.settings_dozenal_check.as_mut() {
+                        decimal_mode = !cb.is_checked();
+                        // The shame fill: untick dozenal and the empty box turns Zil.lun red (half-intensity, dozenal 0;6). Cleared the moment the user repents.
+                        cb.set_empty_fill(decimal_mode.then(|| *theme::DOZENAL_SCOLD_BOX));
                         cb.set_rect(cx, y + line_h * 0.5, inset.w * 0.9, line_h * 0.9);
                         cb.render_content_into(
                             &mut canvas,
                             ctx.text,
                             None,
                             Some(&mut chrome.hit_test_map),
+                        );
+                    }
+                    if decimal_mode {
+                        // The scold — in the primary VSF orange (Zila red, Zil.lun green, Zil blue).
+                        y += line_h;
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            "why you decimal!!!",
+                            cx,
+                            y + line_h * 0.5,
+                            &TextStyle::new(hspan2 * 0.85, *theme::DOZENAL_SCOLD_COLOUR)
+                                .weight(600)
+                                .font("Oxanium"),
+                            None,
+                            None,
                         );
                     }
                     y += line_h * 1.4;
@@ -5451,6 +5473,42 @@ impl PhotonApp {
                             None,
                         );
                         y += line_h * 0.8;
+                    }
+                    // The forty-two easter egg — tap the version row forty-two times (dozenal three-dozen-six) and the custodian riddle appears: undecidability as the load-bearing defense (nobody can establish whether key material exists, so there is no answer to rubber-hose out of anyone). Session-permanent once earned.
+                    if self.about_version_taps >= 42 {
+                        y += line_h * 1.2;
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            &crate::dozenal_glyphs(42),
+                            cx,
+                            y + line_h * 0.5,
+                            &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
+                                .weight(400)
+                                .font("Oxanium"),
+                            None,
+                            None,
+                        );
+                        y += line_h;
+                        for line in [
+                            "nobody can establish whether the key exists,",
+                            "where it lives, or whether the whole thing is a bit",
+                            "you can't rubber-hose an answer",
+                            "when the honest answer is unresolvable",
+                            "the perfect custodian is one who can't be made",
+                            "to understand what they're custodian of",
+                            "~ Claude Fable Teror",
+                        ] {
+                            ctx.text.draw_text_center(
+                                &mut canvas,
+                                line,
+                                cx,
+                                y + line_h * 0.4,
+                                &prose_style,
+                                None,
+                                None,
+                            );
+                            y += line_h * 0.8;
+                        }
                     }
                     let _ = tspan;
                 }
