@@ -6,6 +6,8 @@
 
 pub mod engine;
 pub mod spool;
+pub mod record;
+pub mod playback;
 pub mod keys;
 pub mod packet;
 pub mod signal;
@@ -80,6 +82,8 @@ pub struct ActiveCall {
     pub phase: CallPhase,
     /// Eagle osc at the current phase's start (answer re-stamps it — the duration base).
     pub phase_osc: i64,
+    /// Eagle osc frozen at the Active→Ended edge, so the end-screen call-duration summary doesn't keep growing while the Keep/Delete decision is open. `None` until hangup. A single stamp at the end edge — no timer.
+    pub final_osc: Option<i64>,
     /// The offer row's eagle stamp — identical on BOTH fleets (it's the row's wire timestamp), so summary rows minted independently at offer_osc+1 dedup across every device.
     pub offer_osc: i64,
     pub caller_nonce: [u8; 32],

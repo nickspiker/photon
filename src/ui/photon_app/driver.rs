@@ -341,11 +341,19 @@ impl FluorApp for PhotonApp {
         ));
         self.call_action_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
         self.call_decline_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
+        self.call_speaker_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "Speaker"));
+        self.call_addhandle_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "Add handle"));
+        self.call_back_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "\u{2039} Contact"));
+        self.call_play_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "\u{25B6} Play"));
         for b in [
             self.call_status_btn.as_mut(),
             self.call_start_btn.as_mut(),
             self.call_action_btn.as_mut(),
             self.call_decline_btn.as_mut(),
+            self.call_speaker_btn.as_mut(),
+            self.call_addhandle_btn.as_mut(),
+            self.call_back_btn.as_mut(),
+            self.call_play_btn.as_mut(),
         ]
         .into_iter()
         .flatten()
@@ -2712,8 +2720,14 @@ impl FluorApp for PhotonApp {
                 last + std::time::Duration::from_secs(45)
             })
         });
+        // Live call timer: an Active call recomputes its duration each frame, so it needs frames flowing — but only at ~2 Hz (seconds granularity), not the pulse's full rate. A minimized Active call still ticks so the strip's timer stays honest. Ringing already animates at full rate above.
+        let call_timer = self
+            .active_call
+            .as_ref()
+            .map_or(false, |c| c.phase == crate::call::CallPhase::Active)
+            .then(|| Instant::now() + std::time::Duration::from_millis(500));
         // Soonest of all scheduled wakeups.
-        [blink, anim, presence, pairing, fleet_refold]
+        [blink, anim, presence, pairing, fleet_refold, call_timer]
             .into_iter()
             .flatten()
             .min()
@@ -3129,6 +3143,10 @@ impl FluorApp for PhotonApp {
         // Update events (progress bar, channel states, status lines) are all page CONTENT — without scene_dirty the redraw runs but the dirty-gated content pass skips the page, so the bar painted its empty track once and froze (observed).
         if self.drain_update_events() {
             self.scene_dirty = true;
+            needs_redraw = true;
+        }
+        // Keep-transcode results: a finished N-channel recording mints its `call.audio` row here (off-thread transcode posted back over the channel).
+        if self.drain_call_keep() {
             needs_redraw = true;
         }
         // Auto-attest arm/disarm: apply the off-thread handle-proof verdict (spawned on the confirm click). Done here on the main thread so set_unattended's vault write, the checkbox, and focus stay UI-thread. Compute the verdict first so `self` isn't borrowed while we mutate it.

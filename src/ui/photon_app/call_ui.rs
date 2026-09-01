@@ -9,7 +9,20 @@ use super::*;
 use crate::call::signal::CallSignal;
 use crate::call::{ActiveCall, CallPhase};
 
+/// A finished keep-transcode, posted from the worker thread back to the UI thread to mint the `call.audio` row. `result` is `None` when the recording was empty or the transcode failed (treated as delete).
+pub(super) struct CallKeepResult {
+    peer: [u8; 32],
+    offer_osc: i64,
+    result: Option<([u8; 32], u64)>,
+}
+
 impl PhotonApp {
+    /// Format a call duration as `M:SS`. Base-aware in Phase 4 (dozenal/decimal); decimal for now. Rendered in the Oxanium face so the dozenal `+glyphs` control-block glyphs resolve.
+    pub(super) fn fmt_duration(&self, secs: i64) -> String {
+        let secs = secs.max(0);
+        format!("{}:{:02}", secs / 60, secs % 60)
+    }
+
     /// Poll the retained call Buttons' rising-edge clicks (docs/calls.md) — mirrors the attest/+/send pattern: `dispatch_release` (or a focused-key activation) fired `on_click`; we observe the edge here and run the phase's action. Called from BOTH the Released arm and the key path so pointer taps and Enter/Space on a focused call button both fire exactly once. The verb is phase-driven: action = Answer/Keep/Hang up, decline = Decline/Delete, start = place the call.
     pub(super) fn dispatch_call_button_clicks(&mut self, ctx: &mut Context) -> bool {
         let phase = self.active_call.as_ref().map(|c| c.phase);
@@ -53,10 +66,85 @@ impl PhotonApp {
                 any = true;
             }
         }
+        // Speaker toggle (Active) — visual state + a stubbed route intent (no real device switch in v1).
+        if self
+            .call_speaker_btn
+            .as_mut()
+            .map(|b| b.take_click())
+            .unwrap_or(false)
+        {
+            if matches!(phase, Some(CallPhase::Active)) {
+                self.call_speaker_on = !self.call_speaker_on;
+                let route = if self.call_speaker_on {
+                    crate::platform::audio::AudioRoute::Speaker
+                } else {
+                    crate::platform::audio::AudioRoute::Earpiece
+                };
+                crate::platform::audio::set_route(route);
+            }
+            any = true;
+        }
+        // Add-handle (Active) — stubbed; multi-party call join is a follow-up.
+        if self
+            .call_addhandle_btn
+            .as_mut()
+            .map(|b| b.take_click())
+            .unwrap_or(false)
+        {
+            crate::log("CALL: add-handle tapped (stub — multi-party is a follow-up)");
+            any = true;
+        }
+        // Back to contact (Active) — minimize the full-screen call to the app-wide strip / compact bar.
+        if self
+            .call_back_btn
+            .as_mut()
+            .map(|b| b.take_click())
+            .unwrap_or(false)
+        {
+            if matches!(phase, Some(CallPhase::Active)) {
+                self.minimize_call_to_contact();
+            }
+            any = true;
+        }
+        // Play (Ended) — preview the recording before the Keep/Delete decision (plays the live spool through the same mono downmix).
+        if self
+            .call_play_btn
+            .as_mut()
+            .map(|b| b.take_click())
+            .unwrap_or(false)
+        {
+            if matches!(phase, Some(CallPhase::Ended)) {
+                self.preview_recording();
+            }
+            any = true;
+        }
         if any {
             ctx.window.request_redraw();
         }
         any
+    }
+
+    /// Minimize the in-call full-screen to the app-wide strip / compact bar and navigate to the peer's conversation, so messaging + scrolling stay live during the call. The call keeps running (only the modal panel yields).
+    fn minimize_call_to_contact(&mut self) {
+        self.call_minimized = true;
+        let peer = self.active_call.as_ref().map(|c| c.peer_handle_hash);
+        if let Some(peer) = peer {
+            if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
+                self.open_conversation_with(ci);
+            }
+        }
+        self.scene_dirty = true;
+    }
+
+    /// Preview the in-flight recording on the Ended screen (before Keep/Delete finalizes a blob) — plays the live spool through the mono downmix. Holds the handle so the worker keeps running.
+    fn preview_recording(&mut self) {
+        // Stop any prior preview first (one owner of the audio session).
+        self.call_playback.take();
+        if let Some(call) = self.active_call.as_ref() {
+            if let Some(ticket) = call.spool.as_ref() {
+                self.call_playback = crate::call::playback::play_spool(ticket);
+            }
+        }
     }
 
     /// Place a call to the open (or named) contact. One live call at a time — v1 is singular by design.
@@ -88,6 +176,10 @@ impl PhotonApp {
             crate::log("CALL: offer send failed (no lane) — not dialing");
             return;
         }
+        // Fresh call: clear any stale minimize / speaker state and stop a recording preview (the call owns the audio session).
+        self.call_minimized = false;
+        self.call_speaker_on = false;
+        self.call_playback.take();
         let now = vsf::eagle_time_oscillations();
         self.active_call = Some(ActiveCall {
             call_id,
@@ -95,6 +187,7 @@ impl PhotonApp {
             we_are_caller: true,
             phase: CallPhase::Outgoing,
             phase_osc: now,
+            final_osc: None,
             offer_osc: now,
             caller_nonce,
             callee_nonce: None,
@@ -140,6 +233,10 @@ impl PhotonApp {
             crate::log("CALL: answer send failed");
             return;
         }
+        // Answering owns the audio session — stop any recording preview, and clear stale minimize/speaker state.
+        self.call_playback.take();
+        self.call_minimized = false;
+        self.call_speaker_on = false;
         let secret = self.derive_secret_for(ci, &offer_key, &call_id, &caller_nonce, &callee_nonce);
         let (engine, spool) = self.spawn_call_engine(ci, &call_id, secret, false);
         if let Some(call) = self.active_call.as_mut() {
@@ -252,6 +349,7 @@ impl PhotonApp {
                             we_are_caller: false,
                             phase: CallPhase::Ringing,
                             phase_osc: vsf::eagle_time_oscillations(),
+                            final_osc: None,
                             offer_osc: row_ts,
                             caller_nonce: nonce,
                             callee_nonce: None,
@@ -463,6 +561,7 @@ impl PhotonApp {
         if keep_pending {
             if let Some(call) = self.active_call.as_mut() {
                 call.phase = CallPhase::Ended;
+                call.final_osc = Some(vsf::eagle_time_oscillations()); // freeze the duration for the end-screen summary
                 call.engine = None;
                 call.secret = None;
             }
@@ -547,6 +646,8 @@ impl PhotonApp {
 
     /// KEEP the recording: finalize the spool into the call container, store it as a content-addressed blob, and mint a FLEET-INTERNAL attachment row (local insert + sibling push — never chain-transmitted; the friend's fleet keeps its own recording). v1 gap, tracked in docs/calls.md: the blob itself lives on THIS device until sibling blob-fetch lands.
     pub(super) fn keep_recording(&mut self) {
+        self.call_playback.take(); // stop any preview — the decision is made
+        self.call_minimized = false;
         let Some(call) = self.active_call.as_mut() else {
             return;
         };
@@ -564,34 +665,86 @@ impl PhotonApp {
             .map(|s| s.identity_seed)
             .unwrap_or([0u8; 32]);
         self.active_call = None;
-        match crate::call::spool::finalize(ticket, &seed) {
-            Some((hash, size)) => {
-                if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
-                    // "call.audio" (video calls will mint "call.video") — no POTS in Photon, so nothing here is a "phone call".
-                    let content =
-                        crate::types::attachment_content(&hash, "call.audio", size);
-                    let mut row = ChatMessage::new_with_timestamp(content, true, offer_osc + 2);
-                    row.notified = true;
-                    row.delivered = true;
-                    if let Some(conv) = self.conv_mut_of(ci) {
-                        conv.insert_message_sorted(row.clone());
-                    }
-                    self.persist_messages_async(ci);
-                    self.push_rows_to_siblings(ci, std::slice::from_ref(&row), None);
-                    crate::logf!(
-                        "CALL: recording kept — {} bytes as blob {}…",
-                        size,
-                        hex::encode(&hash[..4])
-                    );
+        // Transcode to the N-channel keep file OFF the UI thread — decode+re-encode is O(call length) and would freeze the frame for seconds on a long call. The worker posts the (hash, size) back over `call_keep_rx`, drained in `tick` → `drain_call_keep`, where the fleet-internal row is minted. Dropping the ticket on any failure still crypto-shreds the spool key (its Drop zeroizes), so a failed transcode degrades safely to delete.
+        let tx = self.call_keep_sender();
+        let wake = self.event_proxy.clone();
+        let spawned = std::thread::Builder::new()
+            .name("call-keep".into())
+            .spawn(move || {
+                let result = crate::call::record::finalize_nchannel(ticket, &seed);
+                let _ = tx.send(CallKeepResult {
+                    peer,
+                    offer_osc,
+                    result,
+                });
+                if let Some(w) = wake {
+                    let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
                 }
-            }
-            None => crate::log("CALL: recording was empty — nothing kept"),
+            })
+            .is_ok();
+        if !spawned {
+            crate::log("CALL: keep-transcode thread failed to spawn — recording shredded");
         }
         self.scene_dirty = true;
     }
 
+    /// Lazily mint the keep-transcode result channel (worker → UI), mirroring `update_sender`.
+    fn call_keep_sender(&mut self) -> std::sync::mpsc::Sender<CallKeepResult> {
+        if self.call_keep_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.call_keep_tx = Some(tx);
+            self.call_keep_rx = Some(rx);
+        }
+        self.call_keep_tx.as_ref().unwrap().clone()
+    }
+
+    /// Drain finished keep-transcodes and mint the fleet-internal `call.audio` attachment row on the UI thread (the mint needs `&mut self`, so results are collected before the row work — same borrow dance as `drain_update_events`). Called from `tick`.
+    pub(super) fn drain_call_keep(&mut self) -> bool {
+        let mut pending: Vec<CallKeepResult> = Vec::new();
+        {
+            let Some(rx) = self.call_keep_rx.as_ref() else {
+                return false;
+            };
+            while let Ok(ev) = rx.try_recv() {
+                pending.push(ev);
+            }
+        }
+        if pending.is_empty() {
+            return false;
+        }
+        for r in pending {
+            match r.result {
+                Some((hash, size)) => {
+                    if let Some(ci) = self.contact_index_by_handle_hash(&r.peer) {
+                        // "call.audio" (video calls will mint "call.video") — no POTS in Photon, so nothing here is a "phone call".
+                        let content = crate::types::attachment_content(&hash, "call.audio", size);
+                        let mut row =
+                            ChatMessage::new_with_timestamp(content, true, r.offer_osc + 2);
+                        row.notified = true;
+                        row.delivered = true;
+                        if let Some(conv) = self.conv_mut_of(ci) {
+                            conv.insert_message_sorted(row.clone());
+                        }
+                        self.persist_messages_async(ci);
+                        self.push_rows_to_siblings(ci, std::slice::from_ref(&row), None);
+                        crate::logf!(
+                            "CALL: recording kept — {} bytes as blob {}…",
+                            size,
+                            hex::encode(&hash[..4])
+                        );
+                    }
+                }
+                None => crate::log("CALL: recording was empty — nothing kept"),
+            }
+        }
+        self.scene_dirty = true;
+        true
+    }
+
     /// DELETE the recording: the ticket drops, the key zeroizes, the spool file is ciphertext-garbage — true crypto-shred, instant.
     pub(super) fn delete_recording(&mut self) {
+        self.call_playback.take(); // stop any preview — the decision is made
+        self.call_minimized = false;
         let Some(call) = self.active_call.as_mut() else {
             return;
         };
