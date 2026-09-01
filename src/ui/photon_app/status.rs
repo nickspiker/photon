@@ -348,6 +348,7 @@ impl PhotonApp {
         // Sender-side re-serve jobs (Nick's go, 2026-08-20): (contact idx, rows as (eagle_time, content, reference)) collected during the drain — chain_transmit needs &mut self, so execution waits for the checker borrow to release, same as rotated_flush.
         let mut reserve_jobs: Vec<(
             usize,
+            (crate::types::friendship::FriendshipId, [u8; 32]),
             Vec<(i64, String, Option<(crate::types::RefKind, i64)>)>,
         )> = Vec::new();
         // Consent gate (2026-08-25): knocks to fire and the roster ride for a Mutual flip — both need &mut self, so they wait out the drain like the jobs above.
@@ -511,9 +512,10 @@ impl PhotonApp {
                                         }
                                         // SENDER-SIDE RE-SERVE (Nick's go, 2026-08-20) — the delivery-side fix the pull-gate comment above promises. The pending list only retransmits rows it still holds; a row implied-delivered by a FLEET ack that THIS peer device never received leaves their lane wedged forever — they gap-buffer every later row (twice on 2026-08-20 that hostage was a call ANSWER). The sealed tip is per-device cryptographic testimony of what they hold contiguously, and their row_count deficit is content-level evidence they lack rows — so when WE are strictly ahead, re-serve the oldest rows above the tip from the DURABLE store at their ORIGINAL stamps (the lane-rotation flush's proven semantics). The receiver's row-store dedup absorbs anything it already had and Re-ACKs it, clearing the fresh pending; a genuinely missing row processes normally and un-jams the gap cascade.
                                         if n_rows > record.row_count {
-                                            const RESERVE_BURSTS_PER_TESTIMONY: u8 = 2;
+                                            // Cap = rows TRANSMITTED per testimony, not bursts attempted (2026-09-01): the serial-send gate lets ~1 row out per burst, so a burst-attempt cap of 2 parked any hole deeper than ~2 rows forever ('re-serving 8 → re-served 1' in the field log). 16 covers the deficit window; the deferred loop below charges actual transmits.
+                                            const RESERVE_ROWS_PER_TESTIMONY: u8 = 16;
                                             const RESERVE_ROWS_PER_BURST: usize = 8;
-                                            // Convergence rule (field 2026-08-21, the hours-long loop): bursts are spent against the peer device's EXACT testimony (tip, row_count, row_digest), and only a testimony CHANGE re-arms them — re-serving into unchanged testimony is evidence the peer already holds (and dedups) the rows, so the count deficit is a counting divergence, not a delivery hole. Device-keyed because sibling devices pong different lane views; the old fid-keyed tip slot reset on every alternation.
+                                            // Convergence rule (field 2026-08-21, the hours-long loop): the spend is against the peer device's EXACT testimony (tip, row_count, row_digest), and only a testimony CHANGE re-arms it — re-serving into unchanged testimony is evidence the peer already holds (and dedups) the rows, so the count deficit is a counting divergence, not a delivery hole. Device-keyed because sibling devices pong different lane views; the old fid-keyed tip slot reset on every alternation.
                                             let allowed = {
                                                 let e = self
                                                     .lane_reserve_bursts
@@ -534,11 +536,10 @@ impl PhotonApp {
                                                         0,
                                                     );
                                                 }
-                                                if e.3 < RESERVE_BURSTS_PER_TESTIMONY {
-                                                    e.3 += 1;
+                                                if e.3 < RESERVE_ROWS_PER_TESTIMONY {
                                                     true
                                                 } else {
-                                                    if e.3 == RESERVE_BURSTS_PER_TESTIMONY {
+                                                    if e.3 == RESERVE_ROWS_PER_TESTIMONY {
                                                         e.3 += 1;
                                                         crate::logf!("CHAT: re-serve cap spent at tip {} with peer testimony unchanged (theirs {} rows vs ours {}) — parked until their sync record moves", tip, record.row_count, n_rows);
                                                     }
@@ -579,7 +580,7 @@ impl PhotonApp {
                                                 rows.truncate(RESERVE_ROWS_PER_BURST);
                                                 if !rows.is_empty() {
                                                     crate::logf!("CHAT: peer {} row(s) behind with our lane tip {} — re-serving {} row(s) from the durable store (the pending list called them delivered)", n_rows - record.row_count, tip, rows.len());
-                                                    reserve_jobs.push((ci, rows));
+                                                    reserve_jobs.push((ci, (fid, peer_pubkey.key), rows));
                                                 }
                                             }
                                         }
@@ -4569,13 +4570,17 @@ impl PhotonApp {
         }
 
         // Sender-side re-serve execution (checker borrow released): rebuild each missing row's wire frame at its ORIGINAL eagle_time. chain_transmit's already-in-flight guard keeps this idempotent, and its in-flight window paces the burst — a refused row just waits for the next tip observation.
-        for (ci, rows) in reserve_jobs {
+        for (ci, cap_key, rows) in reserve_jobs {
             let mut served = 0usize;
             for (ts, content, reference) in rows {
                 let bw = self.bridge_wire_for_row(ci, ts);
                 if self.chain_transmit(ci, &content, ts, reference, bw.as_ref()) {
                     served += 1;
                 }
+            }
+            // Charge the cap for what actually LEFT — attempts the serial-send gate swallowed cost nothing, so the deficit keeps draining across pongs instead of parking two rows in.
+            if let Some(e) = self.lane_reserve_bursts.get_mut(&cap_key) {
+                e.3 = e.3.saturating_add(served as u8);
             }
             if served > 0 {
                 crate::logf!(
