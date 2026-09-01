@@ -56,7 +56,7 @@ fn contact_key(their_identity_seed: &[u8; 32], domain: &str) -> [u8; 32] {
 
 // ============================================================================ Contact List (Index) - Static Identity Data (Schema-validated) ============================================================================
 
-/// Schema for contact_list section Each contact field contains: (handle_proof: hb, handle: x)
+/// Schema for the contact_list section. Each contact field carries the PIN-SET ONLY: (handle_proof: hP, party_id: ke, avatar_pin: ge) — NEVER a handle string (stale prose here once claimed one; the values never did).
 fn contact_list_schema() -> SectionSchema {
     SectionSchema::new("contact_list")
         // Contact field allows mixed types (hash, string) - use Any
