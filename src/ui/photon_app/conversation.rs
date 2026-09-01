@@ -2000,6 +2000,10 @@ impl PhotonApp {
                             existing.delivered = true;
                             upgraded = true;
                         }
+                        // REPLICATED edge: a fold-trusted sibling page carrying our own outgoing row back is proof the sibling holds it durably. Runtime state — no gossip/persist churn (delivered outranks it).
+                        if from_sibling && existing.is_outgoing && is_outgoing {
+                            existing.replicated = true;
+                        }
                         if row.deleted && !existing.deleted {
                             existing.deleted = true;
                             tombstoned_in_merge = true; // drops a row from the syncable set (inserts self-invalidate; this upgrade path doesn't)
@@ -2037,6 +2041,7 @@ impl PhotonApp {
                         reference: row
                             .reference
                             .and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t))),
+                        replicated: from_sibling && row.sender_outgoing,
                         bridge_seq: 0,
                         bridge_exit: None,
                     });

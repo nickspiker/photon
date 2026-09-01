@@ -91,6 +91,8 @@ pub struct ChatMessage {
     pub reference: Option<(RefKind, i64)>,
     /// The fleet has DISCHARGED its alert duty for this row exactly once (docs design 2026-07-23): true the moment any device dings for it OR displays it live (the active-clearer). Explicitly NOT "read" — never records whether the human looked. Synced fleet-internally like `delivered` (true wins, monotone; rides the sibling row pushes + history pages, sealed under fleet keys — friends never see it). Absent on pre-feature rows/pages = TRUE, so history can never re-ding. Outgoing rows are born true (your own sends never alert you).
     pub notified: bool,
+    /// FLEET-REPLICATED (the delivery ladder's middle state, 2026-09-01): a sibling provably holds this outgoing row — flipped when a fold-trusted sibling page carries our copy back, or when a sibling pong's anti-entropy (count, digest) exactly matches ours. RUNTIME-ONLY v1 (not persisted, not on the wire — re-earned each session on the next gossip/digest edge); `delivered` outranks it. The ladder: sending → replicated (our fleet holds it) ∥ delivered (their fleet ACKed — the line; there is nothing beyond it, "seen" is only ever a human's explicit reaction).
+    pub replicated: bool,
     /// BRIDGE runtime only (never persisted — bridge rows are ephemeral): the newest streamed snapshot's sequence on a BridgeOut row, so an out-of-order or duplicated partial can never regress the display.
     pub bridge_seq: u64,
     /// BRIDGE runtime only: the exit code once this BridgeOut row's command completed — present = FINAL frame arrived, the in-flight predicate's other half.
@@ -110,6 +112,7 @@ impl ChatMessage {
             reference: None,
             notified: is_outgoing,
             bridge_seq: 0,
+            replicated: false,
             bridge_exit: None,
         }
     }
@@ -127,6 +130,7 @@ impl ChatMessage {
             reference: None,
             notified: is_outgoing,
             bridge_seq: 0,
+            replicated: false,
             bridge_exit: None,
         }
     }
