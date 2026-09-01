@@ -1997,49 +1997,20 @@ impl PhotonApp {
         crate::network::wfd::stop_open_house(false);
     }
 
-    /// The pairwise WFD seed, DERIVED from the friendship's history key — both sides already hold it and it rotates on re-key, which is exactly the cred-rotation edge the design wanted. Derivation over storage because nothing ever MINTED the stored `relationship_seed` (`with_seed` has zero callers) — every friendship carried None, provisioning silently bailed before its first log line, and the whole WFD bearer sat dark in the field (Emma's disconnected-wifi test, 2026-09-01: zero WFD lines on any device). The stored field still wins when present (a future explicit mint path stays honoured).
-    pub(super) fn wfd_relationship_seed(&self, ci: usize) -> Option<[u8; 32]> {
-        let c = self.contacts.get(ci)?;
-        if let Some(s) = c.relationship_seed.as_ref() {
-            return Some(*s.as_bytes());
-        }
-        let fid = c.friendship_id?;
-        let (_, chains) = self.friendship_chains.iter().find(|(id, _)| *id == fid)?;
-        let hk = chains.history_key()?;
-        let mut h = blake3::Hasher::new();
-        h.update(b"PHOTON_WFD_RELSEED_v1");
-        h.update(hk);
-        Some(*h.finalize().as_bytes())
-    }
-
     pub(super) fn drive_wfd_stranded(&self) {
-        // Open house outranks the stranded evaluation: the user is deliberately adding someone, so the radio stays up whatever the relay says. (The cancel edge lives in cancel_woods_add_if_left, driven from the tick.)
-        if crate::network::wfd::open_house_active() {
-            return;
-        }
-        let Some(kp) = self.device_keypair.as_ref() else {
-            return;
-        };
-        let our_dev = *kp.public.as_bytes();
-        let mut entries: Vec<([u8; 32], [u8; 32])> = Vec::new();
+        // UNIVERSAL-TOKEN mode (user call 2026-09-01): the bearer no longer needs per-pair provisioned credentials — a stranded/metered device arms the SAME open house the deliberate add uses (universal token + cleartext group creds in the TXT record), and further auth is the chain layer once frames flow. The per-pair seed/cred layer is retired: its distribution dependency kept the whole bearer dark in the field (nothing ever minted the pairwise seed — Emma's disconnected-wifi test, zero WFD lines fleet-wide).
         let mut any_stranded = false;
         let mut any_metered = false;
         let mut any_p2p = false;
         let mut any_p2p_online = false;
-        for ci in 0..self.contacts.len() {
-            let c = &self.contacts[ci];
-            if c.is_sibling || c.wfd_cred.is_none() {
+        for c in &self.contacts {
+            if c.is_sibling {
                 continue;
             }
-            let Some(seed) = self.wfd_relationship_seed(ci) else {
-                continue;
-            };
-            let c = &self.contacts[ci];
-            entries.push((seed, our_dev));
             if c.validated_path.is_none() && !c.is_online {
                 any_stranded = true;
             }
-            // METERED WIDENING: the friend may be reachable, but every path we have rides the tower — no LAN path (a validated LAN path means the AP hop is free and WFD buys nothing but battery). Co-located peers should hear each other over the direct radio: zero data cost, ~2-5ms instead of ~50-100ms RTT, and ~8× the throughput of a congested cellular uplink for a live call. Discovery only runs on this edge (metered + provisioned friend + no LAN), so the battery cost is bounded to exactly the situations where WFD wins. Unlike the stranded case this does NOT require the relay to be down — the relay works fine over cellular, it's just the expensive way to reach someone at arm's length.
+            // METERED WIDENING: the friend may be reachable, but every path we have rides the tower — no LAN path (a validated LAN path means the AP hop is free and WFD buys nothing but battery). Co-located peers should hear each other over the direct radio: zero data cost, ~2-5ms instead of ~50-100ms RTT, and ~8× the throughput of a congested cellular uplink for a live call. The arming only runs on this edge (metered + no LAN), so the battery cost is bounded to exactly the situations where WFD wins; the relay working over cellular is irrelevant — it is just the expensive way to reach someone at arm's length.
             if crate::network::wfd::net_metered()
                 && !(c.validated_path.is_some() && c.validated_path_lan)
             {
@@ -2059,93 +2030,11 @@ impl PhotonApp {
             crate::network::wfd::drained();
             return;
         }
-        crate::network::wfd::eval_stranded(
-            (any_stranded && !crate::network::wfd::relay_reachable()) || any_metered,
-            &entries,
-        );
+        if (any_stranded && !crate::network::wfd::relay_reachable()) || any_metered {
+            crate::network::wfd::arm_stranded_house();
+        } else {
+            crate::network::wfd::disarm_stranded_house();
+        }
     }
 
-    /// Wi-Fi Direct credential provisioning (docs/offgrid.md), fired on the friend's came-online edge. The lexicographically-lower device pubkey of the pair is the designated group owner AND the minter; it sends the (existing or freshly minted) credential sealed under the pair's wfd seal key over the normal channel. The non-GO side sends nothing — it adopts from the received frame. Once per session per contact (`wfd_cred_sent`).
-    pub(super) fn provision_wfd_cred(&mut self, id: crate::types::ContactId) {
-        let Some(ci) = self.contacts.iter().position(|c| c.id == id) else {
-            return;
-        };
-        let (Some(kp), Some(checker)) = (self.device_keypair.clone(), self.status_checker.as_ref())
-        else {
-            return;
-        };
-        let Some(our_hh) = self
-            .session
-            .as_ref()
-            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
-        else {
-            return;
-        };
-        let our_dev = *kp.public.as_bytes();
-        // Derived seed (see wfd_relationship_seed) — the silent bail on the never-minted stored field is what kept the whole bearer dark. Bails are LOUD now: a field log must convict its own gate.
-        let Some(seed) = self.wfd_relationship_seed(ci) else {
-            crate::logf!("WFD: no relationship seed derivable for {} (no chain history key yet) — cred not offered", crate::fp(&self.contacts[ci].handle_proof));
-            return;
-        };
-        let contact = &mut self.contacts[ci];
-        let Some(their_dev) = contact.device_key() else {
-            crate::logf!("WFD: no device key for {} — cred not offered", crate::fp(&contact.handle_proof));
-            return;
-        };
-        // One attempt per session either way: the non-GO side has nothing to send, and the GO side's lost frame self-heals next session.
-        contact.wfd_cred_sent = true;
-        if crate::network::wfd::elect_go(&our_dev, &their_dev) != our_dev {
-            return;
-        }
-        // Mint on first provisioning; afterwards re-offer the held credential (idempotent adopt by epoch on the far side). Rotation mints a NEW epoch on the rotate edges (post-teardown / friendship re-key), which land here as a cleared wfd_cred.
-        let cred = match &contact.wfd_cred {
-            Some(c) => c.clone(),
-            None => {
-                let minted = crate::network::wfd::mint_cred(&our_dev, &their_dev, 1);
-                contact.wfd_cred = Some(minted.clone());
-                minted
-            }
-        };
-        let sealed = match crate::network::wfd::seal_cred(&cred, &seed) {
-            Ok(s) => s,
-            Err(e) => {
-                crate::logf!("WFD: cred seal failed: {}", e);
-                return;
-            }
-        };
-        let token = crate::crypto::clutch::derive_conversation_token(&[our_hh, contact.handle_hash]);
-        let (primary, alt) = match contact.race_addrs() {
-            Some(pa) => pa,
-            None => (crate::network::status::RELAY_ADDR, None), // relay-only friend: the relay copy below is the real path
-        };
-        match crate::network::fgtw::protocol::build_wfd_cred_vsf(
-            &token,
-            sealed,
-            kp.public.as_bytes(),
-            kp.secret.as_bytes(),
-        ) {
-            Ok(vsf_bytes) => {
-                crate::logf!(
-                    "WFD: offering group credential (epoch {}) to {}",
-                    cred.epoch,
-                    crate::fp(&contact.handle_proof).as_str()
-                );
-                checker.send_history(crate::network::status::HistorySendRequest {
-                    peer_addr: primary,
-                    alt_addr: alt,
-                    recipient_pubkey: their_dev,
-                    vsf_bytes,
-                    relay_to: vec![their_dev],
-                });
-            }
-            Err(e) => crate::logf!("WFD: cred frame build failed: {}", e),
-        }
-        // Persist the minted credential so the woods meetup survives a relaunch.
-        if let Some(storage) = self.storage.as_ref() {
-            let snapshot = self.contacts[ci].clone();
-            if let Err(e) = crate::storage::contacts::save_contact_state(&snapshot, storage) {
-                crate::logf!("WFD: cred persist failed: {}", e);
-            }
-        }
-    }
 }

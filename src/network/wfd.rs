@@ -403,6 +403,32 @@ pub fn iface_lost() {
 
 /// Our live open-house credentials while the mode is armed (we created a group with these).
 static OPEN_HOUSE: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+/// Which arming EDGE holds the house open: DELIBERATE (the user is adding someone — the woods-add cancel edge may disarm) vs STRANDED (the bearer's trigger — only the un-stranded edge disarms). Both may be true; the house stays up until BOTH release.
+static DELIBERATE_ARMED: AtomicBool = AtomicBool::new(false);
+static STRANDED_ARMED: AtomicBool = AtomicBool::new(false);
+
+/// The UNIVERSAL discovery identity (user call 2026-09-01: "always use blake3('Photon WiFi direct v0'), further auth once we know it's photon-capable"). One static token names the APP, not a person or a pair; real authentication happens at the chain layer the moment frames flow (a hostile joiner sees ciphertext and unresolvable knocks — the same trust story open house always had). This retires the per-pair provisioned-credential layer, whose distribution dependency kept the whole bearer dark in the field (nothing minted the pairwise seed). Down the line the same token is the substrate for opt-in friend relaying.
+pub fn universal_token() -> [u8; WFD_TOKEN_LEN] {
+    let h = blake3::hash(b"Photon WiFi direct v0");
+    let mut t = [0u8; WFD_TOKEN_LEN];
+    t.copy_from_slice(&h.as_bytes()[..WFD_TOKEN_LEN]);
+    t
+}
+
+/// STRANDED/METERED arming of the house: same group + cleartext-creds beacon as the deliberate add, held by its own flag so the woods-add cancel edge can't tear down a bearer-armed house.
+pub fn arm_stranded_house() {
+    if !STRANDED_ARMED.swap(true, Ordering::Relaxed) {
+        crate::log("WFD: stranded/metered — arming the open house (universal token)");
+    }
+    arm_house_inner();
+}
+
+pub fn disarm_stranded_house() {
+    if STRANDED_ARMED.swap(false, Ordering::Relaxed) && !DELIBERATE_ARMED.load(Ordering::Relaxed) {
+        crate::log("WFD: no longer stranded/metered — disarming the open house");
+        release_house(false);
+    }
+}
 /// The live group's shape from the platform's last GroupChanged: (is_go, our_ip, go_ip). Feeds the joiner's ping-cadence unicast beacon (a contact added AFTER group-up still gets announced).
 static CURRENT_GROUP: std::sync::Mutex<Option<(bool, std::net::Ipv4Addr, std::net::Ipv4Addr)>> =
     std::sync::Mutex::new(None);
@@ -419,8 +445,8 @@ pub fn open_house_active() -> bool {
     OPEN_HOUSE.lock().unwrap().is_some()
 }
 
-/// Arm open house: mint ephemeral group credentials, create the group, publish the creds. Idempotent — re-arming keeps the existing group.
-pub fn start_open_house() {
+/// Arm the house (shared by the deliberate-add and stranded edges): mint ephemeral group credentials, create the group, publish the creds. Idempotent — re-arming keeps the existing group.
+fn arm_house_inner() {
     let mut oh = OPEN_HOUSE.lock().unwrap();
     if oh.is_some() {
         return;
@@ -433,8 +459,22 @@ pub fn start_open_house() {
     with_bearer(|b| b.platform.open_house(&c.ssid, &c.psk));
 }
 
-/// Quiet the open-house beacon (stop advertising the creds), optionally tearing the group down too. `keep_group` = the found-them edge (the ceremony still needs the pipe; DRAINED handles the group later); `!keep_group` = the user walked away with nobody found.
+/// Deliberate-add arming (the user submitted an add while off-grid).
+pub fn start_open_house() {
+    DELIBERATE_ARMED.store(true, Ordering::Relaxed);
+    arm_house_inner();
+}
+
+/// Release the DELIBERATE hold (found-them edge or the user walked away). The house itself only quiets when the STRANDED hold is also clear — a bearer-armed house outlives the add flow.
 pub fn stop_open_house(keep_group: bool) {
+    DELIBERATE_ARMED.store(false, Ordering::Relaxed);
+    if !STRANDED_ARMED.load(Ordering::Relaxed) {
+        release_house(keep_group);
+    }
+}
+
+/// Quiet the beacon (stop advertising the creds), optionally tearing the group down too. `keep_group` = the found-them edge (the ceremony still needs the pipe; DRAINED handles the group later).
+fn release_house(keep_group: bool) {
     let was = OPEN_HOUSE.lock().unwrap().take();
     if was.is_none() {
         return;
