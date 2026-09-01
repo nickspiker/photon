@@ -41,9 +41,14 @@ const JITTER_DECAY_FRAMES: usize = 500; // ~5s of clean playback before shrinkin
 static JITTER_TARGET: AtomicUsize = AtomicUsize::new(JITTER_FLOOR);
 static JITTER_PRIMING: AtomicBool = AtomicBool::new(true);
 static JITTER_CLEAN_STREAK: AtomicUsize = AtomicUsize::new(0);
-// STANDING-DEPTH TRIM (2026-09-01 Emma/Nick field call): depth acquired during a transient (slow-start's 4-frame floor bursts, a recv-path stall) is PERMANENT without this — the DAC drains at exactly realtime, so excess queue = mouth-to-ear latency for the rest of the call. Target decay alone never sheds it (it only matters at a re-prime). When the queue sits above target+1 for a full clean second, drop ONE frame (10ms) and re-observe — sheds a standing 40ms in ~4s, inaudible against speech.
-const TRIM_OVER_SLACK: usize = 1; // frames above target that count as "standing over"
-const TRIM_OBSERVE_FRAMES: usize = 100; // 1s of consecutive over-depth before each single-frame drop
+// STANDING-DEPTH TRIM (2026-09-01 Emma/Nick field call): depth acquired during a transient (slow-start's 4-frame floor bursts, a recv-path stall) is PERMANENT without this — the DAC drains at exactly realtime, so excess queue = mouth-to-ear latency for the rest of the call. Target decay alone never sheds it (it only matters at a re-prime).
+// TWO trims, because the field found TWO regimes (Brittany/Nick call: depth 830ms, peak 990ms = the 100-frame cap, WITH 5 underruns — the queue swung dry→full, the fingerprint of sample-CLOCK DRIFT the gentle trim couldn't chase):
+//   1. Gentle: depth a hair over target for a clean second → drop one frame. Sheds slow-start overshoot inaudibly.
+//   2. Hard CEILING: the queue is NEVER allowed to stand more than target+ceiling. Above it, drop down NOW (bounded per render so a big spike sheds over a few frames, not one audible skip). Under pure drift the excess is ~1 frame per render, so this is smooth and bounds mouth-to-ear latency to (target+ceiling)×10ms instead of letting drift fill to the 1s cap.
+const TRIM_OVER_SLACK: usize = 1; // frames above target that count as "standing over" (gentle path)
+const TRIM_OBSERVE_FRAMES: usize = 100; // 1s of consecutive over-depth before each single-frame gentle drop
+const TRIM_CEILING_SLACK: usize = 4; // hard ceiling above target: 4 frames = one FEC-window burst of jitter headroom, never standing latency beyond it
+const TRIM_MAX_DROP_PER_RENDER: usize = 4; // cap the hard drop so a pathological backlog sheds over a few frames rather than one large skip
 static TRIM_OVER_STREAK: AtomicUsize = AtomicUsize::new(0);
 // Telemetry — the numbers that turn "latency feels a little off" into a diagnosis (peak standing depth vs target vs trims). Reset per call in clear_queues, logged by the engine at teardown.
 static JITTER_UNDERRUNS: AtomicUsize = AtomicUsize::new(0);
@@ -163,8 +168,18 @@ fn next_render_frame() -> Vec<i16> {
                         JITTER_TARGET.store(target - 1, Ordering::Relaxed);
                         JITTER_CLEAN_STREAK.store(0, Ordering::Relaxed);
                     }
-                    // Standing-depth trim (see the consts): a queue persistently above target is latency, not safety — after a full second of over-depth, drop one frame to close the gap.
-                    if q.len() > target + TRIM_OVER_SLACK {
+                    // Hard ceiling FIRST (clock-drift clamp): the queue may never stand more than target+ceiling. Drop the excess now, bounded per render so a spike sheds smoothly. This is what bounds latency under drift; the gentle trim below only shaves slow-start overshoot.
+                    let ceiling = target + TRIM_CEILING_SLACK;
+                    if q.len() > ceiling {
+                        let mut dropped = 0;
+                        while q.len() > ceiling && dropped < TRIM_MAX_DROP_PER_RENDER {
+                            q.pop_front();
+                            dropped += 1;
+                        }
+                        JITTER_TRIMS.fetch_add(dropped, Ordering::Relaxed);
+                        TRIM_OVER_STREAK.store(0, Ordering::Relaxed);
+                    } else if q.len() > target + TRIM_OVER_SLACK {
+                        // Gentle trim: a queue persistently a hair over target for a full second drops one frame — sheds slow-start overshoot inaudibly, without chattering against normal jitter.
                         let over = TRIM_OVER_STREAK.fetch_add(1, Ordering::Relaxed) + 1;
                         if over >= TRIM_OBSERVE_FRAMES {
                             q.pop_front();

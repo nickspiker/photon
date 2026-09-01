@@ -51,10 +51,14 @@ const fn tier_window_bytes(tier: usize) -> usize {
 const PID_DUCK_ENABLED: bool = true;
 /// Mic AGC setpoint: mean |sample| of a talking frame lands here (~-18 dBFS of i16 — comfortable headroom above the floor window's repair math, below clipping).
 const TX_TARGET_LEVEL: f32 = 4000.0;
-/// Far-end energy that squashes the duck term to half — continuous, not a threshold.
+/// Far-end energy that squashes the duck term to half — continuous, not a threshold. Also the "far end is talking" line for the side-aware gate.
 const DUCK_FAR_HALF: f32 = 400.0;
-/// Hard floor so the duck never fully mutes the mic (double-talk stays audible under echo).
+/// Hard floor so the SOFT duck (double-talk) never fully mutes the mic (the near talker stays audible under echo).
 const DUCK_GAIN_FLOOR: f32 = 0.15;
+/// SIDE-AWARE ECHO GATE (Nick's call 2026-09-01: "a block when the other is talking, PID reduction for the silence"). When the far end is talking and the near mic is quieter than a plausible ECHO of it — i.e. the near human is NOT talking, the mic is carrying only speaker bleed — hard-gate the mic toward silence instead of the 0.15 soft floor. Real near speech on a close mic runs comparable to or above the far render level, so `near < far × ratio` cleanly separates echo-only from double-talk. Below the ratio = pure echo = gate; above = double-talk = keep the soft floor so an interruption survives.
+const ECHO_GATE_RATIO: f32 = 0.5;
+/// The hard-gate target gain for echo-only frames — near-mute (~-34 dB). The existing slew (0.35/frame) eases in/out over ~60ms so the gate never clicks, and the applied-gain clamp already reaches this low (GAIN_MIN×DUCK_GAIN_FLOOR ≈ 0.019); the old code just never asked for it.
+const ECHO_GATE_GAIN: f32 = 0.02;
 /// PID gains on the log2-domain level error, per 20ms tick. Conservative: proportional carries the loop, integral trims steady-state (clamped ±2 octaves), derivative damps onset pump.
 const PID_KP: f32 = 0.20;
 const PID_KI: f32 = 0.02;
@@ -174,6 +178,7 @@ fn run(
     let mut pid_i: f32 = 0.0;
     let mut pid_last_e: f32 = 0.0;
     let mut ducked_frames: u64 = 0;
+    let mut gated_frames: u64 = 0;
     let mut far_active_frames: u64 = 0;
     let route_ducks = !matches!(
         crate::platform::audio::route(),
@@ -234,11 +239,19 @@ fn run(
                 // Frame mean |sample| — the level the AGC regulates. Silence (below a hair above the noise floor) freezes the loop: regulating silence toward TX_TARGET_LEVEL is how AGCs learn to amplify room hiss.
                 let mean = frame.iter().map(|s| s.unsigned_abs() as u32).sum::<u32>() as f32
                     / frame.len().max(1) as f32;
-                // Continuous duck term: far-end energy squashes the target multiplicatively (half at DUCK_FAR_HALF), floored so double-talk survives. Headset route never ducks.
-                let duck_term = if route_ducks {
-                    (1.0 / (1.0 + far / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
-                } else {
+                // Side-aware duck term (echo gate + soft duck in one branch). Headset route never ducks (no acoustic path).
+                //   far silent            → 1.0 (full mic)
+                //   far talking, near echo → HARD gate toward silence (near human isn't talking; the mic is only speaker bleed)
+                //   far talking, near loud → soft floored duck (double-talk — keep the near talker audible)
+                let far_talking = route_ducks && far > DUCK_FAR_HALF;
+                let echo_only = far_talking && mean < far * ECHO_GATE_RATIO;
+                let duck_term = if !route_ducks || !far_talking {
                     1.0
+                } else if echo_only {
+                    gated_frames += 1;
+                    ECHO_GATE_GAIN
+                } else {
+                    (1.0 / (1.0 + far / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
                 };
                 if mean > 40.0 {
                     // Log2-domain level error toward the setpoint, PID'd, then the duck term scales the RESULT — level management and echo duck in the one inline loop (+~µs per 20ms frame).
@@ -476,13 +489,14 @@ fn run(
         rx_level,
         rx_frames
     );
-    // Ladder + duck field-tuning readout: where the call ended up, how it moved, and — while the duck is disarmed — how often the far-active trigger WOULD have gated the mic (the raw-echo run's key number).
+    // Ladder + duck field-tuning readout: where the call ended up, how it moved, and the echo numbers — `gated` = hard near-mutes (echo-only frames), `ducked` = any attenuation, `far-active` = frames the far end was talking. A healthy speakerphone call wants gated ≈ (far-active − double-talk): most far-talk-alone frames should hard-gate.
     crate::logf!(
-        "CALL: ladder — ended {} kbps, {} up(s), {} down(s); duck {} — ducked {}, far-active {} of {} frames",
+        "CALL: ladder — ended {} kbps, {} up(s), {} down(s); duck {} — gated {}, ducked {}, far-active {} of {} frames",
         TIER_RATES[tier] / 1000,
         tier_ups,
         tier_downs,
-        if PID_DUCK_ENABLED { "PID" } else { "disarmed" },
+        if PID_DUCK_ENABLED { "PID+gate" } else { "disarmed" },
+        gated_frames,
         ducked_frames,
         far_active_frames,
         tx_frames
