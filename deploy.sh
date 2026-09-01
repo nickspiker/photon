@@ -307,6 +307,7 @@ echo "BUILD PHASE complete — all 8 platforms + signed manifest built. Nothing 
 
 echo ""
 echo "Uploading to R2 ($R2_BUCKET/$R2_PATH)..."
+PHASE_T0=$SECONDS
 
 # TIMEOUT + RETRY on every put (field 2026-08-28): wrangler holds a dead HTTP stream FOREVER — a deploy sat 20 minutes on install-release.ps1, a few-KB text file, after all eight binaries had uploaded fine. 10 minutes covers the biggest binary on the slowest sane uplink; three attempts covers the transient-connection class; a genuinely dead network still fails LOUDLY into the trap instead of hanging.
 r2_put() {
@@ -357,6 +358,7 @@ r2_put "$R2_BUCKET/$R2_PATH/install-release.ps1" \
 r2_put "$R2_BUCKET/$R2_PATH/manifest-release.vsf" \
     --file /tmp/manifest-release.vsf --content-type application/octet-stream --remote
 
+note_time "R2 upload (9 artefacts)" $((SECONDS - PHASE_T0))
 echo ""
 echo "Linux ARM64, Linux x86_64, Windows x86_64, Windows ARM64, Redox, macOS x86_64, macOS ARM64, Android binaries + manifest deployed to R2"
 echo "  Windows SHA256: $WINDOWS_SHA256"
@@ -375,6 +377,7 @@ mirror() {
 }
 echo ""
 echo "Mirroring release to GitHub ($GH_TAG)..."
+PHASE_T0=$SECONDS
 # The tag already exists on origin (pushed above at $COMMIT), so ensure_release just attaches a Release to it — no --target.
 if ensure_release "$GH_TAG" false; then
     mirror "photon-messenger-linux-x86_64-release"  target/release/photon-messenger
@@ -388,6 +391,7 @@ if ensure_release "$GH_TAG" false; then
 else
     echo "WARNING: GitHub release creation failed — skipping the mirror entirely (R2 is authoritative and live)"
 fi
+note_time "GitHub mirror" $((SECONDS - PHASE_T0))
 # Binaries only — no installer scripts on GitHub. The README carries the GitHub-fallback install commands (they fetch these assets by name from the latest release), so the scripts aren't needed here.
 
 # Update website version and date
@@ -400,7 +404,9 @@ echo "Updated website: Version $DOZENAL_VERSION, Date $DEPLOY_DATE"
 echo ""
 echo "Deploying website..."
 # Guarded: past the provenance tag the release is permanent, so a website hiccup must not abort into the EXIT trap.
+PHASE_T0=$SECONDS
 (cd /mnt/Chiton/MEGA/holdmyoscilloscope && ./deploy.sh) || echo "WARNING: website deploy failed (non-fatal — the release is live; re-deploy the site when convenient)."
+note_time "website deploy" $((SECONDS - PHASE_T0))
 
 # Rollback traps were already disarmed right after R2 went live (above), where the release became permanent.
 
@@ -433,7 +439,7 @@ if [ "${LINT_COUNT:-0}" -gt 0 ]; then
 else
     echo "  ✓ lint-clean"
 fi
-echo "  build times:"
+echo "  phase times:"
 printf '%s' "$BUILD_TIMES"
 DEPLOY_ELAPSED=$((SECONDS - DEPLOY_T0))
 printf '  %-22s %dm%02ds\n' "TOTAL deploy" $((DEPLOY_ELAPSED / 60)) $((DEPLOY_ELAPSED % 60))
