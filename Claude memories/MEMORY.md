@@ -65,6 +65,7 @@
 - [project_party_colour_perceptual.md](project_party_colour_perceptual.md) — Conversation party colours are placeholder; swap to perceptual L≈50% via vsf spectral/LMS
 - [project_presence_vs_online.md](project_presence_vs_online.md) — presence ≠ online (online = avatar ring, always); "show my presence" = busy/song/mood broadcast, DEFAULTS OFF
 - [project_theme_rec2020.md](project_theme_rec2020.md) — fluor+photon theme.rs colours = VSF RGB lazily passed thru; convert via vsf_rgb_to_bt2020 + target Rec.2020 output on ALL platforms
+- [project_dozenal_datetime.md](project_dozenal_datetime.md) — dozenal date = `year month-glyph day` space-separated; months zero-indexed single glyphs (Feb=short Zila), weekdays are WORDS never digits, week-of-year dropped
 - [project_nunc_clock_check.md](project_nunc_clock_check.md) — nunc-time = clock VALIDATOR not photon's clock source; warn-only banner + ONE load-bearing use: `now` in the update stamp window (user mandate)
 - [project_update_flow.md](project_update_flow.md) — self-update BUILT @228f68c + release-notice push BUILT (deploy.sh → hub broadcast + FCM → instant poll); stamp window gates installs
 - [project_fleet_inbox.md](project_fleet_inbox.md) — fleet inbox DESIGNED in docs/fleet-inbox.md (inbox/<hp>/ + hub/FCM wake; worker events / release notices / member notices, never a control channel); v1 = bind-attempt alert; NOT built
