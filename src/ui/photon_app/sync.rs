@@ -1956,7 +1956,25 @@ impl PhotonApp {
                 relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip());
             // A presence ping tracks the pinged DEVICE — keyless contacts aren't presence-pingable (the "00000000" class).
             if let Some(dev) = contact.public_identity.clone() {
-                checker.ping(ip, dev, punch, relay_to, false);
+                checker.ping(ip, dev.clone(), punch, relay_to.clone(), false);
+                // OWNERLESS FAN-OUT (2026-09-01, the last boss of the head-gap arc): ping EVERY other known device of this contact too, each at its own best address with its own relay leg. One pinned target meant sync-record testimony only flowed between the pinned pair — Emma's phone never SAW the MacBook's behind-tip record, so its per-device re-serve never fired and the MacBook's lane wedged through a ringing, answered, silent call (field 2026-09-01). Pings are tiny + idempotent; each pong now feeds the per-device (fid, device) re-serve slot for ITS sender, so every live device on each side serves every wedged device on the other. The offline edge still rotates the PRIMARY; the fan just stops testimony from depending on that choice.
+                let primary = *dev.as_bytes();
+                for ep in &contact.device_endpoints {
+                    if ep.pubkey == primary || contact.refused_devices.contains(&ep.pubkey) {
+                        continue;
+                    }
+                    let ep_addr = ep.lan.or(ep.public);
+                    let Some(ep_addr) = ep_addr else { continue };
+                    let ep_punch: Vec<std::net::SocketAddr> =
+                        [ep.lan, ep.public].into_iter().flatten().collect();
+                    checker.ping(
+                        ep_addr,
+                        crate::types::DevicePubkey::from_bytes(ep.pubkey),
+                        ep_punch,
+                        vec![ep.pubkey],
+                        false,
+                    );
+                }
             }
         }
     }

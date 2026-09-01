@@ -547,13 +547,15 @@ impl PhotonApp {
                                                 }
                                             };
                                             if allowed {
+                                                // LIVE pendings only (2026-09-01, the head-gap last boss): a pending that exhausted MAX_SEND_ATTEMPTS never retransmits again — it sits in the list solely so a late ACK can clear it — yet the old whole-list exclusion treated it as "already retransmitting" and hid exactly the head row the peer's in-order gate was starving on (the MacBook's ringing-answered-silent call: the ANSWER buffered behind one exhausted pending forever). Given-up rows are re-servable; live ones still are not (their ladder covers them).
                                                 let pending_times: std::collections::HashSet<i64> =
                                                     chains
                                                         .pending_messages
                                                         .iter()
+                                                        .filter(|m| m.attempts < crate::types::friendship::MAX_SEND_ATTEMPTS)
                                                         .map(|m| m.eagle_time)
                                                         .collect();
-                                                // Oldest-first: the OLDEST missing row is the one holding the peer's in-order gate shut; later holes fill on subsequent tip observations. Pending rows are excluded (they already retransmit); deleted and friend-recovered rows never re-serve.
+                                                // Oldest-first: the OLDEST missing row is the one holding the peer's in-order gate shut; later holes fill on subsequent tip observations. LIVE pending rows are excluded (they already retransmit); deleted and friend-recovered rows never re-serve.
                                                 let mut rows: Vec<(
                                                     i64,
                                                     String,

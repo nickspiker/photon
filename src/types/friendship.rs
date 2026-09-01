@@ -156,7 +156,7 @@ const DOMAIN_ANCHOR: &[u8] = b"PHOTON_ANCHOR_v\x02";
 /// Reliability backoff for unacked outgoing messages. A message is (re)sent until an ACK arrives or we hit `MAX_SEND_ATTEMPTS`; between sends we wait `retry_delay_osc(attempts)` — exponential from ~1s, doubling, capped at ~30s. Covers both a dropped message AND a dropped ACK (the sender just keeps resending; the receiver dedupes by eagle_time and its ACK is deterministic, so a re-ACK is free). These live on `PendingMessage` and are runtime-only (not persisted).
 const RETRY_BASE_SECS: u64 = 1;
 const RETRY_CAP_SECS: u64 = 30;
-const MAX_SEND_ATTEMPTS: u8 = 8;
+pub const MAX_SEND_ATTEMPTS: u8 = 8;
 
 /// How many un-ACKed messages a lane may have in flight at once (advance-on-send makes pipelining safe; each frame encrypts at its own position). Held at 4 while pre-hardening receivers may still be in the field: their now-removed gap-streak fork trigger fired at 8 buffered frames, so a burst must stay well under that. Lift once the fleet has updated.
 pub const IN_FLIGHT_WINDOW: usize = 4;
