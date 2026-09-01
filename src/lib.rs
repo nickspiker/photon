@@ -101,6 +101,26 @@ pub const DOZENAL_NAMES: [&str; 12] = [
     "Stelor",
 ];
 
+/// Session mirror of the fleet-wide `display.dozenal` setting (the About-page toggle) — a static so render-edge formatters read the base without threading `&self` everywhere. Synced wherever fleet_settings loads or the toggle flips. Default TRUE: dozenal is the house base (binary at rest, base chosen at the render edge; arabic never by preference).
+pub static DOZENAL_UI: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn dozenal_ui() -> bool {
+    DOZENAL_UI.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_dozenal_ui(on: bool) {
+    DOZENAL_UI.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Base-aware integer render for the UI: dozenal glyphs (Oxanium `+glyphs` face REQUIRED at the draw site) or arabic decimal, per the toggle.
+pub fn fmt_num(n: u32) -> String {
+    if dozenal_ui() {
+        dozenal_glyphs(n)
+    } else {
+        n.to_string()
+    }
+}
+
 /// Render `n` in dozenal as reserved control-code bytes 0x10+digit — the Oxanium `+glyphs` face draws them as the dozenal digits. UI-only: terminals show garbage, so LOG paths use [`dozenal_words`] instead.
 pub fn dozenal_glyphs(mut n: u32) -> String {
     if n == 0 {

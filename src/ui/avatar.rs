@@ -881,12 +881,18 @@ pub fn download_avatar_pinned(
     party_id: &[u8; 32],
     avatar_pin: &[u8; 64],
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
-) -> Option<(usize, Vec<u8>)> {
+) -> Option<(usize, Vec<u8>, Option<String>)> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     let mut key = [0u8; 32];
     key.copy_from_slice(&avatar_pin[..32]);
-    if let Some(cached) = load_cached_avatar_pinned(party_id, &key, storage) {
-        return Some(cached);
+    if let Some((size, px)) = load_cached_avatar_pinned(party_id, &key, storage) {
+        // The cached bytes are the same pinned VSF the wall served — the name slot (if any) decrypts under the same key.
+        let name = storage
+            .read_addr(&crate::storage::vault_key("avatar", party_id))
+            .ok()
+            .flatten()
+            .and_then(|bytes| avatar_name_with_key(&bytes, &key));
+        return Some((size, px, name));
     }
     let storage_key = URL_SAFE_NO_PAD.encode(&avatar_pin[32..]);
     crate::logf!(
@@ -916,12 +922,13 @@ pub fn download_avatar_pinned(
     if fgtw::client::error_frame(&vsf_data).is_some() {
         return None; // not_found or another error frame — no avatar published
     }
-    let loaded = load_avatar_from_bytes_with_key(&vsf_data, &key)?;
+    let (size, px) = load_avatar_from_bytes_with_key(&vsf_data, &key)?;
+    let name = avatar_name_with_key(&vsf_data, &key);
     // Validated — cache at the party-id scope so a restart is local-first.
     if let Err(e) = storage.write_addr(&crate::storage::vault_key("avatar", party_id), &vsf_data) {
         crate::logf!("Avatar: cache write failed: {}", e);
     }
-    Some(loaded)
+    Some((size, px, name))
 }
 
 /// Decode raw AV1 avatar bytes straight to display pixels. The scoped-blob path hands us plaintext AV1 already — the slot carried the key and the content object carried the image — so there is no VSF envelope to unwrap and no second decryption to perform, unlike the pin path where the bytes arrive still sealed.
@@ -938,7 +945,10 @@ pub fn recover_own_avatar_from_wall(
     identity_seed: &[u8; 32],
     avatar_pin: &[u8; 64],
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
-) -> Option<Vec<u8>> {
+) -> (Option<Vec<u8>>, Option<String>) {
+    // Inner Option flow so `?` still works; the outer pair splits pixels from the recovered PREFERRED NAME (same pin, same blob — the reinstall heal restores both).
+    let mut recovered_name: Option<String> = None;
+    let pixels = (|| -> Option<Vec<u8>> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     let mut pin_key = [0u8; 32];
     pin_key.copy_from_slice(&avatar_pin[..32]);
@@ -970,6 +980,8 @@ pub fn recover_own_avatar_from_wall(
     if fgtw::client::error_frame(&vsf_data).is_some() {
         return None; // nothing published under this pin yet
     }
+    // The wall blob carries the preferred name beside the pixels (same pin) — recover it too.
+    recovered_name = avatar_name_with_key(&vsf_data, &pin_key);
     // Decrypt with the pin, then re-save under the seed — the vault's canonical form.
     let av1_data = match extract_av1_data_with_key(&vsf_data, &pin_key) {
         Ok(d) => d,
@@ -983,6 +995,8 @@ pub fn recover_own_avatar_from_wall(
     }
     let (w, h, pixels) = decode_avatar(&av1_data).ok()?;
     (w == h).then_some(pixels)
+    })();
+    (pixels, recovered_name)
 }
 
 /// Save avatar VSF bytes to the local vault by handle.
@@ -1032,8 +1046,10 @@ pub fn load_avatar_from_bytes(vsf_data: &[u8], handle: &str) -> Option<(usize, V
 
 /// Avatar document schema: an "image" section whose "pixels" field is v'e'-wrapped (encrypted) AV1 data. The Wrapped(b'e') constraint rejects any other encoding at validation time.
 fn avatar_image_schema() -> vsf::schema::SectionSchema {
+    // `name` is the PREFERRED NAME riding the same pin (v'e' under the same key half) — optional both directions: schema fields are non-required by default, so pre-name blobs still parse, and pre-name readers parse-and-discard the unknown field. One pin, one wall blob, both always-shared slots.
     vsf::schema::SectionSchema::new("image")
         .field("pixels", vsf::schema::TypeConstraint::Wrapped(b'e'))
+        .field("name", vsf::schema::TypeConstraint::Wrapped(b'e'))
 }
 
 /// Verified read of an avatar VSF document → the encrypted AV1 payload. Goes thru `parse_document`, so verification (hp + hb or signature) is un-skippable — tampered or anchor-less bytes never reach the decrypt step.
@@ -1044,6 +1060,16 @@ fn avatar_encrypted_payload(vsf_data: &[u8]) -> Result<Vec<u8>, String> {
     section
         .get_value::<Vec<u8>>("pixels")
         .map_err(|e| format!("avatar pixels field: {}", e))
+}
+
+/// The PREFERRED NAME riding an avatar VSF, decrypted under the pin's key half. `None` when the blob predates the name slot, carries no name, or fails to decrypt — never an error (the avatar itself is unaffected). The name travels v'e'(v'a'(utf8)) exactly like the pixels, so one pin unlocks both always-shared slots.
+pub fn avatar_name_with_key(vsf_data: &[u8], key: &[u8; 32]) -> Option<String> {
+    let section =
+        vsf::schema::SectionBuilder::parse_document(avatar_image_schema(), vsf_data, None).ok()?;
+    let sealed = section.get_value::<Vec<u8>>("name").ok()?;
+    let bytes = decrypt_av1_data_with_key(&sealed, key).ok()?;
+    let name = String::from_utf8(bytes).ok()?;
+    (!name.is_empty()).then_some(name)
 }
 
 /// `load_avatar_from_bytes` from the already-derived `identity_seed`.
@@ -1154,19 +1180,21 @@ fn extract_av1_data_with_key(vsf_bytes: &[u8], key: &[u8; 32]) -> Result<Vec<u8>
     decrypt_av1_data_with_key(&encrypted, key)
 }
 
-/// Validate a downloaded server avatar (PIN-encrypted wire form) and re-cache it LOCALLY in the owner's SEED form (kete-protected, owner-only). Bridges the wire's pin encryption to the local cache's seed encryption so a later local load decrypts correctly. Returns true iff it decoded + cached.
+/// Validate a downloaded server avatar (PIN-encrypted wire form) and re-cache it LOCALLY in the owner's SEED form (kete-protected, owner-only). Bridges the wire's pin encryption to the local cache's seed encryption so a later local load decrypts correctly. Returns `(cached, recovered_name)`: the wall blob also carries the PREFERRED NAME under the same pin, so a reinstalled owner recovers the name beside the picture (the caller writes it back into fstate when its own `profile.name` is blank — the Theresa reinstall hole).
 fn adopt_server_avatar(
     vsf_data: &[u8],
     identity_seed: &[u8; 32],
     avatar_pin: &[u8; 64],
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
-) -> bool {
+) -> (bool, Option<String>) {
     let mut key = [0u8; 32];
     key.copy_from_slice(&avatar_pin[..32]);
-    match extract_av1_data_with_key(vsf_data, &key) {
+    let name = avatar_name_with_key(vsf_data, &key);
+    let cached = match extract_av1_data_with_key(vsf_data, &key) {
         Ok(av1) => save_avatar_from_seed(&av1, identity_seed, storage).is_ok(),
         Err(_) => false,
-    }
+    };
+    (cached, name)
 }
 
 /// Get avatar's provenance hash by handle (if cached locally) Used to include in ping/pong messages for avatar sync
@@ -1543,6 +1571,7 @@ pub fn build_signed_avatar_vsf(
         &derive_avatar_encryption_key_from_seed(identity_seed),
         avatar_signing_key,
         avatar_verifying_key,
+        None, // owner-local (seed-keyed) copy: the name lives in fstate; only the pin-keyed wire forms carry it
     )
 }
 
@@ -1552,20 +1581,23 @@ pub fn build_signed_avatar_vsf_keyed(
     enc_key: &[u8; 32],
     avatar_signing_key: &SigningKey,
     avatar_verifying_key: &VerifyingKey,
+    preferred_name: Option<&str>,
 ) -> Result<Vec<u8>, String> {
     use vsf::{VsfBuilder, VsfType};
 
     // Encrypt AV1 data (wraps in v'a' then encrypts) under the explicit pin key.
     let encrypted = encrypt_av1_data_with_key(av1_data, enc_key)?;
 
-    // Build the unsigned VSF (ke set, hp/ge placeholders) — "image" section with "pixels" v'e' field for the encrypted data.
+    // Build the unsigned VSF (ke set, hp/ge placeholders) — "image" section with "pixels" v'e' field for the encrypted data, plus the optional "name" slot (the preferred name, sealed under the SAME pin key) so one pin discloses both always-shared slots and a reinstalled owner recovers the name from the wall beside the picture.
+    let mut fields = vec![("pixels".to_string(), VsfType::v(b'e', encrypted))];
+    if let Some(name) = preferred_name.filter(|n| !n.is_empty()) {
+        let sealed_name = encrypt_av1_data_with_key(name.as_bytes(), enc_key)?;
+        fields.push(("name".to_string(), VsfType::v(b'e', sealed_name)));
+    }
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .signed_only(VsfType::ke(avatar_verifying_key.as_bytes().to_vec()))
-        .add_section(
-            "image",
-            vec![("pixels".to_string(), VsfType::v(b'e', encrypted))],
-        )
+        .add_section("image", fields)
         .build()?;
 
     // Canonical vsf signing (fills hp, then ge over BLAKE3(file, ge zeroed)) — the same scheme read_verified/verify_file_signature checks and the worker now verifies. Replaces the hand-rolled sign-the-hp-value scheme and its ge-placeholder byte scanner.
@@ -1597,6 +1629,7 @@ pub fn avatar_vsf_for_friend(
     device_secret: &SigningKey,
     identity_seed: &[u8; 32],
     avatar_pin: &[u8; 64],
+    preferred_name: Option<&str>,
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Result<Vec<u8>, String> {
     let local_vsf = storage
@@ -1608,7 +1641,13 @@ pub fn avatar_vsf_for_friend(
         derive_avatar_keypair_from_seed(device_secret, identity_seed);
     let mut enc_key = [0u8; 32];
     enc_key.copy_from_slice(&avatar_pin[..32]);
-    build_signed_avatar_vsf_keyed(&av1_data, &enc_key, &avatar_signing, &avatar_verifying)
+    build_signed_avatar_vsf_keyed(
+        &av1_data,
+        &enc_key,
+        &avatar_signing,
+        &avatar_verifying,
+        preferred_name,
+    )
 }
 
 /// `upload_avatar` from the already-derived `identity_seed`. String-free owner path.
@@ -1617,6 +1656,7 @@ pub fn upload_avatar_from_seed(
     identity_seed: &[u8; 32],
     avatar_pin: &[u8; 64],
     handle_proof: &[u8; 32],
+    preferred_name: Option<&str>,
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Result<String, String> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -1639,8 +1679,13 @@ pub fn upload_avatar_from_seed(
     // Build signed VSF for upload, re-encrypting the AV1 under the pin's KEY half (friend-gated — decryptable only by someone we handed the pin to over an authenticated pong).
     let mut enc_key = [0u8; 32];
     enc_key.copy_from_slice(&avatar_pin[..32]);
-    let signed_vsf =
-        build_signed_avatar_vsf_keyed(&av1_data, &enc_key, &avatar_signing, &avatar_verifying)?;
+    let signed_vsf = build_signed_avatar_vsf_keyed(
+        &av1_data,
+        &enc_key,
+        &avatar_signing,
+        &avatar_verifying,
+        preferred_name,
+    )?;
 
     #[cfg(feature = "development")]
     crate::log(&crate::network::inspect::vsf_inspect(
@@ -1893,7 +1938,8 @@ pub fn download_avatar_from_seed(
 pub enum AvatarSyncResult {
     NoLocalAvatar, // No local avatar to sync
     LocalNewer,    // Uploaded local (was newer)
-    ServerNewer,   // Downloaded from server (was newer)
+    /// Downloaded from server (was newer). Carries the PREFERRED NAME recovered from the wall blob's name slot (same pin) — the reinstall path writes it back into fstate when local `profile.name` is blank.
+    ServerNewer(Option<String>),
     InSync,        // Timestamps equal, no action needed
     ServerEmpty,   // Server has no avatar
     Error(String), // Something went wrong
@@ -1920,6 +1966,7 @@ pub fn sync_avatar_bidirectional_from_seed(
     identity_seed: &[u8; 32],
     avatar_pin: &[u8; 64],
     handle_proof: Option<&[u8; 32]>,
+    preferred_name: Option<&str>,
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> AvatarSyncResult {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -1934,8 +1981,14 @@ pub fn sync_avatar_bidirectional_from_seed(
         match handle_proof {
             Some(hp) => {
                 crate::logf!("Avatar sync: {}, uploading local", label);
-                match upload_avatar_from_seed(device_secret, identity_seed, avatar_pin, hp, storage)
-                {
+                match upload_avatar_from_seed(
+                    device_secret,
+                    identity_seed,
+                    avatar_pin,
+                    hp,
+                    preferred_name,
+                    storage,
+                ) {
                     Ok(_) => AvatarSyncResult::LocalNewer,
                     Err(e) => AvatarSyncResult::Error(format!("Upload failed: {}", e)),
                 }
@@ -2024,9 +2077,10 @@ pub fn sync_avatar_bidirectional_from_seed(
         (None, _) => {
             // No local copy — adopt the server's, but only if it actually verifies+decrypts+decodes.
             // Caching before validating would poison the vault with a frame we can't decode later.
-            if adopt_server_avatar(&vsf_data, identity_seed, avatar_pin, storage) {
+            let (cached, name) = adopt_server_avatar(&vsf_data, identity_seed, avatar_pin, storage);
+            if cached {
                 crate::log("Avatar sync: No local avatar, caching server copy");
-                AvatarSyncResult::ServerNewer
+                AvatarSyncResult::ServerNewer(name)
             } else {
                 AvatarSyncResult::Error("Server copy failed to decode, not caching".to_string())
             }
@@ -2036,13 +2090,15 @@ pub fn sync_avatar_bidirectional_from_seed(
                 upload(&format!("Local newer ({} > {})", local, server))
             } else if server > local {
                 // Adopt the server copy only if it validates — never overwrite a good local avatar with a body that fails to decode.
-                if adopt_server_avatar(&vsf_data, identity_seed, avatar_pin, storage) {
+                let (cached, name) =
+                    adopt_server_avatar(&vsf_data, identity_seed, avatar_pin, storage);
+                if cached {
                     crate::logf!(
                         "Avatar sync: Server newer ({} > {}), caching",
                         server,
                         local
                     );
-                    AvatarSyncResult::ServerNewer
+                    AvatarSyncResult::ServerNewer(name)
                 } else {
                     AvatarSyncResult::Error(
                         "Server copy newer but failed to decode, not caching".to_string(),
@@ -2063,6 +2119,8 @@ pub fn sync_avatar_bidirectional_from_seed(
 pub struct AvatarDownloadResult {
     pub owner: Option<[u8; 32]>,
     pub pixels: Option<Vec<u8>>, // 256x256 VSF RGB pixels (None if download/decode failed)
+    /// The PREFERRED NAME recovered from the blob's name slot (same pin as the pixels) — `None` when the blob predates the slot or carries none. Self (`owner: None`): the drain writes it into `profile.name` when local fstate is blank (the reinstall heal). Contact: adopted into `published_name`.
+    pub name: Option<String>,
 }
 
 /// Spawn background thread to sync avatar bidirectionally with FGTW For user's own avatar - compares timestamps and syncs newest version
@@ -2088,12 +2146,13 @@ pub fn sync_avatar_background(
             &identity_seed,
             &legacy_pin,
             handle_proof.as_ref(),
+            None,
             &storage,
         );
 
         // Only send pixels if we downloaded a newer version from server
         let pixels = match result {
-            AvatarSyncResult::ServerNewer => {
+            AvatarSyncResult::ServerNewer(_) => {
                 // Load the newly downloaded avatar from cache
                 load_cached_avatar_from_seed(&identity_seed, &storage).map(|(_, p)| p)
             }
@@ -2118,6 +2177,7 @@ pub fn sync_avatar_background(
         let _ = tx.send(AvatarDownloadResult {
             owner: None,
             pixels,
+            name: None,
         });
 
         // Wake the event loop on desktop

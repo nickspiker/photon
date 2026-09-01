@@ -376,6 +376,47 @@ impl PhotonApp {
             needs_redraw = true;
         }
 
+        // Vibrate/ring toggles (Notifications): fleet-wide linked writes. Enforcement is the alert paths' side (ring gate in ring_alert; vibration rides Kotlin — follow-up).
+        // Poll all three first (each take_toggle borrows self mutably), then write — settings_set needs &mut self too.
+        let vib_msg = self
+            .settings_vibrate_msg_check
+            .as_mut()
+            .map(|c| (c.take_toggle(), c.is_checked()));
+        let ring_call = self
+            .settings_ring_call_check
+            .as_mut()
+            .map(|c| (c.take_toggle(), c.is_checked()));
+        let vib_call = self
+            .settings_vibrate_call_check
+            .as_mut()
+            .map(|c| (c.take_toggle(), c.is_checked()));
+        for (toggle, key) in [
+            (vib_msg, "notify.vibrate_msg"),
+            (ring_call, "notify.ring_call"),
+            (vib_call, "notify.vibrate_call"),
+        ] {
+            if let Some((true, checked)) = toggle {
+                if self.settings_set(key, vsf::VsfType::u0(checked)) {
+                    crate::logf!("SETTINGS: {} = {} (linked write)", key, checked);
+                }
+                needs_redraw = true;
+            }
+        }
+
+        // Dozenal toggle (About page): fleet-wide linked write + the render-edge static mirror flips NOW so every number on screen switches base this frame.
+        let dozenal_toggle = self
+            .settings_dozenal_check
+            .as_mut()
+            .map(|cb| (cb.take_toggle(), cb.is_checked()));
+        if let Some((true, checked)) = dozenal_toggle {
+            crate::set_dozenal_ui(checked);
+            if self.settings_set("display.dozenal", vsf::VsfType::u0(checked)) {
+                crate::logf!("SETTINGS: display.dozenal = {} (linked write)", checked);
+            }
+            self.scene_dirty = true;
+            needs_redraw = true;
+        }
+
         // Hard-logs toggle: arm THIS device for 24h (the value stored is the arm time; the sink self-expires) — device-local via unlink, mirroring the display.zoom pattern. Arming flips the sink NOW (a flush edge).
         let hardlogs_toggle = self
             .settings_hardlogs_check

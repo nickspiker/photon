@@ -17,10 +17,19 @@ pub(super) struct CallKeepResult {
 }
 
 impl PhotonApp {
-    /// Format a call duration as `M:SS`. Base-aware in Phase 4 (dozenal/decimal); decimal for now. Rendered in the Oxanium face so the dozenal `+glyphs` control-block glyphs resolve.
+    /// Format a call duration as `M:SS`, base-aware (the About-page dozenal toggle). Rendered in the Oxanium face so the dozenal `+glyphs` control-block glyphs resolve. Dozenal seconds pad to two dozenal digits (0–4B).
     pub(super) fn fmt_duration(&self, secs: i64) -> String {
         let secs = secs.max(0);
-        format!("{}:{:02}", secs / 60, secs % 60)
+        let (m, s) = ((secs / 60) as u32, (secs % 60) as u32);
+        if crate::dozenal_ui() {
+            let mut ss = crate::dozenal_glyphs(s);
+            if s < 12 {
+                ss = format!("{}{}", char::from(0x10), ss); // two-digit pad, dozenal zero
+            }
+            format!("{}:{}", crate::dozenal_glyphs(m), ss)
+        } else {
+            format!("{}:{:02}", m, s)
+        }
     }
 
     /// Poll the retained call Buttons' rising-edge clicks (docs/calls.md) — mirrors the attest/+/send pattern: `dispatch_release` (or a focused-key activation) fired `on_click`; we observe the edge here and run the phase's action. Called from BOTH the Released arm and the key path so pointer taps and Enter/Space on a focused call button both fire exactly once. The verb is phase-driven: action = Answer/Keep/Hang up, decline = Decline/Delete, start = place the call.
@@ -612,6 +621,13 @@ impl PhotonApp {
                 );
             }
         }
+        // Honor the Notifications "Ring on incoming call" tick: unchecked = the notification still posts (the call is never invisible) but the audible ring loop stays silent.
+        let ring_audible = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("notify.ring_call"))
+            .and_then(crate::storage::fleet_settings::as_bool)
+            .unwrap_or(true);
         #[cfg(not(any(target_os = "android", target_os = "redox")))]
         {
             use std::sync::atomic::{AtomicBool, Ordering};
@@ -620,6 +636,10 @@ impl PhotonApp {
                 &sender_name,
                 "\u{260E} incoming call",
             );
+            if !ring_audible {
+                crate::log("CALL: ring muted by notify.ring_call — notification only");
+                return;
+            }
             let stop = std::sync::Arc::new(AtomicBool::new(false));
             let flag = stop.clone();
             std::thread::spawn(move || {

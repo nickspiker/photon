@@ -381,11 +381,18 @@ impl PhotonApp {
             "profile.avatar_ts",
             vsf::VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations())),
         );
+        // The re-upload rides the current preferred name (the wall blob carries both slots under the new pin).
+        let our_name = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("profile.name"))
+            .and_then(crate::storage::fleet_settings::as_text)
+            .filter(|n| !n.is_empty());
         std::thread::spawn(move || {
             #[cfg(not(target_os = "redox"))]
             let _ =
                 thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min);
-            match crate::ui::avatar::upload_avatar_from_seed(&kp.secret, &identity_seed, &new_pin, &hp, &storage) {
+            match crate::ui::avatar::upload_avatar_from_seed(&kp.secret, &identity_seed, &new_pin, &hp, our_name.as_deref(), &storage) {
                 Ok(_) => {
                     crate::log("AVATAR: re-uploaded under the rotated pin (removal heal)");
                     let sk = ed25519_dalek::SigningKey::from_bytes(kp.secret.as_bytes());
@@ -420,6 +427,17 @@ impl PhotonApp {
             .unwrap_or(true);
         if let Some(cb) = self.settings_autoupdate_check.as_mut() {
             cb.set_checked(auto);
+        }
+        // Dozenal base (About toggle, fleet-wide): checkbox + the render-edge static both track the stored value. Absent = house default TRUE.
+        let dozenal = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("display.dozenal"))
+            .and_then(crate::storage::fleet_settings::as_bool)
+            .unwrap_or(true);
+        crate::set_dozenal_ui(dozenal);
+        if let Some(cb) = self.settings_dozenal_check.as_mut() {
+            cb.set_checked(dozenal);
         }
         // Hard logs: DEVICE-LOCAL (an investigation concerns one piece of hardware — never the fleet global) and self-expiring; the stored value is the ARM TIME, the sink owns the 24h window, and the checkbox displays the sink's verdict so the two can't disagree.
         let armed_at = self
@@ -894,10 +912,49 @@ impl PhotonApp {
             // Friends learn the new name on their next ping cycle (the pong carries it).
             self.publish_profile_name();
             self.publish_avatar_pin();
+            // The wall blob carries the preferred name beside the pixels (same pin) — republish it so (a) a friend fetching by pin gets the CURRENT name and (b) a future reinstall of our own fleet recovers it from the wall (the Theresa hole). Skipped when no avatar exists yet (nothing on the wall to carry it; the pong path still serves the name live).
+            self.republish_wall_blob_with_name();
             self.ready_toast = Some("Profile saved \u{221a}".to_string());
         } else {
             self.ready_toast = Some("No changes".to_string());
         }
+    }
+
+    /// Re-upload the pin-keyed wall blob so its name slot matches the current `profile.name`. Off-thread; a missing local avatar or pin is a quiet skip (the blob can't exist without them).
+    fn republish_wall_blob_with_name(&self) {
+        let (Some(identity_seed), Some(storage), Some(kp), Some(hp)) = (
+            self.session.as_ref().map(|s| s.identity_seed),
+            self.storage.clone(),
+            self.device_keypair.clone(),
+            self.our_handle_proof(),
+        ) else {
+            return;
+        };
+        let Some(pin) = self.ensure_avatar_pin_readonly() else {
+            return;
+        };
+        let our_name = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("profile.name"))
+            .and_then(crate::storage::fleet_settings::as_text)
+            .filter(|n| !n.is_empty());
+        std::thread::spawn(move || {
+            #[cfg(not(target_os = "redox"))]
+            let _ =
+                thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min);
+            match crate::ui::avatar::upload_avatar_from_seed(
+                &kp.secret,
+                &identity_seed,
+                &pin,
+                &hp,
+                our_name.as_deref(),
+                &storage,
+            ) {
+                Ok(_) => crate::log("AVATAR: wall blob republished with the current preferred name"),
+                Err(e) => crate::logf!("AVATAR: name republish skipped ({})", e),
+            }
+        });
     }
 
     /// "Add" → register the label typed in the add box as a custom field (label bytes VERBATIM; the id is an internal ascii slug, or a label-hash when the label has no ascii), append its box, and persist it as a `profile._custom.<id>` entry so it reloads next launch. No-op on an empty label or a duplicate id.

@@ -152,8 +152,8 @@ impl PhotonApp {
             let content_rows_h = if page == SettingsPage::You {
                 sl.content_line_h() * you_rows_plan(&self.you_fields).len() as Coord
             } else if page == SettingsPage::About {
-                // Logo(4) + gap + killswitch + passless + version ≈ 7.6 rows collapsed; the reveal adds the spelled line + "dozenal" header + 6 cheat rows ≈ 8.4.
-                let rows = 7.6 + if self.about_version_spelled { 8.4 } else { 0.0 };
+                // Logo(4) + gap + killswitch + passless + link + version + dozenal-toggle ≈ 9.8 rows collapsed; the reveal adds the spelled line + "dozenal" header + 6 cheat rows ≈ 8.4.
+                let rows = 9.8 + if self.about_version_spelled { 8.4 } else { 0.0 };
                 sl.content_line_h() * rows
             } else if page == SettingsPage::Diagnostics && self.diag_log_view {
                 let n = match &self.diag_log_inspect {
@@ -337,7 +337,12 @@ impl PhotonApp {
         let version_cy = buf_h as f32 - version_size - version_line_h * 0.5;
         // Zoom watermark, top-centre: current `ru` zoom factor as a decimal percentage ("100%", "103%"), twice the version size, at 1/4 opacity. Mirrors the version's bottom-centre placement (one font-size in from the edge). Integer percent — the ~3%/step zoom granularity makes decimals noise.
         let zoom_size = version_size * 2.0;
-        let zoom_text = format!("{}%", (ctx.viewport.ru * 100.0).round() as i64);
+        // Dozenal zoom is per-GROSS, not per-cent: no ×100, just base convert — 1.0× renders as dozenal 100 ("zila", = ×144), 2.0× as dozenal 200 ("zilor"). No % sign (percent is a decimal concept). Decimal mode keeps the familiar NN%.
+        let zoom_text = if crate::dozenal_ui() {
+            crate::dozenal_glyphs((ctx.viewport.ru * 144.0).round().max(0.0) as u32)
+        } else {
+            format!("{}%", (ctx.viewport.ru * 100.0).round() as i64)
+        };
         let zoom_cx = buf_w as f32 * 0.5;
         let zoom_cy = zoom_size;
         // Split-borrow `ctx.damage` (consumed by rasterize_bg's first arg) and `ctx.text` (captured by the closure for the logo's text rendering). These are disjoint fields of `Context` so the borrow checker allows both reborrows simultaneously. The closure is non-`move` so the text reborrow ends when rasterize_bg returns, leaving `ctx.text` available for `rasterize_chrome` on the next line.
@@ -2760,14 +2765,15 @@ impl PhotonApp {
                                 let secs = ((vsf::eagle_time_oscillations() - msg.timestamp)
                                     / crate::OSC_PER_SEC)
                                     .max(0);
+                                // Base-aware count (dozenal glyphs or decimal per the About toggle) — the detail style is Oxanium, so the glyphs resolve.
                                 let age = if secs >= 86400 {
-                                    format!("{}d ago", secs / 86400)
+                                    format!("{}d ago", crate::fmt_num((secs / 86400) as u32))
                                 } else if secs >= 3600 {
-                                    format!("{}h ago", secs / 3600)
+                                    format!("{}h ago", crate::fmt_num((secs / 3600) as u32))
                                 } else if secs >= 60 {
-                                    format!("{}m ago", secs / 60)
+                                    format!("{}m ago", crate::fmt_num((secs / 60) as u32))
                                 } else {
-                                    format!("{}s ago", secs)
+                                    format!("{}s ago", crate::fmt_num(secs as u32))
                                 };
                                 let mut detail = if msg.is_outgoing {
                                     format!(
@@ -4567,35 +4573,38 @@ impl PhotonApp {
                             Some(&mut chrome.hit_test_map),
                         );
                     }
+                    // Why ONE tick box and nothing else: you volunteer as a custodian, but nobody — including you — sees WHOSE recoveries you hold a share of, and an owner never learns which friends hold theirs. Not knowing who to lean on is the anti-collusion property: shares that can't be enumerated can't be gathered.
                     settings_line(
                         &mut canvas,
                         ctx.text,
                         rows[4],
-                        "Identity backup",
+                        "One box on purpose: custodians never learn whose",
                         hspan2,
-                        *theme::CONTACT_NAME_COLOUR,
-                        600,
+                        *theme::LABEL_COLOUR,
+                        400,
                     );
                     settings_line(
                         &mut canvas,
                         ctx.text,
                         rows[5],
-                        "Reinstalling won't ask for your handle.",
+                        "recovery they hold, and owners never learn which",
                         hspan2,
                         *theme::LABEL_COLOUR,
                         400,
                     );
-                    draw_stub_pill(
+                    settings_line(
                         &mut canvas,
                         ctx.text,
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        rows[6].center_h(pillf(0.5)),
-                        "Back up identity…",
-                        btn_base.wrapping_add(0),
-                        ctx.pressed_hit,
+                        rows[6],
+                        "friends hold theirs — what can't be named can't collude.",
+                        hspan2,
+                        *theme::LABEL_COLOUR,
+                        400,
                     );
+                    // Identity-backup section COMMENTED OUT (Nick 2026-09-01) — custodians are the recovery story; a portable identity backup file re-creates the very honeypot the register model removed.
+                    // settings_line(&mut canvas, ctx.text, rows[4], "Identity backup", hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                    // settings_line(&mut canvas, ctx.text, rows[5], "Reinstalling won't ask for your handle.", hspan2, *theme::LABEL_COLOUR, 400);
+                    // draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(pillf(0.5)), "Back up identity…", btn_base.wrapping_add(0), ctx.pressed_hit);
                 }
                 SettingsPage::Appearance => {
                     let rows = layout
@@ -4677,7 +4686,17 @@ impl PhotonApp {
                         *theme::CONTACT_NAME_COLOUR,
                         600,
                     );
-                    if let Some(cb) = self.settings_chime_check.as_mut() {
+                    for cb in [
+                        self.settings_chime_check.as_mut(),
+                        self.settings_vibrate_msg_check.as_mut(),
+                        self.settings_ring_call_check.as_mut(),
+                        self.settings_vibrate_call_check.as_mut(),
+                        // presence COMMENTED OUT (Nick 2026-09-01): self.settings_presence_check.as_mut(),
+                        self.settings_background_check.as_mut(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
                         cb.render_content_into(
                             &mut canvas,
                             ctx.text,
@@ -4688,28 +4707,12 @@ impl PhotonApp {
                     settings_line(
                         &mut canvas,
                         ctx.text,
-                        rows[2],
+                        rows[5],
                         "Per-contact override lives in each conversation.",
                         hspan2,
                         *theme::LABEL_COLOUR,
                         400,
                     );
-                    if let Some(cb) = self.settings_presence_check.as_mut() {
-                        cb.render_content_into(
-                            &mut canvas,
-                            ctx.text,
-                            None,
-                            Some(&mut chrome.hit_test_map),
-                        );
-                    }
-                    if let Some(cb) = self.settings_background_check.as_mut() {
-                        cb.render_content_into(
-                            &mut canvas,
-                            ctx.text,
-                            None,
-                            Some(&mut chrome.hit_test_map),
-                        );
-                    }
                 }
                 SettingsPage::Updates => {
                     // Rows (blanks between the pills for vertical breathing room): 0 title · 1 current version · 2 blank · 3 release pill · 4 blank · 5 dev pill · 6 blank · 7 status.
@@ -5152,12 +5155,18 @@ impl PhotonApp {
                     let logo_h = line_h * 4.0;
                     if y + logo_h > inset.y && y < inset.y + inset.h {
                         let lx0 = inset.x.max(0.0) as usize;
-                        let ly0 = y.max(inset.y).max(0.0) as usize;
                         let lx1 = (inset.x + inset.w).max(0.0) as usize;
-                        let ly1 = (y + logo_h).max(0.0) as usize;
-                        if lx1 > lx0 && ly1 > ly0 {
-                            let logo_rect = fluor::canvas::PixelRect::new(lx0, ly0, lx1, ly1);
-                            chromatic_wave(&mut canvas, logo_rect, wave_phase, 1.0);
+                        // Attest-screen composition, not one shared rect: the spectrum band rides the TOP of the block and the wordmark OVERLAPS its bottom (LaunchLayout's slicing) — painting both into one rect stacked them wrong (the "funky alignment").
+                        let wy0 = y.max(inset.y).max(0.0) as usize;
+                        let wy1 = (y + logo_h * 0.62).max(0.0) as usize;
+                        let gy0 = (y + logo_h * 0.30).max(inset.y).max(0.0) as usize;
+                        let gy1 = (y + logo_h).max(0.0) as usize;
+                        if lx1 > lx0 && wy1 > wy0 {
+                            let wave_rect = fluor::canvas::PixelRect::new(lx0, wy0, lx1, wy1);
+                            chromatic_wave(&mut canvas, wave_rect, wave_phase, 1.0);
+                        }
+                        if lx1 > lx0 && gy1 > gy0 {
+                            let logo_rect = fluor::canvas::PixelRect::new(lx0, gy0, lx1, gy1);
                             crate::ui::photon_logo::paint_photon_logo(
                                 &mut canvas,
                                 ctx.text,
@@ -5189,6 +5198,29 @@ impl PhotonApp {
                             .font("Oxanium"),
                         None,
                         None,
+                    );
+                    y += line_h;
+                    // Clickable weblink under the passless headline (slot 4 — opens https://passless.org/ in the system browser).
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        "learn more about passless at passless.org",
+                        cx,
+                        y + line_h * 0.5,
+                        &TextStyle::new(hspan2 * 0.8, *theme::SEARCH_FOUND_COLOUR)
+                            .weight(400)
+                            .font("Oxanium"),
+                        None,
+                        None,
+                    );
+                    restamp_hit_rect(
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        inset.x as isize,
+                        y as isize,
+                        (inset.x + inset.w) as isize,
+                        (y + line_h) as isize,
+                        btn_base.wrapping_add(4),
                     );
                     y += line_h * 1.2;
                     // Version — dozenal glyphs (weight 400 → the Oxanium +glyphs face draws the reserved control bytes as dozenal digits), NEVER arabic. Tap toggles the reveal (spelled form + cheat sheet). Whole row is the tap target (btn_base + 3).
@@ -5284,6 +5316,17 @@ impl PhotonApp {
                             );
                             y += line_h;
                         }
+                    }
+                    // Fleet-wide base toggle (display.dozenal — linked, so a preference follows the identity). Rect set inline off the same y cursor (this page is a card, not equal rows).
+                    y += line_h * 0.4;
+                    if let Some(cb) = self.settings_dozenal_check.as_mut() {
+                        cb.set_rect(cx, y + line_h * 0.5, inset.w * 0.9, line_h * 0.9);
+                        cb.render_content_into(
+                            &mut canvas,
+                            ctx.text,
+                            None,
+                            Some(&mut chrome.hit_test_map),
+                        );
                     }
                     let _ = tspan;
                 }

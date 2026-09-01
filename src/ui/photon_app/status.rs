@@ -2800,7 +2800,13 @@ impl PhotonApp {
                         self.storage.as_ref(),
                         self.status_checker.as_ref(),
                     ) {
-                        // Serve the PIN-keyed copy, never the vault bytes: the vault holds the avatar under a seed-derived key that no friend can ever have, so shipping it verbatim hands them a blob that verifies and then fails to decrypt. `avatar_vsf_for_friend` re-encrypts under the pin we handed them, which is byte-for-byte what the FGTW wall serves.
+                        // Serve the PIN-keyed copy, never the vault bytes: the vault holds the avatar under a seed-derived key that no friend can ever have, so shipping it verbatim hands them a blob that verifies and then fails to decrypt. `avatar_vsf_for_friend` re-encrypts under the pin we handed them, which is byte-for-byte what the FGTW wall serves — including the preferred-name slot.
+                        let our_name = self
+                            .fleet_settings
+                            .as_ref()
+                            .and_then(|fs| fs.effective("profile.name"))
+                            .and_then(crate::storage::fleet_settings::as_text)
+                            .filter(|n| !n.is_empty());
                         let served = self
                             .ensure_avatar_pin_readonly()
                             .ok_or_else(|| "no avatar pin yet".to_string())
@@ -2813,6 +2819,7 @@ impl PhotonApp {
                                             &kp.secret,
                                             &session.identity_seed,
                                             &pin,
+                                            our_name.as_deref(),
                                             storage,
                                         )
                                     })
@@ -2863,6 +2870,9 @@ impl PhotonApp {
                             let storage = self.storage.as_ref().map(std::sync::Arc::clone);
                             let tx = self.avatar_dl_tx.clone();
                             std::thread::spawn(move || {
+                                // The direct-served VSF carries the friend's preferred name beside the pixels (same pin).
+                                let name =
+                                    crate::ui::avatar::avatar_name_with_key(&avatar_vsf, &pin_key);
                                 let pixels = crate::ui::avatar::load_avatar_from_bytes_with_key(
                                     &avatar_vsf,
                                     &pin_key,
@@ -2881,6 +2891,7 @@ impl PhotonApp {
                                 let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
                                     owner: Some(owner_hp),
                                     pixels,
+                                    name,
                                 });
                             });
                         }

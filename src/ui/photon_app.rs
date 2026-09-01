@@ -875,7 +875,7 @@ const EXPANDABLE_FIELDS: &[(&str, bool)] = &[
 
 /// The standard profile fields in taxonomy order: (field_id, display label, tier). `name` is the always-granted display-name slot (formerly the lone name box); every other field defaults UNSHARED. Mirrors the table in docs/contact-system.md — keep the two in sync.
 const STD_PROFILE_FIELDS: &[(&str, &str, &str)] = &[
-    ("name", "Display name", "name"),
+    ("name", "Preferred name", "name"),
     ("first", "First", "name"),
     ("middle", "Middle", "name"),
     ("last", "Last", "name"),
@@ -1596,6 +1596,12 @@ pub struct PhotonApp {
     settings_custodian_check: Option<fluor::widgets::Checkbox>,
     /// Notifications-page global chime on/off — a custom `Checkbox`.
     settings_chime_check: Option<fluor::widgets::Checkbox>,
+    /// About-page "Dozenal numbers" toggle — fleet-wide (`display.dozenal`, linked). Mirrors into the render-edge `crate::DOZENAL_UI` static on flip + settings load.
+    settings_dozenal_check: Option<fluor::widgets::Checkbox>,
+    /// Notifications: vibrate on new message (`notify.vibrate_msg`) + the call pair (`notify.ring_call` / `notify.vibrate_call`). Persisted fleet-wide; enforcement is the alert paths' to honor (Android vibration rides Kotlin — follow-up).
+    settings_vibrate_msg_check: Option<fluor::widgets::Checkbox>,
+    settings_ring_call_check: Option<fluor::widgets::Checkbox>,
+    settings_vibrate_call_check: Option<fluor::widgets::Checkbox>,
     /// Notifications-page presence-visibility toggle — a custom `Checkbox`.
     settings_presence_check: Option<fluor::widgets::Checkbox>,
     /// Updates-page auto-update on/off — a custom `Checkbox`.
@@ -2089,6 +2095,10 @@ impl PhotonApp {
             bridge_int: None,
             settings_custodian_check: None,
             settings_chime_check: None,
+            settings_dozenal_check: None,
+            settings_vibrate_msg_check: None,
+            settings_ring_call_check: None,
+            settings_vibrate_call_check: None,
             settings_presence_check: None,
             settings_autoupdate_check: None,
             settings_hardlogs_check: None,
@@ -2257,6 +2267,13 @@ impl PhotonApp {
         };
         let (px_tx, px_rx) = std::sync::mpsc::channel();
         self.avatar_set_rx = Some(px_rx);
+        // The fresh wall blob carries the preferred name beside the new pixels (same pin).
+        let our_name = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("profile.name"))
+            .and_then(crate::storage::fleet_settings::as_text)
+            .filter(|n| !n.is_empty());
         let wake = self.event_proxy.clone();
         std::thread::spawn(move || {
             #[cfg(not(target_os = "redox"))]
@@ -2296,6 +2313,7 @@ impl PhotonApp {
                         &identity_seed,
                         &pin,
                         &hp,
+                        our_name.as_deref(),
                         &storage,
                     ) {
                         Ok(_) => {
@@ -2667,9 +2685,16 @@ impl PhotonApp {
                     if let Some(cb) = self.settings_chime_check.as_mut() {
                         f(cb);
                     }
-                    if let Some(cb) = self.settings_presence_check.as_mut() {
+                    if let Some(cb) = self.settings_vibrate_msg_check.as_mut() {
                         f(cb);
                     }
+                    if let Some(cb) = self.settings_ring_call_check.as_mut() {
+                        f(cb);
+                    }
+                    if let Some(cb) = self.settings_vibrate_call_check.as_mut() {
+                        f(cb);
+                    }
+                    // presence COMMENTED OUT (Nick 2026-09-01) — restore alongside the render + layout rows.
                     if let Some(cb) = self.settings_background_check.as_mut() {
                         f(cb);
                     }
@@ -2699,6 +2724,11 @@ impl PhotonApp {
                     }
                     if let Some(tb) = self.you_add_textbox.as_mut() {
                         f(tb);
+                    }
+                }
+                SettingsPage::About => {
+                    if let Some(cb) = self.settings_dozenal_check.as_mut() {
+                        f(cb);
                     }
                 }
                 _ => {}

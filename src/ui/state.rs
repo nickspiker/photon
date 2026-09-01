@@ -60,13 +60,13 @@ pub enum SettingsPage {
 }
 
 impl SettingsPage {
-    /// All pages in rail order — the nav rail and the tab-cycle iterate this.
-    pub const ALL: [SettingsPage; 9] = [
+    /// All pages in rail order — the nav rail and the tab-cycle iterate this. Appearance is COMMENTED OUT of the rail (Nick 2026-09-01) — the variant + its render arm stay compiled so restoring it is a one-line uncomment; the dozenal (base-twelve) toggle lives on About.
+    pub const ALL: [SettingsPage; 8] = [
         SettingsPage::You,
         SettingsPage::Fleet,
         SettingsPage::Security,
         SettingsPage::Recovery,
-        SettingsPage::Appearance,
+        // SettingsPage::Appearance,
         SettingsPage::Notifications,
         SettingsPage::Updates,
         SettingsPage::Diagnostics,
