@@ -361,12 +361,12 @@ impl PhotonApp {
         // Bg-first compose chain: noise paints opaque, the wave reads it for the `sqrt(c*scale + c_bg²)` blend, then the logo (glow / body / highlight) paints over both via legacy visible-RGB ops. Each step preserves α on the pixels it touches. The wave + logo are Launch-screen chrome — once attested the user shouldn't be staring at the wordmark every time they open the app, so Ready / Searching / Conversation get just the background noise and let their own widgets own the canvas.
         let on_launch = matches!(self.state, AppState::Launch(_));
         // ABOUT-PAGE SLAB (Nick 2026-09-02): the wave + wordmark SCROLL with the card but never SCALE (fixed window-proportional size, zoom-independent — content sits on a fixed slab instead of the logo warping with zoom). Drawn HERE in the bg pass because that's the only place the wave works: it quadrature-reads the noise beneath it, and fluor's under-blend made the old content-pass draw invisible ("suspiciously absent"). The content arm advances past the same slab height without painting.
-        let about_slab: Option<(usize, usize, isize, usize, isize, usize, usize, usize)> =
+        let about_slab_bands: Option<(usize, usize, isize, usize, isize, usize, usize, usize)> =
             if matches!(self.state, AppState::Settings(SettingsPage::About)) {
                 let sl = SettingsLayout::compute(&ctx.viewport);
                 let inset = sl.content_inset();
-                let slab_h = about_slab_h(buf_h);
-                // LOGICAL band: fixed size (zoom-independent), positioned by the scroll — may extend above the pane; the clipped draw crops.
+                let (unit, _) = about_slab(buf_w, buf_h, inset.w);
+                // LOGICAL band: the attest proportions in slab units (air 0.75u, wave 6u, wordmark 3.5u overlapping by 2u), fixed size, positioned by the scroll — may extend above the pane; the clipped draws crop.
                 let top = (inset.y - settings_content_scroll) as isize;
                 let sx0 = inset.x.max(0.0) as usize;
                 let sx1 = ((inset.x + inset.w).max(0.0) as usize).min(buf_w);
@@ -376,10 +376,10 @@ impl PhotonApp {
                     (
                         sx0,
                         sx1,
-                        top,
-                        (slab_h * 0.62) as usize,
-                        top + (slab_h * 0.30) as isize,
-                        (slab_h * 0.70) as usize,
+                        top + (unit * 0.75) as isize,
+                        (unit * 6.0) as usize,
+                        top + (unit * 4.75) as isize,
+                        (unit * 3.5) as usize,
                         clip_y0,
                         clip_y1,
                     )
@@ -408,7 +408,7 @@ impl PhotonApp {
                 paint_photon_logo(canvas, text, logo_rect);
             }
             // About slab wordmark — SAME rule as the launch logo: an under() layer must claim its pixels BEFORE the noise paints them opaque (drawing it post-noise under()'d against opaque pixels = invisible, the second vanished-wordmark bug).
-            if let Some((sx0, sx1, _, _, logo_top, logo_h, clip_y0, clip_y1)) = about_slab {
+            if let Some((sx0, sx1, _, _, logo_top, logo_h, clip_y0, clip_y1)) = about_slab_bands {
                 paint_photon_logo_clipped(canvas, text, sx0, sx1, logo_top, logo_h, clip_y0, clip_y1);
             }
             if show_version {
@@ -451,7 +451,7 @@ impl PhotonApp {
                 chromatic_wave(canvas, spectrum_rect, phase, period_scale);
             }
             // The About slab: CLIPPED crop-not-shrink variants — the pattern/wordmark stay anchored to the full logical band (top goes negative as the card scrolls) and only pane-visible rows paint. Shrinking the rects instead RESCALED both (the "wave scales when scrolling" + vanished-wordmark field bugs; the shrunken-rect span math also underflowed).
-            if let Some((sx0, sx1, wave_top, wave_h, _, _, clip_y0, clip_y1)) = about_slab {
+            if let Some((sx0, sx1, wave_top, wave_h, _, _, clip_y0, clip_y1)) = about_slab_bands {
                 chromatic_wave_clipped(canvas, sx0, sx1, wave_top, wave_h, clip_y0, clip_y1, about_wave_phase, 1.0);
             }
         });
@@ -5260,8 +5260,8 @@ impl PhotonApp {
                     // Every About text line runs thru centered_wrapped: authored stanzas keep their line breaks but wrap at THIS width instead of clipping at the pane edge when zoomed big.
                     let wrap_w = inset.w - line_h;
                     let mut y = inset.y - settings_content_scroll;
-                    // The wave + wordmark now paint in the BG pass (see about_slab in the bg closure): fixed window-proportional size (never zoom-scaled), scrolled with the card. The card just advances past the slab.
-                    let slab_h = about_slab_h(buf_h);
+                    // The wave + wordmark now paint in the BG pass (see about_slab in the bg closure): the attest screen's proportions at pane width, never zoom-scaled, scrolled with the card. The card just advances past the slab.
+                    let (_, slab_h) = about_slab(buf_w, buf_h, inset.w);
                     y += slab_h + line_h * 0.4;
                     // The two headline properties — the whole pitch in two words each.
                     ctx.text.draw_text_center(
