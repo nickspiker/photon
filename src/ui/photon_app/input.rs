@@ -125,20 +125,7 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Security => {
-                    let rows = layout
-                        .content_scrolled(15, settings_content_scroll)
-                        .split_v([1.0; 15]);
-                    // Checkbox on row 12 (normal state); the confirm handle box shares that row (confirm state) — only one is visited/drawn at a time.
-                    if let Some(cb) = self.settings_unattended_check.as_mut() {
-                        let r = rows[12];
-                        cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
-                        cb.set_font_size(ctrl_font);
-                    }
-                    if let Some(tb) = self.unattended_confirm_tb.as_mut() {
-                        let r = rows[13];
-                        tb.set_rect(r.center_x(), r.center_y(), r.w * 0.9, ctrl_h);
-                        tb.set_font_size(ctrl_font, ctx.text);
-                    }
+                    // Widgets are positioned INLINE by the render arm's Flow now (the About-checkbox pattern) — fixed rows here fought the flowed layout.
                 }
                 SettingsPage::Notifications => {
                     // Rows: 0 title · 1 chime · 2 vibrate-msg · 3 ring-call · 4 vibrate-call · 5 per-contact note · 6 background · 7 blank. Presence is COMMENTED OUT (Nick 2026-09-01) — the field + dispatch stay compiled for a one-line restore.

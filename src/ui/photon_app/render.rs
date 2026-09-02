@@ -4247,151 +4247,67 @@ impl PhotonApp {
                     measured_extent = Some((flow.used(), inset.h));
                 }
                 SettingsPage::Security => {
-                    // Destructiveness ramp, least → most, one blank row between each pill so they breathe: Lock (green, reversible) · fleet self-removal (yellow) · Shred (orange, wipe this device) · Remove & shred (red, sign out of the fleet THEN wipe). The two wipers are two-tap confirmed, mutually exclusive. Rows 11-14 hold the DANGEROUS unattended toggle + disclaimer, well below the wipers.
-                    let rows = layout
-                        .content_scrolled(15, settings_content_scroll)
-                        .split_v([1.0; 15]);
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[0],
-                        "Security",
-                        tspan,
-                        *theme::CONTACT_NAME_COLOUR,
-                        600,
-                    );
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[1],
-                        "Named by destructiveness.",
-                        hspan2,
-                        *theme::LABEL_COLOUR,
-                        400,
-                    );
-                    draw_stub_pill_filled(
-                        &mut canvas,
-                        ctx.text,
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        rows[2].center_h(pillf(0.55)),
-                        "Lock (re-unlock with your handle)",
-                        btn_base.wrapping_add(0),
-                        ctx.pressed_hit,
-                        true,
-                        Some(*theme::PILL_GREEN),
-                        "Open Sans",
-                    );
-                    let remove_label = if self.settings_remove_armed {
-                        "Remove from fleet — tap again to confirm"
-                    } else {
-                        "Remove this device from fleet"
-                    };
-                    draw_stub_pill_filled(
-                        &mut canvas,
-                        ctx.text,
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        rows[4].center_h(pillf(0.55)),
-                        remove_label,
-                        btn_base.wrapping_add(1),
-                        ctx.pressed_hit,
-                        true,
-                        Some(if self.settings_remove_armed {
-                            *theme::PILL_RED
-                        } else {
-                            *theme::PILL_YELLOW
-                        }),
-                        "Open Sans",
-                    );
-                    let shred_label = if self.settings_shred_armed {
-                        "Shred — tap again to confirm"
-                    } else {
-                        "Shred (crypto-wipe)"
-                    };
-                    draw_stub_pill_filled(
-                        &mut canvas,
-                        ctx.text,
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        rows[6].center_h(pillf(0.55)),
-                        shred_label,
-                        btn_base.wrapping_add(2),
-                        ctx.pressed_hit,
-                        true,
-                        Some(*theme::PILL_ORANGE),
-                        "Open Sans",
-                    );
-                    let rs_label = if self.settings_removeshred_armed {
-                        "Remove & shred — tap again to confirm"
-                    } else {
-                        "Remove & shred (sign out, then wipe)"
-                    };
-                    draw_stub_pill_filled(
-                        &mut canvas,
-                        ctx.text,
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        rows[8].center_h(pillf(0.55)),
-                        rs_label,
-                        btn_base.wrapping_add(3),
-                        ctx.pressed_hit,
-                        true,
-                        Some(*theme::PILL_RED),
-                        "Open Sans",
-                    );
-                    if self.settings_shred_armed {
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            rows[9],
-                            "Wipes the vault AND identity on this device — irreversible. It stays signed in to your fleet; to pass the device on, use Remove & shred.",
-                            hspan2,
-                            *theme::ERROR_TEXT_COLOUR,
-                            500,
+                    // SECURITY, Flow rework (Nick 2026-09-02): SHORT pill labels with the explanation as a wrapped hint BELOW each pill (the parentheticals moved out of the buttons), everything wrapping at the pane edge. Destructiveness ramp unchanged: Lock (green, reversible) · Remove (yellow) · Shred (orange) · Remove & shred (red); the wipers stay two-tap + mutually exclusive; hit ids unchanged (0..3 + the unattended base).
+                    let inset = layout.content_inset();
+                    let mut flow = Flow::new(inset, settings_content_scroll);
+                    flow.line(&mut canvas, ctx.text, "Security", tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.prose(&mut canvas, ctx.text, "Four actions, ordered by how much they destroy. The colour is the warning.", hspan2, *theme::LABEL_COLOUR, 400);
+                    flow.gap(hspan2 * 0.6);
+                    // One pill + its hint, flowed. Armed actions turn their hint red + bold — the confirm state IS the explanation.
+                    let mut action = |flow: &mut Flow,
+                                      canvas: &mut Canvas,
+                                      text: &mut fluor::text::TextRenderer,
+                                      hit_map: &mut [HitId],
+                                      label: &str,
+                                      hint: &str,
+                                      slot: HitId,
+                                      fill: (u32, u32),
+                                      armed: bool| {
+                        let band = flow.band(hspan2 * 2.4);
+                        let pill_h = band.h * 0.8;
+                        let w = text
+                            .measure_text(label, &TextStyle::new(pill_h * 0.5, 0))
+                            + pill_h * 0.8
+                            + hspan2 * 0.4;
+                        let rect = fluor::region::Region::new(
+                            band.x + hspan2 * 0.3,
+                            band.y + (band.h - pill_h) * 0.5,
+                            w.min(band.w - hspan2 * 0.6),
+                            pill_h,
                         );
-                    } else if self.settings_removeshred_armed {
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            rows[9],
-                            "Signs this device out of your fleet, then wipes it — irreversible.",
-                            hspan2,
-                            *theme::ERROR_TEXT_COLOUR,
-                            500,
-                        );
-                    }
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[10],
-                        "Security: strong   ·   Recovery: not set up",
-                        hspan2,
-                        *theme::LABEL_COLOUR,
-                        400,
-                    );
-                    // ── DANGEROUS: unattended auto-attest-on-reboot. Off by default. Rows 11-14. Two states, both drawn INLINE in this page (no floating overlay — an over-content modal drawn after chrome.flatten_into never composited its glyphs): the normal checkbox+disclaimer, OR (while a flip is pending) a handle-entry confirmation that must re-prove the operator before arming/disarming.
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[11],
-                        "\u{26A0} Auto-attest on reboot (unattended)",
-                        hspan2,
-                        *theme::CONTACT_NAME_COLOUR,
-                        600,
-                    );
+                        draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, label, btn_base.wrapping_add(slot), ctx.pressed_hit, true, Some(fill), "Open Sans");
+                        let (hc, hw) = if armed { (*theme::ERROR_TEXT_COLOUR, 600) } else { (*theme::LABEL_COLOUR, 400) };
+                        let region = fluor::region::Region::new(flow.x, flow.y, flow.w, hspan2 * 1.6);
+                        let n = settings_prose(canvas, text, region, hint, hspan2 * 0.85, hc, hw);
+                        flow.y += (n.max(1) as Coord) * hspan2 * 0.85 * 1.25 + hspan2 * 0.9;
+                    };
+                    action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
+                        "Lock",
+                        "Locks this device until you re-type your handle. Fully reversible — nothing is deleted.",
+                        0, *theme::PILL_GREEN, false);
+                    action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
+                        if self.settings_remove_armed { "Remove from fleet — sure?" } else { "Remove from fleet" },
+                        "Signs this device out of your fleet with your other devices' consent. Your identity and history live on thru them; nothing is wiped here.",
+                        1, if self.settings_remove_armed { *theme::PILL_RED } else { *theme::PILL_YELLOW }, self.settings_remove_armed);
+                    action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
+                        if self.settings_shred_armed { "Shred — sure?" } else { "Shred" },
+                        "Crypto-wipes the vault and identity on this device — irreversible. The device STAYS signed in to your fleet; to pass it on, use Remove & shred instead.",
+                        2, *theme::PILL_ORANGE, self.settings_shred_armed);
+                    action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
+                        if self.settings_removeshred_armed { "Remove & shred — sure?" } else { "Remove & shred" },
+                        "Signs this device out of your fleet, then wipes it — irreversible. The right way to sell or give a device away.",
+                        3, *theme::PILL_RED, self.settings_removeshred_armed);
+                    flow.gap(hspan2 * 0.4);
+                    flow.line(&mut canvas, ctx.text, "Security: strong   \u{00b7}   Recovery: not set up", hspan2, *theme::LABEL_COLOUR, 400);
+                    flow.gap(hspan2 * 0.8);
+                    // ── DANGEROUS: unattended auto-attest-on-reboot. Off by default. Two states, both INLINE (no floating overlay — an over-content modal drawn after chrome.flatten_into never composited its glyphs): the checkbox+disclaimer, OR (while a flip is pending) a handle-entry confirmation that re-proves the operator before arming/disarming.
+                    flow.line(&mut canvas, ctx.text, "\u{26A0} Auto-attest on reboot (unattended)", hspan2, *theme::CONTACT_NAME_COLOUR, 600);
                     if let Some(target_on) = self.unattended_confirm {
-                        // CONFIRM state: re-type the handle to arm/disarm.
-                        settings_line(
+                        flow.prose(
                             &mut canvas,
                             ctx.text,
-                            rows[12],
                             if target_on {
-                                "Re-type your handle to ARM (this box will reboot as you):"
+                                "Re-type your handle to ARM. After this, the box becomes you on every reboot with nothing typed."
                             } else {
                                 "Re-type your handle to disarm:"
                             },
@@ -4399,7 +4315,9 @@ impl PhotonApp {
                             *theme::ERROR_TEXT_COLOUR,
                             600,
                         );
+                        let tb_band = flow.band(hspan2 * 2.2);
                         if let Some(tb) = self.unattended_confirm_tb.as_mut() {
+                            tb.set_rect(tb_band.center_x(), tb_band.center_y(), tb_band.w * 0.9, tb_band.h * 0.85);
                             let id = tb.hit_id();
                             tb.render_content_into(
                                 &mut canvas,
@@ -4412,51 +4330,34 @@ impl PhotonApp {
                                 id,
                             );
                         }
-                        let pr = rows[14].split_h([1.0, 1.0]);
+                        if self.unattended_confirm_failed {
+                            flow.line(&mut canvas, ctx.text, "Handle didn't match — try again.", hspan2, *theme::ERROR_TEXT_COLOUR, 600);
+                        }
+                        let band = flow.band(hspan2 * 2.4);
+                        let pill_h = band.h * 0.8;
+                        let py = band.y + (band.h - pill_h) * 0.5;
                         draw_stub_pill_filled(
-                            &mut canvas,
-                            ctx.text,
-                            &mut chrome.hit_test_map,
-                            buf_w,
-                            buf_h,
-                            pr[0].center_h(pillf(0.6)),
+                            &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h,
+                            fluor::region::Region::new(band.x + hspan2 * 0.3, py, band.w * 0.38, pill_h),
                             if target_on { "Arm" } else { "Disarm" },
-                            self.unattended_confirm_base,
-                            ctx.pressed_hit,
-                            true,
-                            Some(*theme::PILL_RED),
-                            "Open Sans",
+                            self.unattended_confirm_base, ctx.pressed_hit, true, Some(*theme::PILL_RED), "Open Sans",
                         );
                         draw_stub_pill(
-                            &mut canvas,
-                            ctx.text,
-                            &mut chrome.hit_test_map,
-                            buf_w,
-                            buf_h,
-                            pr[1].center_h(pillf(0.6)),
+                            &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h,
+                            fluor::region::Region::new(band.x + band.w * 0.45, py, band.w * 0.3, pill_h),
                             "Cancel",
-                            self.unattended_confirm_base.wrapping_add(1),
-                            ctx.pressed_hit,
+                            self.unattended_confirm_base.wrapping_add(1), ctx.pressed_hit,
                         );
-                        if self.unattended_confirm_failed {
-                            settings_line(
-                                &mut canvas,
-                                ctx.text,
-                                rows[13],
-                                "Handle didn't match — try again.",
-                                hspan2,
-                                *theme::ERROR_TEXT_COLOUR,
-                                600,
-                            );
-                        }
                     } else {
-                        // NORMAL state: checkbox + disclaimer (red + bold once armed).
                         let armed = self
                             .settings_unattended_check
                             .as_ref()
                             .map(|c| c.is_checked())
                             .unwrap_or(false);
+                        let cb_band = flow.band(hspan2 * 2.0);
                         if let Some(cb) = self.settings_unattended_check.as_mut() {
+                            cb.set_font_size(hspan2);
+                            cb.set_rect(cb_band.x + cb_band.w * 0.45, cb_band.center_y(), cb_band.w * 0.85, cb_band.h * 0.8);
                             cb.render_content_into(
                                 &mut canvas,
                                 ctx.text,
@@ -4464,14 +4365,11 @@ impl PhotonApp {
                                 Some(&mut chrome.hit_test_map),
                             );
                         }
-                        let dc = if armed {
-                            *theme::ERROR_TEXT_COLOUR
-                        } else {
-                            *theme::LABEL_COLOUR
-                        };
-                        settings_line(&mut canvas, ctx.text, rows[13], "BAD IDEA on any device you carry. Defeats the whole point of a passless identity:", hspan2, dc, if armed { 600 } else { 400 });
-                        settings_line(&mut canvas, ctx.text, rows[14], "after a reboot this box becomes YOU with no handle typed. Only for remote failsafe boxes you physically control.", hspan2, dc, if armed { 600 } else { 400 });
+                        let (dc, dw) = if armed { (*theme::ERROR_TEXT_COLOUR, 600) } else { (*theme::LABEL_COLOUR, 400) };
+                        flow.prose(&mut canvas, ctx.text, "BAD IDEA on any device you carry — it defeats the whole point of a passless identity: after a reboot this box becomes YOU with no handle typed. Only for remote failsafe boxes you physically control.", hspan2 * 0.9, dc, dw);
                     }
+                    flow.gap(hspan2);
+                    measured_extent = Some((flow.used(), inset.h));
                 }
                 SettingsPage::Recovery => {
                     let rows = layout
