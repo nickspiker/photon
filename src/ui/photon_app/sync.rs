@@ -446,8 +446,7 @@ impl PhotonApp {
         if pinged > 0 {
             crate::logf!("Status: pinged {} contact(s)", pinged);
         }
-        // LAN broadcast for same-network local-IP discovery (hairpin-NAT workaround) — FULL sweeps only; a single-contact chat ping doesn't shout at the whole subnet.
-        if only.is_none() {
+        // LAN discovery beacon — fires on ANY presence surface, conversations INCLUDED (regression fix, Nick 2026-09-02: gating it to full sweeps starved LAN self-message latency to ~10s — the beacon is self-ANNOUNCEMENT, not a per-contact ping; it's the ONE multicast that keeps a sibling's current LAN address fresh, and a self-message rides those sibling addresses. Without it PT sprays stale endpoints and burns its retransmit ladder. One multicast to the subnet is cheap and it's what makes same-room delivery instant).
         if let (Some(session), Some(hq)) = (self.session.as_ref(), self.handle_query.as_ref()) {
             checker.send_lan_broadcast(session.handle_proof, hq.port());
             // Live Wi-Fi Direct group, we're the CLIENT: also unicast the beacon at the GO each cadence — a contact added AFTER group-up (the woods-add flow) still gets announced, and multicast on the p2p iface can't be trusted to carry the broadcast above.
@@ -458,7 +457,6 @@ impl PhotonApp {
                     std::net::SocketAddr::new(std::net::IpAddr::V4(go), crate::PHOTON_PORT),
                 );
             }
-        }
         }
 
         // Wi-Fi Direct STRANDED evaluation rides the ping cadence (the same edges that change reachability land here): the radio spins up only when a provisioned friend is unreachable AND the relay pipe is down — truly off-grid. Also the DRAINED teardown check for a live group whose peers all went silent.
