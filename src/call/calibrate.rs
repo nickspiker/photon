@@ -1,10 +1,10 @@
-//! Per-route audio calibration (the approved plan, 2026-09-02) — measure once, then leave the mic alone.
+//! Per-route audio calibration, TWO independent measurements (Nick 2026-09-02 — the single combined flow read as vague because it smuggled two different measurements thru one button):
 //!
-//! The ritual: the device PLAYS Nick's recorded prompt ("the quick brown fox jumped over the lazy dogs") while the user just listens — that playback IS the measurement probe: cross-correlating what the mic heard against what we played yields the render→capture DELAY and the speaker→mic COUPLING gain `g`, and the tail silence samples the room noise floor. Then the screen asks the user to REPEAT the sentence; the trimmed median of their voiced frames sets a FIXED mic gain. One recording serves as both instructions-by-example and probe — no second asset needed.
+//! **Echo check** (speaker → mic): plays the recorded fox sentence thru the CURRENT OUTPUT while the user stays quiet; cross-correlating what the mic heard against what was played yields the render→capture DELAY and the coupling gain `g` — the leak your friends would hear as echo. Property of the OUTPUT ROUTE (`audio.cal.echo.<route>`): speakerphone leaks hugely, an earpiece barely, a headset ~zero.
 //!
-//! The profile turns the in-call duck from a heuristic into a prediction: expected-echo-at-mic = `g ×` (delay-compensated render level, volume-scaled). Mic ≈ prediction → pure echo, gate hard; mic ≫ prediction → the human, let it thru. No absolute thresholds — the quiet-talker asymmetry (Brittany/Nick field calls) cannot recur.
+//! **Voice check** (mouth → mic): plays the same sentence once as the example, then records the user repeating it; the trimmed median of voiced frames sets a FIXED mic gain, the quiet gaps the noise floor. Property of the MIC + user (`audio.cal.voice.<mic>`) — switching speaker→earpiece keeps the voice profile (same mic), a BT headset needs both (its own mic).
 //!
-//! Session ownership mirrors `call/playback.rs`: refuses while a call owns the audio; the worker holds start()/stop() for its whole run. Phases are EDGES on the state machine (playback drained, capture window filled) — no wall-clock pacing beyond the DAC itself.
+//! Each step re-runs independently; results carry human-readable verdicts so the page reads like an instrument, not a ritual. Session ownership mirrors playback.rs (refuse while a call owns audio); phases are edges. Stability gates void a run when the volume moves, the route swaps, or the mic changes mid-measurement — a stored profile is a MEASUREMENT, never a guess.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -14,53 +14,67 @@ use std::sync::Mutex;
 const PROMPT_ASSET: &[u8] = include_bytes!("../../assets/cal-prompt.opusp");
 const FRAME_SAMPLES: usize = 480; // 10ms @ 48k — matches platform::audio
 
-/// Where a running calibration stands — published for the Audio page to render live. u8-backed so the worker can post lock-free.
+/// Where a running measurement stands — published for the Wave page to render live.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CalPhase {
     Idle = 0,
-    /// Playing the prompt; user should stay quiet. (The measurement.)
-    Listen = 1,
-    /// Screen asks the user to repeat the sentence; mic window open.
-    Repeat = 2,
-    /// Worker finished — result posted (profile stored by the app drain, or a retry verdict).
-    Done = 3,
-    /// A sanity gate failed — nothing stored; the page says try again.
-    Failed = 4,
+    /// Echo check: the prompt is playing; the user must stay quiet (the measurement).
+    EchoListen = 1,
+    /// Voice check: the example sentence is playing — listen.
+    VoiceExample = 2,
+    /// Voice check: the mic window is open — repeat the sentence now.
+    VoiceRepeat = 3,
+    /// A run finished and posted its result.
+    Done = 4,
+    /// A gate failed — nothing stored; the page says try again.
+    Failed = 5,
 }
 
 static PHASE: AtomicU8 = AtomicU8::new(0);
 
 pub fn phase() -> CalPhase {
     match PHASE.load(Ordering::Relaxed) {
-        1 => CalPhase::Listen,
-        2 => CalPhase::Repeat,
-        3 => CalPhase::Done,
-        4 => CalPhase::Failed,
+        1 => CalPhase::EchoListen,
+        2 => CalPhase::VoiceExample,
+        3 => CalPhase::VoiceRepeat,
+        4 => CalPhase::Done,
+        5 => CalPhase::Failed,
         _ => CalPhase::Idle,
     }
 }
 
-/// A completed measurement, handed to the app drain (which owns settings) for storage under `audio.cal.<route_id>`.
+/// The echo-path profile: how much of this OUTPUT leaks back into the mic, and how late.
 #[derive(Debug, Clone, PartialEq)]
-pub struct CalProfile {
-    /// Fixed mic gain toward the engine's TX target (replaces the chasing AGC on calibrated routes).
-    pub mic_gain: f32,
-    /// Room noise floor (mean |sample| per frame).
-    pub floor: f32,
-    /// Speaker→mic coupling: captured level ÷ rendered level at the correlation peak, normalized to the calibration volume (vol scaling re-applies at call time).
+pub struct EchoProfile {
+    /// Coupling gain, volume-normalized (captured ÷ rendered at the correlation peak ÷ vol_lin at measure time).
     pub g_norm: f32,
-    /// Render→capture delay in ms (device buffer + acoustic path) at 10ms envelope resolution.
+    /// Render→capture delay in ms (device buffers + acoustic path), 10ms envelope resolution.
     pub delay_ms: u32,
-    /// The volume (dB) the profile was measured at; None on desktop (no volume API).
+    /// Volume (dB) at measure time; None on desktop.
     pub cal_vol_db: Option<f32>,
-    /// The route this profile belongs to.
     pub route_id: String,
 }
 
-/// The one in-flight result slot (worker → app tick). Mutex over a channel: exactly one calibration runs at a time.
-static RESULT: Mutex<Option<CalProfile>> = Mutex::new(None);
+/// The voice profile: how the user's natural speech lands on this MIC.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VoiceProfile {
+    /// Fixed mic gain toward the engine's TX target (replaces the chasing AGC).
+    pub mic_gain: f32,
+    /// Room noise floor (mean |sample| per frame).
+    pub floor: f32,
+    pub mic_id: String,
+}
 
-pub fn take_result() -> Option<CalProfile> {
+/// A finished measurement, handed to the app drain (which owns settings).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CalResult {
+    Echo(EchoProfile),
+    Voice(VoiceProfile),
+}
+
+static RESULT: Mutex<Option<CalResult>> = Mutex::new(None);
+
+pub fn take_result() -> Option<CalResult> {
     RESULT.lock().unwrap().take()
 }
 
@@ -103,7 +117,7 @@ fn decode_prompt() -> Option<Vec<Vec<i16>>> {
     Some(frames)
 }
 
-/// Mean |sample| of a frame — the envelope unit every measurement below runs in (matches the engine's level math).
+/// Mean |sample| of a frame — the envelope unit every measurement runs in (matches the engine's level math).
 fn env(frame: &[i16]) -> f32 {
     if frame.is_empty() {
         return 0.0;
@@ -111,7 +125,7 @@ fn env(frame: &[i16]) -> f32 {
     frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>() as f32 / frame.len() as f32
 }
 
-/// Envelope cross-correlation: find the lag (in frames) where `cap` best matches `play`, scanning 0..=max_lag. Returns (lag, gain) — gain = Σcap·play / Σplay² at the peak (the least-squares amplitude ratio, robust against mic noise). Envelope-domain (10ms bins), which is exactly the resolution the frame-quantized duck needs.
+/// Envelope cross-correlation: find the lag (in frames) where `cap` best matches `play`, scanning 0..=max_lag. Returns (lag, gain) — gain = Σcap·play / Σplay² at the peak (the least-squares amplitude ratio, robust against mic noise). Envelope-domain (10ms bins), exactly the resolution the frame-quantized duck needs.
 pub(crate) fn envelope_xcorr(play: &[f32], cap: &[f32], max_lag: usize) -> Option<(usize, f32)> {
     if play.is_empty() || cap.len() < play.len() {
         return None;
@@ -147,150 +161,195 @@ pub(crate) fn voiced_level(envs: &[f32], floor: f32) -> Option<f32> {
     Some(mid[mid.len() / 2])
 }
 
-/// Run a calibration for the CURRENT route. `None` if a call owns the audio session or the prompt asset is unreadable. The worker owns the session for its whole run; the app tick polls `phase()` for the live screen and `take_result()` for the profile to store.
-pub fn start() -> Option<CalHandle> {
-    if crate::platform::audio::is_active() {
-        crate::log("CAL: audio busy (call active) — refused");
-        return None;
-    }
-    let frames = decode_prompt()?;
-    let stop = Arc::new(AtomicBool::new(false));
-    let flag = stop.clone();
-    if !crate::platform::audio::start() {
-        crate::platform::audio::stop();
-        return None;
-    }
-    PHASE.store(CalPhase::Listen as u8, Ordering::Relaxed);
-    let spawned = std::thread::Builder::new()
-        .name("audio-cal".into())
-        .spawn(move || {
-            let verdict = run(frames, &flag);
-            crate::platform::audio::stop();
-            match verdict {
-                Some(profile) => {
-                    crate::logf!(
-                        "CAL: profile — route \"{}\" gain {} floor {} g {} delay {}ms vol {}",
-                        profile.route_id,
-                        format!("{:.2}", profile.mic_gain),
-                        format!("{:.0}", profile.floor),
-                        format!("{:.4}", profile.g_norm),
-                        profile.delay_ms,
-                        format!("{:?}", profile.cal_vol_db)
-                    );
-                    *RESULT.lock().unwrap() = Some(profile);
-                    PHASE.store(CalPhase::Done as u8, Ordering::Relaxed);
-                }
-                None => {
-                    crate::log("CAL: sanity gates failed — nothing stored, ask to retry");
-                    PHASE.store(CalPhase::Failed as u8, Ordering::Relaxed);
-                }
-            }
-        })
-        .is_ok();
-    if !spawned {
-        crate::platform::audio::stop();
-        PHASE.store(CalPhase::Idle as u8, Ordering::Relaxed);
-        return None;
-    }
-    Some(CalHandle { stop })
-}
-
-/// Reset the phase to Idle (the page leaves / the result was consumed).
-pub fn ack_phase() {
-    PHASE.store(CalPhase::Idle as u8, Ordering::Relaxed);
-}
-
 const PACE_TARGET: usize = 6; // frames of render queue — track the DAC, don't race it (playback.rs's constant)
 const TAIL_FRAMES: usize = 100; // 1s of post-prompt silence = noise-floor sample
 const REPEAT_FRAMES: usize = 700; // 7s window to say the sentence
 const MAX_LAG_FRAMES: usize = 100; // 1s of correlation scan — way past any real render→capture path
 
-fn run(prompt: Vec<Vec<i16>>, stop: &AtomicBool) -> Option<CalProfile> {
-    use std::time::Duration;
-    let route_id = crate::platform::audio::route_id();
-    let cal_vol_db = crate::platform::audio::current_volume_db();
-    let route_at_start = route_id.clone();
-    let play_env: Vec<f32> = prompt.iter().map(|f| env(f)).collect();
+fn begin(phase0: CalPhase) -> Option<(Vec<Vec<i16>>, Arc<AtomicBool>)> {
+    if crate::platform::audio::is_active() {
+        crate::log("CAL: audio busy (call active) — refused");
+        return None;
+    }
+    let frames = decode_prompt()?;
+    if !crate::platform::audio::start() {
+        crate::platform::audio::stop();
+        return None;
+    }
+    PHASE.store(phase0 as u8, Ordering::Relaxed);
+    Some((frames, Arc::new(AtomicBool::new(false))))
+}
 
-    // ---- Phase A: play the prompt, capture simultaneously (the user listens, quiet). ----
-    let _ = crate::platform::audio::captured_frames(); // drop anything stale
-    let mut cap_env: Vec<f32> = Vec::with_capacity(play_env.len() + MAX_LAG_FRAMES + TAIL_FRAMES);
+fn finish(verdict: Option<CalResult>) {
+    crate::platform::audio::stop();
+    match verdict {
+        Some(r) => {
+            *RESULT.lock().unwrap() = Some(r);
+            PHASE.store(CalPhase::Done as u8, Ordering::Relaxed);
+        }
+        None => {
+            crate::log("CAL: gates failed — nothing stored, ask to retry");
+            PHASE.store(CalPhase::Failed as u8, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Play the prompt while collecting mic envelopes; returns (captured envelopes, stopped?).
+fn play_and_capture(prompt: &[Vec<i16>], stop: &AtomicBool, capture: bool) -> (Vec<f32>, bool) {
+    use std::time::Duration;
+    let _ = crate::platform::audio::captured_frames();
+    let mut cap: Vec<f32> = Vec::new();
     let mut queued = 0usize;
-    while (queued < prompt.len() || cap_env.len() < play_env.len() + MAX_LAG_FRAMES) && !stop.load(Ordering::Relaxed) {
+    while (queued < prompt.len() || crate::platform::audio::playback_depth() > 0)
+        && !stop.load(Ordering::Relaxed)
+    {
         while queued < prompt.len() && crate::platform::audio::playback_depth() < PACE_TARGET {
             crate::platform::audio::queue_playback(prompt[queued].clone());
             queued += 1;
         }
-        for f in crate::platform::audio::captured_frames() {
-            cap_env.push(env(&f));
+        if capture {
+            for f in crate::platform::audio::captured_frames() {
+                cap.push(env(&f));
+            }
         }
         std::thread::sleep(Duration::from_millis(1));
     }
-    // ---- Tail: 1s of room after the prompt drains — noise floor #1. ----
-    let tail_start = cap_env.len();
-    while cap_env.len() < tail_start + TAIL_FRAMES && !stop.load(Ordering::Relaxed) {
+    (cap, stop.load(Ordering::Relaxed))
+}
+
+/// Collect `n` mic-envelope frames.
+fn capture_frames(n: usize, stop: &AtomicBool) -> (Vec<f32>, bool) {
+    use std::time::Duration;
+    let mut cap: Vec<f32> = Vec::with_capacity(n);
+    while cap.len() < n && !stop.load(Ordering::Relaxed) {
         for f in crate::platform::audio::captured_frames() {
-            cap_env.push(env(&f));
+            cap.push(env(&f));
         }
         std::thread::sleep(Duration::from_millis(1));
     }
-    if stop.load(Ordering::Relaxed) {
-        return None;
-    }
-    let floor_a = mean(&cap_env[tail_start..]);
-    let (lag, g) = envelope_xcorr(&play_env, &cap_env, MAX_LAG_FRAMES)?;
+    (cap, stop.load(Ordering::Relaxed))
+}
 
-    // ---- Phase B: the user repeats the sentence. Pre-speech gap doubles as floor #2. ----
-    PHASE.store(CalPhase::Repeat as u8, Ordering::Relaxed);
-    let _ = crate::platform::audio::captured_frames();
-    let mut rep_env: Vec<f32> = Vec::with_capacity(REPEAT_FRAMES);
-    while rep_env.len() < REPEAT_FRAMES && !stop.load(Ordering::Relaxed) {
-        for f in crate::platform::audio::captured_frames() {
-            rep_env.push(env(&f));
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    if stop.load(Ordering::Relaxed) {
-        return None;
-    }
-    let floor = floor_a.max(quietest_run(&rep_env, 30));
-    let talk = voiced_level(&rep_env, floor)?;
+/// ECHO CHECK — the user stays quiet; the prompt is the probe.
+pub fn start_echo() -> Option<CalHandle> {
+    let (prompt, stop) = begin(CalPhase::EchoListen)?;
+    let flag = stop.clone();
+    std::thread::Builder::new()
+        .name("audio-cal-echo".into())
+        .spawn(move || {
+            let route_id = crate::platform::audio::route_id();
+            let cal_vol_db = crate::platform::audio::current_volume_db();
+            let play_env: Vec<f32> = prompt.iter().map(|f| env(f)).collect();
+            let (mut cap, stopped) = play_and_capture(&prompt, &flag, true);
+            if stopped {
+                finish(None);
+                return;
+            }
+            // Tail: 1s of room after the prompt drains — the correlation scan needs the lag headroom and the tail samples the floor.
+            let (tail, stopped) = capture_frames(TAIL_FRAMES, &flag);
+            cap.extend_from_slice(&tail);
+            if stopped {
+                finish(None);
+                return;
+            }
+            // Stability gates: volume knob or route swap mid-run voids the measurement.
+            if let (Some(a), Some(b)) = (cal_vol_db, crate::platform::audio::current_volume_db()) {
+                if (a - b).abs() > 0.5 {
+                    crate::log("CAL: volume moved mid-run — measurement void");
+                    finish(None);
+                    return;
+                }
+            }
+            if crate::platform::audio::route_id() != route_id {
+                crate::log("CAL: output route changed mid-run — measurement void");
+                finish(None);
+                return;
+            }
+            let Some((lag, g)) = envelope_xcorr(&play_env, &cap, MAX_LAG_FRAMES) else {
+                finish(None);
+                return;
+            };
+            // Sanity: a real coupling needs a plausible lag; lag 0 with real g = smeared correlation (echoey hall) — retry, don't store garbage. lag 0 with g≈0 is a headset: legal.
+            if g > 0.01 && lag == 0 {
+                finish(None);
+                return;
+            }
+            if !g.is_finite() {
+                finish(None);
+                return;
+            }
+            let g_norm = match cal_vol_db {
+                Some(db) => g / 10f32.powf(db / 20.0),
+                None => g,
+            };
+            crate::logf!(
+                "CAL: echo — route \"{}\" g {} delay {}ms vol {}",
+                route_id,
+                format!("{g_norm:.4}"),
+                lag * 10,
+                format!("{cal_vol_db:?}")
+            );
+            finish(Some(CalResult::Echo(EchoProfile {
+                g_norm,
+                delay_ms: (lag as u32) * 10,
+                cal_vol_db,
+                route_id,
+            })));
+        })
+        .ok()?;
+    Some(CalHandle { stop })
+}
 
-    // ---- Stability gates (Nick 2026-09-02: "make sure they aren't fidoodling with buttons — we're listening during the announcement"): a volume change or a route swap MID-RUN invalidates the coupling measurement (g scales with volume; a different device is a different acoustic path). Fail loud, ask to redo — never store a profile measured across a knob twist. ----
-    let vol_now = crate::platform::audio::current_volume_db();
-    if let (Some(a), Some(b)) = (cal_vol_db, vol_now) {
-        if (a - b).abs() > 0.5 {
-            crate::logf!("CAL: volume moved mid-run ({} → {} dB) — measurement void", format!("{a:.1}"), format!("{b:.1}"));
-            return None;
-        }
-    }
-    if crate::platform::audio::route_id() != route_at_start {
-        crate::log("CAL: output route changed mid-run — measurement void");
-        return None;
-    }
+/// VOICE CHECK — the example plays first (listen), then the mic window opens (repeat).
+pub fn start_voice() -> Option<CalHandle> {
+    let (prompt, stop) = begin(CalPhase::VoiceExample)?;
+    let flag = stop.clone();
+    std::thread::Builder::new()
+        .name("audio-cal-voice".into())
+        .spawn(move || {
+            let mic_id = crate::platform::audio::mic_id();
+            // Example pass — no capture needed; the user is listening.
+            let (_, stopped) = play_and_capture(&prompt, &flag, false);
+            if stopped {
+                finish(None);
+                return;
+            }
+            PHASE.store(CalPhase::VoiceRepeat as u8, Ordering::Relaxed);
+            let (rep, stopped) = capture_frames(REPEAT_FRAMES, &flag);
+            if stopped {
+                finish(None);
+                return;
+            }
+            if crate::platform::audio::mic_id() != mic_id {
+                crate::log("CAL: mic changed mid-run — measurement void");
+                finish(None);
+                return;
+            }
+            let floor = quietest_run(&rep, 30);
+            let Some(talk) = voiced_level(&rep, floor) else {
+                finish(None);
+                return;
+            };
+            if talk <= floor * 4.0 {
+                finish(None);
+                return;
+            }
+            let mic_gain = (4000.0 / talk.max(1.0)).clamp(0.125, 8.0); // TX_TARGET_LEVEL / talk, within the engine's GAIN bounds
+            crate::logf!(
+                "CAL: voice — mic \"{}\" gain {} floor {}",
+                mic_id,
+                format!("{mic_gain:.2}"),
+                format!("{floor:.0}")
+            );
+            finish(Some(CalResult::Voice(VoiceProfile { mic_gain, floor, mic_id })));
+        })
+        .ok()?;
+    Some(CalHandle { stop })
+}
 
-    // ---- Sanity gates (the plan's): a stored profile is a MEASUREMENT, never a guess. ----
-    if !(1..=MAX_LAG_FRAMES).contains(&lag) && g > 0.01 {
-        // lag 0 with real coupling = the correlation smeared (echoey hall) — retry rather than store garbage. (lag 0 with g≈0 is a headset: fine, falls thru.)
-        return None;
-    }
-    if !g.is_finite() || talk <= floor * 4.0 {
-        return None;
-    }
-    let mic_gain = (4000.0 / talk.max(1.0)).clamp(0.125, 8.0); // TX_TARGET_LEVEL / talk, within the engine's GAIN bounds
-    // Volume-normalize g: store at "unit volume" so call-time scales by the current volume delta (Android); desktop stores as-measured.
-    let g_norm = match cal_vol_db {
-        Some(db) => g / 10f32.powf(db / 20.0),
-        None => g,
-    };
-    Some(CalProfile {
-        mic_gain,
-        floor,
-        g_norm,
-        delay_ms: (lag as u32) * 10,
-        cal_vol_db,
-        route_id,
-    })
+/// Reset the phase to Idle (result consumed / page left).
+pub fn ack_phase() {
+    PHASE.store(CalPhase::Idle as u8, Ordering::Relaxed);
 }
 
 fn mean(v: &[f32]) -> f32 {
@@ -322,21 +381,17 @@ mod tests {
     #[test]
     fn prompt_asset_decodes() {
         let frames = decode_prompt().expect("embedded prompt must decode");
-        // ~4s of 10ms frames, all full-length.
         assert!(frames.len() > 300 && frames.len() < 500, "got {} frames", frames.len());
         assert!(frames.iter().all(|f| f.len() == FRAME_SAMPLES));
-        // The prompt has real audio in it (not silence).
         let peak = frames.iter().map(|f| env(f) as u32).max().unwrap();
         assert!(peak > 500, "prompt peak envelope {peak} — asset silent?");
     }
 
     #[test]
     fn xcorr_recovers_lag_and_gain() {
-        // Synthetic speech-ish envelope: bursts and gaps.
         let play: Vec<f32> = (0..200)
             .map(|i| if (i / 20) % 2 == 0 { 1000.0 + (i % 20) as f32 * 30.0 } else { 50.0 })
             .collect();
-        // Captured = delayed 17 frames, attenuated ×0.31, plus noise floor.
         let mut cap = vec![25.0f32; 17];
         cap.extend(play.iter().map(|&x| x * 0.31 + 20.0));
         cap.extend(std::iter::repeat(25.0).take(50));
@@ -348,22 +403,20 @@ mod tests {
     #[test]
     fn voiced_median_ignores_onset_and_silence() {
         let floor = 30.0;
-        // 1s silence, then speech ramping in, steady, trailing off.
         let mut envs = vec![28.0f32; 100];
-        envs.extend((0..10).map(|i| 200.0 + i as f32 * 300.0)); // onset ramp
-        envs.extend(std::iter::repeat(3000.0).take(150)); // steady voice
-        envs.extend((0..10).map(|i| 3000.0 - i as f32 * 280.0)); // trail
+        envs.extend((0..10).map(|i| 200.0 + i as f32 * 300.0));
+        envs.extend(std::iter::repeat(3000.0).take(150));
+        envs.extend((0..10).map(|i| 3000.0 - i as f32 * 280.0));
         envs.extend(std::iter::repeat(28.0).take(100));
         let talk = voiced_level(&envs, floor).unwrap();
         assert!((talk - 3000.0).abs() < 200.0, "talk {talk}");
-        // Pure silence → None, never a made-up level.
         assert!(voiced_level(&vec![25.0; 400], floor).is_none());
     }
 
     #[test]
     fn quietest_run_finds_the_gap() {
         let mut envs = vec![3000.0f32; 100];
-        envs.extend(std::iter::repeat(20.0).take(40)); // the gap
+        envs.extend(std::iter::repeat(20.0).take(40));
         envs.extend(std::iter::repeat(2500.0).take(100));
         assert!(quietest_run(&envs, 30) < 30.0);
     }

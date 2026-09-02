@@ -137,6 +137,17 @@ static ROUTE_ID: Mutex<String> = Mutex::new(String::new());
 /// Current output volume in dB (Android `getStreamVolumeDb`; `None` on desktop / pre-mirror).
 static VOLUME_DB: Mutex<Option<f32>> = Mutex::new(None);
 
+/// Identity of the current INPUT (mic) — the voice-profile key (Nick 2026-09-02: the voice measurement is a property of the MIC + user, not the output route; splitting the keys means switching speaker→earpiece keeps your voice profile). `builtin-mic` / `bt:<name>` / `mic:<device>`; empty until mirrored.
+static MIC_ID: Mutex<String> = Mutex::new(String::new());
+
+pub fn mic_id() -> String {
+    MIC_ID.lock().unwrap().clone()
+}
+
+pub(crate) fn set_mic_identity(id: String) {
+    *MIC_ID.lock().unwrap() = id;
+}
+
 pub fn route_id() -> String {
     ROUTE_ID.lock().unwrap().clone()
 }
@@ -497,6 +508,8 @@ mod desktop {
 
         // ---- input (mic) ----
         let in_stream = host.default_input_device().and_then(|dev| {
+            let name = dev.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "?".into());
+            super::set_mic_identity(format!("mic:{name}"));
             let sc = dev.default_input_config().ok()?;
             let src_rate = sc.sample_rate();
             let channels = sc.channels() as usize;
@@ -628,6 +641,12 @@ mod android {
         super::set_volume_db(Some(db));
     }
 
+    /// JNI ingress: the routed INPUT (mic) identity — the voice-profile key.
+    pub(crate) fn on_mic_mirror(id: String) {
+        crate::logf!("AUDIO: mic mirror — {}", id);
+        super::set_mic_identity(id);
+    }
+
     /// JNI ingress: one mic frame from Kotlin's AudioRecord loop.
     pub(crate) fn on_captured(frame: Vec<i16>) {
         if ACTIVE.load(Ordering::Relaxed) {
@@ -644,7 +663,7 @@ mod android {
 #[cfg(target_os = "android")]
 pub use android::{route, start, stop};
 #[cfg(target_os = "android")]
-pub(crate) use android::{on_captured, on_route_mirror, on_volume_mirror, pull_render};
+pub(crate) use android::{on_captured, on_mic_mirror, on_route_mirror, on_volume_mirror, pull_render};
 
 // Redox: no audio backend yet — calls are signaling-only there.
 #[cfg(target_os = "redox")]

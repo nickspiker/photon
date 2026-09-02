@@ -1591,20 +1591,26 @@ impl FluorApp for PhotonApp {
                     }
                 } else if page == SettingsPage::Wave {
                     use crate::call::calibrate::{self, CalPhase};
-                    let running = matches!(calibrate::phase(), CalPhase::Listen | CalPhase::Repeat);
+                    let running = !matches!(calibrate::phase(), CalPhase::Idle | CalPhase::Done | CalPhase::Failed);
                     if slot == 0 && !running {
-                        // Calibrate / Recalibrate — start the ritual (refuses politely while a call owns audio).
+                        // Echo check for the current output route.
                         calibrate::ack_phase();
-                        self.audio_cal_handle = calibrate::start();
+                        self.audio_cal_handle = calibrate::start_echo();
                         if self.audio_cal_handle.is_none() {
-                            self.ready_toast = Some("can't calibrate now (a call is active?)".to_string());
+                            self.ready_toast = Some("can't measure now (a call is active?)".to_string());
                             self.ready_toast_screen = None;
                         }
-                    } else if slot == 1 && !running && !self.route_calibrated_now() {
-                        // Headset skip: no acoustic path to measure — a null-coupling profile (unit gain, zero g/delay) unlocks calls without the ritual.
-                        let p = crate::call::calibrate::CalProfile {
-                            mic_gain: 1.0,
-                            floor: 0.0,
+                    } else if slot == 1 && !running {
+                        // Voice check for the current mic.
+                        calibrate::ack_phase();
+                        self.audio_cal_handle = calibrate::start_voice();
+                        if self.audio_cal_handle.is_none() {
+                            self.ready_toast = Some("can't measure now (a call is active?)".to_string());
+                            self.ready_toast_screen = None;
+                        }
+                    } else if slot == 2 && !running && !self.echo_calibrated_now() {
+                        // Headset skip: no acoustic speaker→mic path to measure — a null-coupling ECHO profile. The voice check is still required (the headset has its own mic).
+                        let p = crate::call::calibrate::EchoProfile {
                             g_norm: 0.0,
                             delay_ms: 0,
                             cal_vol_db: crate::platform::audio::current_volume_db(),
@@ -1613,7 +1619,7 @@ impl FluorApp for PhotonApp {
                         if p.route_id.is_empty() {
                             self.ready_toast = Some("no output device detected yet".to_string());
                         } else {
-                            self.store_cal_profile(&p);
+                            self.store_cal_result(&crate::call::calibrate::CalResult::Echo(p.clone()));
                             self.ready_toast = Some(format!("marked as headset ({})", p.route_id));
                         }
                         self.ready_toast_screen = None;

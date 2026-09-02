@@ -107,6 +107,7 @@ class PhotonConnectionService : Service() {
     private external fun nativeCallAction(answer: Boolean)  // Answer/Decline from the call notification → Rust's pending-action latch (the app tick drains it)
     private external fun nativeAudioRoute(kind: Int, id: String)  // Route mirror: routed output device kind + calibration-profile identity (AudioDeviceCallback)
     private external fun nativeVolumeDb(db: Float)  // Volume mirror: voice-call stream dB, at start + on VOLUME_CHANGED
+    private external fun nativeAudioMic(id: String)  // Mic mirror: routed input identity (the voice-profile key)
 
 
     // Held for the service's whole life: Android DROPS WiFi multicast in the radio firmware unless
@@ -156,6 +157,22 @@ class PhotonConnectionService : Service() {
                 }
             }
             try { nativeAudioRoute(kind, id) } catch (e: Throwable) { PhotonLog.w(TAG, "route mirror failed: ${e.message}") }
+            // INPUT side (the voice-profile key): BT mic > wired mic > builtin.
+            val ins = am.getDevices(android.media.AudioManager.GET_DEVICES_INPUTS)
+            fun rankIn(t: Int): Int = when (t) {
+                android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> 3
+                android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET, android.media.AudioDeviceInfo.TYPE_USB_HEADSET -> 2
+                android.media.AudioDeviceInfo.TYPE_BUILTIN_MIC -> 1
+                else -> 0
+            }
+            val mic = ins.maxByOrNull { rankIn(it.type) }
+            val micId = when (mic?.let { rankIn(it.type) } ?: 0) {
+                3 -> "bt:${mic?.productName}"
+                2 -> "headset:${mic?.productName}"
+                1 -> "builtin-mic"
+                else -> "builtin-mic"
+            }
+            try { nativeAudioMic(micId) } catch (e: Throwable) { PhotonLog.w(TAG, "mic mirror failed: ${e.message}") }
         }
         fun pushVolume() {
             try {

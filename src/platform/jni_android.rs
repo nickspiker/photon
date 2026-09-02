@@ -660,6 +660,21 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeAudioR
     crate::platform::audio::on_route_mirror(kind, id);
 }
 
+/// Mic mirror (voice-profile key): the routed INPUT device identity, from the same AudioDeviceCallback edges as the output route.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeAudioMic(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: JString<'_>,
+) {
+    let id: String = env
+        .get_string(&id)
+        .map(|s| s.into())
+        .unwrap_or_else(|_| "builtin-mic".to_string());
+    crate::platform::audio::on_mic_mirror(id);
+}
+
 /// Volume mirror (calibration substrate): the voice-call stream volume in dB, at service start + on every VOLUME_CHANGED broadcast.
 #[cfg(target_os = "android")]
 #[no_mangle]
