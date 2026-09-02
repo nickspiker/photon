@@ -5021,15 +5021,12 @@ impl PhotonApp {
                         flow.prose(&mut canvas, ctx.text, "Photon plays a short recorded sentence thru this speaker and listens with the mic to measure the leak: how loud its own sound comes back, and how late. You don't say anything — just stay quiet for about five seconds while it plays.", hspan2 * 0.85, *theme::LABEL_COLOUR, 400);
                     }
                     flow.gap(hspan2 * 0.3);
-                    let mut step1: Vec<(&str, HitId, bool)> = vec![(
+                    // NO SKIP (Nick 2026-09-02: "every device leaks, it's just how much — helium inside a stainless capsule will not stay there forever"): a headset's coupling isn't zero, it's small, and the instrument measures small just fine. Every route runs the echo check for real.
+                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2, &[(
                         if phase == CalPhase::EchoListen { "Measuring\u{2026}" } else if echo_done { "Re-measure echo" } else { "Measure echo" },
                         btn_base,
                         !running,
-                    )];
-                    if !echo_done && !running {
-                        step1.push(("It's a headset \u{2014} no leak (skip)", btn_base.wrapping_add(2), true));
-                    }
-                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2, &step1);
+                    )]);
                     flow.gap(hspan2 * 0.9);
 
                     // ── STEP 2: VOICE ────────────────────────────────────────

@@ -1608,22 +1608,8 @@ impl FluorApp for PhotonApp {
                             self.ready_toast = Some("can't measure now (a call is active?)".to_string());
                             self.ready_toast_screen = None;
                         }
-                    } else if slot == 2 && !running && !self.echo_calibrated_now() {
-                        // Headset skip: no acoustic speaker→mic path to measure — a null-coupling ECHO profile. The voice check is still required (the headset has its own mic).
-                        let p = crate::call::calibrate::EchoProfile {
-                            g_norm: 0.0,
-                            delay_ms: 0,
-                            cal_vol_db: crate::platform::audio::current_volume_db(),
-                            route_id: crate::platform::audio::route_id(),
-                        };
-                        if p.route_id.is_empty() {
-                            self.ready_toast = Some("no output device detected yet".to_string());
-                        } else {
-                            self.store_cal_result(&crate::call::calibrate::CalResult::Echo(p.clone()));
-                            self.ready_toast = Some(format!("marked as headset ({})", p.route_id));
-                        }
-                        self.ready_toast_screen = None;
                     }
+                    // NO slot 2: the headset skip is gone (every device leaks — it's just how much; the echo check measures small couplings fine).
                 } else {
                     crate::logf!(
                         "settings-stub: pill {} on {} (no behaviour wired)",
