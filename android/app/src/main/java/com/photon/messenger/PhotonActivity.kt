@@ -764,6 +764,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         super.onResume()
         inForeground = true
         nativeSetForeground(true)
+        // WFD work parked on the permission gate gets its retry now that a foreground exists to prompt from (a background stranded-arm cannot show the dialog).
+        PhotonWifiDirect.retryPending()
         // Entering the app clears any pending "new message" notification — the user is now looking at the message list.
         getSystemService(NotificationManager::class.java)
             ?.cancel(PhotonConnectionService.MESSAGE_NOTIFICATION_ID)

@@ -4187,6 +4187,12 @@ async fn run_checker(
 
         // Process LAN discovery requests via multicast (more reliable than broadcast)
         while let Ok(request) = lan_broadcast_rx.try_recv() {
+            // CALL-ACTIVE QUIESCENCE: while the audio session is live, the periodic multicast/broadcast beacons stand down (Emma's 2026-09-01 call log: discovery churn every ~3s riding the same socket + recv path as the media). The request is consumed (not queued — the next periodic sweep re-fires after the call), and the UNICAST form still flows: WFD group-up needs it and it's one targeted frame.
+            if crate::call::MEDIA_QUIET.load(std::sync::atomic::Ordering::Relaxed)
+                && request.unicast.is_none()
+            {
+                continue;
+            }
             let packet =
                 udp::build_lan_discovery(request.our_handle_proof, request.our_port, our_device_pk);
 
