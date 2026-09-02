@@ -22,18 +22,22 @@ pub enum Span {
     Text(String),
     /// A hyperlink. `href` is a validated https/mailto target; `text` is what's shown (which MAY differ from the href — the render-time confirm sheet shows the true href as the anti-spoof).
     Link { href: String, text: String },
+    /// An INLINE attachment — the same blob an attachment row carries, but riding in a rich body interleaved with text/links. `hash` is the BLAKE3 content-hash (the blob key, reused verbatim by [`crate::storage::blob_load`] and the PT transfer); `name`/`size` are the filename + byte length. Its plaintext contribution is the FILENAME, so a legacy reader shows a readable `photo.jpg` inline and the woven bytes stay stable. Single-attachment and `call.audio` rows keep the legacy marker path ([`crate::types::attachment_content`]); this variant is only for the interleaved case.
+    Attachment { hash: [u8; 32], name: String, size: u64 },
 }
 
 /// Run-kind tags on the wire. Additive: a new span kind takes the next integer, and an old reader that hits an unknown kind fails the decode loudly rather than guessing (see [`MessageBody::decode`]).
 const KIND_TEXT: u64 = 0;
 const KIND_LINK: u64 = 1;
+const KIND_ATTACHMENT: u64 = 2;
 
 impl Span {
-    /// The display string of this run (what a link-unaware surface shows, and what feeds the plaintext + weave).
+    /// The display string of this run (what a link-unaware surface shows, and what feeds the plaintext + weave). An attachment's display is its filename.
     pub fn display(&self) -> &str {
         match self {
             Span::Text(t) => t,
             Span::Link { text, .. } => text,
+            Span::Attachment { name, .. } => name,
         }
     }
 
@@ -79,9 +83,9 @@ impl MessageBody {
         s
     }
 
-    /// Whether any run is a link — i.e. whether the rich framing carries anything the plaintext doesn't.
+    /// Whether any run carries something the plaintext doesn't — a link or an attachment. A pure-text body has none, and encodes to the bare-`x` form.
     pub fn has_rich(&self) -> bool {
-        self.spans.iter().any(|s| matches!(s, Span::Link { .. }))
+        self.spans.iter().any(|s| !matches!(s, Span::Text(_)))
     }
 
     /// Canonicalize: merge adjacent text runs, drop empty text runs. One `MessageBody` value → one span vector → one encoding (the determinism the weave and cross-device agreement need).
@@ -97,7 +101,7 @@ impl MessageBody {
                         out.push(Span::Text(t.clone()));
                     }
                 }
-                Span::Link { .. } => out.push(span.clone()),
+                Span::Link { .. } | Span::Attachment { .. } => out.push(span.clone()),
             }
         }
         MessageBody { spans: out }
@@ -124,6 +128,12 @@ impl MessageBody {
                     out.extend(VsfType::u(KIND_LINK as usize, false).flatten());
                     out.extend(VsfType::x(href.clone()).flatten());
                     out.extend(VsfType::x(text.clone()).flatten());
+                }
+                Span::Attachment { hash, name, size } => {
+                    out.extend(VsfType::u(KIND_ATTACHMENT as usize, false).flatten());
+                    out.extend(VsfType::hb(hash.to_vec()).flatten());
+                    out.extend(VsfType::x(name.clone()).flatten());
+                    out.extend(VsfType::u(*size as usize, false).flatten());
                 }
             }
         }
@@ -165,6 +175,12 @@ impl MessageBody {
                         None => spans.push(Span::Text(text)),
                     }
                 }
+                KIND_ATTACHMENT => {
+                    let hash = parse_hash(bytes, &mut ptr)?;
+                    let name = parse_x(bytes, &mut ptr)?;
+                    let size = vsf::parse(bytes, &mut ptr).ok()?.as_u64()?;
+                    spans.push(Span::Attachment { hash, name, size });
+                }
                 _ => return None, // unknown run kind — malformed, not guessed
             }
         }
@@ -179,6 +195,14 @@ impl MessageBody {
 fn parse_x(bytes: &[u8], ptr: &mut usize) -> Option<String> {
     match vsf::parse(bytes, ptr).ok()? {
         VsfType::x(s) | VsfType::a(s) => Some(s),
+        _ => None,
+    }
+}
+
+/// Parse one VSF element and require it to be a 32-byte hash (`hb`).
+fn parse_hash(bytes: &[u8], ptr: &mut usize) -> Option<[u8; 32]> {
+    match vsf::parse(bytes, ptr).ok()? {
+        VsfType::hb(b) if b.len() == 32 => b.try_into().ok(),
         _ => None,
     }
 }
@@ -246,6 +270,44 @@ mod tests {
             _ => panic!("body must lead with its plaintext"),
         };
         assert_eq!(lead, "learn more at passless today");
+    }
+
+    #[test]
+    fn attachment_round_trip() {
+        let hash = [0x5au8; 32];
+        let b = MessageBody {
+            spans: vec![
+                Span::Text("here's the deck ".into()),
+                Span::Attachment { hash, name: "slides.pdf".into(), size: 2_097_152 },
+                Span::Text(" and a link ".into()),
+                Span::link("https://passless.org/", "passless").unwrap(),
+            ],
+        };
+        let wire = b.encode();
+        assert_eq!(MessageBody::decode(&wire), Some(b.clone()));
+        // Plaintext = every run's display concatenated, attachment contributing its filename.
+        assert_eq!(b.plaintext(), "here's the deck slides.pdf and a link passless");
+        // An attachment makes the body rich (carries a hash the plaintext doesn't).
+        assert!(b.has_rich());
+        // And the plaintext still leads the wire for a legacy reader.
+        let mut ptr = 0;
+        let lead = match vsf::parse(&wire, &mut ptr).unwrap() {
+            VsfType::x(s) | VsfType::a(s) => s,
+            _ => panic!("body must lead with its plaintext"),
+        };
+        assert_eq!(lead, "here's the deck slides.pdf and a link passless");
+    }
+
+    #[test]
+    fn attachment_truncated_is_none() {
+        // A KIND_ATTACHMENT run missing its size field is malformed, not a lesser span.
+        let mut wire = VsfType::x("f".to_string()).flatten();
+        wire.extend(VsfType::u(1usize, false).flatten());
+        wire.extend(VsfType::u(KIND_ATTACHMENT as usize, false).flatten());
+        wire.extend(VsfType::hb([1u8; 32].to_vec()).flatten());
+        wire.extend(VsfType::x("f".to_string()).flatten());
+        // (no size element)
+        assert_eq!(MessageBody::decode(&wire), None);
     }
 
     #[test]
