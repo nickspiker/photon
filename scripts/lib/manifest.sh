@@ -88,7 +88,9 @@ manifest_begin_dev_publish() {
     MANIFEST_PUBLISH_VERSION="$full"
     MANIFEST_PUBLISH_COMMIT=$(git rev-parse HEAD)
     MANIFEST_PUBLISH_LABEL="$label"
-    echo "dev publish: v${full} (publish-current; the post-publish bump opens the next)"
+    # ONE version authority for the shipped binary (field 2026-09-01, Azie: manifest said 0.70.6, the installed binary reported 0.70.60): build.rs derives the patch from commits-since-tag UNLESS PHOTON_STAMP_COMMIT is set, and only deploy.sh set it — so every published dev binary disagreed with its own manifest row (binary patch 60 vs ledger patch 6), and the updater forever saw a "newer" self + release-channel thrash. Exported here — the chokepoint every dev-*.sh passes thru — the binary keeps the injected Cargo.toml patch, exactly what the manifest row claims. Local dev builds (no publish) still get the legible derived patch.
+    export PHOTON_STAMP_COMMIT="$(git rev-parse --short=12 HEAD)"
+    echo "dev publish: v${full} (publish-current; the post-publish bump opens the next; PHOTON_STAMP_COMMIT pinned so the binary wears the ledger patch)"
 }
 
 # Dev publish epilogue: the artefact + manifest for the PINNED version are live — bump the patch and commit,

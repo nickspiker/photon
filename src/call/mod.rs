@@ -18,12 +18,17 @@ use std::sync::Mutex;
 /// The media ingress sink: installed by the call engine at call start, cleared at teardown. The recv worker's two-byte fast path hands matching datagrams here RAW — no PT ack, no StatusUpdate, no parse ladder. `None` (no live call) means media datagrams silently drop, which is also the correct answer for stragglers after hangup.
 static MEDIA_SINK: Mutex<Option<std::sync::mpsc::Sender<(Vec<u8>, SocketAddr)>>> = Mutex::new(None);
 
+/// True exactly while a call engine is up (sink installed → cleared) — the "be quiet, media is flowing" signal for background chatter (discovery beacons, history walks) that shares the socket/recv path with the 50pps media stream. Engine lifecycle, not audio-session: recording playback never sets it.
+pub static MEDIA_QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn install_media_sink(tx: std::sync::mpsc::Sender<(Vec<u8>, SocketAddr)>) {
     *MEDIA_SINK.lock().unwrap() = Some(tx);
+    MEDIA_QUIET.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub fn clear_media_sink() {
     *MEDIA_SINK.lock().unwrap() = None;
+    MEDIA_QUIET.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Called from the recv worker for every magic-matched datagram. Cheap when idle (one mutex + None).

@@ -36,6 +36,8 @@ object PhotonWifiDirect {
     private var receiverRegistered = false
     private var pendingAdvertise: ByteArray? = null
     private var pendingDiscovery = false
+    /** Open house parked on the permission gate — replayed by onPermissionsGranted. Without this, a first-ever arm (permission not yet granted) logged "waiting on permission" and then NOTHING re-ran on grant: createGroup/advertise/discovery all sit past the gate, so WFD "saw nothing" forever (Emma's field log, 2026-09-01). */
+    private var pendingOpenHouse: Pair<String, String>? = null
 
     private external fun nativeInit()
     private external fun nativeOnServiceFound(txt: ByteArray)
@@ -73,6 +75,10 @@ object PhotonWifiDirect {
     fun onPermissionsGranted() {
         pendingAdvertise?.let { startAdvertise(it) }
         if (pendingDiscovery) startDiscovery()
+        pendingOpenHouse?.let { (ss, pk) ->
+            pendingOpenHouse = null
+            startOpenHouse(ss, pk)
+        }
     }
 
     private fun hasPerm(): Boolean {
@@ -208,10 +214,17 @@ object PhotonWifiDirect {
         }
     }
 
+    /** Retry anything parked on the permission gate — called from PhotonActivity.onResume, because a BACKGROUND arm (the stranded/metered bearer edge) has no foreground to prompt from: the request either never showed or showed while nothing could replay. On resume: permission already granted → replay directly; still missing → NOW there's a foreground Activity, prompt for real. */
+    fun retryPending() {
+        if (pendingAdvertise == null && !pendingDiscovery && pendingOpenHouse == null) return
+        if (hasPerm()) onPermissionsGranted() else activity?.requestWfdPermissions()
+    }
+
     /** Stop advertise + discovery (leaves an established group alone). */
     fun stopAll() {
         pendingAdvertise = null
         pendingDiscovery = false
+        pendingOpenHouse = null
         val m = manager ?: return
         val ch = channel ?: return
         try {
@@ -267,10 +280,12 @@ object PhotonWifiDirect {
     /** OPEN HOUSE (add-a-friend nearby): raise the group AND publish its credentials in the clear in the TXT record, plus run discovery so a peer's open house is heard too. The group is a byte pipe — trust is CLUTCH — so cleartext creds are coffee-shop-WiFi exposure, armed only during the deliberate add flow. */
     fun startOpenHouse(ssid: String, psk: String) {
         if (!hasPerm()) {
+            pendingOpenHouse = Pair(ssid, psk)
             PhotonLog.i("WFD", "open house waiting on permission")
             activity?.requestWfdPermissions()
             return
         }
+        pendingOpenHouse = null
         val m = mgr() ?: return
         val ch = channel ?: return
         createGroup(ssid, psk)
