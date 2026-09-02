@@ -377,8 +377,8 @@ impl PhotonApp {
                         sx0,
                         sx1,
                         top + (unit * 0.75) as isize,
-                        (unit * 6.0) as usize,
-                        top + (unit * 4.75) as isize,
+                        (unit * 12.0) as usize,
+                        top + (unit * 10.75) as isize,
                         (unit * 3.5) as usize,
                         clip_y0,
                         clip_y1,
@@ -1829,12 +1829,13 @@ impl PhotonApp {
                     } else {
                         theme::BACK_BUTTON_IDLE_FILL
                     };
+                    // Full rail column, up to the rail's true top — no padding (Nick 2026-09-02).
                     paint::fill_rect(
                         &mut canvas,
-                        r.x as isize,
-                        r.y as isize,
-                        r.w as isize,
-                        r.h as isize,
+                        layout.rail.x as isize,
+                        layout.rail.y as isize,
+                        layout.rail.w as isize,
+                        (r.bottom() - layout.rail.y) as isize,
                         fill,
                         None,
                         None,
@@ -1843,9 +1844,9 @@ impl PhotonApp {
                         &mut chrome.hit_test_map,
                         buf_w,
                         buf_h,
-                        r.x as isize,
-                        r.y as isize,
-                        r.right() as isize,
+                        layout.rail.x as isize,
+                        layout.rail.y as isize,
+                        layout.rail.right() as isize,
                         r.bottom() as isize,
                         self.back_btn_hit_id,
                     );
@@ -3767,12 +3768,13 @@ impl PhotonApp {
                 } else {
                     theme::BACK_BUTTON_IDLE_FILL
                 };
+                // Full rail column, and up to the rail's true top — the hint rectangles wear no padding (Nick 2026-09-02).
                 paint::fill_rect(
                     &mut canvas,
-                    r.x as isize,
-                    r.y as isize,
-                    r.w as isize,
-                    r.h as isize,
+                    layout.rail.x as isize,
+                    layout.rail.y as isize,
+                    layout.rail.w as isize,
+                    (r.bottom() - layout.rail.y) as isize,
                     fill,
                     None,
                     None,
@@ -3781,9 +3783,9 @@ impl PhotonApp {
                     &mut chrome.hit_test_map,
                     buf_w,
                     buf_h,
-                    r.x as isize,
-                    r.y as isize,
-                    r.right() as isize,
+                    layout.rail.x as isize,
+                    layout.rail.y as isize,
+                    layout.rail.right() as isize,
                     r.bottom() as isize,
                     self.back_btn_hit_id,
                 );
@@ -5259,6 +5261,13 @@ impl PhotonApp {
                     let cx = inset.x + inset.w * 0.5;
                     // Every About text line runs thru centered_wrapped: authored stanzas keep their line breaks but wrap at THIS width instead of clipping at the pane edge when zoomed big.
                     let wrap_w = inset.w - line_h;
+                    // Pane clip for the CONTENT-pass text — the bg-pass slab crops at the pane top, and unclipped card text scrolling over the title band beside a trimmed logo read as a layer glitch (Nick 2026-09-02).
+                    let about_clip = Some(fluor::paint::Clip::new(
+                        inset.x.max(0.0) as usize,
+                        inset.y.max(0.0) as usize,
+                        (inset.x + inset.w).max(0.0) as usize,
+                        (inset.y + inset.h).max(0.0) as usize,
+                    ));
                     let mut y = inset.y - settings_content_scroll;
                     // The wave + wordmark now paint in the BG pass (see about_slab in the bg closure): the attest screen's proportions at pane width, never zoom-scaled, scrolled with the card. The card just advances past the slab.
                     let (_, slab_h) = about_slab(buf_w, buf_h, inset.w);
@@ -5272,7 +5281,7 @@ impl PhotonApp {
                         &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
                             .weight(600)
                             .font("Oxanium"),
-                        None,
+                        about_clip,
                         None,
                     );
                     y += line_h;
@@ -5284,7 +5293,7 @@ impl PhotonApp {
                         &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
                             .weight(600)
                             .font("Oxanium"),
-                        None,
+                        about_clip,
                         None,
                     );
                     y += line_h;
@@ -5293,7 +5302,7 @@ impl PhotonApp {
                         .weight(400)
                         .font("Oxanium");
                     let link_y = y;
-                    y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, "learn more about passless at passless.org", &link_style, line_h);
+                    y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, "learn more about passless at passless.org", &link_style, line_h, about_clip);
                     let _ = link_y;
                     restamp_hit_rect(
                         &mut chrome.hit_test_map,
@@ -5320,7 +5329,7 @@ impl PhotonApp {
                         "delete alone and the chain breaks, loudly, for the other side",
                         "agreement is silent; betrayal is evident",
                     ] {
-                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8);
+                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
                     }
                     y += line_h * 0.6;
                     // CONSENT — the third pillar: every lifecycle edge is bilateral (mutual-consent clutch, two-signature add/depart, no expulsion), so nothing happens to an identity without its own key signing.
@@ -5332,7 +5341,7 @@ impl PhotonApp {
                         &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
                             .weight(600)
                             .font("Oxanium"),
-                        None,
+                        about_clip,
                         None,
                     );
                     y += line_h;
@@ -5344,7 +5353,7 @@ impl PhotonApp {
                         "no expulsion, no takedown, no admin",
                         "nothing happens to your identity without your key",
                     ] {
-                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8);
+                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
                     }
                     y += line_h * 0.6;
                     // TOKEN — the recovery story, mirroring the Recovery page's anti-collusion prose so the pitch and the tick box tell one tale.
@@ -5356,7 +5365,7 @@ impl PhotonApp {
                         &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
                             .weight(600)
                             .font("Oxanium"),
-                        None,
+                        about_clip,
                         None,
                     );
                     y += line_h;
@@ -5367,7 +5376,7 @@ impl PhotonApp {
                         "and no owner learns which friends hold theirs",
                         "what can't be named can't be pressured — or collude",
                     ] {
-                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8);
+                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
                     }
                     y += line_h * 0.6;
                     // Version — dozenal glyphs (weight 400 → the Oxanium +glyphs face draws the reserved control bytes as dozenal digits), NEVER arabic. Tap toggles the reveal (spelled form + cheat sheet). Whole row is the tap target (btn_base + 3).
@@ -5380,7 +5389,7 @@ impl PhotonApp {
                         &TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR)
                             .weight(400)
                             .font("Oxanium"),
-                        None,
+                        about_clip,
                         None,
                     );
                     restamp_hit_rect(
@@ -5413,7 +5422,7 @@ impl PhotonApp {
                             &TextStyle::new(hspan2 * 0.85, *theme::LABEL_COLOUR)
                                 .weight(400)
                                 .font("Oxanium"),
-                            None,
+                            about_clip,
                             None,
                         );
                         y += line_h * 1.4;
@@ -5426,7 +5435,7 @@ impl PhotonApp {
                             &TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR)
                                 .weight(600)
                                 .font("Oxanium"),
-                            None,
+                            about_clip,
                             None,
                         );
                         y += line_h;
@@ -5538,7 +5547,7 @@ impl PhotonApp {
                             &TextStyle::new(hspan2 * 0.85, *theme::DOZENAL_SCOLD_COLOUR)
                                 .weight(600)
                                 .font("Oxanium"),
-                            None,
+                            about_clip,
                             None,
                         );
                     }
@@ -5552,7 +5561,7 @@ impl PhotonApp {
                         &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
                             .weight(600)
                             .font("Oxanium"),
-                        None,
+                        about_clip,
                         None,
                     );
                     y += line_h;
@@ -5564,7 +5573,7 @@ impl PhotonApp {
                         "halves, thirds, quarters, sixths — exact, no remainder",
                         "you can still count in decimal above, with our condolences",
                     ] {
-                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8);
+                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
                     }
                     // MEASURED extent (Flow doctrine): the card's true height from the final cursor — retires the hand-counted row arithmetic next frame.
                     measured_extent = Some((y + settings_content_scroll - inset.y + line_h, inset.h));
