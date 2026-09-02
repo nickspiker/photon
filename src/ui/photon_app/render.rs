@@ -4098,145 +4098,89 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Fleet => {
+                    // FLEET, Flow rework (Nick 2026-09-02: "shit overlaps like crazy... much more vertical layout... air top/bottom of each device"): one VERTICAL card per device — name (tap-to-copy), status line, build line, then its action pills on their own band — with real air between cards. Hit-id bands unchanged (copy 16+i · bridge 8+i · release 24+i · lock 32+i · unlock 40+i · approve 48+i · add 0 · rename 1), so the dispatch arm is untouched. Extent is MEASURED from the flow cursor.
                     let locked_set = &fleet_locked_set;
-                    // Live device inventory (gathered above the chrome borrow): this device + our siblings, then the retired rows (signed out, brand still ours — refreshed on page entry). Rows 1..=6 hold up to 6 devices (fleets are usually ≤5; a scroll follows if this grows past the row budget). Member rows are tap-to-copy (btn_base+16+index); retired rows carry a per-row Release pill instead (btn_base+24+index, two-tap).
                     let devices = &fleet_devices;
-                    let rows = layout
-                        .content_scrolled(8, settings_content_scroll)
-                        .split_v([1.0; 8]);
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[0],
-                        "Your devices",
-                        tspan,
-                        *theme::CONTACT_NAME_COLOUR,
-                        600,
-                    );
-                    // "click to copy" — lighter/smaller, right-aligned in the header, over the same (right) side the device NAMES sit on, so it labels the tap-to-copy target.
-                    {
-                        let cc = "click to copy";
-                        let cc_size = hspan2 * 0.82;
-                        let cc_w = ctx
-                            .text
-                            .measure_text(cc, &TextStyle::new(cc_size, 0).font("Oxanium"));
-                        ctx.text.draw_text_left(
-                            &mut canvas,
-                            cc,
-                            rows[0].right() - cc_w - hspan2 * 0.3,
-                            rows[0].center_y(),
-                            &TextStyle::new(cc_size, *theme::LABEL_COLOUR).font("Oxanium"),
-                            None,
-                            None,
-                        );
-                    }
+                    let inset = layout.content_inset();
+                    let mut flow = Flow::new(inset, settings_content_scroll);
+                    flow.line(&mut canvas, ctx.text, "Your devices", tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.line(&mut canvas, ctx.text, "Tap a name to copy its key.", hspan2 * 0.82, *theme::LABEL_COLOUR, 400);
+                    flow.gap(hspan2 * 0.8);
                     for (i, (pk, is_self, online, retired, name, link, tier, about)) in
                         devices.iter().take(6).enumerate()
                     {
-                        let row = rows[1 + i];
-                        // Three columns: STATUS (left) | NAME (middle) | ACTION pill (right). Explicit thirds so nothing overlaps (the name used to draw across the full row on top of the mid pill — that's why Bridge was invisible).
-                        let cols = row.split_h([1.0, 1.0, 1.0]);
                         let row_locked = locked_set.contains(pk);
-                        // Transport dot, left of the status word: green LAN, cyan WAN, orange relay. Absent when the device isn't reachable.
+                        // NAME band — tap-to-copy stamped over it; transport dot leads.
+                        let name_band = flow.band(hspan2 * 1.7);
                         if let Some(colour) = tier {
                             let r = hspan2 * 0.26;
                             paint::circle_filled(
                                 &mut canvas,
-                                (cols[0].x + r * 1.6) as isize,
-                                cols[0].center_y() as isize,
+                                (name_band.x + hspan2 * 0.5) as isize,
+                                name_band.center_y() as isize,
                                 r as isize,
                                 *colour,
                                 None,
                                 None,
                             );
                         }
-                        let (status, status_colour) = if *is_self {
-                            ("(this device)", (*theme::LABEL_COLOUR))
-                        } else if *retired {
-                            ("retired \u{2014} still yours", (*theme::LABEL_COLOUR))
-                        } else if row_locked {
-                            ("locked out", theme::PILL_RED.1)
-                        } else if *online {
-                            ("online", (*theme::SEARCH_FOUND_COLOUR))
-                        } else {
-                            ("offline", (*theme::LABEL_COLOUR))
-                        };
-                        // STATUS in the left column, inset past the transport dot.
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            fluor::region::Region::new(
-                                cols[0].x + hspan2 * 0.9,
-                                cols[0].y,
-                                cols[0].w - hspan2 * 0.9,
-                                cols[0].h,
-                            ),
-                            status,
-                            hspan2 * 0.85,
-                            status_colour,
-                            400,
-                        );
-                        // The link state rides under the status word, dimmer and smaller — present only for siblings (self and retired rows carry none).
-                        if !link.is_empty() {
-                            ctx.text.draw_text_left(
-                                &mut canvas,
-                                link,
-                                cols[0].x + hspan2 * 0.3,
-                                cols[0].center_y() + hspan2 * 0.85,
-                                &TextStyle::new(hspan2 * 0.7, *theme::LABEL_COLOUR).font("Oxanium"),
-                                None,
-                                None,
-                            );
-                        }
-                        // Name centred in the MIDDLE column (tap-to-copy hit stamped over just that column).
-                        ctx.text.draw_text_center(
+                        ctx.text.draw_text_left(
                             &mut canvas,
                             name,
-                            cols[1].center_x(),
-                            cols[1].center_y(),
-                            &TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR)
-                                .weight(500)
+                            name_band.x + hspan2 * 1.1,
+                            name_band.center_y(),
+                            &TextStyle::new(hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR)
+                                .weight(600)
                                 .font("Oxanium"),
                             None,
                             None,
                         );
-                        // Per-device About under the name — what that device is RUNNING (version · commit · os arch, off its sealed pong tail; this row's own build for self). The "did the deploy ship?" answer without a bridge session; a stale version here IS the not-yet-updated indicator.
-                        if !about.is_empty() {
-                            ctx.text.draw_text_center(
-                                &mut canvas,
-                                about,
-                                cols[1].center_x(),
-                                cols[1].center_y() + hspan2 * 0.85,
-                                &TextStyle::new(hspan2 * 0.62, *theme::LABEL_COLOUR).font("Oxanium"),
-                                None,
-                                None,
-                            );
-                        }
                         restamp_hit_rect(
                             &mut chrome.hit_test_map,
                             buf_w,
                             buf_h,
-                            cols[1].x as isize,
-                            cols[1].y as isize,
-                            (cols[1].x + cols[1].w) as isize,
-                            (cols[1].y + cols[1].h) as isize,
+                            name_band.x as isize,
+                            name_band.y as isize,
+                            name_band.right() as isize,
+                            name_band.bottom() as isize,
                             btn_base.wrapping_add(16 + i as HitId),
                         );
-                        // RIGHT column = the per-device action pill(s): Release (retired) or Bridge + Lock out (live sibling). This device gets nothing there.
+                        // STATUS line: state + link path in one sentence.
+                        let (status, status_colour) = if *is_self {
+                            ("this device".to_string(), *theme::LABEL_COLOUR)
+                        } else if *retired {
+                            ("retired \u{2014} still yours".to_string(), *theme::LABEL_COLOUR)
+                        } else if row_locked {
+                            ("locked out".to_string(), theme::PILL_RED.1)
+                        } else if *online {
+                            (
+                                if link.is_empty() { "online".to_string() } else { format!("online \u{00b7} {link}") },
+                                *theme::SEARCH_FOUND_COLOUR,
+                            )
+                        } else {
+                            ("offline".to_string(), *theme::LABEL_COLOUR)
+                        };
+                        flow.line(&mut canvas, ctx.text, &status, hspan2 * 0.85, status_colour, 400);
+                        // BUILD line — version · commit · os arch off the sealed pong tail (self shows its own build). A stale version here IS the not-updated indicator.
+                        if !about.is_empty() {
+                            flow.line(&mut canvas, ctx.text, about, hspan2 * 0.7, *theme::LABEL_COLOUR, 400);
+                        }
+                        // ACTION pills on their own band — flow_pills sizes to labels and wraps if the pane clamps.
+                        let departing = self
+                            .pending_depart_req
+                            .as_ref()
+                            .is_some_and(|(d, _, _)| d == pk);
                         if *retired {
                             let armed = self.fleet_release_armed.as_ref() == Some(pk);
-                            let label = if armed {
-                                "Release \u{2014} sure?"
-                            } else {
-                                "Release"
-                            };
+                            let label = if armed { "Release \u{2014} sure?" } else { "Release" };
+                            let band = flow.band(hspan2 * 2.4);
                             draw_stub_pill_filled(
                                 &mut canvas,
                                 ctx.text,
                                 &mut chrome.hit_test_map,
                                 buf_w,
                                 buf_h,
-                                cols[2].center_h(0.8),
+                                fluor::region::Region::new(band.x + hspan2 * 0.3, band.y + band.h * 0.1, (band.w * 0.4).max(hspan2 * 6.0), band.h * 0.8),
                                 label,
                                 btn_base.wrapping_add(24 + i as HitId),
                                 ctx.pressed_hit,
@@ -4245,142 +4189,62 @@ impl PhotonApp {
                                 "Oxanium",
                             );
                         } else if !*is_self {
-                            // Live sibling: the RIGHT column carries Bridge and the row's state pill side by side — Lock out on a trusted row, Unlock on a locked one. A row with a PENDING departure request replaces the state pill with "Approve sign-out" (the bilateral removal's consent step).
-                            let departing = self
-                                .pending_depart_req
-                                .as_ref()
-                                .is_some_and(|(d, _, _)| d == pk);
-                            let halves = cols[2].split_h([1.0, 1.0]);
-                            let (bridge_pill, lock_pill, unlock_pill, approve_pill) = if departing {
-                                (halves[0].center_h(0.9), None, None, Some(halves[1].center_h(0.9)))
-                            } else if row_locked {
-                                (halves[0].center_h(0.9), None, Some(halves[1].center_h(0.9)), None)
-                            } else {
-                                (halves[0].center_h(0.9), Some(halves[1].center_h(0.9)), None, None)
+                            // Bridge + the row's state pill (Lock out / Unlock / Approve sign-out), each sized to its label.
+                            let band = flow.band(hspan2 * 2.4);
+                            let pill_h = band.h * 0.8;
+                            let pill_y = band.y + (band.h - pill_h) * 0.5;
+                            let mut x = band.x + hspan2 * 0.3;
+                            let mut place = |canvas: &mut Canvas, text: &mut fluor::text::TextRenderer, hit_map: &mut [HitId], label: &str, hit: HitId, fill: Option<(u32, u32)>| {
+                                let w = text.measure_text(label, &TextStyle::new(pill_h * 0.5, 0).font("Oxanium")) + pill_h * 0.8 + hspan2 * 0.4;
+                                let rect = fluor::region::Region::new(x, pill_y, w, pill_h);
+                                draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, label, hit, ctx.pressed_hit, true, fill, "Oxanium");
+                                x += w + hspan2 * 0.6;
                             };
-                            if let Some(pill) = approve_pill {
+                            let bridge_fill = if *online { Some(*theme::PILL_GREEN) } else { Some(*theme::PILL_GREY) };
+                            place(&mut canvas, ctx.text, &mut chrome.hit_test_map, "Bridge", btn_base.wrapping_add(8 + i as HitId), bridge_fill);
+                            if departing {
                                 let armed = self.fleet_approve_armed.as_ref() == Some(pk);
-                                let label = if armed {
-                                    "Approve sign-out \u{2014} sure?"
-                                } else {
-                                    "Approve sign-out"
-                                };
-                                draw_stub_pill_filled(
-                                    &mut canvas,
-                                    ctx.text,
-                                    &mut chrome.hit_test_map,
-                                    buf_w,
-                                    buf_h,
-                                    pill,
-                                    label,
-                                    btn_base.wrapping_add(48 + i as HitId),
-                                    ctx.pressed_hit,
-                                    true,
-                                    Some(if armed { *theme::PILL_RED } else { *theme::PILL_YELLOW }),
-                                    "Oxanium",
-                                );
-                            }
-                            // Bridge on ANY sibling (not just confirmed-online): the send reports "no address yet" if truly unreachable, which is clearer than a missing button. Green when online, dimmed grey when offline so it still reads as "reachable-ish".
-                            let fill = if *online {
-                                Some(*theme::PILL_GREEN)
-                            } else {
-                                Some(*theme::PILL_GREY)
-                            };
-                            draw_stub_pill_filled(
-                                &mut canvas,
-                                ctx.text,
-                                &mut chrome.hit_test_map,
-                                buf_w,
-                                buf_h,
-                                bridge_pill,
-                                "Bridge",
-                                btn_base.wrapping_add(8 + i as HitId),
-                                ctx.pressed_hit,
-                                true,
-                                fill,
-                                "Oxanium",
-                            );
-                            // Live sibling rows carry the treat-as-stolen pill (two-tap): lock the device out WITHOUT touching the chain — removal is self-signed only, zero exceptions; this is the fleet refusing to listen.
-                            if let Some(pill) = lock_pill {
-                                let armed = self.fleet_lock_armed.as_ref() == Some(pk);
-                                let label = if armed {
-                                    "Lock out \u{2014} sure?"
-                                } else {
-                                    "Lock out"
-                                };
-                                draw_stub_pill_filled(
-                                    &mut canvas,
-                                    ctx.text,
-                                    &mut chrome.hit_test_map,
-                                    buf_w,
-                                    buf_h,
-                                    pill,
-                                    label,
-                                    btn_base.wrapping_add(32 + i as HitId),
-                                    ctx.pressed_hit,
-                                    true,
-                                    if armed { Some(*theme::PILL_RED) } else { None },
-                                    "Oxanium",
-                                );
-                            }
-                            // Locked rows carry the reversal (two-tap): the confirm routes thru a handle re-proof exactly like the lock, then clears the worker verdict + fleet marker and re-mints the key with the device wrapped back in.
-                            if let Some(pill) = unlock_pill {
+                                let label = if armed { "Approve sign-out \u{2014} sure?" } else { "Approve sign-out" };
+                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, label, btn_base.wrapping_add(48 + i as HitId), Some(if armed { *theme::PILL_RED } else { *theme::PILL_YELLOW }));
+                            } else if row_locked {
                                 let armed = self.fleet_unlock_armed.as_ref() == Some(pk);
-                                let label = if armed {
-                                    "Unlock \u{2014} sure?"
-                                } else {
-                                    "Unlock"
-                                };
-                                draw_stub_pill_filled(
-                                    &mut canvas,
-                                    ctx.text,
-                                    &mut chrome.hit_test_map,
-                                    buf_w,
-                                    buf_h,
-                                    pill,
-                                    label,
-                                    btn_base.wrapping_add(40 + i as HitId),
-                                    ctx.pressed_hit,
-                                    true,
-                                    if armed { Some(*theme::PILL_RED) } else { None },
-                                    "Oxanium",
-                                );
+                                let label = if armed { "Unlock \u{2014} sure?" } else { "Unlock" };
+                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, label, btn_base.wrapping_add(40 + i as HitId), if armed { Some(*theme::PILL_RED) } else { None });
+                            } else {
+                                let armed = self.fleet_lock_armed.as_ref() == Some(pk);
+                                let label = if armed { "Lock out \u{2014} sure?" } else { "Lock out" };
+                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, label, btn_base.wrapping_add(32 + i as HitId), if armed { Some(*theme::PILL_RED) } else { None });
                             }
                         }
+                        // AIR between device cards — the whole point.
+                        flow.gap(hspan2 * 1.2);
                     }
-                    // No Remove pill: expulsion is not a verb (sovereign records) — a device leaves by its own signed departure. And leaving never frees the hardware: the brand outlives the membership until the owner releases it above.
-                    // SINGLE-COPY WARNING (docs/durability.md §1): fleet-holds-history means a one-device fleet holds the ONLY copy. The honest-surface line takes the hint row whenever no live sibling exists; the sign-out hint returns once history is replicated.
+                    // No Remove pill: expulsion is not a verb (sovereign records) — a device leaves by its own signed departure. And leaving never frees the hardware: the brand outlives the membership until the owner releases it.
                     let single_copy = !devices
                         .iter()
                         .any(|(_, is_self, _, retired, ..)| !*is_self && !*retired);
                     if single_copy {
-                        settings_line(&mut canvas, ctx.text, rows[6], "Your message history lives only on this device \u{2014} add a device to replicate it.", hspan2, theme::PILL_RED.1, 500);
+                        flow.prose(&mut canvas, ctx.text, "Your message history lives only on this device \u{2014} add a device to replicate it.", hspan2, theme::PILL_RED.1, 500);
                     } else {
-                        settings_line(&mut canvas, ctx.text, rows[6], "A device can only sign itself out \u{2014} and its hardware stays yours until you release it.", hspan2, *theme::LABEL_COLOUR, 400);
+                        flow.prose(&mut canvas, ctx.text, "A device can only sign itself out \u{2014} and its hardware stays yours until you release it.", hspan2, *theme::LABEL_COLOUR, 400);
                     }
-                    let pr = rows[7].split_h([1.0, 1.0]);
-                    draw_stub_pill(
+                    flow.gap(hspan2 * 0.5);
+                    flow_pills(
+                        &mut flow,
                         &mut canvas,
                         ctx.text,
                         &mut chrome.hit_test_map,
                         buf_w,
                         buf_h,
-                        pr[0].center_h(0.85),
-                        "Add device",
-                        btn_base.wrapping_add(0),
                         ctx.pressed_hit,
+                        hspan2,
+                        &[
+                            ("Add device", btn_base, true),
+                            ("Rename", btn_base.wrapping_add(1), true),
+                        ],
                     );
-                    draw_stub_pill(
-                        &mut canvas,
-                        ctx.text,
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        pr[1].center_h(0.85),
-                        "Rename",
-                        btn_base.wrapping_add(1),
-                        ctx.pressed_hit,
-                    );
+                    flow.gap(hspan2);
+                    measured_extent = Some((flow.used(), inset.h));
                 }
                 SettingsPage::Security => {
                     // Destructiveness ramp, least → most, one blank row between each pill so they breathe: Lock (green, reversible) · fleet self-removal (yellow) · Shred (orange, wipe this device) · Remove & shred (red, sign out of the fleet THEN wipe). The two wipers are two-tap confirmed, mutually exclusive. Rows 11-14 hold the DANGEROUS unattended toggle + disclaimer, well below the wipers.
