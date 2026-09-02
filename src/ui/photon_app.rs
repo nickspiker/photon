@@ -3223,6 +3223,27 @@ impl Flow {
     }
 }
 
+/// Centred wrapped line (the About card, Nick 2026-09-02: stanza lines clipped at the pane edge when zoomed big — "they just dissa"). Each authored line stays its own stanza but WRAPS to as many centred rows as it needs at the current width/zoom; returns the advanced y. `step` is the per-row advance (the caller's rhythm).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn centered_wrapped(
+    canvas: &mut Canvas,
+    text: &mut fluor::text::TextRenderer,
+    cx: Coord,
+    max_w: Coord,
+    y: Coord,
+    s: &str,
+    style: &TextStyle,
+    step: Coord,
+) -> Coord {
+    let lines = wrap_text_lines(text, s, style, max_w.max(8.0));
+    let mut yy = y;
+    for l in &lines {
+        text.draw_text_center(canvas, l, cx, yy + step * 0.5, style, None, None);
+        yy += step;
+    }
+    yy
+}
+
 /// Flow-aware action pills (Nick 2026-09-02: "have button A and button B be on distinct lines if the width starts to clamp on the inside text"): each pill sizes to its MEASURED label at the natural font (matching draw_pill_immediate's h×0.5 + 1.6-em padding, so the fit-to-slot shrink never engages); pills lay side-by-side while the pane holds them and WRAP onto a fresh band when it can't — a label never squeezes. Returns nothing; the flow cursor ends past the last band.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn flow_pills(
