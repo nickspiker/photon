@@ -34,6 +34,7 @@ impl PhotonApp {
                 AppState::Settings(SettingsPage::Updates) => "Settings:Updates",
                 AppState::Settings(SettingsPage::Diagnostics) => "Settings:Diagnostics",
                 AppState::Settings(SettingsPage::About) => "Settings:About",
+                AppState::Settings(SettingsPage::Wave) => "Settings:Audio",
                 AppState::ContactPanel(_) => "ContactPanel",
             },
         );
@@ -216,12 +217,15 @@ impl PhotonApp {
             .active_contact()
             .and_then(|ci| self.contacts.get(ci))
             .map_or(false, |c| !c.is_sibling && c.friendship_id.is_some());
+        // PLACING a call gates on the current route being calibrated (Settings→Audio) — an uncalibrated speakerphone call is the bad-echo experience the calibration exists to end. Answering an INCOMING call never gates: answering with the fallback duck beats missing a call. Hoisted local: the Audio page arm reads it too, deep inside the chrome borrow where &self is unavailable.
+        let route_calibrated = self.route_calibrated_now();
         let call_pill_enabled = self
             .active_contact()
             .and_then(|ci| self.contacts.get(ci))
             .map_or(false, |c| {
                 !c.is_sibling && c.is_online && (c.chain_woven || c.friendship_id.is_some())
-            });
+            })
+            && route_calibrated;
         // Live call-duration seconds, computed here (a per-frame recompute from the frozen osc stamps — no stored timer): Active counts up from `phase_osc` (re-stamped at answer); Ended freezes at `final_osc - phase_osc`; other phases show 0. Carried in the overlay tuple so the panel + strip render it via the base-aware `fmt_duration`.
         let call_overlay: Option<(crate::call::CallPhase, String, bool, Option<usize>, i64)> =
             self.active_call.as_ref().map(|c| {
@@ -5160,6 +5164,96 @@ impl PhotonApp {
                             None,
                             Some(&mut chrome.hit_test_map),
                         );
+                    }
+                }
+                SettingsPage::Wave => {
+                    // WAVE — everything sound (Beam, its camera sibling, lands with video). Per-route audio calibration: status + the ritual, phase-driven off calibrate::phase(). Rows: 0 title · 1 route · 2 status · 3-5 statement/phase prose · 6 pills · 7-8 spare.
+                    use crate::call::calibrate::CalPhase;
+                    let rows = layout
+                        .content_scrolled(10, settings_content_scroll)
+                        .split_v([1.0; 10]);
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[0],
+                        "Wave",
+                        tspan,
+                        *theme::CONTACT_NAME_COLOUR,
+                        600,
+                    );
+                    let route = crate::platform::audio::route_id();
+                    let route_shown = if route.is_empty() { "no output device detected yet".to_string() } else { route.clone() };
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[1],
+                        &format!("Output: {route_shown}"),
+                        hspan2,
+                        *theme::CONTACT_NAME_COLOUR,
+                        400,
+                    );
+                    let calibrated = route_calibrated;
+                    let phase = crate::call::calibrate::phase();
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[2],
+                        if calibrated { "Calibrated \u{2713}" } else { "Not calibrated — calls wait on this" },
+                        hspan2,
+                        if calibrated { *theme::SEARCH_FOUND_COLOUR } else { *theme::SEARCH_FAIL_COLOUR },
+                        500,
+                    );
+                    // Phase-driven prose (edges: the worker flips the phase, the frame follows).
+                    let (l3, l4, l5): (&str, &str, &str) = match phase {
+                        CalPhase::Listen => (
+                            "Listen\u{2026} stay quiet while the sentence plays.",
+                            "Hands off the volume buttons — we're listening",
+                            "thru the mic right now.",
+                        ),
+                        CalPhase::Repeat => (
+                            "Your turn — say it naturally:",
+                            "\u{201C}The quick brown fox jumped over the lazy dogs\u{201D}",
+                            "",
+                        ),
+                        CalPhase::Failed => (
+                            "Didn't catch that — find somewhere quieter and try again.",
+                            "",
+                            "",
+                        ),
+                        _ => (
+                            "Calibration plays a short sentence, then asks you to repeat it.",
+                            "~15 seconds. Somewhere quiet, volume where you like it —",
+                            "and don't touch the buttons mid-run. Redo it any time.",
+                        ),
+                    };
+                    for (i, s) in [(3usize, l3), (4, l4), (5, l5)] {
+                        if !s.is_empty() {
+                            settings_line(
+                                &mut canvas,
+                                ctx.text,
+                                rows[i],
+                                s,
+                                hspan2,
+                                if phase == CalPhase::Repeat && i == 4 { *theme::CONTACT_NAME_COLOUR } else { *theme::LABEL_COLOUR },
+                                if phase == CalPhase::Repeat && i == 4 { 600 } else { 400 },
+                            );
+                        }
+                    }
+                    // Pills (slot 0 calibrate / slot 1 mark-headset) — inert while a run is live.
+                    let running = matches!(phase, CalPhase::Listen | CalPhase::Repeat);
+                    let pill_h = rows[6].h * 0.8;
+                    let pill_y = rows[6].y + (rows[6].h - pill_h) * 0.5;
+                    let cal_rect = fluor::region::Region::new(rows[6].x + hspan2 * 0.3, pill_y, rows[6].w * 0.38, pill_h);
+                    let skip_rect = fluor::region::Region::new(rows[6].x + rows[6].w * 0.45, pill_y, rows[6].w * 0.42, pill_h);
+                    let cal_label = if running { "Calibrating\u{2026}" } else if calibrated { "Recalibrate" } else { "Calibrate" };
+                    if running {
+                        draw_stub_pill_disabled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, cal_rect, cal_label, btn_base, ctx.pressed_hit);
+                    } else {
+                        draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, cal_rect, cal_label, btn_base, ctx.pressed_hit);
+                    }
+                    if !calibrated && !running {
+                        // Headset/BT escape: no acoustic path to measure — store a null-coupling profile so calls unlock without the ritual.
+                        draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, skip_rect, "It's a headset (skip)", btn_base.wrapping_add(1), ctx.pressed_hit);
                     }
                 }
                 SettingsPage::About => {
