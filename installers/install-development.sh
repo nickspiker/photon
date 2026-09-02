@@ -163,6 +163,8 @@ if [ "$OS" = "Darwin" ]; then
     <true/>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>Photon uses Bluetooth to discover your other devices nearby when adding a device to your fleet.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Photon uses the microphone for voice calls. Audio is end-to-end encrypted and never touches a server.</string>
 </dict>
 </plist>
 PLIST
