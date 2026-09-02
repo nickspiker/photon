@@ -5049,7 +5049,7 @@ impl PhotonApp {
                             flow.prose(&mut canvas, ctx.text, "\u{201C}The quick brown fox jumped over the lazy dogs\u{201D}", hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
                         }
                         _ => {
-                            flow.prose(&mut canvas, ctx.text, "Photon plays the sentence once as your example, then opens the mic so you can say it back \u{2014} that teaches it how loud YOUR voice lands on THIS mic, and what the room sounds like when you're silent. Speak normally; don't perform. About ten seconds.", hspan2 * 0.85, *theme::LABEL_COLOUR, 400);
+                            flow.prose(&mut canvas, ctx.text, "Two beats. First, LISTEN: Photon plays the test phrase once so you hear exactly what to say. Then, SPEAK: the mic opens and you say that same phrase back, in the voice you'd actually use on a call. That teaches Photon how loud YOUR voice lands on THIS mic \u{2014} and the quiet before you start teaches it what the room sounds like. Don't perform; just talk. About ten seconds total.", hspan2 * 0.85, *theme::LABEL_COLOUR, 400);
                         }
                     }
                     flow.gap(hspan2 * 0.3);
