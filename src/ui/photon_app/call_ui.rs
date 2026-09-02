@@ -43,7 +43,7 @@ impl PhotonApp {
             .unwrap_or(false)
         {
             // Name the tap (field 2026-09-02): the SHARED action button means Answer/Keep/Hang-up by phase — a spurious click just after Ringing→Active would read as a hangup. Logging the phase at click catches a double-fire race.
-            crate::logf!("CALL: action button clicked (phase {:?})", phase);
+            crate::logf!("CALL: action button clicked (phase {})", format!("{:?}", phase));
             match phase {
                 Some(CallPhase::Ringing) => self.answer_call(),
                 Some(CallPhase::Ended) => self.keep_recording(),
@@ -299,7 +299,7 @@ impl PhotonApp {
             call.phase_osc,
             call.we_are_caller,
         );
-        crate::logf!("CALL: hangup_call (phase {:?}, id {})", phase, hex::encode(&call_id[..4]));
+        crate::logf!("CALL: hangup_call (phase {}, id {})", format!("{:?}", phase), hex::encode(&call_id[..4]));
         if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
             let _ = self.send_call_signal(ci, CallSignal::Hangup { call_id });
         }
@@ -660,8 +660,8 @@ impl PhotonApp {
         // WHO tore the call down (field 2026-09-02: Brittany's active call died at ~3s the instant an inbound text landed, no call signal from Nick — the trigger wasn't in any obvious path, so every teardown now names itself). `summary` is the visible row text and doubles as the reason tag here.
         if let Some(call) = &self.active_call {
             crate::logf!(
-                "CALL: end_call — phase {:?}, reason \"{}\" (id {})",
-                call.phase,
+                "CALL: end_call — phase {}, reason \"{}\" (id {})",
+                format!("{:?}", call.phase),
                 summary,
                 hex::encode(&call.call_id[..4])
             );
