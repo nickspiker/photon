@@ -759,6 +759,15 @@ Photon demonstrates the social attestation and recovery model works before apply
 - **CHAIN** — rolling per-message encryption over an established session.
 - **RUA** — the handle-addressed async dead-drop for offline peers and first contact.
 
+### The units (wave-particle duality, taken literally)
+
+- **photon** — a message: discrete, quantized, arrives whole. *"Shoot me a photon."* The unit is the noun and the verb takes care of itself: "photon me when you land."
+- **wave** — a voice call: continuous, real-time. *"Wave me."* An incoming call is someone *waving*; a declined call is a wave that passes. The gesture and the physics mean the same thing.
+- **beam** — a video call: a directed, continuous stream of light you can see by. *"Beam me."*
+- **detected** — a read receipt, consent-gated: a photon is not an observation until the detector fires, and the sender learns nothing until the receiver's detector does. Delivery states: *in flight*, *arrived*, *detected*.
+
+Texts are particles, calls are waves. Photon: particles and waves.
+
 Full cross-stack glossary: `GLOSSARY.md` in the ferros repo.
 
 ---
