@@ -105,6 +105,8 @@ class PhotonConnectionService : Service() {
     private external fun nativeSendSessionBroadcast(context: android.content.Context)
     private external fun nativeClearSessionBroadcast(context: android.content.Context)
     private external fun nativeCallAction(answer: Boolean)  // Answer/Decline from the call notification → Rust's pending-action latch (the app tick drains it)
+    private external fun nativeAudioRoute(kind: Int, id: String)  // Route mirror: routed output device kind + calibration-profile identity (AudioDeviceCallback)
+    private external fun nativeVolumeDb(db: Float)  // Volume mirror: voice-call stream dB, at start + on VOLUME_CHANGED
 
 
     // Held for the service's whole life: Android DROPS WiFi multicast in the radio firmware unless
@@ -124,7 +126,63 @@ class PhotonConnectionService : Service() {
             acquire()
         }
         PhotonLog.d(TAG, "Service created (multicast lock held)")
+        registerAudioMirrors()
         reportPriorExits()
+    }
+
+    /** Calibration substrate (docs plan 2026-09-02): mirror the routed OUTPUT device + the voice-call volume down to Rust, edge-driven — an AudioDeviceCallback for route changes and the system VOLUME_CHANGED broadcast for the knob. Rust keys calibration profiles on the route identity and scales the echo prediction by the dB delta from calibration time. */
+    private fun registerAudioMirrors() {
+        val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+        fun pushRoute() {
+            // The device the call audio actually routes to: prefer BT SCO/A2DP, then wired, then earpiece/speaker — mirroring Android's own routing priority.
+            val outs = am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
+            var kind = -1
+            var id = "unknown"
+            fun rank(t: Int): Int = when (t) {
+                android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO, android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> 4
+                android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET, android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES, android.media.AudioDeviceInfo.TYPE_USB_HEADSET -> 3
+                android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> 2
+                android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> 1
+                else -> 0
+            }
+            val dev = outs.maxByOrNull { rank(it.type) }
+            if (dev != null) {
+                when (rank(dev.type)) {
+                    4 -> { kind = 3; id = "bt:${dev.productName}" }
+                    3 -> { kind = 2; id = "headset:${dev.productName}" }
+                    2 -> { kind = 1; id = "earpiece" }
+                    1 -> { kind = 0; id = "speaker" }
+                    else -> { kind = -1; id = "unknown:${dev.productName}" }
+                }
+            }
+            try { nativeAudioRoute(kind, id) } catch (e: Throwable) { PhotonLog.w(TAG, "route mirror failed: ${e.message}") }
+        }
+        fun pushVolume() {
+            try {
+                val db = if (Build.VERSION.SDK_INT >= 28) {
+                    am.getStreamVolumeDb(
+                        android.media.AudioManager.STREAM_VOICE_CALL,
+                        am.getStreamVolume(android.media.AudioManager.STREAM_VOICE_CALL),
+                        android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
+                    )
+                } else {
+                    // Pre-28 fallback: linear index ratio → rough dB (20·log10), floor -60.
+                    val v = am.getStreamVolume(android.media.AudioManager.STREAM_VOICE_CALL).toFloat()
+                    val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_VOICE_CALL).toFloat().coerceAtLeast(1f)
+                    if (v <= 0f) -60f else (20.0 * Math.log10((v / max).toDouble())).toFloat()
+                }
+                nativeVolumeDb(db)
+            } catch (e: Throwable) { PhotonLog.w(TAG, "volume mirror failed: ${e.message}") }
+        }
+        am.registerAudioDeviceCallback(object : android.media.AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(added: Array<out android.media.AudioDeviceInfo>?) { pushRoute() }
+            override fun onAudioDevicesRemoved(removed: Array<out android.media.AudioDeviceInfo>?) { pushRoute() }
+        }, null)
+        registerReceiver(object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: android.content.Context?, i: Intent?) { pushVolume() }
+        }, android.content.IntentFilter("android.media.VOLUME_CHANGED_ACTION"))
+        pushRoute()
+        pushVolume()
     }
 
     /** The system's account of every death the process could not witness itself — ANR, low-memory kill, native crash, explicit stop — logged at the NEXT start so it rides the next submission. The in-process panic hook + crash sidecar cover Rust panics with file and line; this covers everything that bypasses a hook entirely (SIGKILL has no hook), and for ANRs/native crashes attaches the system's own trace. Watermarked in prefs so each exit reports exactly once. API 30+; older devices keep sidecar-only coverage. */
