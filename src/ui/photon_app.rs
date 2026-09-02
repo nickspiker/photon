@@ -1070,6 +1070,8 @@ pub struct PhotonApp {
     last_screen: AppState,
     /// Which presence SURFACE is being watched this tick (None = none: no pings, no beacons): 0 = Ready/contacts, 1 = an open conversation (single-contact ping), 2 = the Fleet page. Transition into a surface is the entry edge — an immediate ping — per the demand-driven model (Nick 2026-09-02).
     presence_surface: Option<u8>,
+    /// Last always-on LAN-beacon multicast (regression fix 2026-09-02): the demand-driven presence gate would otherwise let a backgrounded device go silent + un-findable on the LAN, staling its address for self-messages. Kept on a modest cadence independent of the presence surface.
+    last_lan_beacon: Option<Instant>,
     /// Last time `tick()` ran the background presence ping sweep (`ping_contacts`). `None` until the first sweep. Paired with `last_interaction` to drive the tiered cadence (see `presence_ping_interval`): `tick()` re-pings when due and `wake_at()` schedules the next due sweep so presence refreshes even while idle. Without this, contacts only flipped online when you opened their conversation.
     last_presence_ping: Option<Instant>,
     /// Last time the user interacted with the app (any input event, or window focus-gain). `None` until the first interaction. The presence sweep tapers with idle time — frequent while you're actively using it, sparse when you've walked away — so an unfocused, untouched window isn't hitting the network every few seconds. Reset on interaction, which also triggers an immediate sweep so rings are fresh the instant you look. See `presence_ping_interval`.
@@ -1827,6 +1829,7 @@ impl PhotonApp {
             last_screen: AppState::default(),
             last_presence_ping: None,
             presence_surface: None,
+            last_lan_beacon: None,
             last_interaction: None,
             last_fleet_refold: None,
             last_stalled_refetch: None,

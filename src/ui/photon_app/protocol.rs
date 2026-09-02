@@ -55,6 +55,24 @@ impl PhotonApp {
                     }
                 }
             }
+            // ALWAYS-ON LAN BEACON (regression fix 2026-09-02): the demand-driven gate above stopped a BACKGROUNDED device from announcing at all — so a fleet sibling on any non-presence screen went un-findable on the LAN, its address staled, and a self-message to it sprayed dead endpoints thru PT's retransmit ladder (~10s). The LAN multicast is ONE cheap subnet packet (not the unicast ping fan-out, not the WAN punch/relay machinery — those stay demand-driven and off in the background); keeping it on a modest cadence is what makes same-room delivery instant. Fires regardless of foreground while online.
+            const LAN_BEACON: std::time::Duration = std::time::Duration::from_secs(20);
+            let beacon_due = self
+                .last_lan_beacon
+                .is_none_or(|last| now.duration_since(last) >= LAN_BEACON);
+            if self.online && beacon_due && surface.is_none() {
+                if let (Some(session), Some(hq), Some(checker)) = (
+                    self.session.as_ref(),
+                    self.handle_query.as_ref(),
+                    self.status_checker.as_ref(),
+                ) {
+                    self.last_lan_beacon = Some(now);
+                    checker.send_lan_broadcast(session.handle_proof, hq.port());
+                }
+            } else if surface.is_some() {
+                // A watched surface already beaconed via the ping sweep — keep the timer in step so leaving the surface doesn't double-fire.
+                self.last_lan_beacon = Some(now);
+            }
         }
 
         // Periodic OWN-chain re-fold — the reliable doorbell for fleet membership changes (docs/pairing-v2.md). The hub `fleet` event is the instant path but best-effort; this catches a device add/remove that arrived while our WebSocket was down. Reconciling siblings re-seeds the answerable-pubkey set, so a newly-added device starts getting pong answers (stops showing offline) and appears in the Fleet list without a relaunch. 45s: brisk enough that a just-added device goes live within a sweep, slow enough to be a negligible one-fetch background poll.
