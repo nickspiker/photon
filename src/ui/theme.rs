@@ -57,7 +57,8 @@ pub static RING_LAN_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_00_FF_FF));
 /// Wi-Fi Direct: radio-direct, zero infrastructure — the VSF AGB primary blue (the 462nm monochromatic blue primary, authored as pure B in VSF RGB; user spec 2026-08-31).
 pub static RING_WFD_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_00_00_FF));
 pub static RING_ONLINE_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_00_FF_00));
-pub static RING_OFFLINE_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_28_28_28));
+/// Offline = PERFECT BLACK (Nick 2026-09-02: the grey ring interfered with the avatar visually — offline should read as the ring's ABSENCE, not a competing grey). One constant, every ring/dot site inherits via conn_tier_colour.
+pub static RING_OFFLINE_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_00_00_00));
 /// 0xFFB000 amber — the long-standing 0xB0FF00 lime was this value with its bytes swapped, never a deliberate lime.
 pub static RING_RELAY_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_FF_B0_00));
 /// Unread cue: a magenta ring on the OUTSIDE of the presence ring (a new-message badge that never competes with the connectivity tiers). Event-shown, cleared on conversation-open.
