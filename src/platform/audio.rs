@@ -197,7 +197,7 @@ fn push_captured(frame: Vec<i16>) {
     q.push_back(frame);
 }
 
-/// Pop the next render frame through the adaptive jitter buffer (silence when priming or dry — the no-PLC doctrine: missing audio is silence, never guesswork) and log it into the reference ring. Single-consumer (the one render loop), so the jitter atomics need no CAS.
+/// Pop the next render frame thru the adaptive jitter buffer (silence when priming or dry — the no-PLC doctrine: missing audio is silence, never guesswork) and log it into the reference ring. Single-consumer (the one render loop), so the jitter atomics need no CAS.
 fn next_render_frame() -> Vec<i16> {
     let silence = || vec![0i16; FRAME_SAMPLES];
     let frame = {

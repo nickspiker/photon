@@ -95,7 +95,7 @@ pub fn gather_peer_candidates_from(
 }
 
 /// Convenience wrapper preserving the ORIGINAL subnet-agnostic behaviour for callers with no our-LAN context: a peer LAN candidate is kept as long as the address is a usable LAN v4.
-/// This is what `Contact::race_addrs` and the punch-candidate gathers still use — changing THEM would need our-LAN threaded through every send site, a wide and risky change.
+/// This is what `Contact::race_addrs` and the punch-candidate gathers still use — changing THEM would need our-LAN threaded thru every send site, a wide and risky change.
 /// The foreign-LAN filter is applied instead at the specific send-decision sites that both hold our-LAN and actually black-holed on it (the PT retransmit sweep), via `gather_peer_candidates_from` + `peer_lan_reachable`.
 pub fn gather_peer_candidates(contact: &Contact) -> CandidateSet {
     let mut set = CandidateSet::new();

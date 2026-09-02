@@ -117,7 +117,7 @@ else
     trap 'rc=$?; git checkout HEAD -- Cargo.toml Cargo.lock 2>/dev/null; if [ "$DEPLOY_SHIPPED" != "1" ]; then echo ""; echo "DEPLOY DID NOT SHIP (exit $rc, last: ${BASH_COMMAND}) — injected version restored; no git residue (tag-authority)."; fi' EXIT
 fi
 # Run a cargo build from the frozen source (falls back to the live tree if the snapshot didn't take).
-# Env vars set inline by the caller (cross sysroots, osxcross wrappers) pass through the subshell unchanged.
+# Env vars set inline by the caller (cross sysroots, osxcross wrappers) pass thru the subshell unchanged.
 # A bare `( subshell )` that fails at the tail of a function called under `set -e` aborts the script but does
 # NOT trigger the ERR trap (bash swallows it) — that silently killed the whole deploy at the Redox build with no message and the version bump left committed (2026-08-13: forkpty missing on redox). Catch the failure explicitly, name the target that tore, and `return` non-zero so the ERR trap fires and rolls the bump back.
 # Every build's stderr is TEE'd: streamed live to the terminal (nothing hidden) AND captured so warnings can be counted. Cargo only re-emits warnings for crates it recompiles, so a warm-cache deploy would otherwise look pristine while the tree carries lint (2026-08-13: 11 workspace warnings invisible across a 6-target run).
@@ -363,7 +363,7 @@ echo ""
 echo "Linux ARM64, Linux x86_64, Windows x86_64, Windows ARM64, Redox, macOS x86_64, macOS ARM64, Android binaries + manifest deployed to R2"
 echo "  Windows SHA256: $WINDOWS_SHA256"
 
-# R2 is fully live — the release is public. Its provenance is the built commit $COMMIT: the hash build.rs baked into every binary (PHOTON_GIT_COMMIT) and the SHA the signed manifest stamped. Pin it with the IMMUTABLE v<n> tag and push THAT — the commit rides along with its hash intact, even though main has moved past its parent during the ~1h build. This is NOT a branch push (a plain `git push` of the hour-old bump is rejected non-fast-forward the moment any device touched main during the build — five deploys died exactly here, 2026-08-28). main itself only ever gets the fast-forwarding dev-line bump, further down.
+# R2 is fully live — the release is public. Its provenance is the built commit $COMMIT: the hash build.rs baked into every binary (PHOTON_GIT_COMMIT) and the SHA the signed manifest stamped. Pin it with the IMMUTABLE v<n> tag and push THAT — the commit rides along with its hash intact, even tho main has moved past its parent during the ~1h build. This is NOT a branch push (a plain `git push` of the hour-old bump is rejected non-fast-forward the moment any device touched main during the build — five deploys died exactly here, 2026-08-28). main itself only ever gets the fast-forwarding dev-line bump, further down.
 # Disarm the signal/error rollback traps the instant provenance is on GitHub: the release is now permanent, and every step below (mirror, website, notice, dev-line) is best-effort — a hiccup there must NEVER roll back a shipped release. (The EXIT trap stays armed but is gated by DEPLOY_SHIPPED, and every best-effort step below is `|| echo`-guarded so set -e can't fire in this zone.)
 GH_TAG="v$SHIP_VERSION"
 release_publish_tag "$GH_TAG" "$COMMIT" "release v${SHIP_VERSION} (${FULL_VERSION}, ${DOZENAL_VERSION}) — version injected at build (tag-authority), source tip ${PHOTON_STAMP_COMMIT}"

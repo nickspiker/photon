@@ -244,7 +244,7 @@ impl PhotonApp {
             }
             changed = true;
 
-            // Backfill OUR offer in OUR slot if missing — guarantees all_slots_complete can fire here. Covers the stall where our own offer was never recorded (offer arrived before our keygen, or the offer-received path didn't store it), leaving our slot offer=None forever even though we have keys + KEM secrets.
+            // Backfill OUR offer in OUR slot if missing — guarantees all_slots_complete can fire here. Covers the stall where our own offer was never recorded (offer arrived before our keygen, or the offer-received path didn't store it), leaving our slot offer=None forever even tho we have keys + KEM secrets.
             if contact
                 .get_slot(&our_handle_hash)
                 .map(|s| s.offer.is_none())

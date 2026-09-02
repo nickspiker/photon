@@ -45,7 +45,7 @@ _worktree_check_one() {
     local is_main=0
     [ "$wt" = "$main_path" ] && is_main=1
 
-    # Unmerged commits: HEAD not reachable from main. (Applies to every worktree, including main — though main's HEAD is by definition on main, so it never trips here.)
+    # Unmerged commits: HEAD not reachable from main. (Applies to every worktree, including main — tho main's HEAD is by definition on main, so it never trips here.)
     local unmerged=0
     if [ -n "$head" ] && ! git merge-base --is-ancestor "$head" main 2>/dev/null; then
         unmerged=1

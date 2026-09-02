@@ -18,7 +18,7 @@ Cryptography defends the fleet (rules 1); friends defend the identity (rule 2); 
 Foundational, because it shapes everything below.
 `identity_seed = BLAKE3(x(handle))` is a CHEAP hash; your friends type your handle to add you and store it for display, so every friend can derive your identity_seed.
 The handle is therefore not a secret — it is your public address.
-What actually makes you *you* is `device_secret` (per-device, from the platform oracle, never derived from the handle — this is what gates the vault) and **S** (the CSPRNG private identity, never at rest, reconstitutable only through a friend's blind-serve).
+What actually makes you *you* is `device_secret` (per-device, from the platform oracle, never derived from the handle — this is what gates the vault) and **S** (the CSPRNG private identity, never at rest, reconstitutable only thru a friend's blind-serve).
 Being you = device + S + being a trusted fleet member.
 The boot-lock works because the session stores the derived `identity_seed` register, never the handle string, so a rebooted stolen device cannot re-derive identity_seed, cannot re-attest, and bricks — a defense that needs no handle secrecy.
 
@@ -66,7 +66,7 @@ When every device is gone, you have no member device to pair a new one and can't
 **Always same-handle.** You never forget your handle (it's memorable), so recovery re-attests the same handle_proof: the old chain with its dead devices is superseded, a fresh genesis takes its place at the same address, and friends don't re-address you — they accept your recovered device-set and new S.
 
 **Mechanics.**
-- Custodian designation: an identity-signed op IN the chain (persists on FGTW through device loss — you lose devices, not the chain), naming N custodians and threshold K.
+- Custodian designation: an identity-signed op IN the chain (persists on FGTW thru device loss — you lose devices, not the chain), naming N custodians and threshold K.
 - Succession attestation: K-of-N custodian signatures over old→new, nunc-timestamped.
 - Worker: verify K sigs against the designated set, mark the old chain superseded (whole-identity supersession, NOT a device removal), point to the new genesis.
 - Friend migration: custodian-AUTHORIZED but friend-CONFIRMED (a prompt, never a silent swap); carries history and trust level; re-CLUTCH for a fresh braid.

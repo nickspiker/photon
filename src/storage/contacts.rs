@@ -1676,7 +1676,7 @@ mod tests {
         }
     }
 
-    /// Newest-first cursor pagination over a real vault: head page = the newest rows, the cursor walk visits everything exactly once, terminates with more=false — and `load_messages` returns time-sorted output even though recovery inserts OLDER rows into the catalog LATER.
+    /// Newest-first cursor pagination over a real vault: head page = the newest rows, the cursor walk visits everything exactly once, terminates with more=false — and `load_messages` returns time-sorted output even tho recovery inserts OLDER rows into the catalog LATER.
     #[test]
     fn history_pagination_walk_and_load_sort() {
         use crate::types::HandleText;

@@ -1,5 +1,5 @@
 //! End-to-end call MEDIA loop (docs/calls.md) — proves the crypto/codec/FEC pieces compose
-//! through one full call without a live network: both sides derive the basket from shared friendship
+//! thru one full call without a live network: both sides derive the basket from shared friendship
 //! material, a caller sends sealed bundles under datagram loss, the callee reassembles and
 //! Opus-decodes them. This is the offline half of the self-call harness (the live two-instance
 //! test is a field step). Mirrors the engine's PIGGYBACK wire (2026-08-20): ONE datagram per

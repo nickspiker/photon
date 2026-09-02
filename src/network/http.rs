@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 //
 // fgtw.org is BOOTSTRAP SCAFFOLDING, not infrastructure: the end state is peers first, a random sample to confirm the list is current, and the seed consulted LAST — then retired entirely (docs/peers-are-fgtw.md). That ordering is impossible to implement while the host is spelled out at thirteen call sites, because "try the seed last" needs somewhere that can decide to try it at all. This is that somewhere.
 //
-// Keep it a single definition even though the constants look trivially duplicable — the whole point is that switching to a seed LIST, a user-configured seed, or no seed at all becomes one edit here rather than a hunt through six modules and seven inline string literals.
+// Keep it a single definition even tho the constants look trivially duplicable — the whole point is that switching to a seed LIST, a user-configured seed, or no seed at all becomes one edit here rather than a hunt thru six modules and seven inline string literals.
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
 /// The bootstrap seed's bare host.

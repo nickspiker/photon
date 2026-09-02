@@ -76,7 +76,7 @@ pub fn device_vault() -> Option<std::sync::Arc<FlatStorage>> {
     }
     match FlatStorage::open_device_shared(APP, secret) {
         Ok(v) => {
-            // A repair-open that pruned values booted the vault but LOST data — the banner must say so even though the open "succeeded".
+            // A repair-open that pruned values booted the vault but LOST data — the banner must say so even tho the open "succeeded".
             if v.repaired_lost_values() > 0 {
                 crate::logf!("STORAGE: device vault opened via repair — {} value(s) lost to pruned dangling pointers", v.repaired_lost_values());
                 flag_vault_sick();
@@ -301,7 +301,7 @@ pub fn blob_present(content_hash: &[u8; 32]) -> bool {
     }
 }
 
-/// Delete a blob value (attachment tombstone follow-through — blobs CAN truly shred; only row content is braid-bound).
+/// Delete a blob value (attachment tombstone follow-thru — blobs CAN truly shred; only row content is braid-bound).
 pub fn blob_delete(content_hash: &[u8; 32]) {
     if let (Some(v), Some(addr)) = (device_vault(), blob_addr(content_hash)) {
         let _ = v.delete_addr(&addr);

@@ -875,7 +875,7 @@ impl HandleQuery {
                         crate::log("Network: Handle is CLAIMED by another device (fold-verified different identity)");
                         #[cfg(feature = "development")]
                         {
-                            // Dump the chain's identity binding so a Cloudflare KV read-lag serving a pre-wipe chain is catchable: a stale chain shows the OLD genesis identity and op set even though the handle was wiped.
+                            // Dump the chain's identity binding so a Cloudflare KV read-lag serving a pre-wipe chain is catchable: a stale chain shows the OLD genesis identity and op set even tho the handle was wiped.
                             if let Ok(Some(blob)) =
                                 crate::network::fgtw::fleet::fetch(&handle_proof)
                             {

@@ -140,6 +140,16 @@ impl PhotonApp {
         } else if was_textbox {
             self.pending_keyboard_request = Some(false);
         }
+        // SAVE-ON-BLUR for the You-page profile boxes (Nick 2026-09-02 — the Update button is gone): leaving any profile field/tag box writes the batch. save_you_profile diffs against the stored values, so a no-change blur costs nothing and fires no fleet push.
+        if let Some(old_hit) = old {
+            let leaving_you_field = self.you_fields.iter().any(|f| {
+                f.tb.hit_id() == old_hit
+                    || f.tag_tb.as_ref().is_some_and(|t| t.hit_id() == old_hit)
+            });
+            if leaving_you_field {
+                self.save_you_profile();
+            }
+        }
         self.focused = new;
         widget::apply_focus_change(self, old, new);
         // A textbox focus EDGE re-rasters the full bg layer: the focus glow rays extend past the pill into the noise backdrop, and the dirty-gated bg cache never repaints under them on its own — a deselected box's glow lingered baked into the background (the contacts search box "un-deselectable" look). One noise re-raster per focus change, same cost precedent as a screen change.
@@ -867,7 +877,7 @@ impl PhotonApp {
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
         std::thread::spawn(move || {
-            // LOCAL-FIRST, always: the sweep's LocalCached plan promises "never touches the network", but the scoped-slot read used to run before any cache look — every boot re-fetched every scoped avatar, and an offline boot showed placeholders for faces sitting in the vault (Nick, 2026-08-12). The one party-id cache slot holds either form — raw AV1 (scoped write-through below) or the pin-sealed VSF (the pinned path's own cache) — and each decode rejects the other form cleanly, so try both before any network. The pin-rotation sweep evicts this slot, which is what keeps a changed avatar from being served stale.
+            // LOCAL-FIRST, always: the sweep's LocalCached plan promises "never touches the network", but the scoped-slot read used to run before any cache look — every boot re-fetched every scoped avatar, and an offline boot showed placeholders for faces sitting in the vault (Nick, 2026-08-12). The one party-id cache slot holds either form — raw AV1 (scoped write-thru below) or the pin-sealed VSF (the pinned path's own cache) — and each decode rejects the other form cleanly, so try both before any network. The pin-rotation sweep evicts this slot, which is what keeps a changed avatar from being served stale.
             let cached = storage
                 .read_addr(&crate::storage::vault_key("avatar", &party_id))
                 .ok()
@@ -899,7 +909,7 @@ impl PhotonApp {
                             &crate::ui::avatar_scoped::avatar_purpose(&party_id),
                         )?;
                         let (_, px) = crate::ui::avatar::decode_avatar_av1_to_display(&raw)?;
-                        // Write-through so the next boot is local (the vault encrypts at rest; the raw-AV1 form is what the cache read above tries first).
+                        // Write-thru so the next boot is local (the vault encrypts at rest; the raw-AV1 form is what the cache read above tries first).
                         if let Err(e) = storage
                             .write_addr(&crate::storage::vault_key("avatar", &party_id), &raw)
                         {
@@ -943,7 +953,7 @@ impl PhotonApp {
         }
     }
 
-    /// The commit half of a received chat frame, after its braid decrypt finished on a worker: re-resolve everything against CURRENT state, CAS the lane position, then run the exact post-decrypt pipeline the arm ran inline — parse (fork detector), strand resolve (hold), advance, gap-buffer replay, durable-ACK enqueue, row insert, notify, seal. Every early-out just drops the frame: the sender's retransmit ladder re-enters it through the arm's full gates, so a drop is never a loss.
+    /// The commit half of a received chat frame, after its braid decrypt finished on a worker: re-resolve everything against CURRENT state, CAS the lane position, then run the exact post-decrypt pipeline the arm ran inline — parse (fork detector), strand resolve (hold), advance, gap-buffer replay, durable-ACK enqueue, row insert, notify, seal. Every early-out just drops the frame: the sender's retransmit ladder re-enters it thru the arm's full gates, so a drop is never a loss.
     pub(super) fn commit_braid_rx(&mut self, d: BraidRxDecrypted) {
         let BraidRxDecrypted {
             conversation_token,
@@ -1522,7 +1532,7 @@ impl PhotonApp {
                                 }
                             }
                         }
-                        // ONE bubble per command, keyed by the TYPED reference alone — never by the wire extras. The host's lane-rotation re-serve rebuilds frames without the BridgeWire (chain_transmit(.., None)), and the old seq-required gate let exactly those rebuilds fall through to insert_message_sorted: the duplicate full-output bubble of field 2026-08-26 (git pull arrived twice). Any inbound row targeting t now lands on t's row or is swallowed; a missing seq is treated as a final-ish snapshot that may fill an unfinished row but never regress a finished one.
+                        // ONE bubble per command, keyed by the TYPED reference alone — never by the wire extras. The host's lane-rotation re-serve rebuilds frames without the BridgeWire (chain_transmit(.., None)), and the old seq-required gate let exactly those rebuilds fall thru to insert_message_sorted: the duplicate full-output bubble of field 2026-08-26 (git pull arrived twice). Any inbound row targeting t now lands on t's row or is swallowed; a missing seq is treated as a final-ish snapshot that may fill an unfinished row but never regress a finished one.
                         let seq = bridge_wire.as_ref().and_then(|b| b.seq);
                         let exit = bridge_wire.as_ref().and_then(|b| b.exit);
                         if let Some(row) = conv.messages.iter_mut().find(|m| {
@@ -1961,7 +1971,7 @@ impl PhotonApp {
             {
                 let conv = &mut self.conversations[conv_pos];
                 // Merge to OUR perspective: friend pages flip direction (their outgoing = our incoming); sibling pages ride verbatim (same identity, their flags ARE ours). Friend-recovered outgoing is delivered by definition (the friend has it); dedup on (timestamp, content) against what we already hold.
-                // Index existing rows ONCE by (timestamp, content-hash) — each row is an O(1) lookup; inserts are deferred so the indices stay valid through the upgrade pass.
+                // Index existing rows ONCE by (timestamp, content-hash) — each row is an O(1) lookup; inserts are deferred so the indices stay valid thru the upgrade pass.
                 let row_hash = |c: &str| -> u64 {
                     u64::from_le_bytes(
                         blake3::hash(c.as_bytes()).as_bytes()[..8]
@@ -2051,7 +2061,7 @@ impl PhotonApp {
                     conv.insert_message_sorted(msg.clone());
                     fresh.push(msg);
                 }
-                // A tombstone flip on an existing row doesn't pass through insert_message_sorted, so invalidate the digest for that case (inserts already self-invalidated).
+                // A tombstone flip on an existing row doesn't pass thru insert_message_sorted, so invalidate the digest for that case (inserts already self-invalidated).
                 if tombstoned_in_merge {
                     conv.invalidate_digest();
                 }

@@ -435,6 +435,10 @@ impl PhotonApp {
             .and_then(|fs| fs.effective("display.dozenal"))
             .and_then(crate::storage::fleet_settings::as_bool)
             .unwrap_or(true);
+        // Adoption edge made LOUD (field 2026-09-02: "not sure why that checkbox isn't synchronizing fleetwide") — if this line never fires on the other device, the merge/event path lost the write (LWW clock skew or a dropped fstate event), not this mirror.
+        if crate::dozenal_ui() != dozenal {
+            crate::logf!("SETTINGS: dozenal → {} (fleet adopt)", dozenal);
+        }
         crate::set_dozenal_ui(dozenal);
         if let Some(cb) = self.settings_dozenal_check.as_mut() {
             cb.set_checked(dozenal);
@@ -450,7 +454,7 @@ impl PhotonApp {
         if let Some(cb) = self.settings_hardlogs_check.as_mut() {
             cb.set_checked(crate::hard_logs_active());
         }
-        // Restore THIS DEVICE'S persisted zoom (display.zoom, f32 LE bytes — binary at rest), device-local ONLY: never the fleet global. Zoom is monitor ergonomics, so a device that has never set one keeps the default rather than adopting another screen's value — reading it through `effective` is what made a fresh device jump to a 4K desktop's zoom seconds after launch. Handed to the host as a one-shot absolute request; applies exactly like a user zoom.
+        // Restore THIS DEVICE'S persisted zoom (display.zoom, f32 LE bytes — binary at rest), device-local ONLY: never the fleet global. Zoom is monitor ergonomics, so a device that has never set one keeps the default rather than adopting another screen's value — reading it thru `effective` is what made a fresh device jump to a 4K desktop's zoom seconds after launch. Handed to the host as a one-shot absolute request; applies exactly like a user zoom.
         // ONCE per process, and only at load. `apply_settings_to_ui` also runs after EVERY fleet merge that changed anything, and the fleet poll fires every ~15s -- so without this guard the stored zoom was re-applied on a timer, stomping whatever the window was actually at. That is the "scaling elements go half size a few moments after the contacts show up" report: the first pull after contacts load re-armed the restore, and every pull after it did so again. A restore is a startup action, not a steady-state one; the host applies it exactly like a user zoom and the user must stay in control after that.
         if !self.zoom_restored {
             if let Some(ru) = self

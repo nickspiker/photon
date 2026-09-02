@@ -411,7 +411,7 @@ mod tests {
             .all(|w| w[0].handle_proof <= w[1].handle_proof));
     }
 
-    /// `rec` with a CURRENT last_seen. Both `peer_count` and `get_all_peers` filter on the 7-day expiry window, so a synthetic `last_seen` of 100 is eagle-time ~1969 and reads as decades stale — invisible to every reader even though it is stored.
+    /// `rec` with a CURRENT last_seen. Both `peer_count` and `get_all_peers` filter on the 7-day expiry window, so a synthetic `last_seen` of 100 is eagle-time ~1969 and reads as decades stale — invisible to every reader even tho it is stored.
     fn fresh(handle: u8, device: u8, offset: i64) -> PeerRecord {
         rec(handle, device, vsf::eagle_time_oscillations() + offset)
     }

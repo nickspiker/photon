@@ -171,7 +171,7 @@ enum Inner {
     },
 }
 
-/// Open a kept-call blob for playback — magic-sniffs `PHCALL2` (the current format) and the legacy `PHCALL1` raw spool, so recordings kept before the transcode landed still play through the identical downmix path (no migration, no re-store — the content hash is immutable). `None` on unknown magic or codec init failure.
+/// Open a kept-call blob for playback — magic-sniffs `PHCALL2` (the current format) and the legacy `PHCALL1` raw spool, so recordings kept before the transcode landed still play thru the identical downmix path (no migration, no re-store — the content hash is immutable). `None` on unknown magic or codec init failure.
 pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
     if bytes.len() >= 8 && &bytes[..8] == CONTAINER_MAGIC_V2 {
         if bytes.len() < 8 + 17 {

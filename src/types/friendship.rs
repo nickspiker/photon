@@ -836,7 +836,7 @@ impl FriendshipChains {
         Some(label)
     }
 
-    /// Can a device holding this blob WRITE the braid — i.e. mint and advance its own lane? True from the moment the lane root exists, which only ever happens post-ceremony (`from_clutch`) — so on a sibling-replicated copy, a live root IS the proof the friendship completed somewhere in the fleet (per-device lanes: any device with the root transmits itself instead of forwarding through the chain owner).
+    /// Can a device holding this blob WRITE the braid — i.e. mint and advance its own lane? True from the moment the lane root exists, which only ever happens post-ceremony (`from_clutch`) — so on a sibling-replicated copy, a live root IS the proof the friendship completed somewhere in the fleet (per-device lanes: any device with the root transmits itself instead of forwarding thru the chain owner).
     pub fn lane_capable(&self) -> bool {
         self.lane_root.is_some()
     }
@@ -2036,7 +2036,7 @@ mod tests {
         assert!(!sender.process_ack(9_999, &ph));
     }
 
-    /// PER-LANE REPLICATION: a subset carrying only some lanes must round-trip through merge_lanes_from and adopt EXACTLY those lanes at their real positions, leaving other lanes untouched — index-alignment across the parallel per-lane vecs is load-bearing (a slip corrupts a lane's chain/position/anchors).
+    /// PER-LANE REPLICATION: a subset carrying only some lanes must round-trip thru merge_lanes_from and adopt EXACTLY those lanes at their real positions, leaving other lanes untouched — index-alignment across the parallel per-lane vecs is load-bearing (a slip corrupts a lane's chain/position/anchors).
     #[test]
     fn replication_subset_adopts_only_named_lanes_at_the_right_position() {
         let alice = [1u8; 32];

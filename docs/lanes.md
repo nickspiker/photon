@@ -67,7 +67,7 @@ Ordering dependency (plan item 5): a checkpoint can reference strands (woven mes
 
 ## Flag-day
 
-Chains schema **v8**: lanes + `lane_root`. v≤7 blobs read as **absent** → the contact re-CLUTCHes through the existing re-key flow. Conversation rows are untouched (identity-keyed). This rides the same flag-day as the binary-numeral domain flip (shipped) — one re-clutch per pair covers both. Per standing doctrine: re-clutch always; the only new secret at rest is `lane_root`, which lives and dies with the chains blob it seeds (same custody as the 16KB of chain links beside it — no new exposure class).
+Chains schema **v8**: lanes + `lane_root`. v≤7 blobs read as **absent** → the contact re-CLUTCHes thru the existing re-key flow. Conversation rows are untouched (identity-keyed). This rides the same flag-day as the binary-numeral domain flip (shipped) — one re-clutch per pair covers both. Per standing doctrine: re-clutch always; the only new secret at rest is `lane_root`, which lives and dies with the chains blob it seeds (same custody as the 16KB of chain links beside it — no new exposure class).
 
 ## Verification
 

@@ -1,9 +1,9 @@
 # Sourced by deploy.sh. THE release git flow, "provenance by tag".
 #
-# THE PROBLEM (field 2026-08-28, five dead deploys in a row): the old flow committed the version bump, held that commit through the ~1h cross-platform build, then did a plain `git push`. In a multi-machine tree another device (or the operator locally) almost always pushes something during that hour, so origin/main has moved and the push is rejected non-fast-forward — the whole release dies at the very end, after R2 is already public.
+# THE PROBLEM (field 2026-08-28, five dead deploys in a row): the old flow committed the version bump, held that commit thru the ~1h cross-platform build, then did a plain `git push`. In a multi-machine tree another device (or the operator locally) almost always pushes something during that hour, so origin/main has moved and the push is rejected non-fast-forward — the whole release dies at the very end, after R2 is already public.
 #
 # THE FIX: split provenance from the branch.
-#   * PROVENANCE lives in an immutable `v<n>` TAG on the EXACT built commit — the commit whose hash build.rs baked into every binary (PHOTON_GIT_COMMIT) and whose SHA the signed manifest stamps. Pushing the tag uploads that commit with its hash intact, even though main has moved past its parent. This is what a client, an auditor, or `git checkout v<n>` resolves.
+#   * PROVENANCE lives in an immutable `v<n>` TAG on the EXACT built commit — the commit whose hash build.rs baked into every binary (PHOTON_GIT_COMMIT) and whose SHA the signed manifest stamps. Pushing the tag uploads that commit with its hash intact, even tho main has moved past its parent. This is what a client, an auditor, or `git checkout v<n>` resolves.
 #   * THE BRANCH (main) only ever receives Cargo.toml-only version bumps, each crafted on the FRESHEST origin tip inside a throwaway worktree — so they always fast-forward and never touch the live working tree (which still holds the built .0 bump plus whatever the operator edited during the build). main that moved on GitHub OR locally can no longer wedge anything.
 #
 # Factored into a sourced lib (not inline in deploy.sh) so the hermetic test at scripts/test/release-git-test.sh can drive it against a scratch remote — the git flow is now provable in seconds instead of only over a 1-hour real deploy.

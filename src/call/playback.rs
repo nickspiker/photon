@@ -1,4 +1,4 @@
-//! Kept-recording playback (docs/calls.md) — decode a kept call, sum its channels to MONO, play through the speaker.
+//! Kept-recording playback (docs/calls.md) — decode a kept call, sum its channels to MONO, play thru the speaker.
 //!
 //! Mirrors the media engine's shape: a stop flag + a worker thread that OWNS the audio session for the life of the playback (`platform::audio::start()` on spawn, `stop()` on exit). Playback never touches the cpal streams directly (they are `!Send` and live on the audio thread) — it only pushes decoded mono frames to the global `PLAYBACK_Q` via `queue_playback`, exactly as the live engine's receive path does.
 //!
@@ -32,7 +32,7 @@ impl Drop for PlaybackHandle {
     }
 }
 
-/// Play a KEPT recording blob through the speaker (downmixed to mono). `None` if a call is active, the blob is missing/unreadable, or there's no audio device.
+/// Play a KEPT recording blob thru the speaker (downmixed to mono). `None` if a call is active, the blob is missing/unreadable, or there's no audio device.
 pub fn play_blob(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<PlaybackHandle> {
     if crate::platform::audio::is_active() {
         crate::log("CALL playback: audio busy (call active) — refused");
@@ -43,7 +43,7 @@ pub fn play_blob(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Pl
     spawn(stream)
 }
 
-/// Preview the LIVE spool through the same downmix, before the Keep/Delete decision has finalized a blob (the end-screen Play). Borrows the ticket — never consumes or shreds it.
+/// Preview the LIVE spool thru the same downmix, before the Keep/Delete decision has finalized a blob (the end-screen Play). Borrows the ticket — never consumes or shreds it.
 pub fn play_spool(ticket: &SpoolTicket) -> Option<PlaybackHandle> {
     if crate::platform::audio::is_active() {
         crate::log("CALL playback: audio busy (call active) — refused");

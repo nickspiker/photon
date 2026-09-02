@@ -181,7 +181,7 @@ pub struct PingRequest {
 #[derive(Clone)]
 pub struct MessageRequest {
     pub peer_addr: SocketAddr,
-    /// Second candidate address to race, from `race_addrs()` — the public/WAN path when `peer_addr` is the peer's LAN IPv4 (or vice versa). The wire bytes go to BOTH so the reachable one wins: a cellular peer can't reach the other's `192.168.x` LAN, and two peers on different LANs can only meet on the public path. Chat used to drop this (send LAN-only), which silently blackholed every message to an off-LAN peer even though CLUTCH — which already races both — completed fine.
+    /// Second candidate address to race, from `race_addrs()` — the public/WAN path when `peer_addr` is the peer's LAN IPv4 (or vice versa). The wire bytes go to BOTH so the reachable one wins: a cellular peer can't reach the other's `192.168.x` LAN, and two peers on different LANs can only meet on the public path. Chat used to drop this (send LAN-only), which silently blackholed every message to an off-LAN peer even tho CLUTCH — which already races both — completed fine.
     pub alt_addr: Option<SocketAddr>,
     /// Recipient's device pubkey (for relay fallback)
     pub recipient_pubkey: [u8; 32],
@@ -2149,7 +2149,7 @@ async fn run_checker(
                                 continue;
                             }
                             // ClutchOffer (~548KB) and ClutchKemResponse (~32KB) arriving as a WHOLE frame — this is the RELAY-INJECTED path.
-                            // Direct sends shard these through PT and parse them in the PT-transfer-complete branch above, but a relayed message is injected as one datagram tagged RELAY_ADDR, so it never touches PT and only clutch_complete was parsed here — the offer + KEM were silently dropped, so the ceremony never got past the offer over the relay (presence worked, but no KEM ever came back).
+                            // Direct sends shard these thru PT and parse them in the PT-transfer-complete branch above, but a relayed message is injected as one datagram tagged RELAY_ADDR, so it never touches PT and only clutch_complete was parsed here — the offer + KEM were silently dropped, so the ceremony never got past the offer over the relay (presence worked, but no KEM ever came back).
                             // Parse them here too. The parsers verify the signature internally; the app's CLUTCH handler gates action on fold-respecting knows_device.
                             // No packet-ack: unlike a PT-carried frame, a relayed one isn't in a stop-and-wait queue awaiting one.
                             if let Ok((payload, sender_pubkey, offer_provenance, conversation_token)) =

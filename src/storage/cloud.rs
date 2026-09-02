@@ -510,7 +510,7 @@ mod document_tests {
         );
     }
 
-    /// Round-trip through the real encode/decode pair, values matched by type marker.
+    /// Round-trip thru the real encode/decode pair, values matched by type marker.
     #[test]
     fn round_trip_preserves_every_field() {
         let key = [9u8; 32];
