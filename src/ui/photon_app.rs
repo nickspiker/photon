@@ -3138,6 +3138,11 @@ fn human_bytes(n: u64) -> String {
     }
 }
 
+/// The About slab height: window-proportional and ZOOM-INDEPENDENT (Nick 2026-09-02 — the logo/wave scroll with the card but never scale). One formula, shared by the bg-pass draw and the card's cursor advance so they can't drift.
+pub(super) fn about_slab_h(buf_h: usize) -> f32 {
+    buf_h as f32 * 0.18
+}
+
 fn settings_line(
     canvas: &mut Canvas,
     text: &mut fluor::text::TextRenderer,
@@ -3156,6 +3161,66 @@ fn settings_line(
         None,
         None,
     );
+}
+
+/// FLOW layout for settings pages (Nick 2026-09-02, "option 2"): a y-cursor every element advances by its own height — so EVERY text element wraps at the pane edge by construction, and the page's true height falls out of the final cursor (measured scroll extent, no hand-counted row estimates). The About card proved the pattern; this is it, named. Pages convert one at a time; toka-rendered documents later ride this same substrate.
+pub(super) struct Flow {
+    pub x: Coord,
+    pub y: Coord,
+    pub w: Coord,
+    start_y: Coord,
+}
+
+impl Flow {
+    /// Start a flow at the content inset, offset by the page scroll.
+    pub(super) fn new(inset: fluor::region::Region, scroll: Coord) -> Self {
+        Flow { x: inset.x, y: inset.y - scroll, w: inset.w, start_y: inset.y - scroll }
+    }
+
+    /// One line that WRAPS if it must (titles, statuses — anything). Advances by the drawn height.
+    pub(super) fn line(
+        &mut self,
+        canvas: &mut Canvas,
+        text: &mut fluor::text::TextRenderer,
+        s: &str,
+        size: Coord,
+        colour: u32,
+        weight: u16,
+    ) {
+        let region = fluor::region::Region::new(self.x, self.y, self.w, size * 1.6);
+        let n = settings_prose(canvas, text, region, s, size, colour, weight);
+        self.y += (n.max(1) as Coord) * size * 1.25 + size * 0.35;
+    }
+
+    /// A paragraph — same as [`line`] (everything wraps here); named for call-site intent.
+    pub(super) fn prose(
+        &mut self,
+        canvas: &mut Canvas,
+        text: &mut fluor::text::TextRenderer,
+        s: &str,
+        size: Coord,
+        colour: u32,
+        weight: u16,
+    ) {
+        self.line(canvas, text, s, size, colour, weight);
+    }
+
+    /// Vertical breathing room.
+    pub(super) fn gap(&mut self, h: Coord) {
+        self.y += h;
+    }
+
+    /// Claim a fixed-height band (pills, checkboxes, custom draws) and advance past it.
+    pub(super) fn band(&mut self, h: Coord) -> fluor::region::Region {
+        let r = fluor::region::Region::new(self.x, self.y, self.w, h);
+        self.y += h;
+        r
+    }
+
+    /// Total content height flowed so far — the MEASURED scroll extent input (content_h; caller subtracts the pane height).
+    pub(super) fn used(&self) -> Coord {
+        self.y - self.start_y
+    }
 }
 
 /// Word-wrapped settings prose (Nick 2026-09-02: settings text ran off the screen edge mid-word) — the conversation screen's greedy wrapper reused, drawn into `region` (usually several stacked rows). Lines stack at `size × 1.25` from the region's top; returns the line count so a caller can flow content below. Prose that outgrows the region is still drawn (the page scroll owns overflow) — never silently truncated.
