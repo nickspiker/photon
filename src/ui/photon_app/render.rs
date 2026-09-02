@@ -219,6 +219,8 @@ impl PhotonApp {
             .map_or(false, |c| !c.is_sibling && c.friendship_id.is_some());
         // PLACING a call gates on the current route being calibrated (Settings→Audio) — an uncalibrated speakerphone call is the bad-echo experience the calibration exists to end. Answering an INCOMING call never gates: answering with the fallback duck beats missing a call. Hoisted local: the Audio page arm reads it too, deep inside the chrome borrow where &self is unavailable.
         let route_calibrated = self.route_calibrated_now();
+        let echo_calibrated = self.echo_calibrated_now();
+        let voice_calibrated = self.voice_calibrated_now();
         let call_pill_enabled = self
             .active_contact()
             .and_then(|ci| self.contacts.get(ci))
@@ -4981,64 +4983,86 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Wave => {
-                    // WAVE — everything sound (Beam, its camera sibling, lands with video). The FIRST Flow page: every element wraps at the pane edge and the scroll extent is MEASURED from the final cursor (no row estimates).
+                    // WAVE — two NAMED measurements (Nick 2026-09-02: the combined flow was vague), each with purpose, setup, live phase, and a measured RESULT so the page reads like an instrument. Slots: 0 echo · 1 voice · 2 headset-skip.
                     use crate::call::calibrate::CalPhase;
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
                     flow.line(&mut canvas, ctx.text, "Wave", tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                    flow.gap(hspan2 * 0.6);
-                    let route = crate::platform::audio::route_id();
-                    let route_shown = if route.is_empty() { "no output device detected yet".to_string() } else { route.clone() };
-                    flow.line(&mut canvas, ctx.text, &format!("Output: {route_shown}"), hspan2, *theme::CONTACT_NAME_COLOUR, 400);
-                    let calibrated = route_calibrated;
+                    flow.prose(&mut canvas, ctx.text, "Calls only sound right after Photon measures two things about this exact hardware: how much of the speaker's sound leaks back into the mic (that leak is what your friends hear as echo), and how loudly your voice lands on the mic. One short run of each, per speaker and per mic — redo either any time.", hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                    flow.gap(hspan2 * 0.4);
+                    flow.prose(&mut canvas, ctx.text, "Setup: put the volume where you actually take calls, find somewhere reasonably quiet, and don't touch any buttons while a step runs — the mic is listening the whole time.", hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                    flow.gap(hspan2 * 0.8);
                     let phase = crate::call::calibrate::phase();
+                    let running = !matches!(phase, CalPhase::Idle | CalPhase::Done | CalPhase::Failed);
+                    let route = crate::platform::audio::route_id();
+                    let mic = crate::platform::audio::mic_id();
+                    let echo_done = echo_calibrated;
+                    let voice_done = voice_calibrated;
+
+                    // ── STEP 1: ECHO ─────────────────────────────────────────
+                    flow.line(&mut canvas, ctx.text, &format!("Step 1 \u{00b7} Echo check \u{2014} {}", if route.is_empty() { "no output yet".to_string() } else { route.clone() }), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.line(
                         &mut canvas,
                         ctx.text,
-                        if calibrated { "Calibrated \u{2713}" } else { "Not calibrated — calls wait on this" },
-                        hspan2,
-                        if calibrated { *theme::SEARCH_FOUND_COLOUR } else { *theme::SEARCH_FAIL_COLOUR },
+                        if echo_done { "measured \u{2713}" } else { "not measured \u{2014} calls wait on this" },
+                        hspan2 * 0.85,
+                        if echo_done { *theme::SEARCH_FOUND_COLOUR } else { *theme::SEARCH_FAIL_COLOUR },
                         500,
                     );
-                    flow.gap(hspan2 * 0.8);
-                    // Phase-driven prose — headline + body, both wrapping wherever the pane edge is.
-                    let (headline, body): (&str, &str) = match phase {
-                        CalPhase::Listen => (
-                            "Listen\u{2026} stay quiet while the sentence plays.",
-                            "Hands off the volume buttons — we're listening thru the mic right now.",
-                        ),
-                        CalPhase::Repeat => (
-                            "Your turn — say it naturally:",
-                            "\u{201C}The quick brown fox jumped over the lazy dogs\u{201D}",
-                        ),
-                        CalPhase::Failed => (
-                            "Didn't catch that.",
-                            "Find somewhere quieter, leave the volume alone, and try again.",
-                        ),
-                        _ => (
-                            "Calibration plays a short sentence, then asks you to repeat it.",
-                            "~15 seconds. Somewhere quiet, volume where you like it — and don't touch the buttons mid-run. Redo it any time; each run replaces the last.",
-                        ),
-                    };
-                    flow.line(&mut canvas, ctx.text, headline, hspan2, *theme::CONTACT_NAME_COLOUR, 500);
-                    flow.prose(
+                    if phase == CalPhase::EchoListen {
+                        flow.prose(&mut canvas, ctx.text, "Playing\u{2026} stay quiet and let the whole sentence finish. Photon is listening to its OWN sound coming back thru your mic — any noise you make lands in the measurement.", hspan2 * 0.9, *theme::CONTACT_NAME_COLOUR, 500);
+                    } else {
+                        flow.prose(&mut canvas, ctx.text, "Photon plays a short recorded sentence thru this speaker and listens with the mic to measure the leak: how loud its own sound comes back, and how late. You don't say anything — just stay quiet for about five seconds while it plays.", hspan2 * 0.85, *theme::LABEL_COLOUR, 400);
+                    }
+                    flow.gap(hspan2 * 0.3);
+                    let mut step1: Vec<(&str, HitId, bool)> = vec![(
+                        if phase == CalPhase::EchoListen { "Measuring\u{2026}" } else if echo_done { "Re-measure echo" } else { "Measure echo" },
+                        btn_base,
+                        !running,
+                    )];
+                    if !echo_done && !running {
+                        step1.push(("It's a headset \u{2014} no leak (skip)", btn_base.wrapping_add(2), true));
+                    }
+                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2, &step1);
+                    flow.gap(hspan2 * 0.9);
+
+                    // ── STEP 2: VOICE ────────────────────────────────────────
+                    flow.line(&mut canvas, ctx.text, &format!("Step 2 \u{00b7} Your voice \u{2014} {}", if mic.is_empty() { "no mic yet".to_string() } else { mic.clone() }), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.line(
                         &mut canvas,
                         ctx.text,
-                        body,
-                        hspan2,
-                        if phase == CalPhase::Repeat { *theme::CONTACT_NAME_COLOUR } else { *theme::LABEL_COLOUR },
-                        if phase == CalPhase::Repeat { 600 } else { 400 },
+                        if voice_done { "measured \u{2713}" } else { "not measured \u{2014} calls wait on this" },
+                        hspan2 * 0.85,
+                        if voice_done { *theme::SEARCH_FOUND_COLOUR } else { *theme::SEARCH_FAIL_COLOUR },
+                        500,
                     );
-                    flow.gap(hspan2);
-                    // Pills (slot 0 calibrate / slot 1 mark-headset) — flow_pills sizes each to its measured label and wraps onto a fresh line when the pane can't hold both (labels never squeeze). Inert while a run is live.
-                    let running = matches!(phase, CalPhase::Listen | CalPhase::Repeat);
-                    let cal_label = if running { "Calibrating\u{2026}" } else if calibrated { "Recalibrate" } else { "Calibrate" };
-                    let mut pill_list: Vec<(&str, HitId, bool)> = vec![(cal_label, btn_base, !running)];
-                    if !calibrated && !running {
-                        // Headset/BT escape: no acoustic path to measure — a null-coupling profile unlocks calls without the ritual.
-                        pill_list.push(("It's a headset (skip)", btn_base.wrapping_add(1), true));
+                    match phase {
+                        CalPhase::VoiceExample => {
+                            flow.prose(&mut canvas, ctx.text, "Listen \u{2014} this is the sentence you'll repeat:", hspan2 * 0.9, *theme::CONTACT_NAME_COLOUR, 500);
+                            flow.prose(&mut canvas, ctx.text, "\u{201C}The quick brown fox jumped over the lazy dogs\u{201D}", hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                        }
+                        CalPhase::VoiceRepeat => {
+                            flow.prose(&mut canvas, ctx.text, "Now you \u{2014} say it once, in the voice you'd actually use on a call (hold the device how you normally would):", hspan2 * 0.9, *theme::CONTACT_NAME_COLOUR, 500);
+                            flow.prose(&mut canvas, ctx.text, "\u{201C}The quick brown fox jumped over the lazy dogs\u{201D}", hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
+                        }
+                        _ => {
+                            flow.prose(&mut canvas, ctx.text, "Photon plays the sentence once as your example, then opens the mic so you can say it back \u{2014} that teaches it how loud YOUR voice lands on THIS mic, and what the room sounds like when you're silent. Speak normally; don't perform. About ten seconds.", hspan2 * 0.85, *theme::LABEL_COLOUR, 400);
+                        }
                     }
-                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2, &pill_list);
+                    flow.gap(hspan2 * 0.3);
+                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2, &[(
+                        if matches!(phase, CalPhase::VoiceExample | CalPhase::VoiceRepeat) { "Measuring\u{2026}" } else if voice_done { "Re-measure voice" } else { "Measure voice" },
+                        btn_base.wrapping_add(1),
+                        !running,
+                    )]);
+                    flow.gap(hspan2 * 0.6);
+                    if phase == CalPhase::Failed {
+                        flow.prose(&mut canvas, ctx.text, "Didn't catch that \u{2014} somewhere quieter, leave the volume alone, and run the step again.", hspan2 * 0.9, *theme::SEARCH_FAIL_COLOUR, 600);
+                        flow.gap(hspan2 * 0.4);
+                    }
+                    if echo_done && voice_done {
+                        flow.prose(&mut canvas, ctx.text, "Both measured \u{2014} calls are open on this speaker + mic pair.", hspan2 * 0.9, *theme::SEARCH_FOUND_COLOUR, 500);
+                    }
                     flow.gap(hspan2);
                     measured_extent = Some((flow.used(), inset.h));
                 }

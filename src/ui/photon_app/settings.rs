@@ -525,35 +525,60 @@ impl PhotonApp {
         }
     }
 
-    /// Is the CURRENT output route calibrated (or headset-marked)? The call-placing gate — profiles are device-local (`audio.cal.<route>.gain` is the presence marker), coupling being this hardware's physics.
-    pub(super) fn route_calibrated_now(&self) -> bool {
+    /// Echo profile present for the CURRENT output route?
+    pub(super) fn echo_calibrated_now(&self) -> bool {
         let route = crate::platform::audio::route_id();
-        if route.is_empty() {
-            return false;
-        }
-        self.fleet_settings
-            .as_ref()
-            .and_then(|fs| fs.device_local(&format!("audio.cal.{route}.gain")))
-            .is_some()
+        !route.is_empty()
+            && self
+                .fleet_settings
+                .as_ref()
+                .and_then(|fs| fs.device_local(&format!("audio.cal.echo.{route}.g")))
+                .is_some()
     }
 
-    /// Store one calibration profile as this device's typed per-field settings (the zoom/window-geometry device-local pattern) — called by the drain when the worker posts a result.
-    pub(super) fn store_cal_profile(&mut self, p: &crate::call::calibrate::CalProfile) {
+    /// Voice profile present for the CURRENT mic?
+    pub(super) fn voice_calibrated_now(&self) -> bool {
+        let mic = crate::platform::audio::mic_id();
+        !mic.is_empty()
+            && self
+                .fleet_settings
+                .as_ref()
+                .and_then(|fs| fs.device_local(&format!("audio.cal.voice.{mic}.gain")))
+                .is_some()
+    }
+
+    /// The call gate: BOTH measurements for the current hardware pair (echo per output route ∧ voice per mic). Split keys mean speaker→earpiece keeps the voice profile (same mic); a BT headset needs both (its own mic).
+    pub(super) fn route_calibrated_now(&self) -> bool {
+        self.echo_calibrated_now() && self.voice_calibrated_now()
+    }
+
+    /// Store one profile as device-local typed settings (coupling and voice are this hardware's physics, never fleet-linked).
+    pub(super) fn store_cal_result(&mut self, r: &crate::call::calibrate::CalResult) {
         if !self.ensure_fleet_settings() {
             return;
         }
         let now = vsf::eagle_time_oscillations();
         let fs = self.fleet_settings.as_mut().unwrap();
-        let base = format!("audio.cal.{}", p.route_id);
-        let mut fields: Vec<(String, vsf::VsfType)> = vec![
-            (format!("{base}.gain"), vsf::VsfType::f5(p.mic_gain)),
-            (format!("{base}.floor"), vsf::VsfType::f5(p.floor)),
-            (format!("{base}.g"), vsf::VsfType::f5(p.g_norm)),
-            (format!("{base}.delay"), vsf::VsfType::u(p.delay_ms as usize, false)),
-        ];
-        if let Some(db) = p.cal_vol_db {
-            fields.push((format!("{base}.vol"), vsf::VsfType::f5(db)));
-        }
+        let fields: Vec<(String, vsf::VsfType)> = match r {
+            crate::call::calibrate::CalResult::Echo(p) => {
+                let base = format!("audio.cal.echo.{}", p.route_id);
+                let mut f = vec![
+                    (format!("{base}.g"), vsf::VsfType::f5(p.g_norm)),
+                    (format!("{base}.delay"), vsf::VsfType::u(p.delay_ms as usize, false)),
+                ];
+                if let Some(db) = p.cal_vol_db {
+                    f.push((format!("{base}.vol"), vsf::VsfType::f5(db)));
+                }
+                f
+            }
+            crate::call::calibrate::CalResult::Voice(p) => {
+                let base = format!("audio.cal.voice.{}", p.mic_id);
+                vec![
+                    (format!("{base}.gain"), vsf::VsfType::f5(p.mic_gain)),
+                    (format!("{base}.floor"), vsf::VsfType::f5(p.floor)),
+                ]
+            }
+        };
         for (k, v) in fields {
             if fs.linked(&k) {
                 fs.set_link(&k, false, now);
@@ -561,22 +586,23 @@ impl PhotonApp {
             fs.set(&k, v, now);
         }
         self.persist_and_push_settings();
-        crate::logf!("SETTINGS: {} calibrated (device-local profile stored)", p.route_id);
     }
 
-    /// Drain a finished calibration: store the profile, drop the handle, toast, and reset the phase so the Audio page returns to its calibrated-idle state.
+    /// Drain a finished measurement: store, drop the handle, toast, reset the phase.
     pub(super) fn drain_audio_cal(&mut self) {
-        if let Some(p) = crate::call::calibrate::take_result() {
-            self.store_cal_profile(&p);
+        if let Some(r) = crate::call::calibrate::take_result() {
+            self.store_cal_result(&r);
             self.audio_cal_handle = None;
             crate::call::calibrate::ack_phase();
-            self.ready_toast = Some(format!("audio calibrated \u{2713} ({})", p.route_id));
+            self.ready_toast = Some(match &r {
+                crate::call::calibrate::CalResult::Echo(p) => format!("echo measured \u{2713} ({})", p.route_id),
+                crate::call::calibrate::CalResult::Voice(p) => format!("voice measured \u{2713} ({})", p.mic_id),
+            });
             self.ready_toast_screen = None;
             self.scene_dirty = true;
         } else if crate::call::calibrate::phase() == crate::call::calibrate::CalPhase::Failed
             && self.audio_cal_handle.is_some()
         {
-            // The worker gave up (sanity gates) — free the handle; the page renders the retry text off the Failed phase until the next attempt acks it.
             self.audio_cal_handle = None;
             self.scene_dirty = true;
         }
