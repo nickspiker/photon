@@ -3138,9 +3138,10 @@ fn human_bytes(n: u64) -> String {
     }
 }
 
-/// The About slab height: window-proportional and ZOOM-INDEPENDENT (Nick 2026-09-02 — the logo/wave scroll with the card but never scale). One formula, shared by the bg-pass draw and the card's cursor advance so they can't drift.
-pub(super) fn about_slab_h(buf_h: usize) -> f32 {
-    buf_h as f32 * 0.18
+/// The About slab geometry: the ATTEST screen's spectrum/wordmark proportions (LaunchLayout portrait slices — 0.75u top air, 6u spectrum, wordmark 3.5u overlapping the spectrum's bottom by 2u, of a 22.75u window) shrunk UNIFORMLY by the pane/window width ratio — same shape, pane-sized, zoom-independent (Nick 2026-09-02: the first slab was "too short and wide with no air up top"). Returns (unit_px, total_slab_h); band offsets in units: air 0..0.75, wave 0.75..6.75, wordmark 4.75..8.25. One formula, shared by the bg-pass draw and the card's cursor advance so they can't drift.
+pub(super) fn about_slab(buf_w: usize, buf_h: usize, pane_w: f32) -> (f32, f32) {
+    let unit = (buf_h as f32 / 22.75) * (pane_w / buf_w as f32).min(1.0);
+    (unit, unit * 8.25)
 }
 
 fn settings_line(
