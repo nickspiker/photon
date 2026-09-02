@@ -50,19 +50,43 @@ const TRIM_OBSERVE_FRAMES: usize = 100; // 1s of consecutive over-depth before e
 const TRIM_CEILING_SLACK: usize = 4; // hard ceiling above target: 4 frames = one FEC-window burst of jitter headroom, never standing latency beyond it
 const TRIM_MAX_DROP_PER_RENDER: usize = 4; // cap the hard drop so a pathological backlog sheds over a few frames rather than one large skip
 static TRIM_OVER_STREAK: AtomicUsize = AtomicUsize::new(0);
-// Telemetry — the numbers that turn "latency feels a little off" into a diagnosis (peak standing depth vs target vs trims). Reset per call in clear_queues, logged by the engine at teardown.
+// SAMPLE-SPLICE CLOCK CONTROL (Nick's spec 2026-09-02: "at most one dropped sample per adjustment or 1 duplicated — minimize the DSP catchup framing"): the FINE actuator that nulls sample-clock drift so the coarse frame trims above become last-resort safeties instead of the steady-state. Bang-bang on queue depth: standing over target → DELETE one sample from the outgoing frame; standing under → DUPLICATE one. The splice lands where the waveform is flattest — a first-difference of exactly 0 (two identical adjacent samples: an error-FREE edit) short-circuits the scan, else the minimum-|diff| point (the local extremum, where the slope crosses zero — NOT an amplitude zero-crossing, which is the steepest-slope WORST place). One sample per 480 = ±0.21% rate authority, far beyond any real crystal drift; a splice at a flat point is unrepresentable-to-inaudible. Consumers are length-agnostic (desktop stages thru a VecDeque, Kotlin writes frame.size), so a 479/481-sample frame just paces the DAC pull.
+const SPLICE_UNDER_MARGIN: usize = 2; // duplicate only when depth sits ≥2 under target (priming/underrun own the empty case; hysteresis keeps delete/duplicate from chattering)
+static SPLICE_DROPPED: AtomicUsize = AtomicUsize::new(0);
+static SPLICE_DUPED: AtomicUsize = AtomicUsize::new(0);
+
+/// The splice-point ladder: first-diff == 0 anywhere → take it immediately (perfect edit); else the min-|first-diff| index (flattest point). Returns an index n in 1..len (the edit touches sample n).
+fn best_splice(f: &[i16]) -> usize {
+    let mut best = 1usize;
+    let mut best_d = i32::MAX;
+    for n in 1..f.len() {
+        let d = (f[n] as i32 - f[n - 1] as i32).abs();
+        if d == 0 {
+            return n; // exact zero diff — error-free splice, stop looking
+        }
+        if d < best_d {
+            best_d = d;
+            best = n;
+        }
+    }
+    best
+}
+
+// Telemetry — the numbers that turn "latency feels a little off" into a diagnosis (peak standing depth vs target vs trims vs splice rate). Reset per call in clear_queues, logged at session teardown.
 static JITTER_UNDERRUNS: AtomicUsize = AtomicUsize::new(0);
 static JITTER_DEPTH_PEAK: AtomicUsize = AtomicUsize::new(0);
 static JITTER_TRIMS: AtomicUsize = AtomicUsize::new(0);
 
-/// Per-call jitter diagnostics: (target_frames, current_depth, underruns, peak_depth, trims). 10ms per frame.
-pub fn jitter_stats() -> (usize, usize, usize, usize, usize) {
+/// Per-call jitter diagnostics: (target_frames, current_depth, underruns, peak_depth, trims, samples_dropped, samples_duplicated). 10ms per frame; the splice counts are SAMPLES (20.8µs each) — a settled drift shows a steady low rate, a hammering rate means an upstream nominal-rate bug.
+pub fn jitter_stats() -> (usize, usize, usize, usize, usize, usize, usize) {
     (
         JITTER_TARGET.load(Ordering::Relaxed),
         PLAYBACK_Q.lock().unwrap().len(),
         JITTER_UNDERRUNS.load(Ordering::Relaxed),
         JITTER_DEPTH_PEAK.load(Ordering::Relaxed),
         JITTER_TRIMS.load(Ordering::Relaxed),
+        SPLICE_DROPPED.load(Ordering::Relaxed),
+        SPLICE_DUPED.load(Ordering::Relaxed),
     )
 }
 
@@ -188,7 +212,7 @@ fn next_render_frame() -> Vec<i16> {
             }
         } else {
             match q.pop_front() {
-                Some(f) => {
+                Some(mut f) => {
                     // Clean drain: after a long steady stretch, shrink the target one step toward the floor.
                     let streak = JITTER_CLEAN_STREAK.fetch_add(1, Ordering::Relaxed) + 1;
                     let target = JITTER_TARGET.load(Ordering::Relaxed);
@@ -217,6 +241,24 @@ fn next_render_frame() -> Vec<i16> {
                     } else {
                         TRIM_OVER_STREAK.store(0, Ordering::Relaxed);
                     }
+                    // Sample-splice clock control (the fine actuator — see the consts): one sample per frame, at the flattest point, glides the depth toward target so the frame trims above stay dormant.
+                    if f.len() > 2 {
+                        let depth = q.len();
+                        if depth > target {
+                            // Standing over → delete one sample (frame drains 20.8µs sooner; queue sheds).
+                            let n = best_splice(&f);
+                            f.remove(n);
+                            SPLICE_DROPPED.fetch_add(1, Ordering::Relaxed);
+                        } else if depth + SPLICE_UNDER_MARGIN <= target
+                            && !JITTER_PRIMING.load(Ordering::Relaxed)
+                        {
+                            // Standing under → duplicate one sample (frame lasts 20.8µs longer; queue rebuilds before an underrun stumbles playback).
+                            let n = best_splice(&f);
+                            let s = f[n];
+                            f.insert(n, s);
+                            SPLICE_DUPED.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                     f
                 }
                 None => {
@@ -232,7 +274,8 @@ fn next_render_frame() -> Vec<i16> {
         }
     };
     // Far-end level for the duck: peak-hold with a per-frame decay (~80ms fall from full), so the mic stays attenuated across the device-buffer + acoustic lag rather than only the exact rendered instant.
-    let lvl = (frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>() / FRAME_SAMPLES as u64) as usize;
+    // frame.len(), not FRAME_SAMPLES: the sample splice can hand back 479/481-sample frames.
+    let lvl = (frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>() / frame.len().max(1) as u64) as usize;
     let old = FAR_LEVEL.load(Ordering::Relaxed);
     FAR_LEVEL.store(lvl.max(old - old / 4), Ordering::Relaxed);
     {
@@ -248,15 +291,17 @@ fn next_render_frame() -> Vec<i16> {
 /// Reset all queues — session start/stop hygiene so a new call never hears the last call's tail.
 /// Logs the session's jitter diagnostics FIRST (this runs at both start and stop; the stop edge is the one whose numbers matter, and a start against zeroed stats logs nothing).
 fn clear_queues() {
-    let (target, depth, underruns, peak, trims) = jitter_stats();
-    if underruns > 0 || peak > 0 || trims > 0 {
+    let (target, depth, underruns, peak, trims, dropped, duped) = jitter_stats();
+    if underruns > 0 || peak > 0 || trims > 0 || dropped > 0 || duped > 0 {
         crate::logf!(
-            "CALL: jitter — target {} depth {} peak {} underruns {} trims {} (frames, 10ms each)",
+            "CALL: jitter — target {} depth {} peak {} underruns {} trims {} (frames, 10ms each); splice -{}/+{} samples",
             target,
             depth,
             peak,
             underruns,
-            trims
+            trims,
+            dropped,
+            duped
         );
     }
     CAPTURE_Q.lock().unwrap().clear();
@@ -270,6 +315,8 @@ fn clear_queues() {
     JITTER_UNDERRUNS.store(0, Ordering::Relaxed);
     JITTER_DEPTH_PEAK.store(0, Ordering::Relaxed);
     JITTER_TRIMS.store(0, Ordering::Relaxed);
+    SPLICE_DROPPED.store(0, Ordering::Relaxed);
+    SPLICE_DUPED.store(0, Ordering::Relaxed);
     FAR_LEVEL.store(0, Ordering::Relaxed);
 }
 
