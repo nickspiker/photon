@@ -3,6 +3,7 @@ pub mod conversation;
 pub mod device;
 pub mod friendship;
 pub mod handle;
+pub mod message_body;
 pub mod peer;
 pub mod seed;
 pub mod shard;
