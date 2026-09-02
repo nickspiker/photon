@@ -3138,10 +3138,17 @@ fn human_bytes(n: u64) -> String {
     }
 }
 
-/// The About slab geometry: the ATTEST screen's spectrum/wordmark proportions (LaunchLayout portrait slices — 0.75u top air, 6u spectrum, wordmark 3.5u overlapping the spectrum's bottom by 2u, of a 22.75u window) shrunk UNIFORMLY by the pane/window width ratio — same shape, pane-sized, zoom-independent (Nick 2026-09-02: the first slab was "too short and wide with no air up top"). Returns (unit_px, total_slab_h); band offsets in units: air 0..0.75, wave 0.75..6.75, wordmark 4.75..8.25. One formula, shared by the bg-pass draw and the card's cursor advance so they can't drift.
+/// The About slab band offsets, in slab units (attest proportions, wave doubled to 12u per Nick's call): air 0..0.75, wave 0.75..12.75, wordmark 10.75..14.25 (overlapping the wave's bottom by 2u). ONE set of constants for the bg-pass bands AND the card's cursor advance — the "killswitch ready is higher than the Photon text" overlap (2026-09-02) was exactly these numbers living in two places and only one getting the wave-doubling edit.
+pub(super) const ABOUT_SLAB_AIR: f32 = 0.75;
+pub(super) const ABOUT_SLAB_WAVE_H: f32 = 12.0;
+pub(super) const ABOUT_SLAB_LOGO_TOP: f32 = ABOUT_SLAB_AIR + ABOUT_SLAB_WAVE_H - 2.0;
+pub(super) const ABOUT_SLAB_LOGO_H: f32 = 3.5;
+pub(super) const ABOUT_SLAB_TOTAL: f32 = ABOUT_SLAB_LOGO_TOP + ABOUT_SLAB_LOGO_H;
+
+/// The About slab geometry: the attest screen's composition shrunk UNIFORMLY by the pane/window width ratio — same shape, pane-sized, zoom-independent. Returns (unit_px, total_slab_h).
 pub(super) fn about_slab(buf_w: usize, buf_h: usize, pane_w: f32) -> (f32, f32) {
     let unit = (buf_h as f32 / 22.75) * (pane_w / buf_w as f32).min(1.0);
-    (unit, unit * 8.25)
+    (unit, unit * ABOUT_SLAB_TOTAL)
 }
 
 fn settings_line(

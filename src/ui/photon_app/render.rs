@@ -376,10 +376,10 @@ impl PhotonApp {
                     (
                         sx0,
                         sx1,
-                        top + (unit * 0.75) as isize,
-                        (unit * 12.0) as usize,
-                        top + (unit * 10.75) as isize,
-                        (unit * 3.5) as usize,
+                        top + (unit * ABOUT_SLAB_AIR) as isize,
+                        (unit * ABOUT_SLAB_WAVE_H) as usize,
+                        top + (unit * ABOUT_SLAB_LOGO_TOP) as isize,
+                        (unit * ABOUT_SLAB_LOGO_H) as usize,
                         clip_y0,
                         clip_y1,
                     )
