@@ -10,17 +10,43 @@ use std::f32::consts::TAU;
 
 /// Paint a chromatic wave covering `rect` of `canvas`. `phase` is the wave's horizontal phase shift in radians (advance over time to animate); `period_scale` multiplies the base waves-per-region (`1.` = legacy density, `>1.` = more waves, `<1.` = fewer waves).
 pub fn chromatic_wave(canvas: &mut Canvas, rect: PixelRect, phase: f32, period_scale: f32) {
+    let h = canvas.height;
+    chromatic_wave_clipped(canvas, rect.x0, rect.x1, rect.y0 as isize, rect.y1 - rect.y0, 0, h, phase, period_scale);
+}
+
+/// CROP-not-shrink variant (the About slab, 2026-09-02): the wave's pattern is computed over its FULL logical band (`top`..`top+logical_h`, `top` may be negative when scrolled past the pane top) and only rows inside `clip_y0..clip_y1` (∩ the buffer) are painted. Shrinking the rect instead RESCALES the pattern — the "wave scales when scrolling" field bug.
+#[allow(clippy::too_many_arguments)]
+pub fn chromatic_wave_clipped(
+    canvas: &mut Canvas,
+    x0: usize,
+    x1: usize,
+    top: isize,
+    logical_h: usize,
+    clip_y0: usize,
+    clip_y1: usize,
+    phase: f32,
+    period_scale: f32,
+) {
     let buf_w = canvas.width;
-    let _buf_h = canvas.height;
-    let PixelRect { x0, y0, x1, y1 } = rect;
-    let region_w = x1 - x0;
-    let region_h = y1 - y0;
+    let buf_h = canvas.height;
+    let region_w = x1.saturating_sub(x0);
+    let region_h = logical_h;
+    if region_w == 0 || x1 > buf_w {
+        return;
+    }
+    let clip_y1 = clip_y1.min(buf_h);
     // WHY: `logo_height` is the denominator in `scale = ... / logo_height_f` below; if it were 0 the f32 division produces ±Inf / NaN and the per-pixel `as u8` cast saturates to 0 across the entire region, painting nothing — at which point the loops are wasted work. PROOF: triggered exactly when `region_h ≤ 1` (one or zero pixels of wave); the wave is undefined at that height anyway.
     let logo_height = region_h / 2;
     if logo_height == 0 {
         return;
     }
-    canvas.damage.add(PixelRect::new(x0, y0, x1, y1));
+    {
+        let dy0 = top.max(clip_y0 as isize).max(0) as usize;
+        let dy1 = ((top + region_h as isize).max(0) as usize).min(clip_y1);
+        if dy1 > dy0 {
+            canvas.damage.add(PixelRect::new(x0, dy0, x1, dy1));
+        }
+    }
 
     // Harmonic mean of region dims for brightness scaling — keeps the bar's overall energy stable across aspect ratios. Matches legacy line 5103. The `2` is part of the harmonic-mean formula, not a tuning knob.
     let region_span = 2. * region_w as f32 * region_h as f32 / (region_w as f32 + region_h as f32);
@@ -41,8 +67,12 @@ pub fn chromatic_wave(canvas: &mut Canvas, rect: PixelRect, phase: f32, period_s
     let two_logo_height_f = (logo_height * 2) as f32;
 
     for y in 0..region_h {
-        let py = y0 + y;
-        // py < y1 ≤ buf_h, x bounds checked similarly below — indexes proven in-bounds by loop invariants (no bounds-check needed at the pixel write).
+        // Logical row → canvas row; rows outside the clip band (or the buffer) are computed-free skips — the PATTERN stays anchored to the logical band while only visible rows paint.
+        let py_i = top + y as isize;
+        if py_i < clip_y0 as isize || py_i >= clip_y1 as isize {
+            continue;
+        }
+        let py = py_i as usize;
         let row_base = py * buf_w;
         let y_f = y as f32;
         for x in 0..region_w {

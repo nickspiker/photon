@@ -361,23 +361,27 @@ impl PhotonApp {
         // Bg-first compose chain: noise paints opaque, the wave reads it for the `sqrt(c*scale + c_bg²)` blend, then the logo (glow / body / highlight) paints over both via legacy visible-RGB ops. Each step preserves α on the pixels it touches. The wave + logo are Launch-screen chrome — once attested the user shouldn't be staring at the wordmark every time they open the app, so Ready / Searching / Conversation get just the background noise and let their own widgets own the canvas.
         let on_launch = matches!(self.state, AppState::Launch(_));
         // ABOUT-PAGE SLAB (Nick 2026-09-02): the wave + wordmark SCROLL with the card but never SCALE (fixed window-proportional size, zoom-independent — content sits on a fixed slab instead of the logo warping with zoom). Drawn HERE in the bg pass because that's the only place the wave works: it quadrature-reads the noise beneath it, and fluor's under-blend made the old content-pass draw invisible ("suspiciously absent"). The content arm advances past the same slab height without painting.
-        let about_slab: Option<(fluor::canvas::PixelRect, fluor::canvas::PixelRect)> =
+        let about_slab: Option<(usize, usize, isize, usize, isize, usize, usize, usize)> =
             if matches!(self.state, AppState::Settings(SettingsPage::About)) {
                 let sl = SettingsLayout::compute(&ctx.viewport);
                 let inset = sl.content_inset();
                 let slab_h = about_slab_h(buf_h);
-                let top = inset.y - settings_content_scroll;
-                let lx0 = inset.x.max(0.0) as usize;
-                let lx1 = (inset.x + inset.w).max(0.0) as usize;
-                let clampy = |v: f32| v.max(inset.y).max(0.0) as usize;
-                let wy0 = clampy(top);
-                let wy1 = (top + slab_h * 0.62).max(0.0) as usize;
-                let gy0 = clampy(top + slab_h * 0.30);
-                let gy1 = (top + slab_h).max(0.0) as usize;
-                (lx1 > lx0 && wy1 > wy0 && gy1 > gy0).then(|| {
+                // LOGICAL band: fixed size (zoom-independent), positioned by the scroll — may extend above the pane; the clipped draw crops.
+                let top = (inset.y - settings_content_scroll) as isize;
+                let sx0 = inset.x.max(0.0) as usize;
+                let sx1 = ((inset.x + inset.w).max(0.0) as usize).min(buf_w);
+                let clip_y0 = inset.y.max(0.0) as usize;
+                let clip_y1 = ((inset.y + inset.h).max(0.0) as usize).min(buf_h);
+                (sx1 > sx0 && clip_y1 > clip_y0).then(|| {
                     (
-                        fluor::canvas::PixelRect::new(lx0, wy0, lx1, wy1.min(buf_h)),
-                        fluor::canvas::PixelRect::new(lx0, gy0, lx1, gy1.min(buf_h)),
+                        sx0,
+                        sx1,
+                        top,
+                        (slab_h * 0.62) as usize,
+                        top + (slab_h * 0.30) as isize,
+                        (slab_h * 0.70) as usize,
+                        clip_y0,
+                        clip_y1,
                     )
                 })
             } else {
@@ -399,9 +403,8 @@ impl PhotonApp {
         // Stage marks for the >1s breakdown at the end of the frame — the flat "render took Nms" line named the SCREEN but not the STAGE, which stalled the 2026-08-21 hang hunt (5.8-8.8s Conversation renders, no idea where inside).
         let mark_pre = std::time::Instant::now();
         chrome.rasterize_bg(ctx.damage, |canvas| {
-            // Chromatic wave FIRST, then the background noise — that is the paint order for the spectrum band.
+            // LOGO first (an under() layer — first-drawn claims its pixels; the noise then composes beneath). The wave does NOT draw here: pre-noise it lands on α=0 pixels the noise fully replaces — the old both-blocks double-draw burned a full wave AND a full 3-raster logo per bg pass for nothing (Nick 2026-09-02).
             if on_launch {
-                chromatic_wave(canvas, spectrum_rect, phase, period_scale);
                 paint_photon_logo(canvas, text, logo_rect);
             }
             if show_version {
@@ -439,15 +442,14 @@ impl PhotonApp {
                 None,
                 bg_base,
             );
-            // Wave then logo — RMW ops that read the now-opaque noise beneath as their base. The chromatic wave quadrature-blends with the bg colour (sqrt-linear-light) so it MUST follow the noise; the logo composites over the wave/noise. (Watermarks above went before the noise so it composes under them.)
+            // WAVE after the noise — an RMW quadrature-add that reads the now-opaque noise as its base. One call, post-noise, is the whole spectrum band.
             if on_launch {
                 chromatic_wave(canvas, spectrum_rect, phase, period_scale);
-                paint_photon_logo(canvas, text, logo_rect);
             }
-            // The About slab (see about_slab above): same noise-reading ops, scrolled position, fixed size.
-            if let Some((wave_r, logo_r)) = about_slab {
-                chromatic_wave(canvas, wave_r, about_wave_phase, 1.0);
-                paint_photon_logo(canvas, text, logo_r);
+            // The About slab: CLIPPED crop-not-shrink variants — the pattern/wordmark stay anchored to the full logical band (top goes negative as the card scrolls) and only pane-visible rows paint. Shrinking the rects instead RESCALED both (the "wave scales when scrolling" + vanished-wordmark field bugs; the shrunken-rect span math also underflowed).
+            if let Some((sx0, sx1, wave_top, wave_h, logo_top, logo_h, clip_y0, clip_y1)) = about_slab {
+                paint_photon_logo_clipped(canvas, text, sx0, sx1, logo_top, logo_h, clip_y0, clip_y1);
+                chromatic_wave_clipped(canvas, sx0, sx1, wave_top, wave_h, clip_y0, clip_y1, about_wave_phase, 1.0);
             }
         });
         // Window-perimeter hairline FIRST — painted straight into `target` (not the chrome group) and carves the window-shape clip_mask. fluor is under-blend only, so whatever lands in `target` first wins at shared edge pixels; drawing the hairline before any content makes it survive over full-bleed screens (Ready/Conversation) whose content reaches the window edge. The chrome group (buttons / orb / strip / title) still composites UNDER content via `flatten_into` below. The clip_mask carve here is the SOLE source of the single window-shape alpha-trim done at the OS boundary in finalize.
@@ -1636,7 +1638,9 @@ impl PhotonApp {
                         crate::ui::photon_logo::composite_glow_white(
                             canvas.pixels,
                             buf_w,
-                            band_top,
+                            band_top as isize,
+                            0,
+                            buf_h,
                             &scratch,
                         );
                     }
@@ -2356,7 +2360,9 @@ impl PhotonApp {
                             crate::ui::photon_logo::composite_glow_white(
                                 canvas.pixels,
                                 buf_w,
-                                band_top,
+                                band_top as isize,
+                                0,
+                                buf_h,
                                 &scratch,
                             );
                         }

@@ -1,9 +1,9 @@
 //! [`PhotonApp`]: the [`fluor::host::app::FluorApp`] impl that hosts Photon on desktop. Owns the app state machine (`AppState`), network handles, contact list, and the per-screen widgets (Launch / Ready / Searching / Conversation), drawing the chrome (perimeter, shadow, window buttons, app-icon orb) plus each screen's content, and routing cross-thread wake-ups thru `FluorApp::on_user_event` with the [`super::PhotonEvent`] payload.
 //! This root file holds the struct, its shared helper fns/types, and the small impls (constructor, `Container`, `Default`); the method bodies live in the per-concern child modules declared below.
 
-use super::chromatic_wave::chromatic_wave;
+use super::chromatic_wave::{chromatic_wave, chromatic_wave_clipped};
 use super::launch_layout::{AttestBlockLayout, LaunchLayout};
-use super::photon_logo::paint_photon_logo;
+use super::photon_logo::{paint_photon_logo, paint_photon_logo_clipped};
 use super::ready_layout::ReadyLayout;
 use super::settings_layout::SettingsLayout;
 use super::state::{AppState, ContactPage, LaunchState, SettingsPage};
