@@ -1742,6 +1742,8 @@ pub struct PhotonApp {
     settings_removeshred_armed: bool,
     /// About page: false = show the version as dozenal GLYPHS (the default — proper rendered dozenal, never arabic); true = the version tapped, spell it out in voca words. Toggles on each tap of the version row.
     about_version_spelled: bool,
+    /// The running audio calibration's worker handle (Settings→Audio) — drop = stop. One at a time; the drain stores the posted profile + clears this.
+    audio_cal_handle: Option<crate::call::calibrate::CalHandle>,
     /// One tap on the version reveals the dozenal index; ONE tap within the index reveals the custodian riddle easter egg beneath it (session-permanent once found, hidden with the index when the version collapses).
     about_riddle_revealed: bool,
 
@@ -2165,6 +2167,7 @@ impl PhotonApp {
             fleet_approve_armed: None,
             settings_removeshred_armed: false,
             about_version_spelled: false,
+            audio_cal_handle: None,
             about_riddle_revealed: false,
         }
     }
@@ -2866,6 +2869,7 @@ fn settings_page_rows(page: SettingsPage) -> usize {
         SettingsPage::You => 7,
         SettingsPage::Diagnostics => 10,
         SettingsPage::Security => 15,
+        SettingsPage::Wave => 10,
         _ => 8,
     }
 }

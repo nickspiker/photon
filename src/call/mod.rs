@@ -4,6 +4,7 @@
 //!
 //! No timers anywhere: ringing stops on answer/decline/hangup edges, the caller's patience is the timeout, and the intra-call key ratchet steps on packet COUNT, not clocks.
 
+pub mod calibrate;
 pub mod engine;
 pub mod spool;
 pub mod record;

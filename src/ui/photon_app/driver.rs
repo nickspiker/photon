@@ -1588,6 +1588,35 @@ impl FluorApp for PhotonApp {
                         // A tap anywhere within the revealed dozenal index → the custodian riddle appears beneath it. One tap; session-permanent once found.
                         self.about_riddle_revealed = true;
                     }
+                } else if page == SettingsPage::Wave {
+                    use crate::call::calibrate::{self, CalPhase};
+                    let running = matches!(calibrate::phase(), CalPhase::Listen | CalPhase::Repeat);
+                    if slot == 0 && !running {
+                        // Calibrate / Recalibrate — start the ritual (refuses politely while a call owns audio).
+                        calibrate::ack_phase();
+                        self.audio_cal_handle = calibrate::start();
+                        if self.audio_cal_handle.is_none() {
+                            self.ready_toast = Some("can't calibrate now (a call is active?)".to_string());
+                            self.ready_toast_screen = None;
+                        }
+                    } else if slot == 1 && !running && !self.route_calibrated_now() {
+                        // Headset skip: no acoustic path to measure — a null-coupling profile (unit gain, zero g/delay) unlocks calls without the ritual.
+                        let p = crate::call::calibrate::CalProfile {
+                            mic_gain: 1.0,
+                            floor: 0.0,
+                            g_norm: 0.0,
+                            delay_ms: 0,
+                            cal_vol_db: crate::platform::audio::current_volume_db(),
+                            route_id: crate::platform::audio::route_id(),
+                        };
+                        if p.route_id.is_empty() {
+                            self.ready_toast = Some("no output device detected yet".to_string());
+                        } else {
+                            self.store_cal_profile(&p);
+                            self.ready_toast = Some(format!("marked as headset ({})", p.route_id));
+                        }
+                        self.ready_toast_screen = None;
+                    }
                 } else {
                     crate::logf!(
                         "settings-stub: pill {} on {} (no behaviour wired)",
