@@ -381,7 +381,7 @@ impl PhotonApp {
                     None => break,
                 },
             };
-            // OWN-FRAME GUARD — the one seam every receive path funnels through. A frame we authored can loop back (relay echo, LAN multicast loopback, a send aimed at an endpoint already poisoned to our own address), and the arms below adopt endpoints/addresses/liveness from whatever sender they see: one echoed offer elected US the sibling's active device, every later send aimed at ourselves, and the ceremony parked for a day ringing its own doorbell (field, 2026-08-12). Nothing a device tells ITSELF over the network is information — drop it before any arm can act on it.
+            // OWN-FRAME GUARD — the one seam every receive path funnels thru. A frame we authored can loop back (relay echo, LAN multicast loopback, a send aimed at an endpoint already poisoned to our own address), and the arms below adopt endpoints/addresses/liveness from whatever sender they see: one echoed offer elected US the sibling's active device, every later send aimed at ourselves, and the ceremony parked for a day ringing its own doorbell (field, 2026-08-12). Nothing a device tells ITSELF over the network is information — drop it before any arm can act on it.
             if let (Some(sender), Some(kp)) = (update.sender_device(), self.device_keypair.as_ref())
             {
                 if sender == kp.public.as_bytes() {
@@ -1549,7 +1549,7 @@ impl PhotonApp {
                     use crate::crypto::clutch::{derive_conversation_token, ClutchOfferPayload};
                     use crate::network::status::ClutchOfferRequest;
                     use crate::types::ClutchState;
-                    // LOCKOUT gate: a locked-out device must never re-enter through a ceremony — accepting its offer would weave fresh chains with hardware the fleet declared stolen.
+                    // LOCKOUT gate: a locked-out device must never re-enter thru a ceremony — accepting its offer would weave fresh chains with hardware the fleet declared stolen.
                     if self.is_locked_device(&sender_pubkey) {
                         crate::logf!(
                             "CLUTCH: offer from LOCKED-OUT device {} — refused",
@@ -4589,7 +4589,7 @@ impl PhotonApp {
             }
         }
 
-        // COMPLETE-WITHOUT-CHAINS SELF-HEAL (field 2026-08-26, Emma's device after the pre-fix crypto wipe): the wipe cleared her friendship chains, the RAM resurrection restored a contact CLAIMING Complete — so every inbound frame dropped "No friendship found" forever and nothing ever triggered a repair, because the state said there was nothing to fix. The evidence is the frame we couldn't route: a probed token whose contact claims Complete while its chains are ABSENT gets the same reset the offer-while-Complete re-key path runs, and the fresh offer walks the peer through the normal accepting-re-key flow. Evidence-driven (never fires on healthy or mid-ceremony state), once per contact per session via the keygen-in-progress latch.
+        // COMPLETE-WITHOUT-CHAINS SELF-HEAL (field 2026-08-26, Emma's device after the pre-fix crypto wipe): the wipe cleared her friendship chains, the RAM resurrection restored a contact CLAIMING Complete — so every inbound frame dropped "No friendship found" forever and nothing ever triggered a repair, because the state said there was nothing to fix. The evidence is the frame we couldn't route: a probed token whose contact claims Complete while its chains are ABSENT gets the same reset the offer-while-Complete re-key path runs, and the fresh offer walks the peer thru the normal accepting-re-key flow. Evidence-driven (never fires on healthy or mid-ceremony state), once per contact per session via the keygen-in-progress latch.
         for token in rekey_probe {
             let our_pid = self
                 .session

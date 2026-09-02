@@ -67,29 +67,29 @@ fn dev_patch() -> u32 {
     env!("PHOTON_VERSION_PATCH").parse().unwrap_or(0)
 }
 
-/// A manifest version tuple in dozenal glyphs: major omitted while 0, `.patch` only when ≥1 — the same omissions the wire uses.
+/// A manifest version tuple, BASE-AWARE (fmt_num honours the dozenal/decimal toggle — Nick 2026-09-02: version numbers respect the selected units): major omitted while 0, `.patch` only when ≥1 — the same omissions the wire uses.
 fn dozenal_version_tuple(v: (usize, usize, usize)) -> String {
     let (maj, min, pat) = v;
     let mut s = String::new();
     if maj > 0 {
-        s.push_str(&crate::dozenal_glyphs(maj as u32));
+        s.push_str(&crate::fmt_num(maj as u32));
         s.push('.');
     }
-    s.push_str(&crate::dozenal_glyphs(min as u32));
+    s.push_str(&crate::fmt_num(min as u32));
     if pat > 0 {
         s.push('.');
-        s.push_str(&crate::dozenal_glyphs(pat as u32));
+        s.push_str(&crate::fmt_num(pat as u32));
     }
     s
 }
 
-/// The displayed dozenal version: minor in dozenal glyphs, plus `.patch` (dozenal) when this is a dev build (patch ≥ 1 — releases are always X.Y.0 and show bare).
+/// The displayed version, BASE-AWARE via fmt_num: minor, plus `.patch` when this is a dev build (patch ≥ 1 — releases are always X.Y.0 and show bare). Dozenal glyphs need the Oxanium face at the draw site; decimal renders anywhere.
 fn version_dozenal_glyphs() -> String {
-    let mut s = crate::dozenal_glyphs(deploy_version());
+    let mut s = crate::fmt_num(deploy_version());
     let p = dev_patch();
     if p > 0 {
         s.push('.');
-        s.push_str(&crate::dozenal_glyphs(p));
+        s.push_str(&crate::fmt_num(p));
     }
     s
 }
@@ -684,7 +684,7 @@ fn display_content(content: &str) -> String {
                 tail
             )
         } else {
-            // Files keep the paperclip + DECIMAL size in the default bubble font: that font can't render dozenal glyphs (they are Oxanium-only control bytes), so routing a file size through fmt_num here would tofu. Converting files needs the same Oxanium-row treatment call.audio got — a deliberate follow-up, not a silent regression.
+            // Files keep the paperclip + DECIMAL size in the default bubble font: that font can't render dozenal glyphs (they are Oxanium-only control bytes), so routing a file size thru fmt_num here would tofu. Converting files needs the same Oxanium-row treatment call.audio got — a deliberate follow-up, not a silent regression.
             let state = if held { "" } else { " \u{2014} tap for actions" };
             format!("\u{1F4CE} {} \u{00B7} {}\u{202F}{}{}", name, units, label, state)
         }
@@ -967,9 +967,7 @@ fn you_rows_plan(fields: &[ProfileField]) -> Vec<YouRow> {
     rows.push(YouRow::Note);
     rows.push(YouRow::IdentityHeader);
     rows.push(YouRow::IdentityFp);
-    rows.push(YouRow::SavePill);
-    rows.push(YouRow::Blank);
-    rows.push(YouRow::AvatarPill);
+    // No SavePill / AvatarPill (Nick 2026-09-02): fields save on focus-leave + page-navigate (save_you_fields diffs, so a no-change blur is free), and the avatar changes from YOUR contact page, not here. Variants stay compiled for the render arm's exhaustive match.
     rows
 }
 
@@ -1309,7 +1307,7 @@ pub struct PhotonApp {
     /// A rotation (or other epoch-worthy edge) happened — the next sweep mints a checkpoint.
     /// Fleet-wide ACTIVE-CLEARER claim (notification design 2026-07-23): the newest (conversation_token, device, osc) claim known — ours or a sibling's, LWW by osc so a new device's claim displaces the old holder without coordination. `None` = nobody claims a screen. A live claim by ANOTHER sibling on a conversation suppresses our ding for its messages (that device is watching); voided when the holder's presence drops (the existing 3-strike offline verdict — crash/sleep coverage without timers).
     fleet_focus_claim: Option<([u8; 32], [u8; 32], i64)>,
-    /// Fleet ATTENTION holder (2026-08-18): the device with the human's newest input, (device_pubkey, osc), LWW by osc with device-byte tie-break, Lamport-bumped at the sender so local input supersedes any clock skew. `None` = bootstrap/single-device — every gate defaults to legacy behavior. Frames flow only on the transition edge (a NON-holder receives qualifying input), so the fleet is silent while the human stays put. Both ding-suppression gates require holding attention: a parked-but-focused screen must not silently discharge alert duty while the human is demonstrably at another device. RAM-only; dies with the session. Mutate ONLY through set_fleet_attention (it mirrors the desktop banner-gate atomic).
+    /// Fleet ATTENTION holder (2026-08-18): the device with the human's newest input, (device_pubkey, osc), LWW by osc with device-byte tie-break, Lamport-bumped at the sender so local input supersedes any clock skew. `None` = bootstrap/single-device — every gate defaults to legacy behavior. Frames flow only on the transition edge (a NON-holder receives qualifying input), so the fleet is silent while the human stays put. Both ding-suppression gates require holding attention: a parked-but-focused screen must not silently discharge alert duty while the human is demonstrably at another device. RAM-only; dies with the session. Mutate ONLY thru set_fleet_attention (it mirrors the desktop banner-gate atomic).
     fleet_attention: Option<([u8; 32], i64)>,
     /// The one live call (docs/calls.md) — None = no call. Singular by design (v1); a second inbound offer gets an automatic Busy.
     active_call: Option<crate::call::ActiveCall>,
@@ -1405,7 +1403,7 @@ pub struct PhotonApp {
     zoom_saved_ru: f32,
     /// Monotonic tick counter — the frame-gap fence for `pending_chain_sends` (see `drain_pending_chain_sends`).
     tick_serial: u64,
-    /// Outgoing sends whose WIRE half is deferred: (contact idx, text, eagle_time, tick_serial at enqueue). The pending-grey bubble is inserted synchronously in `send_chain_message`; chain_transmit (weave selection, braid advance, chains persist, PT dispatch) runs from this queue AFTER the frame presents — running it inline meant the bubble, though inserted first, couldn't render until the whole wire half finished (the "message goes into the void" report).
+    /// Outgoing sends whose WIRE half is deferred: (contact idx, text, eagle_time, tick_serial at enqueue). The pending-grey bubble is inserted synchronously in `send_chain_message`; chain_transmit (weave selection, braid advance, chains persist, PT dispatch) runs from this queue AFTER the frame presents — running it inline meant the bubble, tho inserted first, couldn't render until the whole wire half finished (the "message goes into the void" report).
     pending_chain_sends: Vec<(
         usize,
         String,
@@ -2561,7 +2559,7 @@ impl Default for PhotonApp {
 /// Walk the widget tree. Screen content yields BEFORE chrome: launch-screen content (textbox → attest button) first, then chrome's four buttons — matching the macOS / GNOME convention where Tab traverses form fields before window-frame controls. `linear_tab_next` reads this order off the visit walk; `dispatch_click` / `dispatch_key` use it to route events by id. The walk gates on `state` so off-screen widgets neither hit-test nor cycle.
 impl Container for PhotonApp {
     fn visit(&mut self, f: &mut dyn FnMut(&mut dyn Widget)) {
-        // Dispatch (click / key / focus / tab), hover, damage-tracking, and the cursor icon ALL walk widgets through here. App widgets first (screen-gated), then chrome. Registering a widget in `visit_app_widgets` is the ONLY place it must be added — everything else iterates that one walk, so a new textbox inherits hover + damage + I-beam + gestures for free. (Hand-maintained per-concern widget lists were the recurring "new box misses hover/damage" bug.)
+        // Dispatch (click / key / focus / tab), hover, damage-tracking, and the cursor icon ALL walk widgets thru here. App widgets first (screen-gated), then chrome. Registering a widget in `visit_app_widgets` is the ONLY place it must be added — everything else iterates that one walk, so a new textbox inherits hover + damage + I-beam + gestures for free. (Hand-maintained per-concern widget lists were the recurring "new box misses hover/damage" bug.)
         self.visit_app_widgets(f);
         if let Some(chrome) = self.chrome.as_mut() {
             chrome.visit(f);
@@ -3316,7 +3314,7 @@ fn settings_prose(
 }
 
 thread_local! {
-    /// The hovered hit id for the CURRENT frame's immediate-mode action pills. Set once per render from `self.hover_hit` (see [`set_stub_hover`]) so [`draw_stub_pill_filled`] can tell fluor's pill renderer which pill is hovered WITHOUT threading `hover_hit` through every wrapper and all ~30 call sites. UI thread only; a stale value between frames is harmless (the next render overwrites it before any pill draws).
+    /// The hovered hit id for the CURRENT frame's immediate-mode action pills. Set once per render from `self.hover_hit` (see [`set_stub_hover`]) so [`draw_stub_pill_filled`] can tell fluor's pill renderer which pill is hovered WITHOUT threading `hover_hit` thru every wrapper and all ~30 call sites. UI thread only; a stale value between frames is harmless (the next render overwrites it before any pill draws).
     static STUB_HOVER_HIT: std::cell::Cell<HitId> = const { std::cell::Cell::new(HIT_NONE) };
 }
 

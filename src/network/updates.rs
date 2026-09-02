@@ -479,7 +479,7 @@ pub fn apply_desktop_blocking(
         }
     }
 
-    // Re-exec through the shim where installed (Linux), so the relaunch takes the verify-and-fallback path; else the swapped binary directly.
+    // Re-exec thru the shim where installed (Linux), so the relaunch takes the verify-and-fallback path; else the swapped binary directly.
     let target = launch_shim().filter(|p| p.exists()).unwrap_or(exe);
     Ok(target)
 }

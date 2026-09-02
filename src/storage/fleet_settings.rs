@@ -131,7 +131,7 @@ impl FleetSettings {
     }
 
     /// This DEVICE's own value for a key, ignoring the fleet global entirely — `None` if this device has never set one.
-    /// For settings that are ergonomics rather than preferences: zoom is tied to the physical monitor in front of you, so inheriting another device's value is always wrong. `effective` deliberately falls back to the global for a born-linked key, which is right for "how do my devices behave" and wrong for "how big is this screen". Reading zoom through `effective` is what let a fresh device adopt a 4K desktop's zoom seconds after launch.
+    /// For settings that are ergonomics rather than preferences: zoom is tied to the physical monitor in front of you, so inheriting another device's value is always wrong. `effective` deliberately falls back to the global for a born-linked key, which is right for "how do my devices behave" and wrong for "how big is this screen". Reading zoom thru `effective` is what let a fresh device adopt a 4K desktop's zoom seconds after launch.
     pub fn device_local(&self, key: &str) -> Option<&VsfType> {
         self.our_entry(key).map(|e| &e.value)
     }
@@ -326,7 +326,7 @@ mod tests {
             "no zoom of our own to start"
         );
 
-        // A sibling (a phone) pushes ITS zoom. This arrives through the normal fleet pull.
+        // A sibling (a phone) pushes ITS zoom. This arrives thru the normal fleet pull.
         let sibling_zoom = VsfType::f5(0.5);
         let remote = vec![DeviceSettings {
             device_pubkey: SIBLING,

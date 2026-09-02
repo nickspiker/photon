@@ -66,11 +66,11 @@ Every Washington resident who bought something and could not receive it. Every d
 
 The legislature finds that:
 
-(1) Consumers increasingly receive goods and services they have purchased through software running on personal computing devices, including event tickets, transit passes, payment credentials, boarding documents, and access credentials.
+(1) Consumers increasingly receive goods and services they have purchased thru software running on personal computing devices, including event tickets, transit passes, payment credentials, boarding documents, and access credentials.
 
 (2) Certain businesses condition delivery of these purchased goods and services on verification systems that evaluate the origin of software running on a consumer's device rather than the security properties of that device.
 
-(3) These systems reject devices that can demonstrate, through hardware-backed cryptographic attestation, security properties equal to or exceeding those of accepted devices.
+(3) These systems reject devices that can demonstrate, thru hardware-backed cryptographic attestation, security properties equal to or exceeding those of accepted devices.
 
 (4) The result is that consumers who have paid for goods and services are denied delivery of them for reasons unrelated to security, fraud, or any legitimate business purpose.
 
@@ -160,7 +160,7 @@ If any provision of this act or its application to any person or circumstance is
 
 Points a committee will raise, and where the draft already answers them.
 
-**"This legalizes rooted phones and lets fraud through."**
+**"This legalizes rooted phones and lets fraud thru."**
 
 It does not. Section 2(6) requires the attestation to chain to a hardware root of trust and to actually assert the property. A compromised device cannot produce that. It fails the check on the merits. This is the load-bearing definition in the entire bill and it is where opposing testimony will concentrate. Do not let it get weakened.
 

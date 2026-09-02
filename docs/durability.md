@@ -24,7 +24,7 @@ UI obligation (new, small): a single-device fleet is a fleet whose history has o
 
 > Any current-member device offline **≤ W** can resync deterministically from **any one live sibling** holding the rows. Offline **> W**, it may find the fleet's horizon has advanced past its cursor: it rejoins live participation immediately (lanes need no history) and backfills only what the fleet still holds — logged, UI-surfaced, never silent.
 
-- **Cursors.** Each sibling already exposes what it holds (history-page sweeps + lane heads). We make it explicit: a per-sibling **sync cursor** (last checkpoint k through which that sibling has confirmed holding all rows), carried on the existing pong/roster edges — no new frame family, one field.
+- **Cursors.** Each sibling already exposes what it holds (history-page sweeps + lane heads). We make it explicit: a per-sibling **sync cursor** (last checkpoint k thru which that sibling has confirmed holding all rows), carried on the existing pong/roster edges — no new frame family, one field.
 - **The horizon may not advance past `min(cursor)`** across fold members — **except** past wall-clock grace `W` (months; a user-facing setting, never a count), after which advancing past a silent member is a deliberate, logged, UI-surfaced decision, same wording as §14.7: a lost device can't hold forward secrecy hostage.
 - **Convergence gate, fleet form:** before any epoch-key zeroize (§4), at least one OTHER live sibling must confirm holding everything at/below the checkpoint being retired — read back over the sibling link, not assumed. A single-device fleet therefore never auto-shreds (nothing to converge against); its horizon is manual-only (§3).
 

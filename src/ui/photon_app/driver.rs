@@ -1352,7 +1352,7 @@ impl FluorApp for PhotonApp {
                         if let Some((pk, false, _, false, name, _, _, _)) = devices.get(idx).cloned() {
                             if self.fleet_lock_armed == Some(pk) {
                                 self.fleet_lock_armed = None;
-                                // The confirm DE-ATTESTS this device; the lock executes only inside the next successful attest (see pending_lock). Owner knows the handle and sails through; a thief just signed themselves out of the one device they held. Same session teardown as Security's "Lock".
+                                // The confirm DE-ATTESTS this device; the lock executes only inside the next successful attest (see pending_lock). Owner knows the handle and sails thru; a thief just signed themselves out of the one device they held. Same session teardown as Security's "Lock".
                                 if let Some(hp) = self.session.as_ref().map(|s| s.handle_proof) {
                                     // Locking the LAST other live device leaves this one alone holding the fleet — if it is then lost while the lock stands, no member can ever sign the unlock (custodian supersession is the only exit, and it isn't built). Say so at the confirmation.
                                     let other_live = devices
@@ -1560,7 +1560,7 @@ impl FluorApp for PhotonApp {
                         // Version row tapped → toggle dozenal glyphs ↔ spelled-out voca words (+ the dozenal index).
                         self.about_version_spelled = !self.about_version_spelled;
                     } else if slot == 4 {
-                        // The passless weblink → system browser. Desktop-only for now (Android needs an Intent through Kotlin — follow-up).
+                        // The passless weblink → system browser. Desktop-only for now (Android needs an Intent thru Kotlin — follow-up).
                         #[cfg(all(
                             unix,
                             not(target_os = "android"),
@@ -1852,7 +1852,7 @@ impl FluorApp for PhotonApp {
                                     self.ready_toast =
                                         Some("fetching from your devices\u{2026}".to_string());
                                 } else if name == "call.audio" {
-                                    // A kept call recording plays through the mono downmix (call/playback.rs). Holds the handle in call_playback so the worker keeps running (drop = stop); a fresh tap replaces + stops the prior. Refuses (None) if a call owns the audio session.
+                                    // A kept call recording plays thru the mono downmix (call/playback.rs). Holds the handle in call_playback so the worker keeps running (drop = stop); a fresh tap replaces + stops the prior. Refuses (None) if a call owns the audio session.
                                     let seed = self.session.as_ref().map(|s| s.identity_seed);
                                     if let Some(seed) = seed {
                                         self.call_playback =
@@ -2010,6 +2010,10 @@ impl FluorApp for PhotonApp {
                             && hit >= self.contact_hit_base
                             && hit < self.contact_hit_base.wrapping_add(256))
                             || (self.back_btn_hit_id != HIT_NONE && hit == self.back_btn_hit_id)
+                            // Settings pill band: stub pills brighten and the About passless.org link BOLDS on hover — all CONTENT-pass paint (not overlay deltas), so entering/leaving needs the full frame (the link's bold didn't appear until something else forced a redraw, field 2026-09-02).
+                            || (self.settings_btn_base != HIT_NONE
+                                && hit >= self.settings_btn_base
+                                && hit < self.settings_btn_base.wrapping_add(56))
                     };
                     if row_hover(new_hit) || row_hover(self.hover_hit) {
                         self.scene_dirty = true;
@@ -2387,7 +2391,7 @@ impl FluorApp for PhotonApp {
                     return EventResponse::Handled;
                 }
 
-                // Every OTHER item — contacts, pills, nav, orb, back, avatar, start-fresh, the Buttons — activates on RELEASE over the same element (fluor's PointerArbiter → `on_activate`); a drag-off before release cancels. So the press arm does NO activation and NO focus change for them: focusing on press left a button stuck in its dark focused tint after a drag-off (and swallowed hover). The host has already armed the element (held colour); we just consume the press so it doesn't fall through to a window drag.
+                // Every OTHER item — contacts, pills, nav, orb, back, avatar, start-fresh, the Buttons — activates on RELEASE over the same element (fluor's PointerArbiter → `on_activate`); a drag-off before release cancels. So the press arm does NO activation and NO focus change for them: focusing on press left a button stuck in its dark focused tint after a drag-off (and swallowed hover). The host has already armed the element (held colour); we just consume the press so it doesn't fall thru to a window drag.
                 ctx.window.request_redraw();
                 EventResponse::Handled
             }
@@ -2729,7 +2733,7 @@ impl FluorApp for PhotonApp {
                 self.clear_hints();
                 // Soft-keyboard input is a keystroke: it acknowledges the toast too (Android has no zoom chords to guard).
                 self.clear_toast();
-                // Android: soft IME committed `s` (typing, swipe, autocomplete). Route it to whichever textbox holds focus — the attest handle field OR the contacts search box. (This used to be hardcoded to the attest box, so typing on the contacts screen was silently dropped on Android even though focus + the soft keyboard were correct; desktop never hit this because physical keys go thru the focus-generic `widget::dispatch_key`.) Backspace arrives as the literal "\b" character from PhotonSurfaceView's deleteSurroundingText / composing-text replacement path, so peel those off and route to `backspace`; everything else inserts verbatim. No-op when no textbox is focused (focus might sit on the attest button via Tab).
+                // Android: soft IME committed `s` (typing, swipe, autocomplete). Route it to whichever textbox holds focus — the attest handle field OR the contacts search box. (This used to be hardcoded to the attest box, so typing on the contacts screen was silently dropped on Android even tho focus + the soft keyboard were correct; desktop never hit this because physical keys go thru the focus-generic `widget::dispatch_key`.) Backspace arrives as the literal "\b" character from PhotonSurfaceView's deleteSurroundingText / composing-text replacement path, so peel those off and route to `backspace`; everything else inserts verbatim. No-op when no textbox is focused (focus might sit on the attest button via Tab).
                 let mut handled = false;
                 let words_screen = matches!(self.state, AppState::AddDevice);
                 // The multi-line compose box lives OUTSIDE the single-line registry — its IME branch comes first. A committed "\n" inserts (the Android model: Enter is a newline, the send button sends).
@@ -3202,7 +3206,7 @@ impl FluorApp for PhotonApp {
                 let ceiling = self.msg_max_scroll;
                 if let Some(conv) = self.active_conv_mut() {
                     spring |= relax(&mut conv.scroll_offset, f32::INFINITY);
-                    // Clamp the STORED offset to the last-rendered ceiling: the 0-end rubber-bands (relax above, hi=∞), but drifting PAST the top (offset > max_scroll after the viewport shrank/grew) must snap back, else the list sticks above the oldest message until you scroll down through the excess. Only pull DOWN — never fight an active drag toward 0.
+                    // Clamp the STORED offset to the last-rendered ceiling: the 0-end rubber-bands (relax above, hi=∞), but drifting PAST the top (offset > max_scroll after the viewport shrank/grew) must snap back, else the list sticks above the oldest message until you scroll down thru the excess. Only pull DOWN — never fight an active drag toward 0.
                     if conv.scroll_offset > ceiling {
                         conv.scroll_offset = ceiling;
                         spring = true;

@@ -93,7 +93,7 @@ Value budget: the orb rides the fstate blob, so keep it small (a compressed thum
 Almost nothing — a deliberately thin plain layer for knobs needed before any handle exists:
 
 - `main.rs`-time dev knobs (the log hex-elision head/tail load before any identity is possible).
-- Arguably device update policy on a never-attested machine — though compiled defaults ("auto-update on") cover that until a handle shows up, at which point the identity's own settings take over.
+- Arguably device update policy on a never-attested machine — tho compiled defaults ("auto-update on") cover that until a handle shows up, at which point the identity's own settings take over.
 
 The old framing ("identity-scoped → vault, device-scoped-pre-identity → plain file") survives, but the fast path shrinks the plain file to a stub: hand-editable dev knobs, nothing a user touches thru UI.
 

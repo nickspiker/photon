@@ -351,7 +351,7 @@ fn derive_fresh_link(
 // ============================================================================
 
 // // XChaCha20 Nonce Derivation ============================================================================
-/// Derive the 24-byte XChaCha20 nonce from Eagle time (first 24 bytes of BLAKE3(timestamp)). The 192-bit nonce is the message braid's half of the 2026-08-18 stack-wide XChaCha migration — uniform with the AEAD layer, though the chain never carried birthday risk (per-message key rotation + a unique-per-message timestamp already precluded reuse).
+/// Derive the 24-byte XChaCha20 nonce from Eagle time (first 24 bytes of BLAKE3(timestamp)). The 192-bit nonce is the message braid's half of the 2026-08-18 stack-wide XChaCha migration — uniform with the AEAD layer, tho the chain never carried birthday risk (per-message key rotation + a unique-per-message timestamp already precluded reuse).
 pub fn derive_xnonce(eagle_time: &EagleTime) -> [u8; 24] {
     let hash = blake3::hash(&eagle_time.oscillations().unwrap_or(0).to_le_bytes());
     let mut nonce = [0u8; 24];

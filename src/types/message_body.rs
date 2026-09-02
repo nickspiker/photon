@@ -261,7 +261,7 @@ mod tests {
         let wire = b.encode();
         let back = MessageBody::decode(&wire).unwrap();
         assert_eq!(back, b);
-        // The plaintext threads through unchanged (the weave/legacy view).
+        // The plaintext threads thru unchanged (the weave/legacy view).
         assert_eq!(back.plaintext(), "learn more at passless today");
         // And a rich body's plaintext element is still the FIRST thing on the wire — a legacy x-reader gets it.
         let mut ptr = 0;

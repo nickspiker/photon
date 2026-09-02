@@ -144,7 +144,7 @@ mod tests {
             w.append(0, 1000, &[0xAA; 40]);
             w.append(1, 1010, &[0xBB; 42]);
         }
-        // Decrypt through the finalize parser (without blob_store — replicate its loop here against the file).
+        // Decrypt thru the finalize parser (without blob_store — replicate its loop here against the file).
         let ticket = SpoolTicket {
             key,
             path: path.clone(),

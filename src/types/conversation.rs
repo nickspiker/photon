@@ -264,7 +264,7 @@ mod tests {
             Some((300, "original, truly".to_string()))
         );
 
-        // Deleting the newest edit reverts to the previous one; the original row is untouched throughout.
+        // Deleting the newest edit reverts to the previous one; the original row is untouched thruout.
         conv.messages
             .iter_mut()
             .find(|m| m.timestamp == 300)

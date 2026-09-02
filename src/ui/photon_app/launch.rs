@@ -244,7 +244,7 @@ impl PhotonApp {
                     // Kick at most ONE keygen now; the rest are serialized by spawn_next_pending_keygen (called each tick) so we never run two McEliece keygens at once — two in parallel on launch starved the UI thread (the "first launch hangs" symptom). The Pending + keyless contacts are picked up one at a time as each keygen completes.
                     self.spawn_next_pending_keygen();
                 }
-                // Merge the friendship chains the worker loaded from disk into the live map. Without this, resumed contacts have no chains in self.friendship_chains and sending fails with "friendship chains missing" — even though storage loaded them fine. Only add ids we don't already hold; an in-session chain (built at ceremony completion) is fresher than a disk copy, so never clobber it.
+                // Merge the friendship chains the worker loaded from disk into the live map. Without this, resumed contacts have no chains in self.friendship_chains and sending fails with "friendship chains missing" — even tho storage loaded them fine. Only add ids we don't already hold; an in-session chain (built at ceremony completion) is fresher than a disk copy, so never clobber it.
                 let mut merged_chains = 0usize;
                 for (fid, chains) in data.friendships {
                     if !self.friendship_chains.iter().any(|(id, _)| *id == fid) {

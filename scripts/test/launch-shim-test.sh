@@ -49,7 +49,7 @@ out="$(run_shim "$BAD" "$GOOD")"
 out="$(run_shim "$MISSING" "$GOOD")"
 [ "$out" = "RAN=good VERIFIED=1" ] && ok "A missing → skips, runs B" || bad "missing→B [$out]"
 
-# hang: A sleeps forever on verify; a 2s timeout must give up and fall through to B. (Bounds the test at ~2s, proves the timeout path.)
+# hang: A sleeps forever on verify; a 2s timeout must give up and fall thru to B. (Bounds the test at ~2s, proves the timeout path.)
 start=$SECONDS
 out="$(run_shim "$HANG" "$GOOD" 2)"
 elapsed=$((SECONDS - start))

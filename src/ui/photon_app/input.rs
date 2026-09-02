@@ -190,14 +190,14 @@ impl PhotonApp {
                     self.sync_expandable_fields();
                     // Every field except the always-shared display name carries its default-share checkbox; late-born fields (expansion, custom add) get theirs here.
                     self.ensure_share_checkboxes();
-                    // Position every box using the SAME row plan + row rects the render pass draws through, so a box sits exactly under its label.
+                    // Position every box using the SAME row plan + row rects the render pass draws thru, so a box sits exactly under its label.
                     let plan = you_rows_plan(&self.you_fields);
                     for (i, row) in plan.iter().enumerate() {
                         let r = you_row_rect(&layout, settings_content_scroll, i);
                         match row {
                             YouRow::Field(idx) => {
                                 let pf = &mut self.you_fields[*idx];
-                                // Same three columns the render pass draws through: label | value | share box.
+                                // Same three columns the render pass draws thru: label | value | share box.
                                 let three = r.split_h([0.4, 0.54, 0.06]);
                                 let col = three[1];
                                 if let Some(cb) = pf.share_cb.as_mut() {
@@ -685,7 +685,7 @@ impl PhotonApp {
             }
             return true;
         }
-        // A busy-frozen box (`!is_enabled`) takes no pointer input — treat it as "not a textbox" so the press falls through to the normal consume, matching the pre-rework behaviour.
+        // A busy-frozen box (`!is_enabled`) takes no pointer input — treat it as "not a textbox" so the press falls thru to the normal consume, matching the pre-rework behaviour.
         if self
             .textbox_by_hit_mut(id)
             .map_or(true, |tb| !tb.is_enabled())

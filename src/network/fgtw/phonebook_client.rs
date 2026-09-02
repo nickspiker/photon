@@ -325,7 +325,7 @@ mod tests {
         }
     }
 
-    /// LIVE end-to-end: publish a record for a throwaway device key, then resolve it back and confirm the address survives the round trip through R2. `#[ignore]`d — network + deploy. Uses a key derived from the current time so repeat runs never fight the monotonic guard.
+    /// LIVE end-to-end: publish a record for a throwaway device key, then resolve it back and confirm the address survives the round trip thru R2. `#[ignore]`d — network + deploy. Uses a key derived from the current time so repeat runs never fight the monotonic guard.
     #[test]
     #[ignore]
     fn live_publish_then_resolve_round_trips() {

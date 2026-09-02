@@ -22,7 +22,7 @@ pub(super) struct BridgeEmit {
     pub cwd: String,
 }
 
-/// The interrupt registry the UI thread signals through while a worker is blocked draining output: device → the shell's bash pid. The in-flight command is found live as bash's child TREE (a foreground group needs no announce — see run_streaming's foreground rationale). Written by workers at spawn/death, removed by Reset — its ABSENCE after a shell death tells the worker the death was a deliberate reset (swallow the "(shell died)" frame instead of sending it into a freshly wiped screen).
+/// The interrupt registry the UI thread signals thru while a worker is blocked draining output: device → the shell's bash pid. The in-flight command is found live as bash's child TREE (a foreground group needs no announce — see run_streaming's foreground rationale). Written by workers at spawn/death, removed by Reset — its ABSENCE after a shell death tells the worker the death was a deliberate reset (swallow the "(shell died)" frame instead of sending it into a freshly wiped screen).
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 pub(super) type BridgeFgMap =
     std::sync::Arc<std::sync::Mutex<std::collections::HashMap<[u8; 32], i32>>>;

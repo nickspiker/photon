@@ -473,7 +473,7 @@ fn trim_log_if_due(guard: &mut Option<std::fs::File>) {
 
 /// Drain the soft-mode RAM batch to disk — THE edge reaction (panic, app background, submission, threshold, hard-toggle). No-op when nothing is buffered.
 #[cfg(feature = "logging")]
-/// Write a panic verbatim to `photon.crash.txt`, touching NO shared lock. The panic hook cannot report through the normal sink when the panic came from INSIDE it: `log::error!` takes LOG_PENDING and `flush_log_buffer` takes LOG_FILE, both non-reentrant, so the same thread re-locking them deadlocks — the process then dies to the OS watchdog with an empty log, which is exactly the signature of the 2026-08-07 phone death (hook installed, zero PHOTON PANIC lines). A fresh handle on its own path always writes.
+/// Write a panic verbatim to `photon.crash.txt`, touching NO shared lock. The panic hook cannot report thru the normal sink when the panic came from INSIDE it: `log::error!` takes LOG_PENDING and `flush_log_buffer` takes LOG_FILE, both non-reentrant, so the same thread re-locking them deadlocks — the process then dies to the OS watchdog with an empty log, which is exactly the signature of the 2026-08-07 phone death (hook installed, zero PHOTON PANIC lines). A fresh handle on its own path always writes.
 pub fn write_crash_sidecar(text: &str) {
     use std::io::Write;
     let Some(dir) = log_dir() else { return };

@@ -52,7 +52,7 @@ manifest_take_publish_lock() {
         fi
         return
     fi
-    # macOS has no flock(1) (util-linux only). Falling through silently would leave the publish UNLOCKED — the exact 2026-07-16 race above, just quieter — so use shlock(1), which ships with macOS and holds a PID-checked lock file: it detects a dead holder and steals the lock, so a crashed publish can't wedge the next one.
+    # macOS has no flock(1) (util-linux only). Falling thru silently would leave the publish UNLOCKED — the exact 2026-07-16 race above, just quieter — so use shlock(1), which ships with macOS and holds a PID-checked lock file: it detects a dead holder and steals the lock, so a crashed publish can't wedge the next one.
     if command -v shlock >/dev/null; then
         local lock=/tmp/photon-publish.pid
         until shlock -f "$lock" -p $$; do
@@ -73,7 +73,7 @@ manifest_take_publish_lock() {
 # Arg: <platform>-<arch> label, carried to the end-bump's commit message.
 manifest_begin_dev_publish() {
     local label="$1" full patch
-    # Source-level gates FIRST — before the lock, the version bump, or any build — so a comment/parse/migration slip fails in under a second, not after the cross-compile+publish. The single chokepoint every dev-*.sh passes through, so a new platform script can't forget it.
+    # Source-level gates FIRST — before the lock, the version bump, or any build — so a comment/parse/migration slip fails in under a second, not after the cross-compile+publish. The single chokepoint every dev-*.sh passes thru, so a new platform script can't forget it.
     source "$(dirname "${BASH_SOURCE[0]}")/preflight.sh"
     preflight_gates
     manifest_take_publish_lock

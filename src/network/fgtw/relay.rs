@@ -70,7 +70,7 @@ fn build_signed_vsf(
 ///
 /// # Returns
 /// Ok(()) on success, Err with message on failure
-/// Process-wide relay refusal list (treat-as-stolen lockout): every relay send — chat, ping, ceremony, history, ack, present and future — passes through the two senders below, so this ONE gate guarantees a locked device never receives another relay frame no matter which path built the target list. Updated by the app on lock edges and on every locked-set adopt; read-only here.
+/// Process-wide relay refusal list (treat-as-stolen lockout): every relay send — chat, ping, ceremony, history, ack, present and future — passes thru the two senders below, so this ONE gate guarantees a locked device never receives another relay frame no matter which path built the target list. Updated by the app on lock edges and on every locked-set adopt; read-only here.
 static LOCKED_RELAY_TARGETS: std::sync::Mutex<Vec<[u8; 32]>> = std::sync::Mutex::new(Vec::new());
 
 pub fn set_locked_relay_targets(locked: Vec<[u8; 32]>) {
@@ -90,7 +90,7 @@ pub async fn send_via_relay(
     recipient_pubkey: &[u8; 32],
     message_bytes: &[u8],
 ) -> Result<(), String> {
-    // A fan-out list can carry our own device after an echo-poisoned era (an own frame looping back elected us a contact's endpoint, field 2026-08-12) — relaying to ourselves just manufactures the next echo, so refuse it at the one seam every relay send passes through.
+    // A fan-out list can carry our own device after an echo-poisoned era (an own frame looping back elected us a contact's endpoint, field 2026-08-12) — relaying to ourselves just manufactures the next echo, so refuse it at the one seam every relay send passes thru.
     if recipient_pubkey == keypair.public.as_bytes() {
         return Err("relay: recipient is OUR OWN device — echo refused".to_string());
     }
@@ -238,7 +238,7 @@ pub fn send_via_relay_sync(
 mod peel_tests {
     use super::*;
 
-    /// A `send_via_relay` envelope must round-trip through `peel_relay_envelope`. This guards the TOC-name trap specifically: the section name lives in the header near-form, so a bare body parse sees `name == ""` and any `== "relay"` check fails — which silently black-holed the whole pipe data plane until caught in a log.
+    /// A `send_via_relay` envelope must round-trip thru `peel_relay_envelope`. This guards the TOC-name trap specifically: the section name lives in the header near-form, so a bare body parse sees `name == ""` and any `== "relay"` check fails — which silently black-holed the whole pipe data plane until caught in a log.
     #[test]
     fn peel_roundtrip() {
         let kp = crate::network::fgtw::Keypair::from_seed(&[3u8; 32]);

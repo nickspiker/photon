@@ -2457,7 +2457,7 @@ impl PhotonApp {
                         });
                     // Ring computed BEFORE the closure: row_ring_tier borrows &self, and the closure outlives writes to disjoint self fields below.
                     let conv_ring = row_ring_tier_in(&self.contacts, contact, !is_self_contact);
-                    // Stamp the avatar disc + tier ring at a given centre-y — stream entry #0's avatar. Clip rides in as a parameter and the caller passes the LIST clip: the avatar obeys exactly the same boundary as every message (a hardcoded None once let it paint through the top edge onto its own visual layer).
+                    // Stamp the avatar disc + tier ring at a given centre-y — stream entry #0's avatar. Clip rides in as a parameter and the caller passes the LIST clip: the avatar obeys exactly the same boundary as every message (a hardcoded None once let it paint thru the top edge onto its own visual layer).
                     let draw_conv_avatar =
                         |canvas: &mut Canvas, cy: f32, clip: Option<fluor::paint::Clip>| {
                             if let Some(scaled) = contact.avatar_scaled.as_ref() {
@@ -5377,7 +5377,7 @@ impl PhotonApp {
                     );
                     y += line_h;
                     for line in [
-                        "TOKEN is recovery through people you trust. Lose every device and the custodians you chose can bring you back.",
+                        "TOKEN is recovery thru people you trust. Lose every device and the custodians you chose can bring you back.",
                         "No custodian ever learns whose recovery they hold, and no owner learns which friends hold theirs. What cannot be named cannot be pressured — and cannot collude.",
                     ] {
                         y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
@@ -5636,7 +5636,7 @@ impl PhotonApp {
 
         // Re-stamp the call overlay's hit rects LAST: screens re-stamp their own regions of the shared hit_test_map every frame, which would otherwise wipe the top-of-screen call bar's clickable area. Pixels were painted early (under-blend keeps them on top); only the hit rects need re-asserting after every screen has stamped. Each Button stamps its OWN rect (set in the early paint), so the two passes can never disagree. Visibility mirrors `visit_app_widgets` exactly: action always when a call is live, decline in ringing/ended, start only when a callable convo enables it (a dimmed pill must not dispatch a dead tap). The status chip is a label — never stamped.
         if call_overlay.is_some() {
-            // Full-screen ring panel is MODAL: wipe the whole map first so the screen's own widgets (stamped above) can't be tapped through the wash — then the two call buttons are the only live targets.
+            // Full-screen ring panel is MODAL: wipe the whole map first so the screen's own widgets (stamped above) can't be tapped thru the wash — then the two call buttons are the only live targets.
             if call_fullscreen {
                 restamp_hit_rect(
                     &mut chrome.hit_test_map,

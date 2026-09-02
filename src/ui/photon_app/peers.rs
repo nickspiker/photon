@@ -263,14 +263,14 @@ impl PhotonApp {
         false
     }
 
-    /// Mark the phonebook dirty; the tick's debounce gate does the actual write at most once per `PEER_PERSIST_DEBOUNCE`. Both edges that used to call `persist_peer_store` directly (the own-address publish, the gossip-growth harvest) route through here — the store is a cache, so coalescing a burst of merges into one delayed write loses nothing a re-exchange won't restore, and it stops the every-beacon write storm.
+    /// Mark the phonebook dirty; the tick's debounce gate does the actual write at most once per `PEER_PERSIST_DEBOUNCE`. Both edges that used to call `persist_peer_store` directly (the own-address publish, the gossip-growth harvest) route thru here — the store is a cache, so coalescing a burst of merges into one delayed write loses nothing a re-exchange won't restore, and it stops the every-beacon write storm.
     pub(super) fn request_peer_persist(&mut self) {
         self.peer_persist_dirty = true;
     }
 
     /// Write the phonebook to the vault so it survives a restart — OFF the UI thread.
     ///
-    /// Fires on the own-address edge (the reflexive publish site) and on the observed-growth edge in the stalled-contact harvest — gossip merges land on the checker thread, so a UI tick observes and persists them. Both now go through `request_peer_persist` + the debounce gate, which calls this.
+    /// Fires on the own-address edge (the reflexive publish site) and on the observed-growth edge in the stalled-contact harvest — gossip merges land on the checker thread, so a UI tick observes and persists them. Both now go thru `request_peer_persist` + the debounce gate, which calls this.
     ///
     /// The UI thread only takes a cheap snapshot (clone the row Vec under a brief lock) and hands it to one background writer; the O(n) per-row `verify()` + encode + vault write all run on the worker. Holding the store lock across that encode would block every tick's `get_all_peers` harvest for the encode's whole duration — seconds on a debug mobile build — so the lock is released before the snapshot leaves this function.
     ///
