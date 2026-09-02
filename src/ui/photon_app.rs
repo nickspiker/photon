@@ -3235,11 +3235,12 @@ pub(super) fn centered_wrapped(
     s: &str,
     style: &TextStyle,
     step: Coord,
+    clip: Option<fluor::paint::Clip>,
 ) -> Coord {
     let lines = wrap_text_lines(text, s, style, max_w.max(8.0));
     let mut yy = y;
     for l in &lines {
-        text.draw_text_center(canvas, l, cx, yy + step * 0.5, style, None, None);
+        text.draw_text_center(canvas, l, cx, yy + step * 0.5, style, clip, None);
         yy += step;
     }
     yy
