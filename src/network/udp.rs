@@ -81,17 +81,10 @@ pub fn get_local_ip() -> Option<std::net::Ipv4Addr> {
 
 /// Is `ip` an address another host on our LAN could actually reach us at?
 /// Rejects `192.0.0.0/24` — the IETF Protocol Assignments block (RFC 6890), whose `192.0.0.0/29` service-continuity prefix (RFC 7335) is what Android's 464XLAT CLAT hands a cellular device (`192.0.0.4`). That address is meaningful ONLY on the device's own stack; published as a peer's `local_ip` it is pure noise that makes every other device burn its PT/TCP retry budget (~17s observed) racing an unreachable candidate before the WAN path wins. Also rejects loopback and link-local, which are never useful peer LAN addresses. A cellular device thus advertises NO LAN address (correct — it has none), and its reachable WAN IPv6 carries the traffic.
-pub fn is_usable_lan_ipv4(ip: std::net::Ipv4Addr) -> bool {
-    let o = ip.octets();
-    let is_service_continuity = o[0] == 192 && o[1] == 0 && o[2] == 0; // 192.0.0.0/24
-    !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified() && !is_service_continuity
-}
+pub use fgtw::traverse::gather::is_usable_lan_ipv4;
 
 /// True for the RFC 1918 private ranges (10/8, 172.16/12, 192.168/16) — the addresses that are only reachable on a shared LAN. Used to decide whether a peer's v4 candidate is a routable public address (send freely) or a private one that's only worth trying when we're on the SAME subnet (see gather::is_foreign_peer_lan).
-pub fn is_private_ipv4(ip: std::net::Ipv4Addr) -> bool {
-    let o = ip.octets();
-    o[0] == 10 || (o[0] == 172 && (16..=31).contains(&o[1])) || (o[0] == 192 && o[1] == 168)
-}
+pub use fgtw::traverse::gather::is_private_ipv4;
 
 /// Get LAN broadcast address for the interface that routes to internet Returns (broadcast_addr, local_ip) or None if unable to determine
 ///

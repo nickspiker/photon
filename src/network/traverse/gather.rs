@@ -1,183 +1,174 @@
-//! Candidate gathering — turning known addresses into a [`CandidateSet`].
+//! Candidate gathering — photon's `Contact` adapter over [`fgtw::traverse::gather`].
 //!
-//! Two directions:
-//! - [`gather_peer_candidates`] builds the set of addresses at which a *peer* might be reachable (where we send probes), from what we already know about them: their public address and their LAN address. This reads the same `Contact` fields `race_addrs` does, so [`CandidateSet::best_pair`] reproduces its result.
-//! - [`gather_own_candidates`] builds the set of *our* addresses to advertise to a peer so they can punch back at us: our learned reflexive address and our own LAN address.
+//! The gathering logic itself lives in the shared crate so photon and rustdesk can't drift.
+//! What stays here is the part that is genuinely photon's: flattening a [`Contact`] — with its
+//! active-device address, its per-device endpoint list, and its Wi-Fi Direct group address —
+//! into the crate's [`PeerEndpoint`] shape.
 //!
-//! Full local-interface enumeration (multiple NICs, a global-IPv6 host address) is deferred to when the candidate offer actually ships (P2); for now our own set is reflexive + the one LAN v4 the OS routes on.
+//! The two entry points differ only in whether a peer's LAN address must share our `/24`;
+//! that is now [`LanPolicy`] rather than two near-identical copies of the same loop.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use super::candidate::{Candidate, CandidateKind, CandidateSet};
 use crate::types::contact::Contact;
+use fgtw::traverse::candidate::CandidateSet;
+use fgtw::traverse::gather::{LanPolicy, PeerEndpoint};
 
-/// Classify a peer public address into a candidate kind: a v6 public address is a direct host (no NAT rewriting v6, so no punch needed); a v4 public address is reached by hole-punch → reflexive-class.
-fn public_kind(addr: &SocketAddr) -> CandidateKind {
-    if addr.is_ipv6() {
-        CandidateKind::HostV6
-    } else {
-        CandidateKind::Reflexive
-    }
-}
+// Re-exported so the ~23 existing `traverse::gather::…` call sites across photon keep
+// resolving unchanged.
+pub use fgtw::traverse::gather::{
+    gather_own_candidates, is_bogus_addr, is_foreign_peer_lan, is_private_ipv4, is_usable_lan_ipv4,
+    is_wfd_subnet, peer_lan_reachable, public_kind,
+};
 
-/// True for an address that must NEVER enter the candidate set: the unspecified `0.0.0.0` / `::` — which is the RELAY_ADDR sentinel a relayed message carries. If it leaks in, the punch "validates" a path to `0.0.0.0` (it round-trips locally), which then poisons all addressing: sends go to nowhere and `relay_to` empties out because `validated_path` looks Some. Observed as a peer's proof vanishing after a spurious `path validated to … = [0,0,0,0]`.
+/// Flatten a contact into the crate's endpoint shape: the active device first (its `ip` plus
+/// its `local_ip`/`local_port` pair), then every learned per-device endpoint.
 ///
-/// PUBLIC because the sentinel escapes the candidate set: callers hand `RELAY_ADDR` as `peer_addr` for a relay-only peer ON PURPOSE (the relay_to fan-out is the real delivery path), so every send drain that can reach a RELIABLE queue has to recognise it. See [`crate::network::pt::PTManager::send_with_pubkey_and_alt`], which refuses it outright.
-pub fn is_bogus_addr(addr: &SocketAddr) -> bool {
-    addr.ip().is_unspecified()
-}
-
-/// Would a peer's private IPv4 `peer_v4` plausibly be reachable from us, given OUR own LAN v4 `our_v4`?
-/// A peer's private range (`192.168/16`, `10/8`, `172.16/12`) is only reachable when we share its subnet — otherwise it is a FOREIGN LAN address that PT retransmits into a black hole, wasting the direct-path budget and masking that the relay is the real path.
-/// This is common in practice because default home routers all hand out the same `192.168.0.*` block, so two unrelated peers routinely carry colliding-but-unreachable private addresses.
-/// We approximate "same subnet" as a shared `/24` — the common home-LAN mask; a wider real mask only makes us slightly conservative (fall back to public/relay), never sending to an unreachable address.
-/// With no known LAN of our own (`our_v4 == None`) we can't vouch for any peer LAN, so we exclude it — the public + v6 + relay paths still carry the peer.
-fn peer_lan_reachable(peer_v4: std::net::Ipv4Addr, our_v4: Option<std::net::Ipv4Addr>) -> bool {
-    match our_v4 {
-        Some(ours) => {
-            let (a, b) = (peer_v4.octets(), ours.octets());
-            a[0] == b[0] && a[1] == b[1] && a[2] == b[2]
-        }
-        None => false,
-    }
-}
-
-/// The addresses at which `contact` might be reachable — their public address (reflexive, or a v6 host), their usable LAN address, and every per-device endpoint we've learned. This is the set we punch toward and (via [`CandidateSet::best_pair`]) the send order. Scanning `device_endpoints`, not just the active `ip`, is what surfaces a peer's global IPv6 when the active address happens to be v4 (e.g. a device that ponged over v6 while the phonebook only carried its v4 WAN) — so the v6 host, priority-first, gets tried before a v4 LAN address that may be on a foreign network.
-///
-/// `our_v4` is OUR own LAN IPv4 when we have one.
-/// A peer's private-v4 candidate is only added when it shares our `/24` (see [`peer_lan_reachable`]) — a foreign private address from a different network is dropped so we never punch/PT toward a black hole.
-/// The convenience [`gather_peer_candidates`] preserves the older subnet-agnostic behaviour for callers with no our-LAN context; send-decision sites that DO know it call this `_from` form so a genuinely same-subnet peer still gets its fast LAN path.
-pub fn gather_peer_candidates_from(
-    contact: &Contact,
-    our_v4: Option<std::net::Ipv4Addr>,
-) -> CandidateSet {
-    let mut set = CandidateSet::new();
-
-    if let Some(ip) = contact.ip {
-        if !is_bogus_addr(&ip) {
-            set.add(Candidate::new(ip, public_kind(&ip)));
-        }
-    }
-
-    if let (Some(local_v4), Some(port)) = (contact.local_ip, contact.local_port) {
-        // Skip an unreachable LAN candidate: the 464XLAT CLAT `192.0.0.4` family (is_usable_lan_ipv4), AND a foreign LAN not on our subnet (peer_lan_reachable).
-        if crate::network::udp::is_usable_lan_ipv4(local_v4) && peer_lan_reachable(local_v4, our_v4)
-        {
-            let lan = SocketAddr::new(IpAddr::V4(local_v4), port);
-            set.add(Candidate::new(lan, CandidateKind::HostV4Lan));
-        }
-    }
-
-    // Every device's learned endpoints — a sibling reachable over v6 becomes a HostV6 candidate even when the active `ip` is a v4 WAN address. `add` dedups by address and keeps the higher-priority kind.
+/// Scanning all of them, not just the active `ip`, is what surfaces a peer's global IPv6 when
+/// the active address happens to be v4 — so the v6 host, priority-first, gets tried before a
+/// v4 LAN address that may be on a foreign network.
+fn contact_endpoints(contact: &Contact) -> Vec<PeerEndpoint> {
+    let mut eps = Vec::with_capacity(contact.device_endpoints.len() + 1);
+    eps.push(PeerEndpoint {
+        public: contact.ip,
+        lan: match (contact.local_ip, contact.local_port) {
+            (Some(v4), Some(port)) => Some(SocketAddr::new(IpAddr::V4(v4), port)),
+            _ => None,
+        },
+    });
     for ep in &contact.device_endpoints {
-        if let Some(pub_addr) = ep.public {
-            if !is_bogus_addr(&pub_addr) {
-                set.add(Candidate::new(pub_addr, public_kind(&pub_addr)));
-            }
-        }
-        if let Some(lan_addr) = ep.lan {
-            if let IpAddr::V4(v4) = lan_addr.ip() {
-                if crate::network::udp::is_usable_lan_ipv4(v4) && peer_lan_reachable(v4, our_v4) {
-                    set.add(Candidate::new(lan_addr, CandidateKind::HostV4Lan));
-                }
-            }
-        }
+        eps.push(PeerEndpoint {
+            public: ep.public,
+            lan: ep.lan,
+        });
     }
-
-    // A live Wi-Fi Direct group address: membership vouches reachability, so no /24 gate applies.
-    if let Some(p2p) = contact.p2p_addr {
-        if !is_bogus_addr(&p2p) {
-            set.add(Candidate::new(p2p, CandidateKind::HostV4P2p));
-        }
-    }
-
-    set
+    eps
 }
 
-/// Convenience wrapper preserving the ORIGINAL subnet-agnostic behaviour for callers with no our-LAN context: a peer LAN candidate is kept as long as the address is a usable LAN v4.
-/// This is what `Contact::race_addrs` and the punch-candidate gathers still use — changing THEM would need our-LAN threaded thru every send site, a wide and risky change.
-/// The foreign-LAN filter is applied instead at the specific send-decision sites that both hold our-LAN and actually black-holed on it (the PT retransmit sweep), via `gather_peer_candidates_from` + `peer_lan_reachable`.
+/// The addresses at which `contact` might be reachable, without our-LAN context: a peer LAN
+/// candidate is kept as long as the address is a usable LAN v4.
+///
+/// This is what `Contact::race_addrs` and the punch-candidate gathers use — threading our-LAN
+/// through every send site would be a wide and risky change, and a foreign address here
+/// merely fails to validate rather than causing harm.
 pub fn gather_peer_candidates(contact: &Contact) -> CandidateSet {
-    let mut set = CandidateSet::new();
-
-    if let Some(ip) = contact.ip {
-        if !is_bogus_addr(&ip) {
-            set.add(Candidate::new(ip, public_kind(&ip)));
-        }
-    }
-    if let (Some(local_v4), Some(port)) = (contact.local_ip, contact.local_port) {
-        if crate::network::udp::is_usable_lan_ipv4(local_v4) {
-            let lan = SocketAddr::new(IpAddr::V4(local_v4), port);
-            set.add(Candidate::new(lan, CandidateKind::HostV4Lan));
-        }
-    }
-    for ep in &contact.device_endpoints {
-        if let Some(pub_addr) = ep.public {
-            if !is_bogus_addr(&pub_addr) {
-                set.add(Candidate::new(pub_addr, public_kind(&pub_addr)));
-            }
-        }
-        if let Some(lan_addr) = ep.lan {
-            if let IpAddr::V4(v4) = lan_addr.ip() {
-                if crate::network::udp::is_usable_lan_ipv4(v4) {
-                    set.add(Candidate::new(lan_addr, CandidateKind::HostV4Lan));
-                }
-            }
-        }
-    }
-    if let Some(p2p) = contact.p2p_addr {
-        if !is_bogus_addr(&p2p) {
-            set.add(Candidate::new(p2p, CandidateKind::HostV4P2p));
-        }
-    }
-    set
+    fgtw::traverse::gather::gather_peer_candidates(
+        &contact_endpoints(contact),
+        contact.p2p_addr,
+        LanPolicy::AnyUsable,
+    )
 }
 
-/// True if `peer` is a private IPv4 NOT on our `/24` (a foreign LAN we can't reach) — the exact address a caller with our-LAN should refuse to send to directly.
-/// `our_v4 == None` (LAN unknown) means any private peer address is unvouchable, hence foreign.
-/// A public/global v4 is never foreign (returns false).
-pub fn is_foreign_peer_lan(peer: &SocketAddr, our_v4: Option<std::net::Ipv4Addr>) -> bool {
-    match peer.ip() {
-        // The reserved Wi-Fi Direct subnet: a peer address here only enters our state via a live group-up (and is cleared at teardown), so it is vouched by group membership, not by sharing our infra /24. A home router that happens to hand out 192.168.49.x would slip this filter, but punch validation still gates the actual path adoption.
-        IpAddr::V4(v4) if is_wfd_subnet(v4) => false,
-        IpAddr::V4(v4) if crate::network::udp::is_private_ipv4(v4) => {
-            !peer_lan_reachable(v4, our_v4)
-        }
-        _ => false,
-    }
+/// As [`gather_peer_candidates`], but for the send-decision sites that DO know our own LAN v4:
+/// a peer's private-v4 candidate is only kept when it shares our `/24`, so we never punch or
+/// retransmit toward a foreign-LAN black hole.
+pub fn gather_peer_candidates_from(contact: &Contact, our_v4: Option<Ipv4Addr>) -> CandidateSet {
+    fgtw::traverse::gather::gather_peer_candidates(
+        &contact_endpoints(contact),
+        contact.p2p_addr,
+        LanPolicy::SameSubnetAs(our_v4),
+    )
 }
 
-/// The Wi-Fi Direct group subnet Android's GO always uses (192.168.49.0/24).
-pub fn is_wfd_subnet(v4: Ipv4Addr) -> bool {
-    let o = v4.octets();
-    o[0] == 192 && o[1] == 168 && o[2] == 49
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::contact::DeviceEndpoint;
 
-/// Our own addresses to advertise so a peer can punch back at us: our learned reflexive address (public, from peer-echoed reflection) and our LAN address on the port we listen on.
-pub fn gather_own_candidates(
-    our_reflexive: Option<SocketAddr>,
-    local_v4: Option<Ipv4Addr>,
-    port: u16,
-) -> CandidateSet {
-    let mut set = CandidateSet::new();
-
-    if let Some(refl) = our_reflexive {
-        let kind = if refl.is_ipv6() {
-            CandidateKind::HostV6
-        } else {
-            CandidateKind::Reflexive
-        };
-        set.add(Candidate::new(refl, kind));
+    fn a(s: &str) -> SocketAddr {
+        s.parse().unwrap()
+    }
+    fn v4(s: &str) -> Ipv4Addr {
+        s.parse().unwrap()
     }
 
-    if let Some(v4) = local_v4 {
-        if crate::network::udp::is_usable_lan_ipv4(v4) {
-            set.add(Candidate::new(
-                SocketAddr::new(IpAddr::V4(v4), port),
-                CandidateKind::HostV4Lan,
-            ));
+    fn contact() -> Contact {
+        Contact::from_pin([0u8; 64], [1u8; 32], [2u8; 32], None)
+    }
+
+    fn endpoint(public: Option<SocketAddr>, lan: Option<SocketAddr>) -> DeviceEndpoint {
+        DeviceEndpoint {
+            pubkey: [9u8; 32],
+            public,
+            lan,
+            online: true,
         }
     }
 
-    set
+    /// The active device's `ip` + `local_ip`/`local_port` pair must flatten into the same
+    /// candidates a per-device endpoint would produce — that equivalence is the whole basis
+    /// for collapsing the two former gathers onto one core.
+    #[test]
+    fn the_active_device_flattens_like_any_other_endpoint() {
+        let mut c = contact();
+        c.ip = Some(a("203.0.113.7:4383"));
+        c.local_ip = Some(v4("192.168.1.5"));
+        c.local_port = Some(4383);
+
+        let set = gather_peer_candidates(&c);
+        let addrs: Vec<_> = set.sorted().iter().map(|x| x.addr).collect();
+        assert!(addrs.contains(&a("203.0.113.7:4383")));
+        assert!(addrs.contains(&a("192.168.1.5:4383")));
+        // LAN outranks the punched WAN path.
+        assert_eq!(set.best_pair().unwrap().0, a("192.168.1.5:4383"));
+    }
+
+    #[test]
+    fn a_lan_ip_without_a_port_contributes_nothing() {
+        let mut c = contact();
+        c.local_ip = Some(v4("192.168.1.5"));
+        c.local_port = None;
+        assert!(gather_peer_candidates(&c).is_empty());
+    }
+
+    /// The reason all endpoints are scanned rather than just the active `ip`: a sibling
+    /// reachable over v6 must outrank a v4 LAN address that may be on a foreign network.
+    #[test]
+    fn a_device_endpoints_v6_outranks_the_active_devices_v4_lan() {
+        let mut c = contact();
+        c.local_ip = Some(v4("192.168.1.5"));
+        c.local_port = Some(4383);
+        c.device_endpoints = vec![endpoint(Some(a("[2001:db8::1]:4383")), None)];
+        assert_eq!(
+            gather_peer_candidates(&c).best_pair().unwrap().0,
+            a("[2001:db8::1]:4383")
+        );
+    }
+
+    #[test]
+    fn the_subnet_gate_is_the_only_difference_between_the_two_entry_points() {
+        let mut c = contact();
+        c.ip = Some(a("203.0.113.7:4383"));
+        c.local_ip = Some(v4("192.168.9.5")); // a FOREIGN /24
+        c.local_port = Some(4383);
+
+        assert_eq!(gather_peer_candidates(&c).sorted().len(), 2);
+        assert_eq!(
+            gather_peer_candidates_from(&c, Some(v4("192.168.1.9")))
+                .sorted()
+                .len(),
+            1,
+            "a foreign LAN address must not survive the subnet gate"
+        );
+    }
+
+    /// Group membership vouches reachability, so Wi-Fi Direct bypasses the /24 gate that
+    /// would otherwise reject 192.168.49.x as a foreign LAN.
+    #[test]
+    fn wifi_direct_survives_the_subnet_gate() {
+        let mut c = contact();
+        c.p2p_addr = Some(a("192.168.49.5:4383"));
+        let set = gather_peer_candidates_from(&c, Some(v4("192.168.1.9")));
+        assert_eq!(set.sorted().len(), 1);
+        assert_eq!(set.sorted()[0].kind, fgtw::traverse::CandidateKind::HostV4P2p);
+    }
+
+    #[test]
+    fn the_relay_sentinel_never_survives_flattening() {
+        let mut c = contact();
+        c.ip = Some(a("0.0.0.0:0"));
+        c.p2p_addr = Some(a("0.0.0.0:0"));
+        c.device_endpoints = vec![endpoint(Some(a("0.0.0.0:0")), None)];
+        assert!(gather_peer_candidates(&c).is_empty());
+    }
 }

@@ -515,35 +515,34 @@ impl FgtwMessage {
                     )],
                 )
                 .build(),
+            // Punch messages encode in the shared fgtw::traverse module so photon and the
+            // rustdesk fork cannot drift; its golden-bytes tests pin this exact format.
             FgtwMessage::PunchProbe {
                 timestamp,
                 sender_pubkey,
                 provenance_hash,
                 signature,
-            } => builder
-                .creation_time_oscillations(*timestamp)
-                .provenance_hash(*provenance_hash)
-                .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
-                .add_section("punch", vec![])
-                .build(),
+            } => fgtw::traverse::PunchMessage::Probe {
+                timestamp: *timestamp,
+                sender_pubkey: *sender_pubkey.as_bytes(),
+                provenance_hash: *provenance_hash,
+                signature: *signature,
+            }
+            .to_vsf_bytes(),
             FgtwMessage::PunchProbeAck {
                 timestamp,
                 responder_pubkey,
                 provenance_hash,
                 signature,
                 observed_addr,
-            } => builder
-                .creation_time_oscillations(*timestamp)
-                .provenance_hash(*provenance_hash)
-                .signature_ed25519(*responder_pubkey.as_bytes(), *signature)
-                .add_section(
-                    "punch_ack",
-                    vec![(
-                        "obs".to_string(),
-                        VsfType::hb(socketaddr_to_bytes(observed_addr)),
-                    )],
-                )
-                .build(),
+            } => fgtw::traverse::PunchMessage::ProbeAck {
+                timestamp: *timestamp,
+                responder_pubkey: *responder_pubkey.as_bytes(),
+                provenance_hash: *provenance_hash,
+                signature: *signature,
+                observed_addr: *observed_addr,
+            }
+            .to_vsf_bytes(),
             FgtwMessage::AvatarRequest {
                 timestamp,
                 sender_pubkey,
@@ -655,14 +654,36 @@ impl FgtwMessage {
             });
         }
 
-        // Hole-punch probe: header-only, same shape as reflect.
-        if section_name == "punch" {
-            return Ok(FgtwMessage::PunchProbe {
-                timestamp: extract_header_timestamp(&header)?,
-                sender_pubkey: extract_header_pubkey(&header)?,
-                provenance_hash: extract_header_provenance(&header)?,
-                signature: extract_header_signature(&header)?,
-            });
+        // Hole-punch probe + ack: decoded by the shared fgtw::traverse module, the same module
+        // that encodes them, so the two directions cannot disagree about the format.
+        if section_name == "punch" || section_name == "punch_ack" {
+            return match fgtw::traverse::PunchMessage::from_vsf_bytes(bytes)? {
+                Some(fgtw::traverse::PunchMessage::Probe {
+                    timestamp,
+                    sender_pubkey,
+                    provenance_hash,
+                    signature,
+                }) => Ok(FgtwMessage::PunchProbe {
+                    timestamp,
+                    sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                    provenance_hash,
+                    signature,
+                }),
+                Some(fgtw::traverse::PunchMessage::ProbeAck {
+                    timestamp,
+                    responder_pubkey,
+                    provenance_hash,
+                    signature,
+                    observed_addr,
+                }) => Ok(FgtwMessage::PunchProbeAck {
+                    timestamp,
+                    responder_pubkey: DevicePubkey::from_bytes(responder_pubkey),
+                    provenance_hash,
+                    signature,
+                    observed_addr,
+                }),
+                None => Err(format!("{section_name} did not decode as a punch message")),
+            };
         }
 
         // Avatar request: header-only, same shape as reflect.
@@ -685,24 +706,6 @@ impl FgtwMessage {
             let observed_addr = extract_observed_addr(&fields)
                 .ok_or_else(|| "reflect_resp missing observed_addr".to_string())?;
             return Ok(FgtwMessage::ReflectResponse {
-                timestamp,
-                responder_pubkey: pubkey,
-                provenance_hash,
-                signature,
-                observed_addr,
-            });
-        }
-
-        // Hole-punch ack: same shape as reflect_resp (echoed provenance in the header, observed address in `obs`).
-        if section_name == "punch_ack" {
-            let timestamp = extract_header_timestamp(&header)?;
-            let pubkey = extract_header_pubkey(&header)?;
-            let provenance_hash = extract_header_provenance(&header)?;
-            let signature = extract_header_signature(&header)?;
-            let fields = section_fields_to_tuples(&section);
-            let observed_addr = extract_observed_addr(&fields)
-                .ok_or_else(|| "punch_ack missing observed_addr".to_string())?;
-            return Ok(FgtwMessage::PunchProbeAck {
                 timestamp,
                 responder_pubkey: pubkey,
                 provenance_hash,

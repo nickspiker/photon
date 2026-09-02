@@ -168,6 +168,36 @@ mod tests {
         }
     }
 
+    /// Photon's own encoder now delegates to fgtw::traverse. These are the SAME fixtures the
+    /// crate pins, asserted through photon's public API — so if delegation ever changed what
+    /// photon puts on the wire, this fails here rather than in the field. Fix the code, not
+    /// the fixture: every deployed build is punching with these exact bytes.
+    #[test]
+    fn photons_encoder_still_emits_the_deployed_wire_format() {
+        const GOLDEN_PROBE: &str = "52c3853c7a33097933096233b46c33b4653600000000000030396870331f09090909090909090909090909090909090909090909090909090909090909096b65331f07070707070707070707070707070707070707070707070707070707070707076765333f030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303036e33012864330570756e6368293e";
+        const GOLDEN_ACK_V4: &str = "52c3853c7a33097933096233c46c33d9653600000000000030396870331f09090909090909090909090909090909090909090909090909090909090909096b65331f07070707070707070707070707070707070707070707070707070707070707076765333f030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303036e33012864330970756e63685f61636b3a6f33c42c6233152c6e3301293e5b286433036f62733a68623305cb007109111f295d";
+
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let pk = DevicePubkey::from_bytes([7u8; 32]);
+
+        let probe = FgtwMessage::PunchProbe {
+            timestamp: 12345,
+            sender_pubkey: pk.clone(),
+            provenance_hash: [9u8; 32],
+            signature: [3u8; 64],
+        };
+        assert_eq!(hex(&probe.to_vsf_bytes()), GOLDEN_PROBE);
+
+        let ack = FgtwMessage::PunchProbeAck {
+            timestamp: 12345,
+            responder_pubkey: pk,
+            provenance_hash: [9u8; 32],
+            signature: [3u8; 64],
+            observed_addr: addr("203.0.113.9:4383"),
+        };
+        assert_eq!(hex(&ack.to_vsf_bytes()), GOLDEN_ACK_V4);
+    }
+
     #[test]
     fn pending_probe_resolves_once() {
         let mut p = PendingProbes::new();
@@ -199,3 +229,4 @@ mod tests {
         assert!(p.is_empty());
     }
 }
+
