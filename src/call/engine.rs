@@ -223,7 +223,11 @@ fn run(
     while !stop.load(Ordering::Relaxed) {
         // ---- TX: mic → opus → window → fountain → sealed packets ----
         for frame in crate::platform::audio::captured_frames() {
-            if muted.load(Ordering::Relaxed) || frame.len() != FRAME_SAMPLES {
+            // Uncalibrated route mid-call = mic-gated (the calibration doctrine): the harm of an uncalibrated path is the echo WE inflict on the peer, so the mic goes silent while the route stays uncalibrated; hearing continues. The app tick mirrors the flag on every route change.
+            if muted.load(Ordering::Relaxed)
+                || !crate::call::ROUTE_CALIBRATED.load(Ordering::Relaxed)
+                || frame.len() != FRAME_SAMPLES
+            {
                 continue;
             }
             // Rung switches land only between windows — a window's slot geometry is fixed at its first frame.
