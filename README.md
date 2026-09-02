@@ -49,9 +49,9 @@ Your identity lives across the devices you've added to it. Any one of them is fu
 The danger is being down to **one** device and losing *it*. Today, if that last device is gone and you haven't set up recovery, your identity is gone with it — there's no company to call, which is the whole point, but it also means **there's no company to call.** So:
 
 - **Add a second device the day you start** (next point). Two is the floor; more is better.
-- **Recovery through people is coming** (point 4) — trusted friends who can vouch you back onto a fresh device after *total* loss. Until that's fully wired, treat your devices as the only copies of your identity, because they are.
+- **Recovery thru people is coming** (point 4) — trusted friends who can vouch you back onto a fresh device after *total* loss. Until that's fully wired, treat your devices as the only copies of your identity, because they are.
 
-A wiped device (factory reset, reinstall) is a special case: it keeps the one secret that proves it's yours, so it can rejoin your fleet without recovery — *as long as the app's signing key hasn't changed under it.* (If you reinstall from a differently-signed build, the OS hands the app a new hardware fingerprint and the device reads as new. Re-add it like any new device.)
+A wiped device (factory reset, reinstall) is a special case: it keeps the one secret that proves it's yours, so it can rejoin your fleet without recovery. This also prevents an attacker from using your device without your consent.
 
 ### 3. Add several devices — it's one tap
 
@@ -78,7 +78,7 @@ The design requires **at least three** custodians and a threshold of at least th
 
 ## What This Is, precisely
 
-Photon is a peer-to-peer messenger. Your identity is a handle you own, derived from your own entropy and never issued by anyone. Messages use **rolling-chain encryption** — each message cryptographically depends on the last, so the history is tamper-evident and forward-secret. There are no message servers: peers find each other through a distributed hash table and then talk directly.
+Photon is a peer-to-peer messenger. Your identity is a handle you own, derived from your own entropy and never issued by anyone. Messages use **rolling-chain encryption** — each message cryptographically depends on the last, so the history is tamper-evident and forward-secret. There are no message servers: peers find each other thru a distributed hash table and then talk directly.
 
 **Key properties:**
 - **Authenticate once.** You prove who you are a single time, when you create your identity. Everything after is *verification* — cheap, repeated confirmation that a signature came from the same key — not a fresh login. There's no session to expire and re-establish.
@@ -457,7 +457,7 @@ Traditional login asks you to prove identity and then accepts a *password* — w
 
 **How your handle becomes an identity.** Your handle is hashed to a routing address (the handle itself never travels the network — that's why any Unicode works). Claiming an unclaimed handle costs a ~1-second memory-hard proof-of-work: trivial to do once, expensive to do in bulk, which prices out namespace-squatting without any authority deciding who's allowed a name. First to finish claiming owns it. See [choosing your handle](#1-choose-your-handle-with-care) above and [AUTH.md](AUTH.md) for the full specification.
 
-**Existence now, standing later.** Claiming a handle makes you *real* on the network immediately — that's permissionless and always will be. But being a *trusted, weighted* identity is a separate thing that's **earned, not granted**, and it comes later. Every handle starts at zero standing and accrues reputation only through attested interactions with others who already carry standing — a structure the design calls the **Fractal Gradient Trust Web**. A vouch phase is on the roadmap for that: existing identities vouching for others, reputation flowing along real relationships. It can't come first, because there has to *be* a web of genuine relationships to vouch within — and that's exactly what messaging is bootstrapping right now. So today: message people, build the web. The standing layer grows on top of it.
+**Existence now, standing later.** Claiming a handle makes you *real* on the network immediately — that's permissionless and always will be. But being a *trusted, weighted* identity is a separate thing that's **earned, not granted**, and it comes later. Every handle starts at zero standing and accrues reputation only thru attested interactions with others who already carry standing — a structure the design calls the **Fractal Gradient Trust Web**. A vouch phase is on the roadmap for that: existing identities vouching for others, reputation flowing along real relationships. It can't come first, because there has to *be* a web of genuine relationships to vouch within — and that's exactly what messaging is bootstrapping right now. So today: message people, build the web. The standing layer grows on top of it.
 
 > **On vouching and gates:** any vouch phase governs *standing within a context* — how much weight your word carries, what a community will admit — never whether a handle may **exist**. The base namespace is permissionless forever. The power to deny existence is the institutional-capture failure Photon is built to eliminate, so the sovereign namespace holds no such power for anyone to seize or be compelled at.
 
