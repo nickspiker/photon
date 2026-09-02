@@ -69,6 +69,7 @@ impl PhotonApp {
         // Stalled-address re-fetch — the deadlock breaker for flaky-fgtw address discovery.
         // A contact whose address fetch failed sits with `ip = None`: its CLUTCH offer can't send (send needs an address), name/avatar never arrive (they ride the pong, which needs a reachable path), and the ceremony loops keygen forever. There is no periodic address re-fetch otherwise, so while any non-self contact is Pending-CLUTCH with no address, pulse a lightweight background resume (gossip + registry resolve below). A single success learns the address, fire-on-learn punches, the offer sends, and the pong then carries name/avatar. Self-limiting: stops the moment the address lands. (Stopgap for the peer-gossip fix, TICKETS T0.)
         const STALLED_ADDR_REFETCH: std::time::Duration = std::time::Duration::from_secs(15);
+        // EXPONENTIAL BACKOFF on the refetch (battery, 2026-09-02): a Pending contact that never resolves (era-split debris) ran this full registry+punch cycle every 15s for hours. 15s→30s→…→~32min; any LEARNED address resets the streak (the success edge), as does an address-bearing gossip merge re-entering thru the same harvest.
         if matches!(
             self.state,
             AppState::Ready | AppState::Conversation | AppState::Settings(_)
@@ -78,9 +79,10 @@ impl PhotonApp {
                     && c.clutch_state == crate::types::ClutchState::Pending
                     && self.has_remote(c)
             });
+            let interval = STALLED_ADDR_REFETCH * (1u32 << self.stalled_refetch_streak.min(7));
             let due = self
                 .last_stalled_refetch
-                .is_none_or(|last| now.duration_since(last) >= STALLED_ADDR_REFETCH);
+                .is_none_or(|last| now.duration_since(last) >= interval);
             // Harvest every tick while blocked: a record for a stalled contact may have landed in the shared peer store — from our own fgtw fetch OR from a phonebook-gossip response.
             // Adopt it as the contact's address so the offer can send; fire-on-learn does the rest.
             timed!("phonebook-harvest", if blocked {
@@ -110,6 +112,7 @@ impl PhotonApp {
                         }
                     }
                     if learned {
+                        self.stalled_refetch_streak = 0;
                         self.ping_contacts();
                     }
                 }
@@ -122,6 +125,7 @@ impl PhotonApp {
             // Every 15s while blocked: ask every reachable peer for its phonebook AND resolve the stalled devices from the seed registry — peers first, seed last. This used to also fire `query_resume`, which replays the ENTIRE attest (contacts load, cloud sync, roster pull, fleet key sync — 749 full replays in one logged session, and the roster-pull storm rode it via needs_initial_roster_pull). The resume's only job here was the announce echo that learned addresses, and the per-record registry resolve below does that properly now.
             if blocked && due {
                 self.last_stalled_refetch = Some(now);
+                self.stalled_refetch_streak = self.stalled_refetch_streak.saturating_add(1);
                 crate::logf!("FGTW: a Pending contact has no address — gossiping reachable peers + resolving from the seed registry");
                 let reachable: Vec<std::net::SocketAddr> = self
                     .contacts

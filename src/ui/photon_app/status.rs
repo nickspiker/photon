@@ -58,6 +58,8 @@ impl PhotonApp {
             }
         }
 
+        // Fleet-locked pubkeys, snapshotted before the contacts loop borrows (the rotation filter below reads it mid-&mut-walk).
+        let locked_device_set = self.locked_devices();
         // Clock sanity: drain any completed nunc verdict, then (if the wall clock has grossly jumped since the last baseline) spawn a fresh re-check. Both are cheap — the jump check is two clock reads and a subtraction; a re-check only spawns on an actual jump.
         self.drain_clock_check();
         // Surface any fleet-inbox alerts pulled since the last tick (bind attempts on our devices).
@@ -842,12 +844,14 @@ impl PhotonApp {
                             // Bootstrap un-deadlock (docs/lifecycle.md aftermath, observed): a roster-merged contact starts with ONE bootstrap device (public_identity) as its ping target — if THAT device is asleep, pings chase a corpse forever while the friend's live devices sit in the fold. On the offline edge, rotate the ACTIVE device to the next fleet member with a known endpoint and retarget the contact-level address; the sweep pings it next cycle (round-robin until one answers — a pong or inbound DATA re-elects the real active device).
                             if !identity_online && !is_online {
                                 let cur = contact.active_device;
+                                // Fleet-locked devices are never rotation candidates: the 2026-09-02 battery log flapped 114× between the two powered-on-but-locked ghosts (their endpoints re-entered via phonebook adoption, now also gated) — every flap re-aimed pings + relay sends at hardware the fleet already refused.
                                 let next = contact
                                     .device_endpoints
                                     .iter()
                                     .filter(|ep| {
                                         Some(ep.pubkey) != cur
                                             && (ep.public.is_some() || ep.lan.is_some())
+                                            && !locked_device_set.contains(&ep.pubkey)
                                     })
                                     .map(|ep| (ep.pubkey, ep.public, ep.lan))
                                     .next();

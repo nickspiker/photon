@@ -212,9 +212,19 @@ impl PhotonApp {
             return false;
         }
         let mut learned = 0usize;
+        // Fleet-locked pubkeys: a LOCKED device's registry record must never be adopted — the pre-wipe home desktop is still powered on and announcing, and its record was re-adopted onto the sibling row 562 times in one 3.6h battery log (2026-09-02), feeding relay sends + active-device rotation flapping toward a corpse the fleet already refused.
+        let locked: Vec<[u8; 32]> = self
+            .contacts
+            .iter()
+            .filter(|c| c.is_sibling && c.locked_out)
+            .filter_map(|c| c.device_key())
+            .collect();
         for (hp, dev, pubaddr, lan) in found {
             // Never adopt the relay sentinel or an unspecified address as an endpoint — it validates locally and then poisons every send that keys off `validated_path`.
             if crate::network::traverse::gather::is_bogus_addr(&pubaddr) {
+                continue;
+            }
+            if locked.contains(&dev) {
                 continue;
             }
             for contact in self.contacts.iter_mut() {
