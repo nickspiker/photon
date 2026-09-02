@@ -4988,6 +4988,9 @@ impl PhotonApp {
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
                     flow.line(&mut canvas, ctx.text, "Wave", tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    // The 1960 epigraph (docs/lexicon.md, captured off the physical page by the Lumis rig): the page is named for the proper sense, from before the debotcherization.
+                    flow.prose(&mut canvas, ctx.text, "wave: to motion with the hands, or with something held in them, in signal, greeting, or salute \\u{2014} Webster's, 1960", hspan2 * 0.8, *theme::LABEL_COLOUR, 400);
+                    flow.gap(hspan2 * 0.5);
                     flow.prose(&mut canvas, ctx.text, "Calls only sound right after Photon measures two things about this exact hardware: how much of the speaker's sound leaks back into the mic (that leak is what your friends hear as echo), and how loudly your voice lands on the mic. One short run of each, per speaker and per mic — redo either any time.", hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
                     flow.gap(hspan2 * 0.4);
                     flow.prose(&mut canvas, ctx.text, "Setup: put the volume where you actually take calls, find somewhere reasonably quiet, and don't touch any buttons while a step runs — the mic is listening the whole time.", hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
