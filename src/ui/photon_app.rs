@@ -1369,6 +1369,8 @@ pub struct PhotonApp {
             Vec<i64>,
         )>,
     >,
+    /// Count of durable writes queued-but-not-landed across the message + chains writers, with a condvar for the quit drain. The 2026-09-02 vanish: deliberate quit exits the process while a snapshot sits in the writer queue — the typed row dies with it (never-written, not written-then-lost). Every enqueue increments; the writer decrements per consumed item AFTER its write completes and notifies; `drain_durable_writers` blocks the quit edge until zero. Pure edges, no timers — a wedged vault holds the quit honestly rather than silently eating rows.
+    durable_pending: std::sync::Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>,
     /// The message writer's durable verdicts riding back to the UI thread — drained each status pass (drain_persist_done): success flips the named rows bright + releases their sibling push; failure toasts and leaves them faint. The (tx, rx) pair lives for the whole app so a respawned writer keeps the same return path.
     persist_done: (
         std::sync::mpsc::Sender<MessagesDurableVerdict>,
@@ -1805,6 +1807,10 @@ impl PhotonApp {
             peer_store_persisted_len: 0,
             zoom_saved_ru: 1.0,
             persist_tx: None,
+            durable_pending: std::sync::Arc::new((
+                std::sync::Mutex::new(0),
+                std::sync::Condvar::new(),
+            )),
             persist_done: std::sync::mpsc::channel(),
             chains_persist_tx: None,
             conv_state_persist_tx: None,

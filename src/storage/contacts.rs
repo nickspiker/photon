@@ -911,12 +911,13 @@ fn message_row_key(timestamp: i64, content: &str) -> [u8; 16] {
     key
 }
 
+/// Returns (written, skipped): rows that took a durable transaction vs rows the delta gate proved already on disk verbatim. Callers mostly ignore it; tests pin it (a gate that never skips silently re-inflates every save back to ~300 commits, a gate that wrongly skips eats an edit).
 pub fn save_messages(
     conv: &crate::types::Conversation,
     storage: &FlatStorage,
-) -> Result<(), StorageError> {
+) -> Result<(usize, usize), StorageError> {
     if conv.messages.is_empty() {
-        return Ok(()); // Nothing to save
+        return Ok((0, 0)); // Nothing to save
     }
 
     let table = *conv.id().as_bytes();
@@ -933,6 +934,9 @@ pub fn save_messages(
             );
         }
     }
+    // DELTA GATE (2026-09-02, the ten-thousand-year letter): this loop used to re-put EVERY row on EVERY save — one new message on a 72-row table cost ~72 row transactions × 4-5 durable commits each ≈ 300 serial commits ≈ 8-12 fdatasyncs apiece on a commit-per-write vault (group commit reverted 2026-08-21), which is the convicted mechanism behind 40s-to-minutes "sends" and the restart vanish (the starved writer died with the queue). The vault's identical-overwrite skip can't help: kete's fresh-random-nonce AEAD makes byte-identical plaintext re-encrypt differently, so every unchanged row re-committed FOR REAL. The gate compares the would-be record against the decoded durable row (Record: PartialEq; decode is width-tolerant so round-trips compare equal; reads ride the warm kete cache) and skips identical rows — one new message = ONE row transaction. Rows written by an older field schema compare unequal and re-put once (harmless upsert, self-healing), then go quiet. The legacy-key sweep below still runs off the FULL snapshot, unchanged.
+    let mut delta_written = 0usize;
+    let mut delta_skipped = 0usize;
     for msg in conv.messages.iter() {
         // Key each row by the message's eagle_time, NOT a local enumerate index. eagle_time is monotonic (a clock) so it's stable + shared across both devices (the renumber-on-insert hazard of an index key is gone), it's the braid's weave reference, and Pk::Int encodes big-endian so key order == chronological. eagle_time is i64 but always positive (oscillations since Apollo 11), so `as u64` is safe and order-preserving. `content_hash` = blake3 of the message text, stored so the braid's eagle_time->text weave lookup has an integrity/tiebreak check (the adversarial multi-device-same-tick case).
         let content_hash = blake3::hash(msg.content.as_bytes());
@@ -964,12 +968,30 @@ pub fn save_messages(
                 .set("ref_kind", kind as u64)
                 .set("ref_ts", Value::Time(target));
         }
-        db.put_row_in(
-            &table,
-            Pk::bytes(&message_row_key(msg.timestamp, &msg.content)),
-            &rec,
-        )
-        .map_err(|e| StorageError::Vault(e.to_string()))?;
+        let row_key = message_row_key(msg.timestamp, &msg.content);
+        // The delta gate proper: a read error falls thru to the put (never let a flaky read suppress a durable write).
+        if db
+            .get_row_in(&table, Pk::bytes(&row_key))
+            .ok()
+            .flatten()
+            .as_ref()
+            == Some(&rec)
+        {
+            delta_skipped += 1;
+            continue;
+        }
+        db.put_row_in(&table, Pk::bytes(&row_key), &rec)
+            .map_err(|e| StorageError::Vault(e.to_string()))?;
+        delta_written += 1;
+    }
+    if delta_skipped > 0 {
+        crate::logf!(
+            "STORAGE: delta persist — {} of {} row(s) written ({} identical, skipped) for conversation {}",
+            delta_written,
+            conv.messages.len(),
+            delta_skipped,
+            hex::encode(&conv.id().as_bytes()[..4])
+        );
     }
     // Self-terminating key migration: a legacy bare-Int key whose row was just re-put under its composite key is a stale twin — delete it or the table doubles. TIMESTAMP-MATCHED, never a blanket sweep: the old "delete every Int key" form assumed the snapshot held the whole table, and a persist that fired from a not-yet-loaded conversation re-put only its few RAM rows and then deleted every legacy row it never carried — the 2026-08-21 relaunch erasure (rows gone locally, the Mac re-serving them). An Int key with no matching re-put row is NOT ours to touch.
     let reput_times: std::collections::HashSet<u64> = conv
@@ -994,7 +1016,7 @@ pub fn save_messages(
         hex::encode(&conv.id().as_bytes()[..4])
     );
 
-    Ok(())
+    Ok((delta_written, delta_skipped))
 }
 
 /// Load a conversation's messages from its table, in counter order (which is chronological).
@@ -1197,12 +1219,19 @@ pub fn save_messages_page(
                 .set("ref_kind", kind as u64)
                 .set("ref_ts", Value::Time(target));
         }
-        db.put_row_in(
-            &table,
-            Pk::bytes(&message_row_key(msg.timestamp, &msg.content)),
-            &rec,
-        )
-        .map_err(|e| StorageError::Vault(e.to_string()))?;
+        let row_key = message_row_key(msg.timestamp, &msg.content);
+        // Same delta gate as save_messages: history pages routinely re-deliver rows the vault already holds verbatim — skip the durable transaction for identical rows (a read error falls thru to the put).
+        if db
+            .get_row_in(&table, Pk::bytes(&row_key))
+            .ok()
+            .flatten()
+            .as_ref()
+            == Some(&rec)
+        {
+            continue;
+        }
+        db.put_row_in(&table, Pk::bytes(&row_key), &rec)
+            .map_err(|e| StorageError::Vault(e.to_string()))?;
     }
     Ok(())
 }
@@ -1323,6 +1352,47 @@ mod tests {
         let (older, _) =
             load_message_page_before(&our_pid, 1_000_005, 50, usize::MAX, &storage).unwrap();
         assert_eq!(older.len(), 5);
+    }
+
+    /// THE delta gate (2026-09-02, the ten-thousand-year letter): re-saving an unchanged table must write ZERO rows (every row proved identical on disk), one new message must write exactly ONE, and a field flip (delivered) must write exactly the flipped row. Both failure directions are data-shaped: a gate that never skips re-inflates every save to a full-table rewrite (~300 durable commits, the convicted 40s-to-minutes "send"); a gate that wrongly skips eats an ACK flip or an edit.
+    #[test]
+    fn delta_gate_skips_identical_rows_and_writes_changes() {
+        crate::storage::isolate_test_storage();
+        let vault_seed = [0x7Cu8; 32];
+        let device_secret = [0x7Du8; 32];
+        let storage = FlatStorage::new(crate::storage::APP, vault_seed, device_secret).unwrap();
+        let our_pid = crate::crypto::clutch::identity_party_id(&vault_seed);
+        let mut conv = crate::types::Conversation::new([our_pid, our_pid]);
+        for i in 0..5i64 {
+            conv.messages.push(crate::types::ChatMessage::new_with_timestamp(
+                format!("note {i}"),
+                true,
+                2_000_000 + i,
+            ));
+        }
+        // Fresh table: everything writes.
+        let (w, s) = save_messages(&conv, &storage).unwrap();
+        assert_eq!((w, s), (5, 0), "fresh table writes every row");
+        // Identical re-save: the gate must skip ALL rows — this is the ~300-commit amplification kill.
+        let (w, s) = save_messages(&conv, &storage).unwrap();
+        assert_eq!((w, s), (0, 5), "unchanged table must write nothing (round-tripped Records compare equal)");
+        // One new message: exactly one durable transaction.
+        conv.messages.push(crate::types::ChatMessage::new_with_timestamp(
+            "the letter".to_string(),
+            true,
+            2_000_010,
+        ));
+        let (w, s) = save_messages(&conv, &storage).unwrap();
+        assert_eq!((w, s), (1, 5), "one new message = one row written");
+        // A field flip on an old row (the ACK bright flip) must not be eaten by the gate.
+        conv.messages[2].delivered = true;
+        let (w, s) = save_messages(&conv, &storage).unwrap();
+        assert_eq!((w, s), (1, 5), "a delivered flip writes exactly the flipped row");
+        // And the flip survives a real reload from disk.
+        let mut fresh = crate::types::Conversation::new([our_pid, our_pid]);
+        load_messages(&mut fresh, &storage).unwrap();
+        assert_eq!(fresh.messages.len(), 6);
+        assert!(fresh.messages[2].delivered, "the flipped row round-trips");
     }
 
     #[test]
