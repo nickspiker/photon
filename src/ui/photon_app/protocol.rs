@@ -20,24 +20,41 @@ impl PhotonApp {
             }};
         }
 
-        // Recurring background presence sweep — re-ping every contact so online/offline rings stay live. The interval tapers with idle time (5s active → 1min idle → 15min deep-idle) so an untouched window isn't hammering the network. Runs on Ready AND in a Conversation — CRITICAL: presence is symmetric only if both sides keep pinging, and the person you most need a live status for is the one you're actively chatting with. Gating this to Ready meant opening a conversation stopped your pings, so your view of that contact went stale — and if both people opened the chat with each other, NEITHER pinged and both showed offline (observed: the peer on Ready saw the other online, while the one in the conversation saw the first offline). `wake_at()` schedules the next sweep so this fires even while otherwise idle.
-        if matches!(self.state, AppState::Ready | AppState::Conversation) {
-            let interval = self.presence_ping_interval(now);
-            let due = self
-                .last_presence_ping
-                .is_none_or(|last| now.duration_since(last) >= interval);
-            if due {
-                self.last_presence_ping = Some(now);
-                self.ping_contacts();
+        // DEMAND-DRIVEN presence (Nick 2026-09-02: "zero reason I need the status of my fleet OR friends until I open my fleet page OR my contacts screen; on a chat, ping THEM"): pings + the beacon that rides the full sweep fire only while the human is LOOKING at a presence surface — the contacts screen or the Fleet page (full sweep) or an open conversation (that one contact). Everything else arrives on edges: inbound acks/pongs/messages update state passively, the announce-on-online edge keeps our own mapping findable, retransmit ladders stay work-driven, and Android's FCM/doorbell is the background wake path. Screen ENTRY is an edge (immediate ping); while the surface stays visible a slow 30s refresh keeps the rings honest. Backgrounded = silent.
+        {
+            let watching = crate::platform::app_watching();
+            let surface = match self.state {
+                AppState::Ready => watching.then_some(0u8),
+                AppState::Conversation => watching.then_some(1),
+                AppState::Settings(SettingsPage::Fleet) => watching.then_some(2),
+                _ => None,
+            };
+            if surface != self.presence_surface {
+                self.presence_surface = surface;
+                if surface.is_some() {
+                    self.last_presence_ping = None; // entry edge → ping now
+                }
+            }
+            if let Some(kind) = surface {
+                const VISIBLE_REFRESH: std::time::Duration = std::time::Duration::from_secs(30);
+                let due = self
+                    .last_presence_ping
+                    .is_none_or(|last| now.duration_since(last) >= VISIBLE_REFRESH);
+                if due {
+                    self.last_presence_ping = Some(now);
+                    if kind == 1 {
+                        self.ping_active_contact();
+                    } else {
+                        self.ping_contacts();
+                    }
+                }
             }
         }
 
         // Periodic OWN-chain re-fold — the reliable doorbell for fleet membership changes (docs/pairing-v2.md). The hub `fleet` event is the instant path but best-effort; this catches a device add/remove that arrived while our WebSocket was down. Reconciling siblings re-seeds the answerable-pubkey set, so a newly-added device starts getting pong answers (stops showing offline) and appears in the Fleet list without a relaunch. 45s: brisk enough that a just-added device goes live within a sweep, slow enough to be a negligible one-fetch background poll.
         const FLEET_REFOLD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(45);
-        if matches!(
-            self.state,
-            AppState::Ready | AppState::Conversation | AppState::Settings(_)
-        ) {
+        // Demand-driven (2026-09-02): the refold poll runs only while a Settings page is open (the Fleet list is what it feeds); the hub `fleet` event remains the instant background path, and app-start does one refold via last_fleet_refold starting None.
+        if matches!(self.state, AppState::Settings(_)) && crate::platform::app_watching() {
             let due = self
                 .last_fleet_refold
                 .is_none_or(|last| now.duration_since(last) >= FLEET_REFOLD_INTERVAL);

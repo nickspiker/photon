@@ -1068,6 +1068,8 @@ pub struct PhotonApp {
     blink_timer: BlinkTimer,
     /// The screen `tick()` last saw — its per-tick diff against `self.state` is THE page-change hook: any screen swap drops textbox focus (and with it the blinkey + Android IME) no matter which of the many `self.state =` sites caused it. Screen granularity, not state granularity: Launch sub-states are one screen (Error→Fresh happens ON the recovery keystroke — defocusing would eat it), Ready↔Searching share the contacts screen (the search box owns the in-flight search), each Settings page counts as its own.
     last_screen: AppState,
+    /// Which presence SURFACE is being watched this tick (None = none: no pings, no beacons): 0 = Ready/contacts, 1 = an open conversation (single-contact ping), 2 = the Fleet page. Transition into a surface is the entry edge — an immediate ping — per the demand-driven model (Nick 2026-09-02).
+    presence_surface: Option<u8>,
     /// Last time `tick()` ran the background presence ping sweep (`ping_contacts`). `None` until the first sweep. Paired with `last_interaction` to drive the tiered cadence (see `presence_ping_interval`): `tick()` re-pings when due and `wake_at()` schedules the next due sweep so presence refreshes even while idle. Without this, contacts only flipped online when you opened their conversation.
     last_presence_ping: Option<Instant>,
     /// Last time the user interacted with the app (any input event, or window focus-gain). `None` until the first interaction. The presence sweep tapers with idle time — frequent while you're actively using it, sparse when you've walked away — so an unfocused, untouched window isn't hitting the network every few seconds. Reset on interaction, which also triggers an immediate sweep so rings are fresh the instant you look. See `presence_ping_interval`.
@@ -1824,6 +1826,7 @@ impl PhotonApp {
             blink_timer: BlinkTimer::new(),
             last_screen: AppState::default(),
             last_presence_ping: None,
+            presence_surface: None,
             last_interaction: None,
             last_fleet_refold: None,
             last_stalled_refetch: None,

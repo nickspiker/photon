@@ -168,10 +168,7 @@ mod tests {
         }
     }
 
-    /// Photon's own encoder now delegates to fgtw::traverse. These are the SAME fixtures the
-    /// crate pins, asserted through photon's public API — so if delegation ever changed what
-    /// photon puts on the wire, this fails here rather than in the field. Fix the code, not
-    /// the fixture: every deployed build is punching with these exact bytes.
+    /// Photon's own encoder now delegates to fgtw::traverse. These are the SAME fixtures the crate pins, asserted thru photon's public API — so if delegation ever changed what photon puts on the wire, this fails here rather than in the field. Fix the code, not the fixture: every deployed build is punching with these exact bytes.
     #[test]
     fn photons_encoder_still_emits_the_deployed_wire_format() {
         const GOLDEN_PROBE: &str = "52c3853c7a33097933096233b46c33b4653600000000000030396870331f09090909090909090909090909090909090909090909090909090909090909096b65331f07070707070707070707070707070707070707070707070707070707070707076765333f030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303036e33012864330570756e6368293e";

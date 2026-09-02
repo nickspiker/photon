@@ -30,3 +30,15 @@ pub fn attended_here() -> bool {
         desktop_notify::window_attended()
     }
 }
+
+/// Is the app the thing on screen right now? Android mirrors the Activity foreground state; desktop counts as always-watching (battery pressure is an order of magnitude lower and window focus is a weaker signal than "screen off"). The demand-driven presence gates (protocol.rs) read this.
+pub fn app_watching() -> bool {
+    #[cfg(target_os = "android")]
+    {
+        jni_android::app_in_foreground()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        true
+    }
+}
