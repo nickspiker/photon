@@ -5235,23 +5235,15 @@ impl PhotonApp {
                         if phase == CalPhase::Repeat { 600 } else { 400 },
                     );
                     flow.gap(hspan2);
-                    // Pills (slot 0 calibrate / slot 1 mark-headset) — inert while a run is live.
+                    // Pills (slot 0 calibrate / slot 1 mark-headset) — flow_pills sizes each to its measured label and wraps onto a fresh line when the pane can't hold both (labels never squeeze). Inert while a run is live.
                     let running = matches!(phase, CalPhase::Listen | CalPhase::Repeat);
-                    let band = flow.band(hspan2 * 2.4);
-                    let pill_h = band.h * 0.8;
-                    let pill_y = band.y + (band.h - pill_h) * 0.5;
-                    let cal_rect = fluor::region::Region::new(band.x + hspan2 * 0.3, pill_y, band.w * 0.38, pill_h);
-                    let skip_rect = fluor::region::Region::new(band.x + band.w * 0.45, pill_y, band.w * 0.42, pill_h);
                     let cal_label = if running { "Calibrating\u{2026}" } else if calibrated { "Recalibrate" } else { "Calibrate" };
-                    if running {
-                        draw_stub_pill_disabled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, cal_rect, cal_label, btn_base, ctx.pressed_hit);
-                    } else {
-                        draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, cal_rect, cal_label, btn_base, ctx.pressed_hit);
-                    }
+                    let mut pill_list: Vec<(&str, HitId, bool)> = vec![(cal_label, btn_base, !running)];
                     if !calibrated && !running {
-                        // Headset/BT escape: no acoustic path to measure — store a null-coupling profile so calls unlock without the ritual.
-                        draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, skip_rect, "It's a headset (skip)", btn_base.wrapping_add(1), ctx.pressed_hit);
+                        // Headset/BT escape: no acoustic path to measure — a null-coupling profile unlocks calls without the ritual.
+                        pill_list.push(("It's a headset (skip)", btn_base.wrapping_add(1), true));
                     }
+                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2, &pill_list);
                     flow.gap(hspan2);
                     measured_extent = Some((flow.used(), inset.h));
                 }

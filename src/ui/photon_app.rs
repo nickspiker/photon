@@ -3223,6 +3223,46 @@ impl Flow {
     }
 }
 
+/// Flow-aware action pills (Nick 2026-09-02: "have button A and button B be on distinct lines if the width starts to clamp on the inside text"): each pill sizes to its MEASURED label at the natural font (matching draw_pill_immediate's h×0.5 + 1.6-em padding, so the fit-to-slot shrink never engages); pills lay side-by-side while the pane holds them and WRAP onto a fresh band when it can't — a label never squeezes. Returns nothing; the flow cursor ends past the last band.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn flow_pills(
+    flow: &mut Flow,
+    canvas: &mut Canvas,
+    text: &mut fluor::text::TextRenderer,
+    hit_map: &mut [HitId],
+    buf_w: usize,
+    buf_h: usize,
+    pressed_hit: HitId,
+    size: Coord,
+    pills: &[(&str, HitId, bool)],
+) {
+    let pill_h = size * 2.0;
+    let band_h = pill_h + size * 0.5;
+    let gap = size * 0.8;
+    let margin = size * 0.3;
+    let font = size; // draw_pill_immediate uses rect.h × 0.5 = size — measure at the same size so widths agree
+    let mut x = flow.x + margin;
+    let right = flow.x + flow.w - margin;
+    let mut band: Option<fluor::region::Region> = None;
+    for (label, hit_id, enabled) in pills {
+        let style = TextStyle::new(font, 0).weight(500).font("Open Sans");
+        let w = (text.measure_text(label, &style) + font * 1.6 + size * 0.4).min(right - flow.x - margin);
+        if band.is_none() || x + w > right {
+            let b = flow.band(band_h);
+            x = flow.x + margin;
+            band = Some(b);
+        }
+        let b = band.unwrap();
+        let rect = fluor::region::Region::new(x, b.y + (b.h - pill_h) * 0.5, w, pill_h);
+        if *enabled {
+            draw_stub_pill(canvas, text, hit_map, buf_w, buf_h, rect, label, *hit_id, pressed_hit);
+        } else {
+            draw_stub_pill_disabled(canvas, text, hit_map, buf_w, buf_h, rect, label, *hit_id, pressed_hit);
+        }
+        x += w + gap;
+    }
+}
+
 /// Word-wrapped settings prose (Nick 2026-09-02: settings text ran off the screen edge mid-word) — the conversation screen's greedy wrapper reused, drawn into `region` (usually several stacked rows). Lines stack at `size × 1.25` from the region's top; returns the line count so a caller can flow content below. Prose that outgrows the region is still drawn (the page scroll owns overflow) — never silently truncated.
 fn settings_prose(
     canvas: &mut Canvas,
