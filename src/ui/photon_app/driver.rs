@@ -142,7 +142,8 @@ impl FluorApp for PhotonApp {
             crate::log(
                 "EXIT: deliberate quit (shift+close / Shift+Escape) — bypassing resident hide",
             );
-            // Quit is a flush edge: our `false` makes the host process::exit(), and the soft-mode RAM batch dies with the process (field 2026-08-21: freshly-recreated hang evidence evaporated on close because only panic/background/submit flushed).
+            // Quit is a flush edge for DATA first: block until the message/chains writers land their queues (the 2026-09-02 vanish — a queued self row died with the process), THEN flush the log batch (field 2026-08-21: freshly-recreated hang evidence evaporated on close because only panic/background/submit flushed).
+            self.drain_durable_writers();
             crate::flush_log_buffer();
             return false;
         }
@@ -153,7 +154,8 @@ impl FluorApp for PhotonApp {
             crate::log("RESIDENT: window hidden on close — still running; launch photon again to surface it");
             true
         } else {
-            // Same flush edge as the deliberate-quit path above — non-resident close exits the process.
+            // Same drain + flush edge as the deliberate-quit path above — non-resident close exits the process.
+            self.drain_durable_writers();
             crate::flush_log_buffer();
             false
         }
@@ -3289,7 +3291,8 @@ impl FluorApp for PhotonApp {
         }
         if let Some(exe) = self.update_reexec.take() {
             crate::log("UPDATE: re-exec into the new binary");
-            // exec() replaces the process image (and the Windows arm exits) — flush the soft-mode batch or the update trail (and everything since the last edge) dies here.
+            // exec() replaces the process image (and the Windows arm exits) — drain the durable writers first (same law as the quit edge: a queued row must not die with the image), then flush the soft-mode batch or the update trail (and everything since the last edge) dies here.
+            self.drain_durable_writers();
             crate::flush_log_buffer();
             #[cfg(unix)]
             {

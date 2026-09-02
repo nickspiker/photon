@@ -257,13 +257,16 @@ impl PhotonApp {
         let done_tx = self.persist_done.0.clone();
         // The verdict must WAKE the loop, not just queue: on an idle app nothing else pumps events, so a posted verdict sat undrained until an unrelated ping or keystroke — the field's "self-notes stick or take forever to go bright" (2026-08-25). The bridge executor learned this edge first; same law here.
         let wake = self.event_proxy.clone();
+        let pending = self.durable_pending.clone();
         let tx = self.persist_tx.get_or_insert_with(|| {
             let (tx, rx) = std::sync::mpsc::channel::<PersistItem>();
             std::thread::spawn(move || {
                 while let Ok(first) = rx.recv() {
                     // Coalesce the burst: keep the newest snapshot per conversation — and CARRY the superseded snapshot's signal rows onto its replacement (the newer snapshot contains those rows too, so its durable write answers for them; same law as the chains writer).
+                    let mut consumed = 1usize;
                     let mut latest: Vec<PersistItem> = vec![first];
                     while let Ok(next) = rx.try_recv() {
+                        consumed += 1;
                         let mut carried: Vec<i64> = Vec::new();
                         latest.retain_mut(|(v, _, rows)| {
                             if v.id() == next.0.id() {
@@ -283,7 +286,7 @@ impl PhotonApp {
                             crate::storage::contacts::save_messages(&v, &st)
                         }));
                         let err = match r {
-                            Ok(Ok(())) => None,
+                            Ok(Ok(_)) => None,
                             Ok(Err(e)) => {
                                 let m = format!("{e}");
                                 crate::logf!("STORAGE: async message persist failed: {}", m);
@@ -306,6 +309,11 @@ impl PhotonApp {
                             }
                         }
                     }
+                    // Quit-drain accounting: every consumed item's write has landed (or errored LOUDLY thru the verdict) — release the quit edge. Decrement AFTER the writes, never on dequeue: the whole point is that the process may not exit while a snapshot is queued OR mid-write (the 2026-09-02 vanish was exactly a quit racing this thread).
+                    let (n, cv) = &*pending;
+                    let mut n = n.lock().unwrap();
+                    *n = n.saturating_sub(consumed);
+                    cv.notify_all();
                 }
             });
             tx
@@ -318,7 +326,27 @@ impl PhotonApp {
             crate::log("STORAGE: message persist writer was DEAD — respawning and retrying");
             self.persist_tx = None;
             self.persist_messages_signalled(ci, signal_rows);
+        } else {
+            // Enqueue accounting for the quit drain (increment only on a SENT item — the respawn path above re-enters and counts its own retry).
+            *self.durable_pending.0.lock().unwrap() += 1;
         }
+    }
+
+    /// Block the quit edge until every queued message/chains durable write has landed. The 2026-09-02 vanish: a deliberate quit exits the process with a snapshot still in the writer queue — the typed row was never written and dies silently (the field's "important message wiped twice"). This is an EDGE wait (condvar signalled by the writers), not a timer: a healthy vault drains in milliseconds; a wedged vault holds the quit visibly (with a log saying what it waits for), which is the honest alternative to eating rows.
+    pub(super) fn drain_durable_writers(&self) {
+        let (lock, cv) = &*self.durable_pending;
+        let mut n = lock.lock().unwrap();
+        if *n == 0 {
+            return;
+        }
+        crate::logf!(
+            "EXIT: draining {} queued durable write(s) before exit — quitting now would lose them",
+            *n
+        );
+        while *n > 0 {
+            n = cv.wait(n).unwrap();
+        }
+        crate::log("EXIT: durable writers drained — rows are on disk, safe to exit");
     }
 
     /// Apply the message writer's durable verdicts — the zero-remote commit point. The disk confirmed → the named rows flip bright, their sibling push releases, and the bright state re-persists (the ACK arm's exact discipline). The disk refused → the rows stay faint and the failure surfaces as a TOAST, not a log line (2026-08-21 erasure ticket: the silent version of this failure was indistinguishable from success until relaunch ate the rows; the faint row + resend pill are the honest state and the retry).
@@ -390,13 +418,16 @@ impl PhotonApp {
             std::sync::Arc<crate::storage::FlatStorage>,
             Vec<ChainsPostDurable>,
         );
+        let pending = self.durable_pending.clone();
         let tx = self.chains_persist_tx.get_or_insert_with(|| {
             let (tx, rx) = std::sync::mpsc::channel::<ChainsItem>();
             std::thread::spawn(move || {
                 while let Ok(first) = rx.recv() {
                     // Coalesce the burst: keep the newest snapshot per friendship id — and CARRY the superseded snapshot's signals into its replacement. The newest snapshot contains every advance the older one did, so firing them after the newer write keeps persist-before-signal true for all of them.
+                    let mut consumed = 1usize;
                     let mut latest: Vec<ChainsItem> = vec![first];
                     while let Ok(next) = rx.try_recv() {
+                        consumed += 1;
                         let mut carried: Vec<ChainsPostDurable> = Vec::new();
                         latest.retain_mut(|(c, _, acts)| {
                             if c.id() == next.0.id() {
@@ -423,11 +454,19 @@ impl PhotonApp {
                             }
                         }
                     }
+                    // Quit-drain accounting — same law as the message writer: decrement after the writes land, then release the quit edge.
+                    let (n, cv) = &*pending;
+                    let mut n = n.lock().unwrap();
+                    *n = n.saturating_sub(consumed);
+                    cv.notify_all();
                 }
             });
             tx
         });
-        let _ = tx.send((chains, storage, actions));
+        if tx.send((chains, storage, actions)).is_ok() {
+            // Enqueue accounting for the quit drain: a queued chains commit (lane advance / ACK gate) must not die with a quitting process any more than a message row may.
+            *self.durable_pending.0.lock().unwrap() += 1;
+        }
     }
 
     /// Persist a conversation's durable bits (unread + history cursor) OFF the UI thread, coalesced to the newest record per conversation. Same worker discipline as the message/chains writers: storage rides with each item so a vault swap can't strand the thread on a dead session.
