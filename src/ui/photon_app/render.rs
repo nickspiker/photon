@@ -4991,6 +4991,9 @@ impl PhotonApp {
                     flow.prose(&mut canvas, ctx.text, "Calls only sound right after Photon measures two things about this exact hardware: how much of the speaker's sound leaks back into the mic (that leak is what your friends hear as echo), and how loudly your voice lands on the mic. One short run of each, per speaker and per mic — redo either any time.", hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
                     flow.gap(hspan2 * 0.4);
                     flow.prose(&mut canvas, ctx.text, "Setup: put the volume where you actually take calls, find somewhere reasonably quiet, and don't touch any buttons while a step runs — the mic is listening the whole time.", hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                    flow.gap(hspan2 * 0.4);
+                    // The reassurance humans won't infer (Nick 2026-09-02: obvious, but people don't read — say it anyway): the mic is live during calibration, so state plainly that nothing recorded here goes anywhere. "No servers" is an architecture claim; "never leaves this device" is the sentence a person actually needs while a microphone is hot.
+                    flow.prose(&mut canvas, ctx.text, "Everything here happens entirely on this device. What the mic hears during calibration is measured, reduced to a few numbers, and thrown away — it is never stored as audio and never leaves this device. (There are no servers to send it to anyway.)", hspan2 * 0.9, *theme::SEARCH_FOUND_COLOUR, 400);
                     flow.gap(hspan2 * 0.8);
                     let phase = crate::call::calibrate::phase();
                     let running = !matches!(phase, CalPhase::Idle | CalPhase::Done | CalPhase::Failed);
