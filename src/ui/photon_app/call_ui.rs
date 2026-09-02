@@ -225,6 +225,13 @@ impl PhotonApp {
         if call.phase != CallPhase::Ringing {
             return;
         }
+        // UNCALIBRATED ROUTE = NO ANSWER (the doctrine, Nick 2026-09-02: one dropped call beats a lifetime of shit calls; the ring panel already says why). Dispatch-side guard because the disabled button's hit map is a frame stale across the transition.
+        if !self.route_calibrated_now() {
+            self.ready_toast = Some("can't answer — calibrate this speaker first (Settings \u{2192} Wave, ~15s)".to_string());
+            self.ready_toast_screen = None;
+            crate::log("CALL: answer refused — current route uncalibrated");
+            return;
+        }
         let (call_id, peer, caller_nonce, offer_lane_key) = (
             call.call_id,
             call.peer_handle_hash,

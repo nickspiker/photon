@@ -19,6 +19,9 @@ use std::sync::Mutex;
 /// The media ingress sink: installed by the call engine at call start, cleared at teardown. The recv worker's two-byte fast path hands matching datagrams here RAW — no PT ack, no StatusUpdate, no parse ladder. `None` (no live call) means media datagrams silently drop, which is also the correct answer for stragglers after hangup.
 static MEDIA_SINK: Mutex<Option<std::sync::mpsc::Sender<(Vec<u8>, SocketAddr)>>> = Mutex::new(None);
 
+/// Is the CURRENT output route calibrated? The app tick mirrors route_calibrated_now() here so the engine (its own thread) can enforce the doctrine mid-call: an uncalibrated route NEVER TRANSMITS mic audio — plugging an uncalibrated headset in mid-call mutes you (with the screen saying why) instead of inflicting your echo on the peer. Defaults true so a pre-mirror tick can't mute a healthy call.
+pub static ROUTE_CALIBRATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
 /// True exactly while a call engine is up (sink installed → cleared) — the "be quiet, media is flowing" signal for background chatter (discovery beacons, history walks) that shares the socket/recv path with the 50pps media stream. Engine lifecycle, not audio-session: recording playback never sets it.
 pub static MEDIA_QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 

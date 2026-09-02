@@ -578,7 +578,8 @@ impl PhotonApp {
                 let bfont = unit * 0.75;
                 match phase {
                     crate::call::CallPhase::Ringing => {
-                        // Decline LEFT, Answer RIGHT — the incoming-call decision.
+                        // Decline LEFT, Answer RIGHT — the incoming-call decision. UNCALIBRATED ROUTE = NO ANSWER (Nick 2026-09-02: "a single dropped call sucks but a lifetime of shit calls is worse — it literally tells me I'm shit out of luck until I calibrate"): the Answer button disables with the reason on screen; Decline stays live to silence the ring. One ~15s calibration per route, ever.
+                        let cal_ok = route_calibrated;
                         if let Some(b) = self.call_decline_btn.as_mut() {
                             b.set_rect(w * 0.5 - bw * 0.5 - unit * 0.75, by, bw, bh);
                             b.set_font_size(bfont);
@@ -590,8 +591,29 @@ impl PhotonApp {
                             b.set_rect(w * 0.5 + bw * 0.5 + unit * 0.75, by, bw, bh);
                             b.set_font_size(bfont);
                             b.set_label("Answer");
+                            b.set_enabled(cal_ok);
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
+                        if !cal_ok {
+                            ctx.text.draw_text_center(
+                                &mut canvas,
+                                "This speaker isn't calibrated — you can't take calls on it yet.",
+                                w * 0.5,
+                                by - bh * 0.9,
+                                &TextStyle::new(bfont * 0.85, *theme::SEARCH_FAIL_COLOUR).weight(600).font("Oxanium"),
+                                None,
+                                None,
+                            );
+                            ctx.text.draw_text_center(
+                                &mut canvas,
+                                "Settings \u{2192} Wave \u{00b7} about 15 seconds \u{00b7} once per speaker/headset, ever.",
+                                w * 0.5,
+                                by - bh * 0.4,
+                                &TextStyle::new(bfont * 0.7, *theme::LABEL_COLOUR).weight(400).font("Oxanium"),
+                                None,
+                                None,
+                            );
                         }
                     }
                     crate::call::CallPhase::Ended => {
@@ -614,6 +636,7 @@ impl PhotonApp {
                             b.set_rect(w * 0.5 + bw * 0.5 + unit * 0.75, by, bw, bh);
                             b.set_font_size(bfont);
                             b.set_label("Keep");
+                            b.set_enabled(true); // the Ringing arm may have disabled it (uncalibrated-route gate)
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
@@ -650,6 +673,7 @@ impl PhotonApp {
                             b.set_rect(w * 0.5, by, w * 0.5, bh);
                             b.set_font_size(bfont);
                             b.set_label("End call");
+                            b.set_enabled(true); // Ringing may have disabled it (uncalibrated-route gate)
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
@@ -710,6 +734,8 @@ impl PhotonApp {
                     b.set_rect(ax + action_w * 0.5, cy, action_w, pill_h);
                     b.set_font_size(call_font);
                     b.set_label(a_label);
+                    // The compact bar's Answer honors the same uncalibrated-route gate as the panel; other phases re-enable.
+                    b.set_enabled(!matches!(phase, crate::call::CallPhase::Ringing) || route_calibrated);
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                 }

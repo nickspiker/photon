@@ -20,6 +20,12 @@ impl PhotonApp {
             }};
         }
 
+        // Mirror the calibration doctrine to the engine thread: an uncalibrated route never transmits (engine mic gate). Cheap per tick; follows route changes on their mirror edge.
+        crate::call::ROUTE_CALIBRATED.store(
+            self.route_calibrated_now(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+
         // DEMAND-DRIVEN presence (Nick 2026-09-02: "zero reason I need the status of my fleet OR friends until I open my fleet page OR my contacts screen; on a chat, ping THEM"): pings + the beacon that rides the full sweep fire only while the human is LOOKING at a presence surface — the contacts screen or the Fleet page (full sweep) or an open conversation (that one contact). Everything else arrives on edges: inbound acks/pongs/messages update state passively, the announce-on-online edge keeps our own mapping findable, retransmit ladders stay work-driven, and Android's FCM/doorbell is the background wake path. Screen ENTRY is an edge (immediate ping); while the surface stays visible a slow 30s refresh keeps the rings honest. Backgrounded = silent.
         {
             let watching = crate::platform::app_watching();
