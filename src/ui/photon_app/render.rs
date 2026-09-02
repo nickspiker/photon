@@ -360,6 +360,30 @@ impl PhotonApp {
         let text = &mut *ctx.text;
         // Bg-first compose chain: noise paints opaque, the wave reads it for the `sqrt(c*scale + c_bg²)` blend, then the logo (glow / body / highlight) paints over both via legacy visible-RGB ops. Each step preserves α on the pixels it touches. The wave + logo are Launch-screen chrome — once attested the user shouldn't be staring at the wordmark every time they open the app, so Ready / Searching / Conversation get just the background noise and let their own widgets own the canvas.
         let on_launch = matches!(self.state, AppState::Launch(_));
+        // ABOUT-PAGE SLAB (Nick 2026-09-02): the wave + wordmark SCROLL with the card but never SCALE (fixed window-proportional size, zoom-independent — content sits on a fixed slab instead of the logo warping with zoom). Drawn HERE in the bg pass because that's the only place the wave works: it quadrature-reads the noise beneath it, and fluor's under-blend made the old content-pass draw invisible ("suspiciously absent"). The content arm advances past the same slab height without painting.
+        let about_slab: Option<(fluor::canvas::PixelRect, fluor::canvas::PixelRect)> =
+            if matches!(self.state, AppState::Settings(SettingsPage::About)) {
+                let sl = SettingsLayout::compute(&ctx.viewport);
+                let inset = sl.content_inset();
+                let slab_h = about_slab_h(buf_h);
+                let top = inset.y - settings_content_scroll;
+                let lx0 = inset.x.max(0.0) as usize;
+                let lx1 = (inset.x + inset.w).max(0.0) as usize;
+                let clampy = |v: f32| v.max(inset.y).max(0.0) as usize;
+                let wy0 = clampy(top);
+                let wy1 = (top + slab_h * 0.62).max(0.0) as usize;
+                let gy0 = clampy(top + slab_h * 0.30);
+                let gy1 = (top + slab_h).max(0.0) as usize;
+                (lx1 > lx0 && wy1 > wy0 && gy1 > gy0).then(|| {
+                    (
+                        fluor::canvas::PixelRect::new(lx0, wy0, lx1, wy1.min(buf_h)),
+                        fluor::canvas::PixelRect::new(lx0, gy0, lx1, gy1.min(buf_h)),
+                    )
+                })
+            } else {
+                None
+            };
+        let about_wave_phase = self.bg_scroll as f32 / ((1 << 7) as f32);
         // Faint dozenal version watermark shows on the ATTEST screen ONLY (Launch) — a quiet bottom-left mark while you sign in. Ready / Conversation stay clean; the About page carries the version in full (normal-white dozenal glyphs, tap to spell out). Never arabic anywhere.
         let show_version = on_launch;
         // Swap the noise base colour to (*theme::BG_BASE_WARNING) when the dual-ring vault flagged degraded this session — the noise pass already runs every frame so this changes a colour, not the pass count. None on the happy path keeps fluor's default green-dark BG_BASE.
@@ -370,6 +394,8 @@ impl PhotonApp {
         };
         // The 1-px noise inset exists ONLY to clear the window perimeter hairline / shadow band — so gate it on whether that perimeter is actually drawn, which is exactly `!chrome.full_edge`. A windowed desktop draws the perimeter → inset. A maximized/fullscreen desktop goes full_edge (no perimeter) and Android forces full_edge too → paint to the screen edge, else a 1-px unpainted border shows. (Earlier this was hardcoded per-OS, so desktop-maximized still inset for a perimeter that wasn't there.) `|| cfg!(android)` keeps the Android always-fullscreen guarantee even on a transient pre-resize frame where full_edge hasn't synced yet.
         let bg_fullscreen = chrome.full_edge || cfg!(target_os = "android");
+        // MEASURED settings scroll extent (the Flow pages): a converted page arm records (content_height, pane_height) here as it draws; applied to self.settings_content_extent after the borrows release — one frame stale, which the rubber-band tolerates, and it retires the hand-counted row estimates page by page.
+        let mut measured_extent: Option<(f32, f32)> = None;
         // Stage marks for the >1s breakdown at the end of the frame — the flat "render took Nms" line named the SCREEN but not the STAGE, which stalled the 2026-08-21 hang hunt (5.8-8.8s Conversation renders, no idea where inside).
         let mark_pre = std::time::Instant::now();
         chrome.rasterize_bg(ctx.damage, |canvas| {
@@ -417,6 +443,11 @@ impl PhotonApp {
             if on_launch {
                 chromatic_wave(canvas, spectrum_rect, phase, period_scale);
                 paint_photon_logo(canvas, text, logo_rect);
+            }
+            // The About slab (see about_slab above): same noise-reading ops, scrolled position, fixed size.
+            if let Some((wave_r, logo_r)) = about_slab {
+                chromatic_wave(canvas, wave_r, about_wave_phase, 1.0);
+                paint_photon_logo(canvas, text, logo_r);
             }
         });
         // Window-perimeter hairline FIRST — painted straight into `target` (not the chrome group) and carves the window-shape clip_mask. fluor is under-blend only, so whatever lands in `target` first wins at shared edge pixels; drawing the hairline before any content makes it survive over full-bleed screens (Ready/Conversation) whose content reaches the window edge. The chrome group (buttons / orb / strip / title) still composites UNDER content via `flatten_into` below. The clip_mask carve here is the SOLE source of the single window-shape alpha-trim done at the OS boundary in finalize.
@@ -5149,43 +5180,27 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Wave => {
-                    // WAVE — everything sound (Beam, its camera sibling, lands with video). Per-route audio calibration: status + the ritual, phase-driven off calibrate::phase(). Rows: 0 title · 1 route · 2 status · 3-5 statement/phase prose · 6 pills · 7-8 spare.
+                    // WAVE — everything sound (Beam, its camera sibling, lands with video). The FIRST Flow page: every element wraps at the pane edge and the scroll extent is MEASURED from the final cursor (no row estimates).
                     use crate::call::calibrate::CalPhase;
-                    let rows = layout
-                        .content_scrolled(10, settings_content_scroll)
-                        .split_v([1.0; 10]);
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[0],
-                        "Wave",
-                        tspan,
-                        *theme::CONTACT_NAME_COLOUR,
-                        600,
-                    );
+                    let inset = layout.content_inset();
+                    let mut flow = Flow::new(inset, settings_content_scroll);
+                    flow.line(&mut canvas, ctx.text, "Wave", tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.gap(hspan2 * 0.6);
                     let route = crate::platform::audio::route_id();
                     let route_shown = if route.is_empty() { "no output device detected yet".to_string() } else { route.clone() };
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[1],
-                        &format!("Output: {route_shown}"),
-                        hspan2,
-                        *theme::CONTACT_NAME_COLOUR,
-                        400,
-                    );
+                    flow.line(&mut canvas, ctx.text, &format!("Output: {route_shown}"), hspan2, *theme::CONTACT_NAME_COLOUR, 400);
                     let calibrated = route_calibrated;
                     let phase = crate::call::calibrate::phase();
-                    settings_line(
+                    flow.line(
                         &mut canvas,
                         ctx.text,
-                        rows[2],
                         if calibrated { "Calibrated \u{2713}" } else { "Not calibrated — calls wait on this" },
                         hspan2,
                         if calibrated { *theme::SEARCH_FOUND_COLOUR } else { *theme::SEARCH_FAIL_COLOUR },
                         500,
                     );
-                    // Phase-driven prose — a headline row plus a WORD-WRAPPED body (settings_prose wraps at the pane edge between words; the old fixed lines ran off narrow screens mid-word).
+                    flow.gap(hspan2 * 0.8);
+                    // Phase-driven prose — headline + body, both wrapping wherever the pane edge is.
                     let (headline, body): (&str, &str) = match phase {
                         CalPhase::Listen => (
                             "Listen\u{2026} stay quiet while the sentence plays.",
@@ -5204,31 +5219,23 @@ impl PhotonApp {
                             "~15 seconds. Somewhere quiet, volume where you like it — and don't touch the buttons mid-run. Redo it any time; each run replaces the last.",
                         ),
                     };
-                    settings_line(
+                    flow.line(&mut canvas, ctx.text, headline, hspan2, *theme::CONTACT_NAME_COLOUR, 500);
+                    flow.prose(
                         &mut canvas,
                         ctx.text,
-                        rows[3],
-                        headline,
-                        hspan2,
-                        *theme::CONTACT_NAME_COLOUR,
-                        500,
-                    );
-                    let prose_region = fluor::region::Region::new(rows[4].x, rows[4].y, rows[4].w, rows[4].h * 2.0);
-                    settings_prose(
-                        &mut canvas,
-                        ctx.text,
-                        prose_region,
                         body,
                         hspan2,
                         if phase == CalPhase::Repeat { *theme::CONTACT_NAME_COLOUR } else { *theme::LABEL_COLOUR },
                         if phase == CalPhase::Repeat { 600 } else { 400 },
                     );
+                    flow.gap(hspan2);
                     // Pills (slot 0 calibrate / slot 1 mark-headset) — inert while a run is live.
                     let running = matches!(phase, CalPhase::Listen | CalPhase::Repeat);
-                    let pill_h = rows[6].h * 0.8;
-                    let pill_y = rows[6].y + (rows[6].h - pill_h) * 0.5;
-                    let cal_rect = fluor::region::Region::new(rows[6].x + hspan2 * 0.3, pill_y, rows[6].w * 0.38, pill_h);
-                    let skip_rect = fluor::region::Region::new(rows[6].x + rows[6].w * 0.45, pill_y, rows[6].w * 0.42, pill_h);
+                    let band = flow.band(hspan2 * 2.4);
+                    let pill_h = band.h * 0.8;
+                    let pill_y = band.y + (band.h - pill_h) * 0.5;
+                    let cal_rect = fluor::region::Region::new(band.x + hspan2 * 0.3, pill_y, band.w * 0.38, pill_h);
+                    let skip_rect = fluor::region::Region::new(band.x + band.w * 0.45, pill_y, band.w * 0.42, pill_h);
                     let cal_label = if running { "Calibrating\u{2026}" } else if calibrated { "Recalibrate" } else { "Calibrate" };
                     if running {
                         draw_stub_pill_disabled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, cal_rect, cal_label, btn_base, ctx.pressed_hit);
@@ -5239,6 +5246,8 @@ impl PhotonApp {
                         // Headset/BT escape: no acoustic path to measure — store a null-coupling profile so calls unlock without the ritual.
                         draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, skip_rect, "It's a headset (skip)", btn_base.wrapping_add(1), ctx.pressed_hit);
                     }
+                    flow.gap(hspan2);
+                    measured_extent = Some((flow.used(), inset.h));
                 }
                 SettingsPage::About => {
                     // An About CARD, not a settings list: the Photon wordmark over its chromatic wave up top, then the two headline properties (killswitch-ready, passless), then the version — tap it to reveal both the spelled-out form AND the dozenal cheat sheet. No feedback line — photon is owned by everyone. All centred under the logo; a manual vertical cursor (elements are variable-height, not equal rows).
@@ -5246,31 +5255,9 @@ impl PhotonApp {
                     let line_h = layout.content_line_h();
                     let cx = inset.x + inset.w * 0.5;
                     let mut y = inset.y - settings_content_scroll;
-                    // Chromatic wave + wordmark. Static spectrum (phase rides bg_scroll for a touch of life); reads the noise already in `target`. Skipped when scrolled fully off so a negative rect never misbehaves.
-                    let wave_phase = self.bg_scroll as f32 / ((1 << 7) as f32);
-                    let logo_h = line_h * 4.0;
-                    if y + logo_h > inset.y && y < inset.y + inset.h {
-                        let lx0 = inset.x.max(0.0) as usize;
-                        let lx1 = (inset.x + inset.w).max(0.0) as usize;
-                        // Attest-screen composition, not one shared rect: the spectrum band rides the TOP of the block and the wordmark OVERLAPS its bottom (LaunchLayout's slicing) — painting both into one rect stacked them wrong (the "funky alignment").
-                        let wy0 = y.max(inset.y).max(0.0) as usize;
-                        let wy1 = (y + logo_h * 0.62).max(0.0) as usize;
-                        let gy0 = (y + logo_h * 0.30).max(inset.y).max(0.0) as usize;
-                        let gy1 = (y + logo_h).max(0.0) as usize;
-                        if lx1 > lx0 && wy1 > wy0 {
-                            let wave_rect = fluor::canvas::PixelRect::new(lx0, wy0, lx1, wy1);
-                            chromatic_wave(&mut canvas, wave_rect, wave_phase, 1.0);
-                        }
-                        if lx1 > lx0 && gy1 > gy0 {
-                            let logo_rect = fluor::canvas::PixelRect::new(lx0, gy0, lx1, gy1);
-                            crate::ui::photon_logo::paint_photon_logo(
-                                &mut canvas,
-                                ctx.text,
-                                logo_rect,
-                            );
-                        }
-                    }
-                    y += logo_h + line_h * 0.4;
+                    // The wave + wordmark now paint in the BG pass (see about_slab in the bg closure): fixed window-proportional size (never zoom-scaled), scrolled with the card. The card just advances past the slab.
+                    let slab_h = about_slab_h(buf_h);
+                    y += slab_h + line_h * 0.4;
                     // The two headline properties — the whole pitch in two words each.
                     ctx.text.draw_text_center(
                         &mut canvas,
@@ -5615,12 +5602,19 @@ impl PhotonApp {
                         );
                         y += line_h * 0.8;
                     }
+                    // MEASURED extent (Flow doctrine): the card's true height from the final cursor — retires the hand-counted row arithmetic next frame.
+                    measured_extent = Some((y + settings_content_scroll - inset.y + line_h, inset.h));
                     let _ = tspan;
                 }
             }
         }
 
         } // end !call_fullscreen — per-screen bodies skipped while the ring panel owns the surface
+
+        // Apply the frame's MEASURED extent (Flow pages) — next frame's clamp reads it.
+        if let Some((content_h, pane_h)) = measured_extent {
+            self.settings_content_extent = (content_h - pane_h).max(0.0);
+        }
 
         // JOINER SELECTED — the green flood (docs/lifecycle.md): this device is bound and waiting on the sponsor's human to confirm "yes, it's green and says Selected". A HOLD, not an interstitial — stray taps must not kill a ceremony mid-confirm, so presses are simply ignored while it's up (the poller or a relaunch are the exits).
         if self.joiner_selected {
