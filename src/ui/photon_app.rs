@@ -3158,6 +3158,28 @@ fn settings_line(
     );
 }
 
+/// Word-wrapped settings prose (Nick 2026-09-02: settings text ran off the screen edge mid-word) — the conversation screen's greedy wrapper reused, drawn into `region` (usually several stacked rows). Lines stack at `size × 1.25` from the region's top; returns the line count so a caller can flow content below. Prose that outgrows the region is still drawn (the page scroll owns overflow) — never silently truncated.
+fn settings_prose(
+    canvas: &mut Canvas,
+    text: &mut fluor::text::TextRenderer,
+    region: fluor::region::Region,
+    s: &str,
+    size: Coord,
+    colour: u32,
+    weight: u16,
+) -> usize {
+    let style = TextStyle::new(size, colour).weight(weight).font("Oxanium");
+    let max_w = (region.w - size * 0.6).max(size);
+    let lines = wrap_text_lines(text, s, &style, max_w);
+    let step = size * 1.25;
+    let mut y = region.y + size * 0.9;
+    for line in &lines {
+        text.draw_text_left(canvas, line, region.x + size * 0.3, y, &style, None, None);
+        y += step;
+    }
+    lines.len()
+}
+
 thread_local! {
     /// The hovered hit id for the CURRENT frame's immediate-mode action pills. Set once per render from `self.hover_hit` (see [`set_stub_hover`]) so [`draw_stub_pill_filled`] can tell fluor's pill renderer which pill is hovered WITHOUT threading `hover_hit` through every wrapper and all ~30 call sites. UI thread only; a stale value between frames is harmless (the next render overwrites it before any pill draws).
     static STUB_HOVER_HIT: std::cell::Cell<HitId> = const { std::cell::Cell::new(HIT_NONE) };

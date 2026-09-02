@@ -4596,29 +4596,11 @@ impl PhotonApp {
                         );
                     }
                     // Why ONE tick box and nothing else: you volunteer as a custodian, but nobody — including you — sees WHOSE recoveries you hold a share of, and an owner never learns which friends hold theirs. Not knowing who to lean on is the anti-collusion property: shares that can't be enumerated can't be gathered.
-                    settings_line(
+                    settings_prose(
                         &mut canvas,
                         ctx.text,
-                        rows[4],
-                        "One box on purpose: custodians never learn whose",
-                        hspan2,
-                        *theme::LABEL_COLOUR,
-                        400,
-                    );
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[5],
-                        "recovery they hold, and owners never learn which",
-                        hspan2,
-                        *theme::LABEL_COLOUR,
-                        400,
-                    );
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[6],
-                        "friends hold theirs — what can't be named can't collude.",
+                        fluor::region::Region::new(rows[4].x, rows[4].y, rows[4].w, rows[4].h * 3.0),
+                        "One box on purpose: custodians never learn whose recovery they hold, and owners never learn which friends hold theirs — what can't be named can't collude.",
                         hspan2,
                         *theme::LABEL_COLOUR,
                         400,
@@ -5203,42 +5185,44 @@ impl PhotonApp {
                         if calibrated { *theme::SEARCH_FOUND_COLOUR } else { *theme::SEARCH_FAIL_COLOUR },
                         500,
                     );
-                    // Phase-driven prose (edges: the worker flips the phase, the frame follows).
-                    let (l3, l4, l5): (&str, &str, &str) = match phase {
+                    // Phase-driven prose — a headline row plus a WORD-WRAPPED body (settings_prose wraps at the pane edge between words; the old fixed lines ran off narrow screens mid-word).
+                    let (headline, body): (&str, &str) = match phase {
                         CalPhase::Listen => (
                             "Listen\u{2026} stay quiet while the sentence plays.",
-                            "Hands off the volume buttons — we're listening",
-                            "thru the mic right now.",
+                            "Hands off the volume buttons — we're listening thru the mic right now.",
                         ),
                         CalPhase::Repeat => (
                             "Your turn — say it naturally:",
                             "\u{201C}The quick brown fox jumped over the lazy dogs\u{201D}",
-                            "",
                         ),
                         CalPhase::Failed => (
-                            "Didn't catch that — find somewhere quieter and try again.",
-                            "",
-                            "",
+                            "Didn't catch that.",
+                            "Find somewhere quieter, leave the volume alone, and try again.",
                         ),
                         _ => (
                             "Calibration plays a short sentence, then asks you to repeat it.",
-                            "~15 seconds. Somewhere quiet, volume where you like it —",
-                            "and don't touch the buttons mid-run. Redo it any time.",
+                            "~15 seconds. Somewhere quiet, volume where you like it — and don't touch the buttons mid-run. Redo it any time; each run replaces the last.",
                         ),
                     };
-                    for (i, s) in [(3usize, l3), (4, l4), (5, l5)] {
-                        if !s.is_empty() {
-                            settings_line(
-                                &mut canvas,
-                                ctx.text,
-                                rows[i],
-                                s,
-                                hspan2,
-                                if phase == CalPhase::Repeat && i == 4 { *theme::CONTACT_NAME_COLOUR } else { *theme::LABEL_COLOUR },
-                                if phase == CalPhase::Repeat && i == 4 { 600 } else { 400 },
-                            );
-                        }
-                    }
+                    settings_line(
+                        &mut canvas,
+                        ctx.text,
+                        rows[3],
+                        headline,
+                        hspan2,
+                        *theme::CONTACT_NAME_COLOUR,
+                        500,
+                    );
+                    let prose_region = fluor::region::Region::new(rows[4].x, rows[4].y, rows[4].w, rows[4].h * 2.0);
+                    settings_prose(
+                        &mut canvas,
+                        ctx.text,
+                        prose_region,
+                        body,
+                        hspan2,
+                        if phase == CalPhase::Repeat { *theme::CONTACT_NAME_COLOUR } else { *theme::LABEL_COLOUR },
+                        if phase == CalPhase::Repeat { 600 } else { 400 },
+                    );
                     // Pills (slot 0 calibrate / slot 1 mark-headset) — inert while a run is live.
                     let running = matches!(phase, CalPhase::Listen | CalPhase::Repeat);
                     let pill_h = rows[6].h * 0.8;
