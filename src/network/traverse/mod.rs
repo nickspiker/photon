@@ -8,16 +8,12 @@
 //!
 //! # Where this code lives now
 //!
-//! The transport-agnostic half lives in the `fgtw` crate's `traverse` module so that photon and
-//! rustdesk share one implementation instead of two that drift. `candidate`, `reflexive` and
+//! The transport-agnostic half lives in the `fgtw` crate's `traverse` module so that photon and rustdesk share one implementation instead of two that drift. `candidate`, `reflexive` and
 //! `session` are straight re-exports; [`gather`] stays local because it adapts photon's
-//! `Contact` onto the crate's endpoint shape; [`punch`] stays local for now because it encodes
-//! into `FgtwMessage`.
+//! `Contact` onto the crate's endpoint shape; [`punch`] stays local for now because it encodes into `FgtwMessage`.
 //!
 //! Photon drives the crate's state machines from its own receive loop in `network::status`,
-//! which multiplexes one socket across the whole data plane. It therefore uses the state
-//! machines but NOT the crate's `driver` module — rustdesk, which has no such loop, uses the
-//! driver instead. That asymmetry is deliberate; see the crate docs before "fixing" it.
+//! which multiplexes one socket across the whole data plane. It therefore uses the state machines but NOT the crate's `driver` module — rustdesk, which has no such loop, uses the driver instead. That asymmetry is deliberate; see the crate docs before "fixing" it.
 
 pub mod gather;
 pub mod punch;

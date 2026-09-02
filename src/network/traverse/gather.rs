@@ -1,9 +1,7 @@
 //! Candidate gathering — photon's `Contact` adapter over [`fgtw::traverse::gather`].
 //!
 //! The gathering logic itself lives in the shared crate so photon and rustdesk can't drift.
-//! What stays here is the part that is genuinely photon's: flattening a [`Contact`] — with its
-//! active-device address, its per-device endpoint list, and its Wi-Fi Direct group address —
-//! into the crate's [`PeerEndpoint`] shape.
+//! What stays here is the part that is genuinely photon's: flattening a [`Contact`] — with its active-device address, its per-device endpoint list, and its Wi-Fi Direct group address — into the crate's [`PeerEndpoint`] shape.
 //!
 //! The two entry points differ only in whether a peer's LAN address must share our `/24`;
 //! that is now [`LanPolicy`] rather than two near-identical copies of the same loop.
@@ -14,19 +12,15 @@ use crate::types::contact::Contact;
 use fgtw::traverse::candidate::CandidateSet;
 use fgtw::traverse::gather::{LanPolicy, PeerEndpoint};
 
-// Re-exported so the ~23 existing `traverse::gather::…` call sites across photon keep
-// resolving unchanged.
+// Re-exported so the ~23 existing `traverse::gather::…` call sites across photon keep resolving unchanged.
 pub use fgtw::traverse::gather::{
     gather_own_candidates, is_bogus_addr, is_foreign_peer_lan, is_private_ipv4, is_usable_lan_ipv4,
     is_wfd_subnet, peer_lan_reachable, public_kind,
 };
 
-/// Flatten a contact into the crate's endpoint shape: the active device first (its `ip` plus
-/// its `local_ip`/`local_port` pair), then every learned per-device endpoint.
+/// Flatten a contact into the crate's endpoint shape: the active device first (its `ip` plus its `local_ip`/`local_port` pair), then every learned per-device endpoint.
 ///
-/// Scanning all of them, not just the active `ip`, is what surfaces a peer's global IPv6 when
-/// the active address happens to be v4 — so the v6 host, priority-first, gets tried before a
-/// v4 LAN address that may be on a foreign network.
+/// Scanning all of them, not just the active `ip`, is what surfaces a peer's global IPv6 when the active address happens to be v4 — so the v6 host, priority-first, gets tried before a v4 LAN address that may be on a foreign network.
 fn contact_endpoints(contact: &Contact) -> Vec<PeerEndpoint> {
     let mut eps = Vec::with_capacity(contact.device_endpoints.len() + 1);
     eps.push(PeerEndpoint {
@@ -45,12 +39,9 @@ fn contact_endpoints(contact: &Contact) -> Vec<PeerEndpoint> {
     eps
 }
 
-/// The addresses at which `contact` might be reachable, without our-LAN context: a peer LAN
-/// candidate is kept as long as the address is a usable LAN v4.
+/// The addresses at which `contact` might be reachable, without our-LAN context: a peer LAN candidate is kept as long as the address is a usable LAN v4.
 ///
-/// This is what `Contact::race_addrs` and the punch-candidate gathers use — threading our-LAN
-/// through every send site would be a wide and risky change, and a foreign address here
-/// merely fails to validate rather than causing harm.
+/// This is what `Contact::race_addrs` and the punch-candidate gathers use — threading our-LAN through every send site would be a wide and risky change, and a foreign address here merely fails to validate rather than causing harm.
 pub fn gather_peer_candidates(contact: &Contact) -> CandidateSet {
     fgtw::traverse::gather::gather_peer_candidates(
         &contact_endpoints(contact),
@@ -60,8 +51,7 @@ pub fn gather_peer_candidates(contact: &Contact) -> CandidateSet {
 }
 
 /// As [`gather_peer_candidates`], but for the send-decision sites that DO know our own LAN v4:
-/// a peer's private-v4 candidate is only kept when it shares our `/24`, so we never punch or
-/// retransmit toward a foreign-LAN black hole.
+/// a peer's private-v4 candidate is only kept when it shares our `/24`, so we never punch or retransmit toward a foreign-LAN black hole.
 pub fn gather_peer_candidates_from(contact: &Contact, our_v4: Option<Ipv4Addr>) -> CandidateSet {
     fgtw::traverse::gather::gather_peer_candidates(
         &contact_endpoints(contact),
@@ -95,9 +85,7 @@ mod tests {
         }
     }
 
-    /// The active device's `ip` + `local_ip`/`local_port` pair must flatten into the same
-    /// candidates a per-device endpoint would produce — that equivalence is the whole basis
-    /// for collapsing the two former gathers onto one core.
+    /// The active device's `ip` + `local_ip`/`local_port` pair must flatten into the same candidates a per-device endpoint would produce — that equivalence is the whole basis for collapsing the two former gathers onto one core.
     #[test]
     fn the_active_device_flattens_like_any_other_endpoint() {
         let mut c = contact();
@@ -121,8 +109,7 @@ mod tests {
         assert!(gather_peer_candidates(&c).is_empty());
     }
 
-    /// The reason all endpoints are scanned rather than just the active `ip`: a sibling
-    /// reachable over v6 must outrank a v4 LAN address that may be on a foreign network.
+    /// The reason all endpoints are scanned rather than just the active `ip`: a sibling reachable over v6 must outrank a v4 LAN address that may be on a foreign network.
     #[test]
     fn a_device_endpoints_v6_outranks_the_active_devices_v4_lan() {
         let mut c = contact();
@@ -152,8 +139,7 @@ mod tests {
         );
     }
 
-    /// Group membership vouches reachability, so Wi-Fi Direct bypasses the /24 gate that
-    /// would otherwise reject 192.168.49.x as a foreign LAN.
+    /// Group membership vouches reachability, so Wi-Fi Direct bypasses the /24 gate that would otherwise reject 192.168.49.x as a foreign LAN.
     #[test]
     fn wifi_direct_survives_the_subnet_gate() {
         let mut c = contact();

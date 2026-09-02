@@ -515,8 +515,7 @@ impl FgtwMessage {
                     )],
                 )
                 .build(),
-            // Punch messages encode in the shared fgtw::traverse module so photon and the
-            // rustdesk fork cannot drift; its golden-bytes tests pin this exact format.
+            // Punch messages encode in the shared fgtw::traverse module so photon and the rustdesk fork cannot drift; its golden-bytes tests pin this exact format.
             FgtwMessage::PunchProbe {
                 timestamp,
                 sender_pubkey,
@@ -654,8 +653,7 @@ impl FgtwMessage {
             });
         }
 
-        // Hole-punch probe + ack: decoded by the shared fgtw::traverse module, the same module
-        // that encodes them, so the two directions cannot disagree about the format.
+        // Hole-punch probe + ack: decoded by the shared fgtw::traverse module, the same module that encodes them, so the two directions cannot disagree about the format.
         if section_name == "punch" || section_name == "punch_ack" {
             return match fgtw::traverse::PunchMessage::from_vsf_bytes(bytes)? {
                 Some(fgtw::traverse::PunchMessage::Probe {

@@ -208,6 +208,17 @@ impl PhotonApp {
 
     /// Ping all contacts that have IP addresses (call periodically)
     pub(super) fn ping_contacts(&mut self) {
+        self.ping_contacts_filtered(None)
+    }
+
+    /// Ping exactly the OPEN conversation's contact (the demand-driven presence model, Nick 2026-09-02: in a chat you care about THAT person; everyone else's state arrives on inbound edges). No LAN beacon ride-along — beacons belong to the full sweep.
+    pub(super) fn ping_active_contact(&mut self) {
+        if let Some(ci) = self.active_contact() {
+            self.ping_contacts_filtered(Some(ci));
+        }
+    }
+
+    fn ping_contacts_filtered(&mut self, only: Option<usize>) {
         use crate::network::traverse::session::PATH_TTL;
         use crate::types::contact::PUNCH_UNREACHABLE_THRESHOLD;
 
@@ -220,6 +231,9 @@ impl PhotonApp {
         let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
         let siblings = sibling_presence_snapshot(&self.contacts);
         for (i, c) in self.contacts.iter_mut().enumerate() {
+            if only.is_some_and(|oi| oi != i) {
+                continue;
+            }
             // LOCKOUT: no pings, no punches, no stall re-fires, no doorbell rings toward a locked device — the fleet stopped talking to it, both directions.
             if c.locked_out {
                 continue;
@@ -432,7 +446,8 @@ impl PhotonApp {
         if pinged > 0 {
             crate::logf!("Status: pinged {} contact(s)", pinged);
         }
-        // LAN broadcast for same-network local-IP discovery (hairpin-NAT workaround).
+        // LAN broadcast for same-network local-IP discovery (hairpin-NAT workaround) — FULL sweeps only; a single-contact chat ping doesn't shout at the whole subnet.
+        if only.is_none() {
         if let (Some(session), Some(hq)) = (self.session.as_ref(), self.handle_query.as_ref()) {
             checker.send_lan_broadcast(session.handle_proof, hq.port());
             // Live Wi-Fi Direct group, we're the CLIENT: also unicast the beacon at the GO each cadence — a contact added AFTER group-up (the woods-add flow) still gets announced, and multicast on the p2p iface can't be trusted to carry the broadcast above.
@@ -443,6 +458,7 @@ impl PhotonApp {
                     std::net::SocketAddr::new(std::net::IpAddr::V4(go), crate::PHOTON_PORT),
                 );
             }
+        }
         }
 
         // Wi-Fi Direct STRANDED evaluation rides the ping cadence (the same edges that change reachability land here): the radio spins up only when a provisioned friend is unreachable AND the relay pipe is down — truly off-grid. Also the DRAINED teardown check for a live group whose peers all went silent.
