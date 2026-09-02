@@ -66,7 +66,7 @@ pub struct OutboundTransfer {
     pub retransmits: u32, // Count of retransmitted packets
     pub last_activity: Instant,
     pub created_at: Instant,
-    /// SPEC retry tracking (exponential backoff: 1s, 2s, 4s, 8s...)
+    /// SPEC retry tracking (millisecond ladder 200ms→6.4s — see mark_spec_sent for why the handshake can't self-tune on RTT)
     pub spec_last_sent: Instant,
     pub spec_retry_count: u32,
     pub spec_next_delay: Duration,
@@ -109,7 +109,7 @@ impl OutboundTransfer {
             created_at: Instant::now(),
             spec_last_sent: Instant::now(),
             spec_retry_count: 0,
-            spec_next_delay: Duration::from_secs(1),
+            spec_next_delay: Duration::from_millis(200),
             spec_tcp_fallback: false,
             tcp_sent: false,
             relay_sent: false,
@@ -134,10 +134,10 @@ impl OutboundTransfer {
         self.spec_last_sent = Instant::now();
         self.spec_retry_count += 1;
 
-        // Exponential backoff: 1s → 2s → 4s → 8s → 16s → 32s (capped), JITTERED to 50–100% so peers that retransmit after the same shared outage don't sync up into a retransmit storm (decorrelated backoff).
+        // MILLISECOND ladder (Nick 2026-09-02, LAN-latency tune): 200ms → 400 → 800 → 1.6s → 3.2s (capped 6.4s), JITTERED 50–100% so peers riding out a shared outage don't sync into a retransmit storm. The SPEC handshake is the ONE PT timer that couldn't self-tune — a SPEC retry fires only while UN-acked, so no RTT sample exists yet (the SPEC-ACK would be the first), forcing a fixed ladder. The old 1s→32s floor was WAN-conservative: a dropped SPEC on a <1ms LAN waited a full second to recover. 200ms is ~10× snappier on LAN loss, still ≥1× a typical WAN RTT (a premature retry is one cheap dedup'd SPEC packet), and it pulls the relay fallback (SPEC_MAX_RETRIES) in to ~6s — exactly the earlier-is-better trigger the asymmetric-reachability peers needed. The DATA path already self-tunes on measured RTO; this brings the handshake in line.
         self.spec_next_delay = crate::jitter_dur(std::cmp::min(
-            Duration::from_secs(1 << self.spec_retry_count.min(5)),
-            Duration::from_secs(32),
+            Duration::from_millis(100u64 << self.spec_retry_count.min(6)),
+            Duration::from_millis(6400),
         ));
     }
 
@@ -146,7 +146,7 @@ impl OutboundTransfer {
         self.created_at.elapsed() >= Duration::from_secs(1)
     }
 
-    /// Check if we should fall back to relay (UDP + TCP tried, no ACK). Trigger at SPEC_MAX_RETRIES (~31s with 1/2/4/8/16s jittered backoff), NOT 2× that: the old ~90s / 10-retry threshold was never reached because a re-firing CLUTCH ceremony supersedes the transfer first (field logs topped out at attempt 7), so relay NEVER engaged for the peers that needed it most (asymmetric reachability, no direct path). The relayed copy is redundant if a direct path ACKs in the meantime, so an earlier trigger only costs one best-effort store on fgtw.org.
+    /// Check if we should fall back to relay (UDP + TCP tried, no ACK). Trigger at SPEC_MAX_RETRIES (~6s now the SPEC ladder is 200ms→3.2s; was ~31s on the 1s→16s ladder), NOT later: the old ~90s / 10-retry threshold was never reached because a re-firing CLUTCH ceremony supersedes the transfer first (field logs topped out at attempt 7), so relay NEVER engaged for the peers that needed it most (asymmetric reachability, no direct path). The faster ladder pulls this in further, which is strictly the direction that comment always wanted — the relayed copy is redundant if a direct path ACKs in the meantime, so an earlier trigger only costs one best-effort store on fgtw.org.
     pub fn should_relay_fallback(&self) -> bool {
         self.spec_retry_count >= Self::SPEC_MAX_RETRIES && self.spec_tcp_fallback
     }
