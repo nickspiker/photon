@@ -32,7 +32,7 @@ Conventions live in [AGENT.md](AGENT.md) (+ `../fluor/AGENT.md`); build via `./s
 - **Blind ops (private identity S) E2E**: probe → generate → deposit → ack → recover has never run end to end across real devices since the party-id token seam was fixed (2026-07-16).
 - **Fleet message sync E2E**: send on A / watch B, fresh-join backfill, delivered-tick propagation (shipped @c6d6285, never live-tested).
 - **Daniel's device**: still pre-flag-day — needs an update plus an online overlap to complete the re-key.
-- **Ghost decommission**: 90e571bf (pre-wipe home desktop) is locked out fleet-side; the hardware still needs a physical wipe when reachable.
+- **INVERTED LOCK (battery log 2026-09-02)**: the fleet's locked set contains exactly ONE key — 90e571bf, which is the LIVE desktop (leviathan; deterministic hardware identity means the 'pre-wipe' brand and today's desktop are the same key, so the old lock outlived the wipe) — while the ocean'd android 1be949c1 was NEVER locked and the fleet still chases it (299 log lines/3.6h: rotation candidates, relay sends). REMEDY (Nick, from any device): Fleet page → Unlock the desktop row (two-tap, handle re-proof), then Lock out the ocean phone. The 2026-09-02 skip-locked gates (phonebook adopt + rotation) then work FOR the fleet instead of against the desktop. Design note for docs/lifecycle: lock-by-device-key + hardware-deterministic identity = a wipe can never clear a lock; Unlock is the only exit, and the UI should surface a locked SELF row loudly.
 
 ## NEXT — actionable, queued
 
