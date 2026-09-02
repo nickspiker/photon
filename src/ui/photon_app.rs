@@ -671,16 +671,23 @@ const DEFAULT_REACTIONS: [&str; 5] = [
 fn display_content(content: &str) -> String {
     if let Some((hash, name, size)) = crate::types::parse_attachment_content(content) {
         let (units, label) = crate::types::size_units(size);
-        let state = if crate::storage::blob_present(&hash) {
-            ""
+        let held = crate::storage::blob_present(&hash);
+        if name == "call.audio" {
+            // A kept call recording — a PLAY affordance, not a file. Two fixes ride here (Nick's field report):
+            //  - ▶ (U+25B6) replaces the paperclip: 📎 (U+1F4CE) has no glyph in the bubble font and rendered as a tofu rectangle; ▶ IS covered (the Ended panel's Play button uses it).
+            //  - the size renders in DOZENAL (fmt_num honours the fleet toggle) now that the toggle exists — the row is drawn in Oxanium (see the call.audio font switch in render.rs) so the dozenal control-byte glyphs resolve instead of tofu-ing.
+            let tail = if held { "" } else { " \u{2014} fetching\u{2026}" };
+            format!(
+                "\u{25B6} recording \u{00B7} {}\u{202F}{}{}",
+                crate::fmt_num(units),
+                label,
+                tail
+            )
         } else {
-            " \u{2014} tap for actions"
-        };
-        // Plain decimal for the size (Nick 2026-08-21: the VERSION is the only dozenal surface for now — a UI base toggle may come later, "humans are not ready for that shit").
-        format!(
-            "\u{1F4CE} {} \u{00B7} {}\u{202F}{}{}",
-            name, units, label, state
-        )
+            // Files keep the paperclip + DECIMAL size in the default bubble font: that font can't render dozenal glyphs (they are Oxanium-only control bytes), so routing a file size through fmt_num here would tofu. Converting files needs the same Oxanium-row treatment call.audio got — a deliberate follow-up, not a silent regression.
+            let state = if held { "" } else { " \u{2014} tap for actions" };
+            format!("\u{1F4CE} {} \u{00B7} {}\u{202F}{}{}", name, units, label, state)
+        }
     } else {
         // Reference rows (reply/edit/react) need no stripping: their content IS the bare body/glyph — the reference is a typed FIELD, never a string encoding.
         content.to_string()

@@ -2659,8 +2659,14 @@ impl PhotonApp {
                             let mut all_lines: Vec<Vec<String>> = Vec::with_capacity(n);
                             let mut total = 0usize;
                             for m in &visible {
+                                // call.audio rows draw in Oxanium (so the dozenal size + ▶ resolve) — measure with the SAME font or the wrapped line count disagrees with the draw.
+                                let row_wrap = if crate::types::is_call_recording(&m.content) {
+                                    TextStyle::new(msg_size, 0).weight(500).font("Oxanium")
+                                } else {
+                                    wrap_style.clone()
+                                };
                                 let lines =
-                                    wrap_text_lines(ctx.text, &body_of(m), &wrap_style, avail_w);
+                                    wrap_text_lines(ctx.text, &body_of(m), &row_wrap, avail_w);
                                 total += lines.len();
                                 // A reply row reserves ONE extra line for its half-alpha reference snippet above the body.
                                 if matches!(m.reference, Some((crate::types::RefKind::Reply, _))) {
@@ -2874,23 +2880,20 @@ impl PhotonApp {
                                         self.msg_action_base.wrapping_add(2),
                                     ));
                                 }
-                                // Attachment rows: save (blob held) or fetch (blob missing — ask friend + siblings for it).
+                                // Attachment rows: a call recording PLAYS (blob held) or fetches; a file SAVES (blob held) or fetches. Same slot 4 — the click handler branches on call.audio.
                                 if let Some((hash, _, _)) =
                                     crate::types::parse_attachment_content(&msg.content)
                                 {
-                                    if crate::storage::blob_present(&hash) {
-                                        pills.push((
-                                            "save",
-                                            *theme::SEARCH_FOUND_COLOUR,
-                                            self.msg_action_base.wrapping_add(4),
-                                        ));
+                                    let held = crate::storage::blob_present(&hash);
+                                    let is_rec = crate::types::is_call_recording(&msg.content);
+                                    let (label, colour) = if !held {
+                                        ("fetch", *theme::HOURGLASS_COLOUR)
+                                    } else if is_rec {
+                                        ("\u{25B6} play", *theme::COPY_PILL_COLOUR)
                                     } else {
-                                        pills.push((
-                                            "fetch",
-                                            *theme::HOURGLASS_COLOUR,
-                                            self.msg_action_base.wrapping_add(4),
-                                        ));
-                                    }
+                                        ("save", *theme::SEARCH_FOUND_COLOUR)
+                                    };
+                                    pills.push((label, colour, self.msg_action_base.wrapping_add(4)));
                                 }
                                 let deleting =
                                     self.pending_delete.as_ref().is_some_and(|(k, _)| {
@@ -3043,7 +3046,12 @@ impl PhotonApp {
                             } else {
                                 their_colour
                             };
-                            let msg_style = TextStyle::new(msg_size, colour).weight(500);
+                            // call.audio rows render in Oxanium — matches the wrap-loop font so the dozenal size + ▶ glyph resolve (the default bubble font tofus both).
+                            let msg_style = if crate::types::is_call_recording(&msg.content) {
+                                TextStyle::new(msg_size, colour).weight(500).font("Oxanium")
+                            } else {
+                                TextStyle::new(msg_size, colour).weight(500)
+                            };
                             // The referenced message, resolved LIVE (so its own edits show) at HALF alpha in the REPLIER'S colour — the whole reply block is one party's utterance, so its reference line tints like its body (field call, 2026-08-09: the target-colour scheme made a friend's reply-to-us carry a grey reference, since our own colour is the neutral grey). Half vs full separates context from content; quarter stays the not-yet-ACKed signal. Missing target (not synced yet) renders as a bare ellipsis.
                             if let Some(t) = reply_target {
                                 let ref_text = raw_msgs

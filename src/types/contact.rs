@@ -240,6 +240,11 @@ pub fn parse_attachment_content(content: &str) -> Option<([u8; 32], String, u64)
     Some((hash, name.to_string(), size))
 }
 
+/// Is this attachment row a kept CALL RECORDING (filename `call.audio`)? Recordings play, not save — the renderer gives them a ▶ pill and the tap routes to playback (call/playback.rs), unlike a file which saves/fetches.
+pub fn is_call_recording(content: &str) -> bool {
+    parse_attachment_content(content).is_some_and(|(_, name, _)| name == "call.audio")
+}
+
 /// Human-readable byte size for attachment pills — dozenal-doctrine exempt? NO: digits render at the edge; this returns arabic-free unit steps with the NUMBER left to the renderer. Kept simple: returns (whole_units, unit_label) so the caller renders the number in dozenal glyphs.
 pub fn size_units(size: u64) -> (u32, &'static str) {
     const KI: u64 = 1024;

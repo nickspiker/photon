@@ -1817,7 +1817,25 @@ impl FluorApp for PhotonApp {
                                 })
                                 .and_then(|m| crate::types::parse_attachment_content(&m.content));
                             if let Some((hash, name, _)) = att {
-                                if crate::storage::blob_present(&hash) {
+                                if !crate::storage::blob_present(&hash) {
+                                    self.attach_fetch(sci, &hash);
+                                    self.ready_toast =
+                                        Some("fetching from your devices\u{2026}".to_string());
+                                } else if name == "call.audio" {
+                                    // A kept call recording plays through the mono downmix (call/playback.rs). Holds the handle in call_playback so the worker keeps running (drop = stop); a fresh tap replaces + stops the prior. Refuses (None) if a call owns the audio session.
+                                    let seed = self.session.as_ref().map(|s| s.identity_seed);
+                                    if let Some(seed) = seed {
+                                        self.call_playback =
+                                            crate::call::playback::play_blob(&seed, &hash);
+                                        self.ready_toast = Some(
+                                            if self.call_playback.is_some() {
+                                                "playing recording\u{2026}".to_string()
+                                            } else {
+                                                "can't play now (a call is active?)".to_string()
+                                            },
+                                        );
+                                    }
+                                } else {
                                     match self.attach_save(&name, &hash) {
                                         Some(dest) => {
                                             self.ready_toast =
@@ -1830,10 +1848,6 @@ impl FluorApp for PhotonApp {
                                             );
                                         }
                                     }
-                                } else {
-                                    self.attach_fetch(sci, &hash);
-                                    self.ready_toast =
-                                        Some("fetching from your devices\u{2026}".to_string());
                                 }
                                 self.ready_toast_screen = None;
                             }
