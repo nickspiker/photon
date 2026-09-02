@@ -102,6 +102,34 @@ pub fn route_override() -> Option<AudioRoute> {
     *ROUTE_OVERRIDE.lock().unwrap()
 }
 
+// ---------------------------------------------------------------------------
+// Route IDENTITY + device volume — the calibration substrate (docs plan 2026-09-02).
+// A calibration profile keys on WHICH output path is live (`speaker` vs `bt:<name>` couple very differently), and the echo prediction scales with the device volume the profile was measured at. Desktop fills these from the cpal device sniff (no portable volume API → volume stays None, the in-call tracker absorbs drift); Android mirrors both down from Kotlin (AudioDeviceCallback + volume broadcast), the nativeImeInset pattern.
+// ---------------------------------------------------------------------------
+
+/// Normalized identity of the current OUTPUT path — the calibration-profile key. Examples: `speaker`, `earpiece`, `headset`, `bt:AirPods Pro`, `unknown:ALSA default`. Empty until the first device sniff/mirror.
+static ROUTE_ID: Mutex<String> = Mutex::new(String::new());
+
+/// Current output volume in dB (Android `getStreamVolumeDb`; `None` on desktop / pre-mirror).
+static VOLUME_DB: Mutex<Option<f32>> = Mutex::new(None);
+
+pub fn route_id() -> String {
+    ROUTE_ID.lock().unwrap().clone()
+}
+
+pub fn current_volume_db() -> Option<f32> {
+    *VOLUME_DB.lock().unwrap()
+}
+
+/// Install the route identity (platform layer only: the cpal output sniff or the Kotlin device callback).
+pub(crate) fn set_route_identity(id: String) {
+    *ROUTE_ID.lock().unwrap() = id;
+}
+
+pub(crate) fn set_volume_db(db: Option<f32>) {
+    *VOLUME_DB.lock().unwrap() = db;
+}
+
 /// Drain every captured frame since the last call (10ms 48kHz mono each). Engine-side, any thread.
 pub fn captured_frames() -> Vec<Vec<i16>> {
     let mut q = CAPTURE_Q.lock().unwrap();
@@ -451,7 +479,13 @@ mod desktop {
         // ---- output (speaker) ----
         let out_stream = host.default_output_device().and_then(|dev| {
             let name = dev.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "?".into());
-            *ROUTE.lock().unwrap() = sniff_route(&name);
+            let sniffed = sniff_route(&name);
+            *ROUTE.lock().unwrap() = sniffed;
+            // Calibration-profile key: coarse route + the device name (a USB headset and the built-in jack must not share a profile).
+            super::set_route_identity(match sniffed {
+                AudioRoute::Headset => format!("headset:{name}"),
+                _ => format!("out:{name}"),
+            });
             let sc = dev.default_output_config().ok()?;
             let dst_rate = sc.sample_rate();
             let channels = sc.channels() as usize;
@@ -522,9 +556,29 @@ mod android {
         }
     }
 
-    /// Route on Android: Kotlin mirrors it on device/route callbacks; Unknown until told. (Wired in the Kotlin audio step; the duck treats Unknown as Builtin.)
+    /// Route on Android — mirrored down from Kotlin's AudioDeviceCallback (see `on_route_mirror`); Unknown until the first callback (the duck treats Unknown as Builtin, the safe default).
+    static ANDROID_ROUTE: Mutex<AudioRoute> = Mutex::new(AudioRoute::Unknown);
+
     pub fn route() -> AudioRoute {
-        AudioRoute::Unknown
+        *ANDROID_ROUTE.lock().unwrap()
+    }
+
+    /// JNI ingress (PhotonConnectionService.nativeAudioRoute): the routed output device changed. `kind` is the coarse route (0 speaker / 1 earpiece / 2 headset / 3 bluetooth / else unknown); `id` is the calibration-profile identity (device type + BT name when present).
+    pub(crate) fn on_route_mirror(kind: i32, id: String) {
+        let route = match kind {
+            0 => AudioRoute::Speaker,
+            1 => AudioRoute::Earpiece,
+            2 | 3 => AudioRoute::Headset,
+            _ => AudioRoute::Unknown,
+        };
+        *ANDROID_ROUTE.lock().unwrap() = route;
+        crate::logf!("AUDIO: route mirror — {} ({})", id, kind);
+        super::set_route_identity(id);
+    }
+
+    /// JNI ingress: voice-call stream volume in dB (getStreamVolumeDb), mirrored at service start + on every volume change.
+    pub(crate) fn on_volume_mirror(db: f32) {
+        super::set_volume_db(Some(db));
     }
 
     /// JNI ingress: one mic frame from Kotlin's AudioRecord loop.
@@ -543,7 +597,7 @@ mod android {
 #[cfg(target_os = "android")]
 pub use android::{route, start, stop};
 #[cfg(target_os = "android")]
-pub(crate) use android::{on_captured, pull_render};
+pub(crate) use android::{on_captured, on_route_mirror, on_volume_mirror, pull_render};
 
 // Redox: no audio backend yet — calls are signaling-only there.
 #[cfg(target_os = "redox")]

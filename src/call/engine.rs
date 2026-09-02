@@ -198,7 +198,7 @@ fn run(
     let (mut tx_energy, mut tx_frames, mut rx_energy, mut rx_frames) = (0u64, 0u64, 0u64, 0u64);
 
     crate::logf!(
-        "CALL: engine up — tx {} → {}, ladder {}..{} kbps (start {}), floor window {} frames, repair {}, duck {}",
+        "CALL: engine up — tx {} → {}, ladder {}..{} kbps (start {}), floor window {} frames, repair {}, duck {}, route \"{}\" vol {}",
         if params.we_are_caller { "c>e" } else { "e>c" },
         peer,
         TIER_RATES[0] / 1000,
@@ -212,7 +212,12 @@ fn run(
             "PID (level+duck inline)"
         } else {
             "PID (level only — headset)"
-        }
+        },
+        // Calibration substrate readout: WHICH output path + volume this call runs on — the profile key the calibrated duck will look up, loggable now so field logs start naming routes before the calibration lands.
+        crate::platform::audio::route_id(),
+        crate::platform::audio::current_volume_db()
+            .map(|db| format!("{db:.1}dB"))
+            .unwrap_or_else(|| "?".into())
     );
 
     while !stop.load(Ordering::Relaxed) {

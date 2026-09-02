@@ -644,6 +644,33 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeImeInset(
     IME_INSET.store(px.max(0), std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Route mirror (calibration substrate): Kotlin's AudioDeviceCallback reports the routed OUTPUT device — coarse kind (0 speaker / 1 earpiece / 2 headset / 3 bluetooth / -1 unknown) + the calibration-profile identity string (device type + BT name when present).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeAudioRoute(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    kind: jint,
+    id: JString<'_>,
+) {
+    let id: String = env
+        .get_string(&id)
+        .map(|s| s.into())
+        .unwrap_or_else(|_| "unknown".to_string());
+    crate::platform::audio::on_route_mirror(kind, id);
+}
+
+/// Volume mirror (calibration substrate): the voice-call stream volume in dB, at service start + on every VOLUME_CHANGED broadcast.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeVolumeDb(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    db: jni::sys::jfloat,
+) {
+    crate::platform::audio::on_volume_mirror(db);
+}
+
 /// Per-frame poll: the staged self-update APK path, or null. Non-null exactly once per staged update — Kotlin fires the system installer intent with it (the update flow's second click). Mirrors take_picker_request's one-shot pattern.
 #[cfg(target_os = "android")]
 #[no_mangle]
