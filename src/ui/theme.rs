@@ -51,6 +51,8 @@ pub const ZOOM_COLOUR: u32 = 0x40_00_00_00;
 pub static CONTACT_NAME_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_F0_F0_F0));
 /// Hairline separating the user section from the contact list — pure white at 1/4 opacity (α=64), the same translucent treatment as the hints + zoom watermark.
 pub const SEPARATOR_COLOUR: u32 = 0x40_00_00_00;
+/// Settings-rail ACTIVE row hint — half the separator's opacity (α=32 = 1/8): the full-column bar behind the selected page name (Nick 2026-09-02: the α=64 version read too bright).
+pub const RAIL_ACTIVE_COLOUR: u32 = 0x20_00_00_00;
 
 /// Presence-ring tiers (user spec, VSF RGB): how you are connected, at a glance — cyan = direct in the same room (LAN), green = direct across the WAN, amber = relay-only (never mistakable for direct), grey = offline.
 pub static RING_LAN_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_00_FF_FF));

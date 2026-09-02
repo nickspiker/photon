@@ -407,6 +407,10 @@ impl PhotonApp {
             if on_launch {
                 paint_photon_logo(canvas, text, logo_rect);
             }
+            // About slab wordmark — SAME rule as the launch logo: an under() layer must claim its pixels BEFORE the noise paints them opaque (drawing it post-noise under()'d against opaque pixels = invisible, the second vanished-wordmark bug).
+            if let Some((sx0, sx1, _, _, logo_top, logo_h, clip_y0, clip_y1)) = about_slab {
+                paint_photon_logo_clipped(canvas, text, sx0, sx1, logo_top, logo_h, clip_y0, clip_y1);
+            }
             if show_version {
                 // On the Ready screen the version rides the scroll block (positioned past the last contact row); elsewhere it stays pinned at `version_cy`.
                 let vy = ready_block_version_y.unwrap_or(version_cy);
@@ -447,8 +451,7 @@ impl PhotonApp {
                 chromatic_wave(canvas, spectrum_rect, phase, period_scale);
             }
             // The About slab: CLIPPED crop-not-shrink variants — the pattern/wordmark stay anchored to the full logical band (top goes negative as the card scrolls) and only pane-visible rows paint. Shrinking the rects instead RESCALED both (the "wave scales when scrolling" + vanished-wordmark field bugs; the shrunken-rect span math also underflowed).
-            if let Some((sx0, sx1, wave_top, wave_h, logo_top, logo_h, clip_y0, clip_y1)) = about_slab {
-                paint_photon_logo_clipped(canvas, text, sx0, sx1, logo_top, logo_h, clip_y0, clip_y1);
+            if let Some((sx0, sx1, wave_top, wave_h, _, _, clip_y0, clip_y1)) = about_slab {
                 chromatic_wave_clipped(canvas, sx0, sx1, wave_top, wave_h, clip_y0, clip_y1, about_wave_phase, 1.0);
             }
         });
@@ -1884,24 +1887,26 @@ impl PhotonApp {
                         None,
                     );
                     if held {
+                        // Full rail column, edge to edge (Nick 2026-09-02).
                         paint::fill_rect(
                             &mut canvas,
-                            r.x as isize,
+                            layout.rail.x as isize,
                             r.y as isize,
-                            r.w as isize,
+                            layout.rail.w as isize,
                             r.h as isize,
                             fluor::theme::BUTTON_HELD,
                             Some(pages_clip),
                             None,
                         );
                     } else if active {
+                        // Half the old separator opacity — the bright hint read too loud.
                         paint::fill_rect(
                             &mut canvas,
-                            r.x as isize,
+                            layout.rail.x as isize,
                             r.y as isize,
-                            r.w as isize,
+                            layout.rail.w as isize,
                             r.h as isize,
-                            theme::SEPARATOR_COLOUR,
+                            theme::RAIL_ACTIVE_COLOUR,
                             Some(pages_clip),
                             None,
                         );
@@ -3823,26 +3828,26 @@ impl PhotonApp {
                     None,
                 );
                 if held {
-                    // Held (pointer down, release switches to this page) reads brightest.
+                    // Held (pointer down, release switches to this page) reads brightest — FULL rail column, edge to edge (Nick 2026-09-02).
                     paint::fill_rect(
                         &mut canvas,
-                        r.x as isize,
+                        layout.rail.x as isize,
                         r.y as isize,
-                        r.w as isize,
+                        layout.rail.w as isize,
                         r.h as isize,
                         fluor::theme::BUTTON_HELD,
                         Some(pages_clip),
                         None,
                     );
                 } else if active {
-                    // Active-row backing bar (faint) so the selected page reads at a glance.
+                    // Active-row backing bar — full rail column, at HALF the old separator opacity (it read too bright).
                     paint::fill_rect(
                         &mut canvas,
-                        r.x as isize,
+                        layout.rail.x as isize,
                         r.y as isize,
-                        r.w as isize,
+                        layout.rail.w as isize,
                         r.h as isize,
-                        theme::SEPARATOR_COLOUR,
+                        theme::RAIL_ACTIVE_COLOUR,
                         Some(pages_clip),
                         None,
                     );
@@ -5252,6 +5257,8 @@ impl PhotonApp {
                     let inset = layout.content_inset();
                     let line_h = layout.content_line_h();
                     let cx = inset.x + inset.w * 0.5;
+                    // Every About text line runs thru centered_wrapped: authored stanzas keep their line breaks but wrap at THIS width instead of clipping at the pane edge when zoomed big.
+                    let wrap_w = inset.w - line_h;
                     let mut y = inset.y - settings_content_scroll;
                     // The wave + wordmark now paint in the BG pass (see about_slab in the bg closure): fixed window-proportional size (never zoom-scaled), scrolled with the card. The card just advances past the slab.
                     let slab_h = about_slab_h(buf_h);
@@ -5282,17 +5289,12 @@ impl PhotonApp {
                     );
                     y += line_h;
                     // Clickable weblink under the passless headline (slot 4 — opens https://passless.org/ in the system browser).
-                    ctx.text.draw_text_center(
-                        &mut canvas,
-                        "learn more about passless at passless.org",
-                        cx,
-                        y + line_h * 0.5,
-                        &TextStyle::new(hspan2 * 0.8, *theme::SEARCH_FOUND_COLOUR)
-                            .weight(400)
-                            .font("Oxanium"),
-                        None,
-                        None,
-                    );
+                    let link_style = TextStyle::new(hspan2 * 0.8, *theme::SEARCH_FOUND_COLOUR)
+                        .weight(400)
+                        .font("Oxanium");
+                    let link_y = y;
+                    y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, "learn more about passless at passless.org", &link_style, line_h);
+                    let _ = link_y;
                     restamp_hit_rect(
                         &mut chrome.hit_test_map,
                         buf_w,
@@ -5318,16 +5320,7 @@ impl PhotonApp {
                         "delete alone and the chain breaks, loudly, for the other side",
                         "agreement is silent; betrayal is evident",
                     ] {
-                        ctx.text.draw_text_center(
-                            &mut canvas,
-                            line,
-                            cx,
-                            y + line_h * 0.4,
-                            &prose_style,
-                            None,
-                            None,
-                        );
-                        y += line_h * 0.8;
+                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8);
                     }
                     y += line_h * 0.6;
                     // CONSENT — the third pillar: every lifecycle edge is bilateral (mutual-consent clutch, two-signature add/depart, no expulsion), so nothing happens to an identity without its own key signing.
@@ -5351,16 +5344,7 @@ impl PhotonApp {
                         "no expulsion, no takedown, no admin",
                         "nothing happens to your identity without your key",
                     ] {
-                        ctx.text.draw_text_center(
-                            &mut canvas,
-                            line,
-                            cx,
-                            y + line_h * 0.4,
-                            &prose_style,
-                            None,
-                            None,
-                        );
-                        y += line_h * 0.8;
+                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8);
                     }
                     y += line_h * 0.6;
                     // TOKEN — the recovery story, mirroring the Recovery page's anti-collusion prose so the pitch and the tick box tell one tale.
@@ -5383,16 +5367,7 @@ impl PhotonApp {
                         "and no owner learns which friends hold theirs",
                         "what can't be named can't be pressured — or collude",
                     ] {
-                        ctx.text.draw_text_center(
-                            &mut canvas,
-                            line,
-                            cx,
-                            y + line_h * 0.4,
-                            &prose_style,
-                            None,
-                            None,
-                        );
-                        y += line_h * 0.8;
+                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8);
                     }
                     y += line_h * 0.6;
                     // Version — dozenal glyphs (weight 400 → the Oxanium +glyphs face draws the reserved control bytes as dozenal digits), NEVER arabic. Tap toggles the reveal (spelled form + cheat sheet). Whole row is the tap target (btn_base + 3).
@@ -5589,16 +5564,7 @@ impl PhotonApp {
                         "halves, thirds, quarters, sixths — exact, no remainder",
                         "you can still count in decimal above, with our condolences",
                     ] {
-                        ctx.text.draw_text_center(
-                            &mut canvas,
-                            line,
-                            cx,
-                            y + line_h * 0.4,
-                            &prose_style,
-                            None,
-                            None,
-                        );
-                        y += line_h * 0.8;
+                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8);
                     }
                     // MEASURED extent (Flow doctrine): the card's true height from the final cursor — retires the hand-counted row arithmetic next frame.
                     measured_extent = Some((y + settings_content_scroll - inset.y + line_h, inset.h));
