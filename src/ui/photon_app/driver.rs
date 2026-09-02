@@ -383,7 +383,8 @@ impl FluorApp for PhotonApp {
         // Dozenal is the house base — default ON; the About-page toggle flips to decimal for the arabic-inclined. Initial state re-syncs from `display.dozenal` when fleet settings load.
         self.settings_dozenal_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
-            "Dozenal numbers (base twelve)",
+            // "Dozenal", not "Dozenal numbers" — dozenal IS a numeral system, like saying "metric units" (Nick 2026-09-02). Unchecked = decimal.
+            "Dozenal",
             0.,
             0.,
             1.,
@@ -3423,6 +3424,13 @@ impl FluorApp for PhotonApp {
             if chrome.owns_hit(hit) {
                 return CursorIcon::Pointer;
             }
+        }
+        // The About page's passless.org link — a real hyperlink cue: hand cursor (the render bolds it on the same hover).
+        if matches!(self.state, AppState::Settings(SettingsPage::About))
+            && self.settings_btn_base != HIT_NONE
+            && hit == self.settings_btn_base.wrapping_add(4)
+        {
+            return CursorIcon::Pointer;
         }
         if let Some(btn) = self.attest_btn.as_ref() {
             if btn.hit_id() == hit {

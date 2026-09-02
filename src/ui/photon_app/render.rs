@@ -5298,40 +5298,50 @@ impl PhotonApp {
                     );
                     y += line_h;
                     // Clickable weblink under the passless headline (slot 4 — opens https://passless.org/ in the system browser).
-                    let link_style = TextStyle::new(hspan2 * 0.8, *theme::SEARCH_FOUND_COLOUR)
+                    let lead_style = TextStyle::new(hspan2 * 0.8, *theme::LABEL_COLOUR)
                         .weight(400)
                         .font("Oxanium");
-                    let link_y = y;
-                    y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, "learn more about passless at passless.org", &link_style, line_h, about_clip);
-                    let _ = link_y;
+                    y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, "learn more about passless at", &lead_style, line_h * 0.8, about_clip);
+                    // The link itself: primary VSF blue, bigger, BOLD + hand cursor on hover (cursor_for), the openey thing on click (slot 4). Hit rect fits the MEASURED text exactly — the old full-width band is why the hitmap didn't line up.
+                    let link_hovered = stub_hover() == btn_base.wrapping_add(4);
+                    let link_style = TextStyle::new(hspan2 * 1.15, *theme::LINK_COLOUR)
+                        .weight(if link_hovered { 700 } else { 500 })
+                        .font("Oxanium");
+                    let link_w = ctx.text.measure_text("passless.org", &link_style);
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        "passless.org",
+                        cx,
+                        y + line_h * 0.6,
+                        &link_style,
+                        about_clip,
+                        None,
+                    );
                     restamp_hit_rect(
                         &mut chrome.hit_test_map,
                         buf_w,
                         buf_h,
-                        inset.x as isize,
-                        y as isize,
-                        (inset.x + inset.w) as isize,
-                        (y + line_h) as isize,
+                        (cx - link_w * 0.5 - hspan2 * 0.4) as isize,
+                        y.max(inset.y) as isize,
+                        (cx + link_w * 0.5 + hspan2 * 0.4) as isize,
+                        ((y + line_h * 1.2).min(inset.y + inset.h)) as isize,
                         btn_base.wrapping_add(4),
                     );
+                    y += line_h * 1.3;
                     y += line_h * 1.4;
                     // The no-servers pitch — what passless actually buys you. Deletion parity with speech: with genuinely two ends and no third copy, mutual deletion is total and silent while unilateral deletion is cryptographically loud (the chain breaks and the other side sees it) — tamper-evidence and consensual ephemerality aren't in tension.
                     let prose_style = TextStyle::new(hspan2 * 0.75, *theme::LABEL_COLOUR)
                         .weight(400)
                         .font("Oxanium");
                     for line in [
-                        "no accounts, no passwords, no servers",
-                        "your handle is the key — typed, used, never stored",
-                        "words land only on the devices in the conversation",
-                        "no third copy exists, because none was ever made",
-                        "so deletion is real: both sides agree, both burn, gone —",
-                        "the way a spoken conversation is gone",
-                        "delete alone and the chain breaks, loudly, for the other side",
-                        "agreement is silent; betrayal is evident",
+                        "Photon has no accounts and no passwords. Your handle is the key: you type it to prove who you are, and it is never stored or sent anywhere.",
+                        "There are no message servers. Messages travel between the devices in a conversation and land nowhere else, so no third copy of anything exists.",
+                        "That makes deletion real. When both people agree to delete a conversation, it is gone the way a spoken conversation is gone. Deleting alone is visible to the other person, so agreement and betrayal always look different.",
                     ] {
                         y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
+                        y += line_h * 0.3;
                     }
-                    y += line_h * 0.6;
+                    y += line_h * 0.3;
                     // CONSENT — the third pillar: every lifecycle edge is bilateral (mutual-consent clutch, two-signature add/depart, no expulsion), so nothing happens to an identity without its own key signing.
                     ctx.text.draw_text_center(
                         &mut canvas,
@@ -5346,14 +5356,11 @@ impl PhotonApp {
                     );
                     y += line_h;
                     for line in [
-                        "everything here is bilateral",
-                        "a friendship starts with two signatures and ends with two",
-                        "a device joins your fleet only when both sides say so",
-                        "deletion is mutual, or it is loud — never silent and alone",
-                        "no expulsion, no takedown, no admin",
-                        "nothing happens to your identity without your key",
+                        "Everything in Photon is consensual. A friendship starts with two signatures and ends with two. A device joins your fleet only when both sides approve.",
+                        "There is no expulsion, no takedown, and no administrator. Nothing happens to your identity without your own key signing it.",
                     ] {
                         y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
+                        y += line_h * 0.3;
                     }
                     y += line_h * 0.6;
                     // TOKEN — the recovery story, mirroring the Recovery page's anti-collusion prose so the pitch and the tick box tell one tale.
@@ -5370,13 +5377,11 @@ impl PhotonApp {
                     );
                     y += line_h;
                     for line in [
-                        "lose every device and your friends bring you back",
-                        "chosen custodians hold sealed pieces of your recovery",
-                        "no custodian learns whose recovery they hold",
-                        "and no owner learns which friends hold theirs",
-                        "what can't be named can't be pressured — or collude",
+                        "TOKEN is recovery through people you trust. Lose every device and the custodians you chose can bring you back.",
+                        "No custodian ever learns whose recovery they hold, and no owner learns which friends hold theirs. What cannot be named cannot be pressured — and cannot collude.",
                     ] {
                         y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
+                        y += line_h * 0.3;
                     }
                     y += line_h * 0.6;
                     // Version — dozenal glyphs (weight 400 → the Oxanium +glyphs face draws the reserved control bytes as dozenal digits), NEVER arabic. Tap toggles the reveal (spelled form + cheat sheet). Whole row is the tap target (btn_base + 3).
@@ -5528,7 +5533,11 @@ impl PhotonApp {
                         decimal_mode = !cb.is_checked();
                         // The shame fill: untick dozenal and the empty box turns Zil.lun red (half-intensity, dozenal 0;6). Cleared the moment the user repents.
                         cb.set_empty_fill(decimal_mode.then(|| *theme::DOZENAL_SCOLD_BOX));
-                        cb.set_rect(cx, y + line_h * 0.5, inset.w * 0.9, line_h * 0.9);
+                        // CENTRED under cx: the widget's width is the measured box+gap+label, not a pane fraction — a wide rect left the box+label reading left-aligned (Nick 2026-09-02).
+                        let cb_h = line_h * 0.9;
+                        cb.set_font_size(hspan2);
+                        let label_w = ctx.text.measure_text("Dozenal", &TextStyle::new(hspan2, 0));
+                        cb.set_rect(cx, y + line_h * 0.5, cb_h + hspan2 * 0.5 + label_w + hspan2 * 0.3, cb_h);
                         cb.render_content_into(
                             &mut canvas,
                             ctx.text,
@@ -5566,14 +5575,11 @@ impl PhotonApp {
                     );
                     y += line_h;
                     for line in [
-                        "ten is an accident of anatomy — we count on our fingers",
-                        "twelve splits evenly by two, three, four, and six",
-                        "ten splits by two and five, and five never comes up",
-                        "a third in decimal repeats forever; in dozenal it lands clean",
-                        "halves, thirds, quarters, sixths — exact, no remainder",
-                        "you can still count in decimal above, with our condolences",
+                        "Photon counts in dozenal — base twelve — by default. Twelve divides evenly by two, three, four, and six, so halves, thirds, and quarters come out exact where decimal repeats forever.",
+                        "Ten is just how many fingers we happen to have. The toggle above switches the whole interface between dozenal and decimal.",
                     ] {
                         y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
+                        y += line_h * 0.3;
                     }
                     // MEASURED extent (Flow doctrine): the card's true height from the final cursor — retires the hand-counted row arithmetic next frame.
                     measured_extent = Some((y + settings_content_scroll - inset.y + line_h, inset.h));
