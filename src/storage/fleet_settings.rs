@@ -225,6 +225,20 @@ impl FleetSettings {
 
     /// A fleet-wide GROW-ONLY pubkey set read as the union of its per-key entries (`<prefix><hex pubkey>`, value = typed ke).
     /// Per-key because the settings layer is LWW per key: two devices growing ONE blob concurrently each wrote old+own and LWW dropped one — for `fleet.locked` that meant a stolen device stayed trusted on part of the fleet until someone re-locked (the B4 union-merge race). One key per member makes concurrent adds COMMUTE: `merge_global_settings` unions distinct keys by construction, so no write order can lose an entry.
+    /// DELETE a global key fleet-wide: writes an entry-level tombstone at `now` — the CRDT merge propagates it (tombstone wins its LWW tie) and every effective()/union read skips it. The unlock-marker GC uses this once the whole fleet has acknowledged a reversal; a later same-key set with a newer stamp resurrects the key normally.
+    pub fn tombstone_key(&mut self, key: &str, now: i64) -> bool {
+        if let Some(e) = self.global.iter_mut().find(|e| e.key == key) {
+            if e.tombstone {
+                return false;
+            }
+            e.tombstone = true;
+            e.updated = now;
+            e.value = vsf::VsfType::u0(false);
+            return true;
+        }
+        false
+    }
+
     /// Grow-only holds by convention: per-key entries are never tombstoned by a merge (an unlock is a deliberate typed u0(false), which never parses as a key).
     pub fn pubkey_set_union(&self, prefix: &str) -> Vec<[u8; 32]> {
         let mut out: Vec<[u8; 32]> = Vec::new();

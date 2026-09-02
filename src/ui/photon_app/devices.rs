@@ -1629,6 +1629,8 @@ impl PhotonApp {
                 self.reseed_contact_pubkeys();
             }
         }
+        // Unlock lifecycle: ack our own row-clear + GC fully-acknowledged markers (Nick 2026-09-02) — runs AFTER the clearing above so an ack always means "this device has forgiven".
+        self.ack_unlock_tombstones();
         // Persisted rows count too: at boot the settings cache may not have loaded yet, but a row flagged in a previous session must keep its refusal from the first tick.
         for c in self
             .contacts
@@ -1727,6 +1729,71 @@ impl PhotonApp {
                 ),
             }
         });
+    }
+
+    /// UNLOCK-MARKER LIFECYCLE (Nick 2026-09-02: "once my whole fleet re-rolls keys and increments to device total, clear the marker"): every device that has (a) processed an unlock tombstone — its persisted locked rows cleared — and (b) holds the re-grown fleet key (implied: fstate writes SEAL under the current key, so writing the ack proves possession) writes a per-device ack `fleet.unlockack.<pk>.<device>`. When every CURRENT member (self + un-retired, un-locked sibling rows) has acked, the tombstone has finished its job — no device can regress — and ANY member may garbage-collect the `fleet.locked.<pk>` marker plus the acks via entry-level tombstones. A member that slept thru the cycle blocks GC until it returns, clears its row, and acks — exactly the safety the persist-forever rule bought, now with an exit.
+    pub(super) fn ack_unlock_tombstones(&mut self) {
+        let tombs = self.unlocked_tombstones();
+        if tombs.is_empty() {
+            return;
+        }
+        let Some(our_dev) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else {
+            return;
+        };
+        let mut members: Vec<[u8; 32]> = vec![our_dev];
+        for c in self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out) {
+            if let Some(k) = c.device_key() {
+                if !members.contains(&k) {
+                    members.push(k);
+                }
+            }
+        }
+        let now = vsf::eagle_time_oscillations();
+        for pk in tombs {
+            let pk_hex = hex::encode(pk);
+            let our_ack = format!("fleet.unlockack.{}.{}", pk_hex, hex::encode(our_dev));
+            let have_ours = self
+                .fleet_settings
+                .as_ref()
+                .and_then(|fs| fs.effective(&our_ack))
+                .is_some();
+            if !have_ours {
+                self.settings_set(&our_ack, vsf::VsfType::u0(true));
+            }
+            // Count DISTINCT acked devices among current members.
+            let prefix = format!("fleet.unlockack.{}.", pk_hex);
+            let acked: Vec<[u8; 32]> = self
+                .fleet_settings
+                .as_ref()
+                .map(|fs| {
+                    fs.global
+                        .iter()
+                        .filter(|e| !e.tombstone && e.key.starts_with(&prefix))
+                        .filter_map(|e| hex::decode(e.key.strip_prefix(&prefix)?).ok())
+                        .filter_map(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if members.iter().all(|m| acked.contains(m)) {
+                if let Some(fs) = self.fleet_settings.as_mut() {
+                    let mut cleared = fs.tombstone_key(&format!("fleet.locked.{pk_hex}"), now);
+                    for dev in &acked {
+                        cleared |= fs.tombstone_key(
+                            &format!("fleet.unlockack.{}.{}", pk_hex, hex::encode(dev)),
+                            now,
+                        );
+                    }
+                    if cleared {
+                        crate::logf!(
+                            "FLEET: unlock of {} acknowledged by all {} member(s) — markers cleared",
+                            crate::fp(&pk),
+                            members.len()
+                        );
+                        self.persist_and_push_settings();
+                    }
+                }
+            }
+        }
     }
 
     /// Emptied per-key lock entries — devices the fleet has UNLOCKED (the value-level tombstones `unlock_fleet_device` writes). The pubkey rides the key's hex suffix since the value is deliberately empty.
