@@ -472,9 +472,10 @@ impl FluorApp for PhotonApp {
         // Desktop only: Android's lifecycle is the OS's business (foreground service + FCM), so no toggle there.
         #[cfg(not(target_os = "android"))]
         {
+            // "Load on startup" (Security page, beside the auto-attest arm it enables — Nick 2026-09-03): starts at login AND keeps running when closed; the render arm re-sets this label so the two stay in one place.
             self.settings_background_check = Some(fluor::widgets::Checkbox::new(
                 &mut self.hit_counter,
-                "Run in background (start at login, keep running when closed)",
+                "Load on startup",
                 0.,
                 0.,
                 1.,

@@ -2703,6 +2703,10 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Security => {
+                    // Load-on-startup rides Security now (Nick 2026-09-03 — it belongs beside the auto-attest arm it enables).
+                    if let Some(cb) = self.settings_background_check.as_mut() {
+                        f(cb);
+                    }
                     // Confirm state shows the handle box; normal state shows the checkbox — only one is live.
                     if self.unattended_confirm.is_some() {
                         if let Some(tb) = self.unattended_confirm_tb.as_mut() {
@@ -2726,9 +2730,6 @@ impl PhotonApp {
                         f(cb);
                     }
                     // presence COMMENTED OUT (Nick 2026-09-01) — restore alongside the render + layout rows.
-                    if let Some(cb) = self.settings_background_check.as_mut() {
-                        f(cb);
-                    }
                 }
                 SettingsPage::Updates => {
                     if let Some(cb) = self.settings_autoupdate_check.as_mut() {
