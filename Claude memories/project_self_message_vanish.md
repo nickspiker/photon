@@ -22,8 +22,8 @@ Field day 2026-09-02 ("ten-thousand-year letter"). Workflow sweep (4 investigato
 
 **STILL OPEN:**
 1. **Ghost device 1be949c1** in the published membership chain → dead fan-out leg. Design note SHIPPED docs/ghost-device-supersession.md (recommend: routing ostracism now, hardware-continuity supersession in fleet-key redesign). Awaiting Nick.
-2. Message delete still runs full-table save_messages sync on UI thread (driver.rs:2894).
-3. Completion dispatcher unknown payload kinds: scout says 33910B/183KB were AvatarResponse (since wired); re-check field logs post-fix for residual "claimed by NO parser".
+
+**CLOSED in the 2026-09-02 night sweep (328bc7d + f0fe5c7):** delete persist off UI thread; PT completion dispatcher gaps CONVICTED+FIXED (chain_sync 17331B frames from the phone + the 3 ckpt spine frames were datagram-only kinds — large chains NEVER replicated via PT, sibling-lane staleness class); call GLARE fixed (mutual dial → smaller call_id wins, larger side folds+auto-answers — covers lane AND express paths thru on_call_signal); Recovery+Notifications → Flow layout. Contacts-glow ticket found ALREADY FIXED in code (invalidate_bg on focus edges, pre-2026-08-14) — retest before re-opening. Android clipboard bridge found fully wired (pending_clipboard_copy → Kotlin setPrimaryClip).
 
 Phone cacbc223 runs a STALE build (APK 15:26 < fixes) — needs scripts/android/dev-adb.sh rebuild before any self→phone delivery works.
 
