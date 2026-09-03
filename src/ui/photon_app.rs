@@ -1639,9 +1639,7 @@ pub struct PhotonApp {
     /// Bridge executor channels (host side): commands go to the off-thread dispatcher that routes to one worker+shell per sibling device; FINAL outputs come back here for `drain_bridge_output` to reply with. Lazily created on the first command so a fleet that never bridges spawns nothing. Desktop-unix only (the shell host).
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     bridge_cmd_tx: Option<std::sync::mpsc::Sender<bridge::BridgeJob>>,
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-    bridge_out_rx: Option<std::sync::mpsc::Receiver<bridge::BridgeEmit>>,
-    /// Latest-wins streamed-snapshot slot per contact (host side) — the UI drain paces the wire, a burst collapses to the newest snapshot, no clock anywhere.
+    /// Per-command unsent-DELTA spool (host side) — the worker appends what's new, the UI drain broadcasts what's missing at most 1Hz; the exit folds into the last frame (no separate final channel).
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     bridge_partials: Option<
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<usize, bridge::BridgeEmit>>>,
@@ -2164,7 +2162,6 @@ impl PhotonApp {
             #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
             bridge_cmd_tx: None,
             #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-            bridge_out_rx: None,
             #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
             bridge_partials: None,
             #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]

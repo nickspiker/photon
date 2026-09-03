@@ -666,6 +666,8 @@ impl PhotonApp {
                     seq: (m.bridge_seq > 0).then_some(m.bridge_seq),
                     exit: m.bridge_exit,
                     sig: None,
+                    // Every v82+ host frame is a delta; resurrecting without the flag would make a re-served exit frame REPLACE the client's appended transcript with just the last chunk.
+                    delta: true,
                 })
             }
             _ => None,

@@ -1535,6 +1535,7 @@ impl PhotonApp {
                         // ONE bubble per command, keyed by the TYPED reference alone — never by the wire extras. The host's lane-rotation re-serve rebuilds frames without the BridgeWire (chain_transmit(.., None)), and the old seq-required gate let exactly those rebuilds fall thru to insert_message_sorted: the duplicate full-output bubble of field 2026-08-26 (git pull arrived twice). Any inbound row targeting t now lands on t's row or is swallowed; a missing seq is treated as a final-ish snapshot that may fill an unfinished row but never regress a finished one.
                         let seq = bridge_wire.as_ref().and_then(|b| b.seq);
                         let exit = bridge_wire.as_ref().and_then(|b| b.exit);
+                        let is_delta = bridge_wire.as_ref().map_or(false, |b| b.delta);
                         if let Some(row) = conv.messages.iter_mut().find(|m| {
                             !m.is_outgoing
                                 && m.reference == Some((crate::types::RefKind::BridgeOut, t))
@@ -1544,7 +1545,22 @@ impl PhotonApp {
                                 None => row.bridge_exit.is_none(),
                             };
                             if newer {
-                                row.content = msg.content.clone();
+                                if is_delta {
+                                    // DELTA frame (Nick 2026-09-03): the frame carries only what's NEW — append, never replace. The chain's hash links already delivered these in order; the seq guard above swallows re-serves/duplicates so a frame can never append twice.
+                                    row.content.push_str(&msg.content);
+                                    // Display bound: a monster transcript falls off the FRONT like a real terminal's scrollback (char-boundary-safe — the ⛅️✨🌎 lesson).
+                                    const BRIDGE_ROW_MAX: usize = 65536;
+                                    if row.content.len() > BRIDGE_ROW_MAX {
+                                        let mut cut = row.content.len() - BRIDGE_ROW_MAX;
+                                        while cut < row.content.len() && !row.content.is_char_boundary(cut) {
+                                            cut += 1;
+                                        }
+                                        row.content.drain(..cut);
+                                    }
+                                } else {
+                                    // Legacy whole-snapshot frame (pre-v82 host): replace, exactly as before.
+                                    row.content = msg.content.clone();
+                                }
                                 if let Some(s) = seq {
                                     row.bridge_seq = s;
                                 }

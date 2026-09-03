@@ -38,6 +38,8 @@ pub struct BridgeWire {
     pub exit: Option<i64>,
     /// Interrupt signal number (SIGINT/SIGTERM/SIGKILL) on a BridgeCtl row.
     pub sig: Option<u64>,
+    /// APPEND semantics (Nick 2026-09-03): this frame carries only what's NEW since the previous frame — the client appends to the command's row instead of replacing it, the chain's hash links already guarantee order, and "finished" is simply the frame where `exit` is present (no special end message). Absent = legacy whole-snapshot replace.
+    pub delta: bool,
 }
 
 impl BridgeWire {
@@ -47,6 +49,7 @@ impl BridgeWire {
             && self.seq.is_none()
             && self.exit.is_none()
             && self.sig.is_none()
+            && !self.delta
     }
 }
 
@@ -63,6 +66,7 @@ fn msg_schema() -> SectionSchema {
         .field("bseq", TypeConstraint::AnyUnsigned) // bridge snapshot sequence
         .field("bexit", TypeConstraint::Any) // i6 bridge exit code; present = final frame
         .field("bsig", TypeConstraint::AnyUnsigned) // bridge interrupt signal number
+        .field("bdelta", TypeConstraint::AnyUnsigned) // u0 append-semantics flag; absent = legacy whole-snapshot replace (old parsers discard unknown fields, so this is forward-compatible)
         .field("pad", TypeConstraint::Any) // hR random jitter; length is the only meaning
 }
 
@@ -119,6 +123,11 @@ pub fn build_message_package(
         if let Some(s) = b.sig {
             builder = builder
                 .set("bsig", VsfType::u(s as usize, false))
+                .map_err(|e| e.to_string())?;
+        }
+        if b.delta {
+            builder = builder
+                .set("bdelta", VsfType::u0(true))
                 .map_err(|e| e.to_string())?;
         }
     }
@@ -214,6 +223,12 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
             .first()
             .and_then(|f| f.values.first())
             .and_then(|v| v.as_u64()),
+        delta: section
+            .get_fields("bdelta")
+            .first()
+            .and_then(|f| f.values.first())
+            .and_then(|v| v.as_u64())
+            .map_or(false, |v| v != 0),
     };
     Ok(MessagePackage {
         body,
@@ -284,6 +299,7 @@ mod tests {
             seq: Some(7),
             exit: None,
             sig: None,
+            delta: true,
         };
         let partial =
             build_message_package("out so far", &[0u8; 32], &[], Some((4, 999)), Some(&wire), &[])
@@ -294,6 +310,7 @@ mod tests {
         assert_eq!(b.cwd.as_deref(), Some("/mnt/Harbor/Code/photon"));
         assert_eq!(b.seq, Some(7));
         assert_eq!(b.exit, None);
+        assert!(b.delta, "append-semantics flag survives the round trip");
 
         let fin = BridgeWire { exit: Some(-1), seq: Some(8), ..wire };
         let final_frame =
