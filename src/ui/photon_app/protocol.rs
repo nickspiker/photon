@@ -1062,5 +1062,21 @@ impl PhotonApp {
         if let Some(cb) = self.settings_unattended_check.as_mut() {
             cb.set_label(tr(Msg::UnattendedCheckbox));
         }
+        // You-page field labels are baked into the ProfileField structs at build time (field 2026-09-03: "the you page still says maori after I switched back to english") — re-derive them in place. Standard ids relabel thru the catalog; expandable instances (email2, addr3, …) split into base + arabic-suffix count and recompose with fmt_num; custom fields keep the human's verbatim bytes.
+        for pf in self.you_fields.iter_mut() {
+            if pf.tier == "custom" {
+                continue;
+            }
+            if let Some(label) = profile_field_label(&pf.field_id) {
+                pf.label = label.into_owned();
+                continue;
+            }
+            let base = pf.field_id.trim_end_matches(|c: char| c.is_ascii_digit());
+            if base.len() < pf.field_id.len() {
+                if let (Some(base_label), Ok(n)) = (profile_field_label(base), pf.field_id[base.len()..].parse::<u32>()) {
+                    pf.label = format!("{base_label} {}", crate::fmt_num(n));
+                }
+            }
+        }
     }
 }
