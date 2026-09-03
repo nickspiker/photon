@@ -2883,7 +2883,6 @@ impl FluorApp for PhotonApp {
         if let Some(((sci, ts, out), true)) = self.pending_delete {
             self.pending_delete = None;
             let mut tombstoned: Option<ChatMessage> = None;
-            let storage = self.storage.clone();
             if let Some(conv) = self.conv_mut_of(sci) {
                 if let Some(m) = conv
                     .messages
@@ -2897,10 +2896,11 @@ impl FluorApp for PhotonApp {
                 }
                 if tombstoned.is_some() {
                     conv.invalidate_digest(); // a tombstone drops a row from the syncable set
-                    if let Some(storage) = storage.as_ref() {
-                        let _ = crate::storage::contacts::save_messages(conv, storage);
-                    }
                 }
+            }
+            if tombstoned.is_some() {
+                // OFF-THREAD (ticket 2026-09-02): this was the last save_messages call still running synchronously on the UI thread — a delete froze the frame behind an encrypted table write (the delta gate shrank it, but the vault commit is still milliseconds the render loop doesn't have). The async writer's coalescing + quit drain cover it like any other persist.
+                self.persist_messages_async(sci);
             }
             if let Some(row) = tombstoned {
                 // Attachments truly shred: only ROW CONTENT is braid-bound (preserved) — the blob file has no weave duty, so the bytes themselves are deleted here and on every device that applies this tombstone.
