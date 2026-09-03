@@ -14,11 +14,16 @@ Field day 2026-09-02 ("ten-thousand-year letter"). Workflow sweep (4 investigato
 - **Quit ate queued writes**: process exited with snapshots in the message/chains writer queues (the vanish: 73rd row merged 22:59:15, persist enqueued, quit killed it — never-written). FIXED: durable_pending Arc<(Mutex<usize>,Condvar)> counts enqueues on message+chains writers, dec AFTER write lands; drain_durable_writers() blocks deliberate-quit/non-resident-close/update-re-exec edges until zero. Edges not timers.
 - Zero-remote design itself is CORRECT: self send = vault write IS delivery, bright on persist verdict (messaging.rs:132-146) — identical machinery as friends, per the hard rule.
 
-**STILL OPEN (in leverage order):**
-1. **Vault engine**: kete is commit-per-write (group commit added 1944ebe + REVERTED d48f294 same day 2026-08-21 — batching starved manifestus's rollback fence; put_batch is dead code). One put = 8-12 fdatasyncs across two mirrored rings; BTRFS CoW ~14.8K extents/ring inflates each (2-5s SLOW puts in field). Fix direction: rarangi transact → one manifestus put_batch commit (WAL is the recovery story, so batching apply is safe by design); reconsider fence-aware bounded batch in kete.
-2. **PT frozen addresses**: small-packet retransmits + DATA fire forever at addresses frozen at enqueue (pt/mod.rs:770-794); TRAVERSE path-validated addresses never re-target them; stop-and-wait head-of-line per address. Inbound transfers keyed by source addr (mod.rs:350) → SPEC-via-IPv6 + DATA-via-v4 = permanent unknown-drop. Field: desktop sprayed stale wrong-subnet 192.168.0.40 + phone's dead cellular v6 + a blocked v4 while validated v6 sat idle. Same class as the packet-hash ACK fix (mod.rs:316 comment). Completion dispatcher also drops unknown payload kinds silently (33910B/183KB frames, every receiver, senders retry forever) — same class as the av_resp fix (status.rs:2041).
-3. **Ghost device 1be949c1** (phone's pre-re-attest id) still in the published fleet membership chain → permanent dead fan-out leg (50× relay drops). Related [[project_call_no_ring_incident]].
-4. Message delete still runs full-table save_messages sync on UI thread (driver.rs:2894).
+**ENGINE + TRANSPORT FIXES SHIPPED 2026-09-02 (four repos):**
+- **manifestus 660c66d**: apply_batch — mixed puts+deletes, order-preserving, ONE spine commit; fence-safe (put ladder already commits mid-ladder on Fenced — the revert's homework was done, never wired).
+- **kete 7fabf12**: librarian gathers EVERY queued mutation per drain into one apply_batch commit (safe 1944ebe: commits within the cycle, never held open) + apply_addr_batch API + entry_addr; dead put_growing removed.
+- **rarangi 2ac9e8a**: transact apply = one ordered batch [post-images, superroot, WAL retire]; WAL stays atomicity anchor. 4-5 commits/transaction → 2. With delta gate: one send ≈ 2 commits (was ~300).
+- **photon 115a346**: PT frozen-address fix — retarget_peer on verified pong (re-aims queued packets + un-locked transfers by recipient pubkey), handle_data unique-stream fallback with address adoption (SPEC-via-v6 + DATA-via-v4 wedge), handle_ack/handle_spec_ack third-address lock. 3 regression tests.
+
+**STILL OPEN:**
+1. **Ghost device 1be949c1** in the published membership chain → dead fan-out leg. Design note SHIPPED docs/ghost-device-supersession.md (recommend: routing ostracism now, hardware-continuity supersession in fleet-key redesign). Awaiting Nick.
+2. Message delete still runs full-table save_messages sync on UI thread (driver.rs:2894).
+3. Completion dispatcher unknown payload kinds: scout says 33910B/183KB were AvatarResponse (since wired); re-check field logs post-fix for residual "claimed by NO parser".
 
 Phone cacbc223 runs a STALE build (APK 15:26 < fixes) — needs scripts/android/dev-adb.sh rebuild before any self→phone delivery works.
 
