@@ -111,7 +111,8 @@ fn decode_prompt() -> Option<Vec<Vec<i16>>> {
             return None;
         }
         let n = dec.decode(&bytes[p..p + len], &mut pcm, false).ok()?;
-        frames.push(pcm[..n].to_vec());
+        // -9 dB (×363/1024 ≈ 0.354): the master is normalized to full scale, which at a music-listening media volume is DEAFENING (field 2026-09-02) — real call audio never runs that hot. Measurement-neutral: the correlation's render reference and the acoustic emission scale together, so delay and coupling g come out identical; only the user's ears notice.
+        frames.push(pcm[..n].iter().map(|&s| ((s as i32 * 363) >> 10) as i16).collect());
         p += len;
     }
     Some(frames)

@@ -176,16 +176,17 @@ class PhotonConnectionService : Service() {
         }
         fun pushVolume() {
             try {
+                // STREAM_MUSIC, not STREAM_VOICE_CALL (field 2026-09-02, Nick's rocker-indicator catch): our render track is USAGE_MEDIA (the latency-first 2026-08-19 trade — the vendor voice pipeline cost an 80ms buffer floor), so the MUSIC stream is the knob that actually governs our loudness. Mirroring the voice-call stream normalized the echo profile (g_norm = g / vol_lin) by a slider that does NOTHING to our audio — media volume changes didn't rescale the prediction, voice-call changes rescaled it for no physical reason.
                 val db = if (Build.VERSION.SDK_INT >= 28) {
                     am.getStreamVolumeDb(
-                        android.media.AudioManager.STREAM_VOICE_CALL,
-                        am.getStreamVolume(android.media.AudioManager.STREAM_VOICE_CALL),
+                        android.media.AudioManager.STREAM_MUSIC,
+                        am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC),
                         android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
                     )
                 } else {
                     // Pre-28 fallback: linear index ratio → rough dB (20·log10), floor -60.
-                    val v = am.getStreamVolume(android.media.AudioManager.STREAM_VOICE_CALL).toFloat()
-                    val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_VOICE_CALL).toFloat().coerceAtLeast(1f)
+                    val v = am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC).toFloat()
+                    val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC).toFloat().coerceAtLeast(1f)
                     if (v <= 0f) -60f else (20.0 * Math.log10((v / max).toDouble())).toFloat()
                 }
                 nativeVolumeDb(db)
