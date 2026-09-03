@@ -218,6 +218,47 @@ impl PTManager {
         spec_bytes
     }
 
+    /// Path truth changed for a device (a pong/TRAVERSE validation just proved fresh addresses): re-aim every queued/in-flight small packet and every still-unlocked transfer for that pubkey at the proven pair. THE FROZEN-ADDRESS FIX (field 2026-09-02): addresses were captured at enqueue and never revisited, so retransmit ladders burned entire backoff runs against a stale wrong-subnet v4, a dead cellular v6, and a firewall-blocked path while the validated working path sat idle — a same-LAN self-message took 60s-to-minutes and delivered only when a later re-serve happened to enqueue at the fresh address. Transfers that already locked (spec_acked — the peer ANSWERED on that path) are left alone; packet-hash acks are address-blind so a retargeted in-flight head still completes cleanly.
+    pub fn retarget_peer(
+        &mut self,
+        pubkey: &[u8; 32],
+        primary: SocketAddr,
+        alt: Option<SocketAddr>,
+    ) {
+        if crate::network::traverse::gather::is_bogus_addr(&primary) {
+            return;
+        }
+        let alt = alt.filter(|a| !same_addr(*a, primary));
+        let mut moved = 0usize;
+        for pkt in self.outbound_packets.iter_mut() {
+            if pkt.recipient_pubkey.as_ref() == Some(pubkey) && !same_addr(pkt.peer_addr, primary) {
+                pkt.peer_addr = primary;
+                pkt.alt_addr = alt;
+                moved += 1;
+            }
+        }
+        for t in self.outbound.iter_mut() {
+            if !t.spec_acked
+                && t.recipient_pubkey.as_ref() == Some(pubkey)
+                && !same_addr(t.peer_addr, primary)
+            {
+                t.peer_addr = primary;
+                t.alt_addr = alt;
+                moved += 1;
+            }
+        }
+        if moved > 0 {
+            let alt_s = alt.map_or("none".to_string(), |a| a.to_string());
+            crate::logf!(
+                "PT: retargeted {} queued item(s) for {} onto validated path {} (alt {})",
+                moved,
+                hex::encode(&pubkey[..4]),
+                primary,
+                alt_s
+            );
+        }
+    }
+
     /// Handle received SPEC (start receiving)
     pub fn handle_spec(&mut self, peer_addr: SocketAddr, spec: PTSpec) -> Vec<u8> {
         crate::logf!(
@@ -257,12 +298,27 @@ impl PTManager {
     ) -> Vec<Vec<u8>> {
         let mut packets = Vec::new();
 
-        // Find the transfer by stream_id, accepting the ACK from either the primary path or the raced alternate (LAN vs WAN). Whichever address answered is the reachable one, so lock the transfer onto it and drop the alternate — DATA/ACK route by (peer_addr, stream_id), so all subsequent packets must use the path that ACKed.
-        if let Some(transfer) = self.outbound.iter_mut().find(|t| {
-            t.stream_id == stream_id
-                && (same_addr(t.peer_addr, peer_addr)
-                    || t.alt_addr.map_or(false, |a| same_addr(a, peer_addr)))
-        }) {
+        // Find the transfer by stream_id, accepting the ACK from the primary path, the raced alternate, OR — when the stream id is unambiguous — any third address (a multi-homed receiver's egress can differ from the ingress we aimed at; 2026-09-02 field). Whichever address answered is the reachable one, so lock the transfer onto it and drop the alternate — DATA/ACK route by (peer_addr, stream_id), so all subsequent packets must use the path that ACKed.
+        let matched = self
+            .outbound
+            .iter()
+            .position(|t| {
+                t.stream_id == stream_id
+                    && (same_addr(t.peer_addr, peer_addr)
+                        || t.alt_addr.map_or(false, |a| same_addr(a, peer_addr)))
+            })
+            .or_else(|| {
+                let mut candidates = self
+                    .outbound
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.stream_id == stream_id && !t.spec_acked);
+                match (candidates.next(), candidates.next()) {
+                    (Some((i, _)), None) => Some(i),
+                    _ => None,
+                }
+            });
+        if let Some(transfer) = matched.map(|i| &mut self.outbound[i]) {
             if !same_addr(transfer.peer_addr, peer_addr) {
                 crate::logf!("PT: SPEC ACK arrived on alternate path {} (was {}) for stream '{}' - locking onto it", peer_addr, transfer.peer_addr, stream_id as char);
                 transfer.peer_addr = peer_addr;
@@ -346,10 +402,31 @@ impl PTManager {
 
     /// Handle received DATA packet Routes by (peer_addr, stream_id) to support concurrent transfers
     pub fn handle_data(&mut self, peer_addr: SocketAddr, data: PTData) -> Option<Vec<u8>> {
-        // Find inbound transfer by peer AND stream_id
-        if let Some(transfer) = self.inbound.iter_mut().find(|t| {
+        // Find inbound transfer by peer AND stream_id — falling back to a UNIQUE stream match with address adoption. A multi-homed sender's SPEC can arrive via one path (the v6 GUA) and its DATA via another (the v4 LAN): keyed strictly by source address the DATA matched nothing and dropped as "unknown bytes" FOREVER while the sender retransmitted — the 2026-09-02 field wedge. When exactly ONE incomplete inbound transfer carries the stream id, that's the sender path-migrating, not ambiguity: adopt the new source (the receive-side mirror of the SPEC-ACK alternate-path lock). A wrong adoption cannot corrupt: the final data_hash verification rejects the assembled payload and the transfer fails cleanly instead of wedging.
+        let strict = self.inbound.iter().position(|t| {
             same_addr(t.peer_addr, peer_addr) && t.stream_id == data.stream_id && !t.is_complete()
-        }) {
+        });
+        let idx = strict.or_else(|| {
+            let mut candidates = self
+                .inbound
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.stream_id == data.stream_id && !t.is_complete());
+            match (candidates.next(), candidates.next()) {
+                (Some((i, _)), None) => Some(i),
+                _ => None,
+            }
+        });
+        if let Some(transfer) = idx.map(|i| &mut self.inbound[i]) {
+            if !same_addr(transfer.peer_addr, peer_addr) {
+                crate::logf!(
+                    "PT: DATA for stream '{}' arrived from {} (transfer was keyed {}) — sender path-migrated, adopting the live address",
+                    data.stream_id as char,
+                    peer_addr,
+                    transfer.peer_addr
+                );
+                transfer.peer_addr = peer_addr;
+            }
             if let Some(ack) = transfer.handle_data(&data) {
                 let (recv, total) = transfer.progress();
                 // Log at milestones: every 50 packets (but not 0) or completion
@@ -387,12 +464,32 @@ impl PTManager {
             return self.handle_spec_ack(peer_addr, ack.stream_id, ack.chunk_hash);
         }
 
-        // Find outbound transfer by peer AND stream_id
-        if let Some(transfer) = self.outbound.iter_mut().find(|t| {
+        // Find outbound transfer by peer AND stream_id — with the same unique-stream fallback as handle_data: an ACK returning from an address we never sent to (the receiver's egress differs from its ingress — the multi-homed v4/v6 asymmetry) must lock the transfer onto the path that is demonstrably ALIVE, not be dropped.
+        let strict = self.outbound.iter().position(|t| {
             same_addr(t.peer_addr, peer_addr)
                 && t.stream_id == ack.stream_id
                 && t.state == TransferState::Transferring
-        }) {
+        });
+        let idx = strict.or_else(|| {
+            let mut candidates = self.outbound.iter().enumerate().filter(|(_, t)| {
+                t.stream_id == ack.stream_id && t.state == TransferState::Transferring
+            });
+            match (candidates.next(), candidates.next()) {
+                (Some((i, _)), None) => Some(i),
+                _ => None,
+            }
+        });
+        if let Some(transfer) = idx.map(|i| &mut self.outbound[i]) {
+            if !same_addr(transfer.peer_addr, peer_addr) {
+                crate::logf!(
+                    "PT: ACK for stream '{}' arrived from {} (transfer aimed at {}) — locking onto the answering path",
+                    ack.stream_id as char,
+                    peer_addr,
+                    transfer.peer_addr
+                );
+                transfer.peer_addr = peer_addr;
+                transfer.alt_addr = None;
+            }
             transfer.handle_ack(&ack);
 
             // Only log progress at milestones (every 100 packets or completion) Avoids spamming logs with per-ACK updates
@@ -872,6 +969,81 @@ mod tests {
             !mgr.send(real, vec![0xCD; 64]).is_empty(),
             "a routable address must still send"
         );
+    }
+
+    /// THE FROZEN-ADDRESS FIX (2026-09-02): a proven fresh path must re-aim queued small packets and un-locked transfers keyed by recipient pubkey; a transfer that already locked (spec_acked) stays put.
+    #[test]
+    fn retarget_moves_queued_items_but_not_locked_transfers() {
+        let mut mgr = PTManager::new(test_keypair());
+        let stale: SocketAddr = "192.168.0.40:4383".parse().unwrap();
+        let fresh: SocketAddr = "192.168.1.161:4383".parse().unwrap();
+        let pk = [0x77u8; 32];
+        // Small packet + large transfer, both aimed at the stale address.
+        let _ = mgr.send_with_pubkey(stale, vec![1; 64], Some(pk));
+        let _ = mgr.send_with_pubkey(stale, vec![2; 8000], Some(pk));
+        // A second transfer for the SAME pubkey that already locked its path.
+        let _ = mgr.send_with_pubkey(stale, vec![3; 8000], Some(pk));
+        let locked_stream = mgr.outbound[1].stream_id;
+        mgr.outbound[1].spec_acked = true;
+        // A different peer's packet must not move.
+        let other: SocketAddr = "10.0.0.9:4383".parse().unwrap();
+        let _ = mgr.send_with_pubkey(other, vec![4; 64], Some([0x88u8; 32]));
+
+        mgr.retarget_peer(&pk, fresh, None);
+
+        assert!(same_addr(mgr.outbound_packets[0].peer_addr, fresh), "queued packet re-aimed");
+        assert!(same_addr(mgr.outbound_packets[1].peer_addr, other), "other peer untouched");
+        for t in &mgr.outbound {
+            if t.stream_id == locked_stream {
+                assert!(same_addr(t.peer_addr, stale), "locked transfer keeps its answering path");
+            } else {
+                assert!(same_addr(t.peer_addr, fresh), "un-locked transfer re-aimed");
+            }
+        }
+    }
+
+    /// The multi-homed wedge: SPEC arrives via one path, DATA via another. With exactly one incomplete inbound transfer on the stream, the DATA must match and the transfer must adopt the live source instead of dropping as "unknown bytes" forever.
+    #[test]
+    fn inbound_data_adopts_a_migrated_sender_path() {
+        let sender_keypair = test_keypair();
+        let receiver_keypair = test_keypair();
+        let mut sender = PTManager::new(sender_keypair);
+        let mut receiver = PTManager::new(receiver_keypair);
+        let v6_path: SocketAddr = "[2600:100f::1]:4383".parse().unwrap();
+        let v4_path: SocketAddr = "192.168.1.156:4383".parse().unwrap();
+
+        let spec_bytes = sender.send(v6_path, vec![0xAB; 1500]);
+        let spec_fields = parse_vsf_section_fields(&spec_bytes);
+        let spec = PTSpec::from_vsf_fields(&spec_fields).unwrap();
+        // Receiver keys the transfer by the SPEC's source (the v6 path)...
+        let _ = receiver.handle_spec(v6_path, spec.clone());
+        let data_packets = sender.handle_spec_ack(v6_path, spec.stream_id, spec.data_hash);
+        // ...but the DATA arrives from the v4 path.
+        let first = PTData::from_bytes(&data_packets[0]).unwrap();
+        let ack = receiver.handle_data(v4_path, first);
+        assert!(ack.is_some(), "unique-stream DATA from a migrated path must be accepted, not dropped");
+        assert!(
+            receiver.inbound.iter().any(|t| same_addr(t.peer_addr, v4_path)),
+            "the transfer adopted the live source address"
+        );
+    }
+
+    /// SPEC-ACK from a third address (receiver egress ≠ our aim): with an unambiguous stream, the transfer locks onto the answering path instead of ignoring the ACK.
+    #[test]
+    fn spec_ack_from_third_address_locks_the_answering_path() {
+        let mut sender = PTManager::new(test_keypair());
+        let aimed: SocketAddr = "[2600:100f::9]:4383".parse().unwrap();
+        let answering: SocketAddr = "192.168.1.161:4383".parse().unwrap();
+        let spec_bytes = sender.send(aimed, vec![0xCD; 5000]);
+        let spec_fields = parse_vsf_section_fields(&spec_bytes);
+        let spec = PTSpec::from_vsf_fields(&spec_fields).unwrap();
+        let packets = sender.handle_spec_ack(answering, spec.stream_id, spec.data_hash);
+        assert!(!packets.is_empty(), "the ACK must start the DATA phase");
+        assert!(
+            same_addr(sender.outbound[0].peer_addr, answering),
+            "transfer locked onto the path that actually answered"
+        );
+        assert!(sender.outbound[0].spec_acked);
     }
 
     #[test]
