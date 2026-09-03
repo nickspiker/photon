@@ -180,8 +180,41 @@ pub(crate) fn voiced_level(envs: &[f32], floor: f32) -> Option<f32> {
 
 const PACE_TARGET: usize = 6; // frames of render queue — track the DAC, don't race it (playback.rs's constant)
 const TAIL_FRAMES: usize = 100; // 1s of post-prompt silence = noise-floor sample
-const REPEAT_FRAMES: usize = 700; // 7s window to say the sentence
+const REPEAT_FRAMES: usize = 700; // 7s of capture FROM VOICE ONSET (the sentence + settle)
+const ONSET_WAIT_FRAMES: usize = 800; // 8s grace to START speaking after the beat flips — the fixed window used to open at the flip and a slow start burned it (macbook field 2026-09-03, "Didn't catch that")
 const MAX_LAG_FRAMES: usize = 100; // 1s of correlation scan — way past any real render→capture path
+
+/// Wait for the platform to resolve an identity string (route/mic). The cpal/Kotlin device sniff lands ASYNCHRONOUSLY after session start, so the first calibration of a session read "" as its baseline and the settled name at verdict — a phantom "changed mid-run" void (macbook field 2026-09-03, echo attempt 1). Not a UI timer: this is measurement warmup on the worker thread, bounded at 2s.
+fn settle_identity(read: impl Fn() -> String, stop: &AtomicBool) -> String {
+    for _ in 0..200 {
+        let v = read();
+        if !v.is_empty() || stop.load(Ordering::Relaxed) {
+            return v;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    read()
+}
+
+/// Capture until the user's voice STARTS (env climbs past the live floor estimate), up to the grace bound. Returns (collected frames, onset?, stopped?). The onset needs ≥500ms of baseline first so the example's reverb tail can't fake it.
+fn wait_for_onset(stop: &AtomicBool) -> (Vec<f32>, bool, bool) {
+    use std::time::Duration;
+    let mut envs: Vec<f32> = Vec::new();
+    while envs.len() < ONSET_WAIT_FRAMES && !stop.load(Ordering::Relaxed) {
+        for f in crate::platform::audio::captured_frames() {
+            let e = env(&f);
+            envs.push(e);
+            if envs.len() >= 50 {
+                let floor = quietest_run(&envs, 30);
+                if e > floor * 4.0 + 40.0 {
+                    return (envs, true, false);
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    (envs, false, stop.load(Ordering::Relaxed))
+}
 
 fn begin(phase0: CalPhase) -> Option<(Vec<Vec<i16>>, Arc<AtomicBool>)> {
     if crate::platform::audio::is_active() {
@@ -254,7 +287,7 @@ pub fn start_echo() -> Option<CalHandle> {
     std::thread::Builder::new()
         .name("audio-cal-echo".into())
         .spawn(move || {
-            let route_id = crate::platform::audio::route_id();
+            let route_id = settle_identity(crate::platform::audio::route_id, &flag);
             let cal_vol_db = crate::platform::audio::current_volume_db();
             let play_env: Vec<f32> = prompt.iter().map(|f| env(f)).collect();
             let (mut cap, stopped) = play_and_capture(&prompt, &flag, true);
@@ -277,21 +310,27 @@ pub fn start_echo() -> Option<CalHandle> {
                     return;
                 }
             }
-            if crate::platform::audio::route_id() != route_id {
+            if !route_id.is_empty() && crate::platform::audio::route_id() != route_id {
                 crate::log("CAL: output route changed mid-run — measurement void");
                 finish(None);
                 return;
             }
             let Some((lag, g)) = envelope_xcorr(&play_env, &cap, MAX_LAG_FRAMES) else {
+                crate::log("CAL: echo — correlation had nothing to bite on (empty/short capture) — didn't catch it");
                 finish(None);
                 return;
             };
             // Sanity: a real coupling needs a plausible lag; lag 0 with real g = smeared correlation (echoey hall) — retry, don't store garbage. lag 0 with g≈0 is a headset: legal.
             if g > 0.01 && lag == 0 {
+                crate::logf!(
+                    "CAL: echo — g {} at lag 0 = smeared correlation (echoey room?) — retry, not storing",
+                    format!("{g:.4}")
+                );
                 finish(None);
                 return;
             }
             if !g.is_finite() {
+                crate::log("CAL: echo — non-finite coupling — retry, not storing");
                 finish(None);
                 return;
             }
@@ -324,7 +363,7 @@ pub fn start_voice() -> Option<CalHandle> {
     std::thread::Builder::new()
         .name("audio-cal-voice".into())
         .spawn(move || {
-            let mic_id = crate::platform::audio::mic_id();
+            let mic_id = settle_identity(crate::platform::audio::mic_id, &flag);
             // Example pass — no capture needed; the user is listening.
             let (_, stopped) = play_and_capture(&prompt, &flag, false);
             if stopped {
@@ -332,22 +371,49 @@ pub fn start_voice() -> Option<CalHandle> {
                 return;
             }
             set_phase(CalPhase::VoiceRepeat);
+            // ONSET-GATED window: the edge is the user's voice starting, not the phase flip — a slow start (or a phase flip they hadn't seen yet) no longer burns the window.
+            let (pre, onset, stopped) = wait_for_onset(&flag);
+            if stopped {
+                finish(None);
+                return;
+            }
+            if !onset {
+                let floor = quietest_run(&pre, 30);
+                crate::logf!(
+                    "CAL: voice — heard nothing above the floor for 8s (floor {}) — didn't catch it",
+                    format!("{floor:.0}")
+                );
+                finish(None);
+                return;
+            }
             let (rep, stopped) = capture_frames(REPEAT_FRAMES, &flag);
             if stopped {
                 finish(None);
                 return;
             }
-            if crate::platform::audio::mic_id() != mic_id {
+            if !mic_id.is_empty() && crate::platform::audio::mic_id() != mic_id {
                 crate::log("CAL: mic changed mid-run — measurement void");
                 finish(None);
                 return;
             }
-            let floor = quietest_run(&rep, 30);
-            let Some(talk) = voiced_level(&rep, floor) else {
+            // Analyse the whole take (pre-onset quiet + speech): the wait's frames ARE the floor sample.
+            let mut all = pre;
+            all.extend_from_slice(&rep);
+            let floor = quietest_run(&all, 30);
+            let Some(talk) = voiced_level(&all, floor) else {
+                crate::logf!(
+                    "CAL: voice — under 200ms of speech above the floor (floor {}) — didn't catch it",
+                    format!("{floor:.0}")
+                );
                 finish(None);
                 return;
             };
             if talk <= floor * 4.0 {
+                crate::logf!(
+                    "CAL: voice — level {} within 4x of floor {} — spoke too soft or the room is too loud",
+                    format!("{talk:.0}"),
+                    format!("{floor:.0}")
+                );
                 finish(None);
                 return;
             }
