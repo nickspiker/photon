@@ -35,7 +35,9 @@ snapbuild_take() {
     esac
     # One snapshot at a time per box; fd 8 stays open for the script's life (fd 9 is the publish lock).
     # BOUNDED wait, never bare flock: an unbounded flock here blocked with zero output — indistinguishable from a hung build (field 2026-08-24: a relaunched photon inherited fd 8 and held the lock for its lifetime; see reload_photon's 8>&-). Contention now degrades to the live-tree build like every other snapbuild failure, with a line saying WHY.
-    exec 8>>"$SNAPBUILD_ROOT.lock" 2>/dev/null || return 1
+    # NEVER `exec ... 2>/dev/null`: an exec with redirections and no command applies them to the WHOLE SCRIPT — that one silenced every deploy's stderr forever after (cargo output, failure markers, bash -x, all eaten; field 2026-09-03, the blind v82 deploys). Probe writability in a subshell (its redirect dies with it), then open fd 8 with stderr intact.
+    ( : >>"$SNAPBUILD_ROOT.lock" ) 2>/dev/null || return 1
+    exec 8>>"$SNAPBUILD_ROOT.lock" || return 1
     if ! flock -w 15 8; then
         echo "snapbuild: lock $SNAPBUILD_ROOT.lock held elsewhere (check: fuser -v $SNAPBUILD_ROOT.lock) — building the LIVE tree instead" >&2
         return 1
