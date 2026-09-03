@@ -185,6 +185,14 @@ fn run(
         crate::platform::audio::AudioRoute::Headset
     );
 
+    // SHADOW-MODE in-call calibration learner (Stage 3): fed every raw envelope, changes NOTHING this stage — the teardown line is field telemetry to validate the math against ritual-calibrated devices before anything ducks on it. Fed ABOVE the mute/uncalibrated skip on purpose: a muted user is GUARANTEED silent, the cleanest echo windows there are (envelope-only, the mic session is already open — no new privacy surface).
+    let mut learner = crate::call::learn::Learner::new(
+        crate::platform::audio::route_id().starts_with("bt:"),
+        None,
+        None,
+    );
+    let mut renv_cursor = 0usize;
+
     // RX reassembly: per-window (tier, fountain decoder) + decoded-PCM stash, played strictly in window order (a hole is skipped, not synthesized — the dry playback queue renders the silence).
     let mut rx_decoders: std::collections::BTreeMap<u32, (usize, raptorq::Decoder)> =
         Default::default();
@@ -221,8 +229,18 @@ fn run(
     );
 
     while !stop.load(Ordering::Relaxed) {
+        // Learner far feed: drain the render-envelope tap (post-jitter post-splice, osc-stamped at DAC-enqueue).
+        {
+            let (entries, cur) = crate::platform::audio::render_env_since(renv_cursor);
+            renv_cursor = cur;
+            for (osc, env) in entries {
+                learner.push_far(osc, env);
+            }
+        }
         // ---- TX: mic → opus → window → fountain → sealed packets ----
         for frame in crate::platform::audio::captured_frames() {
+            // Learner mic feed FIRST — raw pre-gain pre-duck envelope (the separation invariant), stamped at drain, unconditionally (muted/uncalibrated frames are the cleanest echo windows).
+            learner.push_mic(vsf::eagle_time_oscillations(), crate::call::calibrate::env(&frame));
             // Uncalibrated route mid-call = mic-gated (the calibration doctrine): the harm of an uncalibrated path is the echo WE inflict on the peer, so the mic goes silent while the route stays uncalibrated; hearing continues. The app tick mirrors the flag on every route change.
             if muted.load(Ordering::Relaxed)
                 || !crate::call::ROUTE_CALIBRATED.load(Ordering::Relaxed)
@@ -467,6 +485,11 @@ fn run(
             rx_decoders.retain(|w, _| *w >= np);
         }
 
+        // Learner estimator: internally cadence-gated to one window per second of bin time — this call is a cheap no-op the other 999 iterations.
+        let vol_lin = crate::platform::audio::current_volume_db()
+            .map_or(1.0, |db| 10f32.powf(db / 20.0));
+        learner.tick(vol_lin);
+
         // 1ms poll granularity (was 4ms): captured frames and just-arrived packets wait at most 1ms for their loop pass, shaving ~6ms off the round trip for the cost of a few more wakeups — cheap on a call-dedicated thread.
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
@@ -510,6 +533,22 @@ fn run(
         far_active_frames,
         tx_frames
     );
+    // SHADOW learner readout (Stage 3 field telemetry): the learned physics beside the profile the ritual measured — the convergence proof the gate softening waits on. rejects = per-gate window rejections [short, skew, hole, inactive, quiet, xcorr, cluster-reserved, edge, badg, r].
+    {
+        let e = learner.estimate();
+        crate::logf!(
+            "CALL: learner — g {} delay {} conf {} over {} window(s); floor {} talk {} ({} voiced bins); rejects {:?}; route \"{}\"",
+            e.g_norm.map_or("?".into(), |g| format!("{g:.4}")),
+            e.delay_bins.map_or("?".into(), |d| format!("{}ms", d * 10)),
+            format!("{:?}", e.confidence),
+            e.windows,
+            format!("{:.0}", e.floor),
+            e.talk.map_or("?".into(), |t| format!("{t:.0}")),
+            e.voiced_bins,
+            format!("{:?}", e.rejects),
+            crate::platform::audio::route_id()
+        );
+    }
     teardown();
     // tx_chain/rx_chain drop here — zeroized; the call is cryptographically gone.
 }
