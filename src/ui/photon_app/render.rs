@@ -4400,28 +4400,19 @@ impl PhotonApp {
                     measured_extent = Some((flow.used(), inset.h));
                 }
                 SettingsPage::Recovery => {
-                    let rows = layout
-                        .content_scrolled(8, settings_content_scroll)
-                        .split_v([1.0; 8]);
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[0],
-                        "Recovery",
-                        tspan,
-                        *theme::CONTACT_NAME_COLOUR,
-                        600,
-                    );
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[1],
-                        &format!("Custodians (v{})", crate::dozenal_glyphs(1)),
-                        hspan2,
-                        *theme::CONTACT_NAME_COLOUR,
-                        600,
-                    );
+                    // RECOVERY, Flow rework (ticket queue 2026-09-02): everything wraps at the pane edge, the checkbox positions inline (the About-checkbox pattern), and the measured extent replaces the hand-counted 8-row estimate.
+                    let inset = layout.content_inset();
+                    let mut flow = Flow::new(inset, settings_content_scroll);
+                    flow.line(&mut canvas, ctx.text, "Recovery", tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.line(&mut canvas, ctx.text, &format!("Custodians (v{})", crate::dozenal_glyphs(1)), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.gap(hspan2 * 0.4);
                     if let Some(cb) = self.settings_custodian_check.as_mut() {
+                        let band = flow.band(hspan2 * 2.0);
+                        let cb_h = hspan2 * 1.3;
+                        cb.set_font_size(hspan2);
+                        let label_w = ctx.text.measure_text("Be a custodian for others", &TextStyle::new(hspan2, 0));
+                        let w = cb_h + hspan2 * 0.5 + label_w + hspan2 * 0.3;
+                        cb.set_rect(band.x + w * 0.5, band.center_y(), w, cb_h);
                         cb.render_content_into(
                             &mut canvas,
                             ctx.text,
@@ -4429,20 +4420,18 @@ impl PhotonApp {
                             Some(&mut chrome.hit_test_map),
                         );
                     }
+                    flow.gap(hspan2 * 0.6);
                     // Why ONE tick box and nothing else: you volunteer as a custodian, but nobody — including you — sees WHOSE recoveries you hold a share of, and an owner never learns which friends hold theirs. Not knowing who to lean on is the anti-collusion property: shares that can't be enumerated can't be gathered.
-                    settings_prose(
+                    flow.prose(
                         &mut canvas,
                         ctx.text,
-                        fluor::region::Region::new(rows[4].x, rows[4].y, rows[4].w, rows[4].h * 3.0),
                         "One box on purpose: custodians never learn whose recovery they hold, and owners never learn which friends hold theirs — what can't be named can't collude.",
                         hspan2,
                         *theme::LABEL_COLOUR,
                         400,
                     );
                     // Identity-backup section COMMENTED OUT (Nick 2026-09-01) — custodians are the recovery story; a portable identity backup file re-creates the very honeypot the register model removed.
-                    // settings_line(&mut canvas, ctx.text, rows[4], "Identity backup", hspan2, *theme::CONTACT_NAME_COLOUR, 600);
-                    // settings_line(&mut canvas, ctx.text, rows[5], "Reinstalling won't ask for your handle.", hspan2, *theme::LABEL_COLOUR, 400);
-                    // draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows[6].center_h(pillf(0.5)), "Back up identity…", btn_base.wrapping_add(0), ctx.pressed_hit);
+                    measured_extent = Some((flow.used(), inset.h));
                 }
                 SettingsPage::Appearance => {
                     let rows = layout
@@ -4512,29 +4501,26 @@ impl PhotonApp {
                     );
                 }
                 SettingsPage::Notifications => {
-                    let rows = layout
-                        .content_scrolled(8, settings_content_scroll)
-                        .split_v([1.0; 8]);
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[0],
-                        "Notifications",
-                        tspan,
-                        *theme::CONTACT_NAME_COLOUR,
-                        600,
-                    );
-                    for cb in [
-                        self.settings_chime_check.as_mut(),
-                        self.settings_vibrate_msg_check.as_mut(),
-                        self.settings_ring_call_check.as_mut(),
-                        self.settings_vibrate_call_check.as_mut(),
-                        // presence COMMENTED OUT (Nick 2026-09-01): self.settings_presence_check.as_mut(),
-                        self.settings_background_check.as_mut(),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    {
+                    // NOTIFICATIONS, Flow rework: one checkbox per flowed band (left-aligned, widths measured per label), everything wraps, measured extent replaces the row estimate. Presence stays COMMENTED OUT (Nick 2026-09-01) — field + dispatch compiled for a one-line restore.
+                    let inset = layout.content_inset();
+                    let mut flow = Flow::new(inset, settings_content_scroll);
+                    flow.line(&mut canvas, ctx.text, "Notifications", tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.gap(hspan2 * 0.4);
+                    let boxes: [(Option<&mut fluor::widgets::Checkbox>, &str); 5] = [
+                        (self.settings_chime_check.as_mut(), "Chime on new message"),
+                        (self.settings_vibrate_msg_check.as_mut(), "Vibrate on new message"),
+                        (self.settings_ring_call_check.as_mut(), "Ring on incoming call"),
+                        (self.settings_vibrate_call_check.as_mut(), "Vibrate on incoming call"),
+                        (self.settings_background_check.as_mut(), "Stay running in the background"),
+                    ];
+                    for (cb, label) in boxes {
+                        let Some(cb) = cb else { continue };
+                        let band = flow.band(hspan2 * 2.0);
+                        let cb_h = hspan2 * 1.3;
+                        cb.set_font_size(hspan2);
+                        let label_w = ctx.text.measure_text(label, &TextStyle::new(hspan2, 0));
+                        let w = cb_h + hspan2 * 0.5 + label_w + hspan2 * 0.3;
+                        cb.set_rect(band.x + w * 0.5, band.center_y(), w, cb_h);
                         cb.render_content_into(
                             &mut canvas,
                             ctx.text,
@@ -4542,15 +4528,16 @@ impl PhotonApp {
                             Some(&mut chrome.hit_test_map),
                         );
                     }
-                    settings_line(
+                    flow.gap(hspan2 * 0.6);
+                    flow.prose(
                         &mut canvas,
                         ctx.text,
-                        rows[5],
                         "Per-contact override lives in each conversation.",
                         hspan2,
                         *theme::LABEL_COLOUR,
                         400,
                     );
+                    measured_extent = Some((flow.used(), inset.h));
                 }
                 SettingsPage::Updates => {
                     // Rows (blanks between the pills for vertical breathing room): 0 title · 1 current version · 2 blank · 3 release pill · 4 blank · 5 dev pill · 6 blank · 7 status.
