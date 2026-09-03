@@ -985,8 +985,6 @@ enum YouRow {
     IdentityHeader,
     /// The identity fingerprint read-out.
     IdentityFp,
-    /// "Language" label + the language dropdown, positioned inline at draw.
-    Language,
     /// "Update" action pill.
     SavePill,
     /// Empty breathing row (between the action pills).
@@ -1015,7 +1013,6 @@ fn you_rows_plan(fields: &[ProfileField]) -> Vec<YouRow> {
     rows.push(YouRow::Note);
     rows.push(YouRow::IdentityHeader);
     rows.push(YouRow::IdentityFp);
-    rows.push(YouRow::Language);
     // No SavePill / AvatarPill (Nick 2026-09-02): fields save on focus-leave + page-navigate (save_you_fields diffs, so a no-change blur is free), and the avatar changes from YOUR contact page, not here. Variants stay compiled for the render arm's exhaustive match.
     rows
 }
@@ -1629,7 +1626,6 @@ pub struct PhotonApp {
     settings_btn_base: HitId,
     /// Appearance-page theme selector — a real fluor `Dropdown`. Only in the widget walk while the Settings/Appearance page is up.
     settings_theme_dropdown: Option<fluor::widgets::Dropdown>,
-    settings_lang_dropdown: Option<fluor::widgets::Dropdown>,
     /// Appearance-page zoom / text-size control — a real fluor `Slider`.
     settings_zoom_slider: Option<fluor::widgets::Slider>,
     /// Live PT transfer progress (peer, done, total, outbound) — throttled push from the status thread; drives the pill progress bar.
@@ -2156,7 +2152,6 @@ impl PhotonApp {
             lane_pushed_pos: std::collections::HashMap::new(),
             settings_btn_base: HIT_NONE,
             settings_theme_dropdown: None,
-            settings_lang_dropdown: None,
             settings_zoom_slider: None,
             attach_progress: Vec::new(),
             attach_confirmed: std::collections::HashSet::new(),
@@ -2807,10 +2802,6 @@ impl PhotonApp {
                     }
                     if let Some(tb) = self.you_add_textbox.as_mut() {
                         f(tb);
-                    }
-                    if let Some(dd) = self.settings_lang_dropdown.as_mut() {
-                        f(dd);
-                        dd.visit_rows(f);
                     }
                 }
                 SettingsPage::About => {

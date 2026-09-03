@@ -33,6 +33,7 @@ impl PhotonApp {
                 AppState::Settings(SettingsPage::Notifications) => "Settings:Notifications",
                 AppState::Settings(SettingsPage::Updates) => "Settings:Updates",
                 AppState::Settings(SettingsPage::Diagnostics) => "Settings:Diagnostics",
+                AppState::Settings(SettingsPage::Language) => "Settings:Language",
                 AppState::Settings(SettingsPage::About) => "Settings:About",
                 AppState::Settings(SettingsPage::Wave) => "Settings:Audio",
                 AppState::ContactPanel(_) => "ContactPanel",
@@ -3702,16 +3703,6 @@ impl PhotonApp {
                     );
                 }
             }
-            if page == SettingsPage::You {
-                if let Some(dd) = self.settings_lang_dropdown.as_mut() {
-                    dd.render_popup_into(
-                        &mut canvas,
-                        ctx.text,
-                        None,
-                        Some(&mut chrome.hit_test_map),
-                    );
-                }
-            }
 
             // Status toast ("Sending log (N KiB)…", "Log sent √", "Device removed √", ...) — the Ready screen draws `ready_toast` in its hint slot, but settings is a different AppState, so without this the toasts fired FROM settings pages (log submit, device remove) were invisible. Bottom of the content pane, painted early so under-blend keeps it above the page body; event-shown, cleared on the next interaction via clear_hints, never time-based.
             if let Some(msg) = &self.ready_toast {
@@ -4070,31 +4061,6 @@ impl PhotonApp {
                                     None,
                                 );
                             }
-                            YouRow::Language => {
-                                // Label left, picker right — the dropdown is positioned inline at draw (the Flow-page widget pattern), entries are autonyms.
-                                ctx.text.draw_text_left(
-                                    &mut canvas,
-                                    &tr(Msg::LanguageLabel),
-                                    r.x + hspan2 * 0.3,
-                                    r.center_y(),
-                                    &TextStyle::new(hspan2, *theme::LABEL_COLOUR).font("Oxanium"),
-                                    Some(content_clip),
-                                    None,
-                                );
-                                if let Some(dd) = self.settings_lang_dropdown.as_mut() {
-                                    let dw = (r.w * 0.42).max(hspan2 * 8.0);
-                                    dd.set_rect(r.x + r.w - dw * 0.5 - hspan2 * 0.3, r.center_y(), dw, r.h * 0.82);
-                                    dd.set_font_size(hspan2 * 0.9);
-                                    dd.render_content_into(
-                                        &mut canvas,
-                                        0.,
-                                        0.,
-                                        ctx.text,
-                                        None,
-                                        Some(&mut chrome.hit_test_map),
-                                    );
-                                }
-                            }
                             YouRow::SavePill => {
                                 draw_stub_pill(
                                     &mut canvas,
@@ -4241,8 +4207,22 @@ impl PhotonApp {
                                 place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::LockOutPill { armed }), btn_base.wrapping_add(32 + i as HitId), if armed { Some(*theme::PILL_RED) } else { None });
                             }
                         }
-                        // AIR between device cards — the whole point.
-                        flow.gap(hspan2 * 1.2);
+                        // AIR between device cards — the whole point. Between cards (never after the last) the conversation's white hairline rides the midpoint (Nick 2026-09-03: "same white hairlines between messages"): pure white α=1/8 = VERSION_COLOUR, the between-messages divider treatment.
+                        flow.gap(hspan2 * 0.6);
+                        if i + 1 < devices.len().min(6) {
+                            let hl = flow.band(ctx.viewport.ru.max(1.0) as Coord);
+                            paint::fill_rect(
+                                &mut canvas,
+                                hl.x as isize,
+                                hl.y as isize,
+                                hl.w as isize,
+                                ctx.viewport.ru.max(1.0) as isize,
+                                theme::VERSION_COLOUR,
+                                None,
+                                None,
+                            );
+                            flow.gap(hspan2 * 0.6);
+                        }
                     }
                     // No Remove pill: expulsion is not a verb (sovereign records) — a device leaves by its own signed departure. And leaving never frees the hardware: the brand outlives the membership until the owner releases it.
                     let single_copy = !devices
@@ -4271,6 +4251,34 @@ impl PhotonApp {
                         ],
                     );
                     flow.gap(hspan2);
+                    measured_extent = Some((flow.used(), inset.h));
+                }
+                SettingsPage::Language => {
+                    // LANGUAGE (Nick 2026-09-03: "separate Language page at the bottom of settings but above About... buttons for each language, rather than a dropdown that's hard to find"): one button per language, labelled in ITSELF (autonyms — a lost user must always recognise their own tongue). The current choice is the filled pill; a tap persists device-local display.lang and the whole UI re-renders thru tr().
+                    let inset = layout.content_inset();
+                    let mut flow = Flow::new(inset, settings_content_scroll);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::LanguageLabel), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.gap(hspan2 * 0.8);
+                    let current = crate::ui::lang::lang();
+                    for (i, l) in crate::ui::lang::Lang::ALL.iter().enumerate() {
+                        let band = flow.band(hspan2 * 2.6);
+                        let selected = *l == current;
+                        draw_stub_pill_filled(
+                            &mut canvas,
+                            ctx.text,
+                            &mut chrome.hit_test_map,
+                            buf_w,
+                            buf_h,
+                            fluor::region::Region::new(band.x + hspan2 * 0.3, band.y + band.h * 0.08, (band.w * 0.6).max(hspan2 * 10.0).min(band.w - hspan2 * 0.6), band.h * 0.84),
+                            l.autonym(),
+                            btn_base.wrapping_add(i as HitId),
+                            ctx.pressed_hit,
+                            true,
+                            if selected { Some(*theme::PILL_GREEN) } else { None },
+                            "Oxanium",
+                        );
+                        flow.gap(hspan2 * 0.5);
+                    }
                     measured_extent = Some((flow.used(), inset.h));
                 }
                 SettingsPage::Security => {

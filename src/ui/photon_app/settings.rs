@@ -459,9 +459,6 @@ impl PhotonApp {
                 }
             }
         }
-        if let Some(dd) = self.settings_lang_dropdown.as_mut() {
-            dd.set_selected(crate::ui::lang::lang().index());
-        }
         // Hard logs: DEVICE-LOCAL (an investigation concerns one piece of hardware — never the fleet global) and self-expiring; the stored value is the ARM TIME, the sink owns the 24h window, and the checkbox displays the sink's verdict so the two can't disagree.
         let armed_at = self
             .fleet_settings
