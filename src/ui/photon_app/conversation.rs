@@ -1582,6 +1582,10 @@ impl PhotonApp {
                 if !is_edit_row && is_new_row && !bridge_replaced {
                     conv.scroll_offset = 0.0; // Scroll to show new message (an edit repaints in place; a bridge snapshot grows in place — never yank the reader)
                 }
+                if bridge_replaced {
+                    // A bridge frame mutates an EXISTING row's content in place, which the wrap cache can't see — its key is (conversation, row counts, width, font size), so the count-preserving append/replace left stale wrapped lines on screen until a resize changed the width bits (field 2026-09-03: "the stream of text only updates when you resize the window"). Drop the cache like every edit path does; the next frame re-wraps.
+                    self.msg_wrap = None;
+                }
                 self.scene_dirty = true;
                 // Promote a captured bridge command to an actual run ONLY on first receipt — a re-serve/duplicate/history-backfill must never re-execute (Nick 2026-08-22). A reset likewise fires once; a Stop press signals inline (bridge_interrupt_host bypasses the executor queue by design).
                 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
