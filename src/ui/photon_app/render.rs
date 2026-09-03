@@ -4328,6 +4328,28 @@ impl PhotonApp {
                     flow.gap(hspan2 * 0.4);
                     flow.line(&mut canvas, ctx.text, "Security: strong   \u{00b7}   Recovery: not set up", hspan2, *theme::LABEL_COLOUR, 400);
                     flow.gap(hspan2 * 0.8);
+                    // ── Load on startup (Nick 2026-09-03: auto-attest does no good unless the app also LOADS on reboot — the two belong side by side). The OS artifact IS the setting (platform::autostart, default-ON); the dispatch in protocol.rs works from any page, only the render lives here.
+                    #[cfg(not(target_os = "android"))]
+                    {
+                        let cb_band = flow.band(hspan2 * 2.0);
+                        if let Some(cb) = self.settings_background_check.as_mut() {
+                            let label = "Load on startup";
+                            cb.set_label(label);
+                            cb.set_font_size(hspan2);
+                            let cb_h = hspan2 * 1.3;
+                            let label_w = ctx.text.measure_text(label, &TextStyle::new(hspan2, 0));
+                            let w = cb_h + hspan2 * 0.5 + label_w + hspan2 * 0.3;
+                            cb.set_rect(cb_band.x + w * 0.5, cb_band.center_y(), w, cb_h);
+                            cb.render_content_into(
+                                &mut canvas,
+                                ctx.text,
+                                None,
+                                Some(&mut chrome.hit_test_map),
+                            );
+                        }
+                        flow.prose(&mut canvas, ctx.text, "Starts photon in the background at login and keeps it running when the window closes (visible in your OS's own startup list). Pair it with auto-attest below and a reboot comes back reachable with nothing typed.", hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                        flow.gap(hspan2 * 0.8);
+                    }
                     // ── DANGEROUS: unattended auto-attest-on-reboot. Off by default. Two states, both INLINE (no floating overlay — an over-content modal drawn after chrome.flatten_into never composited its glyphs): the checkbox+disclaimer, OR (while a flip is pending) a handle-entry confirmation that re-proves the operator before arming/disarming.
                     flow.line(&mut canvas, ctx.text, "\u{26A0} Auto-attest on reboot (unattended)", hspan2, *theme::CONTACT_NAME_COLOUR, 600);
                     if let Some(target_on) = self.unattended_confirm {
@@ -4506,12 +4528,12 @@ impl PhotonApp {
                     let mut flow = Flow::new(inset, settings_content_scroll);
                     flow.line(&mut canvas, ctx.text, "Notifications", tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.gap(hspan2 * 0.4);
-                    let boxes: [(Option<&mut fluor::widgets::Checkbox>, &str); 5] = [
+                    // The background/load-on-startup toggle MOVED to Security (Nick 2026-09-03) — it belongs beside the auto-attest arm it enables, not among the alert sounds.
+                    let boxes: [(Option<&mut fluor::widgets::Checkbox>, &str); 4] = [
                         (self.settings_chime_check.as_mut(), "Chime on new message"),
                         (self.settings_vibrate_msg_check.as_mut(), "Vibrate on new message"),
                         (self.settings_ring_call_check.as_mut(), "Ring on incoming call"),
                         (self.settings_vibrate_call_check.as_mut(), "Vibrate on incoming call"),
-                        (self.settings_background_check.as_mut(), "Stay running in the background"),
                     ];
                     for (cb, label) in boxes {
                         let Some(cb) = cb else { continue };
