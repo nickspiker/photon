@@ -74,6 +74,8 @@ pub struct Estimate {
     /// Natural talk level (trimmed median of voiced far-quiet bins). None until 5s of voiced bins.
     pub talk: Option<f32>,
     pub voiced_bins: usize,
+    /// Per-gate window rejections [short, skew, hole, inactive, quiet, xcorr, reserved, edge, badg, r] — the teardown telemetry that convicts a starved pool instead of guessing.
+    pub rejects: [u32; 10],
 }
 
 /// Turns bursty callback stamps (several frames sharing one osc — verified on desktop cpal) into a smooth 10ms lattice per stream, without frame-count drift (crystals differ ±100ppm ≈ 18 bins over 30min; stamps don't drift, counts do).
@@ -446,6 +448,7 @@ impl Learner {
             floor: self.floor,
             talk,
             voiced_bins: self.voiced.len(),
+            rejects: self.rejects,
         }
     }
 }
