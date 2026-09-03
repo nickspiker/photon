@@ -15,4 +15,6 @@ TWO HARD-WON INVARIANTS (both field-burned 2026-08-22):
 1. The braid weaves against prior rows — ephemeral rows + woven strands = "braid strand miss" = frames held forever (no display, no ACK). Ephemeral REQUIRES anchor-only.
 2. NEVER bare-clear pending_messages — each frame links the prev hash; clearing mid-chain leaves a hole the peer gap-buffers behind FOREVER ("expected prev X — buffering (ahead of us)", zero ACKs ever after). The sanctioned abandon = rotate_our_lane ([[lane-rotation-wedge-heal]]): retire the lane wholesale, peer links the fresh lane from its ANCHOR.
 
+Live-feed starvation FIXED 2026-09-03 (the silent v82 deploy: operator saw NOTHING thru a 52s cargo build or the failure after it): partials were 8KB snapshots parked on WHOLE-lane pending>=2, so ordinary fleet-sync chatter + their own PT-sized bodies starved the feed while the command ran. Now: partial body cap 1KB (last screenful; the final keeps the 8KB tail), and ONE partial in flight per feed gated on its OWN ACK edge (bridge_partial_inflight eagle_time watched in pending_messages — no new timers, the 1Hz grant stays the only one). Stop pill was already honest (exit-gated on the final). Host-side only; clients need no update.
+
 Still open: interactive/stdin programs (vim/top/REPL) hit the 30s timeout — needs a real-PTY tier someday. Related: [[project_unattended_reboot]].
