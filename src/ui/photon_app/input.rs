@@ -355,13 +355,57 @@ impl PhotonApp {
         }
     }
 
-    /// Copy `s` to the OS clipboard. Desktop uses arboard; Android has no clipboard JNI yet (returns false — a ClipboardManager bridge is a follow-up), Redox has no arboard backend. Returns true on success.
+    /// Set the clipboard thru the app's long-lived handle, recreating it once on failure. LONG-LIVED is the fix (field 2026-09-02, "fifty copies, two land"): X11/Wayland clipboards are ownership-based — the selection is served only while the arboard instance lives, so the old create-set-drop pattern surrendered ownership microseconds after every copy and the text survived only when a clipboard manager happened to snatch it first. Loud on every outcome so a field log can convict the next failure mode instead of guessing.
+    #[cfg(all(not(target_os = "android"), not(target_os = "redox")))]
+    pub(super) fn clipboard_set(&mut self, s: String) -> bool {
+        let n = s.len();
+        for attempt in 0..2u8 {
+            if self.clipboard.is_none() {
+                match arboard::Clipboard::new() {
+                    Ok(c) => self.clipboard = Some(c),
+                    Err(e) => {
+                        crate::logf!("clipboard: no OS handle: {}", e);
+                        break;
+                    }
+                }
+            }
+            let Some(clip) = self.clipboard.as_mut() else { break };
+            match clip.set_text(s.clone()) {
+                Ok(()) => {
+                    crate::logf!("clipboard: copied {} byte(s)", n);
+                    return true;
+                }
+                Err(e) => {
+                    crate::logf!("clipboard: set failed (attempt {}): {} — recreating the handle", attempt, e);
+                    self.clipboard = None;
+                }
+            }
+        }
+        crate::log("clipboard: copy FAILED");
+        false
+    }
+
+    /// Read the clipboard thru the same long-lived handle (one recreate on failure, same law as `clipboard_set`).
+    #[cfg(all(not(target_os = "android"), not(target_os = "redox")))]
+    pub(super) fn clipboard_get(&mut self) -> Option<String> {
+        for _ in 0..2u8 {
+            if self.clipboard.is_none() {
+                self.clipboard = arboard::Clipboard::new().ok();
+            }
+            let clip = self.clipboard.as_mut()?;
+            match clip.get_text() {
+                Ok(s) => return Some(s),
+                Err(_) => self.clipboard = None,
+            }
+        }
+        None
+    }
+
+    /// Copy `s` to the OS clipboard. Desktop rides the long-lived arboard handle (`clipboard_set`); Android has no clipboard JNI yet (returns false — a ClipboardManager bridge is a follow-up), Redox has no arboard backend. Returns true on success.
     pub(super) fn copy_to_clipboard(&mut self, s: &str) -> bool {
         #[cfg(all(not(target_os = "android"), not(target_os = "redox")))]
         {
-            return arboard::Clipboard::new()
-                .and_then(|mut clip| clip.set_text(s.to_string()))
-                .is_ok();
+            return self.clipboard_set(s.to_string());
         }
         #[cfg(target_os = "android")]
         {
@@ -401,32 +445,26 @@ impl PhotonApp {
             .as_ref()
             .is_some_and(|t| t.hit_id() == focus)
         {
-            let tb = self.message_textbox.as_mut().unwrap();
+            // Short borrows: selection out first, then the clipboard op on `self` (the long-lived handle), then re-borrow to mutate — the one handle and the borrow checker share custody.
             let mut edited = false;
             match op {
                 "c" => {
-                    if let Some(sel) = tb.selected_text() {
-                        if let Ok(mut clip) = arboard::Clipboard::new() {
-                            let _ = clip.set_text(sel);
-                        }
+                    if let Some(sel) = self.message_textbox.as_ref().unwrap().selected_text() {
+                        self.clipboard_set(sel);
                     }
                 }
                 "x" => {
-                    if let Some(sel) = tb.selected_text() {
-                        if let Ok(mut clip) = arboard::Clipboard::new() {
-                            if clip.set_text(sel).is_ok() {
-                                tb.delete_selection(text);
-                                edited = true;
-                            }
+                    if let Some(sel) = self.message_textbox.as_ref().unwrap().selected_text() {
+                        if self.clipboard_set(sel) {
+                            self.message_textbox.as_mut().unwrap().delete_selection(text);
+                            edited = true;
                         }
                     }
                 }
                 "v" => {
-                    if let Ok(mut clip) = arboard::Clipboard::new() {
-                        if let Ok(s) = clip.get_text() {
-                            tb.insert_str(&s, text);
-                            edited = true;
-                        }
+                    if let Some(s) = self.clipboard_get() {
+                        self.message_textbox.as_mut().unwrap().insert_str(&s, text);
+                        edited = true;
                     }
                 }
                 _ => return EventResponse::Pass,
@@ -438,45 +476,44 @@ impl PhotonApp {
             return EventResponse::Handled;
         }
         // A busy field can't be the clipboard target: `sync_busy_freeze` releases focus before disabling it, so a frozen box never matches `self.focused` here.
-        let Some(tb) = self.textbox_by_hit_mut(focus) else {
+        if self.textbox_by_hit_mut(focus).is_none() {
             return EventResponse::Pass;
-        };
+        }
 
         let mut edited = false;
         match op {
             "c" => {
-                if let Some(sel) = tb.selected_text() {
-                    if let Ok(mut clip) = arboard::Clipboard::new() {
-                        let _ = clip.set_text(sel);
-                    }
+                let sel = self.textbox_by_hit_mut(focus).and_then(|tb| tb.selected_text());
+                if let Some(sel) = sel {
+                    self.clipboard_set(sel);
                 }
             }
             "x" => {
-                if let Some(sel) = tb.selected_text() {
+                let sel = self.textbox_by_hit_mut(focus).and_then(|tb| tb.selected_text());
+                if let Some(sel) = sel {
                     // Only delete after the clipboard accepts the text — a failed copy must not destroy the selection.
-                    let copied = arboard::Clipboard::new()
-                        .and_then(|mut clip| clip.set_text(sel))
-                        .is_ok();
-                    if copied {
-                        tb.delete_selection(text);
-                        edited = true;
+                    if self.clipboard_set(sel) {
+                        if let Some(tb) = self.textbox_by_hit_mut(focus) {
+                            tb.delete_selection(text);
+                            edited = true;
+                        }
                     } else {
                         crate::log("clipboard: copy failed, not cutting");
                     }
                 }
             }
             "v" => {
-                if let Ok(mut clip) = arboard::Clipboard::new() {
-                    if let Ok(s) = clip.get_text() {
-                        // Words entry accepts only letters and space — strip everything else from the paste (newlines/tabs become nothing; the camelCase/space tokenizer handles the rest).
-                        let s: String = if words_filter {
-                            s.chars()
-                                .filter(|c| c.is_ascii_alphabetic() || *c == ' ')
-                                .collect()
-                        } else {
-                            s
-                        };
-                        if !s.is_empty() {
+                if let Some(s) = self.clipboard_get() {
+                    // Words entry accepts only letters and space — strip everything else from the paste (newlines/tabs become nothing; the camelCase/space tokenizer handles the rest).
+                    let s: String = if words_filter {
+                        s.chars()
+                            .filter(|c| c.is_ascii_alphabetic() || *c == ' ')
+                            .collect()
+                    } else {
+                        s
+                    };
+                    if !s.is_empty() {
+                        if let Some(tb) = self.textbox_by_hit_mut(focus) {
                             tb.insert_str(&s, text);
                             edited = true;
                         }
