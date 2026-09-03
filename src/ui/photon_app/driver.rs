@@ -355,6 +355,8 @@ impl FluorApp for PhotonApp {
         self.call_addhandle_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::AddHandlePlain)));
         self.call_back_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BackToContact)));
         self.call_play_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::Play)));
+        // Beam (video) — a STUB: rendered disabled beside the Wave button until video lands; constructed LAST so the status/start/action/decline contiguous-id contract holds.
+        self.call_beam_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BeamStart)));
         for b in [
             self.call_status_btn.as_mut(),
             self.call_start_btn.as_mut(),
@@ -364,6 +366,7 @@ impl FluorApp for PhotonApp {
             self.call_addhandle_btn.as_mut(),
             self.call_back_btn.as_mut(),
             self.call_play_btn.as_mut(),
+            self.call_beam_btn.as_mut(),
         ]
         .into_iter()
         .flatten()

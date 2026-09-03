@@ -106,6 +106,8 @@ pub enum Msg<'a> {
     AddHandlePlain,
     BackToContact,
     CallStart,
+    // Beam = video (wave's sibling) — stubbed, unwired; the label ships so the button can exist before the feature.
+    BeamStart,
     CallUncalibratedNoAnswer,
     CallUncalibratedHint,
     CantAnswerUncalibrated,
@@ -493,6 +495,8 @@ pub enum Msg<'a> {
     AboutConsentProse,
     AboutTokenHead,
     AboutTokenProse,
+    AboutWaveBeamHead,
+    AboutWaveBeamProse,
     AboutVersion(&'a str),
     AboutVersionSpelled { main: &'a str, patch: Option<&'a str> },
     AboutDozenalHead,

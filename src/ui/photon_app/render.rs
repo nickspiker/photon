@@ -769,6 +769,14 @@ impl PhotonApp {
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                 }
+                // Beam (video) stub — sits left of Wave, permanently disabled until video lands.
+                if let Some(b) = self.call_beam_btn.as_mut() {
+                    b.set_rect(px - pill_w * 0.5 - unit * 0.4, call_cy, pill_w, pill_h);
+                    b.set_font_size(call_font);
+                    b.set_enabled(false);
+                    let id = b.hit_id();
+                    b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                }
             }
         }
 
@@ -5203,6 +5211,25 @@ impl PhotonApp {
                     );
                     y += line_h;
                     let s = tr(Msg::AboutTokenProse);
+                    for line in s.lines() {
+                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
+                        y += line_h * 0.3;
+                    }
+                    y += line_h * 0.6;
+                    // WAVE + BEAM — why photon has no "calls": waves/beams are honestly recorded and never touch a third party (Nick 2026-09-03).
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        &tr(Msg::AboutWaveBeamHead),
+                        cx,
+                        y + line_h * 0.5,
+                        &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
+                            .weight(600)
+                            .font("Oxanium"),
+                        about_clip,
+                        None,
+                    );
+                    y += line_h;
+                    let s = tr(Msg::AboutWaveBeamProse);
                     for line in s.lines() {
                         y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
                         y += line_h * 0.3;

@@ -1366,6 +1366,8 @@ pub struct PhotonApp {
     /// Call overlay controls — retained fluor Buttons (no hand-rolled pills). Painted front-first on EVERY screen (a ring must be answerable from wherever the user is — docs/calls.md); registered cross-screen in `visit_app_widgets` so hover/press/dispatch ride the same walk as every other Button. `call_status_btn` is a non-interactive label chip (full-brightness, never in the walk, never stamped). `call_start_btn` = ☎ Call (conversation, no live call); `call_action_btn` = Answer / Hang up / Keep (phase decides the verb); `call_decline_btn` = Decline / Delete (ringing/ended only).
     call_status_btn: Option<Button>,
     call_start_btn: Option<Button>,
+    /// Beam (video) — a stub button, rendered disabled beside the Wave button until video lands. Never dispatches.
+    call_beam_btn: Option<Button>,
     call_action_btn: Option<Button>,
     call_decline_btn: Option<Button>,
     /// In-call full-screen (Active) + end-screen (Ended) controls — same retained-Button pattern as the four above. `call_speaker_btn` = speaker toggle (stubbed route intent); `call_addhandle_btn` = add-a-handle (stubbed no-op); `call_back_btn` = minimize ("back to contact"); `call_play_btn` = preview/play the recording (Ended, and the history rows).
@@ -2057,6 +2059,7 @@ impl PhotonApp {
             active_call: None,
             call_status_btn: None,
             call_start_btn: None,
+            call_beam_btn: None,
             call_action_btn: None,
             call_decline_btn: None,
             call_speaker_btn: None,
@@ -2680,6 +2683,10 @@ impl PhotonApp {
                 });
             if callable {
                 if let Some(b) = self.call_start_btn.as_mut() {
+                    f(b);
+                }
+                // The Beam stub joins the walk for hover/disabled tint only — it's permanently disabled, so it never dispatches.
+                if let Some(b) = self.call_beam_btn.as_mut() {
                     f(b);
                 }
             }
