@@ -237,7 +237,7 @@ impl FluorApp for PhotonApp {
             1.,
             1.,
             12.,
-            "Attest",
+            tr(Msg::Attest),
         ));
         // Contacts-page widgets — same placeholder shape; geometry set every frame via `update_widget_layout` based on ReadyLayout. The plus button label is "+" for now; the rotating-hourglass animation lands in a follow-up when we extract `ProgressButton` into fluor.
         self.contacts_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
@@ -322,7 +322,17 @@ impl FluorApp for PhotonApp {
             1.,
             1.,
             12.,
-            vec!["Dark chrome".to_string(), "Light chrome".to_string()],
+            vec![tr(Msg::DarkChrome).into_owned(), tr(Msg::LightChrome).into_owned()],
+        ));
+        // Language picker (You page) — entries are AUTONYMS, deliberately never tr(): a lost user must recognise their own tongue whatever the current language. Placed directly after the theme dropdown so relabel_for_language's recreation of that widget keeps this block adjacent.
+        self.settings_lang_dropdown = Some(fluor::widgets::Dropdown::new(
+            &mut self.hit_counter,
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            crate::ui::lang::Lang::ALL.iter().map(|l| l.autonym().to_string()).collect(),
         ));
         self.settings_zoom_slider = Some(fluor::widgets::Slider::new(
             &mut self.hit_counter,
@@ -332,6 +342,7 @@ impl FluorApp for PhotonApp {
             1.,
             0.5,
         ));
+        self.relabel_for_language();
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.unattended_confirm_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(2); // confirm / cancel
@@ -346,14 +357,14 @@ impl FluorApp for PhotonApp {
             1.,
             1.,
             12.,
-            "\u{260E} Call",
+            tr(Msg::CallStart),
         ));
         self.call_action_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
         self.call_decline_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
-        self.call_speaker_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "Speaker"));
-        self.call_addhandle_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "Add handle"));
-        self.call_back_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "\u{2039} Contact"));
-        self.call_play_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "\u{25B6} Play"));
+        self.call_speaker_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::SpeakerPlain)));
+        self.call_addhandle_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::AddHandlePlain)));
+        self.call_back_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BackToContact)));
+        self.call_play_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::Play)));
         for b in [
             self.call_status_btn.as_mut(),
             self.call_start_btn.as_mut(),
@@ -371,7 +382,7 @@ impl FluorApp for PhotonApp {
         }
         self.settings_custodian_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
-            "Be a custodian for others",
+            tr(Msg::CustodianCheckbox),
             0.,
             0.,
             1.,
@@ -381,7 +392,7 @@ impl FluorApp for PhotonApp {
         ));
         self.settings_chime_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
-            "Chime on new message",
+            tr(Msg::ChimeNewMessage),
             0.,
             0.,
             1.,
@@ -393,7 +404,7 @@ impl FluorApp for PhotonApp {
         self.settings_dozenal_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
             // "Dozenal", not "Dozenal numbers" — dozenal IS a numeral system, like saying "metric units" (Nick 2026-09-02). Unchecked = decimal.
-            "Dozenal",
+            tr(Msg::Dozenal),
             0.,
             0.,
             1.,
@@ -404,7 +415,7 @@ impl FluorApp for PhotonApp {
         // The message-vibrate + call-alert pair (defaults ON — a phone that neither rings nor buzzes is a missed call). Android enforcement rides Kotlin; the settings persist fleet-wide now.
         self.settings_vibrate_msg_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
-            "Vibrate on new message",
+            tr(Msg::VibrateNewMessage),
             0.,
             0.,
             1.,
@@ -414,7 +425,7 @@ impl FluorApp for PhotonApp {
         ));
         self.settings_ring_call_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
-            "Ring on incoming call",
+            tr(Msg::RingIncomingCall),
             0.,
             0.,
             1.,
@@ -424,7 +435,7 @@ impl FluorApp for PhotonApp {
         ));
         self.settings_vibrate_call_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
-            "Vibrate on incoming call",
+            tr(Msg::VibrateIncomingCall),
             0.,
             0.,
             1.,
@@ -435,7 +446,7 @@ impl FluorApp for PhotonApp {
         // DEFAULTS OFF (user mandate): "presence" is the rich self-disclosure broadcast (busy, now-playing, mood) — NOT the online indicator, which is the avatar ring and is never gated by this. Deliberate disclosure is opt-in.
         self.settings_presence_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
-            "Show my presence to contacts",
+            tr(Msg::PresenceCheckbox),
             0.,
             0.,
             1.,
@@ -447,9 +458,9 @@ impl FluorApp for PhotonApp {
             &mut self.hit_counter,
             // Platform-honest: desktop release builds self-apply + re-exec, so "install" is literal. Android auto-CHECKS and notifies but deliberately doesn't auto-DOWNLOAD the APK in the background (metered-data safety — the tap-to-install then rides the unattended session installer, silent after the one-time confirm), so the label there says "check", not "install".
             if cfg!(target_os = "android") {
-                "Check for updates automatically"
+                tr(Msg::AutoUpdateCheck)
             } else {
-                "Install updates automatically"
+                tr(Msg::AutoUpdateInstall)
             },
             0.,
             0.,
@@ -461,7 +472,7 @@ impl FluorApp for PhotonApp {
         // Hard logs default OFF: steady-state logging batches in RAM and reaches disk on edges only (wear); tick it while chasing a crash on this device — see lib.rs LOG_HARD.
         self.settings_hardlogs_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
-            "Hard logs — this device, 24h (write every line to disk)",
+            tr(Msg::HardLogs),
             0.,
             0.,
             1.,
@@ -475,7 +486,7 @@ impl FluorApp for PhotonApp {
             // "Load on startup" (Security page, beside the auto-attest arm it enables — Nick 2026-09-03): starts at login AND keeps running when closed; the render arm re-sets this label so the two stay in one place.
             self.settings_background_check = Some(fluor::widgets::Checkbox::new(
                 &mut self.hit_counter,
-                "Load on startup",
+                tr(Msg::LoadOnStartup),
                 0.,
                 0.,
                 1.,
@@ -487,7 +498,7 @@ impl FluorApp for PhotonApp {
         // Security page: DANGEROUS auto-attest-on-reboot toggle. Off unless the operator opted a failsafe box in.
         self.settings_unattended_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
-            "Auto-attest on reboot (unattended)",
+            tr(Msg::UnattendedCheckbox),
             0.,
             0.,
             1.,
@@ -1316,7 +1327,7 @@ impl FluorApp for PhotonApp {
                                         Ok(()) => {
                                             crate::logf!("FLEET: countersigned {}'s departure — consented Remove published", name);
                                             self.pending_depart_req = None;
-                                            self.ready_toast = Some(format!("{name} signed out of the fleet."));
+                                            self.ready_toast = Some(tr(Msg::FleetSignedOut(&name)).into_owned());
                                             // Adopt the shrink immediately (rotation sentinel + row drop) instead of waiting for the next poll.
                                             if let Some(our_hp) = self.our_handle_proof() {
                                                 self.spawn_contact_fleet_refresh(vec![our_hp]);
@@ -1324,7 +1335,7 @@ impl FluorApp for PhotonApp {
                                         }
                                         Err(e) => {
                                             crate::logf!("FLEET: consented remove failed ({}) — request kept", e);
-                                            self.ready_toast = Some("Couldn't publish the sign-out — check connection and retry.".to_string());
+                                            self.ready_toast = Some(tr(Msg::SignOutPublishFailed).into_owned());
                                         }
                                     }
                                 }
@@ -1345,9 +1356,9 @@ impl FluorApp for PhotonApp {
                                     self.session = None;
                                     self.private_s = crate::crypto::blind::PrivateS::None;
                                     self.pending_broadcast_signal = -1;
-                                    self.state = AppState::Launch(LaunchState::Error(format!(
-                                        "Enter your handle to confirm unlocking {name}."
-                                    )));
+                                    self.state = AppState::Launch(LaunchState::Error(
+                                        tr(Msg::ConfirmUnlock(&name)).into_owned(),
+                                    ));
                                     self.clear_handle_for_reproof();
                                     crate::logf!("FLEET: unlock of {} armed — de-attested, awaiting handle confirmation", name);
                                 }
@@ -1374,19 +1385,14 @@ impl FluorApp for PhotonApp {
                                                 && !self.is_locked_device(rpk)
                                         })
                                         .count();
-                                    let warn = if other_live == 0 {
-                                        " WARNING: this leaves the device you are holding as the ONLY one able to unlock it."
-                                    } else {
-                                        ""
-                                    };
                                     self.pending_lock = Some((pk, hp, name.clone()));
                                     tohu::clear_session();
                                     self.session = None;
                                     self.private_s = crate::crypto::blind::PrivateS::None;
                                     self.pending_broadcast_signal = -1;
-                                    self.state = AppState::Launch(LaunchState::Error(format!(
-                                        "Enter your handle to confirm locking out {name}.{warn}"
-                                    )));
+                                    self.state = AppState::Launch(LaunchState::Error(
+                                        tr(Msg::ConfirmLockOut { name: &name, last_unlocker: other_live == 0 }).into_owned(),
+                                    ));
                                     self.clear_handle_for_reproof();
                                     crate::logf!("FLEET: lock-out of {} armed — de-attested, awaiting handle confirmation", name);
                                 }
@@ -1413,14 +1419,14 @@ impl FluorApp for PhotonApp {
                                                 vsf::VsfType::ke(pk.to_vec()),
                                             );
                                             self.fleet_retired.retain(|d| d != &pk);
-                                            self.ready_toast = Some(format!("{name} released \u{2014} it can join a new identity now."));
+                                            self.ready_toast = Some(tr(Msg::DeviceReleased(&name)).into_owned());
                                         }
                                         Err(e) => {
                                             crate::logf!(
                                                 "FLEET: release failed ({}) — brand kept",
                                                 e
                                             );
-                                            self.ready_toast = Some("Couldn't release \u{2014} check connection and retry.".to_string());
+                                            self.ready_toast = Some(tr(Msg::ReleaseFailed).into_owned());
                                         }
                                     }
                                 }
@@ -1437,7 +1443,7 @@ impl FluorApp for PhotonApp {
                         {
                             let name = name.clone();
                             if self.copy_to_clipboard(&name) {
-                                self.ready_toast = Some(format!("Copied {name}"));
+                                self.ready_toast = Some(tr(Msg::CopiedName(&name)).into_owned());
                             }
                         }
                     } else if slot >= 8 {
@@ -1509,8 +1515,7 @@ impl FluorApp for PhotonApp {
                         }
                         #[cfg(not(target_os = "android"))]
                         {
-                            self.ready_toast =
-                                Some("Drag & drop an image onto the Photon window".to_string());
+                            self.ready_toast = Some(tr(Msg::DragDropAvatar).into_owned());
                         }
                     } else if slot == 2 {
                         // "Add" → register the typed label as a custom field (e.g. "Address 2") and append its box.
@@ -1541,15 +1546,15 @@ impl FluorApp for PhotonApp {
                     } else if slot == 0 {
                         // "Clear" → wipe the on-device log; the next line reopens a fresh, empty file.
                         crate::clear_log();
-                        self.ready_toast = Some("Log cleared".to_string());
+                        self.ready_toast = Some(tr(Msg::LogCleared).into_owned());
                     } else if slot == 1 {
                         // "Snapshot" → a peek at the current log size (a cheap "there's something to send" confirmation; the durable copy now lives on FGTW after Submit, not a local freeze).
                         match crate::snapshot_log_bytes() {
                             Some(b) => {
                                 self.ready_toast =
-                                    Some(format!("Log: {} KiB", (b.len() + 1023) / 1024))
+                                    Some(tr(Msg::LogSizeKib((b.len() + 1023) / 1024)).into_owned())
                             }
-                            None => self.ready_toast = Some("Log is empty".to_string()),
+                            None => self.ready_toast = Some(tr(Msg::LogEmpty).into_owned()),
                         }
                     } else if slot == 2 {
                         // "Submit" → upload the log + optional note to FGTW (outbound HTTPS, NAT-immune — works where P2P is failing, no USB pull needed).
@@ -1607,7 +1612,7 @@ impl FluorApp for PhotonApp {
                         calibrate::ack_phase();
                         self.audio_cal_handle = calibrate::start_echo();
                         if self.audio_cal_handle.is_none() {
-                            self.ready_toast = Some("can't measure now (a call is active?)".to_string());
+                            self.ready_toast = Some(tr(Msg::CantMeasureNow).into_owned());
                             self.ready_toast_screen = None;
                         }
                     } else if slot == 1 && !running {
@@ -1615,7 +1620,7 @@ impl FluorApp for PhotonApp {
                         calibrate::ack_phase();
                         self.audio_cal_handle = calibrate::start_voice();
                         if self.audio_cal_handle.is_none() {
-                            self.ready_toast = Some("can't measure now (a call is active?)".to_string());
+                            self.ready_toast = Some(tr(Msg::CantMeasureNow).into_owned());
                             self.ready_toast_screen = None;
                         }
                     }
@@ -1802,8 +1807,7 @@ impl FluorApp for PhotonApp {
                                     .map_or(false, |c| self.is_zero_remote(c))
                                 {
                                     self.persist_messages_signalled(sci, vec![ts]);
-                                    self.ready_toast =
-                                        Some("re-writing to the vault\u{2026}".to_string());
+                                    self.ready_toast = Some(tr(Msg::RewritingVault).into_owned());
                                     self.ready_toast_screen = None;
                                 } else {
                                     let re_ref = self.conv_of(sci).and_then(|v| {
@@ -1814,7 +1818,7 @@ impl FluorApp for PhotonApp {
                                     });
                                     let bw = self.bridge_wire_for_row(sci, ts);
                                     if self.chain_transmit(sci, &text, ts, re_ref, bw.as_ref()) {
-                                        self.ready_toast = Some("re-sent on the chain".to_string());
+                                        self.ready_toast = Some(tr(Msg::ResentOnChain).into_owned());
                                     } else {
                                         let row = self.conv_of(sci).and_then(|v| {
                                             v.messages
@@ -1828,10 +1832,7 @@ impl FluorApp for PhotonApp {
                                                 std::slice::from_ref(&row),
                                                 None,
                                             );
-                                            self.ready_toast = Some(
-                                            "re-pushed thru the fleet (no chain on this device)"
-                                                .to_string(),
-                                        );
+                                            self.ready_toast = Some(tr(Msg::RepushedFleet).into_owned());
                                         }
                                     }
                                     self.ready_toast_screen = None;
@@ -1851,8 +1852,7 @@ impl FluorApp for PhotonApp {
                             if let Some((hash, name, _)) = att {
                                 if !crate::storage::blob_present(&hash) {
                                     self.attach_fetch(sci, &hash);
-                                    self.ready_toast =
-                                        Some("fetching from your devices\u{2026}".to_string());
+                                    self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
                                 } else if name == "call.audio" {
                                     // A kept call recording plays thru the mono downmix (call/playback.rs). Holds the handle in call_playback so the worker keeps running (drop = stop); a fresh tap replaces + stops the prior. Refuses (None) if a call owns the audio session.
                                     let seed = self.session.as_ref().map(|s| s.identity_seed);
@@ -1861,23 +1861,20 @@ impl FluorApp for PhotonApp {
                                             crate::call::playback::play_blob(&seed, &hash);
                                         self.ready_toast = Some(
                                             if self.call_playback.is_some() {
-                                                "playing recording\u{2026}".to_string()
+                                                tr(Msg::PlayingRecording).into_owned()
                                             } else {
-                                                "can't play now (a call is active?)".to_string()
+                                                tr(Msg::CantPlayNow).into_owned()
                                             },
                                         );
                                     }
                                 } else {
                                     match self.attach_save(&name, &hash) {
                                         Some(dest) => {
-                                            self.ready_toast =
-                                                Some(format!("saved \u{2192} {}", dest));
+                                            self.ready_toast = Some(tr(Msg::SavedTo(&dest)).into_owned());
                                             crate::logf!("attach: saved to {}", dest);
                                         }
                                         None => {
-                                            self.ready_toast = Some(
-                                                "save failed \u{2014} see the log".to_string(),
-                                            );
+                                            self.ready_toast = Some(tr(Msg::SaveFailed).into_owned());
                                         }
                                     }
                                 }
@@ -2304,7 +2301,7 @@ impl FluorApp for PhotonApp {
                             ) {
                                 crate::log("KnownHandle: DEVICE BUSY — bound to another identity; refusing the join");
                                 self.state = AppState::Launch(LaunchState::Error(
-                                    "this device already carries an identity \u{2014} put it on another device first, then Remove & shred (Settings \u{2192} Security)".to_string(),
+                                    tr(Msg::IdentityOccupied).into_owned(),
                                 ));
                                 self.refocus_handle_select_all();
                                 ctx.window.request_redraw();
@@ -2357,7 +2354,7 @@ impl FluorApp for PhotonApp {
                             if let Some(rec) = self.diag_log_rows.get(idx) {
                                 let text = match vsf::inspect::inspect_vsf(&rec.raw) {
                                     Ok(t) => t,
-                                    Err(e) => format!("inspect failed: {e}"),
+                                    Err(e) => tr(Msg::InspectFailed(&e.to_string())).into_owned(),
                                 };
                                 let lines: Vec<Vec<(String, u32)>> = text
                                     .lines()
@@ -3286,9 +3283,9 @@ impl FluorApp for PhotonApp {
                 }
                 self.change_focus(None);
                 self.ready_toast = Some(if target_on {
-                    "Unattended auto-attest ARMED — this box reboots as you".to_string()
+                    tr(Msg::UnattendedArmedToast).into_owned()
                 } else {
-                    "Unattended auto-attest disarmed".to_string()
+                    tr(Msg::UnattendedDisarmedToast).into_owned()
                 });
                 self.ready_toast_screen = None;
             } else {

@@ -351,10 +351,10 @@ impl PhotonApp {
                         .unwrap_or_default();
                     if self.add_device_bind_ble {
                         // BLE / list-tap select: the candidate was picked by proximity + name, NOT by typing its full 256-bit key — so a wrong pick is possible. Hold the fleet-key rotation behind the human's "did it turn green?" confirm (two-phase); a wrong bind stays a keyless ledger entry.
-                        self.add_device_status = format!("Bound {name} — did it turn green?");
+                        self.add_device_status = tr(Msg::BoundDeviceConfirm(&name)).into_owned();
                     } else {
                         // WORDS path: the typed 256-bit match already IS the confirmation (you can only type the words shown on the one device in your hand — no wrong candidate), so release the fleet key immediately.
-                        self.add_device_status = format!("Adding {name}\u{2026}");
+                        self.add_device_status = tr(Msg::AddingDevice(&name)).into_owned();
                         self.spawn_confirm_add();
                     }
                 }
@@ -364,7 +364,7 @@ impl PhotonApp {
                     self.end_add_device_flow();
                     self.refresh_fleet_retired();
                     self.state = AppState::Settings(SettingsPage::Fleet);
-                    self.ready_toast = Some("Device added \u{221a}".to_string());
+                    self.ready_toast = Some(tr(Msg::DeviceAdded).into_owned());
                     // The confirm rotated the fleet key — recover the new epoch AND re-seal the roster under it in one ordered pass, so the just-joined device's roster pull decrypts instead of failing aead::Error until a relaunch. (Was a bare key-sync that left the roster stale-sealed forever, since the periodic re-push only fires on a non-in-app attest.)
                     self.spawn_roster_republish();
                     // And re-fold our own chain immediately so the freshly-bound device gets its sibling contact (fleet weave kickoff) without waiting for the next fleet event.
@@ -374,7 +374,7 @@ impl PhotonApp {
                 }
                 AddDeviceUpdate::Failed(e) => {
                     self.add_device_checking = false;
-                    self.add_device_status = format!("Error: {e}");
+                    self.add_device_status = tr(Msg::AddDeviceError(&e)).into_owned();
                 }
             }
             needs_redraw = true;
@@ -390,7 +390,7 @@ impl PhotonApp {
             self.log_submit_inflight = false;
             match update {
                 Ok(()) => {
-                    self.ready_toast = Some("Log sent \u{221a}".to_string());
+                    self.ready_toast = Some(tr(Msg::LogSent).into_owned());
                     // Clear the note once it's been submitted so the next submit starts blank. MUST be the widget's clear() — wiping `chars` directly leaves cursor/widths stale, and the next cursor paint slices widths[..cursor] out of range → panic → abort (this was the "submit a log → app dies" crash).
                     if let Some(tb) = self.settings_note_textbox.as_mut() {
                         tb.clear();
@@ -402,7 +402,7 @@ impl PhotonApp {
                     self.log_submitted_len = Some(crate::log_size_bytes());
                 }
                 Err(e) => {
-                    self.ready_toast = Some(format!("Send failed: {e}"));
+                    self.ready_toast = Some(tr(Msg::SendFailed(&e)).into_owned());
                     crate::logf!("DIAG: log submit failed: {}", e);
                 }
             }
@@ -544,14 +544,26 @@ impl PhotonApp {
                         if let Some(cb) = self.settings_background_check.as_mut() {
                             cb.set_checked(!checked);
                         }
-                        self.ready_toast = Some(format!("Couldn't change login item: {e}"));
+                        self.ready_toast = Some(tr(Msg::CouldntChangeLoginItem(&e)).into_owned());
                     }
                 }
                 needs_redraw = true;
             }
         }
 
-        // Clear the "handle didn't match" line as soon as the operator edits the confirm box again (event-shown, interaction-cleared — no timers).
+        // Language picker: adopt + persist on selection change; tr() reads the static, so one full redraw flips every string. Constructor-labeled widgets refresh via relabel_for_language.
+        let lang_change = self.settings_lang_dropdown.as_mut().and_then(|dd| dd.take_change());
+        if let Some(idx) = lang_change {
+            let l = crate::ui::lang::Lang::from_index(idx);
+            if l != crate::ui::lang::lang() {
+                crate::ui::lang::set_lang(l);
+                self.save_lang_setting(l);
+                self.relabel_for_language();
+            }
+            needs_redraw = true;
+        }
+
+        // Clear the "handle didn't match" line as soon as the operator edits the confirm box again — event-shown, interaction-cleared, no timers.
         if self.unattended_confirm_failed {
             let has_text = self
                 .unattended_confirm_tb
@@ -608,8 +620,7 @@ impl PhotonApp {
             match update {
                 JoinUpdate::ShowWords(words) => {
                     self.add_join_words = Some(words);
-                    self.add_join_status =
-                        "Add this device from one that's already signed in:".to_string();
+                    self.add_join_status = tr(Msg::AddFromSignedIn).into_owned();
                 }
                 JoinUpdate::Joined(fleet_key, session) => {
                     if fleet_key.is_none() {
@@ -668,7 +679,7 @@ impl PhotonApp {
                     // The ceremony is dead — take the words DOWN with it. Leaving them up strands the screen on a corpse: the user keeps waiting on words no thread is polling for. Back to handle entry with the error visible; re-submitting starts a fresh ceremony.
                     self.add_join_rx = None;
                     self.add_join_words = None;
-                    self.add_join_status = format!("Join failed: {e}");
+                    self.add_join_status = tr(Msg::JoinFailed(&e)).into_owned();
                 }
             }
             needs_redraw = true;
@@ -1020,5 +1031,48 @@ impl PhotonApp {
         // Every needs_redraw in this function is content (protocol state — presence, roster, ceremony; the blinkey-narrow discipline lives in tick, not here), so convert it to scene_dirty HERE rather than trusting the caller: the Android service tick calls this headless and drops the return, and any content change it applied must still paint on the first visible frame.
         self.scene_dirty |= needs_redraw;
         needs_redraw
+    }
+
+    /// Refresh constructor-labeled widgets after a language switch — per-frame set_label sites re-translate on the next paint by themselves; only labels frozen at construction need this.
+    pub(super) fn relabel_for_language(&mut self) {
+        if let Some(dd) = self.settings_theme_dropdown.as_mut() {
+            dd.set_options(vec![tr(Msg::DarkChrome).into_owned(), tr(Msg::LightChrome).into_owned()]);
+        }
+        if let Some(cb) = self.settings_custodian_check.as_mut() {
+            cb.set_label(tr(Msg::CustodianCheckbox));
+        }
+        if let Some(cb) = self.settings_chime_check.as_mut() {
+            cb.set_label(tr(Msg::ChimeNewMessage));
+        }
+        if let Some(cb) = self.settings_dozenal_check.as_mut() {
+            cb.set_label(tr(Msg::Dozenal));
+        }
+        if let Some(cb) = self.settings_vibrate_msg_check.as_mut() {
+            cb.set_label(tr(Msg::VibrateNewMessage));
+        }
+        if let Some(cb) = self.settings_ring_call_check.as_mut() {
+            cb.set_label(tr(Msg::RingIncomingCall));
+        }
+        if let Some(cb) = self.settings_vibrate_call_check.as_mut() {
+            cb.set_label(tr(Msg::VibrateIncomingCall));
+        }
+        if let Some(cb) = self.settings_presence_check.as_mut() {
+            cb.set_label(tr(Msg::PresenceCheckbox));
+        }
+        if let Some(cb) = self.settings_autoupdate_check.as_mut() {
+            #[cfg(target_os = "android")]
+            cb.set_label(tr(Msg::AutoUpdateCheck));
+            #[cfg(not(target_os = "android"))]
+            cb.set_label(tr(Msg::AutoUpdateInstall));
+        }
+        if let Some(cb) = self.settings_hardlogs_check.as_mut() {
+            cb.set_label(tr(Msg::HardLogs));
+        }
+        if let Some(cb) = self.settings_background_check.as_mut() {
+            cb.set_label(tr(Msg::LoadOnStartup));
+        }
+        if let Some(cb) = self.settings_unattended_check.as_mut() {
+            cb.set_label(tr(Msg::UnattendedCheckbox));
+        }
     }
 }

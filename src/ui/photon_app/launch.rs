@@ -26,7 +26,7 @@ impl PhotonApp {
         // A press FROM the Confirm interstitial is the deliberate second act: claim the (probed-Fresh) handle with the roots the probe already derived — no second proof, no permanence warning re-shown. GUARD: fire the stashed roots ONLY if the box still holds the handle they were derived from. Every edit path tears Confirm down, but this is the invariant that survives a missed one — firing stale roots attests a DIFFERENT identity than the box shows (observed: probe handle A, retype to taken handle B, press → attested as A, user believes they claimed B). On mismatch the press falls thru to a fresh probe of the current text.
         if matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
             if let Some(btn) = self.attest_btn.as_mut() {
-                btn.set_label("Attest");
+                btn.set_label(tr(Msg::Attest));
             }
             let matches_probe = self.probed_handle.as_deref()
                 == Some(crate::types::Handle::canonical(&handle).as_str());
@@ -79,7 +79,7 @@ impl PhotonApp {
                         });
                         self.state = AppState::Launch(LaunchState::Confirm);
                         if let Some(btn) = self.attest_btn.as_mut() {
-                            btn.set_label("Yes — forever");
+                            btn.set_label(tr(Msg::YesForever));
                         }
                     }
                     ProbeOutcome::Member => {
@@ -94,14 +94,14 @@ impl PhotonApp {
                     }
                     ProbeOutcome::Taken => {
                         self.state = AppState::Launch(LaunchState::Error(
-                            "this handle is taken".to_string(),
+                            tr(Msg::HandleTaken).into_owned(),
                         ));
                         self.refocus_handle_select_all();
                     }
                     ProbeOutcome::DeviceBusy => {
                         // The post-proof marker refusal (docs/lifecycle.md D2) — same message the old cheap gate showed, now ~1s later and oracle-free.
                         self.state = AppState::Launch(LaunchState::Error(
-                            "this device already carries an identity \u{2014} type its handle to resume. To hand the device to someone else: put that identity on another device first, then Remove & shred (Settings \u{2192} Security)".to_string(),
+                            tr(Msg::IdentityResumeHint).into_owned(),
                         ));
                         self.refocus_handle_select_all();
                     }
@@ -142,9 +142,7 @@ impl PhotonApp {
                             "FLEET: {} locked out — handle confirmed, key rotating away",
                             name
                         );
-                        self.ready_toast = Some(format!(
-                            "{name} locked out \u{2014} it can no longer act in this fleet."
-                        ));
+                        self.ready_toast = Some(tr(Msg::LockedOutNotice(&name)).into_owned());
                     } else {
                         crate::logf!(
                             "FLEET: armed lock-out of {} DISCARDED — a different identity attested",
@@ -324,10 +322,7 @@ impl PhotonApp {
                 }
             }
             QueryResult::AlreadyAttested(peer) => {
-                let msg = format!(
-                    "handle already attested by another device (pubkey {})",
-                    voca::encode(BigUint::from_bytes_be(peer.device_pubkey.as_bytes()))
-                );
+                let msg = tr(Msg::HandleAttestedElsewhere(&voca::encode(BigUint::from_bytes_be(peer.device_pubkey.as_bytes())))).into_owned();
                 crate::log_at(
                     crate::LogLevel::Error,
                     &format!("attestation rejected: {msg}"),
@@ -420,7 +415,7 @@ impl PhotonApp {
                         handle
                     );
                     self.search_status = Some((
-                        format!("{handle} already added"),
+                        tr(Msg::AlreadyAdded(&handle)).into_owned(),
                         (*theme::SEARCH_FOUND_COLOUR),
                     ));
                     return;
@@ -470,7 +465,7 @@ impl PhotonApp {
                     }
                 }
                 self.search_status =
-                    Some((format!("added {handle}"), (*theme::SEARCH_FOUND_COLOUR)));
+                    Some((tr(Msg::AddedHandle(&handle)).into_owned(), (*theme::SEARCH_FOUND_COLOUR)));
                 if let Some(tb) = self.contacts_textbox.as_mut() {
                     tb.clear();
                 }
@@ -479,12 +474,12 @@ impl PhotonApp {
             }
             SearchResult::NotFound => {
                 crate::log("search-result: handle not found on FGTW");
-                self.search_status = Some(("not found".to_string(), (*theme::SEARCH_FAIL_COLOUR)));
+                self.search_status = Some((tr(Msg::NotFound).into_owned(), (*theme::SEARCH_FAIL_COLOUR)));
                 self.refocus_contacts_select_all();
             }
             SearchResult::Error(e) => {
                 crate::logf!("search-result: error '{}'", e);
-                self.search_status = Some((format!("error: {e}"), (*theme::SEARCH_FAIL_COLOUR)));
+                self.search_status = Some((tr(Msg::SearchError(&e)).into_owned(), (*theme::SEARCH_FAIL_COLOUR)));
                 self.refocus_contacts_select_all();
             }
         }

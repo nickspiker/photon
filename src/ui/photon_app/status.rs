@@ -2749,7 +2749,7 @@ impl PhotonApp {
                                         crate::logf!("add-friend: woods contact save failed: {}", e);
                                     }
                                 }
-                                self.ready_toast = Some(format!("found {handle} nearby"));
+                                self.ready_toast = Some(tr(Msg::FoundNearby(&handle)).into_owned());
                                 self.pending_woods_add = None;
                                 // Found them: quiet the cleartext beacon; the group stays for the ceremony (DRAINED tears it down later).
                                 crate::network::wfd::stop_open_house(true);
@@ -4749,10 +4749,10 @@ impl PhotonApp {
                 .iter()
                 .find(|c| c.is_sibling && c.knows_device(&leaver))
                 .map(|c| c.display_name())
-                .unwrap_or_else(|| "a device".to_string());
+                .unwrap_or_else(|| tr(Msg::ADevice).into_owned());
             crate::logf!("SECURITY: {} requests removal from the fleet — approve on the Fleet page", name);
             self.pending_depart_req = Some((leaver, t, sig));
-            self.ready_toast = Some(format!("{name} asks to sign out of your fleet — approve it in Settings → Fleet."));
+            self.ready_toast = Some(tr(Msg::DepartureApproval(&name)).into_owned());
             changed = true;
         }
 

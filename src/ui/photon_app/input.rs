@@ -249,7 +249,7 @@ impl PhotonApp {
         if self.contacts.iter().any(|c| c.handle_hash == typed_pid) {
             crate::log("add-friend: handle already in contacts");
             // Feedback instead of a silent no-op — the whole reason the search "looked broken". Callers request the redraw.
-            self.ready_toast = Some("Already in your contacts".to_string());
+            self.ready_toast = Some(tr(Msg::AlreadyInContacts).into_owned());
             return;
         }
         // Self-contact: if the handle matches our own identity, create the contact directly — FGTW won't return our own record as a search result.
@@ -276,8 +276,10 @@ impl PhotonApp {
                         }
                     }
                 }
-                self.search_status =
-                    Some((format!("added {handle}"), (*theme::SEARCH_FOUND_COLOUR)));
+                self.search_status = Some((
+                    tr(Msg::AddedHandle(&handle)).into_owned(),
+                    (*theme::SEARCH_FOUND_COLOUR),
+                ));
                 if let Some(tb) = self.contacts_textbox.as_mut() {
                     tb.clear();
                 }
@@ -300,7 +302,7 @@ impl PhotonApp {
             self.woods_add_rx = Some(rx);
             crate::network::wfd::start_open_house();
             self.search_status = Some((
-                "off-grid: listening nearby...".to_string(),
+                tr(Msg::OffGridListening).into_owned(),
                 *theme::SEARCH_FOUND_COLOUR,
             ));
             if let Some(tb) = self.contacts_textbox.as_mut() {
@@ -505,7 +507,7 @@ impl PhotonApp {
             self.probed_session = None;
             self.probed_handle = None;
             if let Some(btn) = self.attest_btn.as_mut() {
-                btn.set_label("Attest");
+                btn.set_label(tr(Msg::Attest).into_owned());
             }
         }
     }

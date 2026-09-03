@@ -10,7 +10,7 @@ impl PhotonApp {
         self.add_device_typo = None;
         self.add_device_wordcheck_text.clear();
         self.add_device_checking = false;
-        self.add_device_status = "Type the words shown on the new device".to_string();
+        self.add_device_status = tr(Msg::TypeWords).into_owned();
         let (tx, rx) = std::sync::mpsc::channel();
         self.add_device_rx = Some(rx);
         self.add_device_tx = Some(tx);
@@ -109,21 +109,17 @@ impl PhotonApp {
             // Nothing to match against yet — the voca spell-check still catches finger trouble while the registry answers.
             self.add_device_typo = fleet::first_bad_pair_word(&text);
             self.add_device_status = match &self.add_device_typo {
-                Some(w) => format!("'{w}' isn't one of the words"),
-                None => {
-                    "Waiting for the new device\u{2026} it should be showing its words".to_string()
-                }
+                Some(w) => tr(Msg::InvalidWord(w)).into_owned(),
+                None => tr(Msg::WaitingForDevice).into_owned(),
             };
             return;
         }
         if tokens.is_empty() {
             let n = self.add_device_candidates.len();
             self.add_device_status = if n == 1 {
-                "Type the words shown on the new device".to_string()
+                tr(Msg::TypeWords).into_owned()
             } else {
-                format!(
-                    "{n} devices asking to join \u{2014} type the words on the one in your hand"
-                )
+                tr(Msg::DevicesAskingToJoin(n)).into_owned()
             };
             return;
         }
@@ -172,13 +168,13 @@ impl PhotonApp {
         if alive == 0 {
             // The entry left every candidate at token index `deepest` — name that exact word in red.
             let bad = tokens.get(deepest.min(n - 1)).cloned().unwrap_or_default();
-            self.add_device_status = format!("'{bad}' doesn't match any device asking to join");
+            self.add_device_status = tr(Msg::NoMatchingDevice(&bad)).into_owned();
             self.add_device_typo = Some(bad);
         } else if alive == 1 {
             let name = &self.add_device_candidates[alive_idx].name;
-            self.add_device_status = format!("matching {name}\u{2026}");
+            self.add_device_status = tr(Msg::MatchingDevice(name)).into_owned();
         } else {
-            self.add_device_status = format!("matching\u{2026} ({alive} devices)");
+            self.add_device_status = tr(Msg::MatchingMultiple(alive)).into_owned();
         }
     }
 
@@ -290,13 +286,13 @@ impl PhotonApp {
             };
             if last {
                 crate::log("SECURITY: last member — sign-out refused (an identity must live somewhere)");
-                self.ready_toast = Some("This is your identity's last device — it can't sign out. Add another device first, then retire this one.".to_string());
+                self.ready_toast = Some(tr(Msg::LastDeviceCantSignOut).into_owned());
                 return;
             }
         }
         let (Some(hp), Some(kp)) = (hp, self.device_keypair.clone()) else {
             crate::log("SECURITY: no session/keypair to request departure with");
-            self.ready_toast = Some("No signed-in identity to remove.".to_string());
+            self.ready_toast = Some(tr(Msg::NoIdentityToRemove).into_owned());
             return;
         };
         let t = vsf::eagle_time_oscillations();
@@ -312,11 +308,11 @@ impl PhotonApp {
                     "SECURITY: departure requested (bilateral) — awaiting a sibling's approval{}",
                     if wipe_after { "; will WIPE on completion" } else { "; vault kept on completion" }
                 );
-                self.ready_toast = Some("Sign-out requested — approve it from another of your devices (Settings → Fleet).".to_string());
+                self.ready_toast = Some(tr(Msg::SignOutRequested).into_owned());
             }
             Err(e) => {
                 crate::logf!("SECURITY: departure request build failed: {}", e);
-                self.ready_toast = Some("Couldn't build the sign-out request — retry.".to_string());
+                self.ready_toast = Some(tr(Msg::SignOutBuildFailed).into_owned());
             }
         }
     }
@@ -1426,7 +1422,7 @@ impl PhotonApp {
     /// Phase ONE of the two-phase ceremony: publish the consent-carrying Add for a fully-matched candidate. The chain entry is KEYLESS until the human confirms green — `spawn_confirm_add` holds the rotation.
     pub(super) fn spawn_bind_device(&mut self, req: crate::network::fgtw::fleet::BindRequest) {
         use crate::network::fgtw::fleet;
-        self.add_device_status = "Words match \u{2014} adding\u{2026}".to_string();
+        self.add_device_status = tr(Msg::WordsMatched).into_owned();
         self.add_device_checking = true;
         if let (Some(hp), Some(kp), Some(tx)) = (
             self.our_handle_proof(),
@@ -1448,7 +1444,7 @@ impl PhotonApp {
         if self.add_device_checking || self.add_device_bound.is_none() {
             return;
         }
-        self.add_device_status = "Finishing\u{2026}".to_string();
+        self.add_device_status = tr(Msg::Finishing).into_owned();
         self.add_device_checking = true;
         if let (Some(hp), Some(kp), Some(tx), Some(session)) = (
             self.our_handle_proof(),
@@ -1461,9 +1457,7 @@ impl PhotonApp {
             let locked = self.locked_devices();
             std::thread::spawn(move || {
                 let r = (|| {
-                    let held = held.ok_or_else(|| {
-                        "confirm: this device does not hold the fleet key".to_string()
-                    })?;
+                    let held = held.ok_or_else(|| tr(Msg::NoFleetKey).into_owned())?;
                     let members: Vec<[u8; 32]> = fleet::current_members(&hp)?
                         .into_iter()
                         .filter(|m| !locked.contains(m))
@@ -1516,7 +1510,7 @@ impl PhotonApp {
                     if crate::storage::fanout_pairs::load(&me, &pk, st).is_some())
             });
             let link = if !egged {
-                format!("{} \u{00b7} not egged yet", c.clutch_status_detail())
+                tr(Msg::NotEggedYet(&c.clutch_status_detail())).into_owned()
             } else {
                 c.clutch_status_detail()
             };
@@ -1701,9 +1695,7 @@ impl PhotonApp {
         self.apply_locked_set();
         self.spawn_worker_unlock_push(pk);
         self.spawn_fleet_key_grow();
-        self.ready_toast = Some(format!(
-            "{name} unlocked \u{2014} it can rejoin the fleet on its next attest."
-        ));
+        self.ready_toast = Some(tr(Msg::DeviceUnlockedToast(name)).into_owned());
     }
 
     /// Best-effort off-thread push of ONE device unlock to the worker (fire-and-log). Idempotent (an absent lock is the goal state); the durable re-drive is `reconcile_worker_unlocks` on attest-success.
@@ -1943,7 +1935,7 @@ impl PhotonApp {
         // Cheap emptiness probe only — the actual file read moves into the worker thread below: a long-lived log is hundreds of MB (a field device's never-yet-submitted buffer), and fs::read of that on the UI thread is its own hang.
         let total = crate::log_size_bytes();
         if total == 0 {
-            self.ready_toast = Some("No log to send yet".to_string());
+            self.ready_toast = Some(tr(Msg::NoLogToSend).into_owned());
             return;
         }
         if self.log_submit_tx.is_none() {
@@ -1959,10 +1951,8 @@ impl PhotonApp {
             self.log_submit_tx.clone(),
         ) {
             // Immediate press feedback — the read + upload run seconds on a big log, and silence here read as "the button did nothing". Replaced by "Log sent √" / "Send failed" when the worker thread reports.
-            self.ready_toast = Some(format!(
-                "Sending log ({} KiB)\u{2026}",
-                (total as usize + 1023) / 1024
-            ));
+            self.ready_toast =
+                Some(tr(Msg::SendingLog((total as usize + 1023) / 1024)).into_owned());
             std::thread::spawn(move || {
                 let Some(bytes) = crate::snapshot_log_bytes() else {
                     let _ = tx.send(Err("log unreadable".to_string()));
@@ -1978,7 +1968,7 @@ impl PhotonApp {
             });
             self.log_submit_inflight = true;
         } else {
-            self.ready_toast = Some("Can't send: not signed in".to_string());
+            self.ready_toast = Some(tr(Msg::CantSendNotSignedIn).into_owned());
         }
     }
 
@@ -2094,12 +2084,12 @@ impl PhotonApp {
             return;
         }
         let Some(device_key) = self.device_keypair.clone() else {
-            self.add_join_status = "no device key".to_string();
+            self.add_join_status = tr(Msg::NoDeviceKey).into_owned();
             return;
         };
         // ONE IDENTITY PER DEVICE at the join door (docs/lifecycle.md D2) is gated INSIDE the join thread now, after the proof — the cheap pre-proof compare that used to sit here was the same offline handle oracle as the attest gate (2026-08-23 ticket). The words still show first (they're inert without the bind request), and the gate fires before the request, the NFC serve, or any beacon.
         self.add_join_handle = Some(handle.clone());
-        self.add_join_status = "Preparing\u{2026}".to_string();
+        self.add_join_status = tr(Msg::Preparing).into_owned();
         self.change_focus(None);
         if let Some(tb) = self.textbox.as_mut() {
             tb.clear();
@@ -2141,9 +2131,7 @@ impl PhotonApp {
                 &crate::crypto::clutch::identity_party_id(&identity_seed),
             ) {
                 crate::log("join: DEVICE BUSY — bound to another identity; refused post-proof");
-                let _ = tx.send(JoinUpdate::Failed(
-                    "this device already carries an identity \u{2014} put it on another device first, then Remove & shred (Settings \u{2192} Security)".to_string(),
-                ));
+                let _ = tx.send(JoinUpdate::Failed(tr(Msg::IdentityOccupied).into_owned()));
                 return;
             }
             let hp = session.handle_proof;
@@ -2159,7 +2147,7 @@ impl PhotonApp {
             let offer_et = match fleet::bindreq_put(&device_key, &identity_seed, &hp, &nfc_secret) {
                 Ok(et) => et,
                 Err(e) => {
-                    let _ = tx.send(JoinUpdate::Failed(format!("request failed: {e}")));
+                    let _ = tx.send(JoinUpdate::Failed(tr(Msg::RequestFailed(&e.to_string())).into_owned()));
                     return;
                 }
             };

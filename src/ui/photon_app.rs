@@ -2,6 +2,8 @@
 //! This root file holds the struct, its shared helper fns/types, and the small impls (constructor, `Container`, `Default`); the method bodies live in the per-concern child modules declared below.
 
 use super::chromatic_wave::{chromatic_wave, chromatic_wave_clipped};
+// pub(crate) so every photon_app submodule inherits tr/Msg thru its `use super::*`.
+pub(crate) use super::lang::{tr, Msg};
 use super::launch_layout::{AttestBlockLayout, LaunchLayout};
 use super::photon_logo::{paint_photon_logo, paint_photon_logo_clipped};
 use super::ready_layout::ReadyLayout;
@@ -676,17 +678,10 @@ fn display_content(content: &str) -> String {
             // A kept call recording — a PLAY affordance, not a file. Two fixes ride here (Nick's field report):
             //  - ▶ (U+25B6) replaces the paperclip: 📎 (U+1F4CE) has no glyph in the bubble font and rendered as a tofu rectangle; ▶ IS covered (the Ended panel's Play button uses it).
             //  - the size renders in DOZENAL (fmt_num honours the fleet toggle) now that the toggle exists — the row is drawn in Oxanium (see the call.audio font switch in render.rs) so the dozenal control-byte glyphs resolve instead of tofu-ing.
-            let tail = if held { "" } else { " \u{2014} fetching\u{2026}" };
-            format!(
-                "\u{25B6} recording \u{00B7} {}\u{202F}{}{}",
-                crate::fmt_num(units),
-                label,
-                tail
-            )
+            tr(Msg::RecordingBubble { units, unit_label: label, fetching: !held }).into_owned()
         } else {
-            // Files keep the paperclip + DECIMAL size in the default bubble font: that font can't render dozenal glyphs (they are Oxanium-only control bytes), so routing a file size thru fmt_num here would tofu. Converting files needs the same Oxanium-row treatment call.audio got — a deliberate follow-up, not a silent regression.
-            let state = if held { "" } else { " \u{2014} tap for actions" };
-            format!("\u{1F4CE} {} \u{00B7} {}\u{202F}{}{}", name, units, label, state)
+            // Files keep the paperclip + DECIMAL size in the default bubble font (see the FileBubble arm's comment in en.rs).
+            tr(Msg::FileBubble { name: &name, units, unit_label: label, held }).into_owned()
         }
     } else {
         // Reference rows (reply/edit/react) need no stripping: their content IS the bare body/glyph — the reference is a typed FIELD, never a string encoding.
@@ -923,9 +918,60 @@ const PROFILE_TIERS: &[(&str, &str)] = &[
     ("custom", "Custom"),
 ];
 
+/// Catalog label for a standard profile field id — the tables above stay the canonical ids + docs mirror; the SCREEN reads thru here. `None` = not a standard id (a user-created custom field keeps the human's own label bytes, never translated).
+fn profile_field_label(id: &str) -> Option<std::borrow::Cow<'static, str>> {
+    let msg = match id {
+        "name" => Msg::ProfileNamePreferred,
+        "first" => Msg::ProfileNameFirst,
+        "middle" => Msg::ProfileNameMiddle,
+        "last" => Msg::ProfileNameLast,
+        "nick" => Msg::ProfileNameNick,
+        "prefix" => Msg::ProfileNamePrefix,
+        "suffix" => Msg::ProfileNameSuffix,
+        "maiden" => Msg::ProfileNameMaiden,
+        "phon" => Msg::ProfileNamePronunciation,
+        "email" => Msg::ProfileReachEmail,
+        "phone" => Msg::ProfileReachPhone,
+        "web" => Msg::ProfileReachWeb,
+        "alt_msg" => Msg::ProfileReachAltMsg,
+        "addr" => Msg::ProfilePlaceAddr,
+        "geo" => Msg::ProfilePlaceGeo,
+        "tz" => Msg::ProfilePlaceTz,
+        "dob" => Msg::ProfilePersonalDob,
+        "pronouns" => Msg::ProfilePersonalPronouns,
+        "gender" => Msg::ProfilePersonalGender,
+        "lang" => Msg::ProfilePersonalLang,
+        "bio" => Msg::ProfilePersonalBio,
+        "org" => Msg::ProfileWorkOrg,
+        "title" => Msg::ProfileWorkTitle,
+        "ssn" => Msg::ProfileSensitiveSsn,
+        "passport" => Msg::ProfileSensitivePassport,
+        "license" => Msg::ProfileSensitiveLicense,
+        "tax_id" => Msg::ProfileSensitiveTaxId,
+        "emergency" => Msg::ProfileSensitiveEmergency,
+        _ => return None,
+    };
+    Some(tr(msg))
+}
+
+/// Catalog header for a profile tier id — same doctrine as [`profile_field_label`]; `None` only for an unknown tier (impossible from [`PROFILE_TIERS`], guarded anyway).
+fn profile_tier_label(tier: &str) -> Option<std::borrow::Cow<'static, str>> {
+    let msg = match tier {
+        "name" => Msg::ProfileTierName,
+        "reach" => Msg::ProfileTierReach,
+        "place" => Msg::ProfileTierPlace,
+        "personal" => Msg::ProfileTierPersonal,
+        "work" => Msg::ProfileTierWork,
+        "sensitive" => Msg::ProfileTierSensitive,
+        "custom" => Msg::ProfileTierCustom,
+        _ => return None,
+    };
+    Some(tr(msg))
+}
+
 /// One laid-out row of the You page. Render, layout, and scroll-extent passes all build this SAME plan (via [`you_rows_plan`]) so their row counts and positions never drift.
 enum YouRow {
-    /// Category header (tier title).
+    /// Category header — carries the TIER ID; the draw site routes it thru [`profile_tier_label`] so headers translate.
     Header(&'static str),
     /// An editable field — index into `you_fields`. Label left, box right.
     Field(usize),
@@ -939,6 +985,8 @@ enum YouRow {
     IdentityHeader,
     /// The identity fingerprint read-out.
     IdentityFp,
+    /// "Language" label + the language dropdown, positioned inline at draw.
+    Language,
     /// "Update" action pill.
     SavePill,
     /// Empty breathing row (between the action pills).
@@ -950,12 +998,12 @@ enum YouRow {
 /// Build the ordered You-page row plan from the current field set: fields grouped under their tier header (only non-empty tiers get a header), then the add-field affordance, the reassurance note, the identity read-out, and the action pills. Pure over `fields` so render / layout / scroll-extent all agree on the row count and order.
 fn you_rows_plan(fields: &[ProfileField]) -> Vec<YouRow> {
     let mut rows = Vec::new();
-    for &(tier, title) in PROFILE_TIERS {
+    for &(tier, _title) in PROFILE_TIERS {
         let mut any = false;
         for (i, f) in fields.iter().enumerate() {
             if f.tier == tier {
                 if !any {
-                    rows.push(YouRow::Header(title));
+                    rows.push(YouRow::Header(tier));
                     any = true;
                 }
                 rows.push(YouRow::Field(i));
@@ -967,6 +1015,7 @@ fn you_rows_plan(fields: &[ProfileField]) -> Vec<YouRow> {
     rows.push(YouRow::Note);
     rows.push(YouRow::IdentityHeader);
     rows.push(YouRow::IdentityFp);
+    rows.push(YouRow::Language);
     // No SavePill / AvatarPill (Nick 2026-09-02): fields save on focus-leave + page-navigate (save_you_fields diffs, so a no-change blur is free), and the avatar changes from YOUR contact page, not here. Variants stay compiled for the render arm's exhaustive match.
     rows
 }
@@ -1580,6 +1629,7 @@ pub struct PhotonApp {
     settings_btn_base: HitId,
     /// Appearance-page theme selector — a real fluor `Dropdown`. Only in the widget walk while the Settings/Appearance page is up.
     settings_theme_dropdown: Option<fluor::widgets::Dropdown>,
+    settings_lang_dropdown: Option<fluor::widgets::Dropdown>,
     /// Appearance-page zoom / text-size control — a real fluor `Slider`.
     settings_zoom_slider: Option<fluor::widgets::Slider>,
     /// Live PT transfer progress (peer, done, total, outbound) — throttled push from the status thread; drives the pill progress bar.
@@ -2106,6 +2156,7 @@ impl PhotonApp {
             lane_pushed_pos: std::collections::HashMap::new(),
             settings_btn_base: HIT_NONE,
             settings_theme_dropdown: None,
+            settings_lang_dropdown: None,
             settings_zoom_slider: None,
             attach_progress: Vec::new(),
             attach_confirmed: std::collections::HashSet::new(),
@@ -2757,6 +2808,10 @@ impl PhotonApp {
                     if let Some(tb) = self.you_add_textbox.as_mut() {
                         f(tb);
                     }
+                    if let Some(dd) = self.settings_lang_dropdown.as_mut() {
+                        f(dd);
+                        dd.visit_rows(f);
+                    }
                 }
                 SettingsPage::About => {
                     if let Some(cb) = self.settings_dozenal_check.as_mut() {
@@ -2988,23 +3043,23 @@ fn contact_status_line(
     identity_seed: Option<&[u8; 32]>,
 ) -> String {
     if c.clutch_proof_gave_up {
-        return "can\u{2019}t complete \u{2014} they answer as a different identity; remove & re-add".to_string();
+        return tr(Msg::DifferentIdentity).into_owned();
     }
     if !c.is_sibling && !c.chain_woven {
         match c.ceremony_owner {
             Some(owner) if Some(owner) != our_device => {
                 let name = identity_seed
                     .map(|seed| crate::network::fgtw::fleet::device_name_default(&owner, seed))
-                    .unwrap_or_else(|| "another device".to_string());
+                    .unwrap_or_else(|| tr(Msg::AnotherDevice).into_owned());
                 return if c.owner_woven {
-                    format!("secured on {name} \u{2014} replies visible here; send from there (for now)")
+                    tr(Msg::SecuredOn(&name)).into_owned()
                 } else {
-                    format!("securing on {name}\u{2026}")
+                    tr(Msg::SecuringOn(&name)).into_owned()
                 };
             }
             // A sibling's roster says the friendship is woven but no owner claim survived (pre-§4.2 ceremony) — still HONEST: it is secured elsewhere, not "weaving" here. The owner backfill in seal_chain_if_ready names the device once the owner pushes a fresh roster.
             None if c.owner_woven => {
-                return "secured on another of your devices \u{2014} replies visible here; send from there (for now)".to_string();
+                return tr(Msg::SecuredElsewhere).into_owned();
             }
             _ => {}
         }
@@ -3149,11 +3204,13 @@ fn human_bytes(n: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = KIB * 1024;
     if n >= MIB {
-        format!("{:.1} MiB", n as f64 / MIB as f64)
+        // Digits ride fmt_num (base-aware) — the tenths split keeps the one-decimal precision without a float format string.
+        let tenths = n * 10 / MIB;
+        format!("{}.{} MiB", crate::fmt_num((tenths / 10) as u32), crate::fmt_num((tenths % 10) as u32))
     } else if n >= KIB {
-        format!("{} KiB", n / KIB)
+        format!("{} KiB", crate::fmt_num((n / KIB) as u32))
     } else {
-        format!("{} B", n)
+        format!("{} B", crate::fmt_num(n as u32))
     }
 }
 

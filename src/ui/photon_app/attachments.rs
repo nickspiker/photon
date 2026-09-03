@@ -28,8 +28,7 @@ impl PhotonApp {
     pub(super) fn attach_send_now(&mut self, ci: usize, name: String, bytes: Vec<u8>) {
         const MAX_ATTACH: usize = 25 * 1024 * 1024;
         if bytes.is_empty() || bytes.len() > MAX_ATTACH {
-            self.ready_toast =
-                Some("attachment limit is 25 MB".to_string());
+            self.ready_toast = Some(tr(Msg::AttachmentLimit).into_owned());
             self.ready_toast_screen = None;
             crate::logf!("attach: rejected ({} bytes)", bytes.len());
             return;

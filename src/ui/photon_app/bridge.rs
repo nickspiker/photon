@@ -63,7 +63,7 @@ fn bridge_cap_tail(s: &str, cap: usize) -> String {
     while !s.is_char_boundary(start) {
         start += 1;
     }
-    format!("… ({} earlier bytes on the host)\n{}", start, &s[start..])
+    tr(Msg::BridgeElided { bytes: start, output: &s[start..] }).into_owned()
 }
 
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
@@ -96,7 +96,7 @@ fn spawn_bridge_worker(
                             shell = Some(s);
                         }
                         Err(e) => {
-                            let _ = fin_tx.send(BridgeEmit { ci, target: ts, seq: 1, body: format!("(bridge shell failed to start: {e})"), fin: Some(-1), host: String::new(), cwd: String::new() });
+                            let _ = fin_tx.send(BridgeEmit { ci, target: ts, seq: 1, body: tr(Msg::BridgeShellStartFailed(&e.to_string())).into_owned(), fin: Some(-1), host: String::new(), cwd: String::new() });
                             bridge_wake(&wake);
                             continue;
                         }
@@ -124,9 +124,9 @@ fn spawn_bridge_worker(
                         let trimmed = body.trim_end_matches('\n');
                         let text = if trimmed.is_empty() {
                             // Clean silent success (cd, touch, a green build with -q) sends an EMPTY final — the client stamps the exit on the command row itself and shows NO bubble (Nick 2026-08-31: the ACK + the Stop pill clearing is the whole story). A silent FAILURE still says so; silence must never eat a non-zero exit.
-                            if code == 0 { String::new() } else { format!("(no output, exit {code})") }
+                            if code == 0 { String::new() } else { tr(Msg::BridgeNoOutput(code)).into_owned() }
                         } else if code != 0 {
-                            format!("{}\n[exit {code}]", bridge_cap_tail(trimmed, BRIDGE_BODY_CAP))
+                            tr(Msg::BridgeOutputExit { output: &bridge_cap_tail(trimmed, BRIDGE_BODY_CAP), code }).into_owned()
                         } else {
                             bridge_cap_tail(trimmed, BRIDGE_BODY_CAP)
                         };
@@ -137,7 +137,7 @@ fn spawn_bridge_worker(
                         // Registry absence = a deliberate Reset killed us — the client wiped its screen, so a death notice would land as a stray bubble in a fresh session. A REAL death (bash exited, crashed) reports once and the next command respawns.
                         let was_registered = fg.lock().unwrap().remove(&dev).is_some();
                         if was_registered {
-                            let _ = fin_tx.send(BridgeEmit { ci, target: ts, seq: seq + 1, body: format!("(shell died: {e} — fresh session on the next command)"), fin: Some(-1), host, cwd: cwd0 });
+                            let _ = fin_tx.send(BridgeEmit { ci, target: ts, seq: seq + 1, body: tr(Msg::BridgeShellDied(&e)).into_owned(), fin: Some(-1), host, cwd: cwd0 });
                             bridge_wake(&wake);
                         }
                         return;
@@ -281,14 +281,14 @@ impl BridgeShell {
             let line = match self.lines.recv() {
                 Ok(Some(l)) => l,
                 Ok(None) | Err(_) => {
-                    return Err("shell exited".to_string());
+                    return Err(tr(Msg::ShellExited).into_owned());
                 }
             };
             if let Some(rest) = line.trim_end().strip_prefix(&self.sentinel) {
                 let rest = rest.trim_start();
                 let (code_s, cwd) = rest.split_once(' ').unwrap_or((rest, ""));
                 let final_body = if dropped {
-                    format!("\u{2026}(earlier output dropped)\n{}", body)
+                    tr(Msg::EarlierOutputDropped(&body)).into_owned()
                 } else {
                     body
                 };
@@ -309,7 +309,7 @@ impl BridgeShell {
                 dropped = true;
             }
             if dropped {
-                emit(&format!("\u{2026}(earlier output dropped)\n{}", body));
+                emit(&tr(Msg::EarlierOutputDropped(&body)));
             } else {
                 emit(&body);
             }
@@ -350,7 +350,7 @@ impl PhotonApp {
             .iter()
             .position(|c| c.is_sibling && c.device_key() == Some(device));
         let Some(ci) = idx else {
-            self.ready_toast = Some("That device isn't paired as a sibling yet.".to_string());
+            self.ready_toast = Some(tr(Msg::DeviceNotSibling).into_owned());
             self.ready_toast_screen = None;
             crate::log("BRIDGE: no sibling contact for that device — cannot open");
             return;
@@ -432,7 +432,7 @@ impl PhotonApp {
             };
             self.send_chain_message(
                 ci,
-                "…(stop received — nothing is running here; if a command was in flight, this host restarted and its stream was lost)",
+                &tr(Msg::StopReceivedIdle),
                 false,
                 Some((crate::types::RefKind::BridgeOut, target)),
                 Some(wire),
@@ -487,11 +487,11 @@ impl PhotonApp {
             let Some(conv) = self.conv_mut_of(ci) else {
                 return;
             };
-            let notice = "\n…(no response to Stop — prompt released; the command may still be running on the host)";
+            let notice = tr(Msg::NoResponseToStop);
             if let Some(row) = conv.messages.iter_mut().find(|m| {
                 !m.is_outgoing && m.reference == Some((crate::types::RefKind::BridgeOut, t))
             }) {
-                row.content.push_str(notice);
+                row.content.push_str(&notice);
                 row.bridge_exit = Some(-1);
                 row.bridge_seq = u64::MAX;
             } else {
@@ -524,11 +524,11 @@ impl PhotonApp {
             let Some(conv) = self.conv_mut_of(ci) else {
                 continue;
             };
-            let notice = "\n…(stream lost — the host went offline mid-command; it may still be running there. Reopen the bridge for a fresh session.)";
+            let notice = tr(Msg::StreamLost);
             if let Some(row) = conv.messages.iter_mut().find(|m| {
                 !m.is_outgoing && m.reference == Some((crate::types::RefKind::BridgeOut, t))
             }) {
-                row.content.push_str(notice);
+                row.content.push_str(&notice);
                 row.bridge_exit = Some(-1);
             } else {
                 // No output ever arrived — materialize the verdict row so the operator isn't staring at a silent faint command forever.

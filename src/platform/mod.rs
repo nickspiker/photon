@@ -13,6 +13,9 @@ pub mod tray;
 /// Native-fault catcher (SEH / unix signals) — writes the panic hook's crash sidecar so segfaults ride the next log submission.
 pub mod crash_native;
 
+/// OS-locale sniff for the first-launch language seed (docs/languages.md) — the setting is the user's after that.
+pub mod locale;
+
 /// Hold off IDLE sleep while a ceremony or transfer is genuinely in flight — scoped to the work by a guard, never to the app (macOS; a no-op elsewhere).
 pub mod stay_awake;
 

@@ -934,8 +934,7 @@ impl PhotonApp {
             }
             if let Some(conv) = self.conv_mut_of(ci) {
                 let mut msg = crate::types::ChatMessage::new_with_timestamp(
-                    "…(command undeliverable — the host never acknowledged it; prompt released)"
-                        .to_string(),
+                    tr(Msg::CommandUndeliverable).into_owned(),
                     false,
                     vsf::eagle_time_oscillations(),
                 );
