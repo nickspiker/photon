@@ -40,12 +40,12 @@
 - [project_chain_replication.md](project_chain_replication.md) — chain replication SHIPPED @ 2dfe7ed: chains sync fleet-wide (mutated_osc v7, adopt-iff-newer), adopting device flips sendable
 - [project_avatar_bearer_pin_gap.md](project_avatar_bearer_pin_gap.md) — CLOSED: pin-rotate on membership shrink shipped in removal-rotates step 1 (2026-07-23); avatar = 64-byte bearer pin (key‖lookup)
 - [project_clutch_token_asymmetry.md](project_clutch_token_asymmetry.md) — "unknown conversation_token" = §4.2 competing ceremony instances
-- [project_call_no_ring_incident.md](project_call_no_ring_incident.md) — 2026-08-29 no-ring call CONVICTED: offer delivered, dropped "No friendship found" — identity-era split (phone re-attested cacbc223/proof 7ff3835f, rosters stale 1be949c1, desktop CLUTCHes own sibling)
+- [project_call_no_ring_incident.md](project_call_no_ring_incident.md) — 2026-08-29 no-ring CONVICTED (identity-era split); 2026-09-02 GLARE fixed 328bc7d: mutual dial connects (smaller call_id wins, other side folds+auto-answers), never mutual BUSY
 - [project_clutch_offer_deadlock.md](project_clutch_offer_deadlock.md) — CLUTCH offer-loss deadlock generations; FIXED @7d5e356 (retries=no-progress, path-up/stall offer re-fire, pong-drop torches); OPEN: one peer's pongs never arrive
 - [project_clutch_ui_thread_hitch.md](project_clutch_ui_thread_hitch.md) — FIXED @c48b0e1 2026-08-15: KEM decap = 4th job stage (HQC-prefix CAS drain), duplicate-KEM short-circuit, proof rides durable chains writer; phone E2E pending
 - [project_nat_traversal_relay_gap.md](project_nat_traversal_relay_gap.md) — punch tiers + LIVE relay pipe shipped 2026-07-22: per-recipient Cloudflare DO (PipeHub)
 - [project_windows_dark_theme_bug.md](project_windows_dark_theme_bug.md) — PINNED: photon install corrupted Jennifer's Windows dark-theme search text (theme-cache signature, light/dark toggle fixed)
-- [project_contacts_glow_damage.md](project_contacts_glow_damage.md) — contacts search-box focus glow not repainted on deselect (stale glow lingers/clips, looks un-deselectable); bg pass dirty-gating skips the glow_bbox
+- [project_contacts_glow_damage.md](project_contacts_glow_damage.md) — LIKELY STALE: the invalidate_bg-on-focus-edge fix exists in code (pre-2026-08-14) naming this exact symptom; retest before re-opening
 - [project_history_recovery.md](project_history_recovery.md) — history sync: friend backfill + FLEET sync shipped; BOTH is_online gates that silently killed fleet delivery removed 2026-07-25 (push d73c223, pull 648791b)
 - [project_rekey_attack_surface.md](project_rekey_attack_surface.md) — re-key/history-injection threat model (docs/rekey-threat-model.md); first-met device un-revocable + revocation unwired
 - [project_token_private_identity.md](project_token_private_identity.md) — TOKEN crux SOLVED + phases 1-2 SHIPPED (fleet weave fc841f4, S lifecycle f057c5d): friend-blinded private identity S, OTP-blind, never at rest
