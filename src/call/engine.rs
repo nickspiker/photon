@@ -548,6 +548,40 @@ fn run(
             format!("{:?}", e.rejects),
             crate::platform::audio::route_id()
         );
+        // Persist what the call proved (Stage 4): echo posts only at SOLID confidence (the persisted tier); voice posts on its own evidence gate (≥5s of voiced far-quiet speech ⇒ talk is Some). The drain blends against the stored profile — ritual outranks, learned refines.
+        let mut learned: Vec<crate::call::calibrate::LearnedResult> = Vec::new();
+        if e.confidence == crate::call::learn::Confidence::Solid {
+            if let (Some(g), Some(d)) = (e.g_norm, e.delay_bins) {
+                learned.push(crate::call::calibrate::LearnedResult {
+                    result: crate::call::calibrate::CalResult::Echo(
+                        crate::call::calibrate::EchoProfile {
+                            g_norm: g,
+                            delay_ms: (d * 10) as u32,
+                            // The learner normalizes every window by vol_lin, so the stored reference is 0dB where a volume mirror exists; None where it doesn't (desktop — vol_lin was 1.0 throughout).
+                            cal_vol_db: crate::platform::audio::current_volume_db().map(|_| 0.0),
+                            route_id: crate::platform::audio::route_id(),
+                        },
+                    ),
+                    windows: e.windows as u32,
+                    solid: true,
+                });
+            }
+        }
+        if let Some(talk) = e.talk {
+            let mic_gain = (4000.0 / talk.max(1.0)).clamp(0.125, 8.0);
+            learned.push(crate::call::calibrate::LearnedResult {
+                result: crate::call::calibrate::CalResult::Voice(
+                    crate::call::calibrate::VoiceProfile {
+                        mic_gain,
+                        floor: e.floor,
+                        mic_id: crate::platform::audio::mic_id(),
+                    },
+                ),
+                windows: (e.voiced_bins / 100) as u32,
+                solid: e.confidence == crate::call::learn::Confidence::Solid,
+            });
+        }
+        crate::call::calibrate::post_learned(learned);
     }
     teardown();
     // tx_chain/rx_chain drop here — zeroized; the call is cryptographically gone.

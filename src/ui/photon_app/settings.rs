@@ -565,6 +565,8 @@ impl PhotonApp {
                 let mut f = vec![
                     (format!("{base}.g"), vsf::VsfType::f5(p.g_norm)),
                     (format!("{base}.delay"), vsf::VsfType::u(p.delay_ms as usize, false)),
+                    // RITUAL OUTRANKS: a fresh controlled measurement resets the learner's accumulated sample count — the blend restarts from this value.
+                    (format!("{base}.n"), vsf::VsfType::u(0, false)),
                 ];
                 if let Some(db) = p.cal_vol_db {
                     f.push((format!("{base}.vol"), vsf::VsfType::f5(db)));
@@ -576,6 +578,7 @@ impl PhotonApp {
                 vec![
                     (format!("{base}.gain"), vsf::VsfType::f5(p.mic_gain)),
                     (format!("{base}.floor"), vsf::VsfType::f5(p.floor)),
+                    (format!("{base}.n"), vsf::VsfType::u(0, false)),
                 ]
             }
         };
@@ -588,8 +591,96 @@ impl PhotonApp {
         self.persist_and_push_settings();
     }
 
+    /// Blend one LEARNED (in-call) profile into the stored one — toast-free, phase-free (the ritual's drain arm owns those). Echo g rides learn::blend_g (asymmetric: duck-more fast, duck-less slow + solid-only); voice gain/floor ride a symmetric EMA with the same sample weighting. `<base>.n` carries the accumulated sample count; the ritual resets it to 0 (ritual outranks).
+    pub(super) fn store_learned_result(&mut self, lr: &crate::call::calibrate::LearnedResult) {
+        if !self.ensure_fleet_settings() {
+            return;
+        }
+        let now = vsf::eagle_time_oscillations();
+        let read_f32 = |fs: &crate::storage::fleet_settings::FleetSettings, k: &str| {
+            fs.device_local(k).and_then(crate::storage::fleet_settings::as_f32)
+        };
+        let read_n = |fs: &crate::storage::fleet_settings::FleetSettings, k: &str| {
+            fs.device_local(k).and_then(|v| v.as_u64()).unwrap_or(0) as f32
+        };
+        let conf = if lr.solid {
+            crate::call::learn::Confidence::Solid
+        } else {
+            crate::call::learn::Confidence::Usable
+        };
+        let fields: Vec<(String, vsf::VsfType)> = match &lr.result {
+            crate::call::calibrate::CalResult::Echo(p) => {
+                let base = format!("audio.cal.echo.{}", p.route_id);
+                let fs = self.fleet_settings.as_ref().unwrap();
+                let stored_g = read_f32(fs, &format!("{base}.g"));
+                let stored_n = read_n(fs, &format!("{base}.n"));
+                let (g, n) = match stored_g {
+                    Some(g0) => crate::call::learn::blend_g(g0, stored_n, p.g_norm, lr.windows as usize, conf),
+                    None => (p.g_norm, lr.windows as f32),
+                };
+                crate::logf!(
+                    "CAL: learned echo blended — route \"{}\" g {} (was {}) n {} delay {}ms",
+                    p.route_id,
+                    format!("{g:.4}"),
+                    stored_g.map_or("none".into(), |v| format!("{v:.4}")),
+                    format!("{n:.0}"),
+                    p.delay_ms
+                );
+                let mut f = vec![
+                    (format!("{base}.g"), vsf::VsfType::f5(g)),
+                    (format!("{base}.delay"), vsf::VsfType::u(p.delay_ms as usize, false)),
+                    (format!("{base}.n"), vsf::VsfType::u(n as usize, false)),
+                ];
+                if let Some(db) = p.cal_vol_db {
+                    f.push((format!("{base}.vol"), vsf::VsfType::f5(db)));
+                }
+                f
+            }
+            crate::call::calibrate::CalResult::Voice(p) => {
+                let base = format!("audio.cal.voice.{}", p.mic_id);
+                let fs = self.fleet_settings.as_ref().unwrap();
+                let stored_n = read_n(fs, &format!("{base}.n"));
+                let w = lr.windows as f32;
+                let alpha = w / (w + stored_n + 20.0);
+                let gain = match read_f32(fs, &format!("{base}.gain")) {
+                    Some(g0) => g0 + alpha * (p.mic_gain - g0),
+                    None => p.mic_gain,
+                };
+                let floor = match read_f32(fs, &format!("{base}.floor")) {
+                    Some(f0) => f0 + alpha * (p.floor - f0),
+                    None => p.floor,
+                };
+                let n = (stored_n + w).min(100.0);
+                crate::logf!(
+                    "CAL: learned voice blended — mic \"{}\" gain {} floor {} n {}",
+                    p.mic_id,
+                    format!("{gain:.2}"),
+                    format!("{floor:.0}"),
+                    format!("{n:.0}")
+                );
+                vec![
+                    (format!("{base}.gain"), vsf::VsfType::f5(gain)),
+                    (format!("{base}.floor"), vsf::VsfType::f5(floor)),
+                    (format!("{base}.n"), vsf::VsfType::u(n as usize, false)),
+                ]
+            }
+        };
+        let fs = self.fleet_settings.as_mut().unwrap();
+        for (k, v) in fields {
+            if fs.linked(&k) {
+                fs.set_link(&k, false, now);
+            }
+            fs.set(&k, v, now);
+        }
+        self.persist_and_push_settings();
+    }
+
     /// Drain a finished measurement: store, drop the handle, toast, reset the phase.
     pub(super) fn drain_audio_cal(&mut self) {
+        // Learned (in-call) results first — every hangup can post these; NO toast, NO phase ack (they belong to the ritual below).
+        for lr in crate::call::calibrate::take_learned() {
+            self.store_learned_result(&lr);
+        }
         if let Some(r) = crate::call::calibrate::take_result() {
             self.store_cal_result(&r);
             self.audio_cal_handle = None;
