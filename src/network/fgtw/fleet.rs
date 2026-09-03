@@ -21,7 +21,8 @@ const CURRENT_VERSION: (usize, usize, usize) = (
 );
 /// Releases bump the MINOR (deploy.sh), so each sunset is ~twelve releases out. A knob — bump it only after a conscious "the fleet's v2 migration isn't done yet" decision.
 /// CONSCIOUS BUMP 2026-08-30 (0,70,0 → 0,82,0), the v70 deploy tripped it: the v2 precondition cannot be met yet — a chain goes v2 only thru the succession re-pin flow, whose EMIT side is still unwired, so no chain anywhere has ever been re-founded; Daniel's device is also still pre-flag-day. Deleting v1 verify today would break folding every real chain. Next firing should find succession emit wired and the re-pin actually run fleet-wide — then delete, don't bump.
-const V1_FLEET_VERIFY_SUNSET: (usize, usize, usize) = (0, 82, 0);
+/// CONSCIOUS BUMP 2026-09-03 (0,82,0 → 0,94,0), the v82 deploy tripped it: the succession EMIT side is STILL unwired (the receive path shipped @05f7d27, emit did not), so the precondition is unchanged from the last bump — no chain has ever been re-founded v2, and deleting v1 verify would still break folding every real chain. The tripwire did its second job tho: this firing was the silent-deploy crash Nick hit three times (its message was invisible behind the snapbuild exec-2>/dev/null stderr eater, fixed the same day). Wire succession emit + run the re-pin fleet-wide before 0.94 — then delete, don't bump.
+const V1_FLEET_VERIFY_SUNSET: (usize, usize, usize) = (0, 94, 0);
 /// Flip to `false` in the SAME change that deletes the v1 fleet-op verify path from fgtw/src/fleet.rs.
 const V1_FLEET_VERIFY_PRESENT: bool = true;
 const fn ver_ge(a: (usize, usize, usize), b: (usize, usize, usize)) -> bool {
