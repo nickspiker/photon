@@ -135,7 +135,7 @@ fn decode_prompt() -> Option<Vec<Vec<i16>>> {
 }
 
 /// Mean |sample| of a frame — the envelope unit every measurement runs in (matches the engine's level math).
-fn env(frame: &[i16]) -> f32 {
+pub(crate) fn env(frame: &[i16]) -> f32 {
     if frame.is_empty() {
         return 0.0;
     }
@@ -443,7 +443,7 @@ fn mean(v: &[f32]) -> f32 {
 }
 
 /// The quietest `n`-frame run's mean — the pre/mid-speech gap, a floor sample robust to the user talking thru most of the window.
-fn quietest_run(envs: &[f32], n: usize) -> f32 {
+pub(crate) fn quietest_run(envs: &[f32], n: usize) -> f32 {
     if envs.len() < n {
         return mean(envs);
     }
