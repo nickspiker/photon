@@ -42,6 +42,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             SettingsPage::Notifications => "Pānui",
             SettingsPage::Updates => "Whakahōu",
             SettingsPage::Diagnostics => "Tātari",
+            SettingsPage::Language => "Reo",
             SettingsPage::About => "Mō",
             SettingsPage::Wave => "Ngaru",
         }

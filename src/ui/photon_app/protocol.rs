@@ -551,18 +551,6 @@ impl PhotonApp {
             }
         }
 
-        // Language picker: adopt + persist on selection change; tr() reads the static, so one full redraw flips every string. Constructor-labeled widgets refresh via relabel_for_language.
-        let lang_change = self.settings_lang_dropdown.as_mut().and_then(|dd| dd.take_change());
-        if let Some(idx) = lang_change {
-            let l = crate::ui::lang::Lang::from_index(idx);
-            if l != crate::ui::lang::lang() {
-                crate::ui::lang::set_lang(l);
-                self.save_lang_setting(l);
-                self.relabel_for_language();
-            }
-            needs_redraw = true;
-        }
-
         // Clear the "handle didn't match" line as soon as the operator edits the confirm box again — event-shown, interaction-cleared, no timers.
         if self.unattended_confirm_failed {
             let has_text = self

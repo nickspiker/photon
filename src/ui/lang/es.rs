@@ -42,6 +42,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             SettingsPage::Notifications => "Notificaciones",
             SettingsPage::Updates => "Actualizaciones",
             SettingsPage::Diagnostics => "Diagnóstico",
+            SettingsPage::Language => "Idioma",
             SettingsPage::About => "Acerca de",
             SettingsPage::Wave => "Onda",
         }

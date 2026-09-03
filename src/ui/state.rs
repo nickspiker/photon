@@ -55,6 +55,8 @@ pub enum SettingsPage {
     Updates,
     /// The on-device VSF log: clear / snapshot / submit.
     Diagnostics,
+    /// UI-language picker — one button per language, labelled in itself (autonyms).
+    Language,
     /// Explainer / philosophy / version / feedback / credits.
     About,
     /// WAVE — everything sound (Nick 2026-09-02): per-route calibration now; ringing/notification audio later. Its sibling BEAM (camera/video) lands with video calls. Calls gate on the current route being calibrated.
@@ -63,7 +65,7 @@ pub enum SettingsPage {
 
 impl SettingsPage {
     /// All pages in rail order — the nav rail and the tab-cycle iterate this. Appearance is COMMENTED OUT of the rail (Nick 2026-09-01) — the variant + its render arm stay compiled so restoring it is a one-line uncomment; the dozenal (base-twelve) toggle lives on About.
-    pub const ALL: [SettingsPage; 9] = [
+    pub const ALL: [SettingsPage; 10] = [
         SettingsPage::You,
         SettingsPage::Fleet,
         SettingsPage::Security,
@@ -73,6 +75,7 @@ impl SettingsPage {
         SettingsPage::Notifications,
         SettingsPage::Updates,
         SettingsPage::Diagnostics,
+        SettingsPage::Language,
         SettingsPage::About,
     ];
 
@@ -87,6 +90,7 @@ impl SettingsPage {
             SettingsPage::Notifications => "Notifications",
             SettingsPage::Updates => "Updates",
             SettingsPage::Diagnostics => "Diagnostics",
+            SettingsPage::Language => "Language",
             SettingsPage::About => "About",
             SettingsPage::Wave => "Wave",
         }

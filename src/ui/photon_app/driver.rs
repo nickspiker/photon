@@ -295,7 +295,7 @@ impl FluorApp for PhotonApp {
         // Settings panel (STUB) hit-id blocks + widgets. Reserve a contiguous 9-id block for the nav-rail rows and a 32-id block for the immediate-mode action pills, then construct the stateful fluor widgets (dropdown / slider / textbox) and the custom checkboxes. All get placeholder geometry; `update_widget_layout` repositions the ones on the active page each frame.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.settings_nav_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(8); // rows 0..=8
+        self.hit_counter = self.hit_counter.wrapping_add(10); // rows 0..=9 (SettingsPage::ALL is 10 pages)
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.settings_btn_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(39); // pills 0..=39 — the Fleet page's fourth band (32+ Lock-out) lives at the top of the block
@@ -323,16 +323,6 @@ impl FluorApp for PhotonApp {
             1.,
             12.,
             vec![tr(Msg::DarkChrome).into_owned(), tr(Msg::LightChrome).into_owned()],
-        ));
-        // Language picker (You page) — entries are AUTONYMS, deliberately never tr(): a lost user must recognise their own tongue whatever the current language. Placed directly after the theme dropdown so relabel_for_language's recreation of that widget keeps this block adjacent.
-        self.settings_lang_dropdown = Some(fluor::widgets::Dropdown::new(
-            &mut self.hit_counter,
-            0.,
-            0.,
-            1.,
-            1.,
-            12.,
-            crate::ui::lang::Lang::ALL.iter().map(|l| l.autonym().to_string()).collect(),
         ));
         self.settings_zoom_slider = Some(fluor::widgets::Slider::new(
             &mut self.hit_counter,
@@ -1250,7 +1240,7 @@ impl FluorApp for PhotonApp {
         if let AppState::Settings(page) = self.state {
             if self.settings_nav_base != HIT_NONE
                 && hit_id >= self.settings_nav_base
-                && hit_id < self.settings_nav_base.wrapping_add(9)
+                && hit_id < self.settings_nav_base.wrapping_add(SettingsPage::ALL.len() as HitId)
             {
                 let idx = (hit_id - self.settings_nav_base) as usize;
                 if let Some(p) = self.settings_pages().get(idx).copied() {
@@ -1520,6 +1510,17 @@ impl FluorApp for PhotonApp {
                     } else if slot == 2 {
                         // "Add" → register the typed label as a custom field (e.g. "Address 2") and append its box.
                         self.add_custom_field();
+                    }
+                } else if page == SettingsPage::Language {
+                    // One tap per language button — adopt, persist device-local, refresh constructor-frozen labels; the next paint re-translates everything else thru tr().
+                    let n = crate::ui::lang::Lang::ALL.len() as HitId;
+                    if slot < n {
+                        let l = crate::ui::lang::Lang::from_index(slot as usize);
+                        if l != crate::ui::lang::lang() {
+                            crate::ui::lang::set_lang(l);
+                            self.save_lang_setting(l);
+                            self.relabel_for_language();
+                        }
                     }
                 } else if page == SettingsPage::Updates {
                     use crate::network::updates::Channel;
