@@ -151,7 +151,8 @@ snap_cargo() {
         rm -f "$errlog"
         return 1
     fi
-    local n; n="$(grep -c '^warning' "$errlog" 2>/dev/null || echo 0)"
+    # grep -c PRINTS "0" and returns 1 on no-match, so `|| echo 0` minted a two-line "0\n0" that blew the arithmetic below under set -e — the silent bridge-deploy death at the FIRST warning-free build (field 2026-09-03: v82 died 52s in, right after the tools built clean; v81 survived only because the tree wasn't lint-clean yet). `|| true` keeps grep's own printed count; the fallback only covers a truly absent errlog.
+    local n; n="$(grep -c '^warning' "$errlog" 2>/dev/null || true)"; n="${n:-0}"
     DEPLOY_WARNINGS=$(( DEPLOY_WARNINGS + n ))
     [ "$n" -gt 0 ] && echo "  ⚠ cargo $* — $n warning(s) this build (running total: $DEPLOY_WARNINGS)" >&2
     rm -f "$errlog"
@@ -162,7 +163,7 @@ snap_cargo() {
 echo ""
 echo "Lint check (cache-fresh warning count for the whole workspace)..."
 LINT_WARNINGS="$( ( cd "$SNAP_DIR" && cargo check --workspace --message-format=short 2>&1 ) | grep -E '^warning' | grep -v 'generated .* warning' | sort | uniq)"
-LINT_COUNT="$(printf '%s' "$LINT_WARNINGS" | grep -c '^warning' || echo 0)"
+LINT_COUNT="$(printf '%s' "$LINT_WARNINGS" | grep -c '^warning' || true)"; LINT_COUNT="${LINT_COUNT:-0}"
 if [ "$LINT_COUNT" -gt 0 ]; then
     echo "  ⚠ $LINT_COUNT distinct warning(s) in the tree — this release is NOT lint-clean:"
     printf '%s\n' "$LINT_WARNINGS" | sed 's/^/      /'
