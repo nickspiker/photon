@@ -83,7 +83,7 @@ impl PhotonApp {
                 .and_then(|ci| self.contacts.get(ci))
                 // Pending… until they publish a real name — the title bar is a visual surface; the pseudonym lives ONLY in the contact panel's identity section (Nick 2026-08-21, matching the contact list).
                 .map(|c| c.display_name_or_pending())
-                .unwrap_or_else(|| "Conversation".to_string())
+                .unwrap_or_else(|| tr(Msg::ConversationTitle).into_owned())
         } else if matches!(self.state, AppState::Ready) {
             let own_hp = self.session.as_ref().map(|s| s.handle_proof);
             let n = self
@@ -102,12 +102,12 @@ impl PhotonApp {
                 .unwrap_or(0);
             // The store only fills by gossip since the announce cutover, so on a fresh session it holds nothing but our own record and `n` is 0 even with the whole network up. The seed's identity count (off the signed ack, minus ourselves) is the floor: the store wins once gossip carries more than the seed remembers, and the max never shows a friend LESS than what either source can vouch for.
             let n = n.max(self.seed_identity_count.saturating_sub(1) as usize);
-            format!("{n} {}", if n == 1 { "peer" } else { "peers" })
+            tr(Msg::PeersOnline(n)).into_owned()
         } else if matches!(self.state, AppState::Settings(_)) {
             // The settings screen draws its own "Settings" heading in the header band — a chrome title would double up behind it (portrait showed "‹ Network" bleeding thru the heading).
             String::new()
         } else {
-            "\u{2039} Network".to_string()
+            tr(Msg::NetworkBack).into_owned()
         };
 
         // Clamp the contacts block scroll and refresh the contacts widget layout BEFORE taking the long-lived `chrome` borrow. The whole user section (avatar, hint, search box, separator) now scrolls with the contact rows as one block, and the search box / plus button rects are positioned in `update_widget_layout` off `contacts_scroll`; doing this here (rather than inside the borrowed render block, which can't call `&mut self`) keeps the box, the avatar, and the rows all reading the SAME clamped offset within a frame — no one-frame mismatch at the over-scroll boundary. The formula matches the in-block geometry exactly: `max_scroll = (rows.y0 + matching·row_h) − buf_h`, hard-stopped at 0. Scrolled Y for the Ready-screen version watermark (rides the scroll block); `None` on other screens, where the version uses its pinned `version_cy`.
@@ -354,7 +354,7 @@ impl PhotonApp {
         let zoom_text = if crate::dozenal_ui() {
             crate::dozenal_glyphs((ctx.viewport.ru * 144.0).round().max(0.0) as u32)
         } else {
-            format!("{}%", (ctx.viewport.ru * 100.0).round() as i64)
+            format!("{}%", crate::fmt_num((ctx.viewport.ru * 100.0).round().max(0.0) as u32))
         };
         let zoom_cx = buf_w as f32 * 0.5;
         let zoom_cy = zoom_size;
@@ -547,22 +547,21 @@ impl PhotonApp {
                 let status_line = match phase {
                     crate::call::CallPhase::Ringing => {
                         if direct {
-                            "\u{260E} incoming call".to_string()
+                            tr(Msg::IncomingCall).into_owned()
                         } else {
-                            "\u{260E} incoming call \u{2014} \u{26A0} no direct path".to_string()
+                            tr(Msg::IncomingCallNoPath).into_owned()
                         }
                     }
                     crate::call::CallPhase::Active => {
                         if direct {
+                            // Glyph + duration only (no words) — nothing to translate, stays a raw format.
                             format!("\u{260E} {}", call_dur_str)
                         } else {
-                            format!("\u{260E} {} \u{2014} \u{26A0} no direct path", call_dur_str)
+                            tr(Msg::CallActiveNoPath(&call_dur_str)).into_owned()
                         }
                     }
-                    crate::call::CallPhase::Ended => {
-                        format!("\u{260E} call \u{2014} {}", call_dur_str)
-                    }
-                    crate::call::CallPhase::Outgoing => format!("\u{260E} calling {}\u{2026}", name),
+                    crate::call::CallPhase::Ended => tr(Msg::CallEndedDur(&call_dur_str)).into_owned(),
+                    crate::call::CallPhase::Outgoing => tr(Msg::CallingName(&name)).into_owned(),
                 };
                 ctx.text.draw_text_center(
                     &mut canvas,
@@ -585,14 +584,14 @@ impl PhotonApp {
                         if let Some(b) = self.call_decline_btn.as_mut() {
                             b.set_rect(w * 0.5 - bw * 0.5 - unit * 0.75, by, bw, bh);
                             b.set_font_size(bfont);
-                            b.set_label("Decline");
+                            b.set_label(tr(Msg::Decline));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
                         if let Some(b) = self.call_action_btn.as_mut() {
                             b.set_rect(w * 0.5 + bw * 0.5 + unit * 0.75, by, bw, bh);
                             b.set_font_size(bfont);
-                            b.set_label("Answer");
+                            b.set_label(tr(Msg::Answer));
                             b.set_enabled(cal_ok);
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
@@ -600,7 +599,7 @@ impl PhotonApp {
                         if !cal_ok {
                             ctx.text.draw_text_center(
                                 &mut canvas,
-                                "This speaker isn't calibrated — you can't take calls on it yet.",
+                                &tr(Msg::CallUncalibratedNoAnswer),
                                 w * 0.5,
                                 by - bh * 0.9,
                                 &TextStyle::new(bfont * 0.85, *theme::SEARCH_FAIL_COLOUR).weight(600).font("Oxanium"),
@@ -609,7 +608,7 @@ impl PhotonApp {
                             );
                             ctx.text.draw_text_center(
                                 &mut canvas,
-                                "Settings \u{2192} Wave \u{00b7} about 15 seconds \u{00b7} once per speaker/headset, ever.",
+                                &tr(Msg::CallUncalibratedHint),
                                 w * 0.5,
                                 by - bh * 0.4,
                                 &TextStyle::new(bfont * 0.7, *theme::LABEL_COLOUR).weight(400).font("Oxanium"),
@@ -623,21 +622,21 @@ impl PhotonApp {
                         if let Some(b) = self.call_play_btn.as_mut() {
                             b.set_rect(w * 0.5, by - bh - unit * 0.6, w * 0.4, bh * 0.85);
                             b.set_font_size(bfont);
-                            b.set_label("\u{25B6} Play");
+                            b.set_label(tr(Msg::Play));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
                         if let Some(b) = self.call_decline_btn.as_mut() {
                             b.set_rect(w * 0.5 - bw * 0.5 - unit * 0.75, by, bw, bh);
                             b.set_font_size(bfont);
-                            b.set_label("Delete");
+                            b.set_label(tr(Msg::Delete));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
                         if let Some(b) = self.call_action_btn.as_mut() {
                             b.set_rect(w * 0.5 + bw * 0.5 + unit * 0.75, by, bw, bh);
                             b.set_font_size(bfont);
-                            b.set_label("Keep");
+                            b.set_label(tr(Msg::Keep));
                             b.set_enabled(true); // the Ringing arm may have disabled it (uncalibrated-route gate)
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
@@ -653,28 +652,28 @@ impl PhotonApp {
                         if let Some(b) = self.call_speaker_btn.as_mut() {
                             b.set_rect(w * 0.5 - sw - unit * 0.4, sy, sw, sh);
                             b.set_font_size(sfont);
-                            b.set_label(if spk_on { "\u{1F50A} On" } else { "\u{1F50A} Speaker" });
+                            b.set_label(tr(if spk_on { Msg::SpeakerToggleOn } else { Msg::SpeakerToggleOff }));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
                         if let Some(b) = self.call_addhandle_btn.as_mut() {
                             b.set_rect(w * 0.5, sy, sw, sh);
                             b.set_font_size(sfont);
-                            b.set_label("+ Handle");
+                            b.set_label(tr(Msg::AddHandle));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
                         if let Some(b) = self.call_back_btn.as_mut() {
                             b.set_rect(w * 0.5 + sw + unit * 0.4, sy, sw, sh);
                             b.set_font_size(sfont);
-                            b.set_label("\u{2039} Contact");
+                            b.set_label(tr(Msg::BackToContact));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
                         if let Some(b) = self.call_action_btn.as_mut() {
                             b.set_rect(w * 0.5, by, w * 0.5, bh);
                             b.set_font_size(bfont);
-                            b.set_label("End call");
+                            b.set_label(tr(Msg::EndCall));
                             b.set_enabled(true); // Ringing may have disabled it (uncalibrated-route gate)
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
@@ -698,16 +697,14 @@ impl PhotonApp {
                 let x0 = (buf_w as f32 - bar_w) * 0.5;
                 let gap = unit * 0.5;
                 let mut status = match phase {
-                    crate::call::CallPhase::Outgoing => {
-                        format!("\u{260E} calling {}\u{2026}", name)
-                    }
-                    crate::call::CallPhase::Ringing => format!("\u{260E} {} calling", name),
-                    crate::call::CallPhase::Active => format!("\u{260E} in call \u{2014} {}", name),
-                    crate::call::CallPhase::Ended => "\u{260E} keep this recording?".to_string(),
+                    crate::call::CallPhase::Outgoing => tr(Msg::CallingName(name)).into_owned(),
+                    crate::call::CallPhase::Ringing => tr(Msg::CallBarCalling(name)).into_owned(),
+                    crate::call::CallPhase::Active => tr(Msg::CallBarInCall(name)).into_owned(),
+                    crate::call::CallPhase::Ended => tr(Msg::CallBarKeepRecording).into_owned(),
                 };
                 // No validated direct path in a live phase → say so on the bar (media may be silent until a punch lands; the warning disappears live when it does). The ⚠ is safe everywhere: fonts are fully bundled + deterministic (fluor's explicit-db TextRenderer, zero system-font pulls — verified 2026-08-20), and Noto Sans Symbols 2 covers U+26A0 in the same 2600 block as the field-proven ☎.
                 if !direct && !matches!(phase, crate::call::CallPhase::Ended) {
-                    status.push_str(" \u{26A0} no direct path");
+                    status.push_str(&tr(Msg::NoDirectPathSuffix));
                 }
                 let status_w = if call_two_actions {
                     bar_w * 0.44
@@ -727,11 +724,11 @@ impl PhotonApp {
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, HIT_NONE);
                 }
                 let ax = x0 + status_w + gap;
-                let a_label = match phase {
-                    crate::call::CallPhase::Ringing => "Answer",
-                    crate::call::CallPhase::Ended => "Keep",
-                    _ => "Hang up",
-                };
+                let a_label = tr(match phase {
+                    crate::call::CallPhase::Ringing => Msg::Answer,
+                    crate::call::CallPhase::Ended => Msg::Keep,
+                    _ => Msg::HangUp,
+                });
                 if let Some(b) = self.call_action_btn.as_mut() {
                     b.set_rect(ax + action_w * 0.5, cy, action_w, pill_h);
                     b.set_font_size(call_font);
@@ -743,11 +740,11 @@ impl PhotonApp {
                 }
                 if call_two_actions {
                     let dx = x0 + status_w + gap * 2. + action_w;
-                    let d_label = if phase == crate::call::CallPhase::Ended {
-                        "Delete"
+                    let d_label = tr(if phase == crate::call::CallPhase::Ended {
+                        Msg::Delete
                     } else {
-                        "Decline"
-                    };
+                        Msg::Decline
+                    });
                     if let Some(b) = self.call_decline_btn.as_mut() {
                         b.set_rect(dx + action_w * 0.5, cy, action_w, pill_h);
                         b.set_font_size(call_font);
@@ -802,27 +799,27 @@ impl PhotonApp {
             );
 
             // Status slot — `attest.error` rect above the textbox. Carries either the red error message (`LaunchState::Error`) or the white "Attesting…" indicator (`LaunchState::Attesting`); empty in Fresh. Same geometry for both so they swap in place; colour differentiates "something's wrong" from "we're working". Wave's 1-cycle/sec phase animation pairs with the "Attesting…" line as the secondary cue.
-            let status: Option<(&str, u32)> = if self.launch_add_mode
+            let status: Option<(std::borrow::Cow<'_, str>, u32)> = if self.launch_add_mode
                 && !self.add_join_status.is_empty()
             {
-                Some((self.add_join_status.as_str(), (*theme::STATUS_TEXT_COLOUR)))
+                Some((self.add_join_status.as_str().into(), (*theme::STATUS_TEXT_COLOUR)))
             } else {
                 match launch_state {
                         LaunchState::Attesting => {
-                            Some(("Attesting\u{2026}", (*theme::STATUS_TEXT_COLOUR)))
+                            Some((tr(Msg::Attesting), (*theme::STATUS_TEXT_COLOUR)))
                         }
                         LaunchState::Error(msg) if !msg.is_empty() => {
-                            Some((msg.as_str(), (*theme::ERROR_TEXT_COLOUR)))
+                            Some((msg.as_str().into(), (*theme::ERROR_TEXT_COLOUR)))
                         }
                         // Terminal brick: the fleet locked this device. Red, dead-end — no handle re-type helps (the identity is real, the fleet owner marked the hardware stolen), only an unlock from another of the owner's devices clears it.
                         LaunchState::Locked => Some((
-                            "this device has been locked by your fleet \u{2014} unlock it from another of your devices to use it again",
+                            tr(Msg::LockedByFleet),
                             (*theme::ERROR_TEXT_COLOUR),
                         )),
                         // Up-front hint: a bound device in Fresh gets the resume-or-wipe line in the STATUS colour (not error-red) so the restriction is visible before any submit.
                         // Confirm/KnownHandle fall thru to None and keep their own bands.
                         LaunchState::Fresh if device_bound => Some((
-                            "this device carries an identity \u{2014} type its handle to resume, or wipe (Settings \u{2192} Security)",
+                            tr(Msg::IdentityCarriedHint),
                             (*theme::STATUS_TEXT_COLOUR),
                         )),
                         _ => None,
@@ -837,7 +834,7 @@ impl PhotonApp {
                     // Half-height font: status messages are short by convention; full-rect-height is too loud for one-line text and overflows wide messages off the side.
                     ctx.text.draw_text_center(
                         &mut canvas,
-                        text,
+                        &text,
                         cx,
                         cy,
                         &TextStyle::new(
@@ -859,26 +856,14 @@ impl PhotonApp {
                 let cx = buf_w as f32 * 0.5;
                 let mut y = attest.attest.y1 as f32 + line_h * 1.6;
                 // What's permanent is the IDENTITY, not the handle: a handle is a mutable label, but attesting mints crypto roots with no password / reset / recovery. Ownership binds to the HUMAN, not the hardware — the first person to attest owns that identity, while devices stay replaceable thru the fleet chain (remove the first device whenever, as long as another is added first). The warning must not mis-teach "this phone owns it" NOR "this name is a life sentence" — it's the identity behind it that can't be undone.
-                let lines: [(&str, u32); 5] = [
-                    (
-                        "This mints a permanent identity.",
-                        (*theme::ERROR_TEXT_COLOUR),
-                    ),
-                    (
-                        "No password. No reset. No recovery.",
-                        (*theme::STATUS_TEXT_COLOUR),
-                    ),
-                    (
-                        "The first human to attest owns it.",
-                        (*theme::STATUS_TEXT_COLOUR),
-                    ),
-                    (
-                        "Devices can be replaced. The identity can't.",
-                        (*theme::STATUS_TEXT_COLOUR),
-                    ),
-                    ("Press again if you mean it.", (*theme::STATUS_TEXT_COLOUR)),
-                ];
-                for (line, colour) in lines {
+                // One catalog passage; line 0 is the headline and takes the error colour, the detail lines stay in status grey.
+                let passage = tr(Msg::PermanenceWarning);
+                for (i, line) in passage.lines().enumerate() {
+                    let colour = if i == 0 {
+                        *theme::ERROR_TEXT_COLOUR
+                    } else {
+                        *theme::STATUS_TEXT_COLOUR
+                    };
                     ctx.text.draw_text_center(
                         &mut canvas,
                         line,
@@ -902,18 +887,14 @@ impl PhotonApp {
                 let line_h = (tb_h * 0.45).min(buf_w as f32 / 22.0);
                 let cx = buf_w as f32 * 0.5;
                 let mut y = attest.attest.y1 as f32 + line_h * 1.6;
-                let lines: [(&str, u32); 3] = [
-                    ("This name is already claimed.", (*theme::ERROR_TEXT_COLOUR)),
-                    (
-                        "New here? Someone else owns it \u{2014} pick another.",
-                        (*theme::STATUS_TEXT_COLOUR),
-                    ),
-                    (
-                        "Yours? Approve this device from one you're signed in on.",
-                        (*theme::STATUS_TEXT_COLOUR),
-                    ),
-                ];
-                for (line, colour) in lines {
+                // Same passage discipline as the permanence block: line 0 = headline in error colour, the rest in status grey.
+                let passage = tr(Msg::KnownHandleWarning);
+                for (i, line) in passage.lines().enumerate() {
+                    let colour = if i == 0 {
+                        *theme::ERROR_TEXT_COLOUR
+                    } else {
+                        *theme::STATUS_TEXT_COLOUR
+                    };
                     ctx.text.draw_text_center(
                         &mut canvas,
                         line,
@@ -938,7 +919,7 @@ impl PhotonApp {
                     buf_w,
                     buf_h,
                     pick,
-                    "Pick another name",
+                    &tr(Msg::PickAnotherName),
                     self.known_pick_hit,
                     ctx.pressed_hit,
                 );
@@ -949,7 +930,7 @@ impl PhotonApp {
                     buf_w,
                     buf_h,
                     mine,
-                    "It's mine \u{2014} show pairing words",
+                    &tr(Msg::ItsMineShowWords),
                     self.known_mine_hit,
                     ctx.pressed_hit,
                 );
@@ -1008,7 +989,7 @@ impl PhotonApp {
                         y += line_h * 0.4;
                         ctx.text.draw_text_center(
                             &mut canvas,
-                            &format!("this device: {name}"),
+                            &tr(Msg::ThisDeviceName(&name)),
                             cx,
                             y,
                             &TextStyle::new(line_h * 0.8, fluor::theme::HINT_COLOUR)
@@ -1023,16 +1004,13 @@ impl PhotonApp {
                         y += line_h * 0.9;
                         let csize = line_h * 0.7;
                         let (clabel, ccolour) = if self.join_words_copied {
-                            (
-                                "copied \u{2014} paste them on your other device",
-                                *theme::STATUS_TEXT_COLOUR,
-                            )
+                            (tr(Msg::WordsCopied), *theme::STATUS_TEXT_COLOUR)
                         } else {
-                            ("copy words", *theme::CONTACT_NAME_COLOUR)
+                            (tr(Msg::CopyWords), *theme::CONTACT_NAME_COLOUR)
                         };
                         ctx.text.draw_text_center(
                             &mut canvas,
-                            clabel,
+                            &clabel,
                             cx,
                             y,
                             &TextStyle::new(csize, ccolour).weight(600).font("Oxanium"),
@@ -1056,12 +1034,8 @@ impl PhotonApp {
                     {
                         y += line_h * 0.9;
                         let gsize = line_h * 0.62;
-                        for line in [
-                            "On your other device: Settings \u{2192} Fleet \u{2192} Add",
-                            "Type or paste these words there \u{2014} or, if it's nearby,",
-                            "just tap this device in the list.",
-                            "You'll confirm the add on that device.",
-                        ] {
+                        let s = tr(Msg::LaunchJoinInstructions);
+                        for line in s.lines() {
                             ctx.text.draw_text_center(
                                 &mut canvas,
                                 line,
@@ -1077,11 +1051,11 @@ impl PhotonApp {
                     // "Start fresh (wipe this device)" — the secondary escape: a device that was REMOVED from a fleet can't attest (can't reach the Security page), so this is its only self-clean path. Two-tap confirm. Hit-stamped so a tap on Android works (no chords there). Pushed well below the add guidance so it reads as the edge case, not the main action.
                     {
                         y += line_h * 1.4;
-                        let sf_label = if self.join_startfresh_armed {
-                            "Start fresh — tap again to wipe this device"
+                        let sf_label = tr(if self.join_startfresh_armed {
+                            Msg::StartFreshArmed
                         } else {
-                            "Wrong device? Start fresh (wipe this device)"
-                        };
+                            Msg::StartFreshIdle
+                        });
                         let sf_size = line_h * 0.7;
                         let sf_colour = if self.join_startfresh_armed {
                             *theme::ERROR_TEXT_COLOUR
@@ -1090,7 +1064,7 @@ impl PhotonApp {
                         };
                         ctx.text.draw_text_center(
                             &mut canvas,
-                            sf_label,
+                            &sf_label,
                             cx,
                             y,
                             &TextStyle::new(sf_size, sf_colour)
@@ -1119,14 +1093,14 @@ impl PhotonApp {
                     let region_h = (hint_rect.y1 - hint_rect.y0) as f32;
                     let cx = (hint_rect.x0 + hint_rect.x1) as f32 * 0.5;
                     let cy = (hint_rect.y0 + hint_rect.y1) as f32 * 0.5;
-                    let hint_label = if self.launch_add_mode {
-                        "handle (join a fleet)"
+                    let hint_label = tr(if self.launch_add_mode {
+                        Msg::HandleHintJoin
                     } else {
-                        "handle"
-                    };
+                        Msg::HandleHint
+                    });
                     ctx.text.draw_text_center(
                         &mut canvas,
-                        hint_label,
+                        &hint_label,
                         cx,
                         cy,
                         &TextStyle::new(region_h * 0.7, fluor::theme::HINT_COLOUR)
@@ -1205,7 +1179,7 @@ impl PhotonApp {
                         buf_w,
                         buf_h,
                         pill,
-                        "Unlocked from another device? Tap to retry",
+                        &tr(Msg::LockedRetry),
                         self.locked_retry_hit,
                         ctx.pressed_hit,
                         true,
@@ -1314,7 +1288,7 @@ impl PhotonApp {
                 let hcy = cy + radius + size;
                 ctx.text.draw_text_center(
                     &mut canvas,
-                    "drag/drop to update avatar",
+                    &tr(Msg::AvatarDropHint),
                     cx,
                     hcy,
                     &TextStyle::new(size, fluor::theme::HINT_COLOUR)
@@ -1374,7 +1348,7 @@ impl PhotonApp {
                 if let Some(tb) = self.contacts_textbox.as_ref() {
                     ctx.text.draw_text_center(
                         &mut canvas,
-                        "search | add",
+                        &tr(Msg::SearchPlaceholder),
                         tb.center_x,
                         tb.center_y,
                         &TextStyle::new(tb.font_size * 0.6, fluor::theme::HINT_COLOUR)
@@ -1702,7 +1676,7 @@ impl PhotonApp {
                 let font_size = band_h * 0.6;
                 ctx.text.draw_text_center(
                     &mut canvas,
-                    "storage degraded",
+                    &tr(Msg::StorageDegraded),
                     cx,
                     cy,
                     &TextStyle::new(font_size, *theme::DEGRADED_TEXT)
@@ -1722,7 +1696,7 @@ impl PhotonApp {
                 let font_size = band_h * 0.6;
                 ctx.text.draw_text_center(
                     &mut canvas,
-                    "auto-attest on reboot",
+                    &tr(Msg::AutoAttestBadge),
                     cx,
                     cy,
                     &TextStyle::new(font_size, *theme::CLOCK_TEXT)
@@ -1744,15 +1718,14 @@ impl PhotonApp {
                 let font_size = band_h * 0.6;
                 // Human-readable magnitude + direction. ahead = system clock reads later than truth.
                 let mag = offset_secs.unsigned_abs();
-                let pretty = if mag >= 3600 {
-                    format!("{}h", mag / 3600)
+                let pretty = tr(if mag >= 3600 {
+                    Msg::HoursShort(mag / 3600)
                 } else if mag >= 60 {
-                    format!("{}m", mag / 60)
+                    Msg::MinutesShort(mag / 60)
                 } else {
-                    format!("{}s", mag)
-                };
-                let dir = if offset_secs < 0 { "ahead" } else { "behind" };
-                let label = format!("clock off — {} {}", pretty, dir);
+                    Msg::SecondsShort(mag)
+                });
+                let label = tr(Msg::ClockOff { pretty: &pretty, ahead: offset_secs < 0 });
                 ctx.text.draw_text_center(
                     &mut canvas,
                     &label,
@@ -1843,7 +1816,7 @@ impl PhotonApp {
                         ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
                     ctx.text.draw_text_left(
                         &mut canvas,
-                        "\u{2039} Back",
+                        &tr(Msg::SettingsBack),
                         r.x + rspan * 0.6,
                         r.center_y(),
                         &TextStyle::new(rspan, *theme::SEARCH_FOUND_COLOUR)
@@ -1906,7 +1879,7 @@ impl PhotonApp {
                     };
                     ctx.text.draw_text_left(
                         &mut canvas,
-                        p.label(),
+                        &tr(Msg::ContactPageName(*p)),
                         r.x + rspan * 0.6,
                         r.center_y(),
                         &TextStyle::new(rspan, colour)
@@ -2021,38 +1994,35 @@ impl PhotonApp {
                             Some(content_clip),
                         );
                         let shared_name = if is_self {
-                            "your own notes-to-self conversation".to_string()
+                            tr(Msg::OwnNotesConversation)
                         } else if contact.published_name.is_empty() {
-                            "name: not shared yet".to_string()
+                            tr(Msg::NameNotShared)
                         } else {
-                            format!(
-                                "name: \u{201c}{}\u{201d} (their published name)",
-                                contact.published_name
-                            )
+                            tr(Msg::NameShared(&contact.published_name))
                         };
-                        let shared_avatar = if is_self {
-                            String::new()
+                        let shared_avatar: std::borrow::Cow<'_, str> = if is_self {
+                            "".into()
                         } else if contact.avatar_pin == [0u8; 64] {
-                            "avatar: not shared yet".to_string()
+                            tr(Msg::AvatarNotShared)
                         } else {
-                            "avatar: shared with you".to_string()
+                            tr(Msg::AvatarShared)
                         };
                         let identity_line = if is_self {
-                            "no ceremony, no chain \u{2014} rows ride your fleet key".to_string()
+                            tr(Msg::SelfNoCeremony)
                         } else if contact.identity_superseded {
-                            "\u{26a0} this name was re-claimed by someone else \u{2014} rendering a stranger".to_string()
+                            tr(Msg::ReclaimedStranger)
                         } else if contact.identity_ended {
-                            "identity ended by its owner".to_string()
+                            tr(Msg::IdentityEndedByOwner)
                         } else if contact.pinned_genesis != [0u8; 32] {
-                            format!("identity pinned since first fold \u{00b7} {} device(s) in their fleet", contact.fleet_members.len().max(1))
+                            tr(Msg::ContactFleetPinned(contact.fleet_members.len().max(1)))
                         } else {
-                            "identity not yet folded (first contact still settling)".to_string()
+                            tr(Msg::IdentityNotFolded)
                         };
                         settings_line(
                             &mut canvas,
                             ctx.text,
                             rows[5],
-                            "What they share with you",
+                            &tr(Msg::WhatTheyShare),
                             tspan,
                             *theme::CONTACT_NAME_COLOUR,
                             600,
@@ -2081,7 +2051,7 @@ impl PhotonApp {
                             &mut canvas,
                             ctx.text,
                             rows[9],
-                            "Identity",
+                            &tr(Msg::YouIdentity),
                             tspan,
                             *theme::CONTACT_NAME_COLOUR,
                             600,
@@ -2100,7 +2070,7 @@ impl PhotonApp {
                             &mut canvas,
                             ctx.text,
                             rows[11],
-                            &format!("always \u{201c}{}\u{201d} \u{2014} derived from their identity, can\u{2019}t be changed", crate::network::fgtw::fleet::keyed_pseudonym(&contact.handle_hash)),
+                            &tr(Msg::PublishedNameExplainer(&crate::network::fgtw::fleet::keyed_pseudonym(&contact.handle_hash))),
                             hspan2,
                             *theme::LABEL_COLOUR,
                             400,
@@ -2140,38 +2110,39 @@ impl PhotonApp {
                             .and_then(|v| v.history_recovery.as_ref())
                             .map(|r| r.complete)
                         {
-                            Some(true) => "history: complete on this device".to_string(),
-                            Some(false) => "history: still syncing".to_string(),
-                            None => "history: idle (no sweep this session)".to_string(),
+                            Some(true) => tr(Msg::HistoryComplete),
+                            Some(false) => tr(Msg::HistorySyncing),
+                            None => tr(Msg::HistoryIdle),
                         };
                         let chain_line = if is_self {
-                            "no chain \u{2014} delivered by definition".to_string()
+                            tr(Msg::SelfNoChain)
                         } else if contact.chain_woven {
-                            "chain woven \u{2014} secured end-to-end".to_string()
+                            tr(Msg::ChainWoven)
                         } else {
                             contact_status_line(
                                 contact,
                                 self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()),
                                 self.session.as_ref().map(|se| &se.identity_seed),
                             )
+                            .into()
                         };
                         let connection_line = if is_self {
-                            "always reachable (this is you)".to_string()
+                            tr(Msg::AlwaysReachableSelf)
                         } else if contact.is_online {
                             if contact.reached_via_relay {
-                                "connected \u{00b7} via relay".to_string()
+                                tr(Msg::ConnectedRelay)
                             } else {
-                                "connected \u{00b7} direct".to_string()
+                                tr(Msg::ConnectedDirect)
                             }
                         } else {
-                            "offline".to_string()
+                            tr(Msg::Offline)
                         };
                         // These rows should CONVERGE across your fleet devices — two devices showing different numbers here IS the sync bug, made visible.
                         settings_line(
                             &mut canvas,
                             ctx.text,
                             rows[0],
-                            "Between you",
+                            &tr(Msg::ContactPageName(cpage)),
                             tspan,
                             *theme::CONTACT_NAME_COLOUR,
                             600,
@@ -2180,12 +2151,7 @@ impl PhotonApp {
                             &mut canvas,
                             ctx.text,
                             rows[1],
-                            &format!(
-                                "{} message(s) \u{00b7} {} sent \u{00b7} {} received",
-                                human.len(),
-                                sent,
-                                recv
-                            ),
+                            &tr(Msg::MessagesSentReceived { total: human.len(), sent, recv }),
                             hspan2,
                             *theme::LABEL_COLOUR,
                             400,
@@ -2194,7 +2160,7 @@ impl PhotonApp {
                             &mut canvas,
                             ctx.text,
                             rows[2],
-                            &format!("{} of your messages delivered", delivered),
+                            &tr(Msg::MessagesDelivered(delivered)),
                             hspan2,
                             *theme::LABEL_COLOUR,
                             400,
@@ -2203,7 +2169,7 @@ impl PhotonApp {
                             &mut canvas,
                             ctx.text,
                             rows[3],
-                            &format!("chatting across {} day(s)", span_days),
+                            &tr(Msg::ChatDaysSpan(span_days)),
                             hspan2,
                             *theme::LABEL_COLOUR,
                             400,
@@ -2239,7 +2205,7 @@ impl PhotonApp {
                             &mut canvas,
                             ctx.text,
                             rows[8],
-                            "these rows should match on every one of your devices",
+                            &tr(Msg::RowsShouldMatch),
                             hspan2 * 0.9,
                             *theme::LABEL_COLOUR,
                             400,
@@ -2254,7 +2220,7 @@ impl PhotonApp {
                             &mut canvas,
                             ctx.text,
                             rows[0],
-                            "Manage",
+                            &tr(Msg::ContactPageName(cpage)),
                             tspan,
                             *theme::CONTACT_NAME_COLOUR,
                             600,
@@ -2264,11 +2230,11 @@ impl PhotonApp {
                                 &mut canvas,
                                 ctx.text,
                                 rows[1],
-                                if is_self {
-                                    "your own notes can\u{2019}t be booted"
+                                &tr(if is_self {
+                                    Msg::OwnNotesCantBoot
                                 } else {
-                                    "a fleet device signs itself out \u{2014} see Settings \u{2192} Fleet"
-                                },
+                                    Msg::SiblingSignsItselfOut
+                                }),
                                 hspan2,
                                 *theme::LABEL_COLOUR,
                                 400,
@@ -2280,11 +2246,7 @@ impl PhotonApp {
                                 rows[2].w * 0.5,
                                 rows[2].h * 0.95,
                             );
-                            let label = if self.contact_boot_armed {
-                                "Tap again \u{2014} boot them"
-                            } else {
-                                "Boot"
-                            };
+                            let label = tr(Msg::BootPill { armed: self.contact_boot_armed });
                             draw_stub_pill(
                                 &mut canvas,
                                 ctx.text,
@@ -2292,7 +2254,7 @@ impl PhotonApp {
                                 buf_w,
                                 buf_h,
                                 pill,
-                                label,
+                                &label,
                                 self.contact_panel_btn_base,
                                 ctx.pressed_hit,
                             );
@@ -2300,12 +2262,12 @@ impl PhotonApp {
                                 &mut canvas,
                                 ctx.text,
                                 rows[3],
-                                "removes them from every device of YOUR fleet",
+                                &tr(Msg::BootRemovesEverywhere),
                                 hspan2,
                                 *theme::LABEL_COLOUR,
                                 400,
                             );
-                            settings_line(&mut canvas, ctx.text, rows[4], "they are not told \u{2014} their records stay theirs (ostracism, not erasure)", hspan2, *theme::LABEL_COLOUR, 400);
+                            settings_line(&mut canvas, ctx.text, rows[4], &tr(Msg::BootOstracism), hspan2, *theme::LABEL_COLOUR, 400);
                         }
                     }
                 }
@@ -2346,7 +2308,7 @@ impl PhotonApp {
                     let bar_h = buf_h as f32 * 0.06 + unit + back_size;
                     let bar_off = self.conv_topbar_off.min(bar_h);
                     let back_y = buf_h as f32 * 0.06 + unit - bar_off;
-                    let back_text = "\u{2039} Contacts";
+                    let back_text = tr(Msg::BackToContacts);
                     let topbar_visible = bar_off < bar_h * 0.75;
                     // Same hover/press vocabulary as the contact rows: hover = weight 500 → 700, press = the wordmark's glow behind the label (composited AFTER the text — under() layers beneath).
                     let back_pressed = topbar_visible
@@ -2360,7 +2322,7 @@ impl PhotonApp {
                     if back_y > -back_size {
                         ctx.text.draw_text_left(
                             &mut canvas,
-                            back_text,
+                            &back_text,
                             unit,
                             back_y,
                             &TextStyle::new(back_size, *theme::CONTACT_NAME_COLOUR)
@@ -2380,7 +2342,7 @@ impl PhotonApp {
                                 &mut scratch,
                                 buf_w as u32,
                                 band_h as u32,
-                                back_text,
+                                &back_text,
                                 unit,
                                 back_y - band_top as f32,
                                 back_size,
@@ -2403,7 +2365,7 @@ impl PhotonApp {
                     }
                     // Stamp the back button hit rect.
                     let back_w = ctx.text.measure_text(
-                        back_text,
+                        &back_text,
                         &TextStyle::new(back_size, 0)
                             .weight(back_weight)
                             .font("Oxanium"),
@@ -2552,29 +2514,26 @@ impl PhotonApp {
                     let status_in_stream: Option<(String, u32)> = if show_status {
                         Some(if contact.identity_superseded {
                             (
-                                "name re-claimed by someone new \u{2014} this is NOT them"
-                                    .to_string(),
+                                tr(Msg::NameReclaimed).into_owned(),
                                 *theme::ERROR_TEXT_COLOUR,
                             )
                         } else if contact.identity_ended {
                             (
-                                "identity ended \u{2014} conversation frozen".to_string(),
+                                tr(Msg::IdentityEndedFrozen).into_owned(),
                                 *theme::LABEL_COLOUR,
                             )
                         } else if is_self_contact {
-                            ("notes to self".to_string(), *theme::SEARCH_FOUND_COLOUR)
+                            (tr(Msg::NotesToSelf).into_owned(), *theme::SEARCH_FOUND_COLOUR)
                         } else {
                             (
-                                format!(
-                                    "CLUTCH: {}",
-                                    contact_status_line(
-                                        contact,
-                                        self.device_keypair
-                                            .as_ref()
-                                            .map(|kp| *kp.public.as_bytes()),
-                                        self.session.as_ref().map(|se| &se.identity_seed)
-                                    )
-                                ),
+                                tr(Msg::ClutchStatus(&contact_status_line(
+                                    contact,
+                                    self.device_keypair
+                                        .as_ref()
+                                        .map(|kp| *kp.public.as_bytes()),
+                                    self.session.as_ref().map(|se| &se.identity_seed),
+                                )))
+                                .into_owned(),
                                 if contact.clutch_state == crate::types::ClutchState::Complete {
                                     *theme::SEARCH_FOUND_COLOUR
                                 } else {
@@ -2854,51 +2813,50 @@ impl PhotonApp {
                                     / crate::OSC_PER_SEC)
                                     .max(0);
                                 // Base-aware count (dozenal glyphs or decimal per the About toggle) — the detail style is Oxanium, so the glyphs resolve.
-                                let age = if secs >= 86400 {
-                                    format!("{}d ago", crate::fmt_num((secs / 86400) as u32))
+                                let age = tr(if secs >= 86400 {
+                                    Msg::AgoDays((secs / 86400) as u32)
                                 } else if secs >= 3600 {
-                                    format!("{}h ago", crate::fmt_num((secs / 3600) as u32))
+                                    Msg::AgoHours((secs / 3600) as u32)
                                 } else if secs >= 60 {
-                                    format!("{}m ago", crate::fmt_num((secs / 60) as u32))
+                                    Msg::AgoMinutes((secs / 60) as u32)
                                 } else {
-                                    format!("{}s ago", crate::fmt_num(secs as u32))
-                                };
+                                    Msg::AgoSeconds(secs as u32)
+                                });
                                 // The delivery ladder (sending → replicated ∥ delivered): "delivered" = the friend's fleet ACKed (the line — nothing beyond it exists, ever; "seen" is only a human's explicit reaction); "replicated" = our own fleet holds it but their ACK hasn't landed yet.
                                 let mut detail = if msg.is_outgoing {
-                                    format!(
-                                        "sent · {} · {}",
-                                        age,
-                                        if msg.delivered {
-                                            "delivered"
-                                        } else if msg.replicated {
-                                            "replicated"
-                                        } else {
-                                            "sending"
-                                        }
-                                    )
+                                    let state = tr(if msg.delivered {
+                                        Msg::DeliveryDelivered
+                                    } else if msg.replicated {
+                                        Msg::DeliveryReplicated
+                                    } else {
+                                        Msg::DeliverySending
+                                    });
+                                    tr(Msg::SentDetail { age: &age, state: &state }).into_owned()
                                 } else {
-                                    format!("received · {}", age)
+                                    tr(Msg::ReceivedDetail(&age)).into_owned()
                                 };
                                 if msg.recovered {
-                                    detail.push_str(" · recovered");
+                                    detail.push_str(&tr(Msg::RecoveredSuffix));
                                 }
                                 if crate::types::parse_attachment_content(&msg.content).is_none()
                                     && edit_over.contains_key(&msg.timestamp)
                                 {
-                                    detail.push_str(" \u{00b7} edited");
+                                    detail.push_str(&tr(Msg::EditedSuffix));
                                 }
                                 // Attachment blob state joins the meta line: held/confirmed vs still travelling.
                                 if let Some((hash, _, _)) =
                                     crate::types::parse_attachment_content(&msg.content)
                                 {
                                     if msg.is_outgoing {
-                                        detail.push_str(if self.attach_confirmed.contains(&hash) {
-                                            " · blob delivered"
-                                        } else {
-                                            " · blob sending"
-                                        });
+                                        detail.push_str(&tr(
+                                            if self.attach_confirmed.contains(&hash) {
+                                                Msg::BlobDeliveredSuffix
+                                            } else {
+                                                Msg::BlobSendingSuffix
+                                            },
+                                        ));
                                     } else if !crate::storage::blob_present(&hash) {
-                                        detail.push_str(" · blob not here yet");
+                                        detail.push_str(&tr(Msg::BlobNotHereSuffix));
                                     }
                                 }
                                 let detail_size = msg_size * 0.75;
@@ -2911,12 +2869,12 @@ impl PhotonApp {
                                     if let Some(g) =
                                         slots[0].as_ref().map(|(_, g)| g).filter(|g| !g.is_empty())
                                     {
-                                        detail.push_str(&format!(" \u{00b7} they {}", g));
+                                        detail.push_str(&tr(Msg::ReactTheySuffix(g)));
                                     }
                                     if let Some(g) =
                                         slots[1].as_ref().map(|(_, g)| g).filter(|g| !g.is_empty())
                                     {
-                                        detail.push_str(&format!(" \u{00b7} you {}", g));
+                                        detail.push_str(&tr(Msg::ReactYouSuffix(g)));
                                     }
                                 }
                                 // Upper strip line: the meta text.
@@ -2931,18 +2889,18 @@ impl PhotonApp {
                                 );
                                 // Lower strip line: the ACTION ROW — reply · edit · copy/copied · resend · delete. Conditional pills: edit only for outgoing (stub until the message-format rework), resend only for undelivered outgoing (manual re-fire on the chain), delete always (LOCAL until tombstones — fleet sync may resurrect it), reply always. Each pill stamps its own hit id with generous padding.
                                 let (copy_label, copy_colour) = if self.selected_msg_copied {
-                                    ("copied", *theme::SEARCH_FOUND_COLOUR)
+                                    (tr(Msg::CopiedPill), *theme::SEARCH_FOUND_COLOUR)
                                 } else {
-                                    ("copy", *theme::COPY_PILL_COLOUR)
+                                    (tr(Msg::CopyPill), *theme::COPY_PILL_COLOUR)
                                 };
-                                let mut pills: Vec<(&str, u32, HitId)> =
-                                    vec![("reply", *theme::COPY_PILL_COLOUR, self.msg_action_base)];
+                                let mut pills: Vec<(std::borrow::Cow<'static, str>, u32, HitId)> =
+                                    vec![(tr(Msg::ReplyPill), *theme::COPY_PILL_COLOUR, self.msg_action_base)];
                                 if msg.is_outgoing
                                     && crate::types::parse_attachment_content(&msg.content)
                                         .is_none()
                                 {
                                     pills.push((
-                                        "edit",
+                                        tr(Msg::EditPill),
                                         *theme::COPY_PILL_COLOUR,
                                         self.msg_action_base.wrapping_add(1),
                                     ));
@@ -2950,7 +2908,7 @@ impl PhotonApp {
                                 pills.push((copy_label, copy_colour, self.msg_copy_id));
                                 if msg.is_outgoing && !msg.delivered {
                                     pills.push((
-                                        "resend",
+                                        tr(Msg::ResendPill),
                                         *theme::HOURGLASS_COLOUR,
                                         self.msg_action_base.wrapping_add(2),
                                     ));
@@ -2962,11 +2920,11 @@ impl PhotonApp {
                                     let held = crate::storage::blob_present(&hash);
                                     let is_rec = crate::types::is_call_recording(&msg.content);
                                     let (label, colour) = if !held {
-                                        ("fetch", *theme::HOURGLASS_COLOUR)
+                                        (tr(Msg::FetchPill), *theme::HOURGLASS_COLOUR)
                                     } else if is_rec {
-                                        ("\u{25B6} play", *theme::COPY_PILL_COLOUR)
+                                        (tr(Msg::PlayPill), *theme::COPY_PILL_COLOUR)
                                     } else {
-                                        ("save", *theme::SEARCH_FOUND_COLOUR)
+                                        (tr(Msg::SavePill), *theme::SEARCH_FOUND_COLOUR)
                                     };
                                     pills.push((label, colour, self.msg_action_base.wrapping_add(4)));
                                 }
@@ -2975,11 +2933,11 @@ impl PhotonApp {
                                         *k == (ci, msg.timestamp, msg.is_outgoing)
                                     });
                                 pills.push((
-                                    if deleting {
-                                        "deleting\u{2026}"
+                                    tr(if deleting {
+                                        Msg::DeletingPill
                                     } else {
-                                        "delete"
-                                    },
+                                        Msg::DeletePill
+                                    }),
                                     *theme::ERROR_TEXT_COLOUR,
                                     self.msg_action_base.wrapping_add(3),
                                 ));
@@ -2995,10 +2953,10 @@ impl PhotonApp {
                                     let style = TextStyle::new(detail_size, colour)
                                         .weight(600)
                                         .font("Oxanium");
-                                    let w = ctx.text.measure_text(label, &style);
+                                    let w = ctx.text.measure_text(&label, &style);
                                     ctx.text.draw_text_left(
                                         &mut canvas,
-                                        label,
+                                        &label,
                                         px_cursor,
                                         y - line_h,
                                         &style,
@@ -3359,8 +3317,8 @@ impl PhotonApp {
                                 })
                                 .unwrap_or(*theme::LABEL_COLOUR);
                             let text = match strip_kind {
-                                1 => format!("editing \u{00bb} {}", snippet),
-                                2 => format!("react \u{00bb} {}", snippet),
+                                1 => tr(Msg::EditingSnippet(&snippet)).into_owned(),
+                                2 => tr(Msg::ReactSnippet(&snippet)).into_owned(),
                                 _ => format!("\u{00bb} {}", snippet),
                             };
                             ctx.text.draw_text_left(
@@ -3410,7 +3368,7 @@ impl PhotonApp {
                                     buf_w,
                                     buf_h,
                                     rect,
-                                    "stop",
+                                    &tr(Msg::StopPill),
                                     self.msg_action_base.wrapping_add(5),
                                     ctx.pressed_hit,
                                     true,
@@ -3496,10 +3454,10 @@ impl PhotonApp {
                 let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
                 let back_y = buf_h as f32 * 0.06 + unit;
                 let back_size = unit * 1.15;
-                let back_text = "‹ Contacts";
+                let back_text = tr(Msg::BackToContacts);
                 ctx.text.draw_text_left(
                     &mut canvas,
-                    back_text,
+                    &back_text,
                     unit,
                     back_y,
                     &TextStyle::new(back_size, *theme::CONTACT_NAME_COLOUR)
@@ -3509,7 +3467,7 @@ impl PhotonApp {
                     None,
                 );
                 let back_w = ctx.text.measure_text(
-                    back_text,
+                    &back_text,
                     &TextStyle::new(back_size, 0).weight(500).font("Oxanium"),
                 );
                 restamp_hit_rect(
@@ -3536,7 +3494,7 @@ impl PhotonApp {
             // Two header rows above the field.
             ctx.text.draw_text_center(
                 &mut canvas,
-                "Add a device",
+                &tr(Msg::AddDeviceTitle),
                 cx,
                 tb_cy - u * 2.5,
                 &TextStyle::new(u * 0.85, *theme::STATUS_TEXT_COLOUR)
@@ -3546,16 +3504,16 @@ impl PhotonApp {
                 None,
             );
             let subtitle = if self.add_device_bound.is_none() {
-                "Type the words shown on the new device"
+                tr(Msg::TypeWords)
             } else if self.add_device_checking {
-                "" // Words path: bound + auto-rotating; the status row below carries "Adding…".
+                "".into() // Words path: bound + auto-rotating; the status row below carries "Adding…".
             } else {
                 // BLE/tap path only: load-bearing — the human must check the FAR (new) device's screen, not this one.
-                "Confirm only once the new device shows it's in"
+                tr(Msg::AddDeviceConfirmOnce)
             };
             ctx.text.draw_text_center(
                 &mut canvas,
-                subtitle,
+                &subtitle,
                 cx,
                 tb_cy - u * 1.35,
                 &TextStyle::new(u * 0.45, *theme::STATUS_TEXT_COLOUR).font("Oxanium"),
@@ -3587,7 +3545,11 @@ impl PhotonApp {
                     .unwrap_or_default();
                 let count = crate::network::fgtw::fleet::pair_word_tokens(&typed);
                 let full = count == crate::network::fgtw::fleet::PAIR_WORD_COUNT;
-                let counter = format!("{count} / {}", crate::network::fgtw::fleet::PAIR_WORD_COUNT);
+                let counter = format!(
+                    "{} / {}",
+                    crate::fmt_num(count as u32),
+                    crate::fmt_num(crate::network::fgtw::fleet::PAIR_WORD_COUNT as u32)
+                );
                 let counter_colour = if full {
                     *theme::SEARCH_FOUND_COLOUR
                 } else {
@@ -3615,7 +3577,7 @@ impl PhotonApp {
                 if !nearby.is_empty() {
                     ctx.text.draw_text_center(
                         &mut canvas,
-                        "or tap the nearby device asking to join:",
+                        &tr(Msg::TapNearby),
                         cx,
                         y + u * 0.2,
                         &TextStyle::new(u * 0.4, fluor::theme::HINT_COLOUR).font("Oxanium"),
@@ -3625,7 +3587,7 @@ impl PhotonApp {
                     y += u * 0.4 + gap * 0.5;
                     let row_h = u * 0.85;
                     for (i, cand) in nearby.iter().enumerate() {
-                        let label = format!("{}   · nearby", cand.name);
+                        let label = tr(Msg::AddDeviceNearby(&cand.name));
                         let held = ctx.pressed_hit != HIT_NONE
                             && ctx.pressed_hit
                                 == self.add_candidate_hit_base.wrapping_add(i as HitId);
@@ -3659,7 +3621,7 @@ impl PhotonApp {
                 // Green-confirm affordance (two-phase) — sits IN the field slot (tb_cy), the same place the words field would be. On the WORDS path the Bound handler auto-fires the rotation, so this never renders; it's the tap/BLE gate. Hit-stamped so Android taps land.
                 ctx.text.draw_text_center(
                     &mut canvas,
-                    "Yes, it's green \u{2014} finish",
+                    &tr(Msg::YesGreenFinish),
                     cx,
                     tb_cy,
                     &TextStyle::new(u * 0.7, *theme::SEARCH_FOUND_COLOUR)
@@ -3703,7 +3665,7 @@ impl PhotonApp {
             // Cancel hint (the orb cancels; matching words bind automatically).
             ctx.text.draw_text_center(
                 &mut canvas,
-                "tap the orb to cancel",
+                &tr(Msg::TapOrbCancel),
                 cx,
                 y + u * 0.22,
                 &TextStyle::new(u * 0.4, *theme::STATUS_TEXT_COLOUR).font("Oxanium"),
@@ -3740,6 +3702,16 @@ impl PhotonApp {
                     );
                 }
             }
+            if page == SettingsPage::You {
+                if let Some(dd) = self.settings_lang_dropdown.as_mut() {
+                    dd.render_popup_into(
+                        &mut canvas,
+                        ctx.text,
+                        None,
+                        Some(&mut chrome.hit_test_map),
+                    );
+                }
+            }
 
             // Status toast ("Sending log (N KiB)…", "Log sent √", "Device removed √", ...) — the Ready screen draws `ready_toast` in its hint slot, but settings is a different AppState, so without this the toasts fired FROM settings pages (log submit, device remove) were invisible. Bottom of the content pane, painted early so under-blend keeps it above the page body; event-shown, cleared on the next interaction via clear_hints, never time-based.
             if let Some(msg) = &self.ready_toast {
@@ -3761,7 +3733,7 @@ impl PhotonApp {
             let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
             ctx.text.draw_text_center(
                 &mut canvas,
-                "Settings",
+                &tr(Msg::SettingsTitle),
                 layout.content.x,
                 layout.header.center_y(),
                 &TextStyle::new(hspan, *theme::CONTACT_NAME_COLOUR)
@@ -3782,7 +3754,7 @@ impl PhotonApp {
                 // Text FIRST (topmost-first → in front), THEN the fill behind it. 50%-black (α = 0x80) in darkness space is 0x80_FF_FF_FF (visible black is 0xFFFFFF in the RGB bytes); brighter when held.
                 ctx.text.draw_text_left(
                     &mut canvas,
-                    "‹ Back",
+                    &tr(Msg::SettingsBack),
                     r.x + rspan * 0.6,
                     r.center_y(),
                     &TextStyle::new(rspan, *theme::SEARCH_FOUND_COLOUR)
@@ -3848,7 +3820,7 @@ impl PhotonApp {
                 // Label FIRST (in front), then the highlight fill behind it.
                 ctx.text.draw_text_left(
                     &mut canvas,
-                    p.label(),
+                    &tr(Msg::PageName(*p)),
                     r.x + rspan * 0.6,
                     r.center_y(),
                     &TextStyle::new(rspan, colour)
@@ -3958,10 +3930,13 @@ impl PhotonApp {
                             continue;
                         }
                         match row {
-                            YouRow::Header(title) => {
+                            YouRow::Header(tier) => {
+                                // The plan carries the tier ID; the label translates at this draw edge (unknown ids can't happen, the raw id is the guard fallback).
+                                let title = profile_tier_label(tier)
+                                    .unwrap_or(std::borrow::Cow::Borrowed(*tier));
                                 ctx.text.draw_text_left(
                                     &mut canvas,
-                                    title,
+                                    &title,
                                     r.x + tspan * 0.3,
                                     r.center_y(),
                                     &TextStyle::new(tspan, *theme::CONTACT_NAME_COLOUR)
@@ -4022,7 +3997,7 @@ impl PhotonApp {
                             YouRow::AddHeader => {
                                 ctx.text.draw_text_left(
                                     &mut canvas,
-                                    "Add a custom field",
+                                    &tr(Msg::YouAddCustomField),
                                     r.x + tspan * 0.3,
                                     r.center_y(),
                                     &TextStyle::new(tspan, *theme::CONTACT_NAME_COLOUR)
@@ -4054,18 +4029,18 @@ impl PhotonApp {
                                     buf_w,
                                     buf_h,
                                     cols[1].center_h(0.72),
-                                    "Add",
+                                    &tr(Msg::Add),
                                     btn_base.wrapping_add(2),
                                     ctx.pressed_hit,
                                 );
                             }
                             YouRow::Note => {
-                                ctx.text.draw_text_left(&mut canvas, "Your handle IS your identity — you don't have to set any of this.", r.x + hspan2 * 0.3, r.center_y(), &TextStyle::new(hspan2, *theme::LABEL_COLOUR).font("Oxanium"), Some(content_clip), None);
+                                ctx.text.draw_text_left(&mut canvas, &tr(Msg::YouNote), r.x + hspan2 * 0.3, r.center_y(), &TextStyle::new(hspan2, *theme::LABEL_COLOUR).font("Oxanium"), Some(content_clip), None);
                             }
                             YouRow::IdentityHeader => {
                                 ctx.text.draw_text_left(
                                     &mut canvas,
-                                    "Identity",
+                                    &tr(Msg::YouIdentity),
                                     r.x + tspan * 0.3,
                                     r.center_y(),
                                     &TextStyle::new(tspan, *theme::CONTACT_NAME_COLOUR)
@@ -4095,6 +4070,31 @@ impl PhotonApp {
                                     None,
                                 );
                             }
+                            YouRow::Language => {
+                                // Label left, picker right — the dropdown is positioned inline at draw (the Flow-page widget pattern), entries are autonyms.
+                                ctx.text.draw_text_left(
+                                    &mut canvas,
+                                    &tr(Msg::LanguageLabel),
+                                    r.x + hspan2 * 0.3,
+                                    r.center_y(),
+                                    &TextStyle::new(hspan2, *theme::LABEL_COLOUR).font("Oxanium"),
+                                    Some(content_clip),
+                                    None,
+                                );
+                                if let Some(dd) = self.settings_lang_dropdown.as_mut() {
+                                    let dw = (r.w * 0.42).max(hspan2 * 8.0);
+                                    dd.set_rect(r.x + r.w - dw * 0.5 - hspan2 * 0.3, r.center_y(), dw, r.h * 0.82);
+                                    dd.set_font_size(hspan2 * 0.9);
+                                    dd.render_content_into(
+                                        &mut canvas,
+                                        0.,
+                                        0.,
+                                        ctx.text,
+                                        None,
+                                        Some(&mut chrome.hit_test_map),
+                                    );
+                                }
+                            }
                             YouRow::SavePill => {
                                 draw_stub_pill(
                                     &mut canvas,
@@ -4103,7 +4103,7 @@ impl PhotonApp {
                                     buf_w,
                                     buf_h,
                                     r.center_h(pillf(0.5)),
-                                    "Update",
+                                    &tr(Msg::Update),
                                     btn_base.wrapping_add(0),
                                     ctx.pressed_hit,
                                 );
@@ -4117,7 +4117,7 @@ impl PhotonApp {
                                     buf_w,
                                     buf_h,
                                     r.center_h(pillf(0.5)),
-                                    "Change avatar…",
+                                    &tr(Msg::ChangeAvatar),
                                     btn_base.wrapping_add(1),
                                     ctx.pressed_hit,
                                 );
@@ -4131,8 +4131,8 @@ impl PhotonApp {
                     let devices = &fleet_devices;
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, "Your devices", tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                    flow.line(&mut canvas, ctx.text, "Tap a name to copy its key.", hspan2 * 0.82, *theme::LABEL_COLOUR, 400);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::FleetTitle), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::FleetTapToCopy), hspan2 * 0.82, *theme::LABEL_COLOUR, 400);
                     flow.gap(hspan2 * 0.8);
                     for (i, (pk, is_self, online, retired, name, link, tier, about)) in
                         devices.iter().take(6).enumerate()
@@ -4175,18 +4175,18 @@ impl PhotonApp {
                         );
                         // STATUS line: state + link path in one sentence.
                         let (status, status_colour) = if *is_self {
-                            ("this device".to_string(), *theme::LABEL_COLOUR)
+                            (tr(Msg::ThisDevice), *theme::LABEL_COLOUR)
                         } else if *retired {
-                            ("retired \u{2014} still yours".to_string(), *theme::LABEL_COLOUR)
+                            (tr(Msg::RetiredStillYours), *theme::LABEL_COLOUR)
                         } else if row_locked {
-                            ("locked out".to_string(), theme::PILL_RED.1)
+                            (tr(Msg::LockedOut), theme::PILL_RED.1)
                         } else if *online {
                             (
-                                if link.is_empty() { "online".to_string() } else { format!("online \u{00b7} {link}") },
+                                if link.is_empty() { tr(Msg::Online) } else { tr(Msg::OnlineVia(link)) },
                                 *theme::SEARCH_FOUND_COLOUR,
                             )
                         } else {
-                            ("offline".to_string(), *theme::LABEL_COLOUR)
+                            (tr(Msg::Offline), *theme::LABEL_COLOUR)
                         };
                         flow.line(&mut canvas, ctx.text, &status, hspan2 * 0.85, status_colour, 400);
                         // BUILD line — version · commit · os arch off the sealed pong tail (self shows its own build). A stale version here IS the not-updated indicator.
@@ -4200,7 +4200,7 @@ impl PhotonApp {
                             .is_some_and(|(d, _, _)| d == pk);
                         if *retired {
                             let armed = self.fleet_release_armed.as_ref() == Some(pk);
-                            let label = if armed { "Release \u{2014} sure?" } else { "Release" };
+                            let label = tr(Msg::ReleasePill { armed });
                             let band = flow.band(hspan2 * 2.4);
                             draw_stub_pill_filled(
                                 &mut canvas,
@@ -4209,7 +4209,7 @@ impl PhotonApp {
                                 buf_w,
                                 buf_h,
                                 fluor::region::Region::new(band.x + hspan2 * 0.3, band.y + band.h * 0.1, (band.w * 0.4).max(hspan2 * 6.0), band.h * 0.8),
-                                label,
+                                &label,
                                 btn_base.wrapping_add(24 + i as HitId),
                                 ctx.pressed_hit,
                                 true,
@@ -4229,19 +4229,16 @@ impl PhotonApp {
                                 x += w + hspan2 * 0.6;
                             };
                             let bridge_fill = if *online { Some(*theme::PILL_GREEN) } else { Some(*theme::PILL_GREY) };
-                            place(&mut canvas, ctx.text, &mut chrome.hit_test_map, "Bridge", btn_base.wrapping_add(8 + i as HitId), bridge_fill);
+                            place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::BridgePill), btn_base.wrapping_add(8 + i as HitId), bridge_fill);
                             if departing {
                                 let armed = self.fleet_approve_armed.as_ref() == Some(pk);
-                                let label = if armed { "Approve sign-out \u{2014} sure?" } else { "Approve sign-out" };
-                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, label, btn_base.wrapping_add(48 + i as HitId), Some(if armed { *theme::PILL_RED } else { *theme::PILL_YELLOW }));
+                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::ApproveSignOutPill { armed }), btn_base.wrapping_add(48 + i as HitId), Some(if armed { *theme::PILL_RED } else { *theme::PILL_YELLOW }));
                             } else if row_locked {
                                 let armed = self.fleet_unlock_armed.as_ref() == Some(pk);
-                                let label = if armed { "Unlock \u{2014} sure?" } else { "Unlock" };
-                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, label, btn_base.wrapping_add(40 + i as HitId), if armed { Some(*theme::PILL_RED) } else { None });
+                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::UnlockPill { armed }), btn_base.wrapping_add(40 + i as HitId), if armed { Some(*theme::PILL_RED) } else { None });
                             } else {
                                 let armed = self.fleet_lock_armed.as_ref() == Some(pk);
-                                let label = if armed { "Lock out \u{2014} sure?" } else { "Lock out" };
-                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, label, btn_base.wrapping_add(32 + i as HitId), if armed { Some(*theme::PILL_RED) } else { None });
+                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::LockOutPill { armed }), btn_base.wrapping_add(32 + i as HitId), if armed { Some(*theme::PILL_RED) } else { None });
                             }
                         }
                         // AIR between device cards — the whole point.
@@ -4252,11 +4249,13 @@ impl PhotonApp {
                         .iter()
                         .any(|(_, is_self, _, retired, ..)| !*is_self && !*retired);
                     if single_copy {
-                        flow.prose(&mut canvas, ctx.text, "Your message history lives only on this device \u{2014} add a device to replicate it.", hspan2, theme::PILL_RED.1, 500);
+                        flow.prose(&mut canvas, ctx.text, &tr(Msg::SingleCopyWarning), hspan2, theme::PILL_RED.1, 500);
                     } else {
-                        flow.prose(&mut canvas, ctx.text, "A device can only sign itself out \u{2014} and its hardware stays yours until you release it.", hspan2, *theme::LABEL_COLOUR, 400);
+                        flow.prose(&mut canvas, ctx.text, &tr(Msg::DeviceSignsItselfOut), hspan2, *theme::LABEL_COLOUR, 400);
                     }
                     flow.gap(hspan2 * 0.5);
+                    let add_device_label = tr(Msg::AddDevicePill);
+                    let rename_label = tr(Msg::RenamePill);
                     flow_pills(
                         &mut flow,
                         &mut canvas,
@@ -4267,8 +4266,8 @@ impl PhotonApp {
                         ctx.pressed_hit,
                         hspan2,
                         &[
-                            ("Add device", btn_base, true),
-                            ("Rename", btn_base.wrapping_add(1), true),
+                            (add_device_label.as_ref(), btn_base, true),
+                            (rename_label.as_ref(), btn_base.wrapping_add(1), true),
                         ],
                     );
                     flow.gap(hspan2);
@@ -4278,11 +4277,11 @@ impl PhotonApp {
                     // SECURITY, Flow rework (Nick 2026-09-02): SHORT pill labels with the explanation as a wrapped hint BELOW each pill (the parentheticals moved out of the buttons), everything wrapping at the pane edge. Destructiveness ramp unchanged: Lock (green, reversible) · Remove (yellow) · Shred (orange) · Remove & shred (red); the wipers stay two-tap + mutually exclusive; hit ids unchanged (0..3 + the unattended base).
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, "Security", tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                    flow.prose(&mut canvas, ctx.text, "Four actions, ordered by how much they destroy. The colour is the warning.", hspan2, *theme::LABEL_COLOUR, 400);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.prose(&mut canvas, ctx.text, &tr(Msg::SecurityIntro), hspan2, *theme::LABEL_COLOUR, 400);
                     flow.gap(hspan2 * 0.6);
                     // One pill + its hint, flowed. Armed actions turn their hint red + bold — the confirm state IS the explanation.
-                    let mut action = |flow: &mut Flow,
+                    let action = |flow: &mut Flow,
                                       canvas: &mut Canvas,
                                       text: &mut fluor::text::TextRenderer,
                                       hit_map: &mut [HitId],
@@ -4310,34 +4309,34 @@ impl PhotonApp {
                         flow.y += (n.max(1) as Coord) * hspan2 * 0.85 * 1.25 + hspan2 * 0.9;
                     };
                     action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                        "Lock",
-                        "Locks this device until you re-type your handle. Fully reversible — nothing is deleted.",
+                        &tr(Msg::SecurityLock),
+                        &tr(Msg::SecurityLockHint),
                         0, *theme::PILL_GREEN, false);
                     action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                        if self.settings_remove_armed { "Remove from fleet — sure?" } else { "Remove from fleet" },
-                        "Signs this device out of your fleet with your other devices' consent. Your identity and history live on thru them; nothing is wiped here.",
+                        &tr(Msg::SecurityRemove { armed: self.settings_remove_armed }),
+                        &tr(Msg::SecurityRemoveHint),
                         1, if self.settings_remove_armed { *theme::PILL_RED } else { *theme::PILL_YELLOW }, self.settings_remove_armed);
                     action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                        if self.settings_shred_armed { "Shred — sure?" } else { "Shred" },
-                        "Crypto-wipes the vault and identity on this device — irreversible. The device STAYS signed in to your fleet; to pass it on, use Remove & shred instead.",
+                        &tr(Msg::SecurityShred { armed: self.settings_shred_armed }),
+                        &tr(Msg::SecurityShredHint),
                         2, *theme::PILL_ORANGE, self.settings_shred_armed);
                     action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                        if self.settings_removeshred_armed { "Remove & shred — sure?" } else { "Remove & shred" },
-                        "Signs this device out of your fleet, then wipes it — irreversible. The right way to sell or give a device away.",
+                        &tr(Msg::SecurityRemoveShred { armed: self.settings_removeshred_armed }),
+                        &tr(Msg::SecurityRemoveShredHint),
                         3, *theme::PILL_RED, self.settings_removeshred_armed);
                     flow.gap(hspan2 * 0.4);
-                    flow.line(&mut canvas, ctx.text, "Security: strong   \u{00b7}   Recovery: not set up", hspan2, *theme::LABEL_COLOUR, 400);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::SecurityStatusLine), hspan2, *theme::LABEL_COLOUR, 400);
                     flow.gap(hspan2 * 0.8);
                     // ── Load on startup (Nick 2026-09-03: auto-attest does no good unless the app also LOADS on reboot — the two belong side by side). The OS artifact IS the setting (platform::autostart, default-ON); the dispatch in protocol.rs works from any page, only the render lives here.
                     #[cfg(not(target_os = "android"))]
                     {
                         let cb_band = flow.band(hspan2 * 2.0);
                         if let Some(cb) = self.settings_background_check.as_mut() {
-                            let label = "Load on startup";
-                            cb.set_label(label);
+                            let label = tr(Msg::LoadOnStartup);
+                            cb.set_label(&*label);
                             cb.set_font_size(hspan2);
                             let cb_h = hspan2 * 1.3;
-                            let label_w = ctx.text.measure_text(label, &TextStyle::new(hspan2, 0));
+                            let label_w = ctx.text.measure_text(&label, &TextStyle::new(hspan2, 0));
                             let w = cb_h + hspan2 * 0.5 + label_w + hspan2 * 0.3;
                             cb.set_rect(cb_band.x + w * 0.5, cb_band.center_y(), w, cb_h);
                             cb.render_content_into(
@@ -4347,20 +4346,20 @@ impl PhotonApp {
                                 Some(&mut chrome.hit_test_map),
                             );
                         }
-                        flow.prose(&mut canvas, ctx.text, "Starts photon in the background at login and keeps it running when the window closes (visible in your OS's own startup list). Pair it with auto-attest below and a reboot comes back reachable with nothing typed.", hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                        flow.prose(&mut canvas, ctx.text, &tr(Msg::LoadOnStartupExplainer), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
                         flow.gap(hspan2 * 0.8);
                     }
                     // ── DANGEROUS: unattended auto-attest-on-reboot. Off by default. Two states, both INLINE (no floating overlay — an over-content modal drawn after chrome.flatten_into never composited its glyphs): the checkbox+disclaimer, OR (while a flip is pending) a handle-entry confirmation that re-proves the operator before arming/disarming.
-                    flow.line(&mut canvas, ctx.text, "\u{26A0} Auto-attest on reboot (unattended)", hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::UnattendedTitle), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
                     if let Some(target_on) = self.unattended_confirm {
                         flow.prose(
                             &mut canvas,
                             ctx.text,
-                            if target_on {
-                                "Re-type your handle to ARM. After this, the box becomes you on every reboot with nothing typed."
+                            &tr(if target_on {
+                                Msg::UnattendedArmExplainer
                             } else {
-                                "Re-type your handle to disarm:"
-                            },
+                                Msg::UnattendedDisarmExplainer
+                            }),
                             hspan2,
                             *theme::ERROR_TEXT_COLOUR,
                             600,
@@ -4381,7 +4380,7 @@ impl PhotonApp {
                             );
                         }
                         if self.unattended_confirm_failed {
-                            flow.line(&mut canvas, ctx.text, "Handle didn't match — try again.", hspan2, *theme::ERROR_TEXT_COLOUR, 600);
+                            flow.line(&mut canvas, ctx.text, &tr(Msg::UnattendedMismatch), hspan2, *theme::ERROR_TEXT_COLOUR, 600);
                         }
                         let band = flow.band(hspan2 * 2.4);
                         let pill_h = band.h * 0.8;
@@ -4389,13 +4388,13 @@ impl PhotonApp {
                         draw_stub_pill_filled(
                             &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h,
                             fluor::region::Region::new(band.x + hspan2 * 0.3, py, band.w * 0.38, pill_h),
-                            if target_on { "Arm" } else { "Disarm" },
+                            &tr(if target_on { Msg::Arm } else { Msg::Disarm }),
                             self.unattended_confirm_base, ctx.pressed_hit, true, Some(*theme::PILL_RED), "Open Sans",
                         );
                         draw_stub_pill(
                             &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h,
                             fluor::region::Region::new(band.x + band.w * 0.45, py, band.w * 0.3, pill_h),
-                            "Cancel",
+                            &tr(Msg::Cancel),
                             self.unattended_confirm_base.wrapping_add(1), ctx.pressed_hit,
                         );
                     } else {
@@ -4416,7 +4415,7 @@ impl PhotonApp {
                             );
                         }
                         let (dc, dw) = if armed { (*theme::ERROR_TEXT_COLOUR, 600) } else { (*theme::LABEL_COLOUR, 400) };
-                        flow.prose(&mut canvas, ctx.text, "BAD IDEA on any device you carry — it defeats the whole point of a passless identity: after a reboot this box becomes YOU with no handle typed. Only for remote failsafe boxes you physically control.", hspan2 * 0.9, dc, dw);
+                        flow.prose(&mut canvas, ctx.text, &tr(Msg::UnattendedWarning), hspan2 * 0.9, dc, dw);
                     }
                     flow.gap(hspan2);
                     measured_extent = Some((flow.used(), inset.h));
@@ -4425,14 +4424,14 @@ impl PhotonApp {
                     // RECOVERY, Flow rework (ticket queue 2026-09-02): everything wraps at the pane edge, the checkbox positions inline (the About-checkbox pattern), and the measured extent replaces the hand-counted 8-row estimate.
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, "Recovery", tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                    flow.line(&mut canvas, ctx.text, &format!("Custodians (v{})", crate::dozenal_glyphs(1)), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::CustodiansVersion(&crate::dozenal_glyphs(1))), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.gap(hspan2 * 0.4);
                     if let Some(cb) = self.settings_custodian_check.as_mut() {
                         let band = flow.band(hspan2 * 2.0);
                         let cb_h = hspan2 * 1.3;
                         cb.set_font_size(hspan2);
-                        let label_w = ctx.text.measure_text("Be a custodian for others", &TextStyle::new(hspan2, 0));
+                        let label_w = ctx.text.measure_text(&tr(Msg::CustodianCheckbox), &TextStyle::new(hspan2, 0));
                         let w = cb_h + hspan2 * 0.5 + label_w + hspan2 * 0.3;
                         cb.set_rect(band.x + w * 0.5, band.center_y(), w, cb_h);
                         cb.render_content_into(
@@ -4447,7 +4446,7 @@ impl PhotonApp {
                     flow.prose(
                         &mut canvas,
                         ctx.text,
-                        "One box on purpose: custodians never learn whose recovery they hold, and owners never learn which friends hold theirs — what can't be named can't collude.",
+                        &tr(Msg::CustodianExplainer),
                         hspan2,
                         *theme::LABEL_COLOUR,
                         400,
@@ -4463,7 +4462,7 @@ impl PhotonApp {
                         &mut canvas,
                         ctx.text,
                         rows[0],
-                        "Appearance",
+                        &tr(Msg::PageName(page)),
                         tspan,
                         *theme::CONTACT_NAME_COLOUR,
                         600,
@@ -4472,7 +4471,7 @@ impl PhotonApp {
                         &mut canvas,
                         ctx.text,
                         rows[1],
-                        "Theme",
+                        &tr(Msg::Theme),
                         hspan2,
                         *theme::LABEL_COLOUR,
                         400,
@@ -4491,7 +4490,7 @@ impl PhotonApp {
                         &mut canvas,
                         ctx.text,
                         rows[3],
-                        "Party colours (placeholder → perceptual L≈50%)",
+                        &tr(Msg::PartyColours),
                         hspan2,
                         *theme::LABEL_COLOUR,
                         400,
@@ -4500,7 +4499,7 @@ impl PhotonApp {
                         &mut canvas,
                         ctx.text,
                         rows[4],
-                        "Zoom / text size",
+                        &tr(Msg::ZoomTextSize),
                         hspan2,
                         *theme::LABEL_COLOUR,
                         400,
@@ -4516,7 +4515,7 @@ impl PhotonApp {
                         &mut canvas,
                         ctx.text,
                         rows[6],
-                        "Colour calibration (Android panel)",
+                        &tr(Msg::ColourCalibration),
                         hspan2,
                         *theme::LABEL_COLOUR,
                         400,
@@ -4526,14 +4525,18 @@ impl PhotonApp {
                     // NOTIFICATIONS, Flow rework: one checkbox per flowed band (left-aligned, widths measured per label), everything wraps, measured extent replaces the row estimate. Presence stays COMMENTED OUT (Nick 2026-09-01) — field + dispatch compiled for a one-line restore.
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, "Notifications", tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::NotificationsTitle), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.gap(hspan2 * 0.4);
                     // The background/load-on-startup toggle MOVED to Security (Nick 2026-09-03) — it belongs beside the auto-attest arm it enables, not among the alert sounds.
+                    let chime = tr(Msg::ChimeNewMessage);
+                    let vib_msg = tr(Msg::VibrateNewMessage);
+                    let ring_call = tr(Msg::RingIncomingCall);
+                    let vib_call = tr(Msg::VibrateIncomingCall);
                     let boxes: [(Option<&mut fluor::widgets::Checkbox>, &str); 4] = [
-                        (self.settings_chime_check.as_mut(), "Chime on new message"),
-                        (self.settings_vibrate_msg_check.as_mut(), "Vibrate on new message"),
-                        (self.settings_ring_call_check.as_mut(), "Ring on incoming call"),
-                        (self.settings_vibrate_call_check.as_mut(), "Vibrate on incoming call"),
+                        (self.settings_chime_check.as_mut(), &*chime),
+                        (self.settings_vibrate_msg_check.as_mut(), &*vib_msg),
+                        (self.settings_ring_call_check.as_mut(), &*ring_call),
+                        (self.settings_vibrate_call_check.as_mut(), &*vib_call),
                     ];
                     for (cb, label) in boxes {
                         let Some(cb) = cb else { continue };
@@ -4554,7 +4557,7 @@ impl PhotonApp {
                     flow.prose(
                         &mut canvas,
                         ctx.text,
-                        "Per-contact override lives in each conversation.",
+                        &tr(Msg::PerContactOverride),
                         hspan2,
                         *theme::LABEL_COLOUR,
                         400,
@@ -4570,7 +4573,7 @@ impl PhotonApp {
                         &mut canvas,
                         ctx.text,
                         rows[0],
-                        "Updates",
+                        &tr(Msg::UpdatesTitle),
                         tspan,
                         *theme::CONTACT_NAME_COLOUR,
                         600,
@@ -4579,7 +4582,7 @@ impl PhotonApp {
                         &mut canvas,
                         ctx.text,
                         rows[1],
-                        &format!("Photon {}", version_dozenal_glyphs()),
+                        &tr(Msg::PhotonVersion(&version_dozenal_glyphs())),
                         hspan2,
                         *theme::CONTACT_NAME_COLOUR,
                         400,
@@ -4604,30 +4607,24 @@ impl PhotonApp {
                                   state: &ChannelCheck,
                                   busy: bool| {
                         let (label, fill, enabled) = match state {
-                            ChannelCheck::Idle | ChannelCheck::Checking => (
-                                format!("Checking {kind}\u{2026}"),
-                                (*theme::PILL_GREY),
-                                false,
-                            ),
-                            ChannelCheck::Failed => {
-                                (format!("{kind} unavailable"), (*theme::PILL_GREY), false)
+                            ChannelCheck::Idle | ChannelCheck::Checking => {
+                                (tr(Msg::UpdateChecking(kind)), (*theme::PILL_GREY), false)
                             }
-                            ChannelCheck::Ready(None) => (
-                                format!("No {kind} build for this device"),
-                                (*theme::PILL_GREY),
-                                false,
-                            ),
+                            ChannelCheck::Failed => {
+                                (tr(Msg::UpdateUnavailable(kind)), (*theme::PILL_GREY), false)
+                            }
+                            ChannelCheck::Ready(None) => {
+                                (tr(Msg::UpdateNoBuild(kind)), (*theme::PILL_GREY), false)
+                            }
                             // Tuple equality IS the truth: patch 0 is the release marker and the version scheme guarantees a dev build never wears it (deploy.sh opens the dev line at .1; publishes are publish-current-then-bump) — so a dev build and the release can never be tuple-equal, and "already on" needs no flavour check.
-                            ChannelCheck::Ready(Some(row)) if row.version == ours => (
-                                format!("Already on {kind} {}", dozenal_version_tuple(row.version)),
-                                (*theme::PILL_GREY),
-                                false,
-                            ),
-                            ChannelCheck::Ready(Some(row)) => (
-                                format!("Get {kind} {}", dozenal_version_tuple(row.version)),
-                                avail_fill,
-                                !busy,
-                            ),
+                            ChannelCheck::Ready(Some(row)) if row.version == ours => {
+                                let ver = dozenal_version_tuple(row.version);
+                                (tr(Msg::UpdateAlreadyOn { kind, ver: &ver }), (*theme::PILL_GREY), false)
+                            }
+                            ChannelCheck::Ready(Some(row)) => {
+                                let ver = dozenal_version_tuple(row.version);
+                                (tr(Msg::UpdateGet { kind, ver: &ver }), avail_fill, !busy)
+                            }
                         };
                         draw_stub_pill_filled(
                             canvas,
@@ -4671,13 +4668,13 @@ impl PhotonApp {
                         let finishing = total > 0 && done >= total;
                         // Unknown length (old manifest without size + a chunked CDN stream): the label carries a live MiB counter so the bar area shows life even without a denominator.
                         let label = if finishing {
-                            "Updating\u{2026}".to_string()
+                            tr(Msg::Updating)
                         } else if total > 0 {
-                            "Downloading".to_string()
+                            tr(Msg::Downloading)
                         } else {
-                            format!("Downloading {} MiB\u{2026}", done >> 20)
+                            tr(Msg::DownloadingMiB((done >> 20) as i64))
                         };
-                        let label = label.as_str();
+                        let label = &*label;
                         let r = rows[7];
                         settings_line(
                             &mut canvas,
@@ -4744,7 +4741,7 @@ impl PhotonApp {
                         &mut canvas,
                         ctx.text,
                         hr[0],
-                        "Log",
+                        &tr(Msg::LogTitle),
                         tspan,
                         *theme::CONTACT_NAME_COLOUR,
                         600,
@@ -4756,7 +4753,7 @@ impl PhotonApp {
                         buf_w,
                         buf_h,
                         hr[1].center_h(0.85),
-                        "Back",
+                        &tr(Msg::DiagBack),
                         btn_base.wrapping_add(3),
                         ctx.pressed_hit,
                     );
@@ -4772,22 +4769,21 @@ impl PhotonApp {
                                     .to_string()
                             })
                             .unwrap_or_default();
-                        format!(
-                            "Record VSF · {} · {} line(s) · tap Back for the list",
-                            ts,
-                            lines.len()
-                        )
+                        tr(Msg::DiagRecordInspect { ts: &ts, lines: lines.len() }).into_owned()
                     } else if self.diag_log_rx.is_some() {
-                        "Decoding log\u{2026}".to_string()
+                        tr(Msg::DiagDecoding).into_owned()
                     } else if self.diag_log_rows.is_empty() {
-                        "Log is empty".to_string()
+                        tr(Msg::LogEmpty).into_owned()
                     } else {
-                        format!(
-                            "{} record(s) · {} KiB · newest at the bottom · tap a row for its VSF{}",
-                            self.diag_log_rows.len(),
-                            (crate::log_size_bytes() + 1023) / 1024,
-                            if self.diag_log_rows.len() >= DIAG_LOG_MAX_ROWS { " · oldest trimmed" } else { "" },
-                        )
+                        let mut m = tr(Msg::DiagMeta {
+                            count: self.diag_log_rows.len(),
+                            kib: ((crate::log_size_bytes() + 1023) / 1024) as usize,
+                        })
+                        .into_owned();
+                        if self.diag_log_rows.len() >= DIAG_LOG_MAX_ROWS {
+                            m.push_str(&tr(Msg::DiagTrimmed));
+                        }
+                        m
                     };
                     settings_line(
                         &mut canvas,
@@ -4875,7 +4871,7 @@ impl PhotonApp {
                         &mut canvas,
                         ctx.text,
                         rows[0],
-                        "Diagnostics",
+                        &tr(Msg::PageName(page)),
                         tspan,
                         *theme::CONTACT_NAME_COLOUR,
                         600,
@@ -4888,12 +4884,11 @@ impl PhotonApp {
                         &mut canvas,
                         ctx.text,
                         rows[1],
-                        &format!(
-                            "On-device log · {} of {} ({}%) · self-expires 24\u{2013}48h",
-                            human_bytes(used),
-                            human_bytes(cap),
-                            pct
-                        ),
+                        &tr(Msg::DiagInfo {
+                            used: &human_bytes(used),
+                            cap: &human_bytes(cap),
+                            pct: pct as u64,
+                        }),
                         hspan2,
                         *theme::LABEL_COLOUR,
                         400,
@@ -4906,7 +4901,7 @@ impl PhotonApp {
                         buf_w,
                         buf_h,
                         pr[0].center_h(0.85),
-                        "Clear",
+                        &tr(Msg::DiagClear),
                         btn_base.wrapping_add(0),
                         ctx.pressed_hit,
                     );
@@ -4917,7 +4912,7 @@ impl PhotonApp {
                         buf_w,
                         buf_h,
                         pr[1].center_h(0.85),
-                        "Snapshot",
+                        &tr(Msg::DiagSnapshot),
                         btn_base.wrapping_add(1),
                         ctx.pressed_hit,
                     );
@@ -4932,7 +4927,7 @@ impl PhotonApp {
                             buf_w,
                             buf_h,
                             pr[2].center_h(0.85),
-                            "Submit",
+                            &tr(Msg::DiagSubmit),
                             btn_base.wrapping_add(2),
                             ctx.pressed_hit,
                         );
@@ -4944,7 +4939,7 @@ impl PhotonApp {
                             buf_w,
                             buf_h,
                             pr[2].center_h(0.85),
-                            "Submit",
+                            &tr(Msg::DiagSubmit),
                             btn_base.wrapping_add(2),
                             ctx.pressed_hit,
                         );
@@ -4956,7 +4951,7 @@ impl PhotonApp {
                         buf_w,
                         buf_h,
                         pr[3].center_h(0.85),
-                        "View",
+                        &tr(Msg::DiagView),
                         btn_base.wrapping_add(3),
                         ctx.pressed_hit,
                     );
@@ -4964,7 +4959,7 @@ impl PhotonApp {
                         &mut canvas,
                         ctx.text,
                         rows[6],
-                        "Optional note",
+                        &tr(Msg::OptionalNote),
                         hspan2,
                         *theme::LABEL_COLOUR,
                         400,
@@ -4996,16 +4991,16 @@ impl PhotonApp {
                     use crate::call::calibrate::CalPhase;
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, "Wave", tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                    // The 1960 epigraph (docs/lexicon.md, captured off the physical page by the Lumis rig): the page is named for the proper sense, from before the debotcherization.
-                    flow.prose(&mut canvas, ctx.text, "wave: to motion with the hands, or with something held in them, in signal, greeting, or salute \\u{2014} Webster's, 1960", hspan2 * 0.8, *theme::LABEL_COLOUR, 400);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    // The 1960 epigraph (docs/lexicon.md, captured off the physical page by the Lumis rig): the page is named for the proper sense, from before the debotcherization. A doubled-escape bug used to render a literal "\u{2014}" here; the catalog arm carries the real em dash.
+                    flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveEpigraph), hspan2 * 0.8, *theme::LABEL_COLOUR, 400);
                     flow.gap(hspan2 * 0.5);
-                    flow.prose(&mut canvas, ctx.text, "Calls only sound right after Photon measures two things about this exact hardware: how much of the speaker's sound leaks back into the mic (that leak is what your friends hear as echo), and how loudly your voice lands on the mic. One short run of each, per speaker and per mic — redo either any time.", hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                    flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveIntroHow), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
                     flow.gap(hspan2 * 0.4);
-                    flow.prose(&mut canvas, ctx.text, "Setup: put the volume where you actually take calls, find somewhere reasonably quiet, and don't touch any buttons while a step runs — the mic is listening the whole time.", hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                    flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveIntroSetup), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
                     flow.gap(hspan2 * 0.4);
                     // The reassurance humans won't infer (Nick 2026-09-02: obvious, but people don't read — say it anyway): the mic is live during calibration, so state plainly that nothing recorded here goes anywhere. "No servers" is an architecture claim; "never leaves this device" is the sentence a person actually needs while a microphone is hot.
-                    flow.prose(&mut canvas, ctx.text, "Everything here happens entirely on this device. What the mic hears during calibration is measured, reduced to a few numbers, and thrown away — it is never stored as audio and never leaves this device. (There are no servers to send it to anyway.)", hspan2 * 0.9, *theme::SEARCH_FOUND_COLOUR, 400);
+                    flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveIntroPrivacy), hspan2 * 0.9, *theme::SEARCH_FOUND_COLOUR, 400);
                     flow.gap(hspan2 * 0.8);
                     let phase = crate::call::calibrate::phase();
                     let running = !matches!(phase, CalPhase::Idle | CalPhase::Done | CalPhase::Failed);
@@ -5015,65 +5010,69 @@ impl PhotonApp {
                     let voice_done = voice_calibrated;
 
                     // ── STEP 1: ECHO ─────────────────────────────────────────
-                    flow.line(&mut canvas, ctx.text, &format!("Step 1 \u{00b7} Echo check \u{2014} {}", if route.is_empty() { "no output yet".to_string() } else { route.clone() }), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                    let route_disp = if route.is_empty() { tr(Msg::WaveNoOutputYet).into_owned() } else { route.clone() };
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::WaveStep1Title(&route_disp)), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.line(
                         &mut canvas,
                         ctx.text,
-                        if echo_done { "measured \u{2713}" } else { "not measured \u{2014} calls wait on this" },
+                        &tr(if echo_done { Msg::WaveMeasuredTick } else { Msg::WaveNotMeasured }),
                         hspan2 * 0.85,
                         if echo_done { *theme::SEARCH_FOUND_COLOUR } else { *theme::SEARCH_FAIL_COLOUR },
                         500,
                     );
                     if phase == CalPhase::EchoListen {
-                        flow.prose(&mut canvas, ctx.text, "Playing\u{2026} stay quiet and let the whole sentence finish. Photon is listening to its OWN sound coming back thru your mic — any noise you make lands in the measurement.", hspan2 * 0.9, *theme::CONTACT_NAME_COLOUR, 500);
+                        flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveEchoListenInstruction), hspan2 * 0.9, *theme::CONTACT_NAME_COLOUR, 500);
                     } else {
-                        flow.prose(&mut canvas, ctx.text, "Photon plays a short recorded sentence thru this speaker and listens with the mic to measure the leak: how loud its own sound comes back, and how late. You don't say anything — just stay quiet for about five seconds while it plays.", hspan2 * 0.85, *theme::LABEL_COLOUR, 400);
+                        flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveEchoSetupInstruction), hspan2 * 0.85, *theme::LABEL_COLOUR, 400);
                     }
                     flow.gap(hspan2 * 0.3);
                     // NO SKIP (Nick 2026-09-02: "every device leaks, it's just how much — helium inside a stainless capsule will not stay there forever"): a headset's coupling isn't zero, it's small, and the instrument measures small just fine. Every route runs the echo check for real.
+                    let echo_pill = tr(if phase == CalPhase::EchoListen { Msg::WaveMeasuring } else if echo_done { Msg::RemeasureEcho } else { Msg::MeasureEcho });
                     flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2, &[(
-                        if phase == CalPhase::EchoListen { "Measuring\u{2026}" } else if echo_done { "Re-measure echo" } else { "Measure echo" },
+                        &*echo_pill,
                         btn_base,
                         !running,
                     )]);
                     flow.gap(hspan2 * 0.9);
 
                     // ── STEP 2: VOICE ────────────────────────────────────────
-                    flow.line(&mut canvas, ctx.text, &format!("Step 2 \u{00b7} Your voice \u{2014} {}", if mic.is_empty() { "no mic yet".to_string() } else { mic.clone() }), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                    let mic_disp = if mic.is_empty() { tr(Msg::WaveNoMicYet).into_owned() } else { mic.clone() };
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::WaveStep2Title(&mic_disp)), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.line(
                         &mut canvas,
                         ctx.text,
-                        if voice_done { "measured \u{2713}" } else { "not measured \u{2014} calls wait on this" },
+                        &tr(if voice_done { Msg::WaveMeasuredTick } else { Msg::WaveNotMeasured }),
                         hspan2 * 0.85,
                         if voice_done { *theme::SEARCH_FOUND_COLOUR } else { *theme::SEARCH_FAIL_COLOUR },
                         500,
                     );
                     match phase {
                         CalPhase::VoiceExample => {
-                            flow.prose(&mut canvas, ctx.text, "Listen \u{2014} this is the sentence you'll repeat:", hspan2 * 0.9, *theme::CONTACT_NAME_COLOUR, 500);
-                            flow.prose(&mut canvas, ctx.text, "\u{201C}The quick brown fox jumped over the lazy dogs\u{201D}", hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                            flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveVoiceExampleListen), hspan2 * 0.9, *theme::CONTACT_NAME_COLOUR, 500);
+                            flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveVoiceSentence), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
                         }
                         CalPhase::VoiceRepeat => {
-                            flow.prose(&mut canvas, ctx.text, "Now you \u{2014} say it once, in the voice you'd actually use on a call (hold the device how you normally would):", hspan2 * 0.9, *theme::CONTACT_NAME_COLOUR, 500);
-                            flow.prose(&mut canvas, ctx.text, "\u{201C}The quick brown fox jumped over the lazy dogs\u{201D}", hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
+                            flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveVoiceRepeatInstruction), hspan2 * 0.9, *theme::CONTACT_NAME_COLOUR, 500);
+                            flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveVoiceSentence), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
                         }
                         _ => {
-                            flow.prose(&mut canvas, ctx.text, "Two beats. First, LISTEN: Photon plays the test phrase once so you hear exactly what to say. Then, SPEAK: the mic opens and you say that same phrase back, in the voice you'd actually use on a call. That teaches Photon how loud YOUR voice lands on THIS mic \u{2014} and the quiet before you start teaches it what the room sounds like. Don't perform; just talk. About ten seconds total.", hspan2 * 0.85, *theme::LABEL_COLOUR, 400);
+                            flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveVoiceDefaultInstruction), hspan2 * 0.85, *theme::LABEL_COLOUR, 400);
                         }
                     }
                     flow.gap(hspan2 * 0.3);
+                    let voice_pill = tr(if matches!(phase, CalPhase::VoiceExample | CalPhase::VoiceRepeat) { Msg::WaveMeasuring } else if voice_done { Msg::RemeasureVoice } else { Msg::MeasureVoice });
                     flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2, &[(
-                        if matches!(phase, CalPhase::VoiceExample | CalPhase::VoiceRepeat) { "Measuring\u{2026}" } else if voice_done { "Re-measure voice" } else { "Measure voice" },
+                        &*voice_pill,
                         btn_base.wrapping_add(1),
                         !running,
                     )]);
                     flow.gap(hspan2 * 0.6);
                     if phase == CalPhase::Failed {
-                        flow.prose(&mut canvas, ctx.text, "Didn't catch that \u{2014} somewhere quieter, leave the volume alone, and run the step again.", hspan2 * 0.9, *theme::SEARCH_FAIL_COLOUR, 600);
+                        flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveFailedHint), hspan2 * 0.9, *theme::SEARCH_FAIL_COLOUR, 600);
                         flow.gap(hspan2 * 0.4);
                     }
                     if echo_done && voice_done {
-                        flow.prose(&mut canvas, ctx.text, "Both measured \u{2014} calls are open on this speaker + mic pair.", hspan2 * 0.9, *theme::SEARCH_FOUND_COLOUR, 500);
+                        flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveComplete), hspan2 * 0.9, *theme::SEARCH_FOUND_COLOUR, 500);
                     }
                     flow.gap(hspan2);
                     measured_extent = Some((flow.used(), inset.h));
@@ -5099,7 +5098,7 @@ impl PhotonApp {
                     // The two headline properties — the whole pitch in two words each.
                     ctx.text.draw_text_center(
                         &mut canvas,
-                        "killswitch ready",
+                        &tr(Msg::AboutKillswitchReady),
                         cx,
                         y + line_h * 0.5,
                         &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
@@ -5111,7 +5110,7 @@ impl PhotonApp {
                     y += line_h;
                     ctx.text.draw_text_center(
                         &mut canvas,
-                        "passless",
+                        &tr(Msg::AboutPasslessHead),
                         cx,
                         y + line_h * 0.5,
                         &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
@@ -5125,7 +5124,7 @@ impl PhotonApp {
                     let lead_style = TextStyle::new(hspan2 * 0.8, *theme::LABEL_COLOUR)
                         .weight(400)
                         .font("Oxanium");
-                    y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, "learn more about passless at", &lead_style, line_h * 0.8, about_clip);
+                    y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::AboutPasslessLead), &lead_style, line_h * 0.8, about_clip);
                     // The link itself: primary VSF blue, bigger, BOLD + hand cursor on hover (cursor_for), the openey thing on click (slot 4). Hit rect fits the MEASURED text exactly — the old full-width band is why the hitmap didn't line up.
                     let link_hovered = stub_hover() == btn_base.wrapping_add(4);
                     let link_style = TextStyle::new(hspan2 * 1.15, *theme::LINK_COLOUR)
@@ -5157,11 +5156,8 @@ impl PhotonApp {
                     let prose_style = TextStyle::new(hspan2 * 0.75, *theme::LABEL_COLOUR)
                         .weight(400)
                         .font("Oxanium");
-                    for line in [
-                        "Photon has no accounts and no passwords. Your handle is the key: you type it to prove who you are, and it is never stored or sent anywhere.",
-                        "There are no message servers. Messages travel between the devices in a conversation and land nowhere else, so no third copy of anything exists.",
-                        "That makes deletion real. When both people agree to delete a conversation, it is gone the way a spoken conversation is gone. Deleting alone is visible to the other person, so agreement and betrayal always look different.",
-                    ] {
+                    let s = tr(Msg::AboutPasslessProse);
+                    for line in s.lines() {
                         y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
                         y += line_h * 0.3;
                     }
@@ -5169,7 +5165,7 @@ impl PhotonApp {
                     // CONSENT — the third pillar: every lifecycle edge is bilateral (mutual-consent clutch, two-signature add/depart, no expulsion), so nothing happens to an identity without its own key signing.
                     ctx.text.draw_text_center(
                         &mut canvas,
-                        "consent",
+                        &tr(Msg::AboutConsentHead),
                         cx,
                         y + line_h * 0.5,
                         &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
@@ -5179,10 +5175,8 @@ impl PhotonApp {
                         None,
                     );
                     y += line_h;
-                    for line in [
-                        "Everything in Photon is consensual. A friendship starts with two signatures and ends with two. A device joins your fleet only when both sides approve.",
-                        "There is no expulsion, no takedown, and no administrator. Nothing happens to your identity without your own key signing it.",
-                    ] {
+                    let s = tr(Msg::AboutConsentProse);
+                    for line in s.lines() {
                         y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
                         y += line_h * 0.3;
                     }
@@ -5190,7 +5184,7 @@ impl PhotonApp {
                     // TOKEN — the recovery story, mirroring the Recovery page's anti-collusion prose so the pitch and the tick box tell one tale.
                     ctx.text.draw_text_center(
                         &mut canvas,
-                        "TOKEN",
+                        &tr(Msg::AboutTokenHead),
                         cx,
                         y + line_h * 0.5,
                         &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
@@ -5200,16 +5194,15 @@ impl PhotonApp {
                         None,
                     );
                     y += line_h;
-                    for line in [
-                        "TOKEN is recovery thru people you trust. Lose every device and the custodians you chose can bring you back.",
-                        "No custodian ever learns whose recovery they hold, and no owner learns which friends hold theirs. What cannot be named cannot be pressured — and cannot collude.",
-                    ] {
+                    let s = tr(Msg::AboutTokenProse);
+                    for line in s.lines() {
                         y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
                         y += line_h * 0.3;
                     }
                     y += line_h * 0.6;
                     // Version — dozenal glyphs (weight 400 → the Oxanium +glyphs face draws the reserved control bytes as dozenal digits), NEVER arabic. Tap toggles the reveal (spelled form + cheat sheet). Whole row is the tap target (btn_base + 3).
-                    let ver = format!("Version {}", version_dozenal_glyphs());
+                    let ver_glyphs = version_dozenal_glyphs();
+                    let ver = tr(Msg::AboutVersion(&ver_glyphs));
                     ctx.text.draw_text_center(
                         &mut canvas,
                         &ver,
@@ -5234,15 +5227,9 @@ impl PhotonApp {
                     y += line_h;
                     if self.about_version_spelled {
                         // Spelled-out (voca words), then the dozenal cheat sheet: all twelve digits as GLYPH = name, two columns of six.
-                        let spelled = format!(
-                            "{}{}",
-                            crate::dozenal_spell(deploy_version()),
-                            if dev_patch() > 0 {
-                                format!(" point {}", crate::dozenal_spell(dev_patch()))
-                            } else {
-                                String::new()
-                            }
-                        );
+                        let main = crate::dozenal_spell(deploy_version());
+                        let patch = (dev_patch() > 0).then(|| crate::dozenal_spell(dev_patch()));
+                        let spelled = tr(Msg::AboutVersionSpelled { main: &main, patch: patch.as_deref() });
                         ctx.text.draw_text_center(
                             &mut canvas,
                             &spelled,
@@ -5258,7 +5245,7 @@ impl PhotonApp {
                         let index_top = y;
                         ctx.text.draw_text_center(
                             &mut canvas,
-                            "dozenal",
+                            &tr(Msg::AboutDozenalHead),
                             cx,
                             y + line_h * 0.5,
                             &TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR)
@@ -5328,15 +5315,8 @@ impl PhotonApp {
                                 None,
                             );
                             y += line_h;
-                            for line in [
-                                "nobody can establish whether the key exists,",
-                                "where it lives, or whether the whole thing is a bit",
-                                "you can't rubber-hose an answer",
-                                "when the honest answer is unresolvable",
-                                "the perfect custodian is one who can't be made",
-                                "to understand what they're custodian of",
-                                "~ Claude Fable Teror",
-                            ] {
+                            let s = tr(Msg::AboutRiddle);
+                            for line in s.lines() {
                                 ctx.text.draw_text_center(
                                     &mut canvas,
                                     line,
@@ -5360,7 +5340,7 @@ impl PhotonApp {
                         // CENTRED under cx: the widget's width is the measured box+gap+label, not a pane fraction — a wide rect left the box+label reading left-aligned (Nick 2026-09-02).
                         let cb_h = line_h * 0.9;
                         cb.set_font_size(hspan2);
-                        let label_w = ctx.text.measure_text("Dozenal", &TextStyle::new(hspan2, 0));
+                        let label_w = ctx.text.measure_text(&tr(Msg::Dozenal), &TextStyle::new(hspan2, 0));
                         cb.set_rect(cx, y + line_h * 0.5, cb_h + hspan2 * 0.5 + label_w + hspan2 * 0.3, cb_h);
                         cb.render_content_into(
                             &mut canvas,
@@ -5374,7 +5354,7 @@ impl PhotonApp {
                         y += line_h;
                         ctx.text.draw_text_center(
                             &mut canvas,
-                            "why you decimal!!!",
+                            &tr(Msg::WhyDecimalScold),
                             cx,
                             y + line_h * 0.5,
                             &TextStyle::new(hspan2 * 0.85, *theme::DOZENAL_SCOLD_COLOUR)
@@ -5388,7 +5368,7 @@ impl PhotonApp {
                     // The dozenal rant — why the toggle above defaults ON. Kept playful on purpose: decimal is an anatomical accident, not a design, and the page should own that opinion out loud.
                     ctx.text.draw_text_center(
                         &mut canvas,
-                        "why dozenal",
+                        &tr(Msg::WhyDozenal),
                         cx,
                         y + line_h * 0.5,
                         &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
@@ -5398,10 +5378,8 @@ impl PhotonApp {
                         None,
                     );
                     y += line_h;
-                    for line in [
-                        "Photon counts in dozenal — base twelve — by default. Twelve divides evenly by two, three, four, and six, so halves, thirds, and quarters come out exact where decimal repeats forever.",
-                        "Ten is just how many fingers we happen to have. The toggle above switches the whole interface between dozenal and decimal.",
-                    ] {
+                    let rant = tr(Msg::WhyDozenalProse);
+                    for line in rant.lines() {
                         y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
                         y += line_h * 0.3;
                     }
@@ -5436,7 +5414,7 @@ impl PhotonApp {
             let cx = buf_w as f32 * 0.5;
             ctx.text.draw_text_center(
                 &mut canvas,
-                "Selected!",
+                &tr(Msg::JoinerSelected),
                 cx,
                 buf_h as f32 * 0.4,
                 &TextStyle::new(span / 8., *theme::CONTACT_NAME_COLOUR)
@@ -5447,7 +5425,7 @@ impl PhotonApp {
             );
             ctx.text.draw_text_center(
                 &mut canvas,
-                "Confirm on your other device to finish.",
+                &tr(Msg::JoinerConfirmOther),
                 cx,
                 buf_h as f32 * 0.58,
                 &TextStyle::new(span / 24., *theme::CONTACT_NAME_COLOUR)

@@ -35,6 +35,9 @@ pub mod settings_layout;
 // Photon-specific UI colour palette (the app's own colours, mirroring `fluor::theme`).
 pub mod theme;
 
+// The language catalog — every user-facing string is a `lang::Msg` variant, each language an exhaustive match (see lang.rs doctrine).
+pub mod lang;
+
 // The fluor-hosted `FluorApp` impl. Drives desktop via `host-winit` and Android via `host-android`.
 pub mod photon_app;
 pub use photon_app::PhotonApp;

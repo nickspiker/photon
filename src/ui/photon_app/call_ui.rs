@@ -227,7 +227,7 @@ impl PhotonApp {
         }
         // UNCALIBRATED ROUTE = NO ANSWER (the doctrine, Nick 2026-09-02: one dropped call beats a lifetime of shit calls; the ring panel already says why). Dispatch-side guard because the disabled button's hit map is a frame stale across the transition.
         if !self.route_calibrated_now() {
-            self.ready_toast = Some("can't answer — calibrate this speaker first (Settings \u{2192} Wave, ~15s)".to_string());
+            self.ready_toast = Some(tr(Msg::CantAnswerUncalibrated).into_owned());
             self.ready_toast_screen = None;
             crate::log("CALL: answer refused — current route uncalibrated");
             return;
@@ -290,7 +290,7 @@ impl PhotonApp {
         if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
             let _ = self.send_call_signal(ci, CallSignal::Decline { call_id });
         }
-        self.end_call("\u{260E} call declined", offer_osc);
+        self.end_call(&tr(Msg::CallDeclinedRow), offer_osc);
     }
 
     /// Hang up — covers the caller abandoning an unanswered ring (the human timeout) AND either side ending an active call.
@@ -311,14 +311,14 @@ impl PhotonApp {
             let _ = self.send_call_signal(ci, CallSignal::Hangup { call_id });
         }
         let summary = match phase {
-            CallPhase::Outgoing if we_are_caller => "\u{260E} missed call",
+            CallPhase::Outgoing if we_are_caller => tr(Msg::MissedCallRow),
             CallPhase::Active => {
                 let _ = phase_osc; // duration rendering rides the summary-row polish (dozenal digits at the edge)
-                "\u{260E} call"
+                tr(Msg::CallRow)
             }
-            _ => "\u{260E} call",
+            _ => tr(Msg::CallRow),
         };
-        self.end_call(summary, offer_osc);
+        self.end_call(&summary, offer_osc);
     }
 
     /// One inbound signal — from the friend's lane directly (`rx_lane_key` present, this device decrypted it) or from a sibling's row push (merge; stop-edges only).
@@ -516,11 +516,11 @@ impl PhotonApp {
                 if call.we_are_caller {
                     let offer_osc = call.offer_osc;
                     let text = if matches!(sig, CallSignal::Busy { .. }) {
-                        "\u{260E} busy"
+                        tr(Msg::BusyRow)
                     } else {
-                        "\u{260E} call declined"
+                        tr(Msg::CallDeclinedRow)
                     };
-                    self.end_call(text, offer_osc);
+                    self.end_call(&text, offer_osc);
                 }
             }
             CallSignal::Hangup { call_id } => {
@@ -535,15 +535,15 @@ impl PhotonApp {
                 match phase {
                     CallPhase::Ringing => {
                         // Caller gave up before we answered — the missed-call row, on every device that was ringing (same stamp, merge-folds to one).
-                        self.end_call("\u{260E} missed call", offer_osc);
+                        self.end_call(&tr(Msg::MissedCallRow), offer_osc);
                     }
                     CallPhase::Active => {
-                        self.end_call("\u{260E} call", offer_osc);
+                        self.end_call(&tr(Msg::CallRow), offer_osc);
                     }
                     CallPhase::Outgoing if !we_are_caller => {}
                     CallPhase::Outgoing => {
                         // Friend-side auto-hangup (e.g. answer hit their dead call) — treat as declined-ish end.
-                        self.end_call("\u{260E} call", offer_osc);
+                        self.end_call(&tr(Msg::CallRow), offer_osc);
                     }
                     // Already in the keep/delete window — a late peer hangup changes nothing here.
                     CallPhase::Ended => {}
@@ -783,7 +783,7 @@ impl PhotonApp {
                     &ring_hp,
                     &digest,
                     &sender_name,
-                    "\u{260E} incoming call",
+                    &tr(Msg::IncomingCall),
                 );
             }
         }
@@ -800,7 +800,7 @@ impl PhotonApp {
             crate::platform::desktop_notify::notify_new_message(
                 &ring_hp,
                 &sender_name,
-                "\u{260E} incoming call",
+                &tr(Msg::IncomingCall),
             );
             if !ring_audible {
                 crate::log("CALL: ring muted by notify.ring_call — notification only");

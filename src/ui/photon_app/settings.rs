@@ -119,10 +119,9 @@ impl PhotonApp {
             self.spawn_update_apply(crate::network::updates::Channel::Release);
         } else if self.update_toasted != Some(row.version) {
             self.update_toasted = Some(row.version);
-            self.ready_toast = Some(format!(
-                "Photon {} available \u{2014} Settings \u{2192} Updates",
-                dozenal_version_tuple(row.version)
-            ));
+            self.ready_toast = Some(
+                tr(Msg::UpdateAvailableToast(&dozenal_version_tuple(row.version))).into_owned(),
+            );
         }
     }
 
@@ -161,11 +160,9 @@ impl PhotonApp {
         }
         let row = row.clone();
         self.update_busy = true;
-        self.update_status = Some(format!(
-            "Installing {} {}\u{2026}",
-            channel.label(),
-            dozenal_version_tuple(row.version)
-        ));
+        self.update_status = Some(
+            tr(Msg::Installing { channel: channel.label(), ver: &dozenal_version_tuple(row.version) }).into_owned(),
+        );
         crate::logf!(
             "UPDATE: applying {} {}",
             channel.label(),
@@ -287,21 +284,20 @@ impl PhotonApp {
                 UpdateEvent::Applied(exe) => {
                     self.update_busy = false;
                     self.update_progress = None;
-                    self.update_status = Some("Updated \u{221a} restarting\u{2026}".to_string());
+                    self.update_status = Some(tr(Msg::UpdatedRestarting).into_owned());
                     self.update_reexec = Some(exe);
                 }
                 #[cfg(target_os = "android")]
                 UpdateEvent::ApkReady(path) => {
                     self.update_busy = false;
                     self.update_progress = None;
-                    self.update_status =
-                        Some("Downloaded \u{221a} confirm the install prompt".to_string());
+                    self.update_status = Some(tr(Msg::DownloadedConfirm).into_owned());
                     self.pending_apk_install = Some(path);
                 }
                 UpdateEvent::ApplyFailed(e) => {
                     self.update_busy = false;
                     self.update_progress = None;
-                    self.update_status = Some(format!("Update failed (nothing changed): {e}"));
+                    self.update_status = Some(tr(Msg::UpdateFailed(&e)).into_owned());
                     crate::logf!("UPDATE: apply failed: {}", e);
                 }
             }
@@ -443,6 +439,29 @@ impl PhotonApp {
         if let Some(cb) = self.settings_dozenal_check.as_mut() {
             cb.set_checked(dozenal);
         }
+        // UI language (docs/languages.md): DEVICE-LOCAL typed string code; absent = first launch → seed ONCE from the OS locale, then the value is the user's and never live-follows the host.
+        let stored_lang = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.device_local("display.lang"))
+            .and_then(crate::storage::fleet_settings::as_text);
+        match stored_lang.as_deref().and_then(crate::ui::lang::Lang::from_code) {
+            Some(l) => crate::ui::lang::set_lang(l),
+            None => {
+                if stored_lang.is_none() {
+                    if let Some(l) = crate::platform::locale::os_language().and_then(|c| crate::ui::lang::Lang::from_code(&c)) {
+                        if l != crate::ui::lang::Lang::En {
+                            crate::ui::lang::set_lang(l);
+                            crate::logf!("SETTINGS: display.lang seeded from OS locale = {}", l.code());
+                            self.save_lang_setting(l);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(dd) = self.settings_lang_dropdown.as_mut() {
+            dd.set_selected(crate::ui::lang::lang().index());
+        }
         // Hard logs: DEVICE-LOCAL (an investigation concerns one piece of hardware — never the fleet global) and self-expiring; the stored value is the ARM TIME, the sink owns the 24h window, and the checkbox displays the sink's verdict so the two can't disagree.
         let armed_at = self
             .fleet_settings
@@ -521,6 +540,22 @@ impl PhotonApp {
         }
         if fs.set("display.zoom", vsf::VsfType::f5(ru), now) {
             crate::logf!("SETTINGS: display.zoom = {} (device-local)", ru);
+            self.persist_and_push_settings();
+        }
+    }
+
+    /// Persist the UI language as this DEVICE's `display.lang` (typed x-string code, device-local like zoom — reading language is per-human-per-device ergonomics, never fleet-global).
+    pub(super) fn save_lang_setting(&mut self, l: crate::ui::lang::Lang) {
+        if !self.ensure_fleet_settings() {
+            return;
+        }
+        let now = vsf::eagle_time_oscillations();
+        let fs = self.fleet_settings.as_mut().unwrap();
+        if fs.linked("display.lang") {
+            fs.set_link("display.lang", false, now);
+        }
+        if fs.set("display.lang", vsf::VsfType::x(l.code().to_string()), now) {
+            crate::logf!("SETTINGS: display.lang = {} (device-local)", l.code());
             self.persist_and_push_settings();
         }
     }
@@ -712,8 +747,8 @@ impl PhotonApp {
             self.audio_cal_handle = None;
             crate::call::calibrate::ack_phase();
             self.ready_toast = Some(match &r {
-                crate::call::calibrate::CalResult::Echo(p) => format!("echo measured \u{2713} ({})", p.route_id),
-                crate::call::calibrate::CalResult::Voice(p) => format!("voice measured \u{2713} ({})", p.mic_id),
+                crate::call::calibrate::CalResult::Echo(p) => tr(Msg::EchoMeasuredToast(&p.route_id)).into_owned(),
+                crate::call::calibrate::CalResult::Voice(p) => tr(Msg::VoiceMeasuredToast(&p.mic_id)).into_owned(),
             });
             self.ready_toast_screen = None;
             self.scene_dirty = true;
@@ -861,7 +896,8 @@ impl PhotonApp {
             let tag_tb = tagged.then(|| Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
             self.you_fields.push(ProfileField {
                 field_id: id.to_string(),
-                label: label.to_string(),
+                // Standard ids label thru the catalog; the table's English column stays the canonical docs mirror + fallback.
+                label: profile_field_label(id).map(|c| c.into_owned()).unwrap_or_else(|| label.to_string()),
                 tier,
                 tb,
                 tag_tb,
@@ -963,10 +999,9 @@ impl PhotonApp {
             let (base_label, tier) = {
                 let bf = &self.you_fields[li];
                 (
-                    STD_PROFILE_FIELDS
-                        .iter()
-                        .find(|&&(fid, _, _)| fid == base)
-                        .map(|&(_, l, _)| l.to_string())
+                    // Catalog label for the base id (every expandable base is standard); the sibling box's label is the guard fallback.
+                    profile_field_label(base)
+                        .map(|c| c.into_owned())
                         .unwrap_or_else(|| bf.label.clone()),
                     bf.tier,
                 )
@@ -977,7 +1012,7 @@ impl PhotonApp {
                 li + 1,
                 ProfileField {
                     field_id: id,
-                    label: format!("{base_label} {n}"),
+                    label: format!("{base_label} {}", crate::fmt_num(n as u32)),
                     tier,
                     tb,
                     tag_tb,
@@ -1012,10 +1047,8 @@ impl PhotonApp {
                 }
                 let (li, _) = self.expandable_instances(base);
                 let Some(li) = li else { continue };
-                let base_label = STD_PROFILE_FIELDS
-                    .iter()
-                    .find(|&&(fid, _, _)| fid == base)
-                    .map(|&(_, l, _)| l.to_string())
+                let base_label = profile_field_label(base)
+                    .map(|c| c.into_owned())
                     .unwrap_or_else(|| base.to_string());
                 let tier = self.you_fields[li].tier;
                 let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
@@ -1025,7 +1058,7 @@ impl PhotonApp {
                     li + 1,
                     ProfileField {
                         field_id: id,
-                        label: format!("{base_label} {n}"),
+                        label: format!("{base_label} {}", crate::fmt_num(n as u32)),
                         tier,
                         tb,
                         tag_tb,
@@ -1118,9 +1151,9 @@ impl PhotonApp {
             self.publish_avatar_pin();
             // The wall blob carries the preferred name beside the pixels (same pin) — republish it so (a) a friend fetching by pin gets the CURRENT name and (b) a future reinstall of our own fleet recovers it from the wall (the Theresa hole). Skipped when no avatar exists yet (nothing on the wall to carry it; the pong path still serves the name live).
             self.republish_wall_blob_with_name();
-            self.ready_toast = Some("Profile saved \u{221a}".to_string());
+            self.ready_toast = Some(tr(Msg::ProfileSaved).into_owned());
         } else {
-            self.ready_toast = Some("No changes".to_string());
+            self.ready_toast = Some(tr(Msg::NoChanges).into_owned());
         }
     }
 
@@ -1190,7 +1223,7 @@ impl PhotonApp {
             id = hex::encode(&blake3::hash(label.as_bytes()).as_bytes()[..8]);
         }
         if self.you_fields.iter().any(|f| f.field_id == id) {
-            self.ready_toast = Some("That field already exists".to_string());
+            self.ready_toast = Some(tr(Msg::FieldExists).into_owned());
             if let Some(tb) = self.you_add_textbox.as_mut() {
                 tb.clear();
             }
@@ -1210,7 +1243,7 @@ impl PhotonApp {
         if let Some(tb) = self.you_add_textbox.as_mut() {
             tb.clear();
         }
-        self.ready_toast = Some(format!("Added \u{201c}{label}\u{201d}"));
+        self.ready_toast = Some(tr(Msg::FieldAdded(&label)).into_owned());
     }
 
     pub(super) fn persist_and_push_settings(&mut self) {

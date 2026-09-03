@@ -2155,7 +2155,7 @@ impl PhotonApp {
             undischarged.len(),
             sender_name
         );
-        let summary = format!("{} new message(s)", undischarged.len());
+        let summary = tr(Msg::NewMessages(undischarged.len())).into_owned();
         let batch_hp = *blake3::hash(&undischarged[0].to_le_bytes()).as_bytes();
         #[cfg(target_os = "android")]
         {
@@ -2376,14 +2376,10 @@ impl PhotonApp {
                 }
             }
             if bind_attempts > 0 {
-                let who = match &named {
-                    Some(name) => format!(" into {name}'s fleet"),
-                    None => String::new(),
-                };
-                let plural = if bind_attempts == 1 { "" } else { "s" };
-                self.ready_toast = Some(format!(
-                    "\u{26a0} {bind_attempts} attempt{plural} to enrol your device{who}"
-                ));
+                self.ready_toast = Some(
+                    tr(Msg::EnrolAttempts { n: bind_attempts, fleet_owner: named.as_deref() })
+                        .into_owned(),
+                );
             }
         }
     }

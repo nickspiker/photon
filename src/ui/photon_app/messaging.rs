@@ -354,9 +354,7 @@ impl PhotonApp {
         while let Ok(verdict) = self.persist_done.1.try_recv() {
             if let Some(err) = verdict.err {
                 crate::logf!("STORAGE CRITICAL: durable write refused for {} self row(s) — staying faint, sibling push withheld: {}", verdict.rows.len(), err);
-                self.ready_toast = Some(
-                    "message NOT saved \u{2014} storage refused the write; it stays dim until a resend lands it".to_string(),
-                );
+                self.ready_toast = Some(tr(Msg::MessageNotSaved).into_owned());
                 self.ready_toast_screen = None;
                 self.scene_dirty = true;
                 continue;
