@@ -339,6 +339,52 @@ impl PhotonApp {
             CallSignal::Offer { call_id, nonce } if !row_is_outgoing => {
                 match &self.active_call {
                     Some(c) if c.call_id == call_id => {} // duplicate/retransmit
+                    // GLARE (field 2026-09-02, Emma+Nick dialing each other in the same second → mutual auto-BUSY, no ring, no notification, two "missed call" rows and no call): an offer from the peer we are currently CALLING means both humans pressed the button — both consent, so CONNECT, never refuse. Deterministic fold from symmetric information: the smaller call_id is THE call; the larger-id side quietly drops its own outgoing (no hangup spray, no missed-call row — the peer is ignoring that offer by the same rule) and answers the winner. Both sides compute the same rule on the same two ids, so exactly one call survives.
+                    Some(c)
+                        if c.peer_handle_hash == peer
+                            && matches!(c.phase, CallPhase::Outgoing)
+                            && !from_merge =>
+                    {
+                        if call_id < c.call_id {
+                            // Their call wins: fold ours into answering theirs.
+                            let Some(offer_key) = rx_lane_key else {
+                                return;
+                            };
+                            crate::logf!(
+                                "CALL: glare with {} — folding our outgoing {} into answering their {}",
+                                crate::fp(&peer),
+                                hex::encode(&c.call_id[..4]),
+                                hex::encode(&call_id[..4])
+                            );
+                            self.active_call = Some(ActiveCall {
+                                call_id,
+                                peer_handle_hash: peer,
+                                we_are_caller: false,
+                                phase: CallPhase::Ringing,
+                                phase_osc: vsf::eagle_time_oscillations(),
+                                final_osc: None,
+                                offer_osc: row_ts,
+                                caller_nonce: nonce,
+                                callee_nonce: None,
+                                offer_lane_key: Some(offer_key),
+                                secret: None,
+                                engine: None,
+                                spool: None,
+                                ring: None,
+                                express_addr: None,
+                            });
+                            // Both users already pressed call — consent is mutual, connect NOW (a fold that merely rings would ask one of them to press the button twice). If the answer guard refuses (uncalibrated route), the call stays Ringing and the panel says why — still strictly better than BUSY.
+                            self.answer_call();
+                            self.scene_dirty = true;
+                        } else {
+                            // Ours wins: ignore their offer — their side folds by the same rule and Answers ours.
+                            crate::logf!(
+                                "CALL: glare with {} — our {} wins, expecting their answer to it",
+                                crate::fp(&peer),
+                                hex::encode(&c.call_id[..4])
+                            );
+                        }
+                    }
                     Some(_) => {
                         // Busy: only the direct receiver replies (merge is history, and every sibling replying would triplicate it).
                         if !from_merge {

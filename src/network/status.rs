@@ -1955,6 +1955,84 @@ async fn run_checker(
                                             &event_proxy_recv,
                                         );
                                     }
+                                    // Fleet chain-state replication (chain_sync — a sibling pushing its advanced chains). The UDP-direct arm always knew this kind; large chain blobs (17KB+ for a long friendship) ride PT streams and were completing here only to drop as "claimed by NO parser" (field 2026-09-02, recurring 17331B frames from the phone) — so big chains NEVER replicated and sibling lanes went stale, the desync class the adopt arm exists to prevent.
+                                    else if let Ok(((conversation_token, epoch_k, sealed), sender_pubkey)) =
+                                        crate::network::fgtw::protocol::parse_chain_sync_vsf(&data)
+                                    {
+                                        if !is_known_sender_pt(&sender_pubkey) {
+                                            crate::log("PT: chain_sync REJECTED - unknown sender");
+                                            continue;
+                                        }
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::ChainSyncReceived {
+                                                conversation_token,
+                                                epoch_k,
+                                                sealed,
+                                                sender_pubkey: DevicePubkey::from_bytes(
+                                                    sender_pubkey,
+                                                ),
+                                            },
+                                            &event_proxy_recv,
+                                        );
+                                    }
+                                    // The checkpoint spine's sibling frames (root hand-off / catch-up request / state serve) — the state serve is the LARGEST fleet frame there is (a whole spine state; the field's 183KB drops), so it rides PT streams and must complete here, not just on the datagram path.
+                                    else if let Ok(((k, fanout_epoch, sealed), sender_pubkey)) =
+                                        crate::network::fgtw::protocol::parse_ckpt_root_vsf(&data)
+                                    {
+                                        if !is_known_sender_pt(&sender_pubkey) {
+                                            crate::log("PT: ckpt_root REJECTED - unknown sender");
+                                            continue;
+                                        }
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::CkptRootReceived {
+                                                k,
+                                                fanout_epoch,
+                                                sealed,
+                                                sender_pubkey: DevicePubkey::from_bytes(
+                                                    sender_pubkey,
+                                                ),
+                                            },
+                                            &event_proxy_recv,
+                                        );
+                                    } else if let Ok((have_k, sender_pubkey)) =
+                                        crate::network::fgtw::protocol::parse_ckpt_req_vsf(&data)
+                                    {
+                                        if !is_known_sender_pt(&sender_pubkey) {
+                                            crate::log("PT: ckpt_req REJECTED - unknown sender");
+                                            continue;
+                                        }
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::CkptReqReceived {
+                                                have_k,
+                                                sender_pubkey: DevicePubkey::from_bytes(
+                                                    sender_pubkey,
+                                                ),
+                                                sender_addr: src_addr,
+                                            },
+                                            &event_proxy_recv,
+                                        );
+                                    } else if let Ok(((k, sealed), sender_pubkey)) =
+                                        crate::network::fgtw::protocol::parse_ckpt_state_vsf(&data)
+                                    {
+                                        if !is_known_sender_pt(&sender_pubkey) {
+                                            crate::log("PT: ckpt_state REJECTED - unknown sender");
+                                            continue;
+                                        }
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::CkptStateReceived {
+                                                k,
+                                                sealed,
+                                                sender_pubkey: DevicePubkey::from_bytes(
+                                                    sender_pubkey,
+                                                ),
+                                            },
+                                            &event_proxy_recv,
+                                        );
+                                    }
                                     // Attachment blob (the file bytes — the typical PT large transfer)
                                     else if let Ok((
                                         (conversation_token, content_hash, sealed),
