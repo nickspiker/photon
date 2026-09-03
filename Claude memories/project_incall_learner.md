@@ -1,0 +1,21 @@
+---
+name: project_incall_learner
+description: "in-call passive calibration learner (Nick's insight): echo g/delay + voice level learned from live calls; Stages 1-5 SHIPPED 2026-09-03, Stage 6 (gate off) BLOCKED on field proof"
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 8c6221f3-48a5-4f77-b00e-1e3c7fa4c3b5
+---
+
+Nick's insight 2026-09-03: a live call contains both Wave measurements (far-talks-alone = echo coupling since WE rendered the far signal; near-talks-alone = natural voice level). Formal plan approved (gate off AFTER field proof; echo+voice together). Plan file: ~/.claude/plans/velvety-chasing-lemon.md.
+
+**SHIPPED (photon c8b37a1→b8942c2, all green, 270 lib tests):**
+- S1 c8b37a1: platform RENDER_ENV tap — (osc, env) per rendered frame, cursor-drained, ~10s, survives hygiene without cursor rewind.
+- S2 dcd558f: call/learn.rs pure math + KATs. Load-bearing decisions (each KAT-locked): FLOOR-SUBTRACTION never mean-centering (keeps double-talk contamination one-sided → 25th-pct min-statistics valid; centered variant provably biases LOW); minimum-statistics floor (fall instant, rise 5%/tick); max-deviation stamp-regularizer slewing (per-frame slew drags lattice under bursts); alias defense = publish-time LAG CLUSTER on low-g pool half (PSR failed: speech plateaus give PSR≈1.05; delay-locked narrow scan failed: contaminated locks reject clean windows); per-gate reject counters (caught an i64::MIN cadence sentinel wrapping the estimator dead).
+- S3 b8ea202: shadow wiring — engine feeds learner above the mute skip (muted = cleanest echo windows), teardown telemetry line "CALL: learner — g/delay/conf/windows/floor/talk/rejects".
+- S4 0bc39f7: LEARNED mailbox (separate from ritual RESULT single-slot; toast-free drain), blend via learn::blend_g (asymmetric: duck-more full weight, duck-less ¼+solid-only), `<base>.n` sample-count keys, ritual writes n=0 (ritual outranks).
+- S5 b8942c2: predictive duck — pred = g_norm × vol_lin × far_env(t−delay) via learner bins; PredGate hysteresis (enter pred×2, exit pred×3); fixed mic_gain replaces PID when voice profile exists; EngineParams.cal snapshot read UI-side (settings.rs cal_snapshot()); learner ARMS the duck mid-call at Usable; delay steps only between far bursts; live route tracking (mid-call swap finalizes learning, reverts reactive, re-evals headset bypass — fixed the cached route_ducks bug).
+
+**Stage 6 BLOCKED on field proof**: a few real calls' teardown logs must show learner g/delay ≈ ritual values at Solid confidence (and a constant-double-talk call showing a starved pool). Then: remove the TX mute on uncalibrated routes (engine.rs "Uncalibrated route mid-call = mic-gated" skip), the call-pill gate (render.rs route_calibrated), Wave page copy → optional bootstrap ("calibrate now or let your first call learn it") + diagnostic. Wave stays: first-call-zero-echo bootstrap, controlled diagnostic (e.g. macbook's suspicious echo g=0.0000 — macOS mic DSP eats the loopback), headset verification.
+
+Contracts: separation invariant (learner sees ONLY pre-gain pre-duck mic env + own binned far env; never duck state or far_level()); learned g stored at 0dB reference where a volume mirror exists (vol key 0.0), absent on desktop; audio.cal.* keys unchanged from the ritual.
