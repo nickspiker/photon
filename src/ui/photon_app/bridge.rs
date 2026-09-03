@@ -16,7 +16,10 @@ pub(super) struct BridgeEmit {
     pub ci: usize,
     pub target: i64,
     pub seq: u64,
+    /// The UNSENT output accumulated since the last frame that made it onto the wire — a DELTA, not a snapshot (Nick 2026-09-03: "just send what's missing"). The chain's hash links carry the ordering; the client appends.
     pub body: String,
+    /// Bytes trimmed off this buffer's FRONT to hold the memory bound — named in the frame's elision marker so a gap is never silent.
+    pub dropped: usize,
     pub fin: Option<i32>,
     pub host: String,
     pub cwd: String,
@@ -49,11 +52,9 @@ fn bridge_child_tree(root: i32) -> Vec<i32> {
     all
 }
 
-/// Wire-frame body cap (Nick's redesign 2026-08-31): a terminal shows a SCREEN, not a scrollback — every streamed frame carries at most this many trailing bytes, so an hour-long deploy's updates stay single-datagram-sized instead of growing into 100KB multi-packet PT transfers (the livelock class: the transfer layer's ACK path is exactly what fails on hard links). The full output lives on the host; `tail`/`grep` reaches the rest.
+/// Unsent-delta buffer bound per command (Nick's delta redesign 2026-09-03): frames carry only what's NEW, so nothing is ever re-sent — the only cap left is host memory while a client is slow/unreachable. Past this, the buffer's FRONT is trimmed and the dropped byte count rides the next frame's elision marker (a gap is explicit, never silent). 64KB ≈ minutes of full-tilt cargo spew.
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-const BRIDGE_BODY_CAP: usize = 8192;
-// Partials carry only the LAST screenful: a live feed needs "what is it doing right now", not scrollback — and a small body keeps each snapshot a fast small frame instead of a PT transfer that crawls behind lane traffic (field 2026-09-03: 8KB partials + whole-lane parking made a 52s cargo build invisible from the Mac). The FINAL still carries the full BRIDGE_BODY_CAP tail.
-const BRIDGE_PARTIAL_CAP: usize = 1024;
+const BRIDGE_BUF_MAX: usize = 65536;
 
 /// Keep the LAST `cap` bytes of `s` (char-boundary-safe), prefixed with an elision note naming what stayed behind.
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
@@ -79,11 +80,41 @@ fn bridge_wake(w: &Option<std::sync::Arc<dyn WakeSender<PhotonEvent>>>) {
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 fn spawn_bridge_worker(
     dev: [u8; 32],
-    fin_tx: std::sync::mpsc::Sender<BridgeEmit>,
     partials: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<usize, BridgeEmit>>>,
     fg: BridgeFgMap,
     wake: Option<std::sync::Arc<dyn WakeSender<PhotonEvent>>>,
 ) -> std::sync::mpsc::Sender<(usize, String, i64)> {
+    // Append `chunk` to the command's unsent-delta buffer (creating it on first output), bounding memory by trimming the FRONT with an explicit dropped-byte count. Wake only on the empty→occupied edge so a spewing build can't flood the event loop — the UI drain reads the buffer at its own pace.
+    fn push_delta(
+        partials: &std::sync::Mutex<std::collections::HashMap<usize, BridgeEmit>>,
+        ci: usize,
+        ts: i64,
+        seq: u64,
+        chunk: &str,
+        fin: Option<i32>,
+        host: &str,
+        cwd: &str,
+    ) -> bool {
+        let mut m = partials.lock().unwrap();
+        let e = m.entry(ci).or_insert_with(|| BridgeEmit { ci, target: ts, seq, body: String::new(), dropped: 0, fin: None, host: host.to_string(), cwd: cwd.to_string() });
+        let fresh = e.body.is_empty() && e.fin.is_none();
+        e.target = ts;
+        e.seq = seq;
+        e.body.push_str(chunk);
+        e.fin = fin.or(e.fin);
+        e.host = host.to_string();
+        e.cwd = cwd.to_string();
+        if e.body.len() > BRIDGE_BUF_MAX {
+            // Char-boundary-safe front trim (the ⛅️✨🌎 lesson, 2026-08-28) — the cut is COUNTED, and the drain's elision marker names it.
+            let mut cut = e.body.len() - BRIDGE_BUF_MAX;
+            while cut < e.body.len() && !e.body.is_char_boundary(cut) {
+                cut += 1;
+            }
+            e.body.drain(..cut);
+            e.dropped += cut;
+        }
+        fresh
+    }
     let (tx, rx) = std::sync::mpsc::channel::<(usize, String, i64)>();
     let spawned = std::thread::Builder::new()
         .name("bridge-shell".to_string())
@@ -98,7 +129,7 @@ fn spawn_bridge_worker(
                             shell = Some(s);
                         }
                         Err(e) => {
-                            let _ = fin_tx.send(BridgeEmit { ci, target: ts, seq: 1, body: tr(Msg::BridgeShellStartFailed(&e.to_string())).into_owned(), fin: Some(-1), host: String::new(), cwd: String::new() });
+                            push_delta(&partials, ci, ts, 1, &tr(Msg::BridgeShellStartFailed(&e.to_string())), Some(-1), "", "");
                             bridge_wake(&wake);
                             continue;
                         }
@@ -108,38 +139,27 @@ fn spawn_bridge_worker(
                 let host = sh.host.clone();
                 let cwd0 = last_cwd.clone();
                 let mut seq: u64 = 0;
-                let res = sh.run_streaming(&cmd, |snap| {
+                let mut emitted_any = false;
+                let res = sh.run_streaming(&cmd, |chunk| {
+                    emitted_any = true;
                     seq += 1;
-                    // Latest-wins slot: a burst collapses to whatever snapshot is current when the UI drains; wake only on the empty→occupied edge so a spewing build can't flood the event loop.
-                    let fresh = partials
-                        .lock()
-                        .unwrap()
-                        .insert(ci, BridgeEmit { ci, target: ts, seq, body: bridge_cap_tail(snap, BRIDGE_PARTIAL_CAP), fin: None, host: host.clone(), cwd: cwd0.clone() })
-                        .is_none();
-                    if fresh {
+                    if push_delta(&partials, ci, ts, seq, chunk, None, &host, &cwd0) {
                         bridge_wake(&wake);
                     }
                 });
                 match res {
-                    Ok((code, cwd, body)) => {
+                    Ok((code, cwd, _)) => {
                         last_cwd = cwd.clone();
-                        let trimmed = body.trim_end_matches('\n');
-                        let text = if trimmed.is_empty() {
-                            // Clean silent success (cd, touch, a green build with -q) sends an EMPTY final — the client stamps the exit on the command row itself and shows NO bubble (Nick 2026-08-31: the ACK + the Stop pill clearing is the whole story). A silent FAILURE still says so; silence must never eat a non-zero exit.
-                            if code == 0 { String::new() } else { tr(Msg::BridgeNoOutput(code)).into_owned() }
-                        } else if code != 0 {
-                            tr(Msg::BridgeOutputExit { output: &bridge_cap_tail(trimmed, BRIDGE_BODY_CAP), code }).into_owned()
-                        } else {
-                            bridge_cap_tail(trimmed, BRIDGE_BODY_CAP)
-                        };
-                        let _ = fin_tx.send(BridgeEmit { ci, target: ts, seq: seq + 1, body: text, fin: Some(code), host, cwd });
+                        // "Finished" is a FIELD, not a message (Nick 2026-09-03): the exit code folds into whatever delta is still buffered and rides out on that frame. A command that never printed and failed still names itself; clean silent success stays an empty-bodied exit frame the client stamps without a bubble.
+                        let text = if !emitted_any && code != 0 { tr(Msg::BridgeNoOutput(code)).into_owned() } else { String::new() };
+                        push_delta(&partials, ci, ts, seq + 1, &text, Some(code), &host, &cwd);
                         bridge_wake(&wake);
                     }
                     Err(e) => {
                         // Registry absence = a deliberate Reset killed us — the client wiped its screen, so a death notice would land as a stray bubble in a fresh session. A REAL death (bash exited, crashed) reports once and the next command respawns.
                         let was_registered = fg.lock().unwrap().remove(&dev).is_some();
                         if was_registered {
-                            let _ = fin_tx.send(BridgeEmit { ci, target: ts, seq: seq + 1, body: tr(Msg::BridgeShellDied(&e)).into_owned(), fin: Some(-1), host, cwd: cwd0 });
+                            push_delta(&partials, ci, ts, seq + 1, &tr(Msg::BridgeShellDied(&e)), Some(-1), &host, &cwd0);
                             bridge_wake(&wake);
                         }
                         return;
@@ -299,6 +319,9 @@ impl BridgeShell {
             if Self::line_is_job_notice(&line) {
                 continue;
             }
+            // DELTA emit (Nick 2026-09-03): hand the caller exactly the newly committed line — the worker's buffer accumulates unsent output and the wire sends only what's missing, chain-ordered by hash links. The snapshot re-broadcast (whole body every window) is gone with its duplication.
+            emit(&line);
+            emit("\n");
             body.push_str(&line);
             body.push('\n');
             if body.len() > Self::MAX_OUT {
@@ -309,11 +332,6 @@ impl BridgeShell {
                 }
                 body.drain(..cut);
                 dropped = true;
-            }
-            if dropped {
-                emit(&tr(Msg::EarlierOutputDropped(&body)));
-            } else {
-                emit(&body);
             }
         }
     }
@@ -611,12 +629,11 @@ impl PhotonApp {
         }
         let wake = self.event_proxy.clone();
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<BridgeJob>();
-        let (fin_tx, fin_rx) = std::sync::mpsc::channel::<BridgeEmit>();
+        // ONE shared per-command delta buffer carries everything — output AND the exit that folds into the last frame (no separate final channel; "finished" is a field, not a message).
         let partials: std::sync::Arc<
             std::sync::Mutex<std::collections::HashMap<usize, BridgeEmit>>,
         > = Default::default();
         let fg: BridgeFgMap = Default::default();
-        self.bridge_out_rx = Some(fin_rx);
         self.bridge_partials = Some(partials.clone());
         self.bridge_fg = Some(fg.clone());
         std::thread::Builder::new()
@@ -653,7 +670,6 @@ impl PhotonApp {
                             if !alive {
                                 let tx = spawn_bridge_worker(
                                     dev,
-                                    fin_tx.clone(),
                                     partials.clone(),
                                     fg.clone(),
                                     wake.clone(),
@@ -669,32 +685,42 @@ impl PhotonApp {
         self.bridge_cmd_tx = Some(cmd_tx);
     }
 
-    /// Tick drain: reply with streamed snapshots (latest-wins partials) and finals over the durable chain, every frame carrying the typed locus + seq (+ exit on finals). The UI tick IS the pacing — a spewing build collapses to one frame per drain pass with no clock anywhere. UI thread, but zero shell work — just the sends. No-op when the executor isn't running.
+    /// Tick drain: ship each command's accumulated DELTA over the durable chain — spool up to the 1s window, broadcast what's missing, and if nothing spooled, send nothing (ten silent minutes = zero frames). Every frame carries the typed locus + seq; the frame whose `exit` field is present IS the finish signal (no special end message — Nick 2026-09-03). UI thread, zero shell work — just the sends.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     pub(super) fn drain_bridge_output(&mut self) {
-        let mut emits: Vec<BridgeEmit> = match self.bridge_out_rx.as_ref() {
-            Some(rx) => rx.try_iter().collect(),
-            None => return,
-        };
-        if let Some(slots) = self.bridge_partials.clone() {
-            let mut m = slots.lock().unwrap();
-            emits.extend(m.drain().map(|(_, e)| e));
-        }
-        if emits.is_empty() {
+        let Some(slots) = self.bridge_partials.clone() else {
             return;
-        }
-        // Finals sort after partials for the same command, so the durable frame is the one left standing.
-        emits.sort_by_key(|e| (e.target, e.fin.is_some(), e.seq));
-        for e in emits {
-            // WINDOW DISCIPLINE (field 2026-08-26, the stuck git pull): the lane's ACK window is 4 slots, one streaming burst filled it instantly, and the FINAL sat queued behind its own already-stale partials while relay-latency ACKs crawled back — done in a second host-side, invisible for minutes client-side. A partial may occupy AT MOST one slot: while the lane is busier than (command + one partial), re-park the snapshot for the next drain tick instead of sending — the slot keeps latest-wins, so what eventually goes out is newer anyway. Finals always send; held is fine for the one frame that must survive.
+        };
+        // Put an unsent delta BACK, prepending it to whatever the worker spooled meanwhile — content is never dropped by a parked or failed send, order is preserved, and the exit survives the merge.
+        let put_back = |slots: &std::sync::Mutex<std::collections::HashMap<usize, BridgeEmit>>, e: BridgeEmit| {
+            let mut m = slots.lock().unwrap();
+            match m.entry(e.ci) {
+                std::collections::hash_map::Entry::Occupied(mut o) => {
+                    let cur = o.get_mut();
+                    let mut body = e.body;
+                    body.push_str(&cur.body);
+                    cur.body = body;
+                    cur.dropped += e.dropped;
+                    cur.fin = cur.fin.or(e.fin);
+                }
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(e);
+                }
+            }
+        };
+        let taken: Vec<BridgeEmit> = { slots.lock().unwrap().drain().map(|(_, e)| e).collect() };
+        for e in taken {
+            if e.body.is_empty() && e.fin.is_none() {
+                continue;
+            }
             let is_final = e.fin.is_some();
             if !is_final {
-                // THE ONE TIMER (Nick's grant, 2026-08-31): partials reach the wire at most once per second per conversation — the latest-wins slot already collapses bursts, this paces the send so a chatty build is a steady 1Hz screen update, never a s-t-r-e-a-m of frames. Finals are never paced.
+                // THE ONE TIMER (Nick's grant, 2026-08-31): deltas reach the wire at most once per second per conversation — the spool collapses bursts, this paces the broadcast. The exit-carrying frame is never paced.
                 let recently = self
                     .bridge_partial_sent
                     .get(&e.ci)
                     .map_or(false, |t| t.elapsed() < std::time::Duration::from_secs(1));
-                // ONE partial in flight per feed, gated on ITS OWN ACK edge: the previous snapshot must have left pending_messages before the next ships. The old rule parked on the WHOLE lane's pending count (>= 2), so ordinary fleet-sync chatter starved the feed exactly while a long build ran — the operator watched a dead screen thru a live 52s cargo build and the failure after it (field 2026-09-03, the silent v82 deploy). Own-ACK gating starves on nothing else, self-limits the feed to one lane slot, and needs no new timer: the ACK arrival is the wake edge that sends the next snapshot.
+                // ONE delta in flight per feed, gated on ITS OWN ACK edge — the whole-lane pending count starved the feed behind fleet-sync chatter (the silent v82 deploy, 2026-09-03). The ACK arriving is the wake edge that ships the next spool; a parked spool keeps accumulating, nothing is lost.
                 let prev_unacked = self.bridge_partial_inflight.get(&e.ci).map_or(false, |&et| {
                     self.contacts
                         .get(e.ci)
@@ -703,35 +729,42 @@ impl PhotonApp {
                         .map_or(false, |(_, ch)| ch.pending_messages.iter().any(|m| m.eagle_time == et))
                 });
                 if recently || prev_unacked {
-                    if let Some(slots) = self.bridge_partials.as_ref() {
-                        slots.lock().unwrap().entry(e.ci).or_insert(e);
-                    }
+                    put_back(&slots, e);
                     continue;
                 }
-                self.bridge_partial_sent.insert(e.ci, std::time::Instant::now());
             }
+            // A buffer-bound trim is named, never silent: the elision marker carries the exact byte count that fell off the front.
+            let body = if e.dropped > 0 {
+                tr(Msg::BridgeElided { bytes: e.dropped, output: &e.body }).into_owned()
+            } else {
+                e.body.clone()
+            };
             let wire = crate::network::message_package::BridgeWire {
                 host: (!e.host.is_empty()).then(|| e.host.clone()),
                 cwd: (!e.cwd.is_empty()).then(|| e.cwd.clone()),
                 seq: Some(e.seq),
                 exit: e.fin.map(|c| c as i64),
                 sig: None,
+                delta: true,
             };
             if is_final {
-                // The FINAL rides the full durable path (bubble + retransmit + held-row re-serve) — it is the one frame that must survive.
+                // The exit-carrying delta rides the full durable path (host row + retransmit + held-row re-serve) — it is the one frame that must survive.
                 self.bridge_partial_inflight.remove(&e.ci);
                 self.send_chain_message(
                     e.ci,
-                    &e.body,
+                    &body,
                     false,
                     Some((crate::types::RefKind::BridgeOut, e.target)),
                     Some(wire),
                 );
             } else {
-                // Partials are BEST-EFFORT (no bubble, no held-row machinery — a dropped one is superseded by the next snapshot). Sent thru chain_transmit directly with an eagle_time we mint HERE so the own-ACK gate above can watch this exact frame leave pending.
+                // Mid-command deltas ride chain_transmit directly with an eagle_time minted HERE so the own-ACK gate can watch this exact frame leave pending. A refused send (window full, no address yet) puts the spool back intact — the transcript never loses a byte to flow control.
                 let et = vsf::eagle_time_oscillations();
-                if self.chain_transmit(e.ci, &e.body, et, Some((crate::types::RefKind::BridgeOut, e.target)), Some(&wire)) {
+                if self.chain_transmit(e.ci, &body, et, Some((crate::types::RefKind::BridgeOut, e.target)), Some(&wire)) {
                     self.bridge_partial_inflight.insert(e.ci, et);
+                    self.bridge_partial_sent.insert(e.ci, std::time::Instant::now());
+                } else {
+                    put_back(&slots, e);
                 }
             }
         }
