@@ -74,6 +74,19 @@ pub struct EngineParams {
     pub peer_addr: SocketAddr,
     /// Recording spool (key, path) — recording by default; None only when the spool couldn't be minted (disk trouble; the call proceeds unrecorded, logged).
     pub spool: Option<([u8; 32], std::path::PathBuf)>,
+    /// The stored calibration for the route/mic this call starts on — read on the UI thread (the engine can't touch settings). None = uncalibrated: reactive duck + PID until the in-call learner reaches Usable and arms the predictive path itself.
+    pub cal: Option<CalSnapshot>,
+}
+
+/// The profile snapshot the predictive duck starts from (Cal 4). g is volume-normalized (the engine re-scales by live vol_lin); delay in 10ms bins.
+#[derive(Debug, Clone, Copy)]
+pub struct CalSnapshot {
+    pub g_norm: f32,
+    pub delay_bins: usize,
+    /// Fixed mic gain from the voice profile — replaces the chasing PID when present.
+    pub mic_gain: Option<f32>,
+    /// Room floor from the voice profile — the gate's second leg until the live learner refines it.
+    pub floor: f32,
 }
 
 /// Handle held by the UI's ActiveCall. Dropping it does NOT stop the engine — call `stop()` (teardown is an explicit edge).
@@ -180,18 +193,29 @@ fn run(
     let mut ducked_frames: u64 = 0;
     let mut gated_frames: u64 = 0;
     let mut far_active_frames: u64 = 0;
-    let route_ducks = !matches!(
+    // `mut`: live route tracking below re-evaluates this on a mid-call swap (the old engine cached it once — a BT headset connecting mid-call kept ducking a route with no acoustic path).
+    let mut route_ducks = !matches!(
         crate::platform::audio::route(),
         crate::platform::audio::AudioRoute::Headset
     );
 
-    // SHADOW-MODE in-call calibration learner (Stage 3): fed every raw envelope, changes NOTHING this stage — the teardown line is field telemetry to validate the math against ritual-calibrated devices before anything ducks on it. Fed ABOVE the mute/uncalibrated skip on purpose: a muted user is GUARANTEED silent, the cleanest echo windows there are (envelope-only, the mic session is already open — no new privacy surface).
+    // In-call calibration learner: fed every raw envelope ABOVE the mute/uncalibrated skip on purpose — a muted user is GUARANTEED silent, the cleanest echo windows there are (envelope-only, the mic session is already open — no new privacy surface). Its estimates drive the PREDICTIVE duck below (Cal 4) and persist at teardown; the ritual snapshot in params seeds it.
+    let start_route = crate::platform::audio::route_id();
     let mut learner = crate::call::learn::Learner::new(
-        crate::platform::audio::route_id().starts_with("bt:"),
-        None,
-        None,
+        start_route.starts_with("bt:"),
+        params.cal.as_ref().map(|c| c.delay_bins),
+        params.cal.as_ref().map(|c| c.floor),
     );
     let mut renv_cursor = 0usize;
+    // The APPLIED calibration the duck predicts from: (g_norm, delay_bins). Seeded by the stored profile; the live learner slews it (τ≈2s at the 1s update cadence) once Usable — so an uncalibrated route arms itself mid-call. Live floor rides the learner's minimum-statistics tracker.
+    let mut applied: Option<(f32, usize)> = params.cal.as_ref().map(|c| (c.g_norm, c.delay_bins));
+    let fixed_mic_gain: Option<f32> = params.cal.as_ref().and_then(|c| c.mic_gain);
+    let mut live_floor: f32 = params.cal.as_ref().map_or(40.0, |c| c.floor);
+    let mut pred_gate = crate::call::learn::PredGate::new();
+    let mut live_route = start_route.clone();
+    let mut last_est = std::time::Instant::now();
+    let mut vol_lin_now: f32 = crate::platform::audio::current_volume_db()
+        .map_or(1.0, |db| 10f32.powf(db / 20.0));
 
     // RX reassembly: per-window (tier, fountain decoder) + decoded-PCM stash, played strictly in window order (a hole is skipped, not synthesized — the dry playback queue renders the silence).
     let mut rx_decoders: std::collections::BTreeMap<u32, (usize, raptorq::Decoder)> =
@@ -266,21 +290,40 @@ fn run(
                 // Frame mean |sample| — the level the AGC regulates. Silence (below a hair above the noise floor) freezes the loop: regulating silence toward TX_TARGET_LEVEL is how AGCs learn to amplify room hiss.
                 let mean = frame.iter().map(|s| s.unsigned_abs() as u32).sum::<u32>() as f32
                     / frame.len().max(1) as f32;
-                // Side-aware duck term (echo gate + soft duck in one branch). Headset route never ducks (no acoustic path).
-                //   far silent            → 1.0 (full mic)
-                //   far talking, near echo → HARD gate toward silence (near human isn't talking; the mic is only speaker bleed)
-                //   far talking, near loud → soft floored duck (double-talk — keep the near talker audible)
-                let far_talking = route_ducks && far > DUCK_FAR_HALF;
-                let echo_only = far_talking && mean < far * ECHO_GATE_RATIO;
-                let duck_term = if !route_ducks || !far_talking {
-                    1.0
-                } else if echo_only {
-                    gated_frames += 1;
-                    ECHO_GATE_GAIN
+                // Duck term, two modes:
+                //   PREDICTIVE (Cal 4, an applied calibration exists): expected echo = g_norm × vol_lin × far_env(t−delay) from the learner's delay-aligned bins — the gate compares the mic against what the SPEAKER PHYSICALLY EMITTED one acoustic round-trip ago, not the peak-hold of what's rendering now; hysteresis kills threshold chatter.
+                //   REACTIVE (uncalibrated fallback): the peak-hold far_level + absolute ratio gate, exactly the pre-calibration behavior — until the live learner reaches Usable and arms the predictive path itself.
+                let duck_term = if let Some((g_norm, delay)) = applied {
+                    let far_del = learner.far_env_at(delay);
+                    let far_talking = route_ducks && far_del > crate::call::learn::FAR_ACT;
+                    let pred = g_norm * vol_lin_now * far_del;
+                    match pred_gate.decide(mean, pred, live_floor, far_talking) {
+                        crate::call::learn::GateVerdict::Full => 1.0,
+                        crate::call::learn::GateVerdict::Gate => {
+                            gated_frames += 1;
+                            ECHO_GATE_GAIN
+                        }
+                        crate::call::learn::GateVerdict::Duck => {
+                            (1.0 / (1.0 + far_del / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
+                        }
+                    }
                 } else {
-                    (1.0 / (1.0 + far / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
+                    let far_talking = route_ducks && far > DUCK_FAR_HALF;
+                    let echo_only = far_talking && mean < far * ECHO_GATE_RATIO;
+                    if !route_ducks || !far_talking {
+                        1.0
+                    } else if echo_only {
+                        gated_frames += 1;
+                        ECHO_GATE_GAIN
+                    } else {
+                        (1.0 / (1.0 + far / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
+                    }
                 };
-                if mean > 40.0 {
+                if let Some(fg) = fixed_mic_gain {
+                    // Cal 4: the voice profile's FIXED gain replaces the chasing PID — the AGC fighting the duck was the field's "tx(mic) 279 against a 4000 target". The duck term still scales it; the same slew keeps onsets pump-free.
+                    let target = (fg * duck_term).clamp(GAIN_MIN * DUCK_GAIN_FLOOR, GAIN_MAX);
+                    duck_gain += (target - duck_gain) * 0.35;
+                } else if mean > 40.0 {
                     // Log2-domain level error toward the setpoint, PID'd, then the duck term scales the RESULT — level management and echo duck in the one inline loop (+~µs per 20ms frame).
                     let e = (TX_TARGET_LEVEL / (mean / duck_gain).max(1.0)).log2().clamp(-4.0, 4.0);
                     pid_i = (pid_i + e * PID_KI).clamp(-PID_I_CLAMP, PID_I_CLAMP);
@@ -485,10 +528,55 @@ fn run(
             rx_decoders.retain(|w, _| *w >= np);
         }
 
-        // Learner estimator: internally cadence-gated to one window per second of bin time — this call is a cheap no-op the other 999 iterations.
-        let vol_lin = crate::platform::audio::current_volume_db()
+        // Learner estimator + the 1s control plane (estimate refresh, live floor, route tracking). The tick itself is internally cadence-gated; the Instant is a measurement cadence on the engine thread (like PT's RTO), not UI timing.
+        vol_lin_now = crate::platform::audio::current_volume_db()
             .map_or(1.0, |db| 10f32.powf(db / 20.0));
-        learner.tick(vol_lin);
+        learner.tick(vol_lin_now);
+        if last_est.elapsed() >= std::time::Duration::from_secs(1) {
+            last_est = std::time::Instant::now();
+            let est = learner.estimate();
+            live_floor = est.floor;
+            // A Usable-or-better estimate refines (or ARMS) the predictive duck: slew g (τ≈2s at this cadence), step delay only between far bursts — a mid-burst delay step misaligns the prediction and mis-gates real speech.
+            if est.confidence >= crate::call::learn::Confidence::Usable {
+                if let (Some(g), Some(d)) = (est.g_norm, est.delay_bins) {
+                    match &mut applied {
+                        Some((ag, ad)) => {
+                            *ag += (g - *ag) * 0.4;
+                            if learner.far_env_at(0) < crate::call::learn::FAR_ACT {
+                                *ad = d;
+                            }
+                        }
+                        None => {
+                            crate::logf!(
+                                "CALL: learner armed the predictive duck — g {} delay {}ms ({} windows)",
+                                format!("{g:.4}"),
+                                d * 10,
+                                est.windows
+                            );
+                            applied = Some((g, d));
+                        }
+                    }
+                }
+            }
+            // Live route tracking (the cached-route bug — a mid-call BT swap was invisible): a swap finalizes the old route's learning, reverts the duck to reactive, and starts a fresh accumulator for the new physics.
+            let rid = crate::platform::audio::route_id();
+            if rid != live_route && !rid.is_empty() {
+                crate::logf!(
+                    "CALL: route swapped \"{}\" → \"{}\" — learning finalized, duck reverts to reactive until re-learned",
+                    live_route,
+                    rid
+                );
+                crate::call::calibrate::post_learned(learned_results(&learner.estimate(), &live_route));
+                learner = crate::call::learn::Learner::new(rid.starts_with("bt:"), None, None);
+                applied = None;
+                pred_gate = crate::call::learn::PredGate::new();
+                route_ducks = !matches!(
+                    crate::platform::audio::route(),
+                    crate::platform::audio::AudioRoute::Headset
+                );
+                live_route = rid;
+            }
+        }
 
         // 1ms poll granularity (was 4ms): captured frames and just-arrived packets wait at most 1ms for their loop pass, shaving ~6ms off the round trip for the cost of a few more wakeups — cheap on a call-dedicated thread.
         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -548,43 +636,56 @@ fn run(
             format!("{:?}", e.rejects),
             crate::platform::audio::route_id()
         );
+        // Which duck ran (field forensics): pred = the calibrated prediction gated the mic; reactive = the peak-hold fallback (uncalibrated, or a mid-call route swap reset it).
+        crate::logf!(
+            "CALL: duck mode at teardown — {}{}",
+            if applied.is_some() { "predictive" } else { "reactive" },
+            applied.map_or(String::new(), |(g, d)| format!(" (applied g {g:.4} delay {}ms)", d * 10))
+        );
         // Persist what the call proved (Stage 4): echo posts only at SOLID confidence (the persisted tier); voice posts on its own evidence gate (≥5s of voiced far-quiet speech ⇒ talk is Some). The drain blends against the stored profile — ritual outranks, learned refines.
-        let mut learned: Vec<crate::call::calibrate::LearnedResult> = Vec::new();
-        if e.confidence == crate::call::learn::Confidence::Solid {
-            if let (Some(g), Some(d)) = (e.g_norm, e.delay_bins) {
-                learned.push(crate::call::calibrate::LearnedResult {
-                    result: crate::call::calibrate::CalResult::Echo(
-                        crate::call::calibrate::EchoProfile {
-                            g_norm: g,
-                            delay_ms: (d * 10) as u32,
-                            // The learner normalizes every window by vol_lin, so the stored reference is 0dB where a volume mirror exists; None where it doesn't (desktop — vol_lin was 1.0 throughout).
-                            cal_vol_db: crate::platform::audio::current_volume_db().map(|_| 0.0),
-                            route_id: crate::platform::audio::route_id(),
-                        },
-                    ),
-                    windows: e.windows as u32,
-                    solid: true,
-                });
-            }
-        }
-        if let Some(talk) = e.talk {
-            let mic_gain = (4000.0 / talk.max(1.0)).clamp(0.125, 8.0);
-            learned.push(crate::call::calibrate::LearnedResult {
-                result: crate::call::calibrate::CalResult::Voice(
-                    crate::call::calibrate::VoiceProfile {
-                        mic_gain,
-                        floor: e.floor,
-                        mic_id: crate::platform::audio::mic_id(),
-                    },
-                ),
-                windows: (e.voiced_bins / 100) as u32,
-                solid: e.confidence == crate::call::learn::Confidence::Solid,
-            });
-        }
-        crate::call::calibrate::post_learned(learned);
+        crate::call::calibrate::post_learned(learned_results(&e, &live_route));
     }
     teardown();
     // tx_chain/rx_chain drop here — zeroized; the call is cryptographically gone.
+}
+
+/// Package a learner estimate as persistable results (used at teardown AND on a mid-call route swap). Echo requires SOLID (the persisted tier); voice requires its own ≥5s-voiced evidence (talk is Some). g is per-window vol-normalized, so the stored reference is 0dB where a volume mirror exists, absent on desktop.
+fn learned_results(
+    e: &crate::call::learn::Estimate,
+    route_id: &str,
+) -> Vec<crate::call::calibrate::LearnedResult> {
+    let mut learned: Vec<crate::call::calibrate::LearnedResult> = Vec::new();
+    if e.confidence == crate::call::learn::Confidence::Solid {
+        if let (Some(g), Some(d)) = (e.g_norm, e.delay_bins) {
+            learned.push(crate::call::calibrate::LearnedResult {
+                result: crate::call::calibrate::CalResult::Echo(
+                    crate::call::calibrate::EchoProfile {
+                        g_norm: g,
+                        delay_ms: (d * 10) as u32,
+                        cal_vol_db: crate::platform::audio::current_volume_db().map(|_| 0.0),
+                        route_id: route_id.to_string(),
+                    },
+                ),
+                windows: e.windows as u32,
+                solid: true,
+            });
+        }
+    }
+    if let Some(talk) = e.talk {
+        let mic_gain = (4000.0 / talk.max(1.0)).clamp(0.125, 8.0);
+        learned.push(crate::call::calibrate::LearnedResult {
+            result: crate::call::calibrate::CalResult::Voice(
+                crate::call::calibrate::VoiceProfile {
+                    mic_gain,
+                    floor: e.floor,
+                    mic_id: crate::platform::audio::mic_id(),
+                },
+            ),
+            windows: (e.voiced_bins / 100) as u32,
+            solid: e.confidence == crate::call::learn::Confidence::Solid,
+        });
+    }
+    learned
 }
 
 fn teardown() {

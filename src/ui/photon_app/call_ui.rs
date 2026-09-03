@@ -936,6 +936,7 @@ impl PhotonApp {
             we_are_caller,
             peer_addr: addr,
             spool: spool_param,
+            cal: self.cal_snapshot(),
         });
         (Some(handle), ticket)
     }
