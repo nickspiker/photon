@@ -36,12 +36,12 @@ impl Lang {
             _ => None,
         }
     }
-    // Autonyms are invariant across languages by design — a lost user must always recognise their own tongue in the picker.
+    // Autonyms are invariant across languages by design — a lost user must always recognise their own tongue in the picker. Bare language names, parallel form (Nick 2026-09-03: "Māori" not "Te Reo Māori" — te reo just means "the language").
     pub fn autonym(self) -> &'static str {
         match self {
             Lang::En => "English",
             Lang::Es => "Espa\u{f1}ol",
-            Lang::Mi => "Te Reo M\u{101}ori",
+            Lang::Mi => "M\u{101}ori",
         }
     }
     pub fn index(self) -> usize {
