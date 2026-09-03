@@ -16,8 +16,8 @@ const WINDOW_BINS_BT: usize = 400;
 /// Lag scan cap: 1s covers every wired/builtin path; bt:* gets 1.5s (bad A2DP stacks).
 const MAX_LAG: usize = 100;
 const MAX_LAG_BT: usize = 150;
-/// A far bin counts as ACTIVE above this envelope (quiet playback below it can't excite a measurable echo).
-const FAR_ACT: f32 = 200.0;
+/// A far bin counts as ACTIVE above this envelope (quiet playback below it can't excite a measurable echo). Public: the predictive duck uses the same activity notion.
+pub const FAR_ACT: f32 = 200.0;
 /// Window acceptance: at least this many far-active bins (1s) and far mean > 4×floor (below that the envelope non-additivity breaks the linear model).
 const WIN_FAR_ACTIVE_MIN: usize = 100;
 /// Quality gate: Pearson r of the floor-subtracted pair at the peak lag — the PRIMARY double-talk defense (constant double-talk → low r → empty pool → never publishes).
@@ -420,6 +420,17 @@ impl Learner {
         iqr / med
     }
 
+    /// The delay-aligned far envelope: the bin `delay_bins` back from the newest far bin — what the speaker emitted one acoustic round-trip ago, i.e. what the mic hears NOW. 0.0 when history is short (treated as far-silent: never gate on missing data).
+    pub fn far_env_at(&self, delay_bins: usize) -> f32 {
+        let n = self.far.vals.len();
+        if n > delay_bins {
+            let v = self.far.vals[n - 1 - delay_bins];
+            if v.is_nan() { 0.0 } else { v }
+        } else {
+            0.0
+        }
+    }
+
     /// The published state — duck, teardown log, and persist all read this.
     pub fn estimate(&self) -> Estimate {
         let n = self.pool.len();
@@ -476,6 +487,48 @@ fn xcorr(play: &[f32], cap: &[f32], max_lag: usize) -> Option<(usize, f32)> {
     }
     let gain = (best.1 / play_energy).max(0.0) as f32;
     Some((best.0, gain))
+}
+
+/// The predictive duck's per-frame verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateVerdict {
+    /// Far silent — full mic.
+    Full,
+    /// Far talking, mic ≈ predicted echo — hard gate (the near human is not talking).
+    Gate,
+    /// Far talking, mic ≫ prediction — double-talk, soft duck only.
+    Duck,
+}
+
+/// The predictive gate with HYSTERESIS: enter the hard gate when mic < max(pred×2, floor×2), leave it only when mic > max(pred×3, floor×3) — without the band, a mic level riding the threshold chatters the gate open/shut every frame (audible stutter on the far end). Pure + stateful-in-one-bool, so the decision table and the chatter bound are KATs.
+pub struct PredGate {
+    gated: bool,
+}
+
+impl PredGate {
+    pub fn new() -> Self {
+        Self { gated: false }
+    }
+    pub fn decide(&mut self, mic_mean: f32, pred: f32, floor: f32, far_active: bool) -> GateVerdict {
+        if !far_active {
+            self.gated = false;
+            return GateVerdict::Full;
+        }
+        let enter = (pred * 2.0).max(floor * 2.0);
+        let exit = (pred * 3.0).max(floor * 3.0);
+        if self.gated {
+            if mic_mean > exit {
+                self.gated = false;
+            }
+        } else if mic_mean < enter {
+            self.gated = true;
+        }
+        if self.gated {
+            GateVerdict::Gate
+        } else {
+            GateVerdict::Duck
+        }
+    }
 }
 
 /// Pearson correlation — the window quality gate's statistic.
@@ -761,4 +814,49 @@ mod tests {
         assert_eq!(n, BLEND_N_CAP);
     }
 
+
+    /// The predictive gate's decision table + the hysteresis chatter bound.
+    #[test]
+    fn kat_pred_gate_table_and_chatter() {
+        let mut g = PredGate::new();
+        // Far silent → Full, always, and it resets the latch.
+        assert_eq!(g.decide(5000.0, 100.0, 30.0, false), GateVerdict::Full);
+        // Far talking, mic at echo level (pred 100, mic 150 < enter 200) → Gate.
+        assert_eq!(g.decide(150.0, 100.0, 30.0, true), GateVerdict::Gate);
+        // Still gated at mic 250 (exit is 300 — inside the hysteresis band).
+        assert_eq!(g.decide(250.0, 100.0, 30.0, true), GateVerdict::Gate);
+        // Mic 400 > exit 300 → the near human is talking → Duck (double-talk).
+        assert_eq!(g.decide(400.0, 100.0, 30.0, true), GateVerdict::Duck);
+        // Floor dominates a tiny prediction: pred 5, floor 30 → enter 60.
+        let mut g2 = PredGate::new();
+        assert_eq!(g2.decide(40.0, 5.0, 30.0, true), GateVerdict::Gate);
+        // Chatter bound: mic rides EXACTLY between the thresholds (pred 100: enter 200, exit 300; mic 250) — the verdict must be CONSTANT, not alternating.
+        let mut g3 = PredGate::new();
+        let first = g3.decide(250.0, 100.0, 30.0, true);
+        let mut flips = 0;
+        let mut last = first;
+        for i in 0..1000 {
+            // Wobble ±20 around 250 — still inside the band both ways.
+            let mic = 250.0 + if i % 2 == 0 { 20.0 } else { -20.0 };
+            let v = g3.decide(mic, 100.0, 30.0, true);
+            if v != last {
+                flips += 1;
+                last = v;
+            }
+        }
+        assert_eq!(flips, 0, "in-band wobble must never flip the verdict");
+    }
+
+    /// far_env_at: the delay-aligned lookup the prediction rides.
+    #[test]
+    fn kat_far_env_at() {
+        let mut l = Learner::new(false, None, None);
+        let t0 = 1_000_000_000i64;
+        for i in 0..50i64 {
+            l.push_far(t0 + i * BIN_OSC, i as f32);
+        }
+        assert_eq!(l.far_env_at(0), 49.0, "delay 0 = newest bin");
+        assert_eq!(l.far_env_at(10), 39.0, "delay 10 bins back");
+        assert_eq!(l.far_env_at(60), 0.0, "past history = far-silent, never a gate on missing data");
+    }
 }

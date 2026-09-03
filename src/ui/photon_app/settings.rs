@@ -552,6 +552,32 @@ impl PhotonApp {
         self.echo_calibrated_now() && self.voice_calibrated_now()
     }
 
+    /// The stored calibration for the CURRENT route/mic as an engine snapshot — read here on the UI thread at call start (the engine can't touch settings). None when no echo profile exists (the engine then runs reactive + learner).
+    pub(super) fn cal_snapshot(&self) -> Option<crate::call::engine::CalSnapshot> {
+        let fs = self.fleet_settings.as_ref()?;
+        let route = crate::platform::audio::route_id();
+        if route.is_empty() {
+            return None;
+        }
+        let g_norm = fs
+            .device_local(&format!("audio.cal.echo.{route}.g"))
+            .and_then(crate::storage::fleet_settings::as_f32)?;
+        let delay_bins = fs
+            .device_local(&format!("audio.cal.echo.{route}.delay"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize
+            / 10;
+        let mic = crate::platform::audio::mic_id();
+        let mic_gain = fs
+            .device_local(&format!("audio.cal.voice.{mic}.gain"))
+            .and_then(crate::storage::fleet_settings::as_f32);
+        let floor = fs
+            .device_local(&format!("audio.cal.voice.{mic}.floor"))
+            .and_then(crate::storage::fleet_settings::as_f32)
+            .unwrap_or(40.0);
+        Some(crate::call::engine::CalSnapshot { g_norm, delay_bins, mic_gain, floor })
+    }
+
     /// Store one profile as device-local typed settings (coupling and voice are this hardware's physics, never fleet-linked).
     pub(super) fn store_cal_result(&mut self, r: &crate::call::calibrate::CalResult) {
         if !self.ensure_fleet_settings() {
