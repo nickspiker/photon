@@ -1369,6 +1369,9 @@ pub struct PhotonApp {
             Vec<i64>,
         )>,
     >,
+    /// The ONE long-lived OS clipboard handle (desktop). X11/Wayland clipboards are OWNERSHIP-based: the copying app must stay alive serving the selection, and arboard's ownership dies with the instance — the old create-set-drop pattern lost ~48 of every 50 copies (field 2026-09-02, Nick pressing copy fifty times); the strays that landed were a clipboard manager snatching the selection inside the drop window. Lazily created, recreated once on a set/get failure.
+    #[cfg(all(not(target_os = "android"), not(target_os = "redox")))]
+    clipboard: Option<arboard::Clipboard>,
     /// Count of durable writes queued-but-not-landed across the message + chains writers, with a condvar for the quit drain. The 2026-09-02 vanish: deliberate quit exits the process while a snapshot sits in the writer queue — the typed row dies with it (never-written, not written-then-lost). Every enqueue increments; the writer decrements per consumed item AFTER its write completes and notifies; `drain_durable_writers` blocks the quit edge until zero. Pure edges, no timers — a wedged vault holds the quit honestly rather than silently eating rows.
     durable_pending: std::sync::Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>,
     /// The message writer's durable verdicts riding back to the UI thread — drained each status pass (drain_persist_done): success flips the named rows bright + releases their sibling push; failure toasts and leaves them faint. The (tx, rx) pair lives for the whole app so a respawned writer keeps the same return path.
@@ -1806,6 +1809,8 @@ impl PhotonApp {
             registry_converged_fold: Vec::new(),
             peer_store_persisted_len: 0,
             zoom_saved_ru: 1.0,
+            #[cfg(all(not(target_os = "android"), not(target_os = "redox")))]
+            clipboard: None,
             persist_tx: None,
             durable_pending: std::sync::Arc::new((
                 std::sync::Mutex::new(0),
