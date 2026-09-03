@@ -66,7 +66,7 @@
 - [project_party_colour_perceptual.md](project_party_colour_perceptual.md) — Conversation party colours are placeholder; swap to perceptual L≈50% via vsf spectral/LMS
 - [project_presence_vs_online.md](project_presence_vs_online.md) — presence ≠ online (online = avatar ring, always); "show my presence" = busy/song/mood broadcast, DEFAULTS OFF
 - [project_theme_rec2020.md](project_theme_rec2020.md) — fluor+photon theme.rs colours = VSF RGB lazily passed thru; convert via vsf_rgb_to_bt2020 + target Rec.2020 output on ALL platforms
-- [project_incall_learner.md](project_incall_learner.md) — in-call passive calibration learner S1-S5 SHIPPED 2026-09-03 (predictive duck armed); S6 gate-off BLOCKED on field proof; Wave demotes to bootstrap+diagnostic
+- [project_incall_learner.md](project_incall_learner.md) — in-call learner S1-S5 SHIPPED; first field wave 2026-09-03: echo = stale seeds both sides, conf None (41s too short to arm), delay-before-g slew candidate; S6 still blocked
 - [project_languages.md](project_languages.md) — language catalog SHIPPED 2026-09-03: translations-as-code exhaustive-match enum (en+es+mi, ~330 Msg variants), every numeral thru fmt_num, You-page picker, display.lang device-local + OS seed
 - [project_dozenal_datetime.md](project_dozenal_datetime.md) — dozenal date = `year month-glyph day` space-separated; months zero-indexed single glyphs (Feb=short Zila), weekdays are WORDS never digits, week-of-year dropped
 - [project_nunc_clock_check.md](project_nunc_clock_check.md) — nunc-time = clock VALIDATOR not photon's clock source; warn-only banner + ONE load-bearing use: `now` in the update stamp window (user mandate)
