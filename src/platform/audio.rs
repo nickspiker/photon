@@ -30,6 +30,12 @@ const CAPTURE_Q_MAX: usize = 50; // 500ms
 const PLAYBACK_Q_MAX: usize = 100; // 1s
 const RENDER_REF_MAX: usize = 50; // 500ms
 
+/// The in-call learner's far-end reference: (eagle osc at DAC-enqueue, mean |sample| envelope) per rendered frame — the envelope-only sibling of RENDER_REF, deep enough (~10s) for the learner's sliding correlation windows without cloning 48KB frame snapshots per tick. Silence/priming frames land as env 0.0, which is the CORRECT reference (that is what actually hit the DAC). Post-jitter post-splice, so the render→capture delay measured against it is route-constant.
+static RENDER_ENV: Mutex<VecDeque<(i64, f32)>> = Mutex::new(VecDeque::new());
+const RENDER_ENV_MAX: usize = 1024; // ~10s of 10ms frames
+/// Monotonic count of entries ever pushed — the cursor base for `render_env_since`.
+static RENDER_ENV_TOTAL: AtomicUsize = AtomicUsize::new(0);
+
 // ADAPTIVE JITTER BUFFER (docs/calls.md): the far end arrives in bursts (a FEC window at a time) and the network jitters, so a fixed buffer either adds latency it doesn't need (clean LAN) or underruns (lossy relay).
 // Instead the render side plays silence until the queue reaches `JITTER_TARGET` frames, then drains steadily; a dry queue (underrun) GROWS the target and re-primes, while a long clean stretch SHRINKS it back toward the floor.
 // So a clean call rests at ~20ms of software buffer and only a jittery path pays more — exactly where the latency should go.
@@ -296,7 +302,26 @@ fn next_render_frame() -> Vec<i16> {
         }
         r.push_back((vsf::eagle_time_oscillations(), frame.clone()));
     }
+    // The learner's envelope tap — reuses `lvl` computed above (zero new arithmetic).
+    {
+        let mut r = RENDER_ENV.lock().unwrap();
+        if r.len() >= RENDER_ENV_MAX {
+            r.pop_front();
+        }
+        r.push_back((vsf::eagle_time_oscillations(), lvl as f32));
+        RENDER_ENV_TOTAL.fetch_add(1, Ordering::Relaxed);
+    }
     frame
+}
+
+/// Drain the render-envelope entries newer than `cursor` (a count of entries ever pushed; start at 0). Returns (new entries oldest-first, next cursor). The single learner consumer polls this each engine iteration; entries that aged past the ring before a poll are simply gone (the learner's window logic tolerates gaps — a stalled consumer loses history, never correctness).
+pub fn render_env_since(cursor: usize) -> (Vec<(i64, f32)>, usize) {
+    let r = RENDER_ENV.lock().unwrap();
+    let total = RENDER_ENV_TOTAL.load(Ordering::Relaxed);
+    let missed = total.saturating_sub(cursor);
+    let take = missed.min(r.len());
+    let out: Vec<(i64, f32)> = r.iter().skip(r.len() - take).cloned().collect();
+    (out, total)
 }
 
 /// Reset all queues — session start/stop hygiene so a new call never hears the last call's tail.
@@ -318,6 +343,8 @@ fn clear_queues() {
     CAPTURE_Q.lock().unwrap().clear();
     PLAYBACK_Q.lock().unwrap().clear();
     RENDER_REF.lock().unwrap().clear();
+    // RENDER_ENV clears but its TOTAL cursor base does NOT reset — a learner holding a cursor across the hygiene edge just sees a gap, never a phantom replay.
+    RENDER_ENV.lock().unwrap().clear();
     // Each call starts fresh at the jitter floor, re-priming — never inheriting the last call's grown depth.
     JITTER_TARGET.store(JITTER_FLOOR, Ordering::Relaxed);
     JITTER_PRIMING.store(true, Ordering::Relaxed);
@@ -715,7 +742,26 @@ mod tests {
         assert!(r[0].0 <= r[3].0, "reference is eagle-stamped in order");
         // The duck's far-end signal: rendering real frames raised it (peak-hold survives the one silent frame), and session hygiene zeroes it.
         assert!(far_level() > 0, "far_level tracks rendered energy for the duck");
+
+        // The learner's envelope tap: every rendered frame (silence AND real) appended as (osc, env), cursor drain is exactly-once, and the cursor base survives hygiene (a gap, never a replay).
+        let (entries, cur) = render_env_since(0);
+        assert_eq!(entries.len().min(4), 4, "all four rendered frames tapped (silence env 0.0 included)");
+        let tail = &entries[entries.len() - 4..];
+        assert_eq!(tail[0].1, 0.0, "priming silence lands as env 0.0 — the true DAC signal");
+        assert!(tail[1].1 > 0.0 && tail[2].1 > 0.0, "real frames carry their envelope");
+        assert_eq!(tail[3].1, 0.0, "underrun silence lands as env 0.0");
+        let (none, cur2) = render_env_since(cur);
+        assert!(none.is_empty(), "cursor drain is exactly-once");
+        assert_eq!(cur, cur2);
+
         clear_queues();
         assert_eq!(far_level(), 0, "clear_queues resets the duck's far-end signal");
+        let (after_clear, cur3) = render_env_since(cur);
+        assert!(after_clear.is_empty(), "hygiene clears the ring without rewinding the cursor base");
+        assert_eq!(cur3, cur, "TOTAL survives clear — a held cursor sees a gap, never a phantom replay");
+        queue_playback(vec![55i16; FRAME_SAMPLES]);
+        let _ = next_render_frame();
+        let (fresh, _) = render_env_since(cur);
+        assert_eq!(fresh.len(), 1, "post-hygiene renders resume flowing to the held cursor");
     }
 }
