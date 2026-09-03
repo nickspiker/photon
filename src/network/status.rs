@@ -2932,6 +2932,16 @@ async fn run_checker(
                                         list.retain(|p| p.recipient_pubkey != responder_pubkey);
                                     }
 
+                                    // THE FROZEN-ADDRESS FIX (2026-09-02): this pong is signature-verified AND nonce-matched, so src_addr is the freshest PROVEN path to this device — re-aim every queued PT item (small packets + un-locked transfers) still burning retry ladders at stale addresses for it. Without this, addresses froze at enqueue and a same-LAN message sat 60s-to-minutes behind sprays at a wrong-subnet v4 and a dead cellular v6 while the proven path idled.
+                                    {
+                                        let mut pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.retarget_peer(
+                                            responder_pubkey.as_bytes(),
+                                            src_addr,
+                                            None,
+                                        );
+                                    }
+
                                     // Sensitive tail: an updated peer sends it ONLY sealed — open with the RESPONDING device's pairwise key (the signer, verified just above). A failed open (key not seeded yet, or a stale key across their re-attest) degrades to a tail-less pong: presence still lands, name/pin/sync simply wait for keys — and it logs once per device, not per pong. A legacy peer still sends the plaintext fields; keep honouring them until it updates.
                                     let (sync_records, display_name, avatar_pin, locked_reports, about) =
                                         match sealed {
