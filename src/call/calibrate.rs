@@ -32,6 +32,22 @@ pub enum CalPhase {
 
 static PHASE: AtomicU8 = AtomicU8::new(0);
 
+/// The UI wake for phase edges. Phases are edges and the event loop is event-driven — a transition that doesn't wake the loop paints only when something ELSE stirs it (field 2026-09-02: "hang on" sat on the Wave page forever; Done was long since stored, the screen just never repainted until a scroll). Registered once by the app (the same law as the persist writer's verdict wake, messaging.rs 2026-08-25); every phase transition fires it and the status tick's drain does the rest.
+static WAKE: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
+
+/// Register the event-loop wake fired on every calibration phase transition. First registration wins; later calls are no-ops (one loop, one wake).
+pub fn register_wake(f: impl Fn() + Send + Sync + 'static) {
+    let _ = WAKE.set(Box::new(f));
+}
+
+/// EVERY phase transition goes thru here: store, then wake the loop so the transition paints now, not at the next unrelated event.
+fn set_phase(p: CalPhase) {
+    PHASE.store(p as u8, Ordering::Relaxed);
+    if let Some(w) = WAKE.get() {
+        w();
+    }
+}
+
 pub fn phase() -> CalPhase {
     match PHASE.load(Ordering::Relaxed) {
         1 => CalPhase::EchoListen,
@@ -177,7 +193,7 @@ fn begin(phase0: CalPhase) -> Option<(Vec<Vec<i16>>, Arc<AtomicBool>)> {
         crate::platform::audio::stop();
         return None;
     }
-    PHASE.store(phase0 as u8, Ordering::Relaxed);
+    set_phase(phase0);
     Some((frames, Arc::new(AtomicBool::new(false))))
 }
 
@@ -186,11 +202,11 @@ fn finish(verdict: Option<CalResult>) {
     match verdict {
         Some(r) => {
             *RESULT.lock().unwrap() = Some(r);
-            PHASE.store(CalPhase::Done as u8, Ordering::Relaxed);
+            set_phase(CalPhase::Done);
         }
         None => {
             crate::log("CAL: gates failed — nothing stored, ask to retry");
-            PHASE.store(CalPhase::Failed as u8, Ordering::Relaxed);
+            set_phase(CalPhase::Failed);
         }
     }
 }
@@ -315,7 +331,7 @@ pub fn start_voice() -> Option<CalHandle> {
                 finish(None);
                 return;
             }
-            PHASE.store(CalPhase::VoiceRepeat as u8, Ordering::Relaxed);
+            set_phase(CalPhase::VoiceRepeat);
             let (rep, stopped) = capture_frames(REPEAT_FRAMES, &flag);
             if stopped {
                 finish(None);
@@ -350,7 +366,7 @@ pub fn start_voice() -> Option<CalHandle> {
 
 /// Reset the phase to Idle (result consumed / page left).
 pub fn ack_phase() {
-    PHASE.store(CalPhase::Idle as u8, Ordering::Relaxed);
+    set_phase(CalPhase::Idle);
 }
 
 fn mean(v: &[f32]) -> f32 {

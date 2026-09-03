@@ -94,6 +94,13 @@ impl FluorApp for PhotonApp {
                 self.tray_spawned = true;
             }
         }
+        // Calibration phase edges wake the loop thru this proxy — without it, a finished Wave measurement painted only when something else stirred the loop (the "hang on forever until you scroll" field report, 2026-09-02).
+        {
+            let cal_proxy = proxy.clone();
+            crate::call::calibrate::register_wake(move || {
+                let _ = cal_proxy.send(PhotonEvent::NetworkUpdate);
+            });
+        }
         self.event_proxy = Some(proxy);
     }
 
