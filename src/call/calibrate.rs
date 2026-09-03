@@ -94,6 +94,32 @@ pub fn take_result() -> Option<CalResult> {
     RESULT.lock().unwrap().take()
 }
 
+/// A profile the IN-CALL learner measured, with the evidence weight the blend needs. Separate mailbox from the ritual's RESULT on purpose: that slot is single-occupancy (a teardown posting Echo then Voice thru it would lose one) and its drain toasts "measured ✓" + acks the Wave phase — a learned result on every hangup must do neither.
+pub struct LearnedResult {
+    pub result: CalResult,
+    /// Sample weight: accepted estimator windows (echo) or seconds of voiced speech (voice).
+    pub windows: u32,
+    /// Solid confidence tier — the only tier the engine posts, re-asserted here so the drain can trust it without reaching into the learner.
+    pub solid: bool,
+}
+
+static LEARNED: Mutex<Vec<LearnedResult>> = Mutex::new(Vec::new());
+
+/// Post learned profiles from the engine teardown; fires the UI wake so the drain runs now, not at the next unrelated event.
+pub fn post_learned(items: Vec<LearnedResult>) {
+    if items.is_empty() {
+        return;
+    }
+    LEARNED.lock().unwrap().extend(items);
+    if let Some(w) = WAKE.get() {
+        w();
+    }
+}
+
+pub fn take_learned() -> Vec<LearnedResult> {
+    std::mem::take(&mut *LEARNED.lock().unwrap())
+}
+
 pub struct CalHandle {
     stop: Arc<AtomicBool>,
 }
