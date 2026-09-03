@@ -1649,6 +1649,8 @@ pub struct PhotonApp {
     /// Last wire-send instant per conversation for streamed PARTIALS — the ONE granted timer (Nick 2026-08-31): at most one partial per second per conversation; the latest-wins slot holds anything faster. Finals never consult it.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     bridge_partial_sent: std::collections::HashMap<usize, std::time::Instant>,
+    /// Eagle-time of the last bridge PARTIAL sent per conversation — the own-ACK gate: the next partial ships only once this one has left pending_messages (see drain_bridge_output).
+    bridge_partial_inflight: std::collections::HashMap<usize, i64>,
     /// The interrupt registry (host side): device → (foreground-job pgid handle, bash pid), so a Stop arriving while a worker is blocked draining output can signal the command's own process group directly.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     bridge_fg: Option<bridge::BridgeFgMap>,
@@ -2167,6 +2169,7 @@ impl PhotonApp {
             bridge_partials: None,
             #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
             bridge_partial_sent: std::collections::HashMap::new(),
+            bridge_partial_inflight: std::collections::HashMap::new(),
             #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
             bridge_fg: None,
             bridge_locus: None,

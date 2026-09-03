@@ -52,6 +52,8 @@ fn bridge_child_tree(root: i32) -> Vec<i32> {
 /// Wire-frame body cap (Nick's redesign 2026-08-31): a terminal shows a SCREEN, not a scrollback — every streamed frame carries at most this many trailing bytes, so an hour-long deploy's updates stay single-datagram-sized instead of growing into 100KB multi-packet PT transfers (the livelock class: the transfer layer's ACK path is exactly what fails on hard links). The full output lives on the host; `tail`/`grep` reaches the rest.
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 const BRIDGE_BODY_CAP: usize = 8192;
+// Partials carry only the LAST screenful: a live feed needs "what is it doing right now", not scrollback — and a small body keeps each snapshot a fast small frame instead of a PT transfer that crawls behind lane traffic (field 2026-09-03: 8KB partials + whole-lane parking made a 52s cargo build invisible from the Mac). The FINAL still carries the full BRIDGE_BODY_CAP tail.
+const BRIDGE_PARTIAL_CAP: usize = 1024;
 
 /// Keep the LAST `cap` bytes of `s` (char-boundary-safe), prefixed with an elision note naming what stayed behind.
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
@@ -112,7 +114,7 @@ fn spawn_bridge_worker(
                     let fresh = partials
                         .lock()
                         .unwrap()
-                        .insert(ci, BridgeEmit { ci, target: ts, seq, body: bridge_cap_tail(snap, BRIDGE_BODY_CAP), fin: None, host: host.clone(), cwd: cwd0.clone() })
+                        .insert(ci, BridgeEmit { ci, target: ts, seq, body: bridge_cap_tail(snap, BRIDGE_PARTIAL_CAP), fin: None, host: host.clone(), cwd: cwd0.clone() })
                         .is_none();
                     if fresh {
                         bridge_wake(&wake);
@@ -685,24 +687,22 @@ impl PhotonApp {
         emits.sort_by_key(|e| (e.target, e.fin.is_some(), e.seq));
         for e in emits {
             // WINDOW DISCIPLINE (field 2026-08-26, the stuck git pull): the lane's ACK window is 4 slots, one streaming burst filled it instantly, and the FINAL sat queued behind its own already-stale partials while relay-latency ACKs crawled back — done in a second host-side, invisible for minutes client-side. A partial may occupy AT MOST one slot: while the lane is busier than (command + one partial), re-park the snapshot for the next drain tick instead of sending — the slot keeps latest-wins, so what eventually goes out is newer anyway. Finals always send; held is fine for the one frame that must survive.
-            if e.fin.is_none() {
+            let is_final = e.fin.is_some();
+            if !is_final {
                 // THE ONE TIMER (Nick's grant, 2026-08-31): partials reach the wire at most once per second per conversation — the latest-wins slot already collapses bursts, this paces the send so a chatty build is a steady 1Hz screen update, never a s-t-r-e-a-m of frames. Finals are never paced.
                 let recently = self
                     .bridge_partial_sent
                     .get(&e.ci)
                     .map_or(false, |t| t.elapsed() < std::time::Duration::from_secs(1));
-                let busy = self
-                    .contacts
-                    .get(e.ci)
-                    .and_then(|c| c.friendship_id)
-                    .and_then(|fid| {
-                        self.friendship_chains
-                            .iter()
-                            .find(|(id, _)| *id == fid)
-                            .map(|(_, ch)| ch.pending_messages.len())
-                    })
-                    .unwrap_or(0);
-                if recently || busy >= 2 {
+                // ONE partial in flight per feed, gated on ITS OWN ACK edge: the previous snapshot must have left pending_messages before the next ships. The old rule parked on the WHOLE lane's pending count (>= 2), so ordinary fleet-sync chatter starved the feed exactly while a long build ran — the operator watched a dead screen thru a live 52s cargo build and the failure after it (field 2026-09-03, the silent v82 deploy). Own-ACK gating starves on nothing else, self-limits the feed to one lane slot, and needs no new timer: the ACK arrival is the wake edge that sends the next snapshot.
+                let prev_unacked = self.bridge_partial_inflight.get(&e.ci).map_or(false, |&et| {
+                    self.contacts
+                        .get(e.ci)
+                        .and_then(|c| c.friendship_id)
+                        .and_then(|fid| self.friendship_chains.iter().find(|(id, _)| *id == fid))
+                        .map_or(false, |(_, ch)| ch.pending_messages.iter().any(|m| m.eagle_time == et))
+                });
+                if recently || prev_unacked {
                     if let Some(slots) = self.bridge_partials.as_ref() {
                         slots.lock().unwrap().entry(e.ci).or_insert(e);
                     }
@@ -717,15 +717,23 @@ impl PhotonApp {
                 exit: e.fin.map(|c| c as i64),
                 sig: None,
             };
-            // Partials are BEST-EFFORT (suppressed bubble, no held-row machinery — a dropped one is superseded by the next snapshot); the FINAL rides the full durable path (bubble + retransmit + held-row re-serve), because it is the one frame that must survive.
-            let is_final = e.fin.is_some();
-            self.send_chain_message(
-                e.ci,
-                &e.body,
-                !is_final,
-                Some((crate::types::RefKind::BridgeOut, e.target)),
-                Some(wire),
-            );
+            if is_final {
+                // The FINAL rides the full durable path (bubble + retransmit + held-row re-serve) — it is the one frame that must survive.
+                self.bridge_partial_inflight.remove(&e.ci);
+                self.send_chain_message(
+                    e.ci,
+                    &e.body,
+                    false,
+                    Some((crate::types::RefKind::BridgeOut, e.target)),
+                    Some(wire),
+                );
+            } else {
+                // Partials are BEST-EFFORT (no bubble, no held-row machinery — a dropped one is superseded by the next snapshot). Sent thru chain_transmit directly with an eagle_time we mint HERE so the own-ACK gate above can watch this exact frame leave pending.
+                let et = vsf::eagle_time_oscillations();
+                if self.chain_transmit(e.ci, &e.body, et, Some((crate::types::RefKind::BridgeOut, e.target)), Some(&wire)) {
+                    self.bridge_partial_inflight.insert(e.ci, et);
+                }
+            }
         }
     }
 
