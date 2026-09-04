@@ -177,6 +177,8 @@ impl PhotonApp {
         }
         let peer = contact.handle_hash;
         let contact_validated = contact.validated_path.is_some();
+        // Ringback digest resolved here, while `contact` is still borrowed — the send below takes &mut self.
+        let ringback_digest = self.our_party_id(contact).map(|us| relationship_digest(&peer, &us));
         let call_id: [u8; 16] = rand::random();
         let caller_nonce: [u8; 32] = rand::random();
         let sig = CallSignal::Offer {
@@ -187,6 +189,17 @@ impl PhotonApp {
             crate::log("CALL: offer send failed (no lane) — not dialing");
             return;
         }
+        // The ringback rides the same relationship digest the callee's own ring does — what we hear IS their cadence — and honors the same "Ring on incoming call" tick as the inbound ring.
+        let ring_audible = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("notify.ring_call"))
+            .and_then(crate::storage::fleet_settings::as_bool)
+            .unwrap_or(true);
+        let Some(ringback_digest) = ringback_digest else {
+            crate::log("CALL: no party id for the callee — dialing without ringback");
+            return;
+        };
         // Fresh call: clear any stale minimize / speaker state and stop a recording preview (the call owns the audio session).
         self.call_minimized = false;
         self.call_speaker_on = false;
@@ -207,6 +220,12 @@ impl PhotonApp {
             engine: None,
             spool: None,
             ring: None,
+            // Ringback: the CALLEE's ring in OUR ear (their identity cadence, so we hear who we're waving), padded to the same headset level as the wave that follows. It also probes the room's coupling off a known signal while we're not talking — see call::ringback.
+            ringback: if ring_audible {
+                crate::call::ringback::start(ringback_digest)
+            } else {
+                None
+            },
             express_addr: None,
         });
         if contact_validated {
@@ -371,6 +390,7 @@ impl PhotonApp {
                                 engine: None,
                                 spool: None,
                                 ring: None,
+                                ringback: None, // glare fold: we become the CALLEE, so the ring plays — and dropping the old ActiveCall already stopped our ringback
                                 express_addr: None,
                             });
                             // Both users already pressed call — consent is mutual, connect NOW (a fold that merely rings would ask one of them to press the button twice). If the answer guard refuses (uncalibrated route), the call stays Ringing and the panel says why — still strictly better than BUSY.
@@ -424,6 +444,7 @@ impl PhotonApp {
                             engine: None,
                             spool: None,
                             ring: None,
+                            ringback: None, // inbound: we're the one being waved, the RING plays not the ringback
                             express_addr: None,
                         });
                         self.ring_alert(ci);
@@ -466,6 +487,8 @@ impl PhotonApp {
                         call.callee_nonce = Some(nonce);
                         call.phase = CallPhase::Active;
                         call.phase_osc = vsf::eagle_time_oscillations();
+                        // Answered: the ringback stops HERE, before the engine spawns — it must not still be queueing cadence frames into the live wave. Its probe (measured on this route, seconds ago) survives in the module and seeds the engine below.
+                        call.ringback = None;
                         let Some(offer_key) = offer_key else {
                             crate::log("CALL: answer arrived before our offer commit capture — hanging up (basket incomplete)");
                             self.hangup_call();
@@ -988,9 +1011,31 @@ impl PhotonApp {
             we_are_caller,
             peer_addr: addr,
             spool: spool_param,
-            cal: self.cal_snapshot(),
+            cal: self.ringback_seeded_cal(),
         });
         (Some(handle), ticket)
+    }
+
+    /// The engine's calibration seed, ringback-first: a coupling this device measured on THIS route seconds ago outranks a stored profile measured on another day (the field-wave-1/2 failure was exactly a stale seed the in-call learner never had time to correct). The voice half (mic gain, floor) still comes from the stored profile — the ringback measures the room, not the user's voice, since the whole point is that nobody is talking during it.
+    fn ringback_seeded_cal(&self) -> Option<crate::call::engine::CalSnapshot> {
+        let stored = self.cal_snapshot();
+        let Some(p) = crate::call::ringback::take_probe() else {
+            return stored;
+        };
+        crate::logf!(
+            "CALL: engine seeded from the ringback probe — g {:.4} delay {}ms (conf {:?}, {} window(s)); stored profile {}",
+            p.g_norm,
+            p.delay_bins * 10,
+            format!("{:?}", p.confidence),
+            p.windows,
+            if stored.is_some() { "overridden" } else { "absent" }
+        );
+        Some(crate::call::engine::CalSnapshot {
+            g_norm: p.g_norm,
+            delay_bins: p.delay_bins,
+            mic_gain: stored.as_ref().and_then(|c| c.mic_gain),
+            floor: stored.as_ref().map(|c| c.floor).unwrap_or(p.floor),
+        })
     }
 
     pub(super) fn contact_index_by_handle_hash(&self, hh: &[u8; 32]) -> Option<usize> {
