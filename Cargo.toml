@@ -211,6 +211,8 @@ chirp = { path = "../chirp", default-features = false }
 winit = { version = "0.30.12", default-features = false, features = ["rwh_06"] }
 softbuffer = { version = "0.4", default-features = false }
 fluor = { path = "../fluor", default-features = false, features = ["host-winit"] }
+# Synthesis-only chirp (same form as Android): Redox has no audio backend, but the ring RIM is visual — the casting is pure math and the identity contour belongs on every platform that draws the Ringing panel.
+chirp = { path = "../chirp", default-features = false }
 
 # Desktop platforms (not Redox, not Android): default winit/softbuffer + if-watch + arboard, plus fluor's `host-winit` feature (Cargo unions features across target blocks, so the global `default-features = false` set is augmented here rather than overridden).
 [target.'cfg(not(any(target_os = "redox", target_os = "android")))'.dependencies]
