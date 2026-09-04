@@ -851,6 +851,8 @@ enum TextboxRole {
     ProfileField,
     /// The unattended-confirm modal's handle-entry box — in the registry so it takes keys / IME / blink like every other box (without this it rendered but couldn't be typed into).
     UnattendedConfirm,
+    /// The Fleet page's inline machine-rename box (one device card's name band swaps to it) — registry membership per the two-walk rule.
+    FleetRename,
 }
 
 /// One editable profile field on the You page: a `field_id` (the VSF dictionary label, also the `profile.<id>` settings key), a human label, its taxonomy tier, and the text box holding the working value. Custom fields are user-added (registered in `profile._custom`) and grouped under a "Custom" header. See docs/contact-system.md "The field taxonomy".
@@ -1716,6 +1718,8 @@ pub struct PhotonApp {
     diag_log_inspect: Option<(usize, Vec<Vec<(String, u32)>>)>,
     /// Diagnostics-page optional-note field — a real fluor `Textbox` (distinct from the launch / contacts / compose boxes so content never bleeds).
     settings_note_textbox: Option<Textbox>,
+    /// Fleet page inline rename: the device being renamed + its textbox. Some = that card's name band renders the box; Enter commits to the fleet-linked `fleet.name.<pkhex>` setting, Esc cancels.
+    fleet_rename: Option<([u8; 32], Textbox)>,
     /// You-page profile editor: one box per field (display name, first, email, custom fields, …), grouped by taxonomy tier and prefilled from the fleet `profile.<id>` settings on page-open. "Save profile" writes every changed field in one batched push. HitId is scarce (u16) so this is built ONCE (lazily, on first open) and never rebuilt — custom fields append.
     you_fields: Vec<ProfileField>,
     /// The "add a custom field" entry box: type a label (e.g. "Address 2") → Add registers it in `profile._custom` and appends a new field box.
@@ -2193,6 +2197,7 @@ impl PhotonApp {
             diag_log_next_poll_osc: 0,
             diag_log_inspect: None,
             settings_note_textbox: None,
+            fleet_rename: None,
             you_fields: Vec::new(),
             you_add_textbox: None,
             you_fields_loaded: false,
@@ -2793,6 +2798,11 @@ impl PhotonApp {
                         f(cb);
                     }
                 }
+                SettingsPage::Fleet => {
+                    if let Some((_, tb)) = self.fleet_rename.as_mut() {
+                        f(tb);
+                    }
+                }
                 SettingsPage::Diagnostics => {
                     if let Some(tb) = self.settings_note_textbox.as_mut() {
                         f(tb);
@@ -3136,6 +3146,34 @@ pub(crate) fn row_ring_tier_in(
         Some(t) => ring_colour_of(t),
         None => ring_tier_colour(c, false),
     }
+}
+
+/// A device's visible machine name: the human-assigned preferred name (`fleet.name.<pkhex>`, fleet-linked so a rename made anywhere shows everywhere) when set and non-empty, else the deterministic two-word default.
+pub(crate) fn machine_name(
+    pk: &[u8; 32],
+    seed: &[u8; 32],
+    fs: Option<&crate::storage::fleet_settings::FleetSettings>,
+) -> String {
+    if let Some(vsf::VsfType::x(s)) = fs.and_then(|f| f.effective(&format!("fleet.name.{}", hex::encode(pk)))) {
+        if !s.trim().is_empty() {
+            return s.clone();
+        }
+    }
+    crate::network::fgtw::fleet::device_name_default(pk, seed)
+}
+
+/// The name a visual surface shows for a contact. A SIBLING is a machine: its (renameable) machine name — never "Pending…", the ceremony state is not a name (field 2026-09-04: the bridge header read Pending… forever). A friend stays display_name_or_pending; the gradient avatar carries their identity until the real name arrives.
+pub(crate) fn contact_visible_name(
+    c: &crate::types::Contact,
+    seed: Option<&[u8; 32]>,
+    fs: Option<&crate::storage::fleet_settings::FleetSettings>,
+) -> String {
+    if c.is_sibling {
+        if let (Some(pk), Some(seed)) = (c.device_key(), seed) {
+            return machine_name(&pk, seed, fs);
+        }
+    }
+    c.display_name_or_pending()
 }
 
 pub(crate) fn ring_colour_of(tier: ConnTier) -> u32 {

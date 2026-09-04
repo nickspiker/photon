@@ -568,6 +568,9 @@ impl PhotonApp {
             self.unattended_confirm_tb
                 .as_mut()
                 .map(|t| (TextboxRole::UnattendedConfirm, t)),
+            self.fleet_rename
+                .as_mut()
+                .map(|(_, t)| (TextboxRole::FleetRename, t)),
         ]
         .into_iter()
         .flatten()

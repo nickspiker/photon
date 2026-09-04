@@ -31,12 +31,10 @@ impl PhotonApp {
         }
     }
 
-    /// Point the top-left orb at the right subject: in a conversation it becomes the PEER's avatar with a ring in THEIR presence-tier colour (their online state, not ours); everywhere else it's the Photon brand orb with our own FGTW-connectivity ring. Diffed on (contact, has-avatar) so the Icon rebuild only fires on a real change, not every frame.
+    /// Point the top-left orb at the right subject: in a conversation it becomes the PEER's avatar with a ring in THEIR presence-tier colour (their online state, not ours); everywhere else it's the Photon brand orb with our own FGTW-connectivity ring. SIBLINGS count — a bridge conversation shows the target machine's gradient avatar and ITS tier ring, not the brand orb with our own ring (field 2026-09-04). Diffed on (contact, has-avatar) so the Icon rebuild only fires on a real change, not every frame.
     pub(super) fn update_orb(&mut self) {
         let target: Option<usize> = match self.state {
-            AppState::Conversation | AppState::ContactPanel(_) => self
-                .active_contact()
-                .filter(|&ci| !self.contacts[ci].is_sibling),
+            AppState::Conversation | AppState::ContactPanel(_) => self.active_contact(),
             _ => None,
         };
         // The diff key must cover EVERYTHING the orb renders from, because this early-return is the only thing between a state change and a stale orb: contact, avatar presence, the avatar PIN (a new picture always rotates it, so pixel churn needs no hashing), and the ring colour + brighten flag (connection tier — validated_path and the relay flag mutate with no event of their own). Keying on (contact, has-avatar) alone left the ring and a re-picked avatar frozen until a screen change rebuilt the orb (field, 2026-08-05).
