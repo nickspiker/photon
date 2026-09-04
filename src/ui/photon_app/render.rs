@@ -529,12 +529,13 @@ impl PhotonApp {
                         let t_secs = vsf::eagle_time_oscillations() as f64
                             / vsf::OSCILLATIONS_PER_SECOND as f64;
                         let m = crate::ui::ring_rim::sample(&orbit, t_secs);
-                        let r = avatar_r * (1.30 + 0.12 * m.scale);
+                        // Edge budget (Nick 2026-09-04): the rim lives roughly 31/32..17/16 of the avatar radius — mostly peeking, sometimes swallowed. Radius carries ±1/64 of it, the offset the remaining ~1.5/64 (×√2 when both axes peak lands the extremes on the budget).
+                        let r = avatar_r * (65.0 + m.scale) / 64.0;
                         let a = (0x28 as f32 + m.opacity * 0x38 as f32) as u32;
                         paint::draw_circle(
                             &mut canvas,
-                            acx + m.dx * avatar_r * 0.35,
-                            acy + m.dy * avatar_r * 0.35,
+                            acx + m.dx * avatar_r * (1.5 / 64.0),
+                            acy + m.dy * avatar_r * (1.5 / 64.0),
                             r,
                             (a << 24) | (colour & 0x00FF_FFFF),
                             None,
