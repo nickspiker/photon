@@ -5,6 +5,10 @@
 #
 # A stale sibling is the "missing fgtw/fluor symbol" class: photon compiles against a sibling that lacks the symbol its new code calls, producing dozens of phantom errors that look like photon's fault. Fast-forward everything together or nothing.
 #
+# THE OTHER HALF: scripts/lib/sibling-push-gate.sh (sibling_push_check) guards the PUSH direction — work stranded on this machine, unpushed or uncommitted. This script guards the PULL direction — work missing from this machine, behind or diverged. Same repo set, opposite failure. Keep both; neither is redundant.
+#
+# EXPECT A LOCAL COMMIT AFTER EVERY PUBLISH: the publish flow commits the version line itself ("dev: <target> vX published; next line vY"), so the box that published always holds a commit no other machine has. That is normal, not corruption — pull --rebase and push it. It is also why a build box diverges from a laptop that pushed meanwhile, with nobody having touched a keyboard.
+#
 # Exit status is deploy-gateable: 0 = every repo current and clean, non-zero = at least one repo needs a human.
 
 set -u
