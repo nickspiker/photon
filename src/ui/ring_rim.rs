@@ -1,6 +1,6 @@
 //! The incoming-wave circle (Nick 2026-09-04): ONE perfect circle behind the avatar, alive thru its transform — digest-keyed waveforms drive its x/y offset, a rotation decouples those from the axes (plain sine/cosine rotation of the offset vector), a fourth scales it, a fifth breathes its opacity. The circle strictly moves, scales, and fades; it is never deformed (the Fourier-rim experiment retired 2026-09-04 — an interpolated mess in the field).
 //!
-//! Every waveform is a pair of slow sines at digest-drawn incommensurate frequencies, so the motion is smooth, organic, and never visibly loops — and the same wave always greets you from the same person (pure function of digest + now, no stored animation state).
+//! Every waveform is a pair of sines at digest-drawn incommensurate frequencies, DELIBERATELY ABOVE the display refresh (Nick 2026-09-04: "the phase should be higher than the refresh so it jutters around" — 256× the first cut's crawl): each frame samples an unrelated point of the waveform, so the circle jitters alive instead of drifting imperceptibly. The same digest still greets you with the same jitter (pure function of digest + now, no stored animation state).
 //!
 //! LESSON kept from the retired rim: phases fold mod 2π in f64 BEFORE the f32 sin. Absolute eagle seconds are ~10⁸ — through f32 the time step quantizes to whole seconds and sin's range reduction turns to noise; the motion froze and teleported instead of drifting.
 
@@ -64,11 +64,11 @@ pub struct OrbitSample {
 pub fn orbit_for(digest: &[u8; 32]) -> Orbit {
     let u = |name: &str| chirp::channel_unit(name, digest);
     Orbit {
-        x: Wave::for_channel("x", digest, 0.05, 0.18),
-        y: Wave::for_channel("y", digest, 0.05, 0.18),
-        scale: Wave::for_channel("scale", digest, 0.04, 0.12),
-        opacity: Wave::for_channel("opacity", digest, 0.06, 0.15),
-        spin: (0.05 + u("orbit spin rate") * 0.15) * if u("orbit spin dir") < 0.5 { -1.0 } else { 1.0 },
+        x: Wave::for_channel("x", digest, 12.8, 46.0),
+        y: Wave::for_channel("y", digest, 12.8, 46.0),
+        scale: Wave::for_channel("scale", digest, 10.2, 30.7),
+        opacity: Wave::for_channel("opacity", digest, 15.4, 38.4),
+        spin: (12.8 + u("orbit spin rate") * 38.4) * if u("orbit spin dir") < 0.5 { -1.0 } else { 1.0 },
         spin_phase: u("orbit spin phase") * TAU,
     }
 }
