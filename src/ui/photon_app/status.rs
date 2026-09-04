@@ -64,8 +64,14 @@ impl PhotonApp {
         self.drain_clock_check();
         // Surface any fleet-inbox alerts pulled since the last tick (bind attempts on our devices).
         self.drain_fleet_inbox();
-        if self.online && self.clock_jump.check_and_reset() {
-            crate::log("Clock: wall clock jumped — re-verifying via nunc consensus");
+        // Clock discipline refresh: on the jump edge (an NTP step, a long sleep, a hand on the clock) OR on the hourly cadence, because quartz drifts ±20-50 ppm — up to ~180 ms an hour, which is the scale that reorders a live conversation. A measurement cadence, like the engine's learner tick or PT's RTO; never UI timing.
+        const CLOCK_REFRESH: std::time::Duration = std::time::Duration::from_secs(3600);
+        let due = self
+            .clock_last_check
+            .map_or(true, |t: std::time::Instant| t.elapsed() >= CLOCK_REFRESH);
+        if self.online && (self.clock_jump.check_and_reset() || due) {
+            self.clock_last_check = Some(std::time::Instant::now());
+            crate::log("Clock: re-verifying via nunc consensus (jump edge or hourly refresh)");
             #[cfg(not(target_os = "android"))]
             if let Some(proxy) = self.event_proxy.clone() {
                 crate::network::spawn_clock_check(self.clock_check_tx.clone(), Some(proxy));

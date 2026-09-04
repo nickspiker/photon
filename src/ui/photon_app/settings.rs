@@ -78,10 +78,8 @@ impl PhotonApp {
         let verdict = match stamp_window(stamp_osc, now_sys) {
             StampVerdict::ForwardDated => match self.clock_consensus {
                 // Honest-clock tiebreak: the LOWEST plausible now (offset minus the confidence half-width), so a lagging system clock delays an update rather than rejecting it, and a forward-dated stamp still can't slip in.
-                Some((offset, confidence)) => stamp_window(
-                    stamp_osc,
-                    now_sys + (offset - confidence) * crate::OSC_PER_SEC,
-                ),
+                // Already oscillations (the verdict stopped being rounded to seconds 2026-09-03) — no unit conversion here, or the tiebreak lands 1.4 billion times off.
+                Some((offset, confidence)) => stamp_window(stamp_osc, now_sys + (offset - confidence)),
                 None => {
                     crate::log("UPDATE: manifest ahead of the system clock and no consensus verdict in hand — requesting one, deferring");
                     #[cfg(not(target_os = "android"))]

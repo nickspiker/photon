@@ -5271,6 +5271,32 @@ impl PhotonApp {
                         btn_base.wrapping_add(3),
                     );
                     y += line_h;
+                    // The standing clock correction (Nick 2026-09-03): photon orders messages on consensus-corrected time, so the curious should be able to see how far their own clock sits from it. Purely informational — the system clock is never touched, and a deliberately-fast clock is a preference, not a fault.
+                    let clock_line = match crate::network::time_base::offset_now() {
+                        Some((offset_osc, conf_osc)) => {
+                            let ms = |o: i64| o * 1000 / crate::OSC_PER_SEC;
+                            let (o, c) = (ms(offset_osc), ms(conf_osc));
+                            let sign = if o < 0 { "-" } else { "+" };
+                            tr(Msg::AboutClockOffset {
+                                ms: &format!("{sign}{}", crate::fmt_num(o.unsigned_abs() as u32)),
+                                conf: &crate::fmt_num(c.unsigned_abs() as u32),
+                            })
+                            .into_owned()
+                        }
+                        None => tr(Msg::AboutClockUnknown).into_owned(),
+                    };
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        &clock_line,
+                        cx,
+                        y + line_h * 0.5,
+                        &TextStyle::new(hspan2 * 0.8, *theme::LABEL_COLOUR)
+                            .weight(400)
+                            .font("Oxanium"),
+                        about_clip,
+                        None,
+                    );
+                    y += line_h;
                     if self.about_version_spelled {
                         // Spelled-out (voca words), then the dozenal cheat sheet: all twelve digits as GLYPH = name, two columns of six.
                         let main = crate::dozenal_spell(deploy_version());

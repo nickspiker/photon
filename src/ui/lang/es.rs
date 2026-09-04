@@ -467,6 +467,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AboutWaveBeamHead => "onda + haz".into(),
         Msg::AboutWaveBeamProse => "Una onda es voz. Un haz es video — está en camino. Photon no tiene llamadas, porque esto no son llamadas telefónicas: sin operadora, sin cuenta, sin empresa en medio — tu voz viaja entre tus dispositivos y no aterriza en ningún otro lado.\nCada onda y cada haz se graba honestamente: al terminar, la grabación es TUYA para guardar o borrar, como cualquier mensaje. Una grabación que nunca tocó a Google ni a Meta es algo muy distinto de una que vive en sus servidores.".into(),
         Msg::AboutVersion(v) => format!("Versión {v}").into(),
+        Msg::AboutClockOffset { ms, conf } => format!("Reloj {ms} ms de desfase (±{conf} ms)").into(),
+        Msg::AboutClockUnknown => "Reloj — aún sin comprobar".into(),
         Msg::AboutVersionSpelled { main, patch } => match patch {
             Some(p) => format!("{main} punto {p}").into(),
             None => main.to_string().into(),

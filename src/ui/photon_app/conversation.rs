@@ -2316,29 +2316,32 @@ impl PhotonApp {
 
     /// Drain the nunc-time clock verdict. A consensus offset beyond ±`CLOCK_OFF_THRESHOLD_SECS` raises the amber "clock off" banner (`clock_off`); within threshold clears it. An `Unavailable` result (we couldn't reach consensus) is NOT an anomaly — we leave the banner as-is rather than claiming the clock is fine. This is warn-only: the system clock is never corrected.
     pub(super) fn drain_clock_check(&mut self) {
-        /// How far off (seconds) the system clock must be before we warn. 30s — well past ordinary NTP jitter and nunc's own confidence half-width, so the banner means a real problem.
-        const CLOCK_OFF_THRESHOLD_SECS: i64 = 30;
+        /// How far off the system clock must be before we warn, in oscillations (30 s — well past ordinary NTP jitter and nunc's own half-width, so the banner means a real problem). The BANNER is about the human's clock; photon's own ordering no longer depends on it.
+        const CLOCK_OFF_THRESHOLD_OSC: i64 = 30 * crate::OSC_PER_SEC;
 
         while let Ok(result) = self.clock_check_rx.try_recv() {
             match result {
                 crate::network::ClockCheckResult::Ok {
-                    offset_secs,
-                    confidence_secs,
+                    offset_osc,
+                    confidence_osc,
+                    local_osc,
                     sources_used,
                     sources_queried,
                 } => {
+                    let ms = |o: i64| o * 1000 / crate::OSC_PER_SEC;
                     crate::logf!(
-                        "Clock: nunc consensus offset = {}s (±{}s, {}/{} sources)",
-                        offset_secs,
-                        confidence_secs,
+                        "Clock: nunc consensus offset = {} ms (±{} ms, {}/{} sources)",
+                        ms(offset_osc),
+                        ms(confidence_osc),
                         sources_used,
                         sources_queried
                     );
-                    // Kept regardless of the banner threshold — the update stamp window's forward-fail tiebreak reads the raw verdict.
-                    self.clock_consensus = Some((offset_secs, confidence_secs as i64));
-                    self.clock_off = if offset_secs.abs() > CLOCK_OFF_THRESHOLD_SECS {
-                        crate::logf!("Clock: system clock off by {}s — raising banner (warn only, not corrected)", offset_secs);
-                        Some(offset_secs)
+                    // THE load-bearing use (Nick's mandate, 2026-09-03): the verdict becomes photon's time base, so message stamps are comparable across devices whatever each OS clock believes. Never corrects the system clock — that belongs to the human.
+                    crate::network::time_base::adopt(offset_osc, confidence_osc, local_osc);
+                    self.clock_consensus = Some((offset_osc, confidence_osc));
+                    self.clock_off = if offset_osc.abs() > CLOCK_OFF_THRESHOLD_OSC {
+                        crate::logf!("Clock: system clock off by {} ms — raising banner (warn only, not corrected)", ms(offset_osc));
+                        Some(offset_osc)
                     } else {
                         None
                     };

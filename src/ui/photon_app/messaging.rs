@@ -132,7 +132,8 @@ impl PhotonApp {
         if remotes == 0 {
             // WRITE-CONFIRM-THEN-SEND holds here too (2026-08-21 erasure ticket): with zero remotes the VAULT is the recipient, so the disk write IS the delivery. The row is born faint like every other send; the writer's durable verdict (drain_persist_done) flips it bright AND releases the sibling push — the old shape set delivered=true and pushed before any write, so a refused persist left a bright RAM ghost that vanished at relaunch while siblings held a copy this device never durably owned.
             let mut msg =
-                ChatMessage::new_with_timestamp(text, true, vsf::eagle_time_oscillations());
+                // CORRECTED time, not the system clock: this stamp is the row's identity AND its sort key on every device that will ever hold it (see network::time_base). The system clock may be deliberately wrong — that is the human's business, not the conversation's.
+                ChatMessage::new_with_timestamp(text, true, crate::network::time_base::stamp_osc());
             msg.reference = reference;
             let ts = msg.timestamp;
             let Some(conv) = self.conv_mut_of(ci) else {
@@ -146,7 +147,7 @@ impl PhotonApp {
             return true;
         }
 
-        let eagle_time = vsf::eagle_time_oscillations();
+        let eagle_time = crate::network::time_base::stamp_osc();
         // A suppressed send (the hidden chain-weave probe) shows no UI — wire half only.
         if suppress_bubble {
             return self.chain_transmit(ci, &text, eagle_time, reference, bridge.as_ref());

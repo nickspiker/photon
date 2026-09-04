@@ -19,6 +19,7 @@ pub mod udp;
 pub mod updates;
 pub mod wfd;
 
+pub mod time_base;
 pub use clock_check::spawn_clock_check;
 pub use clock_check::{ClockCheckResult, ClockJumpDetector, ClockWake};
 pub use clutch_jobs::{
