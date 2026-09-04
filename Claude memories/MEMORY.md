@@ -156,3 +156,4 @@
 - [feedback-one-build-per-check.md](feedback-one-build-per-check.md) — NEVER run dev.sh twice to read one build: capture once to scratchpad, grep the capture (battery + heat + double relaunch)
 - [project-ferros-exec-naming.md](project-ferros-exec-naming.md) — ferros exec design: no ambient cwd (shell resolves, programs get identities), bind-dont-search (petname→blake3 + sig at spawn), VSF headers not #!, package roots not $0
 - [feedback_stops_not_db.md](feedback_stops_not_db.md) — Nick does STOPS not dB: 1 stop = ×2 amplitude = one bit-shift; always convert and speak stops
+- [project_vault_seal_failures.md](project_vault_seal_failures.md) — OPEN 2026-09-04: Leviathan failing vault WRITES 7.5h+ (ACKs withheld); ordering already correct, fence/block-reuse is the suspect
