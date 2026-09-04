@@ -968,6 +968,10 @@ pub fn save_messages(
                 .set("ref_kind", kind as u64)
                 .set("ref_ts", Value::Time(target));
         }
+        // marks: typed content elements (links), compact-encoded — written only when present.
+        if !msg.marks.is_empty() {
+            rec = rec.set("marks", Value::Bytes(crate::types::encode_marks(&msg.marks)));
+        }
         let row_key = message_row_key(msg.timestamp, &msg.content);
         // The delta gate proper: a read error falls thru to the put (never let a flaky read suppress a durable write).
         if db
@@ -1071,6 +1075,7 @@ pub fn load_messages(
             deleted: rec.uint("deleted").unwrap_or(0) != 0,
             reference: record_reference(&rec),
             notified: rec.uint("unnotified").unwrap_or(0) == 0,
+            marks: record_marks(&rec, content),
             bridge_seq: 0,
             replicated: false,
             bridge_exit: None,
@@ -1105,6 +1110,13 @@ pub fn conversation_state_record(conv: &crate::types::Conversation) -> ([u8; 32]
 }
 
 /// Decode a row record's typed reference (reply/edit/react target) — absent or unknown-kind reads as None, the pre-feature default.
+/// Row marks: decode + re-validate against the row's own content (a stale range from any past edit path drops harmlessly).
+fn record_marks(rec: &Record, content: &str) -> Vec<crate::types::MessageMark> {
+    rec.bytes("marks")
+        .map(|b| crate::types::valid_marks(content, &crate::types::decode_marks(b)))
+        .unwrap_or_default()
+}
+
 fn record_reference(rec: &Record) -> Option<(crate::types::RefKind, i64)> {
     let kind = crate::types::RefKind::from_wire(rec.uint("ref_kind")? as u8)?;
     Some((kind, rec.time("ref_ts")?))
@@ -1303,6 +1315,7 @@ pub fn load_message_page_before(
             deleted: rec.uint("deleted").unwrap_or(0) != 0,
             reference: record_reference(&rec),
             notified: rec.uint("unnotified").unwrap_or(0) == 0,
+            marks: record_marks(&rec, content),
             bridge_seq: 0,
             replicated: false,
             bridge_exit: None,
@@ -1461,7 +1474,8 @@ mod tests {
                 bridge_seq: 0,
                 replicated: false,
                 bridge_exit: None,
-            },
+                marks: Vec::new(),
+                },
             ChatMessage {
                 content: "hey".to_string(),
                 timestamp: 200,
@@ -1475,7 +1489,8 @@ mod tests {
                 bridge_seq: 0,
                 replicated: false,
                 bridge_exit: None,
-            },
+                marks: Vec::new(),
+                },
             ChatMessage {
                 content: "👋 unicode".to_string(),
                 timestamp: 300,
@@ -1489,7 +1504,8 @@ mod tests {
                 bridge_seq: 0,
                 replicated: false,
                 bridge_exit: None,
-            },
+                marks: Vec::new(),
+                },
         ];
 
         // session 1: save, then drop the vault (closes the on-disk files)
@@ -1762,6 +1778,7 @@ mod tests {
         // Write 120 rows OUT OF CHRONOLOGICAL ORDER (newest batch first — the recovery insertion pattern), timestamps 1..=120.
         let make = |t: i64| ChatMessage {
             content: format!("msg {t}"),
+            marks: Vec::new(),
             timestamp: t,
             is_outgoing: t % 2 == 0,
             delivered: t % 2 == 0,

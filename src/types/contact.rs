@@ -75,6 +75,116 @@ impl RefKind {
     }
 }
 
+/// One typed content ELEMENT annotating a byte range of a message's plaintext (Nick 2026-09-04: "the plaintext should contain the full message… fancification on top so it's searchable and contributes to the weave"). The content string stays the complete readable message — search, logs, history pages, and the braid weave all ride it untouched; marks are display affordances layered beside it. Kind-tagged so the vocabulary extends (link today; future kinds render as plain text on builds that predate them).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MessageMark {
+    /// Wire kind: 1 = link (`dest` is the destination URL). 0 is reserved as "none"; unknown kinds are dropped at validation.
+    pub kind: u8,
+    /// Byte offset into the UTF-8 content where the marked run starts.
+    pub start: usize,
+    /// Byte length of the marked run.
+    pub len: usize,
+    /// The element payload — for a link, the destination URL shown VERBATIM in the consent dialog.
+    pub dest: String,
+}
+
+pub const MARK_KIND_LINK: u8 = 1;
+/// Caps: a message carries at most this many marks, and a destination at most this many bytes — parse-time bounds, not UI limits.
+pub const MARKS_MAX: usize = 32;
+pub const MARK_DEST_MAX: usize = 2048;
+
+/// Compact vault-row encoding for a validated marks list — per mark: kind u8 ‖ start u32le ‖ len u32le ‖ dest_len u16le ‖ dest bytes. Binary at rest per the number doctrine; `decode_marks` is total (any malformation = empty, the text stands) and every load re-validates against the content anyway.
+pub fn encode_marks(marks: &[MessageMark]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for m in marks.iter().take(MARKS_MAX) {
+        out.push(m.kind);
+        out.extend_from_slice(&(m.start as u32).to_le_bytes());
+        out.extend_from_slice(&(m.len as u32).to_le_bytes());
+        let d = &m.dest.as_bytes()[..m.dest.len().min(MARK_DEST_MAX)];
+        out.extend_from_slice(&(d.len() as u16).to_le_bytes());
+        out.extend_from_slice(d);
+    }
+    out
+}
+
+pub fn decode_marks(b: &[u8]) -> Vec<MessageMark> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + 11 <= b.len() && out.len() < MARKS_MAX {
+        let kind = b[i];
+        let start = u32::from_le_bytes(b[i + 1..i + 5].try_into().unwrap()) as usize;
+        let len = u32::from_le_bytes(b[i + 5..i + 9].try_into().unwrap()) as usize;
+        let dlen = u16::from_le_bytes(b[i + 9..i + 11].try_into().unwrap()) as usize;
+        i += 11;
+        if i + dlen > b.len() {
+            return Vec::new();
+        }
+        let Ok(dest) = std::str::from_utf8(&b[i..i + dlen]).map(str::to_string) else {
+            return Vec::new();
+        };
+        i += dlen;
+        out.push(MessageMark { kind, start, len, dest });
+    }
+    out
+}
+
+/// Send-side URL detection (the prim form of the legacy convention, Nick 2026-09-04): a whitespace token that IS a URL becomes a link mark with dest = the visible text VERBATIM — nothing hidden, the wire carries only explicit marks, the receiver never regex-scans. Trailing punctuation that reads as prose is left outside the mark. Pure function of the content, so any re-serve site re-derives identical marks.
+pub fn detect_url_marks(content: &str) -> Vec<MessageMark> {
+    const TRAIL: &[char] = &['.', ',', ';', ':', '!', '?', ')', ']', '}', '"', '\'', '\u{2026}'];
+    let mut marks = Vec::new();
+    let mut i = 0usize;
+    while i < content.len() {
+        let rest = &content[i..];
+        let Some(c0) = rest.chars().next() else { break };
+        if c0.is_whitespace() {
+            i += c0.len_utf8();
+            continue;
+        }
+        let end = rest
+            .char_indices()
+            .find(|(_, c)| c.is_whitespace())
+            .map(|(j, _)| i + j)
+            .unwrap_or(content.len());
+        let token = &content[i..end];
+        let lower = token.to_ascii_lowercase();
+        if lower.starts_with("https://") || lower.starts_with("http://") {
+            let trimmed = token.trim_end_matches(TRAIL);
+            let scheme_len = if lower.starts_with("https://") { 8 } else { 7 };
+            if trimmed.len() > scheme_len {
+                marks.push(MessageMark {
+                    kind: MARK_KIND_LINK,
+                    start: i,
+                    len: trimmed.len(),
+                    dest: trimmed.to_string(),
+                });
+            }
+        }
+        i = end;
+    }
+    valid_marks(content, &marks)
+}
+
+/// Validate marks against their content: known kind, char-boundary in-bounds non-empty ranges, no overlaps, allowlisted scheme (https/http only — anything else renders as text), bounded dest. Returns the surviving marks sorted by start; a bad mark is DROPPED (the text always stands), never an error.
+pub fn valid_marks(content: &str, marks: &[MessageMark]) -> Vec<MessageMark> {
+    let mut ok: Vec<MessageMark> = marks
+        .iter()
+        .filter(|m| m.kind == MARK_KIND_LINK)
+        .filter(|m| m.len > 0 && m.start.checked_add(m.len).is_some_and(|e| e <= content.len()))
+        .filter(|m| content.is_char_boundary(m.start) && content.is_char_boundary(m.start + m.len))
+        .filter(|m| m.dest.len() <= MARK_DEST_MAX)
+        .filter(|m| {
+            let d = m.dest.to_ascii_lowercase();
+            d.starts_with("https://") || d.starts_with("http://")
+        })
+        .cloned()
+        .collect();
+    ok.sort_by_key(|m| m.start);
+    ok.dedup_by(|b, a| b.start < a.start + a.len); // overlap: the earlier mark wins, the overlapper drops
+    ok.truncate(MARKS_MAX);
+    ok
+}
+
+
 #[derive(Clone, Debug)]
 pub struct ChatMessage {
     pub content: String,
@@ -93,6 +203,8 @@ pub struct ChatMessage {
     pub notified: bool,
     /// FLEET-REPLICATED (the delivery ladder's middle state, 2026-09-01): a sibling provably holds this outgoing row — flipped when a fold-trusted sibling page carries our copy back, or when a sibling pong's anti-entropy (count, digest) exactly matches ours. RUNTIME-ONLY v1 (not persisted, not on the wire — re-earned each session on the next gossip/digest edge); `delivered` outranks it. The ladder: sending → replicated (our fleet holds it) ∥ delivered (their fleet ACKed — the line; there is nothing beyond it, "seen" is only ever a human's explicit reaction).
     pub replicated: bool,
+    /// Typed content elements beside the plaintext (links today) — validated against `content` at every ingress; empty = plain message. Persisted, synced, and carried on the wire as FIELDS (the attachment content-string record is the anti-pattern this replaces going forward).
+    pub marks: Vec<MessageMark>,
     /// BRIDGE runtime only (never persisted — bridge rows are ephemeral): the newest streamed snapshot's sequence on a BridgeOut row, so an out-of-order or duplicated partial can never regress the display.
     pub bridge_seq: u64,
     /// BRIDGE runtime only: the exit code once this BridgeOut row's command completed — present = FINAL frame arrived, the in-flight predicate's other half.
@@ -111,6 +223,7 @@ impl ChatMessage {
             deleted: false,
             reference: None,
             notified: is_outgoing,
+            marks: Vec::new(),
             bridge_seq: 0,
             replicated: false,
             bridge_exit: None,
@@ -129,6 +242,7 @@ impl ChatMessage {
             deleted: false,
             reference: None,
             notified: is_outgoing,
+            marks: Vec::new(),
             bridge_seq: 0,
             replicated: false,
             bridge_exit: None,
@@ -944,6 +1058,33 @@ impl Contact {
 
 #[cfg(test)]
 mod fold_honour_tests {
+
+    /// Marks: URL detection is byte-precise and verbatim; validation drops out-of-bounds, overlaps, and non-http(s) schemes; the vault encoding round-trips.
+    #[test]
+    fn marks_detect_validate_and_encode() {
+        let text = "see https://passless.org/, then http://a.example/x ok?";
+        let marks = detect_url_marks(text);
+        assert_eq!(marks.len(), 2);
+        assert_eq!(&text[marks[0].start..marks[0].start + marks[0].len], "https://passless.org/");
+        assert_eq!(marks[0].dest, "https://passless.org/");
+        assert_eq!(&text[marks[1].start..marks[1].start + marks[1].len], "http://a.example/x");
+        let uni = "\u{1F30D} https://x.example/ \u{1F30D}";
+        let m = detect_url_marks(uni);
+        assert_eq!(m.len(), 1);
+        assert_eq!(&uni[m[0].start..m[0].start + m[0].len], "https://x.example/");
+        let content = "hello world";
+        let bad = vec![
+            MessageMark { kind: MARK_KIND_LINK, start: 0, len: 5, dest: "javascript:alert(1)".into() },
+            MessageMark { kind: MARK_KIND_LINK, start: 6, len: 50, dest: "https://x.example/".into() },
+            MessageMark { kind: MARK_KIND_LINK, start: 0, len: 5, dest: "https://ok.example/".into() },
+            MessageMark { kind: MARK_KIND_LINK, start: 3, len: 4, dest: "https://overlap.example/".into() },
+        ];
+        let v = valid_marks(content, &bad);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].dest, "https://ok.example/");
+        assert_eq!(decode_marks(&encode_marks(&v)), v);
+        assert!(decode_marks(&[1, 2, 3]).is_empty(), "truncated garbage decodes to nothing");
+    }
     use super::*;
 
     fn contact_with(pk: [u8; 32]) -> Contact {

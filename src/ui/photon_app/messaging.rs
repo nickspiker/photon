@@ -134,6 +134,7 @@ impl PhotonApp {
             let mut msg =
                 // CORRECTED time, not the system clock: this stamp is the row's identity AND its sort key on every device that will ever hold it (see network::time_base). The system clock may be deliberately wrong — that is the human's business, not the conversation's.
                 ChatMessage::new_with_timestamp(text, true, crate::network::time_base::stamp_osc());
+            msg.marks = crate::types::detect_url_marks(&msg.content);
             msg.reference = reference;
             let ts = msg.timestamp;
             let Some(conv) = self.conv_mut_of(ci) else {
@@ -155,6 +156,7 @@ impl PhotonApp {
 
         // BUBBLE FIRST, WIRE SECOND. The pending-grey bubble appears the instant the user hits send — chain_transmit does weave selection, braid advance, chains persist and PT dispatch, and running it first meant the message rendered as NOTHING for that whole stretch, then grey, then white. The user's mental model (grey immediately, everything else follows) is also the honest one: the row exists the moment they authored it; the wire is delivery, not existence.
         let mut msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
+        msg.marks = crate::types::detect_url_marks(&text);
         msg.reference = reference;
         // The row carries its OWN wire truth (the stop-hang conviction, 2026-08-30): a re-serve rebuilds frames from this row, and a BridgeOut final rebuilt without its seq/exit delivers text the client's gate can never release on ("output row: present, exit: -" — the prompt held forever). Stamp them here so bridge_wire_for_row can resurrect the wire at any re-serve site.
         if let Some(bw) = bridge.as_ref() {
@@ -628,6 +630,7 @@ impl PhotonApp {
         }
         for (ci, text, eagle_time, reference, bridge, _) in sends {
             let mut msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
+            msg.marks = crate::types::detect_url_marks(&text);
             msg.reference = reference;
             if !self.chain_transmit(ci, &text, eagle_time, reference, bridge.as_ref()) {
                 let has_fleet = self.contacts.iter().any(|c| c.is_sibling);
@@ -868,12 +871,18 @@ impl PhotonApp {
                 .min(rand::random::<u8>())
                 .min(rand::random::<u8>()) as usize;
             let pad: Vec<u8> = (0..pad_len).map(|_| rand::random()).collect();
+            // Marks are a pure function of the text (v1: verbatim URL tokens), so every re-serve site rebuilds identical wire marks with no threading.
+            let wire_marks: Vec<(u8, usize, usize, String)> = crate::types::detect_url_marks(text)
+                .into_iter()
+                .map(|m| (m.kind, m.start, m.len, m.dest))
+                .collect();
             let payload = match crate::network::message_package::build_message_package(
                 text,
                 &incorporated_hp,
                 &woven_times,
                 reference.map(|(k, t)| (k as u8, t)),
                 bridge,
+                &wire_marks,
                 &pad,
             ) {
                 Ok(p) => p,

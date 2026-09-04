@@ -334,6 +334,8 @@ impl FluorApp for PhotonApp {
         ));
         self.relabel_for_language();
         self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.link_consent_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(3);
         self.unattended_confirm_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(2); // confirm / cancel
         self.locked_retry_hit = self.hit_counter;
@@ -1905,6 +1907,38 @@ impl FluorApp for PhotonApp {
                 }
                 return EventResponse::Handled;
             }
+            // Link consent pills: Open / Copy / Cancel — every path closes the dialog (interaction-cleared, no timers).
+            if self.link_consent_base != HIT_NONE
+                && self.link_consent.is_some()
+                && hit_id >= self.link_consent_base
+                && hit_id < self.link_consent_base.wrapping_add(3)
+            {
+                let dest = self.link_consent.take().unwrap_or_default();
+                let slot = hit_id - self.link_consent_base;
+                if slot == 0 {
+                    crate::logf!("CHAT: link consent → open ({} bytes)", dest.len());
+                    open_url_in_browser(&dest);
+                } else if slot == 1 {
+                    let ok = self.copy_to_clipboard(&dest);
+                    crate::logf!("CHAT: link consent → copy ({})", if ok { "ok" } else { "failed" });
+                }
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+            // A tap on a rendered link span opens the consent dialog INSTEAD of the row strip — checked before the row arm because the spans live inside row bands.
+            if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(64) {
+                let (cx_f, cy_f) = (ctx.cursor_x as f32, ctx.cursor_y as f32);
+                if let Some(dest) = self
+                    .msg_link_hits
+                    .iter()
+                    .find(|(x0, y0, x1, y1, _)| cx_f >= *x0 && cx_f <= *x1 && cy_f >= *y0 && cy_f <= *y1)
+                    .map(|(_, _, _, _, d)| d.clone())
+                {
+                    self.link_consent = Some(dest);
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
+            }
             if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(64) {
                 let vis = (hit_id - self.msg_hit_base) as usize;
                 if let (Some(ci), Some(&(ts, out, ref_band))) =
@@ -2531,6 +2565,11 @@ impl FluorApp for PhotonApp {
                             // The deliberate quit chord: bypasses residency for ONE close so the host actually exits.
                             self.exit_requested = true;
                             return EventResponse::Close;
+                        }
+                        if self.link_consent.is_some() {
+                            self.link_consent = None;
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
                         }
                         if self.fleet_rename.is_some() {
                             // Rename abandoned — drop the box, nothing written.
@@ -3515,5 +3554,25 @@ impl FluorApp for PhotonApp {
             ResizeEdge::TopRight | ResizeEdge::BottomLeft => CursorIcon::NeswResize,
             ResizeEdge::None => CursorIcon::Default,
         }
+    }
+}
+
+/// Open a URL in the system browser — the About-weblink commands, factored for the link consent dialog. Android is gated upstream (the Open pill disables until the Intent-thru-Kotlin bridge exists).
+fn open_url_in_browser(url: &str) {
+    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox"), not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("cmd").args(["/C", "start", url]).spawn();
+    }
+    #[cfg(any(target_os = "android", target_os = "redox"))]
+    {
+        crate::logf!("CHAT: open link unsupported on this platform ({} bytes)", url.len());
     }
 }

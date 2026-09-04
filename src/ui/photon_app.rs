@@ -1581,6 +1581,12 @@ pub struct PhotonApp {
     shift_held: bool,
     /// Base hit id for the conversation's visible message rows (fixed span 64). The render stamps `msg_hit_base + visible_row` per drawn row and rebuilds [`Self::msg_hit_rows`] in lockstep, so a tap resolves to the message with no knowledge of scroll or backfill. Tap = select (details strip: direction, age, delivery, copy); tap the same again = deselect.
     msg_hit_base: HitId,
+    /// Per-frame link-span hit rects in the conversation: (x0, y0, x1, y1, dest). A tap inside one opens the consent dialog instead of the row strip.
+    msg_link_hits: Vec<(f32, f32, f32, f32, String)>,
+    /// The link consent dialog: Some(destination) while open — a message link NEVER opens without showing the full destination and asking (Nick 2026-09-04).
+    link_consent: Option<String>,
+    /// Hit base for the consent pills: +0 Open, +1 Copy, +2 Cancel.
+    link_consent_base: HitId,
     /// Hit id for the selected message's "copy" pill inside the details strip.
     msg_copy_id: HitId,
     /// Base hit id for the rest of the details-strip action pills (span 8): 0=reply, 1=edit, 2=resend, 3=delete. Copy keeps its own id above.
@@ -2138,6 +2144,9 @@ impl PhotonApp {
             exit_requested: false,
             shift_held: false,
             msg_hit_base: HIT_NONE,
+            msg_link_hits: Vec::new(),
+            link_consent: None,
+            link_consent_base: HIT_NONE,
             msg_copy_id: HIT_NONE,
             msg_action_base: HIT_NONE,
             msg_hit_rows: Vec::new(),
@@ -3176,6 +3185,29 @@ pub(crate) fn contact_visible_name(
     c.display_name_or_pending()
 }
 
+/// Map wrapped display lines back to byte offsets in their source: each wrapped line is a CONTIGUOUS source slice, and between consecutive lines the wrap consumed only whitespace (one space per word-wrap, one newline per hard break, none inside a char-broken word). Returns None if the lines don't re-derive from the source (defensive: the caller then skips link projection, the text still draws).
+pub(crate) fn line_source_starts(source: &str, lines: &[String]) -> Option<Vec<usize>> {
+    let mut starts = Vec::with_capacity(lines.len());
+    let mut c = 0usize;
+    for line in lines {
+        let mut guard = 0;
+        while !source[c..].starts_with(line.as_str()) {
+            let ch = source[c..].chars().next()?;
+            if !ch.is_whitespace() {
+                return None;
+            }
+            c += ch.len_utf8();
+            guard += 1;
+            if guard > 16 {
+                return None;
+            }
+        }
+        starts.push(c);
+        c += line.len();
+    }
+    Some(starts)
+}
+
 pub(crate) fn ring_colour_of(tier: ConnTier) -> u32 {
     match tier {
         ConnTier::Lan => *theme::RING_LAN_COLOUR,
@@ -3597,5 +3629,23 @@ mod compose_codec_tests {
         let blob = super::PhotonApp::encode_react_recent(&stamps);
         assert_eq!(super::PhotonApp::decode_react_recent(&blob), stamps);
         assert!(super::PhotonApp::decode_react_recent(b"not a field").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    /// line_source_starts maps wrapped lines back to contiguous source slices thru word wraps, hard breaks, and char-broken words — and refuses (None) when the lines don't derive from the source.
+    #[test]
+    fn line_starts_map_wrapped_lines() {
+        let src = "one two three\nfour  five";
+        let lines: Vec<String> = vec!["one two".into(), "three".into(), "four  five".into()];
+        let starts = super::line_source_starts(src, &lines).expect("derives");
+        assert_eq!(starts, vec![0, 8, 14]);
+        for (st, l) in starts.iter().zip(&lines) {
+            assert_eq!(&src[*st..*st + l.len()], l.as_str());
+        }
+        let broken: Vec<String> = vec!["abcd".into(), "efgh".into()];
+        assert_eq!(super::line_source_starts("abcdefgh", &broken), Some(vec![0, 4]));
+        assert_eq!(super::line_source_starts("mismatch entirely", &lines), None);
     }
 }

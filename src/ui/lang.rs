@@ -207,6 +207,12 @@ pub enum Msg<'a> {
     ReplyPill,
     EditPill,
     CopyPill,
+    /// Link consent dialog title — a tapped message link never opens silently.
+    LinkConsentTitle,
+    /// The consent dialog's Open action.
+    OpenLinkPill,
+    /// Consent warning when the destination contains non-ASCII bytes (homograph honesty).
+    LinkNonAsciiWarn,
     CopiedPill,
     ResendPill,
     FetchPill,

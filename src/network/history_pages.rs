@@ -23,6 +23,8 @@ pub struct HistoryRow {
     pub reference: Option<(u8, i64)>,
     /// The fleet's alert duty for this row is DISCHARGED (notification design 2026-07-23). Sibling pages carry it so a forwarded row never re-dings; absent on pre-feature pages ⇒ true (history is silent). FRIEND-route pages carry the FRIEND's flag, which the merge overrides to true — their alert state is not ours.
     pub notified: bool,
+    /// Typed content marks (links) — page COLUMNS beside the content, never string-encoded into it. Absent on pre-feature pages ⇒ empty; every consumer re-validates against the row's content.
+    pub marks: Vec<crate::types::MessageMark>,
 }
 
 /// A decoded (pre-seal / post-open) history page.
@@ -52,6 +54,11 @@ fn page_schema() -> SectionSchema {
         .field("m_ntf", TypeConstraint::AnyUnsigned) // notified flag, one per row (absent column on pre-feature pages = all true)
         .field("m_refk", TypeConstraint::AnyUnsigned) // reference kind, one per row: 0 = none, else RefKind wire value (absent on pre-feature pages → all none)
         .field("m_reft", TypeConstraint::Any) // e6 reference target, one per row: 0 when kind is none
+        .field("m_mn", TypeConstraint::AnyUnsigned) // mark COUNT, one per row (absent on pre-feature pages → all zero)
+        .field("m_mk", TypeConstraint::AnyUnsigned) // flat mark kinds, m_mn entries consumed per row in order
+        .field("m_ms", TypeConstraint::AnyUnsigned) // flat mark byte starts
+        .field("m_ml", TypeConstraint::AnyUnsigned) // flat mark byte lens
+        .field("m_md", TypeConstraint::Utf8Text) // flat mark dests
 }
 
 /// Encode + AEAD-seal a page under `key`. Key-agnostic: friendship history key today, fleet key later.
@@ -93,7 +100,20 @@ pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<
                     row.reference.map(|(_, t)| t).unwrap_or(0),
                 ))],
             )
+            .map_err(|e| e.to_string())?
+            .append_multi("m_mn", vec![VsfType::u(row.marks.len(), false)])
             .map_err(|e| e.to_string())?;
+        for m in &row.marks {
+            builder = builder
+                .append_multi("m_mk", vec![VsfType::u(m.kind as usize, false)])
+                .map_err(|e| e.to_string())?
+                .append_multi("m_ms", vec![VsfType::u(m.start, false)])
+                .map_err(|e| e.to_string())?
+                .append_multi("m_ml", vec![VsfType::u(m.len, false)])
+                .map_err(|e| e.to_string())?
+                .append_multi("m_md", vec![VsfType::x(m.dest.clone())])
+                .map_err(|e| e.to_string())?;
+        }
     }
     let section_bytes = builder.encode().map_err(|e| e.to_string())?;
 
@@ -189,10 +209,58 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
         })
         .collect();
 
+    // Marks: per-row counts + four flat columns consumed in row order. A count/flat mismatch drops every mark on the page (fail-safe to plain text); each row's marks re-validate against its own content.
+    let mark_counts: Vec<usize> = section
+        .get_fields("m_mn")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| v.as_u64().map(|n| n as usize))
+        .collect();
+    let flat_u = |name: &str| -> Vec<u64> {
+        section
+            .get_fields(name)
+            .iter()
+            .filter_map(|f| f.values.first())
+            .filter_map(|v| v.as_u64())
+            .collect()
+    };
+    let mk = flat_u("m_mk");
+    let ms = flat_u("m_ms");
+    let ml = flat_u("m_ml");
+    let md: Vec<String> = section
+        .get_fields("m_md")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::x(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    let flat_total: usize = mark_counts.iter().sum();
+    let marks_ok = flat_total == mk.len() && flat_total == ms.len() && flat_total == ml.len() && flat_total == md.len();
+
     // Zip the parallel arrays; a malformed page (mismatched lengths) yields the common prefix.
     let n = times.len().min(texts.len()).min(outs.len()).min(dels.len());
     let mut rows = Vec::with_capacity(n);
+    let mut mcur = 0usize;
     for i in 0..n {
+        let row_marks = if marks_ok {
+            let cnt = mark_counts.get(i).copied().unwrap_or(0);
+            let out: Vec<crate::types::MessageMark> = (mcur..mcur + cnt)
+                .filter_map(|j| {
+                    Some(crate::types::MessageMark {
+                        kind: u8::try_from(*mk.get(j)?).ok()?,
+                        start: *ms.get(j)? as usize,
+                        len: *ml.get(j)? as usize,
+                        dest: md.get(j)?.clone(),
+                    })
+                })
+                .collect();
+            mcur += cnt;
+            crate::types::valid_marks(&texts[i], &out)
+        } else {
+            Vec::new()
+        };
         rows.push(HistoryRow {
             timestamp: times[i],
             content: texts[i].clone(),
@@ -204,6 +272,7 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
                 0 => None,
                 k => Some((k, ref_targets.get(i).copied().unwrap_or(0))),
             },
+            marks: row_marks,
         });
     }
     Ok(HistoryPagePlain {
@@ -235,6 +304,8 @@ mod tests {
                     delivered: true,
                     deleted: false,
                     reference: None,
+                    // A link mark rides the page: range covers "oldest " — validation checks bounds + dest scheme, and the round trip must return it intact.
+                    marks: vec![crate::types::MessageMark { kind: 1, start: 0, len: 7, dest: "https://x.example/".into() }],
                     notified: true,
                 },
                 HistoryRow {
@@ -244,6 +315,7 @@ mod tests {
                     delivered: false,
                     deleted: false,
                     reference: Some((1, 1_000)), // a reply column rides the page
+                    marks: Vec::new(),
                     notified: true,
                 },
                 HistoryRow {
@@ -253,6 +325,7 @@ mod tests {
                     delivered: false,
                     deleted: false,
                     reference: None,
+                    marks: Vec::new(),
                     notified: true,
                 },
             ],
@@ -302,6 +375,7 @@ mod tests {
                 delivered: false,
                 deleted: false,
                 reference: None,
+                marks: Vec::new(),
                 notified: true,
             }],
             oldest_osc: 7,

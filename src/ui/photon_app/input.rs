@@ -908,6 +908,7 @@ impl PhotonApp {
         self.attach_confirmed.clear();
         // Conversation view + drafts: a composed draft is identity content too.
         self.msg_hit_rows.clear();
+        self.msg_link_hits.clear();
         self.selected_msg = None;
         self.pending_delete = None;
         self.compose_reply_to = None;
