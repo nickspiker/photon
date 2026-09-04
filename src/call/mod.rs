@@ -6,6 +6,7 @@
 
 pub mod calibrate;
 pub mod learn;
+pub mod ringback;
 pub mod engine;
 pub mod spool;
 pub mod record;
@@ -29,6 +30,11 @@ pub static MEDIA_QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 pub fn install_media_sink(tx: std::sync::mpsc::Sender<(Vec<u8>, SocketAddr)>) {
     *MEDIA_SINK.lock().unwrap() = Some(tx);
     MEDIA_QUIET.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Is the engine holding the media path? The ringback asks before deciding whether to close the audio session it opened — answered means the engine owns it now, unanswered means nobody does.
+pub fn media_sink_live() -> bool {
+    MEDIA_SINK.lock().unwrap().is_some()
 }
 
 pub fn clear_media_sink() {
@@ -91,6 +97,9 @@ pub enum CallPhase {
     Ended,
 }
 
+/// Live wave playback runs this many stops below full scale (1 stop = x2 amplitude = one bit-shift): the headset default while the speaker toggle is parked (Nick 2026-09-03, field waves 1-2 — the loudspeaker at max media volume ran ~2.5 stops hot). Shared so the ringback lands at the SAME loudness as the conversation that follows it.
+pub const OUTPUT_PAD_STOPS: u32 = 4;
+
 /// Silences the desktop ring loop when dropped (or explicitly). The loop thread replays the relationship ring cadence (`chirp::Chirp::ring_from_hash`) until this flag flips; holding the guard inside [`ActiveCall`] makes every teardown edge — decline, sibling answer, caller hangup, call overwrite — a ring-stop edge for free, honoring the no-timers rule (the flag IS an edge).
 pub struct RingGuard(pub std::sync::Arc<std::sync::atomic::AtomicBool>);
 
@@ -125,6 +134,8 @@ pub struct ActiveCall {
     pub spool: Option<spool::SpoolTicket>,
     /// Desktop ring-loop stopper (Ringing phase only; `None` on Android — Kotlin owns playback there). Dropped or cleared = ring stops at the next cadence boundary.
     pub ring: Option<RingGuard>,
+    /// Outgoing-wave ringback stopper (Outgoing phase only): the callee's own ring cadence playing in OUR earpiece, plus the room-coupling probe it measures. Dropped on every teardown edge — answered, declined, hung up, glare-folded — so the ringback stops without a timer.
+    pub ringback: Option<ringback::RingbackGuard>,
     /// The source address the peer's most recent EXPRESS signal arrived from — the freshest known direct path to the device actually driving this call. Express replies target it first (answer rides back the offer's path), beside the contact's validated path.
     pub express_addr: Option<SocketAddr>,
 }

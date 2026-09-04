@@ -67,8 +67,8 @@ const PID_I_CLAMP: f32 = 2.0;
 /// Applied-gain bounds: ±3 octaves of AGC authority.
 const GAIN_MIN: f32 = 0.125;
 const GAIN_MAX: f32 = 8.0;
-/// Live-playback output pad in stops (1 stop = ×2 amplitude = one bit-shift): the headset default while the speaker toggle is parked (Nick 2026-09-03, field waves 1-2).
-const OUTPUT_PAD_STOPS: u32 = 4;
+/// Live-playback output pad in stops — defined beside the ringback that shares it (see [`super::OUTPUT_PAD_STOPS`]).
+use super::OUTPUT_PAD_STOPS;
 
 pub struct EngineParams {
     pub secret: [u8; 32],
