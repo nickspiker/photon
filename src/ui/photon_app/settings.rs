@@ -555,6 +555,25 @@ impl PhotonApp {
         }
     }
 
+    /// Commit the Fleet page's inline machine rename: write `fleet.name.<pkhex>` fleet-LINKED (default link state — a rename made anywhere shows on every device) and drop the box. Empty/whitespace = clear back to the deterministic two-word default (machine_name treats empty as unset).
+    pub(super) fn commit_fleet_rename(&mut self) {
+        let Some((pk, tb)) = self.fleet_rename.take() else {
+            return;
+        };
+        self.change_focus(None);
+        if !self.ensure_fleet_settings() {
+            return;
+        }
+        let name: String = tb.chars.iter().collect::<String>().trim().to_string();
+        let now = vsf::eagle_time_oscillations();
+        let key = format!("fleet.name.{}", hex::encode(pk));
+        let fs = self.fleet_settings.as_mut().unwrap();
+        if fs.set(&key, vsf::VsfType::x(name.clone()), now) {
+            crate::logf!("SETTINGS: {key} = \"{name}\" (machine name, fleet-linked)");
+            self.persist_and_push_settings();
+        }
+    }
+
     /// Echo profile present for the CURRENT output route?
     pub(super) fn echo_calibrated_now(&self) -> bool {
         let route = crate::platform::audio::route_id();

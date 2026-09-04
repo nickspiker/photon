@@ -1287,14 +1287,25 @@ impl FluorApp for PhotonApp {
             }
             if self.settings_btn_base != HIT_NONE
                 && hit_id >= self.settings_btn_base
-                // 56: the Fleet page's slot map bands — 16+ row tap-copy, 24+ Release, 32+ Lock-out, 40+ Unlock, 48+ Approve-sign-out (six rows each). A pill whose id falls outside this window paints its press but never dispatches — bump the cap with every new band.
-                && hit_id < self.settings_btn_base.wrapping_add(56)
+                // 64: the Fleet page's slot map bands — 16+ row tap-copy, 24+ Release, 32+ Lock-out, 40+ Unlock, 48+ Approve-sign-out, 56+ Rename (six rows each). A pill whose id falls outside this window paints its press but never dispatches — bump the cap with every new band.
+                && hit_id < self.settings_btn_base.wrapping_add(64)
             {
                 let slot = hit_id - self.settings_btn_base;
                 if page == SettingsPage::Fleet {
                     if slot == 0 {
                         // "Add device" pill → the pairing-words flow.
                         self.open_add_device_flow();
+                    } else if slot >= 56 {
+                        // "Rename" on a device card → the card's name band becomes a textbox prefilled with the current name (Enter commits fleet-linked, Esc cancels).
+                        let idx = (slot - 56) as usize;
+                        let devices = self.fleet_device_rows();
+                        if let Some((pk, _, _, _, name, _, _, _)) = devices.get(idx).cloned() {
+                            let mut tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
+                            tb.chars = name.chars().collect();
+                            let id = tb.hit_id();
+                            self.fleet_rename = Some((pk, tb));
+                            self.change_focus(Some(id));
+                        }
                     } else if slot >= 48 {
                         // "Approve sign-out" (two-tap): the CONSENT half of the bilateral removal — countersign the leaver's departure request and publish the consented Remove. The leaver completes its side when it observes itself de-folded.
                         let idx = (slot - 48) as usize;
@@ -1446,10 +1457,8 @@ impl FluorApp for PhotonApp {
                         if let Some((pk, _, _, _, _, _, _, _)) = devices.get(idx).cloned() {
                             self.open_bridge_conversation(pk);
                         }
-                    } else {
-                        // "Rename" (slot 1) is still a stub — no device-label chain-op yet. Remove-other retired with the sovereign-records rule (self-signed departure only; eviction = withholding at the key layer, arriving with the device-trust bundle).
-                        crate::log("settings-stub: Rename (no label op yet)");
                     }
+                    // (No page-level slot 1: Rename moved onto each device card at band 56+i. Remove-other stays retired — sovereign records, self-signed departure only.)
                 } else if page == SettingsPage::Security {
                     if slot == 0 {
                         // "Lock" → clear session only (de-attest); vault kept, re-unlock by re-typing your handle. Works on Android (the -1 broadcast drops Kotlin's sticky session).
@@ -2523,6 +2532,13 @@ impl FluorApp for PhotonApp {
                             self.exit_requested = true;
                             return EventResponse::Close;
                         }
+                        if self.fleet_rename.is_some() {
+                            // Rename abandoned — drop the box, nothing written.
+                            self.fleet_rename = None;
+                            self.change_focus(None);
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
                         if matches!(self.state, AppState::ContactPanel(_)) {
                             self.contact_boot_armed = false;
                             self.state = AppState::Conversation;
@@ -2623,6 +2639,16 @@ impl FluorApp for PhotonApp {
                             .unwrap_or(false);
                         if focused_is_contacts_textbox {
                             self.submit_add_friend();
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
+                        let focused_is_fleet_rename = self
+                            .fleet_rename
+                            .as_ref()
+                            .map(|(_, t)| Some(t.hit_id()) == self.focused)
+                            .unwrap_or(false);
+                        if focused_is_fleet_rename {
+                            self.commit_fleet_rename();
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }

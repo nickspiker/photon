@@ -82,8 +82,8 @@ impl PhotonApp {
         ) {
             active_ci
                 .and_then(|ci| self.contacts.get(ci))
-                // Pending… until they publish a real name — the title bar is a visual surface; the pseudonym lives ONLY in the contact panel's identity section (Nick 2026-08-21, matching the contact list).
-                .map(|c| c.display_name_or_pending())
+                // Pending… until they publish a real name — the title bar is a visual surface; the pseudonym lives ONLY in the contact panel's identity section (Nick 2026-08-21, matching the contact list). Siblings show their machine name.
+                .map(|c| super::contact_visible_name(c, self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref()))
                 .unwrap_or_else(|| tr(Msg::ConversationTitle).into_owned())
         } else if matches!(self.state, AppState::Ready) {
             let own_hp = self.session.as_ref().map(|s| s.handle_proof);
@@ -1628,7 +1628,7 @@ impl PhotonApp {
                         .font("Oxanium")
                         .shear(0.2126)
                 };
-                let row_name = self.contacts[ci].display_name_or_pending();
+                let row_name = super::contact_visible_name(&self.contacts[ci], self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref());
                 ctx.text.draw_text_left(
                     &mut canvas,
                     &row_name,
@@ -1815,7 +1815,7 @@ impl PhotonApp {
                 };
                 ctx.text.draw_text_center(
                     &mut canvas,
-                    &contact.display_name_or_pending(),
+                    &super::contact_visible_name(contact, self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref()),
                     layout.content.x,
                     layout.header.center_y(),
                     &TextStyle::new(hspan, name_colour)
@@ -3282,7 +3282,7 @@ impl PhotonApp {
                             draw_conv_avatar(&mut canvas, block_avatar_cy, Some(list_clip));
                             ctx.text.draw_text_center(
                                 &mut canvas,
-                                &contact.display_name_or_pending(),
+                                &super::contact_visible_name(contact, self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref()),
                                 buf_w as f32 * 0.5,
                                 block_name_y,
                                 &header_style,
@@ -4111,7 +4111,7 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Fleet => {
-                    // FLEET, Flow rework (Nick 2026-09-02: "shit overlaps like crazy... much more vertical layout... air top/bottom of each device"): one VERTICAL card per device — name (tap-to-copy), status line, build line, then its action pills on their own band — with real air between cards. Hit-id bands unchanged (copy 16+i · bridge 8+i · release 24+i · lock 32+i · unlock 40+i · approve 48+i · add 0 · rename 1), so the dispatch arm is untouched. Extent is MEASURED from the flow cursor.
+                    // FLEET, Flow rework (Nick 2026-09-02: "shit overlaps like crazy... much more vertical layout... air top/bottom of each device"): one VERTICAL card per device — name (tap-to-copy), status line, build line, then its action pills on their own band — with real air between cards. Hit-id bands unchanged (copy 16+i · bridge 8+i · release 24+i · lock 32+i · unlock 40+i · approve 48+i · rename 56+i · add 0), so the dispatch arm stays band-shaped. Extent is MEASURED from the flow cursor.
                     let locked_set = &fleet_locked_set;
                     let devices = &fleet_devices;
                     let inset = layout.content_inset();
@@ -4137,27 +4137,38 @@ impl PhotonApp {
                                 None,
                             );
                         }
-                        ctx.text.draw_text_left(
-                            &mut canvas,
-                            name,
-                            name_band.x + hspan2 * 1.1,
-                            name_band.center_y(),
-                            &TextStyle::new(hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR)
-                                .weight(600)
-                                .font("Oxanium"),
-                            None,
-                            None,
-                        );
-                        restamp_hit_rect(
-                            &mut chrome.hit_test_map,
-                            buf_w,
-                            buf_h,
-                            name_band.x as isize,
-                            name_band.y as isize,
-                            name_band.right() as isize,
-                            name_band.bottom() as isize,
-                            btn_base.wrapping_add(16 + i as HitId),
-                        );
+                        // Renaming THIS card: the name band IS the textbox (prefilled, focused); no tap-to-copy stamp while editing. Enter commits, Esc cancels (driver).
+                        let renaming_here = self.fleet_rename.as_ref().is_some_and(|(rpk, _)| rpk == pk);
+                        if renaming_here {
+                            if let Some((_, tb)) = self.fleet_rename.as_mut() {
+                                tb.set_rect(name_band.x + hspan2 * 1.1, name_band.center_y(), name_band.w - hspan2 * 1.6, name_band.h * 0.9);
+                                tb.set_font_size(hspan2 * 0.95, ctx.text);
+                                let id = tb.hit_id();
+                                tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
+                            }
+                        } else {
+                            ctx.text.draw_text_left(
+                                &mut canvas,
+                                name,
+                                name_band.x + hspan2 * 1.1,
+                                name_band.center_y(),
+                                &TextStyle::new(hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR)
+                                    .weight(600)
+                                    .font("Oxanium"),
+                                None,
+                                None,
+                            );
+                            restamp_hit_rect(
+                                &mut chrome.hit_test_map,
+                                buf_w,
+                                buf_h,
+                                name_band.x as isize,
+                                name_band.y as isize,
+                                name_band.right() as isize,
+                                name_band.bottom() as isize,
+                                btn_base.wrapping_add(16 + i as HitId),
+                            );
+                        }
                         // STATUS line: state + link path in one sentence.
                         let (status, status_colour) = if *is_self {
                             (tr(Msg::ThisDevice), *theme::LABEL_COLOUR)
@@ -4201,8 +4212,14 @@ impl PhotonApp {
                                 if armed { Some(*theme::PILL_RED) } else { None },
                                 "Oxanium",
                             );
-                        } else if !*is_self {
-                            // Bridge + the row's state pill (Lock out / Unlock / Approve sign-out), each sized to its label.
+                        } else if *is_self {
+                            // The self card's one action: Rename — this machine's name is the one most worth setting.
+                            let band = flow.band(hspan2 * 2.4);
+                            let pill_h = band.h * 0.8;
+                            let rect = fluor::region::Region::new(band.x + hspan2 * 0.3, band.y + (band.h - pill_h) * 0.5, ctx.text.measure_text(&tr(Msg::RenamePill), &TextStyle::new(pill_h * 0.5, 0).font("Oxanium")) + pill_h * 0.8 + hspan2 * 0.4, pill_h);
+                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, &tr(Msg::RenamePill), btn_base.wrapping_add(56 + i as HitId), ctx.pressed_hit, true, None, "Oxanium");
+                        } else {
+                            // Bridge + Rename + the row's state pill (Lock out / Unlock / Approve sign-out), each sized to its label.
                             let band = flow.band(hspan2 * 2.4);
                             let pill_h = band.h * 0.8;
                             let pill_y = band.y + (band.h - pill_h) * 0.5;
@@ -4215,6 +4232,7 @@ impl PhotonApp {
                             };
                             let bridge_fill = if *online { Some(*theme::PILL_GREEN) } else { Some(*theme::PILL_GREY) };
                             place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::BridgePill), btn_base.wrapping_add(8 + i as HitId), bridge_fill);
+                            place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::RenamePill), btn_base.wrapping_add(56 + i as HitId), None);
                             if departing {
                                 let armed = self.fleet_approve_armed.as_ref() == Some(pk);
                                 place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::ApproveSignOutPill { armed }), btn_base.wrapping_add(48 + i as HitId), Some(if armed { *theme::PILL_RED } else { *theme::PILL_YELLOW }));
@@ -4253,8 +4271,8 @@ impl PhotonApp {
                         flow.prose(&mut canvas, ctx.text, &tr(Msg::DeviceSignsItselfOut), hspan2, *theme::LABEL_COLOUR, 400);
                     }
                     flow.gap(hspan2 * 0.5);
+                    // Rename is per-card now (band 56+i) — the page-level stub pill retired with it.
                     let add_device_label = tr(Msg::AddDevicePill);
-                    let rename_label = tr(Msg::RenamePill);
                     flow_pills(
                         &mut flow,
                         &mut canvas,
@@ -4264,10 +4282,7 @@ impl PhotonApp {
                         buf_h,
                         ctx.pressed_hit,
                         hspan2,
-                        &[
-                            (add_device_label.as_ref(), btn_base, true),
-                            (rename_label.as_ref(), btn_base.wrapping_add(1), true),
-                        ],
+                        &[(add_device_label.as_ref(), btn_base, true)],
                     );
                     flow.gap(hspan2);
                     measured_extent = Some((flow.used(), inset.h));
