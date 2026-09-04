@@ -394,7 +394,7 @@ impl PhotonApp {
         // Faint dozenal version watermark shows on the ATTEST screen ONLY (Launch) — a quiet bottom-left mark while you sign in. Ready / Conversation stay clean; the About page carries the version in full (normal-white dozenal glyphs, tap to spell out). Never arabic anywhere.
         let show_version = on_launch;
         // Swap the noise base colour to (*theme::BG_BASE_WARNING) when the dual-ring vault flagged degraded this session — the noise pass already runs every frame so this changes a colour, not the pass count. None on the happy path keeps fluor's default green-dark BG_BASE.
-        let bg_base = if self.vault_degraded {
+        let bg_base = if self.vault_data_lost || self.vault_degraded {
             Some(*theme::BG_BASE_WARNING)
         } else {
             None
@@ -1684,8 +1684,13 @@ impl PhotonApp {
                 }
             }
 
-            // Persistent degraded-vault indicator: amber text at the bottom. The matching warm background tint already lives in the noise pass above (we swap BG_BASE → (*theme::BG_BASE_WARNING)) so we add no extra render pass here, just the text glyph. Full details live in the README.
-            if self.vault_degraded {
+            // Persistent storage indicator at the bottom, two severities (split 2026-09-03 — a benign mirror hiccup and 43 lost values wore the same words): RED "storage lost data" when values are gone / no vault opened, amber "storage degraded" when the session is merely distrusted. Lost outranks degraded when both latch. The matching warm background tint already lives in the noise pass above (we swap BG_BASE → (*theme::BG_BASE_WARNING)) so we add no extra render pass here, just the text glyph. Full details live in the README.
+            if self.vault_data_lost || self.vault_degraded {
+                let (msg, colour) = if self.vault_data_lost {
+                    (Msg::StorageDataLost, *theme::ERROR_TEXT_COLOUR)
+                } else {
+                    (Msg::StorageDegraded, *theme::DEGRADED_TEXT)
+                };
                 // Band height off the span-based layout unit (zoom-aware, aspect-ratio-robust, no pixel floor) — same scaling family as the rest of the screen.
                 let band_h = ready_layout.unit_height * 1.5;
                 let cx = buf_w as f32 * 0.5;
@@ -1693,10 +1698,10 @@ impl PhotonApp {
                 let font_size = band_h * 0.6;
                 ctx.text.draw_text_center(
                     &mut canvas,
-                    &tr(Msg::StorageDegraded),
+                    &tr(msg),
                     cx,
                     cy,
-                    &TextStyle::new(font_size, *theme::DEGRADED_TEXT)
+                    &TextStyle::new(font_size, colour)
                         .weight(600)
                         .font("Oxanium"),
                     None,
@@ -1708,7 +1713,7 @@ impl PhotonApp {
             if self.unattended_on {
                 let band_h = ready_layout.unit_height * 1.5;
                 let cx = buf_w as f32 * 0.5;
-                let rows_below = if self.vault_degraded { 1.0 } else { 0.0 };
+                let rows_below = if self.vault_data_lost || self.vault_degraded { 1.0 } else { 0.0 };
                 let cy = buf_h as f32 - band_h * (0.5 + rows_below);
                 let font_size = band_h * 0.6;
                 ctx.text.draw_text_center(
@@ -1729,7 +1734,7 @@ impl PhotonApp {
                 let band_h = ready_layout.unit_height * 1.5;
                 let cx = buf_w as f32 * 0.5;
                 // Sit at the bottom, lifted past whichever standing bands are up (storage degraded, auto-attest).
-                let rows_below = (if self.vault_degraded { 1.0 } else { 0.0 })
+                let rows_below = (if self.vault_data_lost || self.vault_degraded { 1.0 } else { 0.0 })
                     + (if self.unattended_on { 1.0 } else { 0.0 });
                 let cy = buf_h as f32 - band_h * (0.5 + rows_below);
                 let font_size = band_h * 0.6;

@@ -158,6 +158,7 @@ pub enum Msg<'a> {
     AvatarDropHint,
     SearchPlaceholder,
     StorageDegraded,
+    StorageDataLost,
     AutoAttestBadge,
     ClockOff { pretty: &'a str, ahead: bool },
     HoursShort(u64),
