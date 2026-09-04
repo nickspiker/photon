@@ -57,9 +57,10 @@ pub fn notify_new_message(msg_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str
     notify_with_chirp(msg_hp, chirp::Chirp::from_hash(*chirp_seed), sender, text)
 }
 
-/// The call flavor of [`notify_new_message`]: same relationship digest, but rendered as the RING — the identity instrument struck in the call phrase (`chirp::Chirp::ring_from_hash`) instead of the one-shot ding. One cadence per posted offer; looping until answer is Kotlin's to own (docs/calls.md).
+/// The call flavor of [`notify_new_message`]: same relationship digest, but rendered as the RING — the identity instrument held in the call cadence (`chirp::Chirp::ring_from_hash`) instead of the one-shot ding.
+/// Kotlin LOOPS this one until a ring-stop edge (a phone rings until answered); we hand over one cadence plus the repeat gap in ms, and it appends the silence itself rather than marshalling 2 s of zeros per ring.
 #[cfg(target_os = "android")]
-pub fn notify_incoming_call(ring_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str, text: &str) {
+pub fn notify_incoming_call(ring_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str, text: &str, audible: bool) {
     notify_with_chirp_via(
         ring_hp,
         chirp::Chirp::ring_from_hash(*chirp_seed),
@@ -67,7 +68,15 @@ pub fn notify_incoming_call(ring_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &
         text,
         // CALL-CLASS notification (CATEGORY_CALL + fullScreenIntent + Answer/Decline actions) — the OS's blessed incoming-call surface for a backgrounded/locked app.
         "postCallNotification",
+        // Muted (notify.ring_call off) still posts the notification; gap None tells Kotlin to skip the ring loop entirely.
+        if audible { Some(ring_gap_ms()) } else { None },
     )
+}
+
+/// The caller-owned silence between ring cadences, in ms — chirp publishes the cadence, Kotlin renders the gap.
+#[cfg(target_os = "android")]
+fn ring_gap_ms() -> i32 {
+    (chirp::RING_REPEAT_GAP_SECS * 1000.0) as i32
 }
 
 /// Foreground ring: the full-screen panel is on screen, so play the relationship ring chirp + haptic WITHOUT posting any notification (the heads-up banner used to cover the answer button).
@@ -95,8 +104,8 @@ pub fn play_ring_chirp(chirp_seed: &[u8; 32]) {
             .call_method(
                 svc.as_obj(),
                 "playRingAlert",
-                "([B[J[I)V",
-                &[(&wav_arr).into(), (&t_arr).into(), (&a_arr).into()],
+                "([B[J[II)V",
+                &[(&wav_arr).into(), (&t_arr).into(), (&a_arr).into(), ring_gap_ms().into()],
             )
             .is_err()
         {
@@ -134,12 +143,12 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeCallAc
 /// Shared body: dedup on the hash pointer, render the given chirp to WAV + haptic, post to Kotlin.
 #[cfg(target_os = "android")]
 fn notify_with_chirp(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, text: &str) {
-    notify_with_chirp_via(msg_hp, chirp, sender, text, "postMessageNotification")
+    notify_with_chirp_via(msg_hp, chirp, sender, text, "postMessageNotification", None)
 }
 
 /// Shared marshal for both notification flavors — `method` names the Kotlin post entry point (message vs call class).
 #[cfg(target_os = "android")]
-fn notify_with_chirp_via(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, text: &str, method: &str) {
+fn notify_with_chirp_via(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, text: &str, method: &str, ring_gap_ms: Option<i32>) {
     // Dedup: skip if this is the same message we most recently notified for (a retransmit).
     {
         let mut last = LAST_NOTIFIED_MSG.lock().unwrap();
@@ -204,21 +213,31 @@ fn notify_with_chirp_via(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, t
                 }
             };
 
-            if env
-                .call_method(
-                    svc.as_obj(),
-                    method,
+            // The call flavor takes a trailing gap-ms int (Kotlin loops the ring and renders the silence); the message flavor doesn't.
+            let (sig, args): (&str, Vec<jni::objects::JValue>) = match ring_gap_ms {
+                Some(gap) => (
+                    "([B[J[ILjava/lang/String;Ljava/lang/String;I)V",
+                    vec![
+                        (&wav_arr).into(),
+                        (&timings_arr).into(),
+                        (&amps_arr).into(),
+                        (&sender_js).into(),
+                        (&text_js).into(),
+                        gap.into(),
+                    ],
+                ),
+                None => (
                     "([B[J[ILjava/lang/String;Ljava/lang/String;)V",
-                    &[
+                    vec![
                         (&wav_arr).into(),
                         (&timings_arr).into(),
                         (&amps_arr).into(),
                         (&sender_js).into(),
                         (&text_js).into(),
                     ],
-                )
-                .is_err()
-            {
+                ),
+            };
+            if env.call_method(svc.as_obj(), method, sig, &args).is_err() {
                 let _ = env.exception_clear();
                 error!("notify_new_message: postMessageNotification call failed");
             }

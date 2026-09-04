@@ -567,13 +567,13 @@ class PhotonConnectionService : Service() {
      *  fatal — a missing sound must not take the service down. The 44-byte WAV header is skipped; the rest
      *  is streamed as PCM16. Sample rate is read from the header so it tracks the chirp crate's rate. */
     /** Foreground ring (called from Rust): the full-screen in-app ring panel is on screen, so ONLY the relationship ring chirp + haptic play — no notification (a heads-up banner used to cover the old top-bar Answer button). */
-    fun playRingAlert(wav: ByteArray, timings: LongArray, amplitudes: IntArray) {
-        playChirp(wav)
-        vibrateChirp(timings, amplitudes)
+    fun playRingAlert(wav: ByteArray, timings: LongArray, amplitudes: IntArray, gapMs: Int) {
+        startRingLoop(wav, gapMs)
+        vibrateChirp(timings, amplitudes, repeat = true)
     }
 
     /** Backgrounded/locked ring (called from Rust): the OS's blessed incoming-call surface — CATEGORY_CALL, fullScreenIntent (locked phone launches straight into the in-app ring panel), Answer/Decline actions ON the notification so nothing can cover them, ongoing (only a stop edge cancels it — see cancelCallNotification). */
-    fun postCallNotification(wav: ByteArray, timings: LongArray, amplitudes: IntArray, sender: String, text: String) {
+    fun postCallNotification(wav: ByteArray, timings: LongArray, amplitudes: IntArray, sender: String, text: String, gapMs: Int) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 PhotonActivity.CHANNEL_ID,
@@ -618,13 +618,77 @@ class PhotonConnectionService : Service() {
             .addAction(0, "Answer", answer)
             .build()
         getSystemService(NotificationManager::class.java).notify(CALL_NOTIFICATION_ID, notification)
-        playChirp(wav)
-        vibrateChirp(timings, amplitudes)
+        startRingLoop(wav, gapMs)
+        vibrateChirp(timings, amplitudes, repeat = true)
     }
 
     /** Ring-stop edge (answered anywhere, declined, caller hangup): tear the ongoing call notification down. */
     fun cancelCallNotification() {
         getSystemService(NotificationManager::class.java).cancel(CALL_NOTIFICATION_ID)
+        stopRingLoop()
+    }
+
+    /** The looping ring track: a phone rings until answered, so unlike the one-shot message ding this
+     *  track repeats. The clip Rust hands over is ONE cadence (chirp's doublet) with no trailing
+     *  silence — `gapMs` of zeros is appended HERE so the repeat gap costs a local memset instead of
+     *  2 s of zeros marshalled across JNI on every ring. MODE_STATIC + setLoopPoints(-1) loops it in
+     *  the audio HAL: no timer, no wakeup, seamless. Stopped only by a ring-stop edge
+     *  (cancelCallNotification — answered here, answered/declined by a sibling, caller hangup). */
+    private var ringTrack: AudioTrack? = null
+
+    private fun startRingLoop(wav: ByteArray, gapMs: Int) {
+        stopRingLoop() // a re-posted offer replaces the loop rather than stacking a second one
+        if (wav.size <= 44) return
+        try {
+            val sampleRate = (wav[24].toInt() and 0xFF) or
+                ((wav[25].toInt() and 0xFF) shl 8) or
+                ((wav[26].toInt() and 0xFF) shl 16) or
+                ((wav[27].toInt() and 0xFF) shl 24)
+            val pcm = wav.copyOfRange(44, wav.size)
+            // 2 bytes/frame (mono 16-bit); the gap is silence, so a zero-filled tail is the whole of it.
+            val gapBytes = (gapMs.toLong() * sampleRate / 1000L).toInt() * 2
+            val buf = ByteArray(pcm.size + gapBytes)
+            pcm.copyInto(buf)
+            val attrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+            val format = AudioFormat.Builder()
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(sampleRate)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                .build()
+            val track = AudioTrack(
+                attrs, format, buf.size,
+                AudioTrack.MODE_STATIC, AudioManager.AUDIO_SESSION_ID_GENERATE
+            )
+            track.write(buf, 0, buf.size)
+            track.setLoopPoints(0, buf.size / 2, -1) // -1 = loop forever, until the stop edge
+            track.play()
+            ringTrack = track
+            PhotonLog.i(TAG, "ring loop started: ${pcm.size / 2} frames + ${gapBytes / 2} gap frames")
+        } catch (e: Exception) {
+            PhotonLog.w(TAG, "startRingLoop failed", e)
+        }
+    }
+
+    private fun stopRingLoop() {
+        ringTrack?.let {
+            try { it.stop(); it.release() } catch (e: Exception) { PhotonLog.w(TAG, "stopRingLoop failed", e) }
+        }
+        ringTrack = null
+        // The ring haptic repeats too, so it needs the same explicit stop.
+        try {
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                (getSystemService(VibratorManager::class.java)).defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Vibrator::class.java)
+            }
+            vibrator?.cancel()
+        } catch (e: Exception) {
+            PhotonLog.w(TAG, "ring haptic cancel failed", e)
+        }
     }
 
     private fun playChirp(wav: ByteArray) {
@@ -675,7 +739,7 @@ class PhotonConnectionService : Service() {
      *
      *  The amplitude curve itself is shaped upstream in the chirp crate (mean-square power per bin,
      *  peak-normalized to 0..255); we hand it to the motor as-is, no remap. */
-    private fun vibrateChirp(timings: LongArray, amplitudes: IntArray) {
+    private fun vibrateChirp(timings: LongArray, amplitudes: IntArray, repeat: Boolean = false) {
         if (timings.isEmpty() || timings.size != amplitudes.size) {
             PhotonLog.w(TAG, "vibrateChirp: bad arrays t=${timings.size} a=${amplitudes.size}")
             return
@@ -694,7 +758,8 @@ class PhotonConnectionService : Service() {
 
             // The chirp crate already shapes the envelope (mean-square power per bin, peak-normalized to
             // 0..255) — feed it straight to the motor.
-            val effect = VibrationEffect.createWaveform(timings, amplitudes, -1)
+            // repeat index 0 = restart the waveform from the top forever (the ring); -1 = one shot (a message ding).
+            val effect = VibrationEffect.createWaveform(timings, amplitudes, if (repeat) 0 else -1)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 // USAGE_COMMUNICATION_REQUEST: ungated by the silent notification channel AND by the
                 // touch-feedback setting — the one usage that actually played on-device (see doc above).

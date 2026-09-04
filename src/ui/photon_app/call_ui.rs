@@ -761,7 +761,7 @@ impl PhotonApp {
 
     /// The ring alert: platform notification + the relationship RING — the identity chirp's instrument conjugated into a call phrase (`chirp::Chirp::ring_from_hash`: 2×9 jittered hits, τ/3 envelopes), so ears know who's calling before eyes do. Deliberately BYPASSES the will_ding gates: a call is the one always-ring event (design decision 2026-08-18).
     ///
-    /// Desktop loops the cadence until the [`crate::call::RingGuard`] stored on the ActiveCall flips — every teardown edge stops it (no timers). Android posts one cadence per offer; looping there is Kotlin's to own (tracked in docs/calls.md).
+    /// Both platforms loop the cadence until a stop edge, no timers: desktop by a thread watching the [`crate::call::RingGuard`] on the ActiveCall, Android by a MODE_STATIC AudioTrack looping in the HAL until `cancelCallNotification` (which every teardown edge already calls).
     fn ring_alert(&mut self, ci: usize) {
         let Some(contact) = self.contacts.get(ci) else {
             return;
@@ -773,27 +773,33 @@ impl PhotonApp {
         };
         let digest = relationship_digest(&from_hh, &us);
         let ring_hp = *blake3::hash(&digest).as_bytes();
-        #[cfg(target_os = "android")]
-        {
-            // App on screen → the full-screen ring panel IS the alert (and the in-process chirp below rings) — posting the notification too was the double-alert whose heads-up banner covered the old top-bar Answer button. Backgrounded/locked → the CALL-CLASS notification (fullScreenIntent + Answer/Decline actions) is the whole surface.
-            if crate::platform::jni_android::app_in_foreground() {
-                crate::platform::jni_android::play_ring_chirp(&digest);
-            } else {
-                crate::platform::jni_android::notify_incoming_call(
-                    &ring_hp,
-                    &digest,
-                    &sender_name,
-                    &tr(Msg::IncomingCall),
-                );
-            }
-        }
-        // Honor the Notifications "Ring on incoming call" tick: unchecked = the notification still posts (the call is never invisible) but the audible ring loop stays silent.
+        // Honor the Notifications "Ring on incoming call" tick: unchecked = the notification still posts (the call is never invisible) but the audible ring loop stays silent. Read BEFORE the platform blocks — Android's ring loops now, and an unhonored mute there is a ring that cannot be silenced.
         let ring_audible = self
             .fleet_settings
             .as_ref()
             .and_then(|fs| fs.effective("notify.ring_call"))
             .and_then(crate::storage::fleet_settings::as_bool)
             .unwrap_or(true);
+        #[cfg(target_os = "android")]
+        {
+            // App on screen → the full-screen ring panel IS the alert (and the in-process chirp below rings) — posting the notification too was the double-alert whose heads-up banner covered the old top-bar Answer button. Backgrounded/locked → the CALL-CLASS notification (fullScreenIntent + Answer/Decline actions) is the whole surface.
+            if crate::platform::jni_android::app_in_foreground() {
+                if ring_audible {
+                    crate::platform::jni_android::play_ring_chirp(&digest);
+                } else {
+                    crate::log("CALL: ring muted by notify.ring_call — panel only");
+                }
+            } else {
+                // Muted still posts the call-class notification (never an invisible call); only the looping audio/haptic is withheld.
+                crate::platform::jni_android::notify_incoming_call(
+                    &ring_hp,
+                    &digest,
+                    &sender_name,
+                    &tr(Msg::IncomingCall),
+                    ring_audible,
+                );
+            }
+        }
         #[cfg(not(any(target_os = "android", target_os = "redox")))]
         {
             use std::sync::atomic::{AtomicBool, Ordering};
