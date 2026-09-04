@@ -295,7 +295,6 @@ impl PhotonApp {
             }
         } else if self.ring_avatar_scaled.is_some() {
             self.ring_avatar_scaled = None;
-            self.ring_rim_terms = None;
         }
 
         // Content-scroll → background offset (hoisted before the chrome borrow, which takes `&mut self`). The background noise translates WITH the foreground content so the whole scene is one rigid vertical shift on scroll — the bg tracks whatever you're reading, and (once the host learns to scroll-copy) a scroll becomes a memcopy of the prior frame plus a repaint of just the newly-exposed slice instead of a full redraw. Sign matches the foreground pixel motion: Contacts moves rows UP as `contacts_scroll` grows (`row_top = … − contacts_scroll`) → texture shifts by `−contacts_scroll`; Conversation moves messages DOWN as `scroll_offset` grows (`y = … + scroll`) → texture shifts by `+scroll_offset`. Settings/ContactPanel keep the split-pane path below. `scroll_offset` is clamped elsewhere (tick clamps the stored conversation offset; contacts_scroll is clamped in the render block), so reading it raw here matches what the foreground draws.
@@ -510,40 +509,37 @@ impl PhotonApp {
                     .unwrap_or(*theme::STATUS_TEXT_COLOUR);
                 let (acx, acy) = (w * 0.5, h * 0.36);
                 let avatar_r = unit * 3.5;
-                // The rim — ONLY while Ringing (the attention cue); Active/Ended sit calm. One continuous contour whose radius undulates: the contact's bell casting mapped to angular harmonics (see ui::ring_rim), drifting at digest-drawn speeds. Pure function of (digest, now) — the wake_at tick keeps frames coming while Ringing, no stored animation state, no expansion (the drift supplies the life, the ring sound the urgency; the three radiating discs retired 2026-09-03).
-                if matches!(phase, crate::call::CallPhase::Ringing) {
-                    // Terms cache: derived from the casting once per ring (a blake3 flurry per frame would be waste), keyed by contact index; cleared with ring_avatar_scaled when the panel closes.
-                    if self.ring_rim_terms.as_ref().map(|(i, _)| Some(*i) != pi).unwrap_or(true) {
-                        self.ring_rim_terms = pi.and_then(|i| {
-                            let c = &self.contacts[i];
-                            self.session.as_ref().map(|s| {
-                                let digest = relationship_digest(
-                                    &c.handle_hash,
-                                    &crate::crypto::clutch::identity_party_id(&s.identity_seed),
-                                );
-                                (i, crate::ui::ring_rim::terms_for(&digest))
-                            })
-                        });
-                    }
-                    if let Some((_, terms)) = self.ring_rim_terms.as_ref() {
-                        let t_secs = vsf::eagle_time_oscillations() as f64
-                            / vsf::OSCILLATIONS_PER_SECOND as f64;
-                        crate::ui::ring_rim::draw(
-                            &mut canvas,
-                            acx,
-                            acy,
-                            avatar_r * 1.45,
-                            unit * 0.45,
-                            terms,
-                            t_secs,
-                            0x4800_0000 | (colour & 0x00FF_FFFF),
-                        );
-                    }
-                }
                 if let Some((diam, px)) = self.ring_avatar_scaled.as_ref() {
                     crate::ui::avatar_render::draw_avatar(
                         &mut canvas, acx, acy, avatar_r, px, *diam, None,
                     );
+                }
+                // The living circle — ONLY while Ringing (Active/Ended sit calm): one perfect circle BEHIND the avatar (paint order per Nick: avatar, circle, text/buttons, background — later paints compose under earlier, so the avatar covers it and it washes over the text where it reaches). Digest-keyed waveforms move it, a spin decouples the offsets from the axes, a fourth scales it, a fifth breathes its opacity (ui::ring_rim); relationship colour, same as the name. Pure function of (digest, now) — the wake_at tick keeps frames coming while Ringing.
+                if matches!(phase, crate::call::CallPhase::Ringing) {
+                    if let Some(digest) = pi.and_then(|i| {
+                        let c = &self.contacts[i];
+                        self.session.as_ref().map(|s| {
+                            relationship_digest(
+                                &c.handle_hash,
+                                &crate::crypto::clutch::identity_party_id(&s.identity_seed),
+                            )
+                        })
+                    }) {
+                        let orbit = crate::ui::ring_rim::orbit_for(&digest);
+                        let t_secs = vsf::eagle_time_oscillations() as f64
+                            / vsf::OSCILLATIONS_PER_SECOND as f64;
+                        let m = crate::ui::ring_rim::sample(&orbit, t_secs);
+                        let r = avatar_r * (1.30 + 0.12 * m.scale);
+                        let a = (0x28 as f32 + m.opacity * 0x38 as f32) as u32;
+                        paint::draw_circle(
+                            &mut canvas,
+                            acx + m.dx * avatar_r * 0.35,
+                            acy + m.dy * avatar_r * 0.35,
+                            r,
+                            (a << 24) | (colour & 0x00FF_FFFF),
+                            None,
+                        );
+                    }
                 }
                 // Name in the relationship colour, large; the phase line beneath in the status grey.
                 ctx.text.draw_text_center(
