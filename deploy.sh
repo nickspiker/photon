@@ -180,19 +180,8 @@ snap_cargo build --release --bin photon-signature-signer --bin photon-manifest
 export SNAP_DIR
 timed "linux-x86_64 (native)" ./build-release.sh
 
-# Build Linux ARM64 (cross-compile)
-echo ""
-echo "Building Linux ARM64 release..."
-# -isystem beside --sysroot: Fedora's glibc-less cross-gcc ships a limits.h that never include_next-chains into the sysroot's, so MB_LEN_MAX falls back to 1 and glibc's _FORTIFY_SOURCE wctomb assert kills any TU that includes <limits.h> before <stdlib.h> — which vendored opus does (first hit: the v0.71.0 deploy, 2026-09-01). -isystem puts the sysroot glibc headers ahead of gcc's internal dir, restoring the proper chain.
-CFLAGS_aarch64_unknown_linux_gnu="--sysroot=/usr/aarch64-redhat-linux/sys-root/fc42 -isystem /usr/aarch64-redhat-linux/sys-root/fc42/usr/include" \
-PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-redhat-linux/sys-root/fc42 \
-PKG_CONFIG_PATH=/usr/aarch64-redhat-linux/sys-root/fc42/usr/lib64/pkgconfig \
-PKG_CONFIG_ALLOW_CROSS=1 \
-snap_cargo build --release --target aarch64-unknown-linux-gnu
-
-echo ""
-echo "Signing Linux ARM64 binary..."
-./target/release/photon-signature-signer target/aarch64-unknown-linux-gnu/release/photon-messenger
+# Linux ARM64 is ALREADY built and signed — build-release.sh above does both targets (native + aarch64) with the working cross env: CC_aarch64_unknown_linux_gnu plus the cross-libs/aarch64 pkgconfig paths that the vendored-.so/x11.pc staging needs.
+# A second build+sign lived here until 2026-09-03. It was pure waste (cargo no-op, and the signer is idempotent so the re-sign no-op'd too) AND a trap: its env was NOT equivalent — no CC_<target> at all, and unsuffixed PKG_CONFIG_* pointing at the fc42 sysroot instead of cross-libs. It only ever appeared to work because build-release.sh had already produced the artifact; had that step ever moved, this block would have silently become the real builder with the worse config.
 
 # Build Windows (x86_64)
 echo ""
