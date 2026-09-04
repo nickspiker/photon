@@ -2749,6 +2749,45 @@ impl PhotonApp {
                             .unwrap_or(0.0)
                             .clamp(0.0, max_scroll);
                         self.msg_hit_rows.clear();
+                        self.msg_link_hits.clear();
+                        // ── LINK CONSENT PANEL ── painted BEFORE the message walk (earliest paint wins under-blend), hit-stamped AFTER it (latest stamp wins the map). A tapped link never opens silently: the full destination shows verbatim — punycode/homograph honesty — with Open / Copy / Cancel (Nick 2026-09-04).
+                        let mut consent_stamp: Option<([fluor::region::Region; 3], f32)> = None;
+                        if let Some(dest) = self.link_consent.clone() {
+                            let url_style = TextStyle::new(msg_size * 0.9, *theme::LINK_COLOUR).weight(500).font("Oxanium");
+                            let panel_w = (buf_w as f32 - pad_x * 2.0).max(msg_size);
+                            let url_lines = wrap_text_lines(ctx.text, &dest, &url_style, panel_w * 0.94);
+                            let non_ascii = !dest.is_ascii();
+                            let warn_h = if non_ascii { line_h } else { 0.0 };
+                            let pill_h = line_h * 1.4;
+                            let panel_h = line_h * 1.4 + url_lines.len() as f32 * line_h + warn_h + pill_h + line_h * 0.8;
+                            let py0 = (list_bottom - panel_h).max(list_top);
+                            // Opaque backdrop + a top hairline so the panel reads as its own surface over the stream.
+                            paint::fill_rect(&mut canvas, pad_x as isize * 0 as isize, py0 as isize, buf_w as isize, (list_bottom - py0) as isize, 0xFF00_0000 | 0x00E8_E2D8, None, None);
+                            paint::fill_rect(&mut canvas, 0, py0 as isize, buf_w as isize, ctx.viewport.ru.max(1.0) as isize, theme::VERSION_COLOUR, None, None);
+                            let mut ty = py0 + line_h;
+                            ctx.text.draw_text_left(&mut canvas, &tr(Msg::LinkConsentTitle), pad_x, ty, &TextStyle::new(msg_size, *theme::CONTACT_NAME_COLOUR).weight(600), Some(list_clip), None);
+                            ty += line_h * 1.1;
+                            for ul in &url_lines {
+                                ctx.text.draw_text_left(&mut canvas, ul, pad_x, ty, &url_style, Some(list_clip), None);
+                                ty += line_h;
+                            }
+                            if non_ascii {
+                                ctx.text.draw_text_left(&mut canvas, &tr(Msg::LinkNonAsciiWarn), pad_x, ty, &TextStyle::new(msg_size * 0.85, *theme::SEARCH_FAIL_COLOUR).weight(600), Some(list_clip), None);
+                                ty += line_h;
+                            }
+                            let pw = panel_w * 0.28;
+                            let prects = [
+                                fluor::region::Region::new(pad_x, ty, pw, pill_h * 0.9),
+                                fluor::region::Region::new(pad_x + pw + line_h * 0.5, ty, pw, pill_h * 0.9),
+                                fluor::region::Region::new(pad_x + (pw + line_h * 0.5) * 2.0, ty, pw, pill_h * 0.9),
+                            ];
+                            // Open is desktop-only until the Android Intent bridge lands (the About weblink owes the same bridge).
+                            let can_open = !cfg!(target_os = "android");
+                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[0], &tr(Msg::OpenLinkPill), self.link_consent_base, ctx.pressed_hit, can_open, Some(*theme::PILL_GREEN), "Open Sans");
+                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[1], &tr(Msg::CopyPill), self.link_consent_base.wrapping_add(1), ctx.pressed_hit, true, None, "Open Sans");
+                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[2], &tr(Msg::Cancel), self.link_consent_base.wrapping_add(2), ctx.pressed_hit, true, None, "Open Sans");
+                            consent_stamp = Some((prects, py0));
+                        }
                         // TOP-ANCHOR while the conversation fits the view: the stream reads avatar/name → msg 1 → msg 2 from the top, ONE strip — bottom-anchoring a short history floated the header block mid-screen above a clump of bottom messages ("rendered in a different layer"). Once content outgrows the view the min() saturates and the classic newest-at-bottom anchor takes over seamlessly.
                         let mut y = (list_top + content_h).min(list_bottom) - msg_size + scroll;
                         // Whether the walk reached the conversation's FIRST message (no early break): the scroll-top avatar/name block may only draw then — drawing it at the break position floated it mid-stream over recent messages in any long conversation ("the avatar and name are rendered in a different block").
@@ -3158,28 +3197,114 @@ impl PhotonApp {
                                     );
                                 }
                             }
+                            // Link projection: map validated marks onto the wrapped lines (each line = a contiguous source slice). Only when the drawn body IS the content (attachment/summary bodies differ, and their marks were never minted anyway).
+                            let line_starts = if !msg.marks.is_empty() && body_of(msg) == msg.content {
+                                super::line_source_starts(&msg.content, lines)
+                            } else {
+                                None
+                            };
                             for (k, line) in lines.iter().enumerate() {
                                 let ly = y - react_off - (lines.len() - 1 - k) as f32 * intra;
-                                if msg.is_outgoing || is_self_contact {
-                                    ctx.text.draw_text_right(
-                                        &mut canvas,
-                                        line,
-                                        buf_w as f32 - pad_x,
-                                        ly,
-                                        &msg_style,
-                                        Some(list_clip),
-                                        None,
-                                    );
+                                let right_aligned = msg.is_outgoing || is_self_contact;
+                                // Which marks intersect this line's source range?
+                                let segs: Vec<(usize, usize, Option<&str>)> = match line_starts.as_ref() {
+                                    Some(starts) => {
+                                        let ls = starts[k];
+                                        let le = ls + line.len();
+                                        let mut cuts: Vec<(usize, usize, Option<&str>)> = Vec::new();
+                                        let mut cur = 0usize; // byte offset within the LINE
+                                        for m in &msg.marks {
+                                            let s0 = m.start.max(ls);
+                                            let s1 = (m.start + m.len).min(le);
+                                            if s0 >= s1 {
+                                                continue;
+                                            }
+                                            if s0 - ls > cur {
+                                                cuts.push((cur, s0 - ls, None));
+                                            }
+                                            cuts.push((s0 - ls, s1 - ls, Some(m.dest.as_str())));
+                                            cur = s1 - ls;
+                                        }
+                                        if cuts.is_empty() {
+                                            Vec::new()
+                                        } else {
+                                            if cur < line.len() {
+                                                cuts.push((cur, line.len(), None));
+                                            }
+                                            cuts
+                                        }
+                                    }
+                                    None => Vec::new(),
+                                };
+                                if segs.is_empty() {
+                                    if right_aligned {
+                                        ctx.text.draw_text_right(
+                                            &mut canvas,
+                                            line,
+                                            buf_w as f32 - pad_x,
+                                            ly,
+                                            &msg_style,
+                                            Some(list_clip),
+                                            None,
+                                        );
+                                    } else {
+                                        ctx.text.draw_text_left(
+                                            &mut canvas,
+                                            line,
+                                            pad_x,
+                                            ly,
+                                            &msg_style,
+                                            Some(list_clip),
+                                            None,
+                                        );
+                                    }
+                                    continue;
+                                }
+                                // Segmented draw: link runs in LINK_COLOUR with an underline hairline + a tap rect; plain runs in the bubble style. Right-aligned lines anchor at (right − full width) so segments flow left→right identically.
+                                let link_style = TextStyle::new(msg_size, *theme::LINK_COLOUR).weight(500);
+                                let mut x = if right_aligned {
+                                    buf_w as f32 - pad_x - ctx.text.measure_text(line, &msg_style)
                                 } else {
-                                    ctx.text.draw_text_left(
+                                    pad_x
+                                };
+                                for (b0, b1, dest) in segs {
+                                    let run = &line[b0..b1];
+                                    let style = if dest.is_some() { &link_style } else { &msg_style };
+                                    let w = ctx.text.draw_text_left(
                                         &mut canvas,
-                                        line,
-                                        pad_x,
+                                        run,
+                                        x,
                                         ly,
-                                        &msg_style,
+                                        style,
                                         Some(list_clip),
                                         None,
                                     );
+                                    if let Some(d) = dest {
+                                        // Underline: one ru hairline just under the run, and the tap target (collected here, dispatched in driver — a tap inside opens the consent dialog).
+                                        let uy = (ly + msg_size * 0.55).min(list_bottom);
+                                        if uy > list_top {
+                                            paint::fill_rect(
+                                                &mut canvas,
+                                                x as isize,
+                                                uy as isize,
+                                                w as isize,
+                                                ctx.viewport.ru.max(1.0) as isize,
+                                                *theme::LINK_COLOUR,
+                                                None,
+                                                None,
+                                            );
+                                        }
+                                        if self.link_consent.is_none() {
+                                            self.msg_link_hits.push((
+                                                x,
+                                                ly - msg_size * 0.6,
+                                                x + w,
+                                                ly + msg_size * 0.7,
+                                                d.to_string(),
+                                            ));
+                                        }
+                                    }
+                                    x += w;
                                 }
                             }
                             // The reaction line: theirs then ours under the bubble, EACH GLYPH IN ITS REACTOR'S COLOUR at half alpha (the reference treatment — and the emoji rasterize thru the style tint, so grey made every reaction read as nobody's). Bubble-side aligned; attribution words live in the details strip meta.
@@ -3268,6 +3393,13 @@ impl PhotonApp {
                                     .push((msg.timestamp, msg.is_outgoing, ref_band));
                             }
                             y -= line_h + block_extra;
+                        }
+                        // Consent panel hit re-assert (the row walk stamped over it): HIT_NONE swallows everything under the panel, then the three pills win their own rects back.
+                        if let Some((prects, py0)) = consent_stamp {
+                            restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, 0, py0 as isize, buf_w as isize, list_bottom as isize, HIT_NONE);
+                            for (pi, r) in prects.iter().enumerate() {
+                                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, r.x as isize, r.y as isize, (r.x + r.w) as isize, (r.y + r.h) as isize, self.link_consent_base.wrapping_add(pi as HitId));
+                            }
                         }
                         // STREAM ENTRY #0 — avatar, name, optional ceremony/lifecycle status: drawn ONLY when the walk reached message 1 (genesis on screen); `y` then sits just above it and the entry is the stream's literal first item. Ordinary stream content: same clip as every message, no pinning, no slide. Off-screen anywhere but genesis.
                         if reached_oldest && y > list_top - header_block_h - line_h {

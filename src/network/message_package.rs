@@ -23,6 +23,8 @@ pub struct MessagePackage {
     pub reference: Option<(u8, i64)>,
     /// Typed bridge extras (locus / stream state / interrupt signal) — fields, never content markers. None = not a bridge frame.
     pub bridge: Option<BridgeWire>,
+    /// Typed content marks: (kind, byte_start, byte_len, dest) per entry — the link elements layered beside the body (Nick 2026-09-04). Parallel multi-value fields on the wire, zipped at parse; a count mismatch drops ALL marks (fail-safe to plain text). Old parsers discard the unknown names — no flag day.
+    pub marks: Vec<(u8, usize, usize, String)>,
 }
 
 /// The bridge's typed wire extras, riding the inner package as named optional fields: the locus that ends blind-cwd operation (field 2026-08-23), the snapshot sequence + final exit that make streamed output loss-proof (every partial is the FULL accumulated text; newest seq wins), and the interrupt signal. An old peer's parser discards the names it doesn't know; a new peer reading an old frame sees all-None — no flag day.
@@ -67,6 +69,10 @@ fn msg_schema() -> SectionSchema {
         .field("bexit", TypeConstraint::Any) // i6 bridge exit code; present = final frame
         .field("bsig", TypeConstraint::AnyUnsigned) // bridge interrupt signal number
         .field("bdelta", TypeConstraint::AnyUnsigned) // u0 append-semantics flag; absent = legacy whole-snapshot replace (old parsers discard unknown fields, so this is forward-compatible)
+        .field("mk", TypeConstraint::AnyUnsigned) // mark kind per entry (1 = link)
+        .field("ms", TypeConstraint::AnyUnsigned) // mark byte start per entry
+        .field("ml", TypeConstraint::AnyUnsigned) // mark byte len per entry
+        .field("md", TypeConstraint::Utf8Text) // mark dest per entry (link destination URL)
         .field("pad", TypeConstraint::Any) // hR random jitter; length is the only meaning
 }
 
@@ -77,6 +83,7 @@ pub fn build_message_package(
     woven_times: &[i64],
     reference: Option<(u8, i64)>,
     bridge: Option<&BridgeWire>,
+    marks: &[(u8, usize, usize, String)],
     pad: &[u8],
 ) -> Result<Vec<u8>, String> {
     let mut builder = msg_schema()
@@ -130,6 +137,17 @@ pub fn build_message_package(
                 .set("bdelta", VsfType::u0(true))
                 .map_err(|e| e.to_string())?;
         }
+    }
+    for (k, st, ln, dest) in marks {
+        builder = builder
+            .append_multi("mk", vec![VsfType::u(*k as usize, false)])
+            .map_err(|e| e.to_string())?
+            .append_multi("ms", vec![VsfType::u(*st, false)])
+            .map_err(|e| e.to_string())?
+            .append_multi("ml", vec![VsfType::u(*ln, false)])
+            .map_err(|e| e.to_string())?
+            .append_multi("md", vec![VsfType::x(dest.clone())])
+            .map_err(|e| e.to_string())?;
     }
     if !pad.is_empty() {
         builder = builder
@@ -230,6 +248,39 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
             .and_then(|v| v.as_u64())
             .map_or(false, |v| v != 0),
     };
+    // Marks: four order-correlated multi-fields zipped back into tuples; any length mismatch = drop all (the text stands, links degrade).
+    let u_list = |name: &str| -> Vec<u64> {
+        section
+            .get_fields(name)
+            .iter()
+            .filter_map(|f| f.values.first())
+            .filter_map(|v| v.as_u64())
+            .collect()
+    };
+    let mk = u_list("mk");
+    let ms = u_list("ms");
+    let ml = u_list("ml");
+    let md: Vec<String> = section
+        .get_fields("md")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::x(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    let marks = if mk.len() == ms.len() && mk.len() == ml.len() && mk.len() == md.len() {
+        mk.iter()
+            .zip(&ms)
+            .zip(&ml)
+            .zip(&md)
+            .filter_map(|(((k, s), l), d)| {
+                Some((u8::try_from(*k).ok()?, *s as usize, *l as usize, d.clone()))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(MessagePackage {
         body,
         incorporated_hp,
@@ -239,6 +290,7 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
             k => Some((k, ref_target)),
         },
         bridge: (!bridge.is_empty()).then_some(bridge),
+        marks,
     })
 }
 
@@ -255,6 +307,7 @@ mod tests {
             &[111, 222],
             Some((1, 987_654_321)),
             None,
+            &[],
             &[0xAA; 17],
         )
         .unwrap();
@@ -266,23 +319,36 @@ mod tests {
         assert_eq!(parsed.bridge, None);
 
         // A reaction retract: empty body, no wovens, no pad.
-        let retract = build_message_package("", &[0u8; 32], &[], Some((3, 42)), None, &[]).unwrap();
+        let retract = build_message_package("", &[0u8; 32], &[], Some((3, 42)), None, &[], &[]).unwrap();
         let parsed = parse_message_package(&retract).unwrap();
         assert_eq!(parsed.body, "");
         assert_eq!(parsed.reference, Some((3, 42)));
 
         // A plain message carries no reference.
-        let plain = build_message_package("hi", &[0u8; 32], &[5], None, None, &[1, 2, 3]).unwrap();
+        let plain = build_message_package("hi", &[0u8; 32], &[5], None, None, &[], &[1, 2, 3]).unwrap();
         assert_eq!(parse_message_package(&plain).unwrap().reference, None);
 
         assert!(parse_message_package(b"not a vsf document").is_err());
     }
 
+    /// Marks ride as four correlated multi-fields and zip back losslessly; a plain package parses to zero marks.
+    #[test]
+    fn marks_round_trip_typed() {
+        let marks = vec![
+            (1u8, 4usize, 8usize, "https://passless.org/".to_string()),
+            (1u8, 20usize, 5usize, "http://example.com".to_string()),
+        ];
+        let built = build_message_package("see passless and more", &[0u8; 32], &[], None, None, &marks, &[]).unwrap();
+        assert_eq!(parse_message_package(&built).unwrap().marks, marks);
+        let plain = build_message_package("no links", &[0u8; 32], &[], None, None, &[], &[]).unwrap();
+        assert!(parse_message_package(&plain).unwrap().marks.is_empty());
+    }
+
     /// Two packages with identical inputs but different pads differ on the wire (size jitter works) yet parse identically — the pad carries no meaning.
     #[test]
     fn pad_jitters_the_wire_without_touching_meaning() {
-        let a = build_message_package("x", &[1u8; 32], &[9], None, None, &[0u8; 4]).unwrap();
-        let b = build_message_package("x", &[1u8; 32], &[9], None, None, &[0u8; 40]).unwrap();
+        let a = build_message_package("x", &[1u8; 32], &[9], None, None, &[], &[0u8; 4]).unwrap();
+        let b = build_message_package("x", &[1u8; 32], &[9], None, None, &[], &[0u8; 40]).unwrap();
         assert_ne!(a.len(), b.len());
         assert_eq!(
             parse_message_package(&a).unwrap(),
@@ -302,7 +368,7 @@ mod tests {
             delta: true,
         };
         let partial =
-            build_message_package("out so far", &[0u8; 32], &[], Some((4, 999)), Some(&wire), &[])
+            build_message_package("out so far", &[0u8; 32], &[], Some((4, 999)), Some(&wire), &[], &[])
                 .unwrap();
         let parsed = parse_message_package(&partial).unwrap();
         let b = parsed.bridge.expect("bridge extras present");
@@ -314,13 +380,13 @@ mod tests {
 
         let fin = BridgeWire { exit: Some(-1), seq: Some(8), ..wire };
         let final_frame =
-            build_message_package("done", &[0u8; 32], &[], Some((4, 999)), Some(&fin), &[])
+            build_message_package("done", &[0u8; 32], &[], Some((4, 999)), Some(&fin), &[], &[])
                 .unwrap();
         assert_eq!(parse_message_package(&final_frame).unwrap().bridge.unwrap().exit, Some(-1));
 
         let ctl = BridgeWire { sig: Some(2), ..Default::default() };
         let ctl_frame =
-            build_message_package(" ", &[0u8; 32], &[], Some((5, 999)), Some(&ctl), &[]).unwrap();
+            build_message_package(" ", &[0u8; 32], &[], Some((5, 999)), Some(&ctl), &[], &[]).unwrap();
         assert_eq!(parse_message_package(&ctl_frame).unwrap().bridge.unwrap().sig, Some(2));
     }
 }

@@ -1449,6 +1449,12 @@ impl PhotonApp {
                 .with_ack_hash(plaintext_hash);
                 // The wire's typed reference lands ON THE ROW — without this the sender saw its own reply hint (the send path stamps its row) while the receiver's copy arrived bare (field, 2026-08-09: "responses don't show the hinted message on the receive side").
                 msg.reference = wire_reference;
+                // The wire's typed marks land too — validated against the body (the receiver renders ONLY explicit marks, never a regex of its own).
+                msg.marks = crate::types::valid_marks(&msg.content, &pkg
+                    .marks
+                    .iter()
+                    .map(|(k, st, ln, d)| crate::types::MessageMark { kind: *k, start: *st, len: *ln, dest: d.clone() })
+                    .collect::<Vec<_>>());
 
                 // Unread gate: is the user plausibly looking at THIS conversation right now? "Looking" = this contact's conversation (or its contact-scoped panel) is the active view AND, on desktop, the window is visible + focused. Event-shown, interaction-cleared doctrine: the counter only ever moves on a message landing or the user opening the conversation — no timers anywhere. Computed BEFORE the insert so the fleet alert-duty flag can ride the row into the sibling push.
                 let conversation_open = matches!(
@@ -2051,6 +2057,14 @@ impl PhotonApp {
                                 upgraded = true;
                             }
                         }
+                        // Marks upgrade: a page carrying link marks enriches a plain copy of the same row (content is the identity, so validation against ours is validation against theirs).
+                        if existing.marks.is_empty() && !row.marks.is_empty() {
+                            let v = crate::types::valid_marks(&existing.content, &row.marks);
+                            if !v.is_empty() {
+                                existing.marks = v;
+                                upgraded = true;
+                            }
+                        }
                         if upgraded {
                             fresh.push(existing.clone());
                         }
@@ -2070,6 +2084,7 @@ impl PhotonApp {
                             .reference
                             .and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t))),
                         replicated: from_sibling && row.sender_outgoing,
+                        marks: crate::types::valid_marks(&row.content, &row.marks),
                         bridge_seq: 0,
                         bridge_exit: None,
                     });
