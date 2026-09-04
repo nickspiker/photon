@@ -20,6 +20,8 @@ Nick approved translations-as-code 2026-09-03 ("Rust can already tell us if we m
 
 **Terminology (Nick 2026-09-03): the word "call" is BANNED from the UI** — voice = wave (es onda, mi ngaru; verb: waving/saludando/tāwhiri), video = beam (es haz, mi hihi, stubbed @cf2a505). Rationale lives on the About page: waves/beams are always recorded and never touch a third party. The ☎ icon is interim — swaps to a literal waveform once people are used to it; Beam's 📹 button sits disabled left of Wave until video lands.
 
+**Wave/beam are TRANSITIVE (Nick 2026-09-03): "wave {party}", never "wave AT {party}"** — the person is the DIRECT OBJECT, exactly like "calling Steve" (you don't say "calling at Steve"). Same for beaming. Per language: en drops the preposition outright; **es KEEPS its `a`** — that is the mandatory personal-a direct-object marker ("saludando a Steve" already IS "waving Steve"), dropping it would be ungrammatical; mi uses the direct-object particle `i a`, NOT the directional `ki a`, and drops `atu`.
+
 **Traps for future string work:** add the variant FIRST, then all three language arms, then the call site (compile errors guide the order). Widget constructor labels are frozen — either re-set per frame in render or add to relabel_for_language. Multi-line passages are ONE '\n'-joined variant; call sites iterate .lines() (PermanenceWarning gives line 0 the headline colour). es judgment calls logged in the 2026-09-03 session (darse de baja, Echar, Puente…); mi is my best-effort pending native review — flagged in mi.rs header.
 
 **Script ceiling:** any Latin-script language is a pure translation file; CJK/RTL blocks on fluor (font bundle + bidi), not on strings.
