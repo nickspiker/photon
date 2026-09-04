@@ -446,6 +446,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AboutWaveBeamHead => "wave + beam".into(),
         Msg::AboutWaveBeamProse => "A wave is voice. A beam is video — it's on the way. Photon doesn't have calls, because these aren't phone calls: no carrier, no account, no company in the middle — your voice travels between your devices and lands nowhere else.\nEvery wave and beam is honestly recorded: when it ends, the recording is YOURS to keep or delete, like any message. A recording that never touched a Google or a Meta is a different thing from one that lives on their servers.".into(),
         Msg::AboutVersion(v) => format!("Version {v}").into(),
+        Msg::AboutClockOffset { ms, conf } => format!("Clock {ms} ms off true (±{conf} ms)").into(),
+        Msg::AboutClockUnknown => "Clock — not yet checked".into(),
         Msg::AboutVersionSpelled { main, patch } => match patch {
             Some(p) => format!("{main} point {p}").into(),
             None => main.to_string().into(),

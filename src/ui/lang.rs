@@ -498,6 +498,10 @@ pub enum Msg<'a> {
     AboutWaveBeamHead,
     AboutWaveBeamProse,
     AboutVersion(&'a str),
+    /// The standing clock correction on the About page: how far this device's system clock sits from network-consensus true time, and the confidence half-width. Both already rendered as base-aware numeric strings by the caller.
+    AboutClockOffset { ms: &'a str, conf: &'a str },
+    /// Shown in the same slot before the first consensus lands.
+    AboutClockUnknown,
     AboutVersionSpelled { main: &'a str, patch: Option<&'a str> },
     AboutDozenalHead,
     AboutRiddle,

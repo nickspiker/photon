@@ -472,6 +472,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AboutWaveBeamProse => "Ko te ngaru te reo. Ko te hihi te ataata — kei te haere mai. Kāore he waea i a Photon, nō te mea ehara ēnei i te waea: kāore he kamupene waea, kāore he pūkete, kāore he kamupene i waenganui — ka haere tō reo i waenganui i ō pūrere anake, kāore e tau ki wāhi kē.\nKa hopukina pono ia ngaru me ia hihi: ka mutu ana, NĀU te hopukanga hei pupuri, hei muku rānei, pēnei i ngā karere katoa. He mea tino rerekē te hopukanga kāore i pā ki a Google, ki a Meta rānei, i te mea e noho ana i ō rātou tūmau."
             .into(),
         Msg::AboutVersion(v) => format!("Putanga {v}").into(),
+        Msg::AboutClockOffset { ms, conf } => format!("Karaka {ms} ms te rerekētanga (±{conf} ms)").into(),
+        Msg::AboutClockUnknown => "Karaka — kāore anō kia tirohia".into(),
         Msg::AboutVersionSpelled { main, patch } => match patch {
             Some(p) => format!("{main} ira {p}").into(),
             None => main.to_string().into(),

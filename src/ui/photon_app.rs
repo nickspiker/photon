@@ -1224,12 +1224,14 @@ pub struct PhotonApp {
     /// nunc-time clock sanity check: result channel + drain. The worker (one-shot, off-thread) posts the consensus-vs-system offset here; `drain_clock_check` reads it and updates `clock_off`.
     clock_check_tx: std::sync::mpsc::Sender<crate::network::ClockCheckResult>,
     clock_check_rx: std::sync::mpsc::Receiver<crate::network::ClockCheckResult>,
-    /// `Some(offset_secs)` when the last consensus said the system clock is off by more than the threshold (consensus − system; positive = system behind). Drives the amber "clock off" banner. Tracks the LATEST verdict, not sticky — a corrected clock clears it on the next clean check.
+    /// `Some(offset_osc)` when the last consensus said the system clock is off by more than the threshold (true − system, OSCILLATIONS; positive = system behind). Drives the amber "clock off" banner. Tracks the LATEST verdict, not sticky — a corrected clock clears it on the next clean check.
     clock_off: Option<i64>,
-    /// The latest nunc consensus verdict, kept even when the clock is fine: (offset_secs = consensus − system, confidence_secs). The update stamp window's forward-fail tiebreak reads this — the "honest clock" consulted exactly when a manifest claims time travel (docs/updates.md staged clock). `None` until the first successful consensus.
+    /// The latest nunc consensus verdict in OSCILLATIONS, kept even when the clock is fine: (offset = true − system, confidence half-width). The update stamp window's forward-fail tiebreak reads this — the "honest clock" consulted exactly when a manifest claims time travel (docs/updates.md staged clock) — and the About page renders it. `None` until the first successful consensus.
     clock_consensus: Option<(i64, i64)>,
     /// Watches the wall clock against the monotonic clock; a gross unexplained jump (NTP step, long sleep, or an adversary moving the clock after boot) triggers a fresh consensus re-check.
     clock_jump: crate::network::ClockJumpDetector,
+    /// When the last nunc verdict was requested — the hourly discipline cadence (see the tick in status.rs). `None` = never asked, so the first online tick asks.
+    clock_last_check: Option<std::time::Instant>,
     /// Fleet-inbox drain: a one-shot off-thread pull of this identity's pending worker-observed events (bind-attempt alerts, docs/fleet-inbox.md). `drain_fleet_inbox` reads the result and surfaces a notice. Kicked once per attest/resume.
     inbox_check_tx: std::sync::mpsc::Sender<Vec<crate::network::fgtw::FleetInboxEvent>>,
     inbox_check_rx: std::sync::mpsc::Receiver<Vec<crate::network::fgtw::FleetInboxEvent>>,
@@ -1995,6 +1997,7 @@ impl PhotonApp {
             clock_consensus: None,
             // ~1 hour of unexplained wall-vs-monotonic skew triggers a re-check (loose enough to ignore NTP steps and short sleeps, tight enough to catch a day-scale set or long sleep).
             clock_jump: crate::network::ClockJumpDetector::new(3600),
+            clock_last_check: None,
             inbox_check_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
                 tx

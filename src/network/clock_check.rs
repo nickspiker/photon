@@ -8,6 +8,7 @@
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
+
 #[cfg(not(target_os = "android"))]
 use crate::ui::PhotonEvent;
 #[cfg(not(target_os = "android"))]
@@ -22,10 +23,13 @@ pub type ClockWake = Option<()>;
 /// Outcome of one consensus query against the system clock.
 #[derive(Debug, Clone)]
 pub enum ClockCheckResult {
-    /// Consensus reached. `offset_secs` = consensus_time − system_time (positive: system clock is BEHIND true time; negative: AHEAD). `confidence_secs` is the consensus half-width.
+    /// Consensus reached, in OSCILLATIONS — never seconds. nunc measures to single-digit milliseconds and photon's whole reason for asking is a skew of ~1.9 s between devices; `.as_secs()` rounded exactly the signal we need to zero (and units belong at the render edge, not in the plumbing).
+    ///
+    /// `offset_osc` = true − system (positive: system clock is BEHIND). `local_osc` is the local clock reading nunc anchored that offset to — the caller must NOT sample its own clock instead, because a query runs for seconds and an absolute consensus names no instant.
     Ok {
-        offset_secs: i64,
-        confidence_secs: u64,
+        offset_osc: i64,
+        confidence_osc: i64,
+        local_osc: i64,
         sources_used: usize,
         sources_queried: usize,
     },
@@ -42,9 +46,6 @@ pub fn spawn_clock_check(
     #[allow(unused_variables)] event_proxy: ClockWake,
 ) {
     std::thread::spawn(move || {
-        // Sample the system clock as close as possible to the consensus query so the offset reflects the same instant on both clocks.
-        let system_at_query = SystemTime::now();
-
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -60,20 +61,14 @@ pub fn spawn_clock_check(
             // Fast mode: smaller source set, quicker to consensus — plenty for a sanity check.
             // The package is `nunc-time` but its lib crate name is `nunc`, so the path is `nunc::`.
             match nunc::query(nunc::Mode::Fast).await {
-                Ok(t) => {
-                    let consensus = t.timestamp();
-                    // offset = consensus − system, in whole seconds, sign preserved.
-                    let offset_secs = match consensus.duration_since(system_at_query) {
-                        Ok(d) => d.as_secs() as i64, // consensus ahead → system behind → positive
-                        Err(e) => -(e.duration().as_secs() as i64), // system ahead → negative
-                    };
-                    ClockCheckResult::Ok {
-                        offset_secs,
-                        confidence_secs: t.confidence().as_secs(),
-                        sources_used: t.sources_used,
-                        sources_queried: t.sources_queried,
-                    }
-                }
+                // nunc reports the offset AND the local instant it is anchored to, so there is nothing to sample here and no window to be wrong about.
+                Ok(t) => ClockCheckResult::Ok {
+                    offset_osc: t.offset_et,
+                    confidence_osc: t.confidence_et,
+                    local_osc: t.local_et,
+                    sources_used: t.sources_used,
+                    sources_queried: t.sources_queried,
+                },
                 Err(e) => ClockCheckResult::Unavailable(e.to_string()),
             }
         });
