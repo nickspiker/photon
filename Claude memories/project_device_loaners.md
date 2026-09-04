@@ -1,6 +1,6 @@
 ---
 name: project_device_loaners
-description: "Loaner devices: de-attest keeps device claims (dormant) so no genesis-minting; add-to-fleet relaxed for dormant; transfer-vs-loan-annotation UNDECIDED"
+description: "Loaner devices DECIDED 2026-09-04: LEASE model (docs/device-lease.md) — grant/recall on the brand, title never moves; airport delegated guest session = stage 2 with pairing-v2 + fleet-inbox cluster"
 metadata: 
   node_type: memory
   type: project
@@ -16,7 +16,11 @@ Facts established:
 
 The loaner middle state: claimed-dormant (de-attest keeps claims, handle off the air). HARD CONSTRAINT: de-attest must NOT release claims, else one machine can mint handle after handle (sybil laundering). Dormancy relaxes ONLY bind-into-another-fleet (pairing possession = consent), never genesis.
 
-UNDECIDED (user to pick):
+**DECIDED 2026-09-04 — the LEASE (docs/device-lease.md is canonical)**: option (b) won and grew. Grant = owner-fleet-signed brand annotation naming the guest identity; worker attest rule = brand owner OR live grant; recall = owner-signed edge at the ROUTING layer (the lockout machinery pointed at a guest); guest vault seals under their handle (mutual privacy); owner re-attest on recalled hardware wipes foreign vaults; recall never touches the guest's own fleet membership (they bilaterally depart at leisure). Release-folded-into-Approve REJECTED — with leases, "someone uses my device" is a lease, and title transfer keeps its two-tap friction.
+**The airport vision (stage 2)**: borrow a STRANGER's device, approve on your watch, everything appears — the handle NEVER touches borrowed hardware (seed = BLAKE3(handle)); a delegated SESSION key (routing + fleet-streamed history, never the seed) lands instead, killable from any owned device. Builds with the pairing-v2 + fleet-inbox + session-capsule cluster, after voice calls. Stage 1 (household lease, guest types own handle) can ship alone.
+Also flagged 2026-09-04: a WORDING/FLOW sweep across most pages is wanted — the lease/recall/release/retire vocabulary should land with it.
+
+Superseded original question:
 1. Loan ownership model: (a) transfer-on-bind (owner index flips; recall needs borrower cooperation) vs (b) loan annotation (owner stays, `loaned_to` added; unilateral recall enforced at announce time — I argued for (b)).
 2. Dormancy fleet-wide only, or per-device loanability.
 3. Stated (not accidental): the handle stays occupied thru dormancy — forced anyway since seeds derive from the handle string.
