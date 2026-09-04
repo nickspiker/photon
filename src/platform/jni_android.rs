@@ -269,6 +269,35 @@ pub fn call_service_void(method: &str) -> bool {
     }
 }
 
+/// Open a URL in the system browser via Kotlin's ACTION_VIEW Intent bridge. Called ONLY downstream of the link consent dialog (or the About weblink) — the human already saw the full destination and said Open. Returns false when the service ref isn't up or the call throws.
+pub fn open_url(url: &str) -> bool {
+    let Some((vm, svc)) = MESSAGE_NOTIFIER.get() else {
+        return false;
+    };
+    match vm.attach_current_thread() {
+        Ok(mut env) => {
+            let Ok(js) = env.new_string(url) else {
+                error!("open_url: string alloc failed");
+                return false;
+            };
+            if env
+                .call_method(svc.as_obj(), "openUrl", "(Ljava/lang/String;)V", &[(&js).into()])
+                .is_err()
+            {
+                let _ = env.exception_clear();
+                error!("open_url: openUrl call failed");
+                false
+            } else {
+                true
+            }
+        }
+        Err(e) => {
+            error!("open_url: JVM attach failed: {:?}", e);
+            false
+        }
+    }
+}
+
 /// One mic frame from Kotlin's AudioRecord loop (VOICE_COMMUNICATION source — the vendor AEC path). 480 samples of 48kHz mono PCM16 per call; anything else is queued as-is and the engine's chunker copes.
 #[cfg(target_os = "android")]
 #[no_mangle]

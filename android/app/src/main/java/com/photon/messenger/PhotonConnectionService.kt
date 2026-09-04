@@ -622,6 +622,18 @@ class PhotonConnectionService : Service() {
         vibrateChirp(timings, amplitudes, repeat = true)
     }
 
+    /** Open a URL in the user's browser — the Intent bridge the consent dialog and the About weblink ride (Rust gates on user consent BEFORE calling; this fires only after the human said Open). FLAG_ACTIVITY_NEW_TASK because a Service context has no task of its own. Logged-not-fatal: no browser / bad URI must never take the service down. */
+    fun openUrl(url: String) {
+        try {
+            val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
+            PhotonLog.i(TAG, "openUrl: fired (${url.length} chars)")
+        } catch (e: Exception) {
+            PhotonLog.w(TAG, "openUrl failed", e)
+        }
+    }
+
     /** Ring-stop edge (answered anywhere, declined, caller hangup): tear the ongoing call notification down. */
     fun cancelCallNotification() {
         getSystemService(NotificationManager::class.java).cancel(CALL_NOTIFICATION_ID)

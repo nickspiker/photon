@@ -1590,30 +1590,8 @@ impl FluorApp for PhotonApp {
                         // Version row tapped → toggle dozenal glyphs ↔ spelled-out voca words (+ the dozenal index).
                         self.about_version_spelled = !self.about_version_spelled;
                     } else if slot == 4 {
-                        // The passless weblink → system browser. Desktop-only for now (Android needs an Intent thru Kotlin — follow-up).
-                        #[cfg(all(
-                            unix,
-                            not(target_os = "android"),
-                            not(target_os = "redox"),
-                            not(target_os = "macos")
-                        ))]
-                        {
-                            let _ = std::process::Command::new("xdg-open")
-                                .arg("https://passless.org/")
-                                .spawn();
-                        }
-                        #[cfg(target_os = "macos")]
-                        {
-                            let _ = std::process::Command::new("open")
-                                .arg("https://passless.org/")
-                                .spawn();
-                        }
-                        #[cfg(target_os = "windows")]
-                        {
-                            let _ = std::process::Command::new("cmd")
-                                .args(["/C", "start", "https://passless.org/"])
-                                .spawn();
-                        }
+                        // The passless weblink → system browser, every platform thru the one opener (Android rides the Kotlin Intent bridge now).
+                        open_url_in_browser("https://passless.org/");
                         crate::log("ABOUT: passless.org link tapped");
                     } else if slot == 5 {
                         // A tap anywhere within the revealed dozenal index → the custodian riddle appears beneath it. One tap; session-permanent once found.
@@ -3571,7 +3549,14 @@ fn open_url_in_browser(url: &str) {
     {
         let _ = std::process::Command::new("cmd").args(["/C", "start", url]).spawn();
     }
-    #[cfg(any(target_os = "android", target_os = "redox"))]
+    #[cfg(target_os = "android")]
+    {
+        // The Intent bridge: Kotlin fires ACTION_VIEW. Consent already happened upstream — this is the post-Open hop.
+        if !crate::platform::jni_android::open_url(url) {
+            crate::log("CHAT: open link failed (service ref down?)");
+        }
+    }
+    #[cfg(target_os = "redox")]
     {
         crate::logf!("CHAT: open link unsupported on this platform ({} bytes)", url.len());
     }
