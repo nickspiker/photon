@@ -782,7 +782,7 @@ impl PhotonApp {
         self.scene_dirty = true;
     }
 
-    /// The ring alert: platform notification + the relationship RING — the identity chirp's instrument conjugated into a call phrase (`chirp::Chirp::ring_from_hash`: 2×9 jittered hits, τ/3 envelopes), so ears know who's calling before eyes do. Deliberately BYPASSES the will_ding gates: a call is the one always-ring event (design decision 2026-08-18).
+    /// The ring alert: platform notification + the relationship RING — the identity chirp's instrument conjugated into a call phrase (`chirp::Chirp::ring_from_hash`: the ding's chord HELD flat under a sin³ 0→9π arc, doubletted), so ears know who's calling before eyes do. Deliberately BYPASSES the will_ding gates: a call is the one always-ring event (design decision 2026-08-18).
     ///
     /// Both platforms loop the cadence until a stop edge, no timers: desktop by a thread watching the [`crate::call::RingGuard`] on the ActiveCall, Android by a MODE_STATIC AudioTrack looping in the HAL until `cancelCallNotification` (which every teardown edge already calls).
     fn ring_alert(&mut self, ci: usize) {
