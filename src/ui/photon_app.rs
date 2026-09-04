@@ -1219,6 +1219,8 @@ pub struct PhotonApp {
     private_s: crate::crypto::blind::PrivateS,
     /// True when the dual-ring vault flagged a damaged ring on open this session. Drives the persistent amber banner on the Ready screen. Sticky for the session.
     vault_degraded: bool,
+    /// The severity above degraded (split 2026-09-03): values were pruned/lost, or no vault opened at all. Drives the RED banner — degraded says "distrust", this says "something is gone". Sticky for the session.
+    vault_data_lost: bool,
     /// Green confirmation band on the Ready screen ("Device added \u{221a}"). Event-shown, interaction-cleared (clear_hints), NEVER time-based. Stacks above the amber warning bands.
     ready_toast: Option<String>,
     /// The FULL screen state the toast was first RENDERED on — captured lazily by the tick; any mismatch means the user navigated, which clears the toast (screen change = acknowledgement). The whole AppState VALUE, not its discriminant: every Settings page shares one discriminant, so page-to-page navigation inside the panel never cleared ("changing from page to page in settings doesn't clear the toast").
@@ -1994,6 +1996,7 @@ impl PhotonApp {
             session: None,
             private_s: crate::crypto::blind::PrivateS::None,
             vault_degraded: false,
+            vault_data_lost: false,
             ready_toast: None,
             ready_toast_screen: None,
             clock_check_tx: {

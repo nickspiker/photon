@@ -979,8 +979,8 @@ impl FluorApp for PhotonApp {
                     }
                     Err(e) => {
                         crate::logf!("STORAGE: init failed on resume: {}", e);
-                        // A hard vault-open failure (e.g. seal verification failed) is the WORST storage state — no contacts load and nothing persists — yet it previously showed no warning, while a mere recoverable mirror-divergence (`degraded()`) did. Flag it so the red "storage degraded" banner surfaces a fully-broken vault too.
-                        self.vault_degraded = true;
+                        // A hard vault-open failure (e.g. seal verification failed) is the WORST storage state — no contacts load and nothing persists. The RED banner, not the amber one.
+                        self.vault_data_lost = true;
                     }
                 }
             }
@@ -2907,6 +2907,12 @@ impl FluorApp for PhotonApp {
         // Storage-failure latch → the amber banner. Writer threads and open paths can only set a static (no &mut self there); this mirror is how a fence error or a dead vault open reaches the screen — 1,276 of them once ran for hours as log lines while the UI claimed all was well (2026-08-24).
         if crate::storage::vault_sick() && !self.vault_degraded {
             self.vault_degraded = true;
+            self.scene_dirty = true;
+            needs_redraw = true;
+        }
+        // The lost latch rides the same mirror, one severity up: pruned values or a dead vault open → the RED banner.
+        if crate::storage::vault_data_lost() && !self.vault_data_lost {
+            self.vault_data_lost = true;
             self.scene_dirty = true;
             needs_redraw = true;
         }

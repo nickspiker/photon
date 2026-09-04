@@ -111,6 +111,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AvatarDropHint => "arrastra y suelta para actualizar el avatar".into(),
         Msg::SearchPlaceholder => "buscar | agregar".into(),
         Msg::StorageDegraded => "almacenamiento degradado".into(),
+        Msg::StorageDataLost => "el almacenamiento perdió datos".into(),
         Msg::AutoAttestBadge => "auto-atestar al reiniciar".into(),
         Msg::ClockOff { pretty, ahead } => format!("reloj desfasado — {pretty} {}", if ahead { "adelantado" } else { "atrasado" }).into(),
         Msg::HoursShort(n) => format!("{}h", fmt_num(n as u32)).into(),

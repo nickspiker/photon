@@ -111,6 +111,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AvatarDropHint => "tōia mai he whakaahua hei avatar hou".into(),
         Msg::SearchPlaceholder => "rapu | tāpiri".into(),
         Msg::StorageDegraded => "kua hē te rokiroki".into(),
+        Msg::StorageDataLost => "kua ngaro ētahi raraunga o te rokiroki".into(),
         Msg::AutoAttestBadge => "whakaū aunoa i te whakaohonga".into(),
         Msg::ClockOff { pretty, ahead } => format!("kei te hē te karaka — {pretty} {}", if ahead { "kei mua" } else { "kei muri" }).into(),
         Msg::HoursShort(n) => format!("{}h", fmt_num(n as u32)).into(),

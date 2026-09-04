@@ -76,10 +76,10 @@ pub fn device_vault() -> Option<std::sync::Arc<FlatStorage>> {
     }
     match FlatStorage::open_device_shared(APP, secret) {
         Ok(v) => {
-            // A repair-open that pruned values booted the vault but LOST data — the banner must say so even tho the open "succeeded".
+            // A repair-open that pruned values booted the vault but LOST data — a severity above degraded (mirror healing loses nothing; a pruned pointer is a value gone). The red banner, not the amber one.
             if v.repaired_lost_values() > 0 {
-                crate::logf!("STORAGE: device vault opened via repair — {} value(s) lost to pruned dangling pointers", v.repaired_lost_values());
-                flag_vault_sick();
+                crate::logf!("STORAGE: device vault opened via repair — {} value(s) lost to pruned dangling pointers (identities in the kete log lines above)", v.repaired_lost_values());
+                flag_vault_data_lost();
             }
             census_sweep(&secret);
             *g = Some((secret, v.clone()));
@@ -87,7 +87,8 @@ pub fn device_vault() -> Option<std::sync::Arc<FlatStorage>> {
         }
         Err(e) => {
             crate::logf!("STORAGE: device vault open failed: {}", e);
-            flag_vault_sick();
+            // No vault at all: nothing loads and nothing persists — the WORST storage state, same red banner as data loss.
+            flag_vault_data_lost();
             None
         }
     }
@@ -96,12 +97,23 @@ pub fn device_vault() -> Option<std::sync::Arc<FlatStorage>> {
 /// Cross-thread storage-failure latch: writer threads and open paths set it, the UI tick mirrors it into `vault_degraded` (the amber banner). Born of the 2026-08-24 zombie boots — a vault-open death and 1,276 fence errors ran for hours as log lines while the screen claimed all was well. Sticky for the session by design: a vault that failed once is a vault to distrust until relaunch.
 static VAULT_SICK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The severity above sick (split 2026-09-03 — Emma's benign one-shot mirror hiccup and Leviathan's 43 lost values wore the SAME banner): values are gone, or no vault opened at all. Amber says "distrust and relaunch"; red says "something you had is not coming back from this device".
+static VAULT_LOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn flag_vault_sick() {
     VAULT_SICK.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub fn vault_sick() -> bool {
     VAULT_SICK.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn flag_vault_data_lost() {
+    VAULT_LOST.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn vault_data_lost() -> bool {
+    VAULT_LOST.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// A device-scope boolean flag (opt-ins/vetoes that used to be marker FILES). Present = true, absent = false; the caller owns the default polarity.
