@@ -77,24 +77,24 @@ impl PhotonApp {
                 any = true;
             }
         }
-        // Speaker toggle (Active) — visual state + a stubbed route intent (no real device switch in v1).
-        if self
-            .call_speaker_btn
-            .as_mut()
-            .map(|b| b.take_click())
-            .unwrap_or(false)
-        {
-            if matches!(phase, Some(CallPhase::Active)) {
-                self.call_speaker_on = !self.call_speaker_on;
-                let route = if self.call_speaker_on {
-                    crate::platform::audio::AudioRoute::Speaker
-                } else {
-                    crate::platform::audio::AudioRoute::Earpiece
-                };
-                crate::platform::audio::set_route(route);
-            }
-            any = true;
-        }
+        // Speaker toggle PARKED (Nick 2026-09-03): headset is the only mode for now — a fixed 4-stop output pad in the engine (OUTPUT_PAD_STOPS) with the duck dropping further from there; re-arm this handler when a real speaker route lands.
+        // if self
+        //     .call_speaker_btn
+        //     .as_mut()
+        //     .map(|b| b.take_click())
+        //     .unwrap_or(false)
+        // {
+        //     if matches!(phase, Some(CallPhase::Active)) {
+        //         self.call_speaker_on = !self.call_speaker_on;
+        //         let route = if self.call_speaker_on {
+        //             crate::platform::audio::AudioRoute::Speaker
+        //         } else {
+        //             crate::platform::audio::AudioRoute::Earpiece
+        //         };
+        //         crate::platform::audio::set_route(route);
+        //     }
+        //     any = true;
+        // }
         // Add-handle (Active) — stubbed; multi-party call join is a follow-up.
         if self
             .call_addhandle_btn
