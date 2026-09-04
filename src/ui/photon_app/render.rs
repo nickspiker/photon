@@ -644,28 +644,28 @@ impl PhotonApp {
                         }
                     }
                     _ => {
-                        // Active in-call screen: a secondary row (Speaker / +Handle / ‹ Contact) above the primary End call. Speaker + Add-handle are stubs; ‹ Contact minimizes.
+                        // Active in-call screen: a secondary row (+Handle / ‹ Contact) above the primary End call. Add-handle is a stub; ‹ Contact minimizes. Speaker toggle PARKED (Nick 2026-09-03, headset-only + engine output pad) — restore the third slot when a real speaker route lands.
                         let sw = w * 0.29;
                         let sh = unit * 2.0;
                         let sfont = unit * 0.58;
                         let sy = by - bh - unit * 0.6;
-                        let spk_on = self.call_speaker_on;
-                        if let Some(b) = self.call_speaker_btn.as_mut() {
-                            b.set_rect(w * 0.5 - sw - unit * 0.4, sy, sw, sh);
-                            b.set_font_size(sfont);
-                            b.set_label(tr(if spk_on { Msg::SpeakerToggleOn } else { Msg::SpeakerToggleOff }));
-                            let id = b.hit_id();
-                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                        }
+                        // let spk_on = self.call_speaker_on;
+                        // if let Some(b) = self.call_speaker_btn.as_mut() {
+                        //     b.set_rect(w * 0.5 - sw - unit * 0.4, sy, sw, sh);
+                        //     b.set_font_size(sfont);
+                        //     b.set_label(tr(if spk_on { Msg::SpeakerToggleOn } else { Msg::SpeakerToggleOff }));
+                        //     let id = b.hit_id();
+                        //     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        // }
                         if let Some(b) = self.call_addhandle_btn.as_mut() {
-                            b.set_rect(w * 0.5, sy, sw, sh);
+                            b.set_rect(w * 0.5 - sw - unit * 0.2, sy, sw, sh);
                             b.set_font_size(sfont);
                             b.set_label(tr(Msg::AddHandle));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
                         if let Some(b) = self.call_back_btn.as_mut() {
-                            b.set_rect(w * 0.5 + sw + unit * 0.4, sy, sw, sh);
+                            b.set_rect(w * 0.5 + unit * 0.2, sy, sw, sh);
                             b.set_font_size(sfont);
                             b.set_label(tr(Msg::BackToContact));
                             let id = b.hit_id();
@@ -5498,8 +5498,8 @@ impl PhotonApp {
             if call_fullscreen {
                 match call_overlay.as_ref().map(|t| t.0) {
                     Some(crate::call::CallPhase::Active) => {
+                        // call_speaker_btn stays out of the stamp list while the toggle is parked — an unstamped rect is stale from whenever it last rendered.
                         for b in [
-                            self.call_speaker_btn.as_ref(),
                             self.call_addhandle_btn.as_ref(),
                             self.call_back_btn.as_ref(),
                         ]

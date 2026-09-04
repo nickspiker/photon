@@ -67,6 +67,8 @@ const PID_I_CLAMP: f32 = 2.0;
 /// Applied-gain bounds: ±3 octaves of AGC authority.
 const GAIN_MIN: f32 = 0.125;
 const GAIN_MAX: f32 = 8.0;
+/// Live-playback output pad in stops (1 stop = ×2 amplitude = one bit-shift): the headset default while the speaker toggle is parked (Nick 2026-09-03, field waves 1-2).
+const OUTPUT_PAD_STOPS: u32 = 4;
 
 pub struct EngineParams {
     pub secret: [u8; 32],
@@ -500,7 +502,11 @@ fn run(
             let mut np = np;
             loop {
                 if let Some(frames) = rx_done.remove(&np) {
-                    for f in frames {
+                    for mut f in frames {
+                        // Output pad: 4 stops down on live wave playback (Nick 2026-09-03) — the headset default now that the speaker toggle is parked; the loudspeaker at max media volume ran ~2.5 stops hot in the field and near-unity echo coupling came with it. The duck drops further from here when the physics demand it. Ritual prompts and recording preview enqueue directly and stay unpadded; the RENDER_ENV/RENDER_REF taps sit downstream, so the learner still measures the true emitted level.
+                        for s in &mut f {
+                            *s >>= OUTPUT_PAD_STOPS;
+                        }
                         crate::platform::audio::queue_playback(f);
                     }
                     np = np.wrapping_add(1);

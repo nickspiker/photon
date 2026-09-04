@@ -2662,9 +2662,7 @@ impl PhotonApp {
                 }
                 // Active full-screen in-call controls; a minimized Active call yields only the action (the strip / compact bar's End).
                 CallPhase::Active if !self.call_minimized => {
-                    if let Some(b) = self.call_speaker_btn.as_mut() {
-                        f(b);
-                    }
+                    // call_speaker_btn out of the walk while the toggle is parked (headset-only, engine output pad).
                     if let Some(b) = self.call_addhandle_btn.as_mut() {
                         f(b);
                     }
