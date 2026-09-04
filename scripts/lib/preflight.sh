@@ -15,6 +15,8 @@ preflight_gates() {
     arch_gate || exit 1
     source "$d/artifact-gate.sh"
     artifact_gate || exit 1
+    source "$d/running-from-tree-gate.sh"
+    running_from_tree_gate || exit 1
     source "$d/sibling-push-gate.sh"
     # Strict ONLY when the caller says so (deploy.sh exports SEAM_STRICT=1). preflight_gates runs at EVERY build entry point including dev.sh's — and a strict seam there blocked leviathan's dev rebuilds entirely on 2026-08-30 (14 unpushed sibling commits, refused in a loop, "why is the remote not deploying"). Dev builds warn; only a PUBLISH refuses.
     if [ "${SEAM_STRICT:-0}" = "1" ]; then

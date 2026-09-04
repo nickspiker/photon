@@ -25,27 +25,30 @@ echo "photon:   $PHOTON"
 echo "siblings: $ROOT"
 
 # The closure: walk photon's Cargo.toml path deps transitively, keeping anything that resolves inside the sibling root.
-REPOS=$(python3 - "$ROOT" <<'PY'
-import re, os, sys
-root = sys.argv[1]
-seen, stack = set(), ['photon']
-while stack:
-    r = stack.pop()
-    if r in seen:
-        continue
-    seen.add(r)
-    ct = os.path.join(root, r, 'Cargo.toml')
-    if not os.path.exists(ct):
-        continue
-    for m in re.finditer(r'path\s*=\s*"([^"]+)"', open(ct).read()):
-        p = os.path.normpath(os.path.join(root, r, m.group(1)))
-        if p.startswith(root + os.sep):
-            n = os.path.relpath(p, root).split(os.sep)[0]
-            if n not in seen:
-                stack.append(n)
-print(' '.join(sorted(seen)))
-PY
-)
+# Pure shell BY RULE — the no-python gate forbids python in build scripts (this tree is Rust-only), and it caught this very script on its first run.
+closure() {
+    local todo="photon" seen="" cur dir rel abs name
+    while [ -n "$todo" ]; do
+        cur="${todo%% *}"
+        case "$todo" in *" "*) todo="${todo#* }" ;; *) todo="" ;; esac
+        case " $seen " in *" $cur "*) continue ;; esac
+        seen="$seen $cur"
+        dir="$ROOT/$cur"
+        [ -f "$dir/Cargo.toml" ] || continue
+        # Every `path = "..."` value, relative to THIS repo, resolved and kept only if it lands under the sibling root.
+        for rel in $(sed -n 's/.*path[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$dir/Cargo.toml"); do
+            abs="$(cd "$dir/$rel" 2>/dev/null && pwd)" || continue
+            case "$abs" in
+                "$ROOT"/*) name="${abs#"$ROOT"/}"; name="${name%%/*}" ;;
+                *) continue ;;
+            esac
+            case " $seen $todo " in *" $name "*) ;; *) todo="$todo $name" ;; esac
+        done
+    done
+    # Sorted, single-spaced.
+    echo $(printf '%s\n' $seen | sort)
+}
+REPOS="$(closure)"
 
 echo "closure:  $REPOS"
 echo
