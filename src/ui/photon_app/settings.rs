@@ -437,11 +437,11 @@ impl PhotonApp {
         if let Some(cb) = self.settings_dozenal_check.as_mut() {
             cb.set_checked(dozenal);
         }
-        // UI language (docs/languages.md): DEVICE-LOCAL typed string code; absent = first launch → seed ONCE from the OS locale, then the value is the user's and never live-follows the host.
+        // UI language (docs/languages.md): fleet-LINKED typed string code — a language picked anywhere follows the identity to every device. Absent = first launch → seed ONCE from the OS locale, then the value is the user's and never live-follows the host. `effective` also swallows the pre-2026-09-04 device-local entries (an unlinked local wins until the owner re-picks, which re-links).
         let stored_lang = self
             .fleet_settings
             .as_ref()
-            .and_then(|fs| fs.device_local("display.lang"))
+            .and_then(|fs| fs.effective("display.lang"))
             .and_then(crate::storage::fleet_settings::as_text);
         match stored_lang.as_deref().and_then(crate::ui::lang::Lang::from_code) {
             Some(l) => crate::ui::lang::set_lang(l),
@@ -539,18 +539,18 @@ impl PhotonApp {
         }
     }
 
-    /// Persist the UI language as this DEVICE's `display.lang` (typed x-string code, device-local like zoom — reading language is per-human-per-device ergonomics, never fleet-global).
+    /// Persist the UI language as `display.lang`, fleet-LINKED (Nick 2026-09-04: "identities can't copy — if I speak Spanish I prolly want all my devices to"; the earlier device-local rationale was wrong, one human = one fleet = one tongue). Re-links any device that stored the old unlinked entry, so upgraded fleets converge.
     pub(super) fn save_lang_setting(&mut self, l: crate::ui::lang::Lang) {
         if !self.ensure_fleet_settings() {
             return;
         }
         let now = vsf::eagle_time_oscillations();
         let fs = self.fleet_settings.as_mut().unwrap();
-        if fs.linked("display.lang") {
-            fs.set_link("display.lang", false, now);
+        if !fs.linked("display.lang") {
+            fs.set_link("display.lang", true, now);
         }
         if fs.set("display.lang", vsf::VsfType::x(l.code().to_string()), now) {
-            crate::logf!("SETTINGS: display.lang = {} (device-local)", l.code());
+            crate::logf!("SETTINGS: display.lang = {} (fleet-linked)", l.code());
             self.persist_and_push_settings();
         }
     }
