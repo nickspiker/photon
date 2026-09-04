@@ -137,7 +137,9 @@ fn run(digest: [u8; 32], stop: Arc<AtomicBool>) {
             };
             learner.push_mic(vsf::eagle_time_oscillations(), mean);
         }
-        learner.tick(1.0);
+        // Volume-normalize exactly as the engine does (engine.rs's vol_lin_now): the probe's g is published as a UNIT-VOLUME figure and the predictive duck re-scales it by the live vol_lin. Ticking 1.0 here would hand the engine a g measured at whatever the media slider happened to be, which it would then scale AGAIN — under-ducking by the volume factor, the direction that inflicts echo on the peer. On Android the mirrored stream is STREAM_MUSIC, which IS the knob governing our USAGE_MEDIA render; desktop has no volume API and stays 1.0.
+        let vol_lin = crate::platform::audio::current_volume_db().map_or(1.0, |db| 10f32.powf(db / 20.0));
+        learner.tick(vol_lin);
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 

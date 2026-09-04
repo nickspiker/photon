@@ -33,6 +33,8 @@ Same on desktop and Android (it's the shared platform audio layer); silent on Re
 
 **It is also the calibration probe.** A ringback is a known signal played into the room while the near human is provably not talking — the far-talks-alone condition the in-call learner otherwise waits a whole conversation for. The session is open, so the mic captures while it plays; the same `learn::Learner` runs on the ring and publishes a probe. On answer, the engine seeds from that freshly measured `(g, delay)` instead of a stored profile from another day. Field waves 1-2 failed exactly there: the learner never armed inside a 41 s call, so both sides ducked on stale seeds.
 
+The probe volume-normalizes with the live `current_volume_db()` exactly as the engine's learner does — it publishes `g` at unit volume because the predictive duck re-scales by `vol_lin` at use. On Android the mirrored stream is `STREAM_MUSIC`, which is genuinely the knob governing our `USAGE_MEDIA` render (mirroring `STREAM_VOICE_CALL` was the earlier bug: it normalized by a slider that did nothing to our audio).
+
 Session ownership: ringback opens the audio session; on stop it closes it **unless** the engine took over (`media_sink_live()`). The engine's own `audio::start()` is a no-op against a live session, so ringback → call never tears the device down and never clicks.
 
 ## 3. Ring — someone is waving us
@@ -91,4 +93,5 @@ Every stop is an **edge, never a timer** — the project rule.
 2. **No receiver/speaker choice on Android.** One path, one loudness, set by the 4-stop pad. Restoring a real earpiece mode means taking the 80 ms buffer floor back in that mode.
 3. **Ring cadence length is fixed** at 0.5 s bursts / 0.25 s inner gap / 2 s repeat. Not user-tunable, not per-contact beyond the digest.
 4. **Redox is silent** end to end — signaling only.
-5. **Desktop ring gap is polled** (24 × 50 ms) rather than event-driven; the poll exists only so a stop edge lands within ~50 ms.
+5. **The volume rocker adjusts media, not call volume** on Android — the direct consequence of the `USAGE_MEDIA` trade. Self-consistent (the mirror reads the same stream the render uses), and the ring/ringback split still matches the customary model: inbound ring on the ringtone slider, ringback on the call/media one.
+6. **Desktop ring gap is polled** (24 × 50 ms) rather than event-driven; the poll exists only so a stop edge lands within ~50 ms.
