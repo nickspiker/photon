@@ -49,7 +49,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::IncomingCallNoPath => "\u{260E} incoming wave \u{2014} \u{26A0} no direct path".into(),
         Msg::CallActiveNoPath(dur) => format!("\u{260E} {dur} \u{2014} \u{26A0} no direct path").into(),
         Msg::CallEndedDur(dur) => format!("\u{260E} wave \u{2014} {dur}").into(),
-        Msg::CallingName(name) => format!("\u{260E} waving at {name}\u{2026}").into(),
+        Msg::CallingName(name) => format!("\u{260E} waving {name}\u{2026}").into(),
         Msg::CallRow => "\u{260E} wave".into(),
         Msg::MissedCallRow => "\u{260E} missed wave".into(),
         Msg::CallDeclinedRow => "\u{260E} wave declined".into(),
