@@ -8,10 +8,19 @@
 # Exit status is deploy-gateable: 0 = every repo current and clean, non-zero = at least one repo needs a human.
 
 set -u
-cd "$(dirname "$0")/../.."   # ~/Code — the parent that holds every sibling
-ROOT="$PWD"
+# Resolve the tree from THIS SCRIPT's own location, never from $HOME or a hardcoded ~/Code: the build box wipes its home directory daily, so the checkout lives on a persistent mount whose path is nobody's business but the filesystem's. readlink -f so invoking through a symlink still lands on the real tree.
+SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+PHOTON="$(cd "$(dirname "$SELF")/.." && pwd)"
+ROOT="$(cd "$PHOTON/.." && pwd)"   # the parent that holds every sibling checkout
 
-# The closure: walk photon's Cargo.toml path deps transitively, keeping anything that resolves inside ~/Code.
+if [ ! -d "$PHOTON/.git" ]; then
+    echo "pull-deps: $PHOTON is not a git checkout — is this script running from inside the photon tree?" >&2
+    exit 1
+fi
+echo "photon:   $PHOTON"
+echo "siblings: $ROOT"
+
+# The closure: walk photon's Cargo.toml path deps transitively, keeping anything that resolves inside the sibling root.
 REPOS=$(python3 - "$ROOT" <<'PY'
 import re, os, sys
 root = sys.argv[1]
@@ -34,14 +43,14 @@ print(' '.join(sorted(seen)))
 PY
 )
 
-echo "dependency closure: $REPOS"
+echo "closure:  $REPOS"
 echo
 
 fail=0
 dirty=""
 for r in $REPOS; do
     d="$ROOT/$r"
-    [ -d "$d/.git" ] || { printf '  %-12s SKIP   not a git repo\n' "$r"; continue; }
+    [ -d "$d/.git" ] || { printf '  %-12s SKIP   not a git checkout: %s\n' "$r" "$d"; continue; }
 
     # Detached HEAD or no tracking branch = a deliberate pin (winit-patched's vanilla checkout is the archetype). Never yank those.
     branch=$(git -C "$d" symbolic-ref --quiet --short HEAD 2>/dev/null) || {
@@ -50,7 +59,7 @@ for r in $REPOS; do
         printf '  %-12s SKIP   no upstream for %s\n' "$r" "$branch"; continue; }
 
     if ! git -C "$d" fetch --quiet origin 2>/dev/null; then
-        printf '  %-12s FAIL   fetch failed (network?)\n' "$r"; fail=1; continue
+        printf '  %-12s FAIL   fetch failed (network?): %s\n' "$r" "$d"; fail=1; continue
     fi
 
     local_sha=$(git -C "$d" rev-parse HEAD)
@@ -61,12 +70,19 @@ for r in $REPOS; do
         if git -C "$d" merge --ff-only --quiet "@{upstream}" 2>/dev/null; then
             state="PULLED  $(git -C "$d" log --oneline -1 | cut -c1-52)"
         else
-            printf '  %-12s FAIL   ff-only merge refused (uncommitted changes in the way?)\n' "$r"; fail=1; continue
+            printf '  %-12s FAIL   ff-only merge refused (uncommitted changes in the way?): %s\n' "$r" "$d"; fail=1; continue
         fi
     elif git -C "$d" merge-base --is-ancestor "@{upstream}" HEAD 2>/dev/null; then
         state="ahead — you have unpushed commits"
     else
-        printf '  %-12s FAIL   DIVERGED from %s — history was rewritten or both sides moved\n' "$r" "$branch"; fail=1; continue
+        ahead=$(git -C "$d" rev-list --count "@{upstream}..HEAD" 2>/dev/null || echo '?')
+        behind=$(git -C "$d" rev-list --count "HEAD..@{upstream}" 2>/dev/null || echo '?')
+        printf '  %-12s FAIL   DIVERGED from %s: %s ahead, %s behind\n' "$r" "$branch" "$ahead" "$behind"
+        printf '               %s\n' "$d"
+        printf '               local-only commits:\n'
+        git -C "$d" log --oneline "@{upstream}..HEAD" 2>/dev/null | sed 's/^/                 /'
+        printf '               fix: git -C %s pull --rebase\n' "$d"
+        fail=1; continue
     fi
 
     # Report a dirty tree but never touch it: uncommitted work is the human's call, and a deploy off a dirty tree ships something no commit describes.
@@ -80,6 +96,7 @@ done
 echo
 if [ -n "$dirty" ]; then
     echo "WARNING: uncommitted changes in:$dirty"
+    for r in $dirty; do printf '         %s\n' "$ROOT/$r"; done
     echo "         a deploy from a dirty tree ships bits no commit can reproduce — commit or stash first."
     fail=1
 fi
