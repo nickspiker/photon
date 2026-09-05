@@ -2751,6 +2751,7 @@ impl PhotonApp {
                             .unwrap_or(0.0)
                             .clamp(0.0, max_scroll);
                         self.msg_hit_rows.clear();
+                        self.msg_hit_rows.resize(super::MSG_HIT_SPAN as usize, None);
                         self.msg_link_hits.clear();
                         // ── LINK CONSENT PANEL ── painted BEFORE the message walk (earliest paint wins under-blend), hit-stamped AFTER it (latest stamp wins the map). A tapped link never opens silently: the full destination shows verbatim — punycode/homograph honesty — with Open / Copy / Cancel (Nick 2026-09-04).
                         let mut consent_stamp: Option<([fluor::region::Region; 3], f32)> = None;
@@ -3371,13 +3372,12 @@ impl PhotonApp {
                                     }
                                 }
                             }
-                            // Stamp the row band — the WHOLE wrapped block — so a tap selects this message (details strip). Clamped to the list region so header/compose never lose their own hits; capped at the MSG_HIT_SPAN id span. ON-SCREEN ROWS ONLY (field 2026-09-05, Nick's Android: taps dead on every old message once scrolled up a ways): the walk starts at the NEWEST row and processes everything below the viewport first, so an unconditional push burned the whole id budget on invisible rows — every visible old row then had no tap target. An empty clamped band = off-screen = no id spent.
+                            // Stamp the row band — the WHOLE wrapped block — so a tap selects this message (details strip). Clamped to the list region so header/compose never lose their own hits. MODULAR SLOTS, not a spend-down budget (Nick 2026-09-05, after the field bug where the walk's off-screen rows below the viewport exhausted a 64-id budget before any visible row got a target): the slot is `visible_index % MSG_HIT_SPAN`, so every row HAS an id by construction and there is nothing to exhaust. Stamp + table-write only when the clamped band is non-empty (= on screen), which keeps map and table in lockstep and makes wrap collisions need 256+ rows on one screen.
                             let band_top = ((y - block_extra - line_h * 0.5).max(list_top)) as isize;
                             let band_bot = ((y + line_h * 0.5).min(list_bottom)) as isize;
-                            if band_bot > band_top && self.msg_hit_rows.len() < super::MSG_HIT_SPAN as usize {
-                                let row_hit = self
-                                    .msg_hit_base
-                                    .wrapping_add(self.msg_hit_rows.len() as HitId);
+                            if band_bot > band_top {
+                                let slot = vi % super::MSG_HIT_SPAN as usize;
+                                let row_hit = self.msg_hit_base.wrapping_add(slot as HitId);
                                 restamp_hit_rect(
                                     &mut chrome.hit_test_map,
                                     buf_w,
@@ -3393,8 +3393,8 @@ impl PhotonApp {
                                     let ref_y = y - react_off - lines.len() as f32 * intra;
                                     (ref_y - line_h * 0.5, ref_y + line_h * 0.5, t)
                                 });
-                                self.msg_hit_rows
-                                    .push((msg.timestamp, msg.is_outgoing, ref_band));
+                                self.msg_hit_rows[slot] =
+                                    Some((msg.timestamp, msg.is_outgoing, ref_band));
                             }
                             y -= line_h + block_extra;
                         }

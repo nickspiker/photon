@@ -1596,8 +1596,8 @@ pub struct PhotonApp {
     msg_copy_id: HitId,
     /// Base hit id for the rest of the details-strip action pills (span 8): 0=reply, 1=edit, 2=resend, 3=delete. Copy keeps its own id above.
     msg_action_base: HitId,
-    /// Visible-row → message identity map, rebuilt each conversation render, parallel to the `msg_hit_base` stamps. The identity is (timestamp, is_outgoing) — index-free so a mid-frame history backfill can't redirect a tap.
-    msg_hit_rows: Vec<(i64, bool, Option<(f32, f32, i64)>)>,
+    /// Slot table (fixed [`MSG_HIT_SPAN`] entries): stamped row identity at slot `visible_index % MSG_HIT_SPAN` (Nick 2026-09-05 — modular slots instead of a spend-down id budget, so there is nothing to exhaust and every on-screen row has an id by construction; a wrap collision needs 256+ rows on one screen). `None` = no on-screen row stamped that slot this frame. The identity is (timestamp, is_outgoing) — index-free so a mid-frame history backfill can't redirect a tap.
+    msg_hit_rows: Vec<Option<(i64, bool, Option<(f32, f32, i64)>)>>,
     /// The list viewport height at the last conversation render — the scroll-to-message centering math needs it outside the render pass (same pattern as msg_max_scroll).
     msg_view_h: f32,
     /// Compose-box line count at the last frame — the growth edge: a change moves list_bottom, so the next frame reflows the whole scene while ordinary keystrokes stay on the narrow path.
