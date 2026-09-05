@@ -1918,8 +1918,8 @@ impl FluorApp for PhotonApp {
             }
             if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(super::MSG_HIT_SPAN) {
                 let vis = (hit_id - self.msg_hit_base) as usize;
-                if let (Some(ci), Some(&(ts, out, ref_band))) =
-                    (self.active_contact(), self.msg_hit_rows.get(vis))
+                if let (Some(ci), Some((ts, out, ref_band))) =
+                    (self.active_contact(), self.msg_hit_rows.get(vis).copied().flatten())
                 {
                     // Reference-line tap = JUMP to the source row, centered — the hint is a link, not part of the select band.
                     if let Some((band_y0, band_y1, target)) = ref_band {
