@@ -3371,8 +3371,10 @@ impl PhotonApp {
                                     }
                                 }
                             }
-                            // Stamp the row band — the WHOLE wrapped block — so a tap selects this message (details strip). Clamped to the list region so header/compose never lose their own hits; capped at the 64-id span (a taller screen than that doesn't exist).
-                            if self.msg_hit_rows.len() < 64 {
+                            // Stamp the row band — the WHOLE wrapped block — so a tap selects this message (details strip). Clamped to the list region so header/compose never lose their own hits; capped at the 64-id span (a taller screen than that doesn't exist). ON-SCREEN ROWS ONLY (field 2026-09-05, Nick's Android: taps dead on every old message once scrolled up a ways): the walk starts at the NEWEST row and processes everything below the viewport first, so an unconditional push burned the whole 64-id budget on invisible rows — every visible old row then had no tap target. An empty clamped band = off-screen = no id spent.
+                            let band_top = ((y - block_extra - line_h * 0.5).max(list_top)) as isize;
+                            let band_bot = ((y + line_h * 0.5).min(list_bottom)) as isize;
+                            if band_bot > band_top && self.msg_hit_rows.len() < 64 {
                                 let row_hit = self
                                     .msg_hit_base
                                     .wrapping_add(self.msg_hit_rows.len() as HitId);
@@ -3381,9 +3383,9 @@ impl PhotonApp {
                                     buf_w,
                                     buf_h,
                                     0,
-                                    ((y - block_extra - line_h * 0.5).max(list_top)) as isize,
+                                    band_top,
                                     buf_w as isize,
-                                    ((y + line_h * 0.5).min(list_bottom)) as isize,
+                                    band_bot,
                                     row_hit,
                                 );
                                 // A reply row's reference line is its own tap target: the band + the referenced ts ride the hit row, and a tap inside it JUMPS to the source row instead of opening the strip.
