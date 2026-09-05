@@ -307,8 +307,7 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(3); // contact-panel rail rows 0..=3
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.msg_hit_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(63); // message rows 0..=63
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        self.hit_counter = self.hit_counter.wrapping_add(super::MSG_HIT_SPAN); // message rows 0..MSG_HIT_SPAN
         self.msg_copy_id = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.msg_action_base = self.hit_counter;
@@ -1904,7 +1903,7 @@ impl FluorApp for PhotonApp {
                 return EventResponse::Handled;
             }
             // A tap on a rendered link span opens the consent dialog INSTEAD of the row strip — checked before the row arm because the spans live inside row bands.
-            if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(64) {
+            if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(super::MSG_HIT_SPAN) {
                 let (cx_f, cy_f) = (ctx.cursor_x as f32, ctx.cursor_y as f32);
                 if let Some(dest) = self
                     .msg_link_hits
@@ -1917,7 +1916,7 @@ impl FluorApp for PhotonApp {
                     return EventResponse::Handled;
                 }
             }
-            if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(64) {
+            if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(super::MSG_HIT_SPAN) {
                 let vis = (hit_id - self.msg_hit_base) as usize;
                 if let (Some(ci), Some(&(ts, out, ref_band))) =
                     (self.active_contact(), self.msg_hit_rows.get(vis))

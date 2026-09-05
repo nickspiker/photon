@@ -3371,10 +3371,10 @@ impl PhotonApp {
                                     }
                                 }
                             }
-                            // Stamp the row band — the WHOLE wrapped block — so a tap selects this message (details strip). Clamped to the list region so header/compose never lose their own hits; capped at the 64-id span (a taller screen than that doesn't exist). ON-SCREEN ROWS ONLY (field 2026-09-05, Nick's Android: taps dead on every old message once scrolled up a ways): the walk starts at the NEWEST row and processes everything below the viewport first, so an unconditional push burned the whole 64-id budget on invisible rows — every visible old row then had no tap target. An empty clamped band = off-screen = no id spent.
+                            // Stamp the row band — the WHOLE wrapped block — so a tap selects this message (details strip). Clamped to the list region so header/compose never lose their own hits; capped at the MSG_HIT_SPAN id span. ON-SCREEN ROWS ONLY (field 2026-09-05, Nick's Android: taps dead on every old message once scrolled up a ways): the walk starts at the NEWEST row and processes everything below the viewport first, so an unconditional push burned the whole id budget on invisible rows — every visible old row then had no tap target. An empty clamped band = off-screen = no id spent.
                             let band_top = ((y - block_extra - line_h * 0.5).max(list_top)) as isize;
                             let band_bot = ((y + line_h * 0.5).min(list_bottom)) as isize;
-                            if band_bot > band_top && self.msg_hit_rows.len() < 64 {
+                            if band_bot > band_top && self.msg_hit_rows.len() < super::MSG_HIT_SPAN as usize {
                                 let row_hit = self
                                     .msg_hit_base
                                     .wrapping_add(self.msg_hit_rows.len() as HitId);

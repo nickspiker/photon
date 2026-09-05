@@ -1087,6 +1087,9 @@ fn diag_log_row_rect(layout: &SettingsLayout, scroll: Coord, i: usize) -> fluor:
     )
 }
 
+/// Hit-id span reserved for the conversation's visible message rows. The map is u16 (~65k ids) so the width costs nothing; 256 one-line rows outruns even a portrait 4K monitor at minimum zoom (the old 64 was fine for phones but load-bearing on its "a taller screen doesn't exist" claim). One constant, referenced by the allocator, the render cap, and both dispatch range checks — they can never drift apart.
+pub(crate) const MSG_HIT_SPAN: HitId = 256;
+
 /// Photon-desktop as a `FluorApp`. Owns fluor's `DefaultChrome` (window frame), the dense hit-id counter for widget allocation, and an optional event-loop proxy clone for waking from background tasks.
 ///
 /// `chrome` is `Option` because [`DefaultChrome::new`] needs the actual viewport size, which the host doesn't hand the app until [`FluorApp::init`] fires. `new()` is parameterless; everything else allocates in `init`.
@@ -1581,7 +1584,7 @@ pub struct PhotonApp {
     exit_requested: bool,
     /// Live shift-key mirror (refreshed each `on_event`) so `on_close_requested` — which gets no Context — can honor "shift+close = real exit".
     shift_held: bool,
-    /// Base hit id for the conversation's visible message rows (fixed span 64). The render stamps `msg_hit_base + visible_row` per drawn row and rebuilds [`Self::msg_hit_rows`] in lockstep, so a tap resolves to the message with no knowledge of scroll or backfill. Tap = select (details strip: direction, age, delivery, copy); tap the same again = deselect.
+    /// Base hit id for the conversation's visible message rows (fixed span [`MSG_HIT_SPAN`]). The render stamps `msg_hit_base + visible_row` per drawn row and rebuilds [`Self::msg_hit_rows`] in lockstep, so a tap resolves to the message with no knowledge of scroll or backfill. Tap = select (details strip: direction, age, delivery, copy); tap the same again = deselect.
     msg_hit_base: HitId,
     /// Per-frame link-span hit rects in the conversation: (x0, y0, x1, y1, dest). A tap inside one opens the consent dialog instead of the row strip.
     msg_link_hits: Vec<(f32, f32, f32, f32, String)>,
