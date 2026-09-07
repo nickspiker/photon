@@ -53,7 +53,7 @@ The guest session and the owned-device wake become the SAME approval flow — th
 ## Invariants (non-negotiable)
 
 1. **The identity seed itself never crosses a wire and never rests.** What the fleet delivers is session material: routing capability, streamed history, and a WRAPPED vault root — killable, session-scoped, useless off-device. (The wrapping design rides the fleet-key redesign's ira-wrap work — docs/fleet-key.md.)
-2. **The handle is typed only at the root of the ladder** — first device, total loss, fleet dark. Every rung above it exists to keep the handle OFF keyboards, especially borrowed ones.
+2. **The handle lands on the WAKING device only at the root of the ladder** — first device, total loss, fleet dark. At the fleet rung it is typed on the APPROVER instead. The ladder exists to keep the handle off indefensible keyboards — the just-rebooted, the borrowed — never to remove the knowledge factor.
 3. **No timers.** Wairua dies at the power rail; fleet vouching dies at the recall/lockout edge; nothing expires by clock.
 4. **Approval is an owned-device edge WITH the knowledge factor** — the fleet-inbox bind-attempt alert carries a handle-entry gate on the approver, the unattended arm/disarm precedent generalized. Possession alone authenticates nothing, ever.
 
