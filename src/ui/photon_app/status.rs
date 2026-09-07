@@ -2209,7 +2209,10 @@ impl PhotonApp {
 
                     // Spawn re-key keygen after releasing mutable borrow
                     if let Some((contact_id, their_handle_hash)) = rekey_request {
-                        self.spawn_clutch_keygen(contact_id, our_identity_seed, their_handle_hash);
+                        let progress = self.spawn_clutch_keygen(contact_id.clone(), our_identity_seed, their_handle_hash);
+                        if let Some(c) = self.contacts.iter_mut().find(|c| c.id == contact_id) {
+                            c.clutch_keygen_progress = Some(progress);
+                        }
                     }
 
                     // Spawn deferred KEM encapsulation after releasing mutable borrow
@@ -3464,7 +3467,8 @@ impl PhotonApp {
                             && !self.contacts[ci].clutch_keygen_in_progress
                         {
                             self.contacts[ci].clutch_keygen_in_progress = true;
-                            self.spawn_clutch_keygen(id, us, them);
+                            let progress = self.spawn_clutch_keygen(id, us, them);
+                            self.contacts[ci].clutch_keygen_progress = Some(progress);
                         }
                         if let Some(storage) = self.storage.as_ref() {
                             let snapshot = self.contacts[ci].clone();

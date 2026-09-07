@@ -2,6 +2,25 @@
 
 use super::*;
 
+/// Greedy word wrap against a pixel width: one measure per candidate join. The attest band and stream entry #0's status line both need it — long ceremony steps and locked-device messages must fold, never run off the sides.
+fn wrap_to_width(text: &mut fluor::text::TextRenderer, s: &str, style: &TextStyle, max_w: f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for word in s.split_whitespace() {
+        let cand = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
+        if !cur.is_empty() && text.measure_text(&cand, style) > max_w {
+            lines.push(std::mem::take(&mut cur));
+            cur = word.to_string();
+        } else {
+            cur = cand;
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    lines
+}
+
 impl PhotonApp {
     /// The full frame paint — the body of [`FluorApp::render`], verbatim; the trait method in `driver.rs` delegates here so the paint code can live in its own file.
     pub(super) fn render_frame(&mut self, target: &mut [u32], ctx: &mut Context) {
@@ -2600,6 +2619,13 @@ impl PhotonApp {
                         None
                     };
 
+                    // Status wrap: computed HERE (once) so the height budget below and the entry-#0 draw agree on the line count — a long ceremony step folds instead of running off the sides.
+                    let status_wrapped: Option<(Vec<String>, u32)> =
+                        status_in_stream.as_ref().map(|(label, colour)| {
+                            let sstyle = TextStyle::new(unit * 0.6, *colour).weight(500).font("Oxanium");
+                            (wrap_to_width(ctx.text, label, &sstyle, buf_w as f32 * 0.92), *colour)
+                        });
+
                     // The stream renders for EVERY conversation state — an empty one is just entry #0 (avatar/name/status) alone. Only the COMPOSE box stays gated below (sending needs a chain somewhere).
                     {
                         // ── Message list ─────────────────────────────────────────── Text-only, right-aligned (outgoing) / left-aligned (incoming), one thin white divider after every message. Newest at the bottom, just above the compose bar; older scroll up off-screen.
@@ -2722,11 +2748,10 @@ impl PhotonApp {
                         // Stream entry #0 (avatar + name + optional status) is the oldest item: its height joins content_h so scrolling to genesis reveals it above message 1. Unconditional — every conversation has entry #0.
                         let header_block_h = avatar_r * 2.0
                             + unit * 3.0
-                            + if status_in_stream.is_some() {
-                                unit * 1.0
-                            } else {
-                                0.0
-                            };
+                            + status_wrapped
+                                .as_ref()
+                                .map(|(lines, _)| unit * 0.25 + unit * 0.75 * lines.len() as f32)
+                                .unwrap_or(0.0);
                         // Details-strip selection for THIS conversation (identity-keyed): one strip line joins content_h so the stream shifts to make room rather than overdrawing a neighbour row.
                         let sel_key = self
                             .selected_msg
@@ -3440,10 +3465,11 @@ impl PhotonApp {
                         }
                         // STREAM ENTRY #0 — avatar, name, optional ceremony/lifecycle status: drawn ONLY when the walk reached message 1 (genesis on screen); `y` then sits just above it and the entry is the stream's literal first item. Ordinary stream content: same clip as every message, no pinning, no slide. Off-screen anywhere but genesis.
                         if reached_oldest && y > list_top - header_block_h - line_h {
-                            let (block_status, status_h) = match &status_in_stream {
-                                Some((label, colour)) => {
-                                    (Some((label.clone(), *colour)), unit * 1.0)
-                                }
+                            let (block_status, status_h) = match &status_wrapped {
+                                Some((lines, colour)) => (
+                                    Some((lines.clone(), *colour)),
+                                    unit * 0.25 + unit * 0.75 * lines.len() as f32,
+                                ),
                                 None => (None, 0.0),
                             };
                             let block_name_y = y - unit * 0.2 - status_h;
@@ -3458,18 +3484,24 @@ impl PhotonApp {
                                 Some(list_clip),
                                 None,
                             );
-                            if let Some((label, colour)) = block_status {
-                                ctx.text.draw_text_center(
-                                    &mut canvas,
-                                    &label,
-                                    buf_w as f32 * 0.5,
-                                    y - unit * 0.2,
-                                    &TextStyle::new(unit * 0.6, colour)
-                                        .weight(500)
-                                        .font("Oxanium"),
-                                    Some(list_clip),
-                                    None,
-                                );
+                            if let Some((lines, colour)) = block_status {
+                                // Bottom-anchored: the LAST wrapped line sits where the old single line sat; extra lines stack upward (the name above already yielded via status_h).
+                                let pitch = unit * 0.75;
+                                let mut ly = y - unit * 0.2 - pitch * (lines.len() as f32 - 1.0);
+                                for line in &lines {
+                                    ctx.text.draw_text_center(
+                                        &mut canvas,
+                                        line,
+                                        buf_w as f32 * 0.5,
+                                        ly,
+                                        &TextStyle::new(unit * 0.6, colour)
+                                            .weight(500)
+                                            .font("Oxanium"),
+                                        Some(list_clip),
+                                        None,
+                                    );
+                                    ly += pitch;
+                                }
                             }
                         }
                         let _ = n;

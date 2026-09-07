@@ -1409,12 +1409,23 @@ pub struct ClutchCompletePayload {
 
 /// Generate all 12 ephemeral keypairs for the full CLUTCH ceremony — 5 classical curves, 5 lattice KEMs across three distinct structural assumptions, 2 code-based. WARNING: This generates ~570KB of public key material (McEliece alone is ~512KB). Caller MUST call zeroize() on the result when done!
 pub fn generate_all_ephemeral_keypairs() -> ClutchAllKeypairs {
+    generate_all_ephemeral_keypairs_with_progress(None)
+}
+
+/// [`generate_all_ephemeral_keypairs`] with the step narration tap: `progress` (when given) is stored 1/2/3 as each keygen stage completes, so the ceremony ladder can show WHICH family is grinding — 0 = elliptic curves, 1 = lattices, 2 = HQC, 3 = McEliece (the known-slow one, deliberately generated LAST so the first three steps advance visibly before the long stretch).
+pub fn generate_all_ephemeral_keypairs_with_progress(progress: Option<&std::sync::atomic::AtomicU8>) -> ClutchAllKeypairs {
+    let bump = |n: u8| {
+        if let Some(p) = progress {
+            p.store(n, std::sync::atomic::Ordering::Relaxed);
+        }
+    };
     // Class 0: Classical EC
     let (x25519_secret, x25519_public) = generate_x25519_ephemeral();
     let (p384_secret, p384_public) = generate_p384_ephemeral();
     let (secp256k1_secret, secp256k1_public) = generate_secp256k1_ephemeral();
     let (p256_secret, p256_public) = generate_p256_ephemeral();
     let (p521_secret, p521_public) = generate_p521_ephemeral();
+    bump(1);
 
     // Class 1: Post-quantum lattice KEMs — structured (NTRU, ML-KEM), prime-field (NTRU Prime), unstructured (Frodo, plain LWE).
     let (frodo976_secret, frodo976_public) = generate_frodo976_keypair();
@@ -1422,10 +1433,12 @@ pub fn generate_all_ephemeral_keypairs() -> ClutchAllKeypairs {
     let (ntru701_secret, ntru701_public) = generate_ntru701_keypair();
     let (sntrup761_secret, sntrup761_public) = generate_sntrup761_keypair();
     let (mlkem1024_secret, mlkem1024_public) = generate_mlkem1024_keypair();
+    bump(2);
 
-    // Class 2: Post-quantum code-based KEMs
-    let (mceliece_secret, mceliece_public) = generate_mceliece460896_keypair();
+    // Class 2: Post-quantum code-based KEMs. HQC first, McEliece last — see the progress doc above.
     let (hqc256_secret, hqc256_public) = generate_hqc256_keypair();
+    bump(3);
+    let (mceliece_secret, mceliece_public) = generate_mceliece460896_keypair();
 
     ClutchAllKeypairs {
         x25519_secret,

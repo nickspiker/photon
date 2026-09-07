@@ -1016,7 +1016,8 @@ impl PhotonApp {
         self.contacts[ci].friendship_id = None;
         self.contacts[ci].init_clutch_slots(us);
         self.contacts[ci].clutch_keygen_in_progress = true;
-        self.spawn_clutch_keygen(id, us, them);
+        let progress = self.spawn_clutch_keygen(id, us, them);
+        self.contacts[ci].clutch_keygen_progress = Some(progress);
         if let Some(storage) = self.storage.as_ref() {
             let snapshot = self.contacts[ci].clone();
             if let Err(e) = crate::storage::contacts::save_contact(&snapshot, storage) {

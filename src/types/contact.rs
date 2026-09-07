@@ -483,6 +483,8 @@ pub struct Contact {
     pub clutch_claim_deferred: Option<std::time::Instant>,
     /// Flag to prevent multiple concurrent keygens (race condition guard)
     pub clutch_keygen_in_progress: bool,
+    /// Which keygen family the worker is grinding (0 curves / 1 lattices / 2 HQC / 3 McEliece) — the ladder's steps 0-3. Runtime-only, minted per spawn; stale once keypairs land.
+    pub clutch_keygen_progress: Option<std::sync::Arc<std::sync::atomic::AtomicU8>>,
     /// Flag to prevent multiple concurrent KEM encapsulations
     pub clutch_kem_encap_in_progress: bool,
     /// Flag to serialize KEM decapsulation jobs — a queued KEM re-arrival mid-flight waits in clutch_pending_kem until the running decap drains.
@@ -669,6 +671,7 @@ impl Contact {
             clutch_last_adoption: None,
             clutch_claim_deferred: None,
             clutch_keygen_in_progress: false, // No keygen running yet
+            clutch_keygen_progress: None,
             clutch_kem_encap_in_progress: false, // No KEM encap running yet
             clutch_kem_decap_in_progress: false,
             clutch_ceremony_in_progress: false, // No ceremony completion running yet
@@ -1006,51 +1009,60 @@ impl Contact {
     /// Total ceremony milestones for a 2-party CLUTCH — the denominator of the status fraction. Steps are ZERO-INDEXED (0..=11), so the ladder reads 0/12 thru 11/12; 12/12 is never rendered, because reaching it IS the conversation opening.
     pub const CLUTCH_STEPS: u8 = 12;
 
-    /// Where the CLUTCH ceremony actually is, as `step/total · what's happening` — for the conversation status line and asymmetric-completion debugging. The fraction is monotonic toward `secured`; the label names what is in flight instead of a flat "pending".
+    /// Where the CLUTCH ceremony actually is, as `prefix · what's happening` — for the conversation status line and asymmetric-completion debugging. Twelve clean zero-indexed steps (Nick 2026-09-07) mapping to the dozenal digits: dozenal mode shows `.⟨digit⟩` (the radix point IS the fraction — .Zil thru .Stelor), decimal shows `0/12`..`11/12`. Step 12 is never rendered — reaching it IS the conversation opening.
+    /// Vocabulary doctrine (2026-07-31): describe the EXCHANGE, not our internals — but the honest facts carry the personality, and the four keygen steps teach the crypto layers exactly where the user is staring at a wait (McEliece). The step TEXT lives in the language catalog (Msg::ClutchStep); this fn owns only the state→step mapping and the base-aware prefix.
     pub fn clutch_status_detail(&self) -> String {
-        // Display doctrine: dozenal is the acclimation surface for VERSION + REPUTATION only; a step counter stays in current mixed arabic units.
-        let n = Self::CLUTCH_STEPS;
-        let eggs = Self::CLUTCH_EGGS;
-        // Vocabulary doctrine (2026-07-31): describe the EXCHANGE, not our internals — no "eggs", no "braiding", no "KEMs" in user-facing text. Each step reads as part of one sentence (make keys → swap public halves → lock secrets to each other → combine → prove → confirm → secured), and every "waiting" step names whose side the ball is on, so "it's stuck on 9/12" is a diagnosis by itself. The one flourish kept: the honest facts (12 secrets, 4 crypto families) carry the personality.
-        // Zero-indexed (Nick 2026-08-01): the first step is 0/12 and the last VISIBLE one is 11/12. Step 12 exists only as the moment the conversation opens, so it is never drawn.
+        use crate::ui::lang::{tr, Msg};
+        let Some(n) = self.clutch_step() else {
+            return tr(Msg::ClutchSecured).into_owned();
+        };
+        let prefix = if crate::dozenal_ui() {
+            format!(".{}", crate::dozenal_glyphs(n as u32))
+        } else {
+            format!("{n}/{}", Self::CLUTCH_STEPS)
+        };
+        format!("{prefix} \u{00b7} {}", tr(Msg::ClutchStep(n)))
+    }
+
+    /// The ladder's step number, 0..=11 — `None` = secured (woven), the state with no line at all.
+    /// Keygen occupies 0..=3, one step per crypto family, read from the worker's live progress marker (see spawn_clutch_keygen); the rest map the existing milestone flags in order, earliest-unreached-first.
+    pub fn clutch_step(&self) -> Option<u8> {
         match self.clutch_state {
             ClutchState::Complete => {
                 if self.chain_woven {
-                    "secured".to_string()
+                    None
                 } else {
-                    format!("11/{n} · testing the secure channel")
+                    Some(11)
                 }
             }
-            ClutchState::AwaitingProof => {
-                if self.clutch_their_eggs_proof.is_some() {
-                    format!("10/{n} · confirming both proofs match")
-                } else {
-                    format!("9/{n} · sent our proof — waiting for theirs")
-                }
-            }
+            ClutchState::AwaitingProof => Some(if self.clutch_their_eggs_proof.is_some() {
+                10
+            } else {
+                9
+            }),
             ClutchState::Pending => {
                 let their_offer = self
                     .clutch_slots
                     .iter()
                     .any(|s| s.offer.is_some() && s.handle_hash != self.handle_hash);
-                let all_kem = self.all_slots_complete();
-                // Walk the milestones in order; report the earliest one not yet reached.
-                if self.clutch_ceremony_in_progress {
-                    format!("8/{n} · combining all {eggs} shared secrets")
+                Some(if self.clutch_ceremony_in_progress {
+                    8
                 } else if self.clutch_our_keypairs.is_none() {
-                    // Keygen (McEliece dominates the ~1-2s).
-                    format!("0/{n} · creating {eggs} key pairs (4 families of crypto)")
+                    self.clutch_keygen_progress
+                        .as_ref()
+                        .map(|p| p.load(std::sync::atomic::Ordering::Relaxed).min(3))
+                        .unwrap_or(0)
                 } else if self.clutch_kem_encap_in_progress {
-                    format!("4/{n} · locking secrets to their keys")
-                } else if all_kem {
-                    format!("8/{n} · combining all {eggs} shared secrets")
+                    6
+                } else if self.all_slots_complete() {
+                    8
                 } else if their_offer || self.clutch_pending_kem.is_some() {
-                    format!("6/{n} · waiting for their locked secrets")
+                    7
                 } else if self.clutch_offer_sent {
-                    format!("2/{n} · waiting for their public keys")
+                    5
                 } else {
-                    format!("1/{n} · sending our public keys")
-                }
+                    4
+                })
             }
         }
     }

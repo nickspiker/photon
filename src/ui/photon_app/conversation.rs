@@ -664,7 +664,8 @@ impl PhotonApp {
             c.clutch_keygen_in_progress = true;
             let (cid, their_hh) = (c.id.clone(), c.handle_hash);
             crate::log("CLUTCH: spawning keygen for Pending contact (serialized, one at a time)");
-            self.spawn_clutch_keygen(cid, our_pid, their_hh);
+            let progress = self.spawn_clutch_keygen(cid, our_pid, their_hh);
+            self.contacts[i].clutch_keygen_progress = Some(progress);
             true
         } else {
             false

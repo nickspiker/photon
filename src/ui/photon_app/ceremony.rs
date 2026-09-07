@@ -8,9 +8,12 @@ impl PhotonApp {
         contact_id: ContactId,
         _our_handle_hash: [u8; 32],
         _their_handle_hash: [u8; 32],
-    ) {
-        use crate::crypto::clutch::generate_all_ephemeral_keypairs;
+    ) -> std::sync::Arc<std::sync::atomic::AtomicU8> {
+        use crate::crypto::clutch::generate_all_ephemeral_keypairs_with_progress;
 
+        // The ladder's keygen narration: the worker bumps this as each family completes (0 curves, 1 lattices, 2 HQC, 3 McEliece); the caller hangs it on the contact so clutch_status_detail can read it. Per-ceremony, so concurrent keygens never share a counter.
+        let progress = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let worker_progress = progress.clone();
         let tx = self.clutch_keygen_tx.clone();
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
@@ -19,7 +22,7 @@ impl PhotonApp {
         let thread_body = move || {
             #[cfg(feature = "development")]
             crate::log("CLUTCH: Background keypair generation started...");
-            let keypairs = generate_all_ephemeral_keypairs();
+            let keypairs = generate_all_ephemeral_keypairs_with_progress(Some(&worker_progress));
             crate::log(
                 "CLUTCH: Keypairs ready (ceremony_id computed when ping provenances available)",
             );
@@ -51,6 +54,7 @@ impl PhotonApp {
                 .spawn(thread_body)
                 .expect("Failed to spawn CLUTCH keygen thread");
         }
+        progress
     }
 
     /// Spawn background thread to perform CLUTCH KEM encapsulation. The PQ KEMs (~800ms total) are slow, so we do them off the main thread. Results are received via clutch_kem_encap_rx and processed in check_clutch_kem_encaps().
