@@ -846,23 +846,41 @@ impl PhotonApp {
                 let error_rect = attest.error;
                 if !error_rect.is_empty() {
                     let region_h = (error_rect.y1 - error_rect.y0) as f32;
+                    let region_w = (error_rect.x1 - error_rect.x0) as f32;
                     let cx = (error_rect.x0 + error_rect.x1) as f32 * 0.5;
                     let cy = (error_rect.y0 + error_rect.y1) as f32 * 0.5;
-                    // Half-height font: status messages are short by convention; full-rect-height is too loud for one-line text and overflows wide messages off the side.
-                    ctx.text.draw_text_center(
-                        &mut canvas,
-                        &text,
-                        cx,
-                        cy,
-                        &TextStyle::new(
-                            region_h * 0.5, // Medium weight — readable at small sizes; matches the Oxanium family already loaded in init().
-                            colour,
-                        )
-                        .weight(500)
-                        .font("Oxanium"),
-                        None,
-                        None,
-                    );
+                    // Word wrap (Nick 2026-09-04): greedy against the band width — a message that outgrows one line wraps at a step-smaller size instead of running off the sides.
+                    let mut size = region_h * 0.5;
+                    let style = |sz: f32| TextStyle::new(sz, colour).weight(500).font("Oxanium");
+                    let wrap = |text: &str, sz: f32, tx: &mut fluor::text::TextRenderer| -> Vec<String> {
+                        let max_w = region_w * 0.96;
+                        let mut lines = Vec::new();
+                        let mut cur = String::new();
+                        for word in text.split_whitespace() {
+                            let cand = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
+                            if !cur.is_empty() && tx.measure_text(&cand, &style(sz)) > max_w {
+                                lines.push(std::mem::take(&mut cur));
+                                cur = word.to_string();
+                            } else {
+                                cur = cand;
+                            }
+                        }
+                        if !cur.is_empty() {
+                            lines.push(cur);
+                        }
+                        lines
+                    };
+                    let mut lines = wrap(&text, size, ctx.text);
+                    if lines.len() > 1 {
+                        size = region_h * 0.38;
+                        lines = wrap(&text, size, ctx.text);
+                    }
+                    let pitch = size * 1.25;
+                    let mut y = cy - pitch * (lines.len() as f32 - 1.0) * 0.5;
+                    for line in &lines {
+                        ctx.text.draw_text_center(&mut canvas, line, cx, y, &style(size), None, None);
+                        y += pitch;
+                    }
                 }
             }
 
