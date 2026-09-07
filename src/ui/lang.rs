@@ -132,6 +132,7 @@ pub enum Msg<'a> {
     CopyWords,
     WordsCopied,
     LaunchJoinInstructions,
+    LaunchJoinConfirmNote,
     StartFreshIdle,
     StartFreshArmed,
     JoinerSelected,

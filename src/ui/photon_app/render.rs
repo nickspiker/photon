@@ -997,7 +997,25 @@ impl PhotonApp {
                     let tb_h = (attest.textbox.y1 - attest.textbox.y0) as f32;
                     let line_h = (tb_h * 0.45).min(buf_w as f32 / 18.0);
                     let lines: Vec<String> = tokens.chunks(4).map(|c| c.join(" ")).collect();
-                    let mut y = attest.error.y1 as f32 + line_h * 1.2;
+                    let mut y = attest.error.y1 as f32 + line_h * 1.0;
+                    // Guidance FIRST (Nick 2026-09-06): say what to do, then hand over the payload — the instructions end with a colon pointing at the words below. Nearby-tap and far-away-words are the user's two experiences; LAN vs BLE is our plumbing, never their decision.
+                    {
+                        let gsize = line_h * 0.62;
+                        let s = tr(Msg::LaunchJoinInstructions);
+                        for line in s.lines() {
+                            ctx.text.draw_text_center(
+                                &mut canvas,
+                                line,
+                                cx,
+                                y,
+                                &TextStyle::new(gsize, fluor::theme::HINT_COLOUR).font("Oxanium"),
+                                None,
+                                None,
+                            );
+                            y += gsize * 1.5;
+                        }
+                        y += line_h * 0.5;
+                    }
                     for line in &lines {
                         ctx.text.draw_text_center(
                             &mut canvas,
@@ -1065,23 +1083,20 @@ impl PhotonApp {
                         );
                         y += csize * 0.9;
                     }
-                    // How-to guidance: the two ways the OTHER (already-in-fleet) device adds this one, plus the confirm. Small + dim so it reads as instructions, not chrome.
+                    // The confirm reminder closes the block: the add is approved on the OTHER device.
                     {
                         y += line_h * 0.9;
                         let gsize = line_h * 0.62;
-                        let s = tr(Msg::LaunchJoinInstructions);
-                        for line in s.lines() {
-                            ctx.text.draw_text_center(
-                                &mut canvas,
-                                line,
-                                cx,
-                                y,
-                                &TextStyle::new(gsize, fluor::theme::HINT_COLOUR).font("Oxanium"),
-                                None,
-                                None,
-                            );
-                            y += gsize * 1.5;
-                        }
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            &tr(Msg::LaunchJoinConfirmNote),
+                            cx,
+                            y,
+                            &TextStyle::new(gsize, fluor::theme::HINT_COLOUR).font("Oxanium"),
+                            None,
+                            None,
+                        );
+                        y += gsize * 1.5;
                     }
                     // "Start fresh (wipe this device)" — the secondary escape: a device that was REMOVED from a fleet can't attest (can't reach the Security page), so this is its only self-clean path. Two-tap confirm. Hit-stamped so a tap on Android works (no chords there). Pushed well below the add guidance so it reads as the edge case, not the main action.
                     {
