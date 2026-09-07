@@ -48,6 +48,9 @@ mod devices;
 mod driver;
 mod input;
 mod launch;
+/// The headless lifeline pump (docs/headless-lifeline.md) — pub so main.rs can enter it instead of fluor's run_app.
+#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+pub mod lifeline;
 mod messaging;
 mod peers;
 mod protocol;

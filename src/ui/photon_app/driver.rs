@@ -169,7 +169,8 @@ impl FluorApp for PhotonApp {
     }
 
     fn on_user_event(&mut self, event: PhotonEvent, _ctx: &mut Context) -> EventResponse {
-        if matches!(event, PhotonEvent::ShowWindow) {
+        // A full-UI instance never yields the lock — Yield from a confused second launch just surfaces us (the lifeline's exit-on-Yield lives in lifeline.rs, not here).
+        if matches!(event, PhotonEvent::ShowWindow | PhotonEvent::Yield) {
             #[cfg(not(target_os = "android"))]
             crate::platform::desktop_notify::set_window_visible(true);
             self.scene_dirty = true;
@@ -508,489 +509,8 @@ impl FluorApp for PhotonApp {
 
         self.update_widget_layout(ctx);
 
-        // HandleQuery: device keypair is derived deterministically from the machine fingerprint (NEVER stored to disk — same machine yields the same keypair so attestations are reproducible across restarts). HandleQuery owns the UDP socket + sends/receives FGTW packets; an empty PeerStore wires the transport so query packets have somewhere to fan out to. The proxy expect is structurally safe: fluor's host calls `set_event_proxy` BEFORE `init` (see `run_app` in fluor/src/host/app.rs), so `event_proxy` is always `Some` here.
-        let proxy = self
-            .event_proxy
-            .as_ref()
-            .expect("event_proxy must be set before init (host contract)");
-        // Prefer an externally-injected keypair (Android: PhotonContext sets it from NetworkContext before AndroidShell::new calls init). Fall back to deriving from the OS machine fingerprint — desktop reads /etc/machine-id etc., Android has no in-Rust fallback (Build.FINGERPRINT lives Java-side) so a missing keypair there is a panic-worthy programmer error: shipping a zero-derived keypair would silently downgrade every cryptographic identity in the app.
-        let keypair = match self.device_keypair.take() {
-            Some(kp) => kp,
-            None => {
-                #[cfg(not(target_os = "android"))]
-                {
-                    let fingerprint = get_machine_fingerprint()
-                        .expect("device-key derivation: machine fingerprint unavailable");
-                    crate::network::fgtw::derive_device_keypair(&fingerprint)
-                }
-                #[cfg(target_os = "android")]
-                {
-                    panic!(
-                        "PhotonApp::set_device_keypair must be called before init on Android — \
-                         the JNI shim wires thru the keypair derived from the OS fingerprint \
-                         in PhotonConnectionService; a missing keypair here means the wiring was \
-                         skipped and would produce a zeroed/insecure key derivation"
-                    );
-                }
-            }
-        };
-        // Stash a clone for app-level operations that need the keypair after init (avatar upload via `upload_avatar`). The clone is cheap (Ed25519 keypair is ~64 bytes); we can't ask HandleQuery for it back because its constructor moves the keypair into the worker threads.
-        self.device_keypair = Some(keypair.clone());
-        // Hand the device secret to storage so the pre-identity device vault (D2 binding, opt-in flags, reboot capsule) resolves from here on — on Android this is the ONLY route (no in-Rust fingerprint oracle).
-        crate::storage::install_device_secret(*keypair.secret.as_bytes());
-        #[cfg(not(target_os = "android"))]
-        let hq = HandleQuery::new(keypair, proxy.clone());
-        #[cfg(target_os = "android")]
-        let hq = {
-            let _ = proxy;
-            HandleQuery::new(keypair)
-        };
-        // ONE shared peer store: HandleQuery populates it from fgtw fetches, the status receiver serves/merges phonebook-gossip records into it, and the app harvests learned addresses from it for stalled contacts. All three hold clones of the same Arc.
-        let peer_store = Arc::new(Mutex::new(PeerStore::new()));
-        self.peer_store = Some(peer_store.clone());
-        hq.set_transport(peer_store.clone());
-
-        // Wire the CLUTCH job channels (replace the disconnected placeholders from `new`).
-        {
-            let (ktx, krx) = std::sync::mpsc::channel();
-            self.clutch_keygen_tx = ktx;
-            self.clutch_keygen_rx = krx;
-            let (etx, erx) = std::sync::mpsc::channel();
-            self.clutch_kem_encap_tx = etx;
-            self.clutch_kem_encap_rx = erx;
-            let (ctx_, crx) = std::sync::mpsc::channel();
-            self.clutch_ceremony_tx = ctx_;
-            self.clutch_ceremony_rx = crx;
-            let (dtx, drx) = std::sync::mpsc::channel();
-            self.clutch_kem_decap_tx = dtx;
-            self.clutch_kem_decap_rx = drx;
-            let (atx, arx) = std::sync::mpsc::channel();
-            self.avatar_dl_tx = atx;
-            self.avatar_dl_rx = arx;
-            let (aitx, airx) = std::sync::mpsc::channel();
-            self.attach_installed_tx = aitx;
-            self.attach_installed_rx = airx;
-            let (hptx, hprx) = std::sync::mpsc::channel();
-            self.hist_opened_tx = hptx;
-            self.hist_opened_rx = hprx;
-            let (cstx, csrx) = std::sync::mpsc::channel();
-            self.chain_sync_opened_tx = cstx;
-            self.chain_sync_opened_rx = csrx;
-            let (brtx, brrx) = std::sync::mpsc::channel();
-            self.braid_rx_tx = brtx;
-            self.braid_rx_rx = brrx;
-            self.chat_replay_queue.clear();
-            let (bttx, btrx) = std::sync::mpsc::channel();
-            self.braid_tx_tx = bttx;
-            self.braid_tx_rx = btrx;
-            self.send_encrypt_busy.clear();
-            let (frtx, frrx) = std::sync::mpsc::channel();
-            self.fleet_rotated_tx = frtx;
-            self.fleet_rotated_rx = frrx;
-            let (cctx, ccrx) = std::sync::mpsc::channel();
-            self.clock_check_tx = cctx;
-            self.clock_check_rx = ccrx;
-            let (ictx, icrx) = std::sync::mpsc::channel();
-            self.inbox_check_tx = ictx;
-            self.inbox_check_rx = icrx;
-        }
-
-        // One-shot wall-clock sanity check via nunc-time, a few seconds behind attest (off-thread, so the several-seconds consensus query never blocks the UI). Warns via banner if the system clock is grossly wrong — never corrects it. Mid-session re-checks fire from the jump detector in `update`. On Android the wake handle is `None` (redraws come thru the JNI/Choreographer path); the result is drained on a subsequent tick.
-        #[cfg(not(target_os = "android"))]
-        crate::network::spawn_clock_check(self.clock_check_tx.clone(), Some(proxy.clone()));
-        #[cfg(target_os = "android")]
-        crate::network::spawn_clock_check(self.clock_check_tx.clone(), None);
-
-        // One-shot fleet-inbox drain: pull any worker-observed alerts (bind attempts on our devices). Off-thread — a blocking HTTPS round trip — with the verdict drained on a later tick.
-        self.spawn_inbox_drain();
-
-        // Spawn the presence + CLUTCH status checker on HandleQuery's shared socket. Done BEFORE `hq` is moved into the field so we can take its socket. Without this the UDP recv/pong worker never runs — the socket is bound but nothing reads it or replies, so the device is invisible to every peer (no presence, no CLUTCH). The desktop and Android constructors differ only in the wake sender: desktop passes the winit event proxy; Android's redraws come thru the JNI/Choreographer path so its constructor takes none.
-        #[cfg(not(target_os = "android"))]
-        let checker_result = crate::network::status::StatusChecker::new(
-            hq.socket(),
-            self.device_keypair
-                .clone()
-                .expect("device_keypair set above"),
-            self.contact_pubkeys.clone(),
-            self.sync_records.clone(),
-            self.pong_seal_keys.clone(),
-            proxy.clone(),
-            peer_store.clone(),
-        );
-        #[cfg(target_os = "android")]
-        let checker_result = crate::network::status::StatusChecker::new(
-            hq.socket(),
-            self.device_keypair
-                .clone()
-                .expect("device_keypair set above"),
-            self.contact_pubkeys.clone(),
-            self.sync_records.clone(),
-            self.pong_seal_keys.clone(),
-            peer_store.clone(),
-        );
-        match checker_result {
-            Ok(c) => {
-                self.status_checker = Some(c);
-                crate::log("UI: status checker started (presence + CLUTCH)");
-            }
-            Err(e) => crate::logf!("UI: status checker failed to start: {}", e),
-        }
-
-        self.handle_query = Some(hq);
-
-        // UNATTENDED MODE (off by default, Security → "Auto-attest on reboot"): the boot-locked tohu session dies on reboot BY DESIGN, so a normal reboot lands on the typed-attest screen. When the operator has explicitly opted a failsafe box into unattended mode, a device-bound reboot capsule (sealed under the hardware fingerprint, not the wairua) survives the reboot — adopt it into tohu's live session here so the identical resume path below runs with no handle typed. The capsule opens ONLY on the same hardware; a copy elsewhere fails. If tohu already has a live session (warm restart, same boot) this is a no-op.
-        if tohu::session().is_none() {
-            if let Some(cap) = crate::storage::device_vault()
-                .and_then(|v| v.read_device(Self::REBOOT_CAPSULE_ENTRY).ok().flatten())
-                .and_then(|bytes| tohu::open_reboot_capsule(&bytes))
-            {
-                crate::log("RESUME: unattended reboot capsule opened — auto-attesting with no handle (Security toggle is ON)");
-                let _ = tohu::set_session(&cap); // re-arm the normal (boot-locked) session so the rest of this boot behaves like a warm restart
-            }
-        }
-
-        // Auto-resume from the remembered session roots. If tohu has this login's roots (persisted on a prior, FGTW-confirmed attest), paint Ready IMMEDIATELY from local state — we already own this identity, so there is no reason to block the first frame on the network. The avatar comes from a local cache file (no vault, no network); contacts + peer presence + cloud-merge arrive a beat later via the background `query_resume` and merge in thru `on_query_result`. A rejection (handle claimed by another device) bails back to the attest screen; a transient network error leaves the local session on Ready untouched. None (first run / post-logout) falls thru to the normal typed-attest flow.
-        if let Some(remembered) = tohu::session() {
-            // Blob name key + the one-time v0→v1 filename re-key walk — BEFORE the first Ready frame, so render-path blob_present reads work immediately (and the plaintext-hash possession oracle is closed the moment a seed exists).
-            crate::storage::blob_init_names(&remembered.identity_seed);
-            self.session = Some(remembered);
-            self.hints_dismissed = false; // fresh Ready entry → the avatar prompt gets a chance until first interaction
-                                          // Initialize local storage and load contacts immediately so the contact list is visible before the FGTW round-trip completes.
-            if let Some(kp) = &self.device_keypair {
-                let device_secret = *kp.secret.as_bytes();
-                // open_session_vault = the ONE device vault via the shared registry: query_resume below spawns the attest worker, which opens this same vault — a second independent engine racing this one is how the vault corruption happened (stale engine committed over the live one's blocks → seal verification failed at every subsequent open).
-                // Phase-timed (the PERF summary below): everything in this arm runs on the UI thread BEFORE the first Ready frame, and the field measured ~1.2s of it with no line naming the eater — the timers make the next boot log ground truth.
-                let t_boot = std::time::Instant::now();
-                let opened = crate::storage::open_session_vault(
-                    remembered.identity_seed,
-                    remembered.vault_seed,
-                    device_secret,
-                );
-                let ms_vault = t_boot.elapsed().as_millis();
-                match opened {
-                    Ok(s) => {
-                        // Preserve any IN-FLIGHT ceremony round across this reload. CLUTCH keypairs/slots are ephemeral scratch, so a wholesale reload from disk wipes a live round — and a warm resume (Android foregrounds constantly) then trips the keygen sweep into minting a DIVERGENT round the peer never agreed to. That is exactly what stranded the relay ceremony: the slow relay round-trip outlived the keys, the peer's KEM came back addressed to keys we'd already discarded, and it was dropped as "old keys". Re-key must be deliberate on real failure — never a side effect of a lifecycle event. Snapshot rounds that are still FRESH by eagle time (a genuinely stale one is let go, to be re-keyed cleanly) and restore them after the reload.
-                        let now = vsf::eagle_time_oscillations();
-                        let inflight: std::collections::HashMap<[u8; 32], _> = self
-                            .contacts
-                            .iter()
-                            .filter(|c| {
-                                c.clutch_our_keypairs.is_some()
-                                    && c.clutch_round_started
-                                        .map_or(false, |t| now - t < CLUTCH_ROUND_TTL_OSC)
-                            })
-                            .map(|c| {
-                                (
-                                    c.handle_hash,
-                                    (
-                                        c.clutch_our_keypairs.clone(),
-                                        c.clutch_slots.clone(),
-                                        c.offer_provenances.clone(),
-                                        c.ceremony_id,
-                                        c.clutch_round_started,
-                                        c.clutch_offer_sent,
-                                        c.clutch_pending_kem.clone(),
-                                        c.clutch_state,
-                                    ),
-                                )
-                            })
-                            .collect();
-                        let t_phase = std::time::Instant::now();
-                        self.contacts = crate::storage::contacts::load_all_contacts(&s);
-                        self.apply_locked_set();
-                        let ms_contacts = t_phase.elapsed().as_millis();
-                        for c in self.contacts.iter_mut() {
-                            if let Some((
-                                kp,
-                                slots,
-                                provs,
-                                cid,
-                                started,
-                                offer_sent,
-                                pending_kem,
-                                state,
-                            )) = inflight.get(&c.handle_hash)
-                            {
-                                c.clutch_our_keypairs = kp.clone();
-                                c.clutch_slots = slots.clone();
-                                c.offer_provenances = provs.clone();
-                                c.ceremony_id = *cid;
-                                c.clutch_round_started = *started;
-                                c.clutch_offer_sent = *offer_sent;
-                                c.clutch_pending_kem = pending_kem.clone();
-                                // Keep a mid-ceremony state alive — never downgrade a live AwaitingProof to disk's stale Pending. A persisted Complete on disk wins (the round already sealed).
-                                if !matches!(c.clutch_state, crate::types::ClutchState::Complete) {
-                                    c.clutch_state = *state;
-                                }
-                                crate::logf!("CLUTCH: preserved in-flight round for {} across resume (no willy-nilly re-key)", crate::fp(&c.handle_proof));
-                            }
-                        }
-                        // Fleet siblings load from their own index (they never enter the contacts index).
-                        {
-                            let siblings = crate::storage::contacts::load_all_siblings(
-                                remembered.handle_proof,
-                                &s,
-                            );
-                            if !siblings.is_empty() {
-                                crate::logf!(
-                                    "SIBLING: loaded {} sibling(s) from local vault on resume",
-                                    siblings.len()
-                                );
-                            }
-                            self.contacts.extend(siblings);
-                        }
-                        // Load each contact's conversation too — load_all_contacts only loads per-peer contact STATE from the vault, not the messages (those live in the rārangi DB, loaded separately). Without this the resume frame paints contacts with empty message lists, and the later query_resume result can't fix it: on_query_result merges by handle_proof and SKIPS already-loaded contacts as duplicates, so the message-bearing copy is discarded → history looks wiped until the next app launch. Loading here makes resume show full history at once.
-                        let t_phase = std::time::Instant::now();
-                        for ci in 0..self.contacts.len() {
-                            let (proof, key) = (
-                                self.contacts[ci].handle_proof,
-                                self.contacts[ci].handle_hash,
-                            );
-                            let Some(conv) = self.conv_mut_of(ci) else {
-                                continue;
-                            };
-                            crate::storage::contacts::load_conversation_state(conv, &key, &s);
-                            if let Err(e) = crate::storage::contacts::load_messages(conv, &s) {
-                                crate::logf!(
-                                    "UI: resume failed to load messages for {}: {}",
-                                    crate::fp(&proof).as_str(),
-                                    e
-                                );
-                            }
-                        }
-                        let ms_messages = t_phase.elapsed().as_millis();
-                        crate::logf!(
-                            "UI: loaded {} contact(s) from local vault on resume",
-                            self.contacts.len()
-                        );
-                        // STORAGE CENSUS (field diagnosis, 2026-08-10): one line per contact naming the conversation table and how many rows actually loaded from it. The "messages don't recover" round showed devices advertising 92 rows while serving 3 — the row sets had split across contact keys, and nothing in the logs could say WHICH table held what. This makes the next log round ground truth. Delete once the split-conversation incident is closed.
-                        {
-                            let mut census: Vec<(String, [u8; 32], usize, String)> = Vec::new();
-                            for ci in 0..self.contacts.len() {
-                                let c = &self.contacts[ci];
-                                let fp = crate::fp(&c.handle_proof);
-                                // The row's full identity beside its table: handle_hash names the party id the tokens/tables derive from, first-met names the pinned device, state names the ceremony posture. The 2026-08-12 evening round proved fp+table alone can't distinguish a stale-keyed self row / debris row / sibling from the outside — this makes the next round ground truth without another guessing session.
-                                let detail = format!(
-                                    " [id {} hash {} first-met {} {:?}{}]",
-                                    hex::encode(&c.id.as_bytes()[..4]),
-                                    hex::encode(&c.handle_hash[..4]),
-                                    hex::encode(&c.device_key().unwrap_or_default()[..4]),
-                                    c.clutch_state,
-                                    if c.is_sibling { " sibling" } else { "" }
-                                );
-                                let Some(conv) = self.conv_of(ci) else {
-                                    continue;
-                                };
-                                census.push((
-                                    fp,
-                                    *conv.id().as_bytes(),
-                                    conv.messages.len(),
-                                    detail,
-                                ));
-                            }
-                            for (fp, table, rows, detail) in &census {
-                                crate::logf!("STORAGE: census — {} table {} holds {} row(s) in RAM after load{}", fp, hex::encode(&table[..4]), rows, detail);
-                            }
-                            // The reference values the census hashes are read against — without these in the same log, "is that hash our pid or debris?" needs a second device round-trip.
-                            if let (Some(sess), Some(sib_pid)) =
-                                (self.session.as_ref(), self.our_sibling_pid())
-                            {
-                                let our_pid =
-                                    crate::crypto::clutch::identity_party_id(&sess.identity_seed);
-                                crate::logf!(
-                                    "STORAGE: census — OUR ids: identity pid {}, this device's sibling pid {}",
-                                    hex::encode(&our_pid[..4]),
-                                    hex::encode(&sib_pid[..4])
-                                );
-                            }
-                            // Split-identity detector: two FRIEND rows sharing a handle_proof but keyed by different conversation tables IS the duplicated-contact state (one row per identity is the invariant). SIBLINGS are excluded: the whole fleet shares our handle_proof with a per-device hash BY DESIGN — the first census run flagged ordinary sibling pairs as "duplicates" for two log rounds (2026-08-11). Loud, because every downstream system — recovery walks, digest records, ceremonies — silently picks whichever row it finds first.
-                            for i in 0..self.contacts.len() {
-                                for j in (i + 1)..self.contacts.len() {
-                                    if !self.contacts[i].is_sibling
-                                        && !self.contacts[j].is_sibling
-                                        && self.contacts[i].handle_proof
-                                            == self.contacts[j].handle_proof
-                                        && self.contacts[i].handle_hash
-                                            != self.contacts[j].handle_hash
-                                    {
-                                        crate::logf!("STORAGE: census — DUPLICATE CONTACT for {}: two rows with different conversation keys ({}… vs {}…) — conversations are SPLIT across them", crate::fp(&self.contacts[i].handle_proof), hex::encode(&self.contacts[i].handle_hash[..4]), hex::encode(&self.contacts[j].handle_hash[..4]));
-                                    }
-                                }
-                            }
-                            // SELF-STUB PURGE: a non-sibling row carrying OUR handle_proof under a handle_hash that is NOT our identity pid is a corrupt self-contact stub — the source of the "CLUTCH offers toward its OWN identity" storm (ticketed 2026-08-07; the census caught THREE self rows on one desktop, 2026-08-11, two of them empty stubs spraying 573KB offers at the fleet's own contacts). Empty-conversation stubs only: a row that somehow holds messages is somebody's data and stays for a deliberate repair, never a boot-time sweep.
-                            if let Some((our_proof, our_seed)) = self
-                                .session
-                                .as_ref()
-                                .map(|s| (s.handle_proof, s.identity_seed))
-                            {
-                                let our_pid = crate::crypto::clutch::identity_party_id(&our_seed);
-                                let stub_hashes: Vec<[u8; 32]> = self
-                                    .contacts
-                                    .iter()
-                                    .enumerate()
-                                    .filter(|(ci, c)| {
-                                        !c.is_sibling
-                                            && c.handle_proof == our_proof
-                                            && c.handle_hash != our_pid
-                                            && self
-                                                .conv_of(*ci)
-                                                .map_or(true, |v| v.messages.is_empty())
-                                    })
-                                    .map(|(_, c)| c.handle_hash)
-                                    .collect();
-                                if !stub_hashes.is_empty() {
-                                    for hh in &stub_hashes {
-                                        crate::logf!("STORAGE: census — PURGING empty self-contact stub (key {}…) — its ceremony queue dies with it", hex::encode(&hh[..4]));
-                                        let _ = crate::storage::contacts::delete_contact(hh, &s);
-                                    }
-                                    self.contacts
-                                        .retain(|c| !stub_hashes.contains(&c.handle_hash));
-                                    // Rewrite the index too, or the next launch resurrects the stubs from the list (same rule as the ostracism path).
-                                    let index: Vec<crate::storage::contacts::ContactIdentity> =
-                                        self.contacts
-                                            .iter()
-                                            .filter(|c| !c.is_sibling)
-                                            .map(|c| crate::storage::contacts::ContactIdentity {
-                                                handle_proof: c.handle_proof,
-                                                party_id: c.handle_hash,
-                                                avatar_pin: c.avatar_pin,
-                                            })
-                                            .collect();
-                                    if let Err(e) =
-                                        crate::storage::contacts::save_contact_list(&index, &s)
-                                    {
-                                        crate::logf!(
-                                            "STORAGE: census — stub-purge index rewrite failed: {}",
-                                            e
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        // Load friendship chains NOW too, not just contacts. Resume paints Ready and the status checker starts answering immediately, but chains used to arrive only later via query_resume — so any chat that landed in that window hit "No friendship found for conversation_token" and was DROPPED (no chain = no decrypt, no buffer). Loading chains here closes that gap so a peer messaging us the instant we come back online doesn't lose messages. query_resume still merges (and won't clobber these — it only adds ids we don't already hold).
-                        let t_phase = std::time::Instant::now();
-                        let friendship_ids: Vec<crate::types::FriendshipId> = self
-                            .contacts
-                            .iter()
-                            .filter_map(|c| c.friendship_id)
-                            .collect();
-                        let loaded_chains =
-                            crate::storage::friendship::load_all_friendships(&friendship_ids, &s);
-                        for (fid, chains) in loaded_chains {
-                            if !self.friendship_chains.iter().any(|(id, _)| *id == fid) {
-                                self.friendship_chains.push((fid, chains));
-                            }
-                        }
-                        // Anything the loader REJECTED (pre-v8 blobs, the lanes flag-day) leaves its contact keyed-but-chainless — reset those ceremonies now, while every chain that CAN load already has.
-                        self.reclutch_chainless_contacts("resume load");
-                        self.update_sync_records();
-                        // Seed the checker's answerable-pubkey set with every loaded contact's FULL fleet so pongs/offers from any of their devices are honoured.
-                        self.reseed_contact_pubkeys();
-                        // Wake-up catch-up: re-fold each contact's fleet so a friend's device added while we were off is honoured now, not next launch. Our OWN hp is included explicitly — the drain routes it to sibling reconcile (fleet weave), so a freshly-joined device discovers its siblings on first resume even with an empty contact list.
-                        let mut hps: Vec<[u8; 32]> = self
-                            .contacts
-                            .iter()
-                            .filter(|c| !c.is_sibling)
-                            .map(|c| c.handle_proof)
-                            .collect();
-                        hps.push(remembered.handle_proof);
-                        hps.sort_unstable();
-                        hps.dedup();
-                        self.spawn_contact_fleet_refresh(hps);
-                        let ms_chains = t_phase.elapsed().as_millis();
-                        // Rehydrate each contact's saved ephemeral keypairs from disk (~588KB each). load_contact_state deliberately doesn't pull these (they're huge and live in a separate vault key), so without this every resume re-runs the McEliece-heavy keygen below — which is what froze the UI on launch. Loading the persisted keypairs makes the re-key filter a no-op for contacts that already have them, so keygen only fires for genuinely keyless Pending ones.
-                        // Complete contacts are SKIPPED: their ceremony sealed, the chains carry the conversation, and every live path that could want keys again (peer-lost-chains re-key, reclutch) mints a fresh round anyway — so ~588KB per settled contact was pure frame-one tax (the bulk of the field's 1.2s resume, 2026-08-12).
-                        let t_phase = std::time::Instant::now();
-                        let mut rehydrated = 0usize;
-                        for contact in self.contacts.iter_mut() {
-                            if contact.clutch_our_keypairs.is_none()
-                                && contact.clutch_state != crate::types::ClutchState::Complete
-                            {
-                                match crate::storage::contacts::load_clutch_keypairs(
-                                    &contact.handle_hash,
-                                    &s,
-                                ) {
-                                    Ok(Some(keypairs)) => {
-                                        contact.clutch_our_keypairs = Some(keypairs);
-                                        rehydrated += 1;
-                                    }
-                                    Ok(None) => {}
-                                    Err(e) => crate::logf!(
-                                        "CLUTCH: failed to rehydrate keypairs for {}: {}",
-                                        crate::fp(&contact.handle_proof),
-                                        e
-                                    ),
-                                }
-                            }
-                        }
-                        let ms_keypairs = t_phase.elapsed().as_millis();
-                        self.storage = Some(s);
-                        // Frame one owns the persisted ergonomics: fleet_settings live on disk, but nothing read them at boot — every ensure_fleet_settings caller was a user action or the network merge drain, so the zoom restore waited ~5s for the first fleet pull (and forever offline), painting every launch at default scale (Nick, 2026-08-12).
-                        let t_phase = std::time::Instant::now();
-                        self.ensure_fleet_settings();
-                        let ms_settings = t_phase.elapsed().as_millis();
-                        // This device's avatar: ONE cheap vault read decides recovery now; the heavy VSF-parse + AV1 decode runs off-thread and installs thru the avatar drain (owner: None), so frame one never waits on dav1d.
-                        let own_avatar_bytes = self.storage.as_ref().and_then(|storage| {
-                            storage
-                                .read_addr(&crate::storage::vault_key(
-                                    "avatar",
-                                    &remembered.identity_seed,
-                                ))
-                                .ok()
-                                .flatten()
-                        });
-                        match own_avatar_bytes {
-                            Some(bytes) => {
-                                let seed = remembered.identity_seed;
-                                let tx = self.avatar_dl_tx.clone();
-                                std::thread::spawn(move || {
-                                    let pixels =
-                                        crate::ui::avatar::load_avatar_from_bytes_from_seed(
-                                            &bytes, &seed,
-                                        )
-                                        .map(|(_, px)| px);
-                                    let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
-                                        owner: None,
-                                        pixels,
-                                        name: None, // seed-keyed local decode — the name lives in fstate on this path
-                                    });
-                                });
-                                // Decode failure (poisoned bytes) arms the FGTW recovery in the drain — never here, or the tick would race the in-flight decode into a pointless network fetch every boot.
-                            }
-                            // Local vault had no avatar (e.g. this device was cleared) — recover our own from FGTW, where it was published. Off-thread; installs via the avatar drain.
-                            None => {
-                                if !self.spawn_self_avatar_recover(remembered.identity_seed) {
-                                    // No pin at rest yet (settings still loading) — the tick retries once one lands.
-                                    self.self_avatar_recover_pending =
-                                        Some(remembered.identity_seed);
-                                }
-                            }
-                        }
-                        // Notes-to-self is NOT bootstrapped (Nick 2026-08-01): an empty conversation with yourself is not a contact you asked for, and it sat at the top of the list looking broken because it has no peer to pong a name or avatar. Add yourself deliberately and it appears; until then the list holds only people you chose.
-                        self.settle_self_display();
-                        self.scrub_zero_remote_rounds();
-                        // Re-key Pending contacts that still lack keypairs after the rehydrate — but ONE AT A TIME (spawn_next_pending_keygen, repeated each tick), never all at once: parallel McEliece keygens on launch starved the UI thread.
-                        self.spawn_next_pending_keygen();
-                        crate::logf!(
-                            "PERF: resume load — vault {}ms, contacts {}ms, messages {}ms, chains {}ms, keypairs {}ms ({} rehydrated), settings {}ms → local Ready in {}ms (UI thread)",
-                            ms_vault, ms_contacts, ms_messages, ms_chains, ms_keypairs, rehydrated, ms_settings, t_boot.elapsed().as_millis()
-                        );
-                    }
-                    Err(e) => {
-                        crate::logf!("STORAGE: init failed on resume: {}", e);
-                        // A hard vault-open failure (e.g. seal verification failed) is the WORST storage state — no contacts load and nothing persists. The RED banner, not the amber one.
-                        self.vault_data_lost = true;
-                    }
-                }
-            }
-            self.state = AppState::Ready;
-            if let Some(hq) = self.handle_query.as_ref() {
-                crate::log("UI: resumed to Ready from local session roots (tohu) — FGTW announce + presence run in background");
-                hq.query_resume(remembered);
-            }
-            // Kick presence immediately for the just-loaded contacts so their online rings reflect reality without waiting for the FGTW round-trip.
-            self.ping_contacts();
-        }
+        // Everything below is DISPLAY-FREE — split out so the headless lifeline (docs/headless-lifeline.md) runs the identical core with no Context.
+        self.core_init();
     }
 
     fn on_resize(&mut self, _width: u32, _height: u32, ctx: &mut Context) {
@@ -3564,5 +3084,495 @@ fn open_url_in_browser(url: &str) {
     #[cfg(target_os = "redox")]
     {
         crate::logf!("CHAT: open link unsupported on this platform ({} bytes)", url.len());
+    }
+}
+
+// The display-free startup half lives OUTSIDE the FluorApp impl so the lifeline can call it with no host at all.
+impl PhotonApp {
+    /// The display-free half of startup: network stack, job channels, unattended capsule, vault open + session resume. Called by `FluorApp::init` after the widget half, and by `lifeline::run_lifeline` with no UI at all. MUST stay ctx-free.
+    pub(super) fn core_init(&mut self) {
+        // HandleQuery: device keypair is derived deterministically from the machine fingerprint (NEVER stored to disk — same machine yields the same keypair so attestations are reproducible across restarts). HandleQuery owns the UDP socket + sends/receives FGTW packets; an empty PeerStore wires the transport so query packets have somewhere to fan out to. The proxy expect is structurally safe: fluor's host calls `set_event_proxy` BEFORE `init` (see `run_app` in fluor/src/host/app.rs) and the lifeline sets it before core_init, so `event_proxy` is always `Some` here.
+        let proxy = self
+            .event_proxy
+            .as_ref()
+            .expect("event_proxy must be set before init (host contract)");
+        // Prefer an externally-injected keypair (Android: PhotonContext sets it from NetworkContext before AndroidShell::new calls init). Fall back to deriving from the OS machine fingerprint — desktop reads /etc/machine-id etc., Android has no in-Rust fallback (Build.FINGERPRINT lives Java-side) so a missing keypair there is a panic-worthy programmer error: shipping a zero-derived keypair would silently downgrade every cryptographic identity in the app.
+        let keypair = match self.device_keypair.take() {
+            Some(kp) => kp,
+            None => {
+                #[cfg(not(target_os = "android"))]
+                {
+                    let fingerprint = get_machine_fingerprint()
+                        .expect("device-key derivation: machine fingerprint unavailable");
+                    crate::network::fgtw::derive_device_keypair(&fingerprint)
+                }
+                #[cfg(target_os = "android")]
+                {
+                    panic!(
+                        "PhotonApp::set_device_keypair must be called before init on Android — \
+                         the JNI shim wires thru the keypair derived from the OS fingerprint \
+                         in PhotonConnectionService; a missing keypair here means the wiring was \
+                         skipped and would produce a zeroed/insecure key derivation"
+                    );
+                }
+            }
+        };
+        // Stash a clone for app-level operations that need the keypair after init (avatar upload via `upload_avatar`). The clone is cheap (Ed25519 keypair is ~64 bytes); we can't ask HandleQuery for it back because its constructor moves the keypair into the worker threads.
+        self.device_keypair = Some(keypair.clone());
+        // Hand the device secret to storage so the pre-identity device vault (D2 binding, opt-in flags, reboot capsule) resolves from here on — on Android this is the ONLY route (no in-Rust fingerprint oracle).
+        crate::storage::install_device_secret(*keypair.secret.as_bytes());
+        #[cfg(not(target_os = "android"))]
+        let hq = HandleQuery::new(keypair, proxy.clone());
+        #[cfg(target_os = "android")]
+        let hq = {
+            let _ = proxy;
+            HandleQuery::new(keypair)
+        };
+        // ONE shared peer store: HandleQuery populates it from fgtw fetches, the status receiver serves/merges phonebook-gossip records into it, and the app harvests learned addresses from it for stalled contacts. All three hold clones of the same Arc.
+        let peer_store = Arc::new(Mutex::new(PeerStore::new()));
+        self.peer_store = Some(peer_store.clone());
+        hq.set_transport(peer_store.clone());
+
+        // Wire the CLUTCH job channels (replace the disconnected placeholders from `new`).
+        {
+            let (ktx, krx) = std::sync::mpsc::channel();
+            self.clutch_keygen_tx = ktx;
+            self.clutch_keygen_rx = krx;
+            let (etx, erx) = std::sync::mpsc::channel();
+            self.clutch_kem_encap_tx = etx;
+            self.clutch_kem_encap_rx = erx;
+            let (ctx_, crx) = std::sync::mpsc::channel();
+            self.clutch_ceremony_tx = ctx_;
+            self.clutch_ceremony_rx = crx;
+            let (dtx, drx) = std::sync::mpsc::channel();
+            self.clutch_kem_decap_tx = dtx;
+            self.clutch_kem_decap_rx = drx;
+            let (atx, arx) = std::sync::mpsc::channel();
+            self.avatar_dl_tx = atx;
+            self.avatar_dl_rx = arx;
+            let (aitx, airx) = std::sync::mpsc::channel();
+            self.attach_installed_tx = aitx;
+            self.attach_installed_rx = airx;
+            let (hptx, hprx) = std::sync::mpsc::channel();
+            self.hist_opened_tx = hptx;
+            self.hist_opened_rx = hprx;
+            let (cstx, csrx) = std::sync::mpsc::channel();
+            self.chain_sync_opened_tx = cstx;
+            self.chain_sync_opened_rx = csrx;
+            let (brtx, brrx) = std::sync::mpsc::channel();
+            self.braid_rx_tx = brtx;
+            self.braid_rx_rx = brrx;
+            self.chat_replay_queue.clear();
+            let (bttx, btrx) = std::sync::mpsc::channel();
+            self.braid_tx_tx = bttx;
+            self.braid_tx_rx = btrx;
+            self.send_encrypt_busy.clear();
+            let (frtx, frrx) = std::sync::mpsc::channel();
+            self.fleet_rotated_tx = frtx;
+            self.fleet_rotated_rx = frrx;
+            let (cctx, ccrx) = std::sync::mpsc::channel();
+            self.clock_check_tx = cctx;
+            self.clock_check_rx = ccrx;
+            let (ictx, icrx) = std::sync::mpsc::channel();
+            self.inbox_check_tx = ictx;
+            self.inbox_check_rx = icrx;
+        }
+
+        // One-shot wall-clock sanity check via nunc-time, a few seconds behind attest (off-thread, so the several-seconds consensus query never blocks the UI). Warns via banner if the system clock is grossly wrong — never corrects it. Mid-session re-checks fire from the jump detector in `update`. On Android the wake handle is `None` (redraws come thru the JNI/Choreographer path); the result is drained on a subsequent tick.
+        #[cfg(not(target_os = "android"))]
+        crate::network::spawn_clock_check(self.clock_check_tx.clone(), Some(proxy.clone()));
+        #[cfg(target_os = "android")]
+        crate::network::spawn_clock_check(self.clock_check_tx.clone(), None);
+
+        // One-shot fleet-inbox drain: pull any worker-observed alerts (bind attempts on our devices). Off-thread — a blocking HTTPS round trip — with the verdict drained on a later tick.
+        self.spawn_inbox_drain();
+
+        // Spawn the presence + CLUTCH status checker on HandleQuery's shared socket. Done BEFORE `hq` is moved into the field so we can take its socket. Without this the UDP recv/pong worker never runs — the socket is bound but nothing reads it or replies, so the device is invisible to every peer (no presence, no CLUTCH). The desktop and Android constructors differ only in the wake sender: desktop passes the winit event proxy; Android's redraws come thru the JNI/Choreographer path so its constructor takes none.
+        #[cfg(not(target_os = "android"))]
+        let checker_result = crate::network::status::StatusChecker::new(
+            hq.socket(),
+            self.device_keypair
+                .clone()
+                .expect("device_keypair set above"),
+            self.contact_pubkeys.clone(),
+            self.sync_records.clone(),
+            self.pong_seal_keys.clone(),
+            proxy.clone(),
+            peer_store.clone(),
+        );
+        #[cfg(target_os = "android")]
+        let checker_result = crate::network::status::StatusChecker::new(
+            hq.socket(),
+            self.device_keypair
+                .clone()
+                .expect("device_keypair set above"),
+            self.contact_pubkeys.clone(),
+            self.sync_records.clone(),
+            self.pong_seal_keys.clone(),
+            peer_store.clone(),
+        );
+        match checker_result {
+            Ok(c) => {
+                self.status_checker = Some(c);
+                crate::log("UI: status checker started (presence + CLUTCH)");
+            }
+            Err(e) => crate::logf!("UI: status checker failed to start: {}", e),
+        }
+
+        self.handle_query = Some(hq);
+
+        // UNATTENDED MODE (off by default, Security → "Auto-attest on reboot"): the boot-locked tohu session dies on reboot BY DESIGN, so a normal reboot lands on the typed-attest screen. When the operator has explicitly opted a failsafe box into unattended mode, a device-bound reboot capsule (sealed under the hardware fingerprint, not the wairua) survives the reboot — adopt it into tohu's live session here so the identical resume path below runs with no handle typed. The capsule opens ONLY on the same hardware; a copy elsewhere fails. If tohu already has a live session (warm restart, same boot) this is a no-op.
+        if tohu::session().is_none() {
+            if let Some(cap) = crate::storage::device_vault()
+                .and_then(|v| v.read_device(Self::REBOOT_CAPSULE_ENTRY).ok().flatten())
+                .and_then(|bytes| tohu::open_reboot_capsule(&bytes))
+            {
+                crate::log("RESUME: unattended reboot capsule opened — auto-attesting with no handle (Security toggle is ON)");
+                let _ = tohu::set_session(&cap); // re-arm the normal (boot-locked) session so the rest of this boot behaves like a warm restart
+            }
+        }
+
+        // Auto-resume from the remembered session roots. If tohu has this login's roots (persisted on a prior, FGTW-confirmed attest), paint Ready IMMEDIATELY from local state — we already own this identity, so there is no reason to block the first frame on the network. The avatar comes from a local cache file (no vault, no network); contacts + peer presence + cloud-merge arrive a beat later via the background `query_resume` and merge in thru `on_query_result`. A rejection (handle claimed by another device) bails back to the attest screen; a transient network error leaves the local session on Ready untouched. None (first run / post-logout) falls thru to the normal typed-attest flow.
+        if let Some(remembered) = tohu::session() {
+            // Blob name key + the one-time v0→v1 filename re-key walk — BEFORE the first Ready frame, so render-path blob_present reads work immediately (and the plaintext-hash possession oracle is closed the moment a seed exists).
+            crate::storage::blob_init_names(&remembered.identity_seed);
+            self.session = Some(remembered);
+            self.hints_dismissed = false; // fresh Ready entry → the avatar prompt gets a chance until first interaction
+                                          // Initialize local storage and load contacts immediately so the contact list is visible before the FGTW round-trip completes.
+            if let Some(kp) = &self.device_keypair {
+                let device_secret = *kp.secret.as_bytes();
+                // open_session_vault = the ONE device vault via the shared registry: query_resume below spawns the attest worker, which opens this same vault — a second independent engine racing this one is how the vault corruption happened (stale engine committed over the live one's blocks → seal verification failed at every subsequent open).
+                // Phase-timed (the PERF summary below): everything in this arm runs on the UI thread BEFORE the first Ready frame, and the field measured ~1.2s of it with no line naming the eater — the timers make the next boot log ground truth.
+                let t_boot = std::time::Instant::now();
+                let opened = crate::storage::open_session_vault(
+                    remembered.identity_seed,
+                    remembered.vault_seed,
+                    device_secret,
+                );
+                let ms_vault = t_boot.elapsed().as_millis();
+                match opened {
+                    Ok(s) => {
+                        // Preserve any IN-FLIGHT ceremony round across this reload. CLUTCH keypairs/slots are ephemeral scratch, so a wholesale reload from disk wipes a live round — and a warm resume (Android foregrounds constantly) then trips the keygen sweep into minting a DIVERGENT round the peer never agreed to. That is exactly what stranded the relay ceremony: the slow relay round-trip outlived the keys, the peer's KEM came back addressed to keys we'd already discarded, and it was dropped as "old keys". Re-key must be deliberate on real failure — never a side effect of a lifecycle event. Snapshot rounds that are still FRESH by eagle time (a genuinely stale one is let go, to be re-keyed cleanly) and restore them after the reload.
+                        let now = vsf::eagle_time_oscillations();
+                        let inflight: std::collections::HashMap<[u8; 32], _> = self
+                            .contacts
+                            .iter()
+                            .filter(|c| {
+                                c.clutch_our_keypairs.is_some()
+                                    && c.clutch_round_started
+                                        .map_or(false, |t| now - t < CLUTCH_ROUND_TTL_OSC)
+                            })
+                            .map(|c| {
+                                (
+                                    c.handle_hash,
+                                    (
+                                        c.clutch_our_keypairs.clone(),
+                                        c.clutch_slots.clone(),
+                                        c.offer_provenances.clone(),
+                                        c.ceremony_id,
+                                        c.clutch_round_started,
+                                        c.clutch_offer_sent,
+                                        c.clutch_pending_kem.clone(),
+                                        c.clutch_state,
+                                    ),
+                                )
+                            })
+                            .collect();
+                        let t_phase = std::time::Instant::now();
+                        self.contacts = crate::storage::contacts::load_all_contacts(&s);
+                        self.apply_locked_set();
+                        let ms_contacts = t_phase.elapsed().as_millis();
+                        for c in self.contacts.iter_mut() {
+                            if let Some((
+                                kp,
+                                slots,
+                                provs,
+                                cid,
+                                started,
+                                offer_sent,
+                                pending_kem,
+                                state,
+                            )) = inflight.get(&c.handle_hash)
+                            {
+                                c.clutch_our_keypairs = kp.clone();
+                                c.clutch_slots = slots.clone();
+                                c.offer_provenances = provs.clone();
+                                c.ceremony_id = *cid;
+                                c.clutch_round_started = *started;
+                                c.clutch_offer_sent = *offer_sent;
+                                c.clutch_pending_kem = pending_kem.clone();
+                                // Keep a mid-ceremony state alive — never downgrade a live AwaitingProof to disk's stale Pending. A persisted Complete on disk wins (the round already sealed).
+                                if !matches!(c.clutch_state, crate::types::ClutchState::Complete) {
+                                    c.clutch_state = *state;
+                                }
+                                crate::logf!("CLUTCH: preserved in-flight round for {} across resume (no willy-nilly re-key)", crate::fp(&c.handle_proof));
+                            }
+                        }
+                        // Fleet siblings load from their own index (they never enter the contacts index).
+                        {
+                            let siblings = crate::storage::contacts::load_all_siblings(
+                                remembered.handle_proof,
+                                &s,
+                            );
+                            if !siblings.is_empty() {
+                                crate::logf!(
+                                    "SIBLING: loaded {} sibling(s) from local vault on resume",
+                                    siblings.len()
+                                );
+                            }
+                            self.contacts.extend(siblings);
+                        }
+                        // Load each contact's conversation too — load_all_contacts only loads per-peer contact STATE from the vault, not the messages (those live in the rārangi DB, loaded separately). Without this the resume frame paints contacts with empty message lists, and the later query_resume result can't fix it: on_query_result merges by handle_proof and SKIPS already-loaded contacts as duplicates, so the message-bearing copy is discarded → history looks wiped until the next app launch. Loading here makes resume show full history at once.
+                        let t_phase = std::time::Instant::now();
+                        for ci in 0..self.contacts.len() {
+                            let (proof, key) = (
+                                self.contacts[ci].handle_proof,
+                                self.contacts[ci].handle_hash,
+                            );
+                            let Some(conv) = self.conv_mut_of(ci) else {
+                                continue;
+                            };
+                            crate::storage::contacts::load_conversation_state(conv, &key, &s);
+                            if let Err(e) = crate::storage::contacts::load_messages(conv, &s) {
+                                crate::logf!(
+                                    "UI: resume failed to load messages for {}: {}",
+                                    crate::fp(&proof).as_str(),
+                                    e
+                                );
+                            }
+                        }
+                        let ms_messages = t_phase.elapsed().as_millis();
+                        crate::logf!(
+                            "UI: loaded {} contact(s) from local vault on resume",
+                            self.contacts.len()
+                        );
+                        // STORAGE CENSUS (field diagnosis, 2026-08-10): one line per contact naming the conversation table and how many rows actually loaded from it. The "messages don't recover" round showed devices advertising 92 rows while serving 3 — the row sets had split across contact keys, and nothing in the logs could say WHICH table held what. This makes the next log round ground truth. Delete once the split-conversation incident is closed.
+                        {
+                            let mut census: Vec<(String, [u8; 32], usize, String)> = Vec::new();
+                            for ci in 0..self.contacts.len() {
+                                let c = &self.contacts[ci];
+                                let fp = crate::fp(&c.handle_proof);
+                                // The row's full identity beside its table: handle_hash names the party id the tokens/tables derive from, first-met names the pinned device, state names the ceremony posture. The 2026-08-12 evening round proved fp+table alone can't distinguish a stale-keyed self row / debris row / sibling from the outside — this makes the next round ground truth without another guessing session.
+                                let detail = format!(
+                                    " [id {} hash {} first-met {} {:?}{}]",
+                                    hex::encode(&c.id.as_bytes()[..4]),
+                                    hex::encode(&c.handle_hash[..4]),
+                                    hex::encode(&c.device_key().unwrap_or_default()[..4]),
+                                    c.clutch_state,
+                                    if c.is_sibling { " sibling" } else { "" }
+                                );
+                                let Some(conv) = self.conv_of(ci) else {
+                                    continue;
+                                };
+                                census.push((
+                                    fp,
+                                    *conv.id().as_bytes(),
+                                    conv.messages.len(),
+                                    detail,
+                                ));
+                            }
+                            for (fp, table, rows, detail) in &census {
+                                crate::logf!("STORAGE: census — {} table {} holds {} row(s) in RAM after load{}", fp, hex::encode(&table[..4]), rows, detail);
+                            }
+                            // The reference values the census hashes are read against — without these in the same log, "is that hash our pid or debris?" needs a second device round-trip.
+                            if let (Some(sess), Some(sib_pid)) =
+                                (self.session.as_ref(), self.our_sibling_pid())
+                            {
+                                let our_pid =
+                                    crate::crypto::clutch::identity_party_id(&sess.identity_seed);
+                                crate::logf!(
+                                    "STORAGE: census — OUR ids: identity pid {}, this device's sibling pid {}",
+                                    hex::encode(&our_pid[..4]),
+                                    hex::encode(&sib_pid[..4])
+                                );
+                            }
+                            // Split-identity detector: two FRIEND rows sharing a handle_proof but keyed by different conversation tables IS the duplicated-contact state (one row per identity is the invariant). SIBLINGS are excluded: the whole fleet shares our handle_proof with a per-device hash BY DESIGN — the first census run flagged ordinary sibling pairs as "duplicates" for two log rounds (2026-08-11). Loud, because every downstream system — recovery walks, digest records, ceremonies — silently picks whichever row it finds first.
+                            for i in 0..self.contacts.len() {
+                                for j in (i + 1)..self.contacts.len() {
+                                    if !self.contacts[i].is_sibling
+                                        && !self.contacts[j].is_sibling
+                                        && self.contacts[i].handle_proof
+                                            == self.contacts[j].handle_proof
+                                        && self.contacts[i].handle_hash
+                                            != self.contacts[j].handle_hash
+                                    {
+                                        crate::logf!("STORAGE: census — DUPLICATE CONTACT for {}: two rows with different conversation keys ({}… vs {}…) — conversations are SPLIT across them", crate::fp(&self.contacts[i].handle_proof), hex::encode(&self.contacts[i].handle_hash[..4]), hex::encode(&self.contacts[j].handle_hash[..4]));
+                                    }
+                                }
+                            }
+                            // SELF-STUB PURGE: a non-sibling row carrying OUR handle_proof under a handle_hash that is NOT our identity pid is a corrupt self-contact stub — the source of the "CLUTCH offers toward its OWN identity" storm (ticketed 2026-08-07; the census caught THREE self rows on one desktop, 2026-08-11, two of them empty stubs spraying 573KB offers at the fleet's own contacts). Empty-conversation stubs only: a row that somehow holds messages is somebody's data and stays for a deliberate repair, never a boot-time sweep.
+                            if let Some((our_proof, our_seed)) = self
+                                .session
+                                .as_ref()
+                                .map(|s| (s.handle_proof, s.identity_seed))
+                            {
+                                let our_pid = crate::crypto::clutch::identity_party_id(&our_seed);
+                                let stub_hashes: Vec<[u8; 32]> = self
+                                    .contacts
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(ci, c)| {
+                                        !c.is_sibling
+                                            && c.handle_proof == our_proof
+                                            && c.handle_hash != our_pid
+                                            && self
+                                                .conv_of(*ci)
+                                                .map_or(true, |v| v.messages.is_empty())
+                                    })
+                                    .map(|(_, c)| c.handle_hash)
+                                    .collect();
+                                if !stub_hashes.is_empty() {
+                                    for hh in &stub_hashes {
+                                        crate::logf!("STORAGE: census — PURGING empty self-contact stub (key {}…) — its ceremony queue dies with it", hex::encode(&hh[..4]));
+                                        let _ = crate::storage::contacts::delete_contact(hh, &s);
+                                    }
+                                    self.contacts
+                                        .retain(|c| !stub_hashes.contains(&c.handle_hash));
+                                    // Rewrite the index too, or the next launch resurrects the stubs from the list (same rule as the ostracism path).
+                                    let index: Vec<crate::storage::contacts::ContactIdentity> =
+                                        self.contacts
+                                            .iter()
+                                            .filter(|c| !c.is_sibling)
+                                            .map(|c| crate::storage::contacts::ContactIdentity {
+                                                handle_proof: c.handle_proof,
+                                                party_id: c.handle_hash,
+                                                avatar_pin: c.avatar_pin,
+                                            })
+                                            .collect();
+                                    if let Err(e) =
+                                        crate::storage::contacts::save_contact_list(&index, &s)
+                                    {
+                                        crate::logf!(
+                                            "STORAGE: census — stub-purge index rewrite failed: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        // Load friendship chains NOW too, not just contacts. Resume paints Ready and the status checker starts answering immediately, but chains used to arrive only later via query_resume — so any chat that landed in that window hit "No friendship found for conversation_token" and was DROPPED (no chain = no decrypt, no buffer). Loading chains here closes that gap so a peer messaging us the instant we come back online doesn't lose messages. query_resume still merges (and won't clobber these — it only adds ids we don't already hold).
+                        let t_phase = std::time::Instant::now();
+                        let friendship_ids: Vec<crate::types::FriendshipId> = self
+                            .contacts
+                            .iter()
+                            .filter_map(|c| c.friendship_id)
+                            .collect();
+                        let loaded_chains =
+                            crate::storage::friendship::load_all_friendships(&friendship_ids, &s);
+                        for (fid, chains) in loaded_chains {
+                            if !self.friendship_chains.iter().any(|(id, _)| *id == fid) {
+                                self.friendship_chains.push((fid, chains));
+                            }
+                        }
+                        // Anything the loader REJECTED (pre-v8 blobs, the lanes flag-day) leaves its contact keyed-but-chainless — reset those ceremonies now, while every chain that CAN load already has.
+                        self.reclutch_chainless_contacts("resume load");
+                        self.update_sync_records();
+                        // Seed the checker's answerable-pubkey set with every loaded contact's FULL fleet so pongs/offers from any of their devices are honoured.
+                        self.reseed_contact_pubkeys();
+                        // Wake-up catch-up: re-fold each contact's fleet so a friend's device added while we were off is honoured now, not next launch. Our OWN hp is included explicitly — the drain routes it to sibling reconcile (fleet weave), so a freshly-joined device discovers its siblings on first resume even with an empty contact list.
+                        let mut hps: Vec<[u8; 32]> = self
+                            .contacts
+                            .iter()
+                            .filter(|c| !c.is_sibling)
+                            .map(|c| c.handle_proof)
+                            .collect();
+                        hps.push(remembered.handle_proof);
+                        hps.sort_unstable();
+                        hps.dedup();
+                        self.spawn_contact_fleet_refresh(hps);
+                        let ms_chains = t_phase.elapsed().as_millis();
+                        // Rehydrate each contact's saved ephemeral keypairs from disk (~588KB each). load_contact_state deliberately doesn't pull these (they're huge and live in a separate vault key), so without this every resume re-runs the McEliece-heavy keygen below — which is what froze the UI on launch. Loading the persisted keypairs makes the re-key filter a no-op for contacts that already have them, so keygen only fires for genuinely keyless Pending ones.
+                        // Complete contacts are SKIPPED: their ceremony sealed, the chains carry the conversation, and every live path that could want keys again (peer-lost-chains re-key, reclutch) mints a fresh round anyway — so ~588KB per settled contact was pure frame-one tax (the bulk of the field's 1.2s resume, 2026-08-12).
+                        let t_phase = std::time::Instant::now();
+                        let mut rehydrated = 0usize;
+                        for contact in self.contacts.iter_mut() {
+                            if contact.clutch_our_keypairs.is_none()
+                                && contact.clutch_state != crate::types::ClutchState::Complete
+                            {
+                                match crate::storage::contacts::load_clutch_keypairs(
+                                    &contact.handle_hash,
+                                    &s,
+                                ) {
+                                    Ok(Some(keypairs)) => {
+                                        contact.clutch_our_keypairs = Some(keypairs);
+                                        rehydrated += 1;
+                                    }
+                                    Ok(None) => {}
+                                    Err(e) => crate::logf!(
+                                        "CLUTCH: failed to rehydrate keypairs for {}: {}",
+                                        crate::fp(&contact.handle_proof),
+                                        e
+                                    ),
+                                }
+                            }
+                        }
+                        let ms_keypairs = t_phase.elapsed().as_millis();
+                        self.storage = Some(s);
+                        // Frame one owns the persisted ergonomics: fleet_settings live on disk, but nothing read them at boot — every ensure_fleet_settings caller was a user action or the network merge drain, so the zoom restore waited ~5s for the first fleet pull (and forever offline), painting every launch at default scale (Nick, 2026-08-12).
+                        let t_phase = std::time::Instant::now();
+                        self.ensure_fleet_settings();
+                        let ms_settings = t_phase.elapsed().as_millis();
+                        // This device's avatar: ONE cheap vault read decides recovery now; the heavy VSF-parse + AV1 decode runs off-thread and installs thru the avatar drain (owner: None), so frame one never waits on dav1d.
+                        let own_avatar_bytes = self.storage.as_ref().and_then(|storage| {
+                            storage
+                                .read_addr(&crate::storage::vault_key(
+                                    "avatar",
+                                    &remembered.identity_seed,
+                                ))
+                                .ok()
+                                .flatten()
+                        });
+                        match own_avatar_bytes {
+                            Some(bytes) => {
+                                let seed = remembered.identity_seed;
+                                let tx = self.avatar_dl_tx.clone();
+                                std::thread::spawn(move || {
+                                    let pixels =
+                                        crate::ui::avatar::load_avatar_from_bytes_from_seed(
+                                            &bytes, &seed,
+                                        )
+                                        .map(|(_, px)| px);
+                                    let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
+                                        owner: None,
+                                        pixels,
+                                        name: None, // seed-keyed local decode — the name lives in fstate on this path
+                                    });
+                                });
+                                // Decode failure (poisoned bytes) arms the FGTW recovery in the drain — never here, or the tick would race the in-flight decode into a pointless network fetch every boot.
+                            }
+                            // Local vault had no avatar (e.g. this device was cleared) — recover our own from FGTW, where it was published. Off-thread; installs via the avatar drain.
+                            None => {
+                                if !self.spawn_self_avatar_recover(remembered.identity_seed) {
+                                    // No pin at rest yet (settings still loading) — the tick retries once one lands.
+                                    self.self_avatar_recover_pending =
+                                        Some(remembered.identity_seed);
+                                }
+                            }
+                        }
+                        // Notes-to-self is NOT bootstrapped (Nick 2026-08-01): an empty conversation with yourself is not a contact you asked for, and it sat at the top of the list looking broken because it has no peer to pong a name or avatar. Add yourself deliberately and it appears; until then the list holds only people you chose.
+                        self.settle_self_display();
+                        self.scrub_zero_remote_rounds();
+                        // Re-key Pending contacts that still lack keypairs after the rehydrate — but ONE AT A TIME (spawn_next_pending_keygen, repeated each tick), never all at once: parallel McEliece keygens on launch starved the UI thread.
+                        self.spawn_next_pending_keygen();
+                        crate::logf!(
+                            "PERF: resume load — vault {}ms, contacts {}ms, messages {}ms, chains {}ms, keypairs {}ms ({} rehydrated), settings {}ms → local Ready in {}ms (UI thread)",
+                            ms_vault, ms_contacts, ms_messages, ms_chains, ms_keypairs, rehydrated, ms_settings, t_boot.elapsed().as_millis()
+                        );
+                    }
+                    Err(e) => {
+                        crate::logf!("STORAGE: init failed on resume: {}", e);
+                        // A hard vault-open failure (e.g. seal verification failed) is the WORST storage state — no contacts load and nothing persists. The RED banner, not the amber one.
+                        self.vault_data_lost = true;
+                    }
+                }
+            }
+            self.state = AppState::Ready;
+            if let Some(hq) = self.handle_query.as_ref() {
+                crate::log("UI: resumed to Ready from local session roots (tohu) — FGTW announce + presence run in background");
+                hq.query_resume(remembered);
+            }
+            // Kick presence immediately for the just-loaded contacts so their online rings reflect reality without waiting for the FGTW round-trip.
+            self.ping_contacts();
+        }
     }
 }

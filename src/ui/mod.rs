@@ -65,4 +65,6 @@ pub enum PhotonEvent {
     ClutchCeremonyComplete,
     /// A second launch handed off "surface yourself" over the control channel (desktop resident mode) — the handler un-hides the window via `EventResponse::ShowWindow`.
     ShowWindow,
+    /// A full-UI launch asks the LIFELINE instance to release the single-instance lock (docs/headless-lifeline.md): the lifeline exits, the full instance takes over. A full-UI instance receiving this treats it as ShowWindow (it isn't yielding to anyone).
+    Yield,
 }

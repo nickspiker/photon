@@ -20,6 +20,11 @@ Photon stays ONE binary. A new `--lifeline` mode runs the network core with no f
 
 ## Phases
 
+## Status (2026-09-07)
+
+Phases A + B are BUILT and enrolled on leviathan: `core_init` split (compiler-proven ctx-free), `lifeline.rs` pump (HeadlessWaker condvar + 250ms heartbeat floor, `advance_protocol` wraps the whole drain), the yield handoff (control verb `yield`; a full-UI launch takes the lock over, a full-UI resident ignores it and surfaces), and `scripts/lifeline-unit.sh` (user-manager watcher unit, Restart=always).
+Tier 2 (the patched-winit in-process X-death survival) is designed below, not built.
+
 **A — the headless pump.**
 `main.rs --lifeline` branch: skip `run_app`, construct `PhotonApp`, call a `lifeline_init()` (the network/vault/attest subset of `FluorApp::init` — no widgets, no `Context`), then loop: pump ticks on the WAKE edges (a headless `WakeSender` impl over a condvar) with the same cadences the UI loop provides.
 The audit: every `ctx.text`/widget touch reachable from `advance_protocol`/`check_status_updates`/bridge drains must no-op headless (most already do; `load_you_fields`-class calls are page-gated and unreachable).

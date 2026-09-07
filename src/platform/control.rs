@@ -56,6 +56,10 @@ pub fn spawn_accept_thread(
             if buf.starts_with(b"show") {
                 crate::log("CONTROL: show requested by a second launch — surfacing the window");
                 let _ = proxy.send(crate::ui::PhotonEvent::ShowWindow);
+            } else if buf.starts_with(b"yield") {
+                // A full-UI launch wants the lock (docs/headless-lifeline.md). The LIFELINE pump exits on this event; a full-UI instance just surfaces (its on_user_event maps Yield → ShowWindow behavior) and keeps the lock — the requester's re-acquire then fails and it falls back to the show path.
+                crate::log("CONTROL: yield requested by a full-UI launch");
+                let _ = proxy.send(crate::ui::PhotonEvent::Yield);
             }
         };
         match listener {
@@ -80,6 +84,27 @@ pub fn spawn_accept_thread(
             }
         }
     });
+}
+
+/// Full-UI-launch side of the lifeline handoff: ask whoever holds the lock to yield it. `true` = delivered; the caller then retries the lock (a lifeline exits and frees it; a full-UI resident keeps it and surfaces instead).
+pub fn request_yield(data_dir: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        let path = socket_path(data_dir);
+        if let Ok(mut s) = std::os::unix::net::UnixStream::connect(&path) {
+            return s.write_all(b"yield\n").is_ok();
+        }
+        false
+    }
+    #[cfg(not(unix))]
+    {
+        let h = blake3::hash(data_dir.to_string_lossy().as_bytes());
+        let port = 20000 + (u16::from_le_bytes([h.as_bytes()[0], h.as_bytes()[1]]) % 20000);
+        if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+            return s.write_all(b"yield\n").is_ok();
+        }
+        false
+    }
 }
 
 /// Second-launch side: ask the resident instance to surface. `true` = delivered (the caller should exit 0 quietly); `false` = nobody answered (stale lock? different failure — caller falls back to the old already-running error).

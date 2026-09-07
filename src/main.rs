@@ -91,35 +91,82 @@ fn main() {
         std::process::exit(0);
     }
 
+    // Headless lifeline mode (docs/headless-lifeline.md): no fluor, no winit, no display — the bridge host that survives X death. Runs as a WATCHER while a real instance holds the lock, becomes the instance the moment the lock frees, and yields it back when a full-UI launch asks.
+    let lifeline_mode = std::env::args().any(|arg| arg == "--lifeline");
+
     // Single-instance guard: a second instance on the SAME data dir would race the vault and corrupt the log.
     // Held for the whole process (OS frees it on exit). A second instance with its own PHOTON_DATA_DIR (+ PHOTON_FINGERPRINT for a distinct identity) hashes to a different lock port and is allowed — that's the supported way to run two parties on one machine.
-    // Losing the lock is no longer an error by default: the resident-mode handoff — clicking the icon while a (possibly hidden) instance runs — asks that instance to surface itself and exits quietly. The old already-running error remains the fallback when nobody answers the control channel.
+    // Losing the lock is no longer an error by default: the resident-mode handoff — clicking the icon while a (possibly hidden) instance runs — asks that instance to surface itself and exits quietly; if the holder is a LIFELINE it yields the lock instead and this launch takes over. The old already-running error remains the fallback when nobody answers the control channel.
+    let dir = photon_messenger::storage::photon_config_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let install_listener = |lock: &photon_messenger::storage::InstanceLock| {
+        // We ARE the instance: park the control listener for the app to serve once its event proxy exists. Unix gets a dedicated socket (safe to create only now, under the flock); Windows reuses the lock's own TcpListener.
+        #[cfg(unix)]
+        photon_messenger::platform::control::install_unix_listener(&dir);
+        #[cfg(not(unix))]
+        if let Some(l) = lock.control_listener() {
+            photon_messenger::platform::control::install_tcp_listener(l);
+        }
+    };
+    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    if lifeline_mode {
+        // WATCHER: while a real instance runs, do nothing but wait for the lock to free (X death takes the instance and its flock with it). Liveness polling of a lock file is supervisor work, not UI work — the edges-not-timers rule governs the product, not the janitor.
+        let lock = loop {
+            match photon_messenger::storage::acquire_single_instance(&dir) {
+                Some(lock) => break lock,
+                None => std::thread::sleep(std::time::Duration::from_secs(5)),
+            }
+        };
+        install_listener(&lock);
+        photon_messenger::log("LIFELINE: lock acquired — starting the headless pump");
+        photon_messenger::ui::photon_app::lifeline::run_lifeline(PhotonApp::new());
+        // Yield: return releases the flock; the full-UI launch retrying acquire takes over. Exit 0 so a supervising unit restarts us back into watcher mode.
+        photon_messenger::flush_log_buffer();
+        std::process::exit(0);
+    }
+    #[cfg(not(all(unix, not(target_os = "android"), not(target_os = "redox"))))]
+    if lifeline_mode {
+        eprintln!("photon: --lifeline is desktop-unix only");
+        std::process::exit(1);
+    }
     let _instance_lock = {
-        let dir = photon_messenger::storage::photon_config_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."));
         match photon_messenger::storage::acquire_single_instance(&dir) {
             Some(lock) => {
-                // We ARE the instance: park the control listener for the app to serve once its event proxy exists. Unix gets a dedicated socket (safe to create only now, under the flock); Windows reuses the lock's own TcpListener.
-                #[cfg(unix)]
-                photon_messenger::platform::control::install_unix_listener(&dir);
-                #[cfg(not(unix))]
-                if let Some(l) = lock.control_listener() {
-                    photon_messenger::platform::control::install_tcp_listener(l);
-                }
+                install_listener(&lock);
                 lock
             }
             None => {
-                if photon_messenger::platform::control::request_show(&dir) {
-                    println!(
-                        "photon: already running — asked the resident instance to show itself."
-                    );
-                    std::process::exit(0);
+                // The holder may be a lifeline (docs/headless-lifeline.md): ask it to yield, then retry the lock briefly — a lifeline exits and frees it; a full-UI resident keeps it (and surfaces), so the retry fails and we fall thru to the show path.
+                let mut took_over = None;
+                if photon_messenger::platform::control::request_yield(&dir) {
+                    for _ in 0..50 {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        if let Some(lock) = photon_messenger::storage::acquire_single_instance(&dir) {
+                            took_over = Some(lock);
+                            break;
+                        }
+                    }
                 }
-                eprintln!(
-                    "photon: another instance is already running for this data dir:\n  {}\nFor a second instance (two-party testing) set a separate PHOTON_DATA_DIR (and PHOTON_FINGERPRINT for a distinct identity).",
-                    dir.display()
-                );
-                std::process::exit(1);
+                match took_over {
+                    Some(lock) => {
+                        photon_messenger::log("LIFELINE: took the lock over from a yielding lifeline instance");
+                        install_listener(&lock);
+                        lock
+                    }
+                    None => {
+                        if photon_messenger::platform::control::request_show(&dir) {
+                            println!(
+                                "photon: already running — asked the resident instance to show itself."
+                            );
+                            std::process::exit(0);
+                        }
+                        eprintln!(
+                            "photon: another instance is already running for this data dir:\n  {}\nFor a second instance (two-party testing) set a separate PHOTON_DATA_DIR (and PHOTON_FINGERPRINT for a distinct identity).",
+                            dir.display()
+                        );
+                        std::process::exit(1);
+                    }
+                }
             }
         }
     };
