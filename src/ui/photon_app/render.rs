@@ -4636,6 +4636,8 @@ impl PhotonApp {
                         );
                         let tb_band = flow.band(hspan2 * 2.2);
                         if let Some(tb) = self.unattended_confirm_tb.as_mut() {
+                            // Page-scale glyphs like every other box — without this it kept the constructor's placeholder 12.0 (field 2026-09-07: "itty bitty, half the size").
+                            tb.set_font_size(hspan2 * 0.95, ctx.text);
                             tb.set_rect(tb_band.center_x(), tb_band.center_y(), tb_band.w * 0.9, tb_band.h * 0.85);
                             let id = tb.hit_id();
                             tb.render_content_into(
