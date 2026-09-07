@@ -4348,7 +4348,7 @@ impl PhotonApp {
                         if renaming_here {
                             if let Some((_, tb)) = self.fleet_rename.as_mut() {
                                 tb.set_rect(name_band.x + hspan2 * 1.1, name_band.center_y(), name_band.w - hspan2 * 1.6, name_band.h * 0.9);
-                                tb.set_font_size(hspan2 * 0.95, ctx.text);
+                                tb.set_font_size(hspan2, ctx.text);
                                 let id = tb.hit_id();
                                 tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
                             }
@@ -4637,7 +4637,7 @@ impl PhotonApp {
                         let tb_band = flow.band(hspan2 * 2.2);
                         if let Some(tb) = self.unattended_confirm_tb.as_mut() {
                             // Page-scale glyphs like every other box — without this it kept the constructor's placeholder 12.0 (field 2026-09-07: "itty bitty, half the size").
-                            tb.set_font_size(hspan2 * 0.95, ctx.text);
+                            tb.set_font_size(hspan2, ctx.text);
                             tb.set_rect(tb_band.center_x(), tb_band.center_y(), tb_band.w * 0.9, tb_band.h * 0.85);
                             let id = tb.hit_id();
                             tb.render_content_into(
