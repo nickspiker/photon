@@ -212,5 +212,18 @@ fn main() {
     }
 
     // Hand off to fluor's host. PhotonApp::new() is parameterless: the host hands us the event-loop proxy via FluorApp::set_event_proxy and the initial viewport via FluorApp::init, so there's nothing to thread thru up-front.
+    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    {
+        let (app, res) = fluor::host::app::run_app_recoverable(PhotonApp::new());
+        if let Err(e) = res {
+            // TIER 2 (docs/headless-lifeline.md): the display server died out from under a living photon — winit's x11rb loop exits with an error instead of killing the process. Keep the SAME process serving as the headless lifeline: same attested session, same sockets, zero gap. A fresh full-UI launch takes over thru the yield handshake exactly as with a flag-launched lifeline; a clean quit returns Ok and exits normally.
+            photon_messenger::logf!("HOST: event loop died under a living app ({e}) — dropping to the embedded headless lifeline");
+            photon_messenger::flush_log_buffer();
+            photon_messenger::ui::photon_app::lifeline::run_lifeline(app);
+            photon_messenger::log("LIFELINE: yielded — exiting");
+            photon_messenger::flush_log_buffer();
+        }
+    }
+    #[cfg(not(all(unix, not(target_os = "android"), not(target_os = "redox"))))]
     fluor::host::app::run_app(PhotonApp::new()).expect("event loop failed");
 }

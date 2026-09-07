@@ -25,7 +25,12 @@ pub fn run_lifeline(mut app: PhotonApp) {
     // set_event_proxy spawns the control accept thread (the yield channel) exactly as the host would; resident-mode tray stays off (the field defaults false and nothing headless flips it).
     fluor::host::app::FluorApp::set_event_proxy(&mut app, waker.clone());
     // The identical display-free startup the UI runs: network stack, job channels, unattended capsule → auto-attest, vault open + session resume. No capsule = the pump idles pre-attest and serves nothing sensitive — lifeline is exactly as available as unattended mode.
-    app.core_init();
+    // EMBEDDED takeover (Tier 2: the event loop died under a living app) arrives already initialized — re-running core_init would double-spawn the network stack; the pump alone is the whole job then.
+    if app.handle_query.is_none() {
+        app.core_init();
+    } else {
+        crate::log("LIFELINE: embedded takeover — core already live, pump only (same session, zero attest gap)");
+    }
     crate::logf!(
         "LIFELINE: headless pump up — attested: {}, waiting on network edges (Yield hands off to a full-UI launch)",
         tohu::session().is_some()

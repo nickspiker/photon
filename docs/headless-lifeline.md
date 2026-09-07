@@ -23,7 +23,12 @@ Photon stays ONE binary. A new `--lifeline` mode runs the network core with no f
 ## Status (2026-09-07)
 
 Phases A + B are BUILT and enrolled on leviathan: `core_init` split (compiler-proven ctx-free), `lifeline.rs` pump (HeadlessWaker condvar + 250ms heartbeat floor, `advance_protocol` wraps the whole drain), the yield handoff (control verb `yield`; a full-UI launch takes the lock over, a full-UI resident ignores it and surfaces), and `scripts/lifeline-unit.sh` (user-manager watcher unit, Restart=always).
-Tier 2 (the patched-winit in-process X-death survival) is designed below, not built.
+
+TIER 2 is BUILT too, and needed NO winit patch: winit 0.30's x11rb backend already exits the loop with a code (never the process) on connection death — fluor's `run_app_recoverable` returns the living app alongside the verdict, and photon's main drops it into `run_lifeline` on Err: same attested session, same sockets, zero gap, pump-only (core_init skipped on embedded takeover; the control accept thread re-aims at the new waker via the swappable CURRENT_PROXY). A clean quit returns Ok and exits normally.
+
+The UI half: the "bulletproof bridge" checkbox on the Security page (Linux systemd user unit / macOS KeepAlive LaunchAgent — platform::lifeline, artifact-is-the-setting) enrolls Phase B for anyone without a terminal.
+
+Field verification of the X-death drop still owed (needs a nested X server: `sudo dnf install xorg-x11-server-Xvfb`, run photon on `DISPLAY=:99` with a test data dir, kill Xvfb, expect "dropping to the embedded headless lifeline" and a living process).
 
 **A — the headless pump.**
 `main.rs --lifeline` branch: skip `run_app`, construct `PhotonApp`, call a `lifeline_init()` (the network/vault/attest subset of `FluorApp::init` — no widgets, no `Context`), then loop: pump ticks on the WAKE edges (a headless `WakeSender` impl over a condvar) with the same cadences the UI loop provides.

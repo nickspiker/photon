@@ -16,6 +16,10 @@ pub mod crash_native;
 /// OS-locale sniff for the first-launch language seed (docs/languages.md) — the setting is the user's after that.
 pub mod locale;
 
+/// Headless-lifeline enrolment (docs/headless-lifeline.md) — the bulletproof-bridge checkbox's platform half: systemd user unit (Linux) / KeepAlive LaunchAgent (macOS).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod lifeline;
+
 /// Hold off IDLE sleep while a ceremony or transfer is genuinely in flight — scoped to the work by a guard, never to the app (macOS; a no-op elsewhere).
 pub mod stay_awake;
 

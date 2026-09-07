@@ -551,6 +551,39 @@ impl PhotonApp {
             }
         }
 
+        // Bulletproof-bridge toggle: the lifeline unit/agent artifact IS the setting (platform::lifeline) — write/remove it, revert the box and say why on failure.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let ll_toggle = self
+                .settings_lifeline_check
+                .as_mut()
+                .map(|cb| (cb.take_toggle(), cb.is_checked()));
+            if let Some((true, checked)) = ll_toggle {
+                let result = if checked {
+                    crate::platform::lifeline::enable()
+                } else {
+                    crate::platform::lifeline::disable()
+                };
+                match result {
+                    Ok(()) => {
+                        crate::logf!(
+                            "LIFELINE: bulletproof bridge {} (unit/agent {})",
+                            if checked { "ON" } else { "OFF" },
+                            if checked { "written" } else { "removed" }
+                        );
+                    }
+                    Err(e) => {
+                        crate::logf!("LIFELINE: enrolment change failed: {}", e);
+                        if let Some(cb) = self.settings_lifeline_check.as_mut() {
+                            cb.set_checked(!checked);
+                        }
+                        self.ready_toast = Some(tr(Msg::LifelineChangeFailed(&e)).into_owned());
+                    }
+                }
+                needs_redraw = true;
+            }
+        }
+
         // Clear the "handle didn't match" line as soon as the operator edits the confirm box again — event-shown, interaction-cleared, no timers.
         if self.unattended_confirm_failed {
             let has_text = self

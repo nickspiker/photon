@@ -42,17 +42,25 @@ pub fn install_tcp_listener(listener: std::net::TcpListener) {
 }
 
 /// Resident side: start the accept loop, forwarding each `show` to the UI thread via the wake proxy. Called once from `set_event_proxy`; a no-op if `main` never parked a listener (handoff disabled, nothing to serve).
+/// The CURRENT wake target — swappable so a re-registered proxy (the embedded lifeline replacing a dead winit loop's, docs/headless-lifeline.md) re-aims the long-lived accept thread instead of it poking a corpse.
+static CURRENT_PROXY: std::sync::Mutex<
+    Option<std::sync::Arc<dyn fluor::host::WakeSender<crate::ui::PhotonEvent>>>,
+> = std::sync::Mutex::new(None);
+
 pub fn spawn_accept_thread(
     proxy: std::sync::Arc<dyn fluor::host::WakeSender<crate::ui::PhotonEvent>>,
 ) {
+    // Refresh FIRST: on a second registration the listener is already taken and we return below, but the running thread must still start waking the NEW loop.
+    *CURRENT_PROXY.lock().unwrap() = Some(proxy);
     let Some(listener) = LISTENER.lock().unwrap().take() else {
         return;
     };
     std::thread::spawn(move || {
-        let handle = |buf: &[u8],
-                      proxy: &std::sync::Arc<
-            dyn fluor::host::WakeSender<crate::ui::PhotonEvent>,
-        >| {
+        let handle = |buf: &[u8]| {
+            let Some(proxy) = CURRENT_PROXY.lock().unwrap().clone() else {
+                return;
+            };
+            let proxy = &proxy;
             if buf.starts_with(b"show") {
                 crate::log("CONTROL: show requested by a second launch — surfacing the window");
                 let _ = proxy.send(crate::ui::PhotonEvent::ShowWindow);
@@ -69,7 +77,7 @@ pub fn spawn_accept_thread(
                     let Ok(mut s) = stream else { continue };
                     let mut buf = [0u8; 16];
                     let n = s.read(&mut buf).unwrap_or(0);
-                    handle(&buf[..n], &proxy);
+                    handle(&buf[..n]);
                 }
             }
             ControlListener::Tcp(l) => {
@@ -79,7 +87,7 @@ pub fn spawn_accept_thread(
                     let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(500)));
                     let mut buf = [0u8; 16];
                     let n = s.read(&mut buf).unwrap_or(0);
-                    handle(&buf[..n], &proxy);
+                    handle(&buf[..n]);
                 }
             }
         }

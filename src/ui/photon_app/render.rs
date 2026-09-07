@@ -4597,6 +4597,28 @@ impl PhotonApp {
                         flow.prose(&mut canvas, ctx.text, &tr(Msg::LoadOnStartupExplainer), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
                         flow.gap(hspan2 * 0.8);
                     }
+                    // ── Bulletproof bridge (Nick 2026-09-07): the headless-lifeline watcher (docs/headless-lifeline.md) as a checkbox — the OS artifact IS the setting (platform::lifeline); the toggle dispatch rides protocol.rs like every settings checkbox.
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    {
+                        let cb_band = flow.band(hspan2 * 2.0);
+                        if let Some(cb) = self.settings_lifeline_check.as_mut() {
+                            let label = tr(Msg::LifelineCheckbox);
+                            cb.set_label(&*label);
+                            cb.set_font_size(hspan2);
+                            let cb_h = hspan2 * 1.3;
+                            let label_w = ctx.text.measure_text(&label, &TextStyle::new(hspan2, 0));
+                            let w = cb_h + hspan2 * 0.5 + label_w + hspan2 * 0.3;
+                            cb.set_rect(cb_band.x + w * 0.5, cb_band.center_y(), w, cb_h);
+                            cb.render_content_into(
+                                &mut canvas,
+                                ctx.text,
+                                None,
+                                Some(&mut chrome.hit_test_map),
+                            );
+                        }
+                        flow.prose(&mut canvas, ctx.text, &tr(Msg::LifelineExplainer), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                        flow.gap(hspan2 * 0.8);
+                    }
                     // ── DANGEROUS: unattended auto-attest-on-reboot. Off by default. Two states, both INLINE (no floating overlay — an over-content modal drawn after chrome.flatten_into never composited its glyphs): the checkbox+disclaimer, OR (while a flip is pending) a handle-entry confirmation that re-proves the operator before arming/disarming.
                     flow.line(&mut canvas, ctx.text, &tr(Msg::UnattendedTitle), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
                     if let Some(target_on) = self.unattended_confirm {

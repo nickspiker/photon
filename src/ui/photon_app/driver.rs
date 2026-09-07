@@ -89,7 +89,7 @@ impl FluorApp for PhotonApp {
         {
             crate::platform::control::spawn_accept_thread(proxy.clone());
             // Resident from launch → the orb parks next to the clock now; a later toggle-on spawns it then (tray_spawned gates the once-per-process).
-            if self.resident_mode {
+            if self.resident_mode && !self.tray_spawned {
                 crate::platform::tray::spawn(proxy.clone());
                 self.tray_spawned = true;
             }
@@ -489,6 +489,20 @@ impl FluorApp for PhotonApp {
                 12.,
                 crate::platform::autostart::background_desired(),
             ));
+        // Bulletproof bridge (headless lifeline) — checked state mirrors the OS artifact (platform::lifeline), same doctrine as the login item above.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            self.settings_lifeline_check = Some(fluor::widgets::Checkbox::new(
+                &mut self.hit_counter,
+                tr(Msg::LifelineCheckbox),
+                0.,
+                0.,
+                1.,
+                1.,
+                12.,
+                crate::platform::lifeline::enabled(),
+            ));
+        }
         }
         // Security page: DANGEROUS auto-attest-on-reboot toggle. Off unless the operator opted a failsafe box in.
         self.settings_unattended_check = Some(fluor::widgets::Checkbox::new(

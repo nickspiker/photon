@@ -1692,6 +1692,9 @@ pub struct PhotonApp {
     settings_hardlogs_check: Option<fluor::widgets::Checkbox>,
     /// Desktop "Run in background" toggle (Notifications page): the OS autostart artifact IS the stored state (`platform::autostart` — no vault setting to desync), and `resident_mode` follows it live. Never built on Android (the OS owns app lifecycle there).
     settings_background_check: Option<fluor::widgets::Checkbox>,
+    /// Bulletproof-bridge (headless lifeline) enrolment checkbox — Linux/macOS only (the --lifeline flag is unix-desktop).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    settings_lifeline_check: Option<fluor::widgets::Checkbox>,
     /// Security-page "Auto-attest on reboot" toggle — DANGEROUS, off by default. Marker file (`unattended_reboot`) + a device-bound reboot capsule; defeats the deliberate reboot-death of the session for remote failsafe boxes. See `set_unattended`.
     settings_unattended_check: Option<fluor::widgets::Checkbox>,
     /// Handle-confirmation modal for the unattended toggle: `Some(target_on)` while the operator must re-type their handle to arm (true) or disarm (false) unattended mode. Arming/disarming this device-becomes-you switch from an already-unlocked session must still prove the operator — not just whoever walked up to the screen. `None` = no modal.
@@ -1860,6 +1863,8 @@ impl PhotonApp {
             #[cfg(not(target_os = "android"))]
             tray_spawned: false,
             settings_background_check: None,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            settings_lifeline_check: None,
             settings_unattended_check: None,
             unattended_confirm: None,
             unattended_confirm_tb: None,
@@ -2790,6 +2795,10 @@ impl PhotonApp {
                             f(tb);
                         }
                     } else if let Some(cb) = self.settings_unattended_check.as_mut() {
+                        f(cb);
+                    }
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    if let Some(cb) = self.settings_lifeline_check.as_mut() {
                         f(cb);
                     }
                 }
