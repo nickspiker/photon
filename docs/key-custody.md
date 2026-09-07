@@ -1,22 +1,22 @@
 # Key custody — who vouches for a waking device
 
-Design sketch 2026-09-04 (Nick, riffing off docs/device-lease.md): the lease's delegated session isn't a guest-only trick — it's the general shape. The identity seed and decryption roots should be AT REST NOWHERE; day to day, the FLEET delivers session material to a waking device, and the typed handle becomes the root of last resort instead of the daily ritual.
+Design 2026-09-04, settled after two revisions (both Nick's): **the primary flow for OWNED hardware is a direct handle entry on the device itself.** The delegated session is the LEASE's mechanism — it exists because borrowed hardware must never see the handle — and it does not generalize into a wake path for your own devices. The identity seed and decryption roots stay at rest nowhere; what varies by rung is only who re-proves the human after the wairua dies.
 
 ## The voucher spectrum
 
 Every wake answers one question — who vouches for this device right now?
 
-| voucher | lifetime | what it proves | cost to the human |
+| voucher | applies to | lifetime | what it proves |
 |---|---|---|---|
-| **wairua** (per-boot secret) | until power interruption | same boot, same session — nothing left the rail | zero (seamless resume) |
-| **fleet** (an owned device approves) | until recall/lockout | possession of live hardware AND knowledge: the handle is typed ON THE APPROVER | handle entry, on hardware you chose |
-| **handle** (typed) | the root itself | the human knows the name that IS the key (seed = BLAKE3(handle)) | typing a secret on THIS hardware |
+| **wairua** (per-boot secret) | owned hardware, same boot | until power interruption | same boot, same session — nothing left the rail |
+| **handle typed ON the device** | owned hardware — THE PRIMARY FLOW | the root itself | the human knows the name that IS the key (seed = BLAKE3(handle)) |
+| **delegated session** (lease, stage 2) | BORROWED hardware only | until recall | an owned device approved — the handle NEVER touches the borrowed keyboard |
 
-**The knowledge factor is never traded away (Nick 2026-09-04, revising the first draft).** A tap-only fleet vouch would make possession sufficient: a thief with the whole backpack — rebooted laptop plus still-attested watch — would authenticate by powering on and tapping approve. Rejected. The fleet rung moves WHERE the handle is typed (onto an approver you chose), never WHETHER: waking hardware + typed handle on live owned hardware = the same two factors as today, with the secret kept off the least defensible keyboard in the room. Matches the shipped precedent: the unattended toggle already demands handle re-entry to arm AND disarm.
+**Two revisions, both Nick's, same day — kept as testimony:**
+1. A tap-only fleet vouch was rejected: possession must never suffice (a stolen backpack — rebooted laptop + still-attested watch — would have authenticated).
+2. The approver-typed variant for OWNED devices was rejected too: the drawer phone, the re-added laptop, the sold device under its new owner's handle — every owned-hardware wake takes a DIRECT handle entry on that device. The delegated session is not a convenience rung; it is the lease's necessity, scoped to hardware that must not see the handle because it is not yours.
 
-Why WHERE matters: ferros and Android can give the handle entry a kernel-protected input path (keylog-resistant by construction); Windows and macOS cannot promise one. The ladder's payoff is typing the handle only on platforms that can defend the keyboard — and NEVER on borrowed hardware.
-
-Falling down the ladder: boot vouches until reboot; the fleet vouches when an owned device is live AND the human proves the handle there; the handle lands on the waking device itself only at the root — first device, total loss, all-offline.
+Keylogging on the primary flow is a PLATFORM problem with a platform answer: ferros and Android can give the handle entry a kernel-protected input path; Windows and macOS cannot promise one — a hardening axis for the entry box, not a reason to move the entry off the device.
 
 ## Today (shipped + spec'd)
 
@@ -33,33 +33,29 @@ flowchart TD
 
 The invariant already held everywhere: nothing durable stores the seed; the capsule stores roots only under a key that dies with the power rail. The cost: every reboot spends a handle entry ON the waking device — the one place a keylogger would sit.
 
-## Target (the ladder completed)
+## Target
 
 ```mermaid
 flowchart TD
-    W[device wakes] --> C{capsule opens\nunder wairua?}
+    W[OWNED device wakes] --> C{capsule opens\nunder wairua?}
     C -- "same boot" --> R[resume]
-    C -- reboot --> F{any OWNED device\nreachable?}
-    F -- yes --> A["fleet inbox: wake request\n→ HANDLE typed on the approver\n(kernel-protected input where the platform has it;\nthe waking device never sees it)"]
-    A --> S["fleet DELIVERS session material:\nrouting capability + wrapped vault root\nsession-scoped · killable by recall"]
-    S --> V[vault opens · fleet announces\nseed still at rest NOWHERE]
-    F -- "no — fleet dark" --> H[handle typed: the root of last resort]
-    H --> D[derive registers] --> V
-    G[guest on BORROWED hardware\ndocs/device-lease.md stage 2] --> A
+    C -- reboot --> H["PRIMARY FLOW: handle typed\nON THIS DEVICE\n(kernel-protected input where\nthe platform has it)"]
+    H --> D["memory-hard derive\n(tohu registers, RAM only)"] --> V[vault opens · fleet announces]
+    G[BORROWED device — lease stage 2\ndocs/device-lease.md] --> A["session request → fleet inbox\n→ approved from an owned device\n(the borrowed keyboard NEVER sees the handle)"]
+    A --> S["fleet delivers a SESSION key:\nrouting + streamed history\nkillable by recall — never the seed"]
 ```
 
-The guest session and the owned-device wake become the SAME approval flow — the lease's stage-2 machinery, pointed at your own hardware. Lockout unifies too: a locked-out device is exactly one the fleet refuses to vouch for; recall of a delivered session is the same verb for guests and for your own drawer phone.
+Owned and borrowed stay separate flows on purpose: the delegated session's whole justification is that the hardware is not yours to type on. Lockout/recall remain routing-layer verbs for both.
 
 ## Invariants (non-negotiable)
 
-1. **The identity seed itself never crosses a wire and never rests.** What the fleet delivers is session material: routing capability, streamed history, and a WRAPPED vault root — killable, session-scoped, useless off-device. (The wrapping design rides the fleet-key redesign's ira-wrap work — docs/fleet-key.md.)
-2. **The handle lands on the WAKING device only at the root of the ladder** — first device, total loss, fleet dark. At the fleet rung it is typed on the APPROVER instead. The ladder exists to keep the handle off indefensible keyboards — the just-rebooted, the borrowed — never to remove the knowledge factor.
-3. **No timers.** Wairua dies at the power rail; fleet vouching dies at the recall/lockout edge; nothing expires by clock.
-4. **Approval is an owned-device edge WITH the knowledge factor** — the fleet-inbox bind-attempt alert carries a handle-entry gate on the approver, the unattended arm/disarm precedent generalized. Possession alone authenticates nothing, ever.
+1. **The identity seed itself never crosses a wire and never rests.** The lease's delegated session delivers session material only — routing capability + streamed history, killable by recall — never the seed and never a vault root for hardware that isn't yours.
+2. **Owned hardware authenticates by direct handle entry on that device.** No proxy entry, no vouch-by-sibling. Possession alone authenticates nothing, ever.
+3. **No timers.** Wairua dies at the power rail; a delegated session dies at the recall edge; nothing expires by clock.
+4. **The borrowed keyboard never sees the handle** — the lease exists precisely because that entry is banned there; approval + knowledge live on an owned device.
 
 ## Open questions
 
-- Exactly what the wrapped vault root is: the ira-wrap from the fleet-key redesign is the natural candidate, but that spec is still under Nick's review — this doc must not front-run it.
-- The all-devices-rebooted-simultaneously fleet: everyone's wairua died, nobody can vouch — one device takes the handle entry and re-seeds the ladder. Fine, but the UX should say WHY ("your other devices are dark").
-- Whether the unattended reboot-capsule toggle survives this design or is subsumed by it (the capsule keeps the single-device unattended case; it remains the ONE deliberate possession-only surface, off by default, armed by handle entry).
-- How light the approver-side entry can get on kernel-protected platforms (full handle vs a shortened proof) — undecided; the full handle is the conservative default.
+- Kernel-protected handle entry: the ferros path is ours to build; the Android secure-input shape needs research; Windows/macOS may simply stay honest about the gap.
+- The unattended reboot-capsule toggle stays as shipped — the one deliberate possession-only surface, off by default, armed by handle entry, single-device scope.
+- What the guest session streams and caches on borrowed hardware (viewport depth) — sized with the lease stage-2 build.
