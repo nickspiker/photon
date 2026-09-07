@@ -4,6 +4,10 @@ use super::*;
 
 /// Greedy word wrap against a pixel width: one measure per candidate join. The attest band and stream entry #0's status line both need it — long ceremony steps and locked-device messages must fold, never run off the sides.
 fn wrap_to_width(text: &mut fluor::text::TextRenderer, s: &str, style: &TextStyle, max_w: f32) -> Vec<String> {
+    // Explicit '\n' is an authored break (the clutch steps use line returns, never dashes — Nick 2026-09-07): each segment wraps independently and the break always survives.
+    if s.contains('\n') {
+        return s.lines().flat_map(|seg| wrap_to_width(text, seg, style, max_w)).collect();
+    }
     let mut lines = Vec::new();
     let mut cur = String::new();
     for word in s.split_whitespace() {
