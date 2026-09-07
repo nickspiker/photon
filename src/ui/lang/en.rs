@@ -433,7 +433,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BridgeOutputExit { output, code } => format!("{output}\n[exit {}]", fmt_i(code as i64)).into(),
         Msg::BridgeShellDied(e) => format!("(shell died: {e} — fresh session on the next command)").into(),
         Msg::EarlierOutputDropped(output) => format!("\u{2026}(earlier output dropped)\n{output}").into(),
-        Msg::DeviceNotSibling => "That device isn't paired as a sibling yet.".into(),
+        Msg::DeviceNotSibling => "That device isn't bound in as a sibling yet.".into(),
         Msg::ShellExited => "shell exited".into(),
         Msg::StopReceivedIdle => "…(stop received — nothing is running here; if a command was in flight, this host restarted and its stream was lost)".into(),
         Msg::NoResponseToStop => "\n…(no response to Stop — prompt released; the command may still be running on the host)".into(),

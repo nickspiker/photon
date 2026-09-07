@@ -454,7 +454,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BridgeOutputExit { output, code } => format!("{output}\n[exit {}]", fmt_i(code as i64)).into(),
         Msg::BridgeShellDied(e) => format!("(el shell murió: {e} — sesión nueva con el próximo comando)").into(),
         Msg::EarlierOutputDropped(output) => format!("\u{2026}(salida anterior descartada)\n{output}").into(),
-        Msg::DeviceNotSibling => "Ese dispositivo aún no está emparejado como hermano.".into(),
+        Msg::DeviceNotSibling => "Ese dispositivo aún no está vinculado como hermano.".into(),
         Msg::ShellExited => "el shell terminó".into(),
         Msg::StopReceivedIdle => "…(stop recibido — aquí no corre nada; si un comando estaba en vuelo, este host se reinició y su flujo se perdió)".into(),
         Msg::NoResponseToStop => "\n…(sin respuesta al Stop — prompt liberado; el comando puede seguir corriendo en el host)".into(),
