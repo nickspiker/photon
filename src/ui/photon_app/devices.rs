@@ -1509,10 +1509,12 @@ impl PhotonApp {
                 matches!((ours, self.storage.as_ref()), (Some(me), Some(st))
                     if crate::storage::fanout_pairs::load(&me, &pk, st).is_some())
             });
+            // One-line row: authored line returns in the ladder/status strings flatten to the middot here.
+            let detail = c.clutch_status_detail().replace('\n', " \u{00b7} ");
             let link = if !egged {
-                tr(Msg::NotEggedYet(&c.clutch_status_detail())).into_owned()
+                tr(Msg::NotEggedYet(&detail)).into_owned()
             } else {
-                c.clutch_status_detail()
+                detail
             };
             rows.push((
                 pk,

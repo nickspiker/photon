@@ -2202,6 +2202,7 @@ impl PhotonApp {
                                 self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()),
                                 self.session.as_ref().map(|se| &se.identity_seed),
                             )
+                            .replace('\n', " \u{00b7} ")
                             .into()
                         };
                         let connection_line = if is_self {
