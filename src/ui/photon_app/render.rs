@@ -4409,7 +4409,7 @@ impl PhotonApp {
                         let departing = self
                             .pending_depart_req
                             .as_ref()
-                            .is_some_and(|(d, _, _)| d == pk);
+                            .is_some_and(|(d, _, _, _, _)| d == pk);
                         if *retired {
                             let armed = self.fleet_release_armed.as_ref() == Some(pk);
                             let label = tr(Msg::ReleasePill { armed });
@@ -4458,6 +4458,32 @@ impl PhotonApp {
                             } else {
                                 let armed = self.fleet_lock_armed.as_ref() == Some(pk);
                                 place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::LockOutPill { armed }), btn_base.wrapping_add(32 + i as HitId), if armed { Some(*theme::PILL_RED) } else { None });
+                            }
+                        }
+                        // DEPARTURE ceremony bands (2026-09-04): the declared intent under the pills, and — once Approve is tapped on a words-carrying request — the words-entry box that gates the countersign (type what the departing device's screen shows).
+                        let departing_here = self.pending_depart_req.as_ref().is_some_and(|(d, _, _, _, _)| d == pk);
+                        if departing_here {
+                            let intent = self.pending_depart_req.as_ref().map(|(_, _, _, it, _)| *it).unwrap_or(0);
+                            if intent != 0 {
+                                flow.line(
+                                    &mut canvas,
+                                    ctx.text,
+                                    &tr(if intent == 1 { Msg::DepartIntentNewOwner } else { Msg::DepartIntentDesk }),
+                                    hspan2 * 0.85,
+                                    if intent == 1 { theme::PILL_YELLOW.1 } else { *theme::LABEL_COLOUR },
+                                    600,
+                                );
+                            }
+                            let entry_here = self.depart_words_entry.as_ref().is_some_and(|(d, _)| d == pk);
+                            if entry_here {
+                                flow.line(&mut canvas, ctx.text, &tr(Msg::DepartWordsPrompt), hspan2 * 0.85, *theme::CONTACT_NAME_COLOUR, 600);
+                                let tb_band = flow.band(hspan2 * 2.0);
+                                if let Some((_, tb)) = self.depart_words_entry.as_mut() {
+                                    tb.set_rect(tb_band.x + tb_band.w * 0.35, tb_band.center_y(), tb_band.w * 0.66, tb_band.h * 0.9);
+                                    tb.set_font_size(hspan2 * 0.95, ctx.text);
+                                    let id = tb.hit_id();
+                                    tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
+                                }
                             }
                         }
                         // AIR between device cards — the whole point. Between cards (never after the last) the conversation's white hairline rides the midpoint (Nick 2026-09-03: "same white hairlines between messages"): pure white α=1/8 = VERSION_COLOUR, the between-messages divider treatment.
@@ -4583,6 +4609,14 @@ impl PhotonApp {
                         &tr(Msg::SecurityRemoveShredHint),
                         3, *theme::PILL_RED, self.settings_removeshred_armed);
                     flow.gap(hspan2 * 0.4);
+                    // LEAVER's pending departure: the approval words, big and Oxanium, plus the waiting line — this screen IS the ceremony's display half until the de-fold completes (or relaunch clears it).
+                    if self.depart_request_t.is_some() {
+                        if let Some(words) = self.depart_words.clone() {
+                            flow.line(&mut canvas, ctx.text, &tr(Msg::DepartWordsShow(&words)), hspan2 * 1.25, *theme::SEARCH_FOUND_COLOUR, 700);
+                            flow.prose(&mut canvas, ctx.text, &tr(Msg::DepartWaitingLine), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                            flow.gap(hspan2 * 0.6);
+                        }
+                    }
                     flow.line(&mut canvas, ctx.text, &tr(Msg::SecurityStatusLine), hspan2, *theme::LABEL_COLOUR, 400);
                     flow.gap(hspan2 * 0.8);
                     // ── Load on startup (Nick 2026-09-03: auto-attest does no good unless the app also LOADS on reboot — the two belong side by side). The OS artifact IS the setting (platform::autostart, default-ON); the dispatch in protocol.rs works from any page, only the render lives here.

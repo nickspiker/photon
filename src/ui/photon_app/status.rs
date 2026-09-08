@@ -371,7 +371,7 @@ impl PhotonApp {
         let mut chain_pull_reqs_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
         let mut chain_pull_misses_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
         // Sibling departure requests (bilateral removal), deferred past the checker borrow.
-        let mut depart_reqs_after: Vec<(i64, Vec<u8>, [u8; 32])> = Vec::new();
+        let mut depart_reqs_after: Vec<(i64, Vec<u8>, [u8; 32], u8, Option<[u8; 32]>)> = Vec::new();
         // Wi-Fi Direct credential provisioning, collected on came-online edges (after releasing the checker borrow): the elected-GO side mints/re-offers the pair's group credential once per session (docs/offgrid.md).
         // Wi-Fi Direct beacon answer-back target, collected on the p2p learn edge (the reply teaches the peer OUR group address).
         let mut wfd_beacon_reply: Option<std::net::SocketAddr> = None;
@@ -3581,12 +3581,14 @@ impl PhotonApp {
                     consent_t,
                     consent_sig,
                     sender_pubkey,
+                    intent,
+                    words_commit,
                 } => {
                     // Sibling gate: only a live member of OUR fleet may ask us to countersign its exit.
                     if self.contacts.iter().any(|c| {
                         c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
                     }) {
-                        depart_reqs_after.push((consent_t, consent_sig, sender_pubkey.key));
+                        depart_reqs_after.push((consent_t, consent_sig, sender_pubkey.key, intent, words_commit));
                     }
                 }
                 StatusUpdate::CkptReqReceived {
@@ -4742,7 +4744,7 @@ impl PhotonApp {
         }
 
         // Sibling departure requests (deferred): verify the leaver's signature over its own departure request, then surface the approval to THIS user (fleet page pill + toast). The countersign happens only on the human's two-tap approve — never automatically, that's the whole point of bilateral.
-        for (t, sig, leaver) in depart_reqs_after {
+        for (t, sig, leaver, intent, words_commit) in depart_reqs_after {
             let Some(hp) = self.our_handle_proof() else { continue };
             let msg = fgtw::fleet::departreq_signing_bytes(&hp, &leaver, t);
             let valid = ed25519_dalek::VerifyingKey::from_bytes(&leaver)
@@ -4763,8 +4765,12 @@ impl PhotonApp {
                 .find(|c| c.is_sibling && c.knows_device(&leaver))
                 .map(|c| c.display_name())
                 .unwrap_or_else(|| tr(Msg::ADevice).into_owned());
-            crate::logf!("SECURITY: {} requests removal from the fleet — approve on the Fleet page", name);
-            self.pending_depart_req = Some((leaver, t, sig));
+            crate::logf!(
+                "SECURITY: {} requests removal from the fleet (intent {}) — approve on the Fleet page",
+                name,
+                match intent { 1 => "new owner", 2 => "desk", _ => "unstated" }
+            );
+            self.pending_depart_req = Some((leaver, t, sig, intent, words_commit));
             self.ready_toast = Some(tr(Msg::DepartureApproval(&name)).into_owned());
             changed = true;
         }

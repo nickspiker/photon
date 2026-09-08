@@ -358,6 +358,11 @@ impl PhotonApp {
                     self.state = AppState::Launch(LaunchState::Fresh);
                     self.add_join_handle = None;
                     self.submit_join_step(None);
+                } else if e.contains("device_owned") || e.contains("another identity's fleet") {
+                    // JOINER-SIDE HONESTY (the 2026-09-04 retire/Release incident): the new user staring at branded hardware gets the truth — who can free it and where — instead of a mystery brick. The fgtw fallback string stays for logs; the screen speaks the catalog.
+                    crate::logf!("attest: refused — hardware branded to another identity ({})", e);
+                    self.state = AppState::Launch(LaunchState::Error(tr(Msg::DeviceBrandedHint).into_owned()));
+                    self.refocus_handle_select_all();
                 } else {
                     self.state = AppState::Launch(LaunchState::Error(e));
                     self.refocus_handle_select_all();

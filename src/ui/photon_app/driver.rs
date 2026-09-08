@@ -849,34 +849,25 @@ impl FluorApp for PhotonApp {
                             let matches_pending = self
                                 .pending_depart_req
                                 .as_ref()
-                                .is_some_and(|(d, _, _)| *d == pk);
+                                .is_some_and(|(d, _, _, _, _)| *d == pk);
                             if !matches_pending {
                                 // Stale pill (request cleared between paint and tap) — disarm and ignore.
                                 self.fleet_approve_armed = None;
                             } else if self.fleet_approve_armed == Some(pk) {
                                 self.fleet_approve_armed = None;
-                                let Some((_, t, sig)) = self.pending_depart_req.clone() else {
-                                    return EventResponse::Handled;
-                                };
-                                let hp = self.our_handle_proof();
-                                if let (Some(hp), Some(kp)) = (hp, self.device_keypair.clone()) {
-                                    match crate::network::fgtw::fleet::depart_device_consented(
-                                        &kp, &hp, &pk, t, &sig,
-                                    ) {
-                                        Ok(()) => {
-                                            crate::logf!("FLEET: countersigned {}'s departure — consented Remove published", name);
-                                            self.pending_depart_req = None;
-                                            self.ready_toast = Some(tr(Msg::FleetSignedOut(&name)).into_owned());
-                                            // Adopt the shrink immediately (rotation sentinel + row drop) instead of waiting for the next poll.
-                                            if let Some(our_hp) = self.our_handle_proof() {
-                                                self.spawn_contact_fleet_refresh(vec![our_hp]);
-                                            }
-                                        }
-                                        Err(e) => {
-                                            crate::logf!("FLEET: consented remove failed ({}) — request kept", e);
-                                            self.ready_toast = Some(tr(Msg::SignOutPublishFailed).into_owned());
-                                        }
-                                    }
+                                // WORDS GATE (2026-09-04): a request carrying a commitment demands the leaver's on-screen words before the countersign — live contact with the departing device, and the reason a thief-minted "new owner" request can't be rubber-stamped. Pre-intent requests (no commitment) approve as before.
+                                let has_commit = self
+                                    .pending_depart_req
+                                    .as_ref()
+                                    .is_some_and(|(_, _, _, _, wc)| wc.is_some());
+                                if has_commit && self.depart_words_entry.is_none() {
+                                    let mut tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
+                                    let id = tb.hit_id();
+                                    tb.chars.clear();
+                                    self.depart_words_entry = Some((pk, tb));
+                                    self.change_focus(Some(id));
+                                } else {
+                                    self.complete_departure_approval(pk, &name);
                                 }
                             } else {
                                 self.fleet_approve_armed = Some(pk);
@@ -1018,21 +1009,21 @@ impl FluorApp for PhotonApp {
                             self.settings_remove_armed = false;
                         }
                     } else if slot == 3 {
-                        // "Remove & shred" → the BILATERAL departure request, wipe-on-completion flavor. Two-tap confirm. The wipe is GATED on observing our own de-fold (a sibling approved + published): nothing is wiped while the request is pending — otherwise the fleet would forever list a device whose keys are gone. Plain Shred (orange) remains the wipe-without-departing path.
+                        // "Sign out — new owner" (intent 1): the BILATERAL departure request whose approval countersigns AND releases the brand — the whole handoff completes at the approver's one confirm (the 2026-09-04 retire/Release incident fix). Two-tap confirm; wipe is GATED on observing our own de-fold.
                         if self.settings_removeshred_armed {
                             self.settings_removeshred_armed = false;
-                            self.request_fleet_departure(true);
+                            self.request_fleet_departure(1);
                         } else {
                             self.settings_removeshred_armed = true;
                             self.settings_shred_armed = false;
                             self.settings_remove_armed = false;
                         }
                     } else {
-                        // Slot 1 "Remove this device from fleet" → the BILATERAL departure request, keep-vault flavor (loaner doctrine: the completion de-attests but leaves the vault's claims dormant on disk). Two-tap confirm; last-member gate inside request_fleet_departure.
+                        // Slot 1 "Sign out — keeping the device" (intent 2): departure with the brand KEPT — the retired row is deliberate inventory, not a to-do. Two-tap confirm; last-member gate inside request_fleet_departure. Wipes on completion like every departure now (fleet holds history; the old keep-vault flavor retired with the intent menu).
                         if self.settings_remove_armed {
                             self.settings_remove_armed = false;
-                            // BILATERAL: this fires the signed departure REQUEST at the siblings; a surviving member approves on their screen, and the keep-vault de-attest runs when we observe ourselves de-folded. Why not unilateral: whoever briefly holds one unlocked device could sign it out — forcing a key rotation and laundering the hardware into their own fleet.
-                            self.request_fleet_departure(false);
+                            // BILATERAL: this fires the signed departure REQUEST at the siblings; a surviving member approves on their screen. Why not unilateral: whoever briefly holds one unlocked device could sign it out — forcing a key rotation and laundering the hardware into their own fleet.
+                            self.request_fleet_departure(2);
                         } else {
                             self.settings_remove_armed = true;
                             self.settings_shred_armed = false;
@@ -2061,6 +2052,12 @@ impl FluorApp for PhotonApp {
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
+                        if self.depart_words_entry.is_some() {
+                            self.depart_words_entry = None;
+                            self.change_focus(None);
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
                         if self.fleet_rename.is_some() {
                             // Rename abandoned — drop the box, nothing written.
                             self.fleet_rename = None;
@@ -2178,6 +2175,16 @@ impl FluorApp for PhotonApp {
                             .unwrap_or(false);
                         if focused_is_fleet_rename {
                             self.commit_fleet_rename();
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
+                        let focused_is_depart_words = self
+                            .depart_words_entry
+                            .as_ref()
+                            .map(|(_, t)| Some(t.hit_id()) == self.focused)
+                            .unwrap_or(false);
+                        if focused_is_depart_words {
+                            self.submit_depart_words();
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }

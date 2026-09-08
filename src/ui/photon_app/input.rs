@@ -571,6 +571,9 @@ impl PhotonApp {
             self.fleet_rename
                 .as_mut()
                 .map(|(_, t)| (TextboxRole::FleetRename, t)),
+            self.depart_words_entry
+                .as_mut()
+                .map(|(_, t)| (TextboxRole::DepartWords, t)),
         ]
         .into_iter()
         .flatten()

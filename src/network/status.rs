@@ -410,6 +410,10 @@ pub enum StatusUpdate {
         consent_t: i64,
         consent_sig: Vec<u8>,
         sender_pubkey: DevicePubkey,
+        /// Declared departure intent (1 = new owner, 2 = desk; 0 = pre-intent build → desk).
+        intent: u8,
+        /// blake3 of the lowercased approval words the leaver's screen shows; None on pre-intent builds (no words gate).
+        words_commit: Option<[u8; 32]>,
     },
     /// A sibling's whole epoch state (k ‖ epoch ‖ prev), fleet-key-sealed — the UI thread adopts it if it is ahead of the local spine.
     CkptStateReceived {
@@ -2460,7 +2464,7 @@ async fn run_checker(
                                 continue;
                             }
                             // Bilateral removal: a sibling's departure request. Same mandatory packet-ack.
-                            if let Ok((consent_t, consent_sig, sender_pubkey)) =
+                            if let Ok((consent_t, consent_sig, sender_pubkey, intent, words_commit)) =
                                 crate::network::fgtw::protocol::parse_depart_req_vsf(msg_bytes)
                             {
                                 {
@@ -2476,6 +2480,8 @@ async fn run_checker(
                                         consent_t,
                                         consent_sig,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                        intent,
+                                        words_commit,
                                     },
                                     &event_proxy_recv,
                                 );

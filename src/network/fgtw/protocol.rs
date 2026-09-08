@@ -2227,12 +2227,22 @@ pub fn build_depart_req_vsf(
     consent_sig: &[u8],
     device_pubkey: &[u8; 32],
     device_secret: &[u8; 32],
+    intent: u8,
+    words_commit: Option<&[u8; 32]>,
 ) -> Result<Vec<u8>, String> {
     use vsf::file_format::VsfSection;
     use vsf::VsfBuilder;
     let mut section = VsfSection::new("depart_req");
     section.add_field("t", VsfType::e(vsf::types::EtType::e6(t_osc)));
     section.add_field("cs", VsfType::ge(consent_sig.to_vec()));
+    // Departure INTENT (2026-09-04, the retire/Release incident): 1 = new owner (approve countersigns AND releases the brand), 2 = desk (brand kept, retired row = inventory). 0/absent = a pre-intent build; the approver treats it as desk. Authenticated by the file signature like every field.
+    if intent != 0 {
+        section.add_field("it", VsfType::u(intent as usize, false));
+    }
+    // The approval-words COMMITMENT (blake3 of the lowercased words): the leaver's screen shows the words; the approver must type them — proof of live contact with the departing device's screen (the mirror of add's words ceremony). The words themselves never ride the wire.
+    if let Some(wc) = words_commit {
+        section.add_field("wc", VsfType::hp(wc.to_vec()));
+    }
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .signature_ed25519(*device_pubkey, [0u8; 64])
@@ -2242,8 +2252,8 @@ pub fn build_depart_req_vsf(
     vsf::verification::sign_file(unsigned, device_secret)
 }
 
-/// Parse + verify a `depart_req`. Returns (consent_t, consent_sig, sender device pubkey = the leaving device).
-pub fn parse_depart_req_vsf(vsf_bytes: &[u8]) -> Result<(i64, Vec<u8>, [u8; 32]), String> {
+/// Parse + verify a `depart_req`. Returns (consent_t, consent_sig, sender device pubkey = the leaving device, intent, words_commit). Intent 0 + no commitment = a pre-intent build's request — approve treats it as desk with no words gate.
+pub fn parse_depart_req_vsf(vsf_bytes: &[u8]) -> Result<(i64, Vec<u8>, [u8; 32], u8, Option<[u8; 32]>), String> {
     let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
         .map_err(|e| format!("depart_req verification failed: {}", e))?;
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
@@ -2271,7 +2281,24 @@ pub fn parse_depart_req_vsf(vsf_bytes: &[u8]) -> Result<(i64, Vec<u8>, [u8; 32])
             _ => None,
         })
         .ok_or("depart_req missing cs")?;
-    Ok((t, cs, sender_pubkey))
+    let intent = section
+        .fields
+        .iter()
+        .find(|f| f.name == "it")
+        .and_then(|f| f.values.first())
+        .and_then(|v| v.as_u64())
+        .and_then(|n| u8::try_from(n).ok())
+        .unwrap_or(0);
+    let words_commit: Option<[u8; 32]> = section
+        .fields
+        .iter()
+        .find(|f| f.name == "wc")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::hp(h) if h.len() == 32 => <[u8; 32]>::try_from(h.as_slice()).ok(),
+            _ => None,
+        });
+    Ok((t, cs, sender_pubkey, intent, words_commit))
 }
 
 /// Build a `chain_pull_miss` — the negative answer to a `chain_pull`: this sibling holds NO chains for the token. The requester re-keys only when EVERY live sibling has answered miss; a sibling that has the chains never sends this (it re-pushes instead).

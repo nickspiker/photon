@@ -856,6 +856,8 @@ enum TextboxRole {
     UnattendedConfirm,
     /// The Fleet page's inline machine-rename box (one device card's name band swaps to it) — registry membership per the two-walk rule.
     FleetRename,
+    /// The Fleet page's departure-approval words box — typing the leaver's on-screen words is the live-contact binding that gates the countersign.
+    DepartWords,
 }
 
 /// One editable profile field on the You page: a `field_id` (the VSF dictionary label, also the `profile.<id>` settings key), a human label, its taxonomy tier, and the text box holding the working value. Custom fields are user-added (registered in `profile._custom`) and grouped under a "Custom" header. See docs/contact-system.md "The field taxonomy".
@@ -1815,7 +1817,11 @@ pub struct PhotonApp {
     /// The pending departure completes as a WIPE (Remove & shred) instead of the keep-vault de-attest. Dies with the process — a relaunch mid-ceremony safely degrades to keep-vault (the user can Shred manually).
     depart_wipe_after: bool,
     /// A sibling's inbound departure request awaiting THIS user's approval: (leaving device pubkey, consent_t, consent_sig). One at a time — a second request overwrites (latest wins; the earlier requester just re-taps).
-    pending_depart_req: Option<([u8; 32], i64, Vec<u8>)>,
+    pending_depart_req: Option<([u8; 32], i64, Vec<u8>, u8, Option<[u8; 32]>)>,
+    /// LEAVER side: the approval words this device's Security page shows while its own departure request is pending — the approver must type them (live-contact binding). RAM only; gone at completion or relaunch.
+    depart_words: Option<String>,
+    /// APPROVER side: the inline words-entry box gating a countersign (device pk + textbox). Some = the Fleet card's approve is waiting on the words; Enter verifies against the request's commitment, Esc cancels.
+    depart_words_entry: Option<([u8; 32], Textbox)>,
     /// Two-tap arm for the fleet page's "Approve sign-out" pill, keyed by the leaving device pubkey.
     fleet_approve_armed: Option<[u8; 32]>,
     /// Two-tap confirm armed for the Security page's "Remove & shred" (self-departure from the fleet chain, then crypto-wipe). Mutually exclusive with `settings_shred_armed`; cleared on any page switch, like every destructive arm.
@@ -2264,6 +2270,8 @@ impl PhotonApp {
             depart_request_t: None,
             depart_wipe_after: false,
             pending_depart_req: None,
+            depart_words: None,
+            depart_words_entry: None,
             fleet_approve_armed: None,
             settings_removeshred_armed: false,
             dialed_call_ids: Default::default(),
@@ -2827,6 +2835,9 @@ impl PhotonApp {
                 }
                 SettingsPage::Fleet => {
                     if let Some((_, tb)) = self.fleet_rename.as_mut() {
+                        f(tb);
+                    }
+                    if let Some((_, tb)) = self.depart_words_entry.as_mut() {
                         f(tb);
                     }
                 }

@@ -219,6 +219,24 @@ pub enum Msg<'a> {
     OpenLinkPill,
     /// Consent warning when the destination contains non-ASCII bytes (homograph honesty).
     LinkNonAsciiWarn,
+    /// LEAVER's Security page while its departure request is pending: the approval words the approver must type.
+    DepartWordsShow(&'a str),
+    /// LEAVER's pending line under the words.
+    DepartWaitingLine,
+    /// APPROVER's Fleet card: the leaver declared new-owner intent.
+    DepartIntentNewOwner,
+    /// APPROVER's Fleet card: the leaver declared desk (keeping-it) intent.
+    DepartIntentDesk,
+    /// APPROVER's words-entry prompt above the box.
+    DepartWordsPrompt,
+    /// Typed words don't match the request's commitment.
+    DepartWordsMismatch,
+    /// New-owner departure fully completed (countersigned + brand released).
+    DepartCompleteNewOwner(&'a str),
+    /// Countersign landed but the release half failed — the retired row's Release pill is the retry.
+    DepartReleasePending(&'a str),
+    /// Attest refused because the hardware is still branded to another identity — the honest joiner-side message.
+    DeviceBrandedHint,
     CopiedPill,
     ResendPill,
     FetchPill,

@@ -273,7 +273,84 @@ impl PhotonApp {
 
     /// Ship one fleet-scoped frame to every non-locked sibling (direct legs race, relay covers the rest) — the ckpt frames' transport, same targeting as the chain_sync push.
     /// REQUESTER half of the bilateral removal: sign our departure request and hand it to every sibling (the mirror of a joiner posting its binding request). No chain op happens here — a surviving member's user approves on THEIR screen, that device countersigns and publishes, and we complete when we observe our own key de-folded (`depart_request_t` + the member-adopt drain). `wipe_after` = Remove & shred's flavor: wipe on completion instead of the keep-vault de-attest.
-    pub(super) fn request_fleet_departure(&mut self, wipe_after: bool) {
+    /// `intent`: 1 = new owner (the approver countersigns AND releases the brand), 2 = desk (brand kept). Every departure wipes on completion now (fleet holds history); the old keep-vault flavor retired with the intent menu (2026-09-04).
+    /// APPROVER: verify the typed approval words against the pending request's commitment; a match completes the declared departure path, a miss says so and keeps the box (retype or Esc).
+    pub(super) fn submit_depart_words(&mut self) {
+        let Some((pk, tb)) = self.depart_words_entry.take() else {
+            return;
+        };
+        let typed: String = tb.chars.iter().collect::<String>().trim().to_string();
+        let Some((req_pk, _, _, _, Some(commit))) = self.pending_depart_req.clone() else {
+            self.change_focus(None);
+            return;
+        };
+        if req_pk != pk {
+            self.change_focus(None);
+            return; // request replaced between open and Enter — stale box, drop it
+        }
+        if *blake3::hash(typed.to_lowercase().as_bytes()).as_bytes() != commit {
+            crate::log("FLEET: departure words mismatch — countersign withheld");
+            self.ready_toast = Some(tr(Msg::DepartWordsMismatch).into_owned());
+            self.depart_words_entry = Some((pk, tb)); // keep the box; the human retypes or Esc-cancels
+            return;
+        }
+        self.change_focus(None);
+        let name = self
+            .contacts
+            .iter()
+            .find(|c| c.is_sibling && c.knows_device(&pk))
+            .map(|c| c.display_name())
+            .unwrap_or_else(|| tr(Msg::ADevice).into_owned());
+        self.complete_departure_approval(pk, &name);
+    }
+
+    /// APPROVER: run the DECLARED departure path to completion — countersign, then for a new-owner intent release the brand in the same breath (the flow-completes rule: the approve tap finishes the handoff; a release failure surfaces IMMEDIATELY as the retired row's Release pill, the visible retry).
+    pub(super) fn complete_departure_approval(&mut self, pk: [u8; 32], name: &str) {
+        let Some((_, t, sig, intent, _)) = self.pending_depart_req.clone() else {
+            return;
+        };
+        let (Some(hp), Some(kp)) = (self.our_handle_proof(), self.device_keypair.clone()) else {
+            return;
+        };
+        match crate::network::fgtw::fleet::depart_device_consented(&kp, &hp, &pk, t, &sig) {
+            Ok(()) => {
+                crate::logf!("FLEET: countersigned {}'s departure — consented Remove published (intent {})", name, intent);
+                self.pending_depart_req = None;
+                if intent == 1 {
+                    // New owner: the release rides the same approval — the hardware walks out the door attestable.
+                    match crate::network::fgtw::fleet::release_device(&kp, &hp, &pk) {
+                        Ok(()) => {
+                            crate::logf!("FLEET: released the brand on {} — hardware free for its new owner", name);
+                            self.settings_set(
+                                &format!("fleet.released.{}", hex::encode(pk)),
+                                vsf::VsfType::ke(pk.to_vec()),
+                            );
+                            self.fleet_retired.retain(|d| d != &pk);
+                            self.ready_toast = Some(tr(Msg::DepartCompleteNewOwner(name)).into_owned());
+                        }
+                        Err(e) => {
+                            // The countersign LANDED; only the release half failed. The retired row appears with its Release pill — the named, visible retry — and the toast says exactly that.
+                            crate::logf!("FLEET: release after countersign failed ({}) — retired row holds the retry", e);
+                            self.ready_toast = Some(tr(Msg::DepartReleasePending(name)).into_owned());
+                        }
+                    }
+                } else {
+                    self.ready_toast = Some(tr(Msg::FleetSignedOut(name)).into_owned());
+                }
+                // Adopt the shrink immediately (rotation sentinel + row drop) instead of waiting for the next poll.
+                if let Some(our_hp) = self.our_handle_proof() {
+                    self.spawn_contact_fleet_refresh(vec![our_hp]);
+                }
+            }
+            Err(e) => {
+                crate::logf!("FLEET: consented remove failed ({}) — request kept", e);
+                self.ready_toast = Some(tr(Msg::SignOutPublishFailed).into_owned());
+            }
+        }
+    }
+
+    pub(super) fn request_fleet_departure(&mut self, intent: u8) {
+        let wipe_after = true;
         let hp = self.our_handle_proof();
         // LAST-MEMBER GATE (identity never dies): the final member cannot sign out — and structurally, a consented removal needs a SECOND device to approve, so a one-device fleet could never complete anyway. Fail toward refusal on a fetch error.
         if let Some(ref hp_v) = hp {
@@ -299,14 +376,31 @@ impl PhotonApp {
         let me = kp.public.to_bytes();
         let msg = fgtw::fleet::departreq_signing_bytes(&hp, &me, t);
         let sig = kp.sign(&msg).to_bytes().to_vec();
-        match crate::network::fgtw::protocol::build_depart_req_vsf(t, &sig, &me, kp.secret.as_bytes()) {
+        // Approval words: three voca words from a fresh nonce, shown on THIS screen until completion; only their blake3 rides the request. The approver types what this screen shows — live contact with the departing device, the mirror of add's ceremony.
+        let base = voca::FULL.alphabet.len() as u64;
+        let nonce = rand::random::<u64>() % base.pow(3);
+        let mut words = voca::encode(num_bigint::BigUint::from(nonce));
+        // Left-pad to exactly three words (a small nonce encodes short) — the fgtw pair idiom, capitalized zero-word.
+        while fgtw::pair::pair_word_tokens(&words) < 3 {
+            let w0 = std::str::from_utf8(voca::FULL.alphabet[0]).expect("voca words are ASCII");
+            let mut z = String::new();
+            let mut cs = w0.chars();
+            if let Some(c) = cs.next() {
+                z.push(c.to_ascii_uppercase());
+                z.extend(cs);
+            }
+            words = format!("{z}{words}");
+        }
+        let commit: [u8; 32] = *blake3::hash(words.to_lowercase().as_bytes()).as_bytes();
+        match crate::network::fgtw::protocol::build_depart_req_vsf(t, &sig, &me, kp.secret.as_bytes(), intent, Some(&commit)) {
             Ok(frame) => {
                 self.dispatch_frame_to_siblings(frame);
                 self.depart_request_t = Some(t);
                 self.depart_wipe_after = wipe_after;
+                self.depart_words = Some(words);
                 crate::logf!(
-                    "SECURITY: departure requested (bilateral) — awaiting a sibling's approval{}",
-                    if wipe_after { "; will WIPE on completion" } else { "; vault kept on completion" }
+                    "SECURITY: departure requested (bilateral, intent {}) — awaiting a sibling's approval; will WIPE on completion",
+                    if intent == 1 { "new owner" } else { "desk" }
                 );
                 self.ready_toast = Some(tr(Msg::SignOutRequested).into_owned());
             }
