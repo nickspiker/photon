@@ -23,7 +23,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Decline => "Whakakāhore".into(),
         Msg::Delete => "Muku".into(),
         Msg::Keep => "Pupuri".into(),
-        Msg::Play => "\u{25B6} Whakatangi".into(),
+        Msg::Play => "\u{25B6}\u{FE0E} Whakatangi".into(),
         Msg::EndCall => "Whakamutu".into(),
         Msg::HangUp => "Whakairi".into(),
         Msg::Attest => "Whakaū".into(),
@@ -193,7 +193,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ResendPill => "tuku anō".into(),
         Msg::FetchPill => "tiki".into(),
         Msg::SavePill => "tiaki".into(),
-        Msg::PlayPill => "\u{25B6} whakatangi".into(),
+        Msg::PlayPill => "\u{25B6}\u{FE0E} whakatangi".into(),
         Msg::DeletePill => "muku".into(),
         Msg::DeletingPill => "e muku ana\u{2026}".into(),
         Msg::StopPill => "kati".into(),
@@ -434,7 +434,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::RecordingPlaying { pct } => format!("\u{25A0} e p\u{101}whara ana \u{00B7} {}%", fmt_num(pct)).into(),
         Msg::RecordingBubble { units, unit_label, fetching } => {
             let tail = if fetching { " \u{2014} e tiki ana\u{2026}" } else { "" };
-            format!("\u{25B6} hopukanga \u{00B7} {}\u{202F}{unit_label}{tail}", fmt_num(units)).into()
+            format!("\u{25B6}\u{FE0E} hopukanga \u{00B7} {}\u{202F}{unit_label}{tail}", fmt_num(units)).into()
         }
         Msg::FileBubble { name, units, unit_label, held } => {
             let state = if held { "" } else { " \u{2014} pāwhiritia mō ngā mahi" };

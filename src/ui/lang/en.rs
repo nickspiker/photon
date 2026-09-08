@@ -21,7 +21,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Decline => "Decline".into(),
         Msg::Delete => "Delete".into(),
         Msg::Keep => "Keep".into(),
-        Msg::Play => "\u{25B6} Play".into(),
+        Msg::Play => "\u{25B6}\u{FE0E} Play".into(),
         Msg::EndCall => "End wave".into(),
         Msg::HangUp => "Hang up".into(),
         Msg::Attest => "Attest".into(),
@@ -169,7 +169,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ResendPill => "resend".into(),
         Msg::FetchPill => "fetch".into(),
         Msg::SavePill => "save".into(),
-        Msg::PlayPill => "\u{25B6} play".into(),
+        Msg::PlayPill => "\u{25B6}\u{FE0E} play".into(),
         Msg::DeletePill => "delete".into(),
         Msg::DeletingPill => "deleting\u{2026}".into(),
         Msg::StopPill => "stop".into(),
@@ -410,7 +410,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::RecordingPlaying { pct } => format!("\u{25A0} playing \u{00B7} {}%", fmt_num(pct)).into(),
         Msg::RecordingBubble { units, unit_label, fetching } => {
             let tail = if fetching { " \u{2014} fetching\u{2026}" } else { "" };
-            format!("\u{25B6} recording \u{00B7} {}\u{202F}{unit_label}{tail}", fmt_num(units)).into()
+            format!("\u{25B6}\u{FE0E} recording \u{00B7} {}\u{202F}{unit_label}{tail}", fmt_num(units)).into()
         }
         // The "would tofu in the bubble font" caveat here was never true — MEASURED 2026-09-08 (tests/glyph_fallback_probe.rs): the glyph block falls back to Oxanium's `+glyphs` face from any primary family, so file sizes render dozenal like every other numeral.
         Msg::FileBubble { name, units, unit_label, held } => {

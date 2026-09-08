@@ -58,6 +58,7 @@
 //   chromatic_wave.rs  — the sine-modulated visible-spectrum bar (direct-pixel).
 //   state.rs           — AppState{Launch,Ready,Searching,Conversation,AddDevice,Settings(SettingsPage),Connected}, SettingsPage{You,Fleet,Security,Recovery,Appearance,Notifications,Updates,Diagnostics,About}.
 //   settings_layout.rs — SettingsLayout (nav-rail vs content split). Checkbox is now fluor::widgets::Checkbox (first-class, alongside Button/Slider/Dropdown).
+//   fonts.rs           — the bundled font set, one loader (load_bundled): Oxanium weights + the dozenal `+glyphs` face, Noto Symbols/Math/Mono (mono symbol/arrow/box/currency coverage), Noto Arabic/Devanagari/Thai/Armenian/Georgian/Runic. No host fonts ever; CJK deliberately unbundled.
 //   lang.rs            — THE language catalog (docs/languages.md): enum Msg (every user-facing string, semantic params), Lang{En,Es,Mi} + code/autonym/index, set_lang/lang statics (device-local display.lang, OS-locale seeded), tr() dispatch; lang/en.rs, lang/es.rs, lang/mi.rs = one exhaustive match each (the compiler is the completeness checker; every numeral thru fmt_num).
 //   keyboard.rs, mouse.rs — input handling.
 //

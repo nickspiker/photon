@@ -40,6 +40,8 @@ pub mod theme;
 
 // The language catalog — every user-facing string is a `lang::Msg` variant, each language an exhaustive match (see lang.rs doctrine).
 pub mod lang;
+/// The bundled font set — one loader shared by the app and the font-contract KAT.
+pub mod fonts;
 
 // The fluor-hosted `FluorApp` impl. Drives desktop via `host-winit` and Android via `host-android`.
 pub mod photon_app;

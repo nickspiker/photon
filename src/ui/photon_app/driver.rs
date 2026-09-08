@@ -181,20 +181,8 @@ impl FluorApp for PhotonApp {
     }
 
     fn init(&mut self, ctx: &mut Context) {
-        // Register Photon's Oxanium font weights with fluor's shared `TextRenderer` so the logo wordmark can resolve `Family::Name("Oxanium")`. ExtraLight/Light/Regular/Medium/SemiBold/Bold/ExtraBold = numeric weights 200/300/400/500/600/700/800. The logo uses weight 800.
-        let db = ctx.text.font_system_mut().db_mut();
-        db.load_font_data(
-            include_bytes!("../../../assets/Oxanium/Oxanium-ExtraLight.ttf").to_vec(),
-        );
-        db.load_font_data(include_bytes!("../../../assets/Oxanium/Oxanium-Light.ttf").to_vec());
-        // Regular weight uses the `+glyphs` superset: identical to plain Oxanium-Regular for 0x20-0x7e (normal text) but adds the dozenal digit glyphs in the reserved control-code block 0x10-0x1b (DLE..ESC = digits 0..11, Zil..Stelor). Rendering a dozenal number is then a plain draw_text of those bytes at weight 400 — no runtime SVG, no separate font family. Other weights stay on the plain faces (the dozenal glyphs only need to exist at one weight, and the version string renders at 400).
-        db.load_font_data(
-            include_bytes!("../../../assets/Oxanium/Oxanium-Regular+glyphs.ttf").to_vec(),
-        );
-        db.load_font_data(include_bytes!("../../../assets/Oxanium/Oxanium-Medium.ttf").to_vec());
-        db.load_font_data(include_bytes!("../../../assets/Oxanium/Oxanium-SemiBold.ttf").to_vec());
-        db.load_font_data(include_bytes!("../../../assets/Oxanium/Oxanium-Bold.ttf").to_vec());
-        db.load_font_data(include_bytes!("../../../assets/Oxanium/Oxanium-ExtraBold.ttf").to_vec());
+        // Every bundled face (Oxanium weights, the dozenal `+glyphs` superset, the Noto symbol/math/mono coverage, the per-script fonts) — one loader, shared with tests/glyph_fallback_probe.rs so the KAT measures the bundle the app actually ships.
+        crate::ui::fonts::load_bundled(ctx.text);
 
         // Chrome owns its own hit-test map sized to the viewport, allocates four hit-ids for its buttons via the threaded counter, and stamps the perimeter + button rasters in `rasterize_chrome`. The Photon orb (chromatic starburst — same brand mark as the OS-level app icon) ships as a VSF image and decodes into the chrome's app_icon slot. Decode the bundled orb (the Photon brand mark, and the app_icon slot that swaps to a peer's avatar in a conversation). A decode failure logs LOUDLY instead of silently falling back to a plain coloured disk — a stale asset against a bumped vsf format is exactly how a blank orb shipped unnoticed, so make the next one scream rather than degrade in silence.
         // DEV builds get a per-build random gradient orb so a fresh upload is visible at a glance; release ships the real brand mark.

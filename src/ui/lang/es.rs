@@ -23,7 +23,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Decline => "Rechazar".into(),
         Msg::Delete => "Eliminar".into(),
         Msg::Keep => "Conservar".into(),
-        Msg::Play => "\u{25B6} Reproducir".into(),
+        Msg::Play => "\u{25B6}\u{FE0E} Reproducir".into(),
         Msg::EndCall => "Terminar onda".into(),
         Msg::HangUp => "Colgar".into(),
         Msg::Attest => "Atestar".into(),
@@ -189,7 +189,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ResendPill => "reenviar".into(),
         Msg::FetchPill => "traer".into(),
         Msg::SavePill => "guardar".into(),
-        Msg::PlayPill => "\u{25B6} reproducir".into(),
+        Msg::PlayPill => "\u{25B6}\u{FE0E} reproducir".into(),
         Msg::DeletePill => "eliminar".into(),
         Msg::DeletingPill => "eliminando\u{2026}".into(),
         Msg::StopPill => "detener".into(),
@@ -430,7 +430,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::RecordingPlaying { pct } => format!("\u{25A0} reproduciendo \u{00B7} {}%", fmt_num(pct)).into(),
         Msg::RecordingBubble { units, unit_label, fetching } => {
             let tail = if fetching { " \u{2014} trayendo\u{2026}" } else { "" };
-            format!("\u{25B6} grabación \u{00B7} {}\u{202F}{unit_label}{tail}", fmt_num(units)).into()
+            format!("\u{25B6}\u{FE0E} grabación \u{00B7} {}\u{202F}{unit_label}{tail}", fmt_num(units)).into()
         }
         Msg::FileBubble { name, units, unit_label, held } => {
             let state = if held { "" } else { " \u{2014} toca para acciones" };
