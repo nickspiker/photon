@@ -474,6 +474,8 @@ class PhotonConnectionService : Service() {
             ).apply {
                 description = "Quiet indicator that Photon is maintaining a secure connection"
                 setShowBadge(false)
+                // Off the lock screen entirely — a background-connection indicator has no business there.
+                lockscreenVisibility = Notification.VISIBILITY_SECRET
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
@@ -494,16 +496,21 @@ class PhotonConnectionService : Service() {
             "Connecting..."
         }
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        // As invisible as the FGS contract allows (Nick 2026-09-08, researched): MIN channel (no status-bar icon, collapsed quiet section), ongoing=FALSE so Android 13/14+ users can swipe it away for good — the service keeps running; pre-13 pins FGS notifications regardless of this flag. VISIBILITY_SECRET keeps it off the lock screen; DEFERRED keeps it from flashing at every boot (the system shows it lazily, if at all). The notification must EXIST (API 26+ FGS contract — the alternative is doorbell-first delivery thru Google, rejected: the socket stays sovereign); everything else is minimized.
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Photon")
             .setContentText(statusText)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(pendingIntent)
-            .setOngoing(true)
+            .setOngoing(false)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .setSilent(true)
             .setShowWhen(false)
-            .build()
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+        if (Build.VERSION.SDK_INT >= 31) {
+            builder.foregroundServiceBehavior = NotificationCompat.FOREGROUND_SERVICE_DEFERRED
+        }
+        return builder.build()
     }
 
     /**
