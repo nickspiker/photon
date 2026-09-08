@@ -84,6 +84,7 @@
 - [feedback_legacy_first.md](feedback_legacy_first.md) — Port Photon UI from legacy compositing.rs as visible-RGB RMW first; fluor under-blend is Phase 5 cleanup
 - [project_vault_roadmap.md](project_vault_roadmap.md) — Vault phasing: ring tooling, GC, mid-session resurrection, bulk content (avatars/attachments/calls) all wait for device-sync phase
 - [project_identity_storage_model.md](project_identity_storage_model.md) — Device identity is deterministic from fingerprint (not stored); vault lives in app-private storage only, dual ring is intra-session resilience not uninstall-survival
+- [project_font_bundle.md](project_font_bundle.md) — fonts 100% BUNDLED (no system fonts, by design); dozenal glyph block falls back to Oxanium from ANY family (measured, no per-font art needed); emoji feature was OFF until 1439865; CJK/Arabic/Devanagari/Thai/arrows/box-draw/math still tofu
 - [project_android_color_pipeline_floor.md](project_android_color_pipeline_floor.md) — Android 1:1 panel rendering floor: ~2% calibration LUT residual with BT.2020+γ=2.2 buffer tag; ColorMode::NATIVE blocked by vendor init even with root
 - [feedback_orb_settings_panel.md](feedback_orb_settings_panel.md) — orb = settings/about/help panel entry; device management is a separate page in that panel, never the orb's direct action (current direct wiring is interim)
 - [feedback_no_time_based_ui.md](feedback_no_time_based_ui.md) — never time-based UI: no auto-expiring toasts/banners/delayed transitions; event-shown, interaction-cleared (click/keystroke via clear_hints)
