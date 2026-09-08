@@ -57,34 +57,6 @@ pub fn play_blob(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Pl
     spawn(stream, 0)
 }
 
-/// Preview the LIVE spool thru the same downmix, before the Keep/Delete decision has finalized a blob (the end-screen Play). Borrows the ticket — never consumes or shreds it.
-pub fn play_spool(ticket: &SpoolTicket) -> Option<PlaybackHandle> {
-    if crate::platform::audio::is_active() {
-        crate::log("CALL playback: audio busy (call active) — refused");
-        return None;
-    }
-    let records = crate::call::spool::drain_records(ticket)?;
-    let stream = crate::call::record::stream_from_records(&records)?;
-    spawn(stream, 0)
-}
-
-/// [`play_spool`] starting at `skip` frames in — the scrub-bar seek (the worker decode-and-discards to the mark; Opus is stateful, so a seek is a fast re-decode, never a blind jump).
-pub fn play_spool_at(ticket: &SpoolTicket, skip: usize) -> Option<PlaybackHandle> {
-    if crate::platform::audio::is_active() {
-        crate::log("CALL playback: audio busy (call active) — refused");
-        return None;
-    }
-    let records = crate::call::spool::drain_records(ticket)?;
-    let stream = crate::call::record::stream_from_records(&records)?;
-    spawn(stream, skip)
-}
-
-/// Total playable frames of the spool (the scrub bar's denominator before playback starts).
-pub fn spool_total_frames(ticket: &SpoolTicket) -> Option<usize> {
-    let records = crate::call::spool::drain_records(ticket)?;
-    Some(crate::call::record::stream_from_records(&records)?.total)
-}
-
 fn spawn(stream: KeptStream, skip: usize) -> Option<PlaybackHandle> {
     let stop = Arc::new(AtomicBool::new(false));
     let done = Arc::new(AtomicBool::new(false));

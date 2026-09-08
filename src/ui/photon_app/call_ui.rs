@@ -712,7 +712,7 @@ impl PhotonApp {
                         }
                     }
                     // Ringing/Ended: an answer arriving after we've already left the live window is stale — ignore it.
-                    CallPhase::Ringing | CallPhase::Ended => {}
+                    CallPhase::Ringing => {}
                 }
             }
             CallSignal::Decline { call_id } | CallSignal::Busy { call_id } => {
@@ -763,8 +763,6 @@ impl PhotonApp {
                         // Friend-side auto-hangup (e.g. answer hit their dead call) — treat as declined-ish end.
                         self.end_call(&tr(Msg::CallRow), offer_osc);
                     }
-                    // Already in the keep/delete window — a late peer hangup changes nothing here.
-                    CallPhase::Ended => {}
                 }
             }
             CallSignal::Taken { call_id } => {

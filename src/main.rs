@@ -99,7 +99,7 @@ fn main() {
     // Losing the lock is no longer an error by default: the resident-mode handoff — clicking the icon while a (possibly hidden) instance runs — asks that instance to surface itself and exits quietly; if the holder is a LIFELINE it yields the lock instead and this launch takes over. The old already-running error remains the fallback when nobody answers the control channel.
     let dir = photon_messenger::storage::photon_config_dir()
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let install_listener = |lock: &photon_messenger::storage::InstanceLock| {
+    let install_listener = |_lock: &photon_messenger::storage::InstanceLock| {
         // We ARE the instance: park the control listener for the app to serve once its event proxy exists. Unix gets a dedicated socket (safe to create only now, under the flock); Windows reuses the lock's own TcpListener.
         #[cfg(unix)]
         photon_messenger::platform::control::install_unix_listener(&dir);
@@ -217,7 +217,7 @@ fn main() {
         let (app, res) = fluor::host::app::run_app_recoverable(PhotonApp::new());
         if let Err(e) = res {
             // TIER 2 (docs/headless-lifeline.md): the display server died out from under a living photon — winit's x11rb loop exits with an error instead of killing the process. Keep the SAME process serving as the headless lifeline: same attested session, same sockets, zero gap. A fresh full-UI launch takes over thru the yield handshake exactly as with a flag-launched lifeline; a clean quit returns Ok and exits normally.
-            photon_messenger::logf!("HOST: event loop died under a living app ({e}) — dropping to the embedded headless lifeline");
+            photon_messenger::logf!("HOST: event loop died under a living app ({}) — dropping to the embedded headless lifeline", e);
             photon_messenger::flush_log_buffer();
             photon_messenger::ui::photon_app::lifeline::run_lifeline(app);
             photon_messenger::log("LIFELINE: yielded — exiting");

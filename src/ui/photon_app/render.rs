@@ -263,24 +263,18 @@ impl PhotonApp {
                     crate::call::CallPhase::Active => {
                         (vsf::eagle_time_oscillations() - c.phase_osc).max(0) / ops
                     }
-                    crate::call::CallPhase::Ended => {
-                        (c.final_osc.unwrap_or(c.phase_osc) - c.phase_osc).max(0) / ops
-                    }
                     _ => 0,
                 };
                 (c.phase, name, direct, pi, dur)
             });
-        // Ringing / Ended show a SECOND action (Decline / Delete) beside the primary — hoisted so the end-of-frame hit re-stamp agrees with the early paint without re-deriving the phase.
+        // Ringing shows a SECOND action (Decline) beside the primary — hoisted so the end-of-frame hit re-stamp agrees with the early paint without re-deriving the phase.
         let call_two_actions = call_overlay.as_ref().map_or(false, |(p, _, _, _, _)| {
-            matches!(
-                p,
-                crate::call::CallPhase::Ringing | crate::call::CallPhase::Ended
-            )
+            matches!(p, crate::call::CallPhase::Ringing)
         });
-        // Full-screen call panel: Ringing (redesign 2026-08-30 — the compact bar squeezed Answer/Decline under the title band where Android's heads-up notification drops), Ended (the roomy Keep/Delete/Play decision), and Active UNLESS minimized (the in-call screen: timer + speaker/end/add/back). Minimized Active yields to the screen underneath (Phase 3 strip / the compact bar), so messaging + navigation stay live.
+        // Full-screen call panel: Ringing (redesign 2026-08-30 — the compact bar squeezed Answer/Decline under the title band where Android's heads-up notification drops) and Active UNLESS minimized. Ended no longer exists — waves record by default and land straight in the conversation (2026-09-08). Minimized Active yields to the screen underneath (Phase 3 strip / the compact bar), so messaging + navigation stay live.
         let call_minimized = self.call_minimized;
         let call_fullscreen = match call_overlay.as_ref().map(|(p, _, _, _, _)| *p) {
-            Some(crate::call::CallPhase::Ringing) | Some(crate::call::CallPhase::Ended) => true,
+            Some(crate::call::CallPhase::Ringing) => true,
             Some(crate::call::CallPhase::Active) => !call_minimized,
             _ => false,
         };
@@ -612,7 +606,6 @@ impl PhotonApp {
                             tr(Msg::CallActiveNoPath(&call_dur_str)).into_owned()
                         }
                     }
-                    crate::call::CallPhase::Ended => tr(Msg::CallEndedDur(&call_dur_str)).into_owned(),
                     crate::call::CallPhase::Outgoing => tr(Msg::CallingName(&name)).into_owned(),
                 };
                 ctx.text.draw_text_center(
@@ -646,30 +639,6 @@ impl PhotonApp {
                             b.set_rect(w * 0.5 + bw * 0.5 + unit * 0.75, by, bw, bh);
                             b.set_font_size(bfont);
                             b.set_label(tr(Msg::Answer));
-                            b.set_enabled(true);
-                            b.set_fill(Some(*theme::CALL_ACCEPT_FILL));
-                            b.set_hover_fill(Some(*theme::CALL_ACCEPT_HOVER));
-                            b.set_held_fill(Some(*theme::CALL_ACCEPT_HOVER));
-                            let id = b.hit_id();
-                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                        }
-                    }
-                    crate::call::CallPhase::Ended => {
-                        // Keep / Discard ONLY (Nick 2026-09-08): the ended screen is the decision, nothing else. Playback lives on the kept recording's own bubble in the conversation.
-                        if let Some(b) = self.call_decline_btn.as_mut() {
-                            b.set_rect(w * 0.5 - bw * 0.5 - unit * 0.75, by, bw, bh);
-                            b.set_font_size(bfont);
-                            b.set_label(tr(Msg::Delete));
-                            b.set_fill(Some(*theme::CALL_DANGER_FILL));
-                            b.set_hover_fill(Some(*theme::CALL_DANGER_HOVER));
-                            b.set_held_fill(Some(*theme::CALL_DANGER_HOVER));
-                            let id = b.hit_id();
-                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                        }
-                        if let Some(b) = self.call_action_btn.as_mut() {
-                            b.set_rect(w * 0.5 + bw * 0.5 + unit * 0.75, by, bw, bh);
-                            b.set_font_size(bfont);
-                            b.set_label(tr(Msg::Keep));
                             b.set_enabled(true);
                             b.set_fill(Some(*theme::CALL_ACCEPT_FILL));
                             b.set_hover_fill(Some(*theme::CALL_ACCEPT_HOVER));
@@ -739,10 +708,9 @@ impl PhotonApp {
                     crate::call::CallPhase::Outgoing => tr(Msg::CallingName(name)).into_owned(),
                     crate::call::CallPhase::Ringing => tr(Msg::CallBarCalling(name)).into_owned(),
                     crate::call::CallPhase::Active => tr(Msg::CallBarInCall(name)).into_owned(),
-                    crate::call::CallPhase::Ended => tr(Msg::CallBarKeepRecording).into_owned(),
                 };
                 // No validated direct path in a live phase → say so on the bar (media may be silent until a punch lands; the warning disappears live when it does). The ⚠ is safe everywhere: fonts are fully bundled + deterministic (fluor's explicit-db TextRenderer, zero system-font pulls — verified 2026-08-20), and Noto Sans Symbols 2 covers U+26A0 in the same 2600 block as the field-proven ☎.
-                if !direct && !matches!(phase, crate::call::CallPhase::Ended) {
+                if !direct {
                     status.push_str(&tr(Msg::NoDirectPathSuffix));
                 }
                 let status_w = if call_two_actions {
@@ -765,7 +733,6 @@ impl PhotonApp {
                 let ax = x0 + status_w + gap;
                 let a_label = tr(match phase {
                     crate::call::CallPhase::Ringing => Msg::Answer,
-                    crate::call::CallPhase::Ended => Msg::Keep,
                     _ => Msg::HangUp,
                 });
                 if let Some(b) = self.call_action_btn.as_mut() {
@@ -774,7 +741,7 @@ impl PhotonApp {
                     b.set_label(a_label);
                     b.set_enabled(true);
                     // Traffic light by semantics: Answer/Keep green, HangUp red — same law as the full panel.
-                    let accept = matches!(phase, crate::call::CallPhase::Ringing | crate::call::CallPhase::Ended);
+                    let accept = matches!(phase, crate::call::CallPhase::Ringing);
                     b.set_fill(Some(if accept { *theme::CALL_ACCEPT_FILL } else { *theme::CALL_DANGER_FILL }));
                     b.set_hover_fill(Some(if accept { *theme::CALL_ACCEPT_HOVER } else { *theme::CALL_DANGER_HOVER }));
                     b.set_held_fill(Some(if accept { *theme::CALL_ACCEPT_HOVER } else { *theme::CALL_DANGER_HOVER }));
@@ -783,11 +750,7 @@ impl PhotonApp {
                 }
                 if call_two_actions {
                     let dx = x0 + status_w + gap * 2. + action_w;
-                    let d_label = tr(if phase == crate::call::CallPhase::Ended {
-                        Msg::Delete
-                    } else {
-                        Msg::Decline
-                    });
+                    let d_label = tr(Msg::Decline);
                     if let Some(b) = self.call_decline_btn.as_mut() {
                         b.set_rect(dx + action_w * 0.5, cy, action_w, pill_h);
                         b.set_font_size(call_font);

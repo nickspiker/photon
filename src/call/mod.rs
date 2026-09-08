@@ -92,8 +92,6 @@ pub enum CallPhase {
     Ringing,
     /// Media flowing.
     Active,
-    /// Hung up, recording decision pending: the bar shows Keep / Delete (docs/calls.md — recording by default, endpoint memory).
-    Ended,
 }
 
 /// Live wave playback runs this many stops below full scale (1 stop = x2 amplitude = one bit-shift): the headset default while the speaker toggle is parked (Nick 2026-09-03, field waves 1-2 — the loudspeaker at max media volume ran ~2.5 stops hot). Shared so the ringback lands at the SAME loudness as the conversation that follows it.

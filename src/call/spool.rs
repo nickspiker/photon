@@ -55,7 +55,7 @@ pub fn persist_register(call_id8: &[u8; 8], ticket: &SpoolTicket, peer: &[u8; 32
     reg.extend_from_slice(&offer_osc.to_le_bytes());
     match v.write(&reg_key(call_id8), &reg) {
         Ok(()) => crate::logf!("CALL: spool register persisted ({})", hex::encode(call_id8)),
-        Err(e) => crate::logf!("CALL: spool register persist FAILED ({e}) — a crash mid-wave loses this recording"),
+        Err(e) => crate::logf!("CALL: spool register persist FAILED ({}) — a crash mid-wave loses this recording", e),
     }
 }
 

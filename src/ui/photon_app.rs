@@ -1384,11 +1384,10 @@ pub struct PhotonApp {
     call_beam_btn: Option<Button>,
     call_action_btn: Option<Button>,
     call_decline_btn: Option<Button>,
-    /// In-call full-screen (Active) + end-screen (Ended) controls — same retained-Button pattern as the four above. `call_speaker_btn` = speaker toggle (stubbed route intent); `call_addhandle_btn` = add-a-handle (stubbed no-op); `call_back_btn` = minimize ("back to contact"); `call_play_btn` = preview/play the recording (Ended, and the history rows).
+    /// In-call full-screen (Active) controls — same retained-Button pattern as the four above. `call_speaker_btn` = speaker toggle (stubbed route intent); `call_addhandle_btn` = add-a-handle (stubbed no-op); `call_back_btn` = minimize ("back to contact"). (The Ended keep/delete panel + its play button died with record-by-default, 2026-09-08 — playback lives on the recording bubble.)
     call_speaker_btn: Option<Button>,
     call_addhandle_btn: Option<Button>,
     call_back_btn: Option<Button>,
-    call_play_btn: Option<Button>,
     /// The Active call is minimized to a strip (Phase 3) / compact bar — the full-screen call panel yields to the screen underneath so messaging + navigation stay live. Reset on every phase start and forced false on Ringing/Ended (always full-screen).
     call_minimized: bool,
     /// Speaker-toggle visual state (stub — no real device route switch in v1).
@@ -2107,7 +2106,6 @@ impl PhotonApp {
             call_speaker_btn: None,
             call_addhandle_btn: None,
             call_back_btn: None,
-            call_play_btn: None,
             call_minimized: false,
             call_speaker_on: false,
             call_playback: None,
@@ -2701,14 +2699,6 @@ impl PhotonApp {
             match phase {
                 CallPhase::Ringing => {
                     if let Some(b) = self.call_decline_btn.as_mut() {
-                        f(b);
-                    }
-                }
-                CallPhase::Ended => {
-                    if let Some(b) = self.call_decline_btn.as_mut() {
-                        f(b);
-                    }
-                    if let Some(b) = self.call_play_btn.as_mut() {
                         f(b);
                     }
                 }
