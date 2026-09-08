@@ -299,8 +299,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::CustodianExplainer => "One box on purpose: custodians never learn whose recovery they hold, and owners never learn which friends hold theirs — what can't be named can't collude.".into(),
         Msg::SecurityIntro => "Four actions, ordered by how much they destroy. The colour is the warning.".into(),
         Msg::SecurityLockHint => "Locks this device until you re-type your handle. Fully reversible — nothing is deleted, nothing changes for your fleet.".into(),
-        Msg::SecurityShredHint => "Nukes the vault and signs this device out — irreversible here; your identity and history live on thru your other devices. The device STAYS in your fleet's chain; use Release to also remove it.".into(),
-        Msg::SecurityRemoveShredHint => "Signs out, wipes, and removes this device from your fleet. A surviving device approves and chooses the hardware\u{2019}s fate \u{2014} released to a new owner, or kept yours in the drawer.".into(),
+        Msg::SecurityShredHint => "Nukes the vault and de-attests this device — irreversible here; your identity and history live on thru your other devices. It STAYS in your fleet and stays yours: type your handle to start it over empty. To hand the hardware on instead, use Release.".into(),
+        Msg::SecurityRemoveShredHint => "Signs out, wipes, and removes this device from your fleet, freeing the hardware for whoever gets it next \u{2014} they can make it theirs. Another of your devices approves, and that approval finishes the handoff. The right way to sell or give a device away.".into(),
         // ---- appearance ----
         Msg::Theme => "Theme".into(),
         Msg::DarkChrome => "Dark chrome".into(),

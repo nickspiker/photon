@@ -323,8 +323,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::CustodianExplainer => "Kotahi te pouaka, he mea whakaaro: kāore ngā kaitiaki e mōhio nā wai te whakaoranga kei a rātou, kāore hoki ngā rangatira e mōhio ko ēhea hoa kei te pupuri i ā rātou — ko te mea kāore e taea te whakaingoa, kāore e taea te whakakotahi kino.".into(),
         Msg::SecurityIntro => "E whā ngā mahi, kua raupapatia e te nui o tā rātou whakangaro. Ko te tae te whakatūpato.".into(),
         Msg::SecurityLockHint => "Ka raka i tēnei pūrere kia tāurua anō rā anō tō handle. Ka taea katoatia te whakahoki — kāore he mea e mukua.".into(),
-        Msg::SecurityShredHint => "Ka muku whakamuna i te pātaka me te tuakiri i tēnei pūrere — kāore e taea te whakahoki. Ka NOHO TONU te pūrere i tō kāhui; ki te hoatu i te pūrere, whakamahia a Tuku kia tangohia hoki ia.".into(),
-        Msg::SecurityRemoveShredHint => "Ka wehe, ka ūkui, ka tangohia hoki tēnei pūrere i tō kāhui. Mā tētahi atu o ō pūrere e whakaae, māna hoki e kōwhiri te mutunga o te taputapu — ka tukua ki te rangatira hou, ka puritia rānei māu.".into(),
+        Msg::SecurityShredHint => "Ka muku whakamuna i te pātaka, ka wehe hoki te whakaū o tēnei pūrere — kāore e taea te whakahoki i konei; ka ora tonu tō tuakiri me tō hītori mā ō pūrere kē. Ka NOHO TONU ia i tō kāhui, ka mau tonu ki a koe: tāurua tō handle kia tīmata anō, kau ana. Ki te hoatu i te taputapu, whakamahia a Tuku.".into(),
+        Msg::SecurityRemoveShredHint => "Ka wehe, ka ūkui, ka tangohia hoki tēnei pūrere i tō kāhui, ā, ka wetekina te taputapu mō te tangata e whiwhi ana i muri — ka taea e ia te whakawhiwhi ki a ia anō. Mā tētahi atu o ō pūrere e whakaae, mā taua whakaaetanga e whakaoti te tuku. Koinei te tikanga tika mō te hoko, mō te hoatu rānei i tētahi pūrere.".into(),
         // ---- appearance ----
         Msg::Theme => "Kaupapa tae".into(),
         Msg::DarkChrome => "Anga pōuri".into(),

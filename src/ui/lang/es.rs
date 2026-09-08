@@ -319,8 +319,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::CustodianExplainer => "Una casilla a propósito: los custodios nunca saben de quién es la recuperación que guardan, y los dueños nunca saben qué amigos guardan la suya — lo que no se puede nombrar no puede coludirse.".into(),
         Msg::SecurityIntro => "Cuatro acciones, ordenadas por cuánto destruyen. El color es la advertencia.".into(),
         Msg::SecurityLockHint => "Bloquea este dispositivo hasta que vuelvas a escribir tu handle. Totalmente reversible — no se elimina nada.".into(),
-        Msg::SecurityShredHint => "Destruye la bóveda y cierra la sesión de este dispositivo — irreversible aquí; tu identidad y tu historial siguen viviendo en tus otros dispositivos. El dispositivo SIGUE en la cadena de tu flota; usa Liberar para también quitarlo.".into(),
-        Msg::SecurityRemoveShredHint => "Cierra sesi\u{00F3}n, borra y quita este dispositivo de tu flota. Otro de tus dispositivos aprueba y elige el destino del hardware \u{2014} liberado a un nuevo due\u{00F1}o, o guardado tuyo en el caj\u{00F3}n.".into(),
+        Msg::SecurityShredHint => "Destruye la bóveda y desatesta este dispositivo — irreversible aquí; tu identidad y tu historial siguen viviendo en tus otros dispositivos. SIGUE en tu flota y sigue siendo tuyo: escribe tu handle para empezarlo de nuevo, vacío. Para entregar el hardware, usa Liberar.".into(),
+        Msg::SecurityRemoveShredHint => "Cierra sesi\u{00F3}n, borra y quita este dispositivo de tu flota, liberando el hardware para quien lo reciba \u{2014} podr\u{00E1} hacerlo suyo. Otro de tus dispositivos aprueba, y esa aprobaci\u{00F3}n completa la entrega. La manera correcta de vender o regalar un dispositivo.".into(),
         // ---- appearance ----
         Msg::Theme => "Tema".into(),
         Msg::DarkChrome => "Marco oscuro".into(),
