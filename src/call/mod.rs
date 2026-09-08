@@ -143,6 +143,8 @@ pub struct ActiveCall {
     pub reconnecting: bool,
     /// Eagle osc of the last anchor this side fired into a drought — the re-fire spacing check (a measurement cadence, not a UI timer).
     pub last_anchor_osc: i64,
+    /// Ring-lease heartbeat (2026-09-08): caller side = osc we last BEAT the offer (re-express every ~1s during Outgoing); callee side = osc we last RECEIVED an offer beat. The callee drops a Ringing call after 3 missed beats (~3s) — the caller stopping its beat (answered elsewhere / hung up / gone) is the universal stop, needing no delivered edge. A lease on the offer heartbeat, NOT a UI timer.
+    pub last_beat_osc: i64,
 }
 
 /// Eagle osc of the last AUTHENTICATED media packet the engine opened; 0 = none this call. Written by the engine thread, read by the UI's drought measurement.

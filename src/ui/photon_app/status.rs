@@ -29,6 +29,8 @@ impl PhotonApp {
         timed_drain!("call_express", self.drain_express_signals());
         // Media-liveness measurement on the live call (two atomic loads when idle).
         timed_drain!("call_drought", self.call_drought_tick());
+        // Ring-lease heartbeat: caller beats the offer ~1s, callee lapses a stale ring ~3s (two atomics + a compare when idle).
+        timed_drain!("call_ring", self.call_ring_tick());
         // Preview worker finished → flip the Play/Stop pill back (one atomic read when idle).
         self.tick_playback_done();
         // A finished audio calibration posts its profile here (rare; empty = one mutex).

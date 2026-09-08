@@ -289,6 +289,7 @@ impl PhotonApp {
             peer_device: None,
             reconnecting: false,
             last_anchor_osc: 0,
+            last_beat_osc: now,
         });
         if contact_validated {
             crate::logf!("CALL: dialing {} (id {})", crate::fp(&peer), hex::encode(&call_id[..4]));
@@ -396,6 +397,48 @@ impl PhotonApp {
         self.end_call(&summary, offer_osc);
     }
 
+    /// The ring-lease heartbeat (Nick 2026-09-08). Caller: while Outgoing, re-express the offer every ~1s so every ringing callee device keeps its lease — the beat stops the instant we leave Outgoing (answered by anyone / hung up), which is the universal, loss-proof stop. Callee: a Ringing call with no offer beat for ~3s lapses SILENTLY (no row — the caller signs the missed-wave record, never the receiver). Instant stops (Hangup/Decline/sibling-answer) still fire on their edges; this is the backstop for when no edge is ever delivered (the desktop+mac forever-ring, 2026-09-08).
+    pub(super) fn call_ring_tick(&mut self) {
+        const OSC: i64 = vsf::OSCILLATIONS_PER_SECOND as i64;
+        let now = vsf::eagle_time_oscillations();
+        let Some(call) = self.active_call.as_ref() else {
+            return;
+        };
+        match call.phase {
+            CallPhase::Outgoing if call.we_are_caller => {
+                if now - call.last_beat_osc < OSC {
+                    return;
+                }
+                let (call_id, nonce, offer_key, peer) =
+                    (call.call_id, call.caller_nonce, call.offer_lane_key, call.peer_handle_hash);
+                let Some(offer_key) = offer_key else {
+                    return; // no lane key captured yet — the first express already carries it once committed
+                };
+                let Some(ci) = self.contact_index_by_handle_hash(&peer) else {
+                    return;
+                };
+                let device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+                let sig = CallSignal::Offer { call_id, nonce, device };
+                self.send_express_signal(ci, &sig, now, Some(offer_key));
+                if let Some(c) = self.active_call.as_mut() {
+                    c.last_beat_osc = now;
+                }
+            }
+            CallPhase::Ringing => {
+                if now - call.last_beat_osc >= 3 * OSC {
+                    crate::logf!(
+                        "CALL: ring lease lapsed — no offer beat for 3s, caller stopped (id {})",
+                        hex::encode(&call.call_id[..4])
+                    );
+                    self.active_call = None;
+                    Self::stop_ring_alert_platform();
+                    self.scene_dirty = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Media-liveness measurement (edges-not-timers: packet arrival IS the event stream; this is a measurement cadence on it, like the learner tick or PT's RTO — never UI timing). Receive drought past the reconnect line → panel shows reconnecting + anchors fire at the peer's freshest paths; past the drop line → honest teardown with a dropped summary, because a silently-dead Active call the human must notice and kill is the worse experience. The engine's mute-transmits-zeros contract keeps a muted peer from ever reading as a drought.
     pub(super) fn call_drought_tick(&mut self) {
         const OSC: i64 = vsf::OSCILLATIONS_PER_SECOND as i64;
@@ -489,7 +532,14 @@ impl PhotonApp {
         match sig {
             CallSignal::Offer { call_id, nonce, device } if !row_is_outgoing => {
                 match &self.active_call {
-                    Some(c) if c.call_id == call_id => {} // duplicate/retransmit
+                    Some(c) if c.call_id == call_id => {
+                        // A repeated offer for the LIVE ringing call is the caller's heartbeat — renew the ring lease (call_ring_tick lapses it after 3 missed beats).
+                        if c.phase == CallPhase::Ringing {
+                            if let Some(call) = self.active_call.as_mut() {
+                                call.last_beat_osc = vsf::eagle_time_oscillations();
+                            }
+                        }
+                    }
                     // GLARE (field 2026-09-02, Emma+Nick dialing each other in the same second → mutual auto-BUSY, no ring, no notification, two "missed call" rows and no call): an offer from the peer we are currently CALLING means both humans pressed the button — both consent, so CONNECT, never refuse. Deterministic fold from symmetric information: the smaller call_id is THE call; the larger-id side quietly drops its own outgoing (no hangup spray, no missed-call row — the peer is ignoring that offer by the same rule) and answers the winner. Both sides compute the same rule on the same two ids, so exactly one call survives.
                     Some(c)
                         if c.peer_handle_hash == peer
@@ -529,6 +579,7 @@ impl PhotonApp {
                                 peer_device,
                                 reconnecting: false,
                                 last_anchor_osc: 0,
+                                last_beat_osc: vsf::eagle_time_oscillations(),
                             });
                             // Both users already pressed call — consent is mutual, connect NOW (a fold that merely rings would ask one of them to press the button twice). If the answer guard refuses (uncalibrated route), the call stays Ringing and the panel says why — still strictly better than BUSY.
                             self.answer_call();
@@ -589,6 +640,7 @@ impl PhotonApp {
                             peer_device,
                             reconnecting: false,
                             last_anchor_osc: 0,
+                            last_beat_osc: vsf::eagle_time_oscillations(),
                         });
                         self.ring_alert(ci);
                         crate::logf!(
