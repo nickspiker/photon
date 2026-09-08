@@ -470,7 +470,7 @@ mod tests {
         assert!(b
             .pubkey_set_union("fleet.locked.")
             .contains(&STOLEN));
-        // The owner's reversal: the typed u0(false) tombstone unlock_fleet_device writes. It never parses as a key, so it drops out of the union locally and syncs the reversal fleet-wide.
+        // The owner's reversal: the typed u0(false) tombstone reinstate_fleet_device writes. It never parses as a key, so it drops out of the union locally and syncs the reversal fleet-wide.
         a.set(&key, VsfType::u0(false), 200);
         assert!(a
             .pubkey_set_union("fleet.locked.")

@@ -838,16 +838,6 @@ impl FluorApp for PhotonApp {
                             self.fleet_rename = Some((pk, tb));
                             self.change_focus(Some(id));
                         }
-                    } else if (72..80).contains(&slot) || slot >= 80 && slot < 88 {
-                        // Departure intent chosen (the approver's answer): 72+ = new owner (countersign + release the brand), 80+ = desk (countersign, brand kept). Each completes the whole path at this one tap.
-                        let new_owner = slot < 80;
-                        let idx = (if new_owner { slot - 72 } else { slot - 80 }) as usize;
-                        let devices = self.fleet_device_rows();
-                        if let Some((pk, _, _, _, name, _, _, _)) = devices.get(idx).cloned() {
-                            if self.depart_choice.as_ref().is_some_and(|(d, _)| *d == pk) {
-                                self.complete_departure_approval(pk, &name, if new_owner { 1 } else { 2 });
-                            }
-                        }
                     } else if slot >= 48 {
                         // "Approve sign-out" (two-tap): the CONSENT half of the bilateral removal — countersign the leaver's departure request and publish the consented Remove. The leaver completes its side when it observes itself de-folded.
                         let idx = (slot - 48) as usize;
@@ -874,7 +864,7 @@ impl FluorApp for PhotonApp {
                                     self.depart_words_entry = Some((pk, tb));
                                     self.change_focus(Some(id));
                                 } else {
-                                    // Commitment-less request (pre-words era): no words gate and no intent menu — complete on the declared intent (0 degrades to desk: brand kept is the conservative fate).
+                                    // Commitment-less request (pre-words era): no words gate — complete on the declared intent, an unspecified 0 taking the conservative brand-kept path.
                                     let intent = self.pending_depart_req.as_ref().map(|(_, _, _, it, _)| *it).unwrap_or(2);
                                     self.complete_departure_approval(pk, &name, if intent == 0 { 2 } else { intent });
                                 }
@@ -896,7 +886,7 @@ impl FluorApp for PhotonApp {
                                     self.private_s = crate::crypto::blind::PrivateS::None;
                                     self.pending_broadcast_signal = -1;
                                     self.state = AppState::Launch(LaunchState::Error(
-                                        tr(Msg::ConfirmUnlock(&name)).into_owned(),
+                                        tr(Msg::ConfirmReinstate(&name)).into_owned(),
                                     ));
                                     self.clear_handle_for_reproof();
                                     crate::logf!("FLEET: unlock of {} armed — de-attested, awaiting handle confirmation", name);
@@ -930,13 +920,25 @@ impl FluorApp for PhotonApp {
                                     self.private_s = crate::crypto::blind::PrivateS::None;
                                     self.pending_broadcast_signal = -1;
                                     self.state = AppState::Launch(LaunchState::Error(
-                                        tr(Msg::ConfirmLockOut { name: &name, last_unlocker: other_live == 0 }).into_owned(),
+                                        tr(Msg::ConfirmRevoke { name: &name, last_unlocker: other_live == 0 }).into_owned(),
                                     ));
                                     self.clear_handle_for_reproof();
                                     crate::logf!("FLEET: lock-out of {} armed — de-attested, awaiting handle confirmation", name);
                                 }
                             } else {
                                 self.fleet_lock_armed = Some(pk);
+                            }
+                        }
+                    } else if (64..72).contains(&slot) {
+                        // Benign remote LOCK (two-tap): ask a sibling to de-attest. No handle confirmation — nothing is destroyed and nothing is refused; the device stays a trusted member and its own handle wakes it. (Revoke, the hostile twin below, still demands the handle.)
+                        let idx = (slot - 64) as usize;
+                        let devices = self.fleet_device_rows();
+                        if let Some((pk, false, _, false, name, _, _, _)) = devices.get(idx).cloned() {
+                            if self.fleet_dormant_armed == Some(pk) {
+                                self.fleet_dormant_armed = None;
+                                self.lock_device_remote(pk, &name);
+                            } else {
+                                self.fleet_dormant_armed = Some(pk);
                             }
                         }
                     } else if slot >= 24 {
@@ -1016,10 +1018,10 @@ impl FluorApp for PhotonApp {
                             self.settings_removeshred_armed = false;
                         }
                     } else if slot == 3 {
-                        // "Release" (Nick 2026-09-08: Lock / Wipe / Release — the whole page): the BILATERAL departure — signs out, wipes, and removes this device from the fleet. Intent 0 = the APPROVER chooses the hardware's fate (new owner vs desk) at the words screen — the 2026-09-04 intent-menu design, now where it belongs. Two-tap confirm; wipe is GATED on observing our own de-fold. Why not unilateral: whoever briefly holds one unlocked device could sign it out — forcing a key rotation and laundering the hardware into their own fleet.
+                        // "Release" (Nick 2026-09-08, the four verbs: Lock / Wipe / Release / Revoke): the BILATERAL departure — signs out, wipes, AND removes this device from the fleet, freeing the hardware brand. No intent question any more — the drawer case is LOCK (stays a member, nothing departs), so every departure is a real handoff. Two-tap confirm; the wipe is GATED on observing our own de-fold. Why not unilateral: whoever briefly holds one unlocked device could sign it out — forcing a key rotation and laundering the hardware into their own fleet.
                         if self.settings_removeshred_armed {
                             self.settings_removeshred_armed = false;
-                            self.request_fleet_departure(0);
+                            self.request_fleet_departure(1);
                         } else {
                             self.settings_removeshred_armed = true;
                             self.settings_shred_armed = false;
@@ -2036,9 +2038,8 @@ impl FluorApp for PhotonApp {
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
-                        if self.depart_words_entry.is_some() || self.depart_choice.is_some() {
+                        if self.depart_words_entry.is_some() {
                             self.depart_words_entry = None;
-                            self.depart_choice = None;
                             self.change_focus(None);
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
@@ -3266,6 +3267,8 @@ impl PhotonApp {
                         let t_phase = std::time::Instant::now();
                         self.contacts = crate::storage::contacts::load_all_contacts(&s);
                         self.apply_locked_set();
+                        self.apply_dormant_set();
+                    self.apply_dormant_set();
                         let ms_contacts = t_phase.elapsed().as_millis();
                         for c in self.contacts.iter_mut() {
                             if let Some((

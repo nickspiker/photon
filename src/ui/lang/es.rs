@@ -100,13 +100,13 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SearchError(e) => format!("error: {e}").into(),
         Msg::AlreadyInContacts => "Ya está en tus contactos".into(),
         Msg::Attesting => "Atestando\u{2026}".into(),
-        Msg::LockedByFleet => "tu flota bloqueó este dispositivo \u{2014} desbloquéalo desde otro de tus dispositivos para volver a usarlo".into(),
+        Msg::RevokedByFleet => "tu flota REVOCÓ este dispositivo \u{2014} ya no puede actuar como tú. Restitúyelo desde otro de tus dispositivos para volver a usarlo.".into(),
         Msg::IdentityCarriedHint => "este dispositivo ya lleva una identidad".into(),
         Msg::PermanenceWarning => "Esto acuña una identidad permanente.\nSin contraseña. Sin reinicio. Sin recuperación.\nEl primer humano en atestarla es su dueño.\nLos dispositivos se pueden reemplazar. La identidad no.\nPresiona otra vez si lo dices en serio.".into(),
         Msg::KnownHandleWarning => "Alguien ya responde a este nombre.".into(),
         Msg::PickAnotherName => "No soy yo \u{2014} elegir otro".into(),
         Msg::ItsMineShowWords => "Soy yo \u{2014} agregar este dispositivo".into(),
-        Msg::LockedRetry => "¿Lo desbloqueaste desde otro dispositivo? Toca para reintentar".into(),
+        Msg::LockedRetry => "¿Lo restituiste desde otro dispositivo? Toca para reintentar".into(),
         // ---- ready screen ----
         Msg::PeersOnline(n) => format!("{} {}", fmt_num(n as u32), if n == 1 { "par" } else { "pares" }).into(),
         Msg::NetworkBack => "\u{2039} Red".into(),
@@ -250,7 +250,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FleetTapToCopy => "Toca un nombre para copiar su clave.".into(),
         Msg::ThisDevice => "este dispositivo".into(),
         Msg::RetiredStillYours => "retirado \u{2014} sigue siendo tuyo".into(),
-        Msg::LockedOut => "bloqueado".into(),
+        Msg::RevokedBadge => "revocado".into(),
         Msg::Online => "en línea".into(),
         Msg::Offline => "fuera de línea".into(),
         Msg::OnlineVia(link) => format!("en línea \u{00b7} {link}").into(),
@@ -266,19 +266,21 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SignOutBuildFailed => "No se pudo construir la solicitud de salida — reintenta.".into(),
         Msg::DeviceReleased(name) => format!("{name} liberado — ahora puede unirse a una identidad nueva.").into(),
         Msg::ReleaseFailed => "No se pudo liberar — revisa la conexión y reintenta.".into(),
-        Msg::DeviceUnlockedToast(name) => format!("{name} desbloqueado \u{2014} puede volver a la flota en su próxima atestación.").into(),
-        Msg::LockedOutNotice(name) => format!("{name} bloqueado \u{2014} ya no puede actuar en esta flota.").into(),
-        Msg::ConfirmUnlock(name) => format!("Escribe tu handle para confirmar el desbloqueo de {name}.").into(),
-        Msg::ConfirmLockOut { name, last_unlocker } => {
-            let warn = if last_unlocker { " ADVERTENCIA: esto deja al dispositivo que tienes en la mano como el ÚNICO capaz de desbloquearlo." } else { "" };
-            format!("Escribe tu handle para confirmar el bloqueo de {name}.{warn}").into()
+        Msg::DeviceReinstatedToast(name) => format!("{name} restituido \u{2014} puede volver a la flota en su próxima atestación.").into(),
+        Msg::RevokedNotice(name) => format!("{name} revocado \u{2014} ya no puede actuar en esta flota.").into(),
+        Msg::ConfirmReinstate(name) => format!("Escribe tu handle para confirmar el desbloqueo de {name}.").into(),
+        Msg::ConfirmRevoke { name, last_unlocker } => {
+            let warn = if last_unlocker { " ADVERTENCIA: esto deja al dispositivo que tienes en la mano como el ÚNICO capaz de restituirlo." } else { "" };
+            format!("Escribe tu handle para confirmar la revocación de {name}.{warn}").into()
         }
         Msg::CopiedName(name) => format!("Se copió {name}").into(),
         Msg::ReleasePill { armed } => if armed { "Liberar \u{2014} ¿seguro?" } else { "Liberar" }.into(),
         Msg::BridgePill => "Puente".into(),
         Msg::ApproveSignOutPill { armed } => if armed { "Aprobar la salida \u{2014} ¿seguro?" } else { "Aprobar salida" }.into(),
-        Msg::UnlockPill { armed } => if armed { "Desbloquear \u{2014} ¿seguro?" } else { "Desbloquear" }.into(),
-        Msg::LockOutPill { armed } => if armed { "Bloquear \u{2014} ¿seguro?" } else { "Bloquear" }.into(),
+        Msg::ReinstatePill { armed } => if armed { "Restituir \u{2014} ¿seguro?" } else { "Restituir" }.into(),
+        Msg::RevokePill { armed } => if armed { "Revocar \u{2014} ¿seguro?" } else { "Revocar" }.into(),
+        Msg::LockPill { armed } => if armed { "Bloquear \u{2014} ¿seguro?" } else { "Bloquear" }.into(),
+        Msg::DeviceLockedToast(name) => format!("{name} bloqueado \u{2014} cerrará su sesión en su próximo tick; tu handle lo despierta.").into(),
         Msg::SingleCopyWarning => "Tu historial de mensajes vive solo en este dispositivo \u{2014} agrega otro para replicarlo.".into(),
         Msg::DeviceSignsItselfOut => "Solo el propio dispositivo puede pedir salir \u{2014} y su hardware sigue siendo tuyo hasta que lo liberes.".into(),
         Msg::AddDevicePill => "Agregar dispositivo".into(),
@@ -287,7 +289,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SecurityLock => "Bloquear".into(),
         Msg::DepartWordsShow(w) => format!("Palabras de aprobaci\u{00F3}n: {w}").into(),
         Msg::DepartWaitingLine => "Esperando la aprobaci\u{00F3}n desde otro de tus dispositivos (Ajustes \u{2192} Flota). Pedir\u{00E1} las palabras de arriba.".into(),
-        Msg::DepartChooseFate => "Palabras verificadas — ¿qué pasa con el hardware?".into(),
         Msg::DepartIntentNewOwner => "quiere salir \u{2014} va a un NUEVO DUE\u{00D1}O (aprobar tambi\u{00E9}n libera el hardware)".into(),
         Msg::DepartIntentDesk => "quiere salir \u{2014} te quedas con el hardware (la marca sigue siendo tuya)".into(),
         Msg::DepartWordsPrompt => "Escribe las palabras que muestra el dispositivo que se va:".into(),

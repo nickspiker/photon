@@ -301,16 +301,12 @@ impl PhotonApp {
             .find(|c| c.is_sibling && c.knows_device(&pk))
             .map(|c| c.display_name())
             .unwrap_or_else(|| tr(Msg::ADevice).into_owned());
-        let intent = self.pending_depart_req.as_ref().map(|(_, _, _, it, _)| *it).unwrap_or(0);
-        if intent == 0 {
-            // Intent-0 request (the leaver's single Release pill): the words gate passed — now the APPROVER answers what's happening. The choice pills render on this device's fleet row; each completes the departure on its path.
-            crate::logf!("FLEET: {}'s departure words verified — awaiting the intent choice (new owner / desk)", name);
-            self.depart_choice = Some((pk, name));
-            self.scene_dirty = true;
-        } else {
-            // Legacy pre-declared intent (an older leaver) — complete as declared.
-            self.complete_departure_approval(pk, &name, intent);
-        }
+        // Release always frees the brand (intent 1). A legacy request declaring desk (2) still completes brand-kept, and an ancient intent-0 takes that same conservative path.
+        let intent = match self.pending_depart_req.as_ref().map(|(_, _, _, it, _)| *it) {
+            Some(1) => 1,
+            _ => 2,
+        };
+        self.complete_departure_approval(pk, &name, intent);
     }
 
     /// APPROVER: run the DECLARED departure path to completion — countersign, then for a new-owner intent release the brand in the same breath (the flow-completes rule: the approve tap finishes the handoff; a release failure surfaces IMMEDIATELY as the retired row's Release pill, the visible retry).
@@ -318,7 +314,6 @@ impl PhotonApp {
         let Some((_, t, sig, _, _)) = self.pending_depart_req.clone() else {
             return;
         };
-        self.depart_choice = None;
         let (Some(hp), Some(kp)) = (self.our_handle_proof(), self.device_keypair.clone()) else {
             return;
         };
@@ -410,7 +405,7 @@ impl PhotonApp {
                 self.depart_words = Some(words);
                 crate::logf!(
                     "SECURITY: departure requested (bilateral, intent {}) — awaiting a sibling's approval; will WIPE on completion",
-                    match intent { 1 => "new owner", 2 => "desk", _ => "approver chooses" }
+                    if intent == 1 { "release the brand" } else { "brand kept (legacy)" }
                 );
                 self.ready_toast = Some(tr(Msg::SignOutRequested).into_owned());
             }
@@ -1739,7 +1734,7 @@ impl PhotonApp {
                 }
             }
         }
-        // The forgiveness side of the sweep: an EXPLICIT emptied entry (unlock_fleet_device here, or a sibling's synced tombstone) clears the row. Absence alone never clears — at boot the settings cache lags and the persisted rows below are the only truth, so only an affirmative tombstone may forgive.
+        // The forgiveness side of the sweep: an EXPLICIT emptied entry (reinstate_fleet_device here, or a sibling's synced tombstone) clears the row. Absence alone never clears — at boot the settings cache lags and the persisted rows below are the only truth, so only an affirmative tombstone may forgive.
         let unlocked = self.unlocked_tombstones();
         if !unlocked.is_empty() {
             let mut cleared: Vec<usize> = Vec::new();
@@ -1806,8 +1801,50 @@ impl PhotonApp {
         }
     }
 
+    /// The devices a sibling has asked to go DORMANT (the benign drawer lock): per-key `fleet.dormant.<hex pubkey>`, same union/tombstone shape as the revoked set. This is a one-shot COURTESY signal, not a state — the target consumes it and tombstones it itself.
+    pub(super) fn dormant_devices(&self) -> Vec<[u8; 32]> {
+        self.fleet_settings
+            .as_ref()
+            .map(|fs| fs.pubkey_set_union("fleet.dormant."))
+            .unwrap_or_default()
+    }
+
+    /// REMOTE LOCK (Nick 2026-09-08, the drawer case): ask a sibling to de-attest. Benign twin of revoke — the device stays a full, trusted member: no key rotation, no refusal list, no worker push, no contact-row flag. Its vault and chains are untouched; typing the handle on it wakes it. Marking is per-key so two concurrent locks can't drop each other (the B4 race), and the marker is a one-shot the target clears.
+    pub(super) fn lock_device_remote(&mut self, pk: [u8; 32], name: &str) {
+        self.settings_set(
+            &format!("fleet.dormant.{}", hex::encode(pk)),
+            vsf::VsfType::ke(pk.to_vec()),
+        );
+        crate::logf!("FLEET: asked {} to go dormant — it de-attests on its next tick (handle wakes it)", crate::fp(&pk));
+        self.ready_toast = Some(tr(Msg::DeviceLockedToast(name)).into_owned());
+    }
+
+    /// Consume a dormant request aimed at THIS device: tombstone first (so the edge fires exactly once and a later relaunch isn't re-locked by a stale marker), then do exactly what the local Lock pill does — clear the session, land on Launch, re-gate on the handle. Nothing else changes: still a member, still trusted, vault intact.
+    pub(super) fn apply_dormant_set(&mut self) {
+        let Some(ours) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else {
+            return;
+        };
+        if !self.dormant_devices().contains(&ours) {
+            return;
+        }
+        self.settings_set(
+            &format!("fleet.dormant.{}", hex::encode(ours)),
+            vsf::VsfType::u0(false),
+        );
+        if self.session.is_none() {
+            return;
+        }
+        crate::log("FLEET-LOCK: a sibling asked this device to go dormant — de-attesting (vault kept; re-type handle to wake)");
+        tohu::clear_session();
+        self.session = None;
+        self.private_s = crate::crypto::blind::PrivateS::None;
+        self.pending_broadcast_signal = -1;
+        self.state = AppState::Launch(LaunchState::Fresh);
+        self.clear_handle_for_reproof();
+    }
+
     /// Treat-as-stolen: lock a fleet device out WITHOUT touching the membership chain (removal is self-signed only, zero exceptions). The device stays a permanent member; the fleet stops trusting it — the locked set syncs fleet-wide, every trust gate refuses it, and the fleet key rotates so its cached key goes stale.
-    pub(super) fn lock_out_device(&mut self, pk: [u8; 32]) {
+    pub(super) fn revoke_device(&mut self, pk: [u8; 32]) {
         // PER-KEY write, never read-union-write on one blob: two devices locking DIFFERENT pubkeys concurrently each unioned old+own into the same LWW key and one lock was DROPPED — a stolen device stayed trusted on part of the fleet until someone re-locked. Distinct keys commute under merge_global_settings, so a lock can no longer lose a race.
         if !self.is_locked_device(&pk) {
             self.settings_set(
@@ -1822,10 +1859,10 @@ impl PhotonApp {
         self.spawn_worker_lock_push(pk);
     }
 
-    /// The owner's deliberate reversal of `lock_out_device` — fires only inside a handle-confirmed attest (see `pending_unlock`).
+    /// The owner's deliberate reversal of `revoke_device` — fires only inside a handle-confirmed attest (see `pending_unlock`).
     /// Order is tombstone-first: the fleet-synced marker empties BEFORE the worker push, so every sibling's `reconcile_worker_locks` stops re-asserting the lock and `reconcile_worker_unlocks` re-drives the clear until the worker agrees — there is no strandable state in either direction.
     /// Re-admission is a GROW: the compliance rotation mints the next epoch including the freshly-eligible device; no shrink semantics involved.
-    pub(super) fn unlock_fleet_device(&mut self, pk: [u8; 32], name: &str) {
+    pub(super) fn reinstate_fleet_device(&mut self, pk: [u8; 32], name: &str) {
         // Value-level tombstone, honestly typed: u0(false) = "not locked". It never parses as a key, so it drops out of pubkey_set_union, and LWW carries the reversal fleet-wide.
         self.settings_set(
             &format!("fleet.locked.{}", hex::encode(pk)),
@@ -1834,7 +1871,7 @@ impl PhotonApp {
         self.apply_locked_set();
         self.spawn_worker_unlock_push(pk);
         self.spawn_fleet_key_grow();
-        self.ready_toast = Some(tr(Msg::DeviceUnlockedToast(name)).into_owned());
+        self.ready_toast = Some(tr(Msg::DeviceReinstatedToast(name)).into_owned());
     }
 
     /// Best-effort off-thread push of ONE device unlock to the worker (fire-and-log). Idempotent (an absent lock is the goal state); the durable re-drive is `reconcile_worker_unlocks` on attest-success.
@@ -1927,7 +1964,7 @@ impl PhotonApp {
         }
     }
 
-    /// Emptied per-key lock entries — devices the fleet has UNLOCKED (the value-level tombstones `unlock_fleet_device` writes). The pubkey rides the key's hex suffix since the value is deliberately empty.
+    /// Emptied per-key lock entries — devices the fleet has UNLOCKED (the value-level tombstones `reinstate_fleet_device` writes). The pubkey rides the key's hex suffix since the value is deliberately empty.
     pub(super) fn unlocked_tombstones(&self) -> Vec<[u8; 32]> {
         let Some(fs) = self.fleet_settings.as_ref() else {
             return Vec::new();

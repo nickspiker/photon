@@ -842,7 +842,7 @@ impl PhotonApp {
                         }
                         // Terminal brick: the fleet locked this device. Red, dead-end — no handle re-type helps (the identity is real, the fleet owner marked the hardware stolen), only an unlock from another of the owner's devices clears it.
                         LaunchState::Locked => Some((
-                            tr(Msg::LockedByFleet),
+                            tr(Msg::RevokedByFleet),
                             (*theme::ERROR_TEXT_COLOUR),
                         )),
                         // Up-front hint: a bound device in Fresh gets the resume-or-wipe line in the STATUS colour (not error-red) so the restriction is visible before any submit.
@@ -4385,7 +4385,7 @@ impl PhotonApp {
                         } else if *retired {
                             (tr(Msg::RetiredStillYours), *theme::LABEL_COLOUR)
                         } else if row_locked {
-                            (tr(Msg::LockedOut), theme::PILL_RED.1)
+                            (tr(Msg::RevokedBadge), theme::PILL_RED.1)
                         } else if *online {
                             (
                                 if link.is_empty() { tr(Msg::Online) } else { tr(Msg::OnlineVia(link)) },
@@ -4429,7 +4429,7 @@ impl PhotonApp {
                             let rect = fluor::region::Region::new(band.x + hspan2 * 0.3, band.y + (band.h - pill_h) * 0.5, ctx.text.measure_text(&tr(Msg::RenamePill), &TextStyle::new(pill_h * 0.5, 0).font("Oxanium")) + pill_h * 0.8 + hspan2 * 0.4, pill_h);
                             draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, &tr(Msg::RenamePill), btn_base.wrapping_add(56 + i as HitId), ctx.pressed_hit, true, None, "Oxanium");
                         } else {
-                            // Bridge + Rename + the row's state pill (Lock out / Unlock / Approve sign-out), each sized to its label.
+                            // Bridge + Rename + the row's state pills (Lock / Revoke / Reinstate / Approve departure), each sized to its label.
                             let band = flow.band(hspan2 * 2.4);
                             let pill_h = band.h * 0.8;
                             let pill_y = band.y + (band.h - pill_h) * 0.5;
@@ -4448,10 +4448,13 @@ impl PhotonApp {
                                 place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::ApproveSignOutPill { armed }), btn_base.wrapping_add(48 + i as HitId), Some(if armed { *theme::PILL_RED } else { *theme::PILL_YELLOW }));
                             } else if row_locked {
                                 let armed = self.fleet_unlock_armed.as_ref() == Some(pk);
-                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::UnlockPill { armed }), btn_base.wrapping_add(40 + i as HitId), if armed { Some(*theme::PILL_RED) } else { None });
+                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::ReinstatePill { armed }), btn_base.wrapping_add(40 + i as HitId), if armed { Some(*theme::PILL_RED) } else { None });
                             } else {
+                                // The two hostile-vs-benign twins side by side: Lock (yellow — de-attest a device you still trust, the drawer case) then Revoke (red — treat-as-stolen, the device stays a member but the fleet stops trusting it).
+                                let lock_armed = self.fleet_dormant_armed.as_ref() == Some(pk);
+                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::LockPill { armed: lock_armed }), btn_base.wrapping_add(64 + i as HitId), if lock_armed { Some(*theme::PILL_YELLOW) } else { None });
                                 let armed = self.fleet_lock_armed.as_ref() == Some(pk);
-                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::LockOutPill { armed }), btn_base.wrapping_add(32 + i as HitId), if armed { Some(*theme::PILL_RED) } else { None });
+                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::RevokePill { armed }), btn_base.wrapping_add(32 + i as HitId), if armed { Some(*theme::PILL_RED) } else { None });
                             }
                         }
                         // DEPARTURE ceremony bands (2026-09-04): the declared intent under the pills, and — once Approve is tapped on a words-carrying request — the words-entry box that gates the countersign (type what the departing device's screen shows).
@@ -4467,14 +4470,6 @@ impl PhotonApp {
                                     if intent == 1 { theme::PILL_YELLOW.1 } else { *theme::LABEL_COLOUR },
                                     600,
                                 );
-                            }
-                            // INTENT CHOICE (the 2026-09-04 design, now built): an intent-0 request passed its words gate — the APPROVER answers what's happening. Two pills; each completes the departure on its path.
-                            if self.depart_choice.as_ref().is_some_and(|(d, _)| d == pk) {
-                                flow.line(&mut canvas, ctx.text, &tr(Msg::DepartChooseFate), hspan2 * 0.85, *theme::CONTACT_NAME_COLOUR, 600);
-                                flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2, &[
-                                    (&tr(Msg::DepartIntentNewOwner), btn_base.wrapping_add(72 + i as HitId), true),
-                                    (&tr(Msg::DepartIntentDesk), btn_base.wrapping_add(80 + i as HitId), true),
-                                ]);
                             }
                             let entry_here = self.depart_words_entry.as_ref().is_some_and(|(d, _)| d == pk);
                             if entry_here {

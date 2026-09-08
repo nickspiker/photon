@@ -100,13 +100,13 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SearchError(e) => format!("hapa: {e}").into(),
         Msg::AlreadyInContacts => "Kei roto kē i ō hoa".into(),
         Msg::Attesting => "E whakaū ana\u{2026}".into(),
-        Msg::LockedByFleet => "kua rakaina tēnei pūrere e tō kāhui \u{2014} wetekia mai i tētahi atu o ō pūrere kia whakamahia anō".into(),
+        Msg::RevokedByFleet => "kua TANGOHIA e tō kāhui te mana o tēnei pūrere \u{2014} kāore e taea e ia te mahi hei a koe. Whakahokia mai i tētahi atu o ō pūrere kia whakamahia anō.".into(),
         Msg::IdentityCarriedHint => "kei tēnei pūrere kē tētahi tuakiri".into(),
         Msg::PermanenceWarning => "Ka whānau mai i konei he tuakiri pūmau.\nKāore he kupuhipa. Kāore he tautuhi anō. Kāore he whakaoranga.\nMā te tangata tuatahi ka whakaū, ka riro.\nKa taea ngā pūrere te whakakapi. Kāore te tuakiri.\nPāwhiritia anō mehemea e tino hiahia ana koe.".into(),
         Msg::KnownHandleWarning => "Kei te whakautu kē tētahi ki tēnei ingoa.".into(),
         Msg::PickAnotherName => "Ehara i a au \u{2014} kōwhiria he ingoa kē".into(),
         Msg::ItsMineShowWords => "Ko au tērā \u{2014} tāpirihia tēnei pūrere".into(),
-        Msg::LockedRetry => "Kua wetekia mai i tētahi atu pūrere? Pāwhiritia kia ngana anō".into(),
+        Msg::LockedRetry => "Kua whakahokia mai i tētahi atu pūrere? Pāwhiritia kia ngana anō".into(),
         // ---- ready screen ----
         Msg::PeersOnline(n) => if n == 1 { format!("{} hoa tūhono", fmt_num(1)) } else { format!("{} ngā hoa tūhono", fmt_num(n as u32)) }.into(),
         Msg::NetworkBack => "\u{2039} Whatunga".into(),
@@ -254,7 +254,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FleetTapToCopy => "Pāwhiritia he ingoa kia tāruatia tōna kī.".into(),
         Msg::ThisDevice => "tēnei pūrere".into(),
         Msg::RetiredStillYours => "kua whakatā \u{2014} nāu tonu".into(),
-        Msg::LockedOut => "kua rakaina".into(),
+        Msg::RevokedBadge => "kua tangohia te mana".into(),
         Msg::Online => "tūhono".into(),
         Msg::Offline => "tuimotu".into(),
         Msg::OnlineVia(link) => format!("tūhono \u{00b7} {link}").into(),
@@ -270,19 +270,21 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SignOutBuildFailed => "Kāore i taea te hanga i te tono wehenga — ngana anō.".into(),
         Msg::DeviceReleased(name) => format!("kua tukuna a {name} — ka taea e ia te hono ki tētahi tuakiri hou ināianei.").into(),
         Msg::ReleaseFailed => "Kāore i taea te tuku — tirohia te hononga, ka ngana anō.".into(),
-        Msg::DeviceUnlockedToast(name) => format!("kua wetekia a {name} \u{2014} ka taea e ia te hoki ki te kāhui i tōna whakaū e whai ake nei.").into(),
-        Msg::LockedOutNotice(name) => format!("kua rakaina a {name} \u{2014} kāore e taea e ia te mahi i tēnei kāhui.").into(),
-        Msg::ConfirmUnlock(name) => format!("Tāurua tō handle hei whakaū i te weteki i a {name}.").into(),
-        Msg::ConfirmLockOut { name, last_unlocker } => {
-            let warn = if last_unlocker { " KIA TŪPATO: mā tēnei ka noho ko te pūrere kei tō ringa ANAKE hei weteki." } else { "" };
-            format!("Tāurua tō handle hei whakaū i te raka i a {name}.{warn}").into()
+        Msg::DeviceReinstatedToast(name) => format!("kua whakahokia a {name} \u{2014} ka taea e ia te hoki ki te kāhui i tōna whakaū e whai ake nei.").into(),
+        Msg::RevokedNotice(name) => format!("kua tangohia te mana o {name} \u{2014} kāore e taea e ia te mahi i tēnei kāhui.").into(),
+        Msg::ConfirmReinstate(name) => format!("Tāurua tō handle hei whakaū i te weteki i a {name}.").into(),
+        Msg::ConfirmRevoke { name, last_unlocker } => {
+            let warn = if last_unlocker { " KIA TŪPATO: mā tēnei ka noho ko te pūrere kei tō ringa ANAKE hei whakahoki." } else { "" };
+            format!("Tāurua tō handle hei whakaū i te tango mana i a {name}.{warn}").into()
         }
         Msg::CopiedName(name) => format!("Kua tāruatia a {name}").into(),
         Msg::ReleasePill { armed } => if armed { "Tuku \u{2014} e tino hiahia ana?" } else { "Tuku" }.into(),
         Msg::BridgePill => "Arawhata".into(),
         Msg::ApproveSignOutPill { armed } => if armed { "Whakaae ki te wehenga \u{2014} e tino hiahia ana?" } else { "Whakaae ki te wehenga" }.into(),
-        Msg::UnlockPill { armed } => if armed { "Weteki \u{2014} e tino hiahia ana?" } else { "Weteki" }.into(),
-        Msg::LockOutPill { armed } => if armed { "Raka \u{2014} e tino hiahia ana?" } else { "Raka" }.into(),
+        Msg::ReinstatePill { armed } => if armed { "Whakahoki \u{2014} e tino hiahia ana?" } else { "Whakahoki" }.into(),
+        Msg::RevokePill { armed } => if armed { "Tango mana \u{2014} e tino hiahia ana?" } else { "Tango mana" }.into(),
+        Msg::LockPill { armed } => if armed { "Raka \u{2014} e tino hiahia ana?" } else { "Raka" }.into(),
+        Msg::DeviceLockedToast(name) => format!("Kua rakaina a {name} \u{2014} ka wehe tōna wātū ā tōna wā; mā tō handle ia e whakaara.").into(),
         Msg::SingleCopyWarning => "Kei tēnei pūrere anake tō hītori karere \u{2014} tāpirihia he pūrere kia horapa ai.".into(),
         Msg::DeviceSignsItselfOut => "Mā te pūrere anō ia e wehe \u{2014} ā, nāu tonu tōna tinana kia tukuna rā anō e koe.".into(),
         Msg::AddDevicePill => "Tāpiri pūrere".into(),
@@ -291,7 +293,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SecurityLock => "Raka".into(),
         Msg::DepartWordsShow(w) => format!("Kupu whakaae: {w}").into(),
         Msg::DepartWaitingLine => "E tatari ana ki te whakaae mai i t\u{0113}tahi atu o \u{014D} p\u{016B}rere (Tautuhinga \u{2192} K\u{0101}hui). Ka tonoa ng\u{0101} kupu o runga.".into(),
-        Msg::DepartChooseFate => "Kua ū ngā kupu — ka ahatia te taputapu?".into(),
         Msg::DepartIntentNewOwner => "e hiahia ana ki te wehe \u{2014} ka riro i t\u{0113}tahi RANGATIRA HOU (m\u{0101} te whakaae ka tukuna hoki te taputapu)".into(),
         Msg::DepartIntentDesk => "e hiahia ana ki te wehe \u{2014} ka pupuri koe i te taputapu (ka mau tonu te tohu ki a koe)".into(),
         Msg::DepartWordsPrompt => "T\u{0101}urua ng\u{0101} kupu e whakaaturia ana i te p\u{016B}rere e wehe ana:".into(),

@@ -80,13 +80,13 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SearchError(e) => format!("error: {e}").into(),
         Msg::AlreadyInContacts => "Already in your contacts".into(),
         Msg::Attesting => "Attesting\u{2026}".into(),
-        Msg::LockedByFleet => "this device has been locked by your fleet \u{2014} unlock it from another of your devices to use it again".into(),
+        Msg::RevokedByFleet => "your fleet has REVOKED this device \u{2014} it can no longer act as you. Reinstate it from another of your devices to use it again.".into(),
         Msg::IdentityCarriedHint => "this device already carries an identity".into(),
         Msg::PermanenceWarning => "This mints a permanent identity.\nNo password. No reset. No recovery.\nThe first human to attest owns it.\nDevices can be replaced. The identity can't.\nPress again if you mean it.".into(),
         Msg::KnownHandleWarning => "Someone already answers to this name.".into(),
         Msg::PickAnotherName => "Not me \u{2014} pick another".into(),
         Msg::ItsMineShowWords => "That's me \u{2014} add this device".into(),
-        Msg::LockedRetry => "Unlocked from another device? Tap to retry".into(),
+        Msg::LockedRetry => "Reinstated from another device? Tap to retry".into(),
         // ---- ready screen ----
         Msg::PeersOnline(n) => format!("{} {}", fmt_num(n as u32), if n == 1 { "peer" } else { "peers" }).into(),
         Msg::NetworkBack => "\u{2039} Network".into(),
@@ -230,7 +230,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FleetTapToCopy => "Tap a name to copy its key.".into(),
         Msg::ThisDevice => "this device".into(),
         Msg::RetiredStillYours => "retired \u{2014} still yours".into(),
-        Msg::LockedOut => "locked out".into(),
+        Msg::RevokedBadge => "revoked".into(),
         Msg::Online => "online".into(),
         Msg::Offline => "offline".into(),
         Msg::OnlineVia(link) => format!("online \u{00b7} {link}").into(),
@@ -246,19 +246,21 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SignOutBuildFailed => "Couldn't build the departure request — retry.".into(),
         Msg::DeviceReleased(name) => format!("{name} released — it can join a new identity now.").into(),
         Msg::ReleaseFailed => "Couldn't release — check connection and retry.".into(),
-        Msg::DeviceUnlockedToast(name) => format!("{name} unlocked \u{2014} it can rejoin the fleet on its next attest.").into(),
-        Msg::LockedOutNotice(name) => format!("{name} locked out \u{2014} it can no longer act in this fleet.").into(),
-        Msg::ConfirmUnlock(name) => format!("Enter your handle to confirm unlocking {name}.").into(),
-        Msg::ConfirmLockOut { name, last_unlocker } => {
-            let warn = if last_unlocker { " WARNING: this leaves the device you are holding as the ONLY one able to unlock it." } else { "" };
-            format!("Enter your handle to confirm locking out {name}.{warn}").into()
+        Msg::DeviceReinstatedToast(name) => format!("{name} reinstated \u{2014} it can rejoin the fleet on its next attest.").into(),
+        Msg::RevokedNotice(name) => format!("{name} revoked \u{2014} it can no longer act in this fleet.").into(),
+        Msg::ConfirmReinstate(name) => format!("Enter your handle to confirm reinstating {name}.").into(),
+        Msg::ConfirmRevoke { name, last_unlocker } => {
+            let warn = if last_unlocker { " WARNING: this leaves the device you are holding as the ONLY one able to reinstate it." } else { "" };
+            format!("Enter your handle to confirm revoking {name}.{warn}").into()
         }
         Msg::CopiedName(name) => format!("Copied {name}").into(),
         Msg::ReleasePill { armed } => if armed { "Release \u{2014} sure?" } else { "Release" }.into(),
         Msg::BridgePill => "Bridge".into(),
         Msg::ApproveSignOutPill { armed } => if armed { "Approve departure \u{2014} sure?" } else { "Approve departure" }.into(),
-        Msg::UnlockPill { armed } => if armed { "Unlock \u{2014} sure?" } else { "Unlock" }.into(),
-        Msg::LockOutPill { armed } => if armed { "Lock out \u{2014} sure?" } else { "Lock out" }.into(),
+        Msg::ReinstatePill { armed } => if armed { "Reinstate \u{2014} sure?" } else { "Reinstate" }.into(),
+        Msg::RevokePill { armed } => if armed { "Revoke \u{2014} sure?" } else { "Revoke" }.into(),
+        Msg::LockPill { armed } => if armed { "Lock \u{2014} sure?" } else { "Lock" }.into(),
+        Msg::DeviceLockedToast(name) => format!("{name} locked \u{2014} it de-attests on its next tick; your handle wakes it.").into(),
         Msg::SingleCopyWarning => "Your message history lives only on this device \u{2014} add a device to replicate it.".into(),
         Msg::DeviceSignsItselfOut => "Only a device can ask to leave \u{2014} and its hardware stays yours until you release it.".into(),
         Msg::AddDevicePill => "Add device".into(),
@@ -267,7 +269,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SecurityLock => "Lock".into(),
         Msg::DepartWordsShow(w) => format!("Approval words: {w}").into(),
         Msg::DepartWaitingLine => "Waiting for approval from another of your devices (Settings \u{2192} Fleet). It will ask for the words above.".into(),
-        Msg::DepartChooseFate => "Words verified — what\u{2019}s happening with the hardware?".into(),
         Msg::DepartIntentNewOwner => "wants to leave \u{2014} going to a NEW OWNER (approving also frees the hardware)".into(),
         Msg::DepartIntentDesk => "wants to leave \u{2014} you're keeping the hardware (brand stays yours)".into(),
         Msg::DepartWordsPrompt => "Type the words shown on the departing device:".into(),
@@ -296,7 +297,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::CustodianCheckbox => "Be a custodian for others".into(),
         Msg::CustodianExplainer => "One box on purpose: custodians never learn whose recovery they hold, and owners never learn which friends hold theirs — what can't be named can't collude.".into(),
         Msg::SecurityIntro => "Four actions, ordered by how much they destroy. The colour is the warning.".into(),
-        Msg::SecurityLockHint => "Locks this device until you re-type your handle. Fully reversible — nothing is deleted.".into(),
+        Msg::SecurityLockHint => "Locks this device until you re-type your handle. Fully reversible — nothing is deleted, and it stays in your fleet. You can lock any of your devices from the Fleet page too.".into(),
         Msg::SecurityShredHint => "Nukes the vault and signs this device out — irreversible here; your identity and history live on thru your other devices. The device STAYS in your fleet's chain; use Release to also remove it.".into(),
         Msg::SecurityRemoveShredHint => "Signs out, wipes, and removes this device from your fleet. A surviving device approves and chooses the hardware\u{2019}s fate \u{2014} released to a new owner, or kept yours in the drawer.".into(),
         // ---- appearance ----

@@ -137,12 +137,12 @@ impl PhotonApp {
                 // An armed lock-out fires HERE and only here — the handle just proved itself. A different identity attesting (thief typing their own name) discards the arm instead: their lock was never this fleet's to execute.
                 if let Some((pk, armer_hp, name)) = self.pending_lock.take() {
                     if data.handle_proof == armer_hp {
-                        self.lock_out_device(pk);
+                        self.revoke_device(pk);
                         crate::logf!(
                             "FLEET: {} locked out — handle confirmed, key rotating away",
                             name
                         );
-                        self.ready_toast = Some(tr(Msg::LockedOutNotice(&name)).into_owned());
+                        self.ready_toast = Some(tr(Msg::RevokedNotice(&name)).into_owned());
                     } else {
                         crate::logf!(
                             "FLEET: armed lock-out of {} DISCARDED — a different identity attested",
@@ -154,7 +154,7 @@ impl PhotonApp {
                 if let Some((pk, armer_hp, name)) = self.pending_unlock.take() {
                     if data.handle_proof == armer_hp {
                         crate::logf!("FLEET: {} unlock confirmed — clearing the worker verdict + fleet marker", name);
-                        self.unlock_fleet_device(pk, &name);
+                        self.reinstate_fleet_device(pk, &name);
                     } else {
                         crate::logf!(
                             "FLEET: armed unlock of {} DISCARDED — a different identity attested",
