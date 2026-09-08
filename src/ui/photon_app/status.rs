@@ -369,6 +369,8 @@ impl PhotonApp {
         )> = Vec::new();
         // Consent gate (2026-08-25): knocks to fire and the roster ride for a Mutual flip — both need &mut self, so they wait out the drain like the jobs above.
         let mut knock_after: Vec<crate::types::ContactId> = Vec::new();
+        // Pong-seal reseed request(s) this drain — one walk after the loop no matter how many unkeyed devices reported (the per-drain edge that replaced the 10s clock).
+        let mut seal_reseed_requested = false;
         // Fold-freshness tripwire (the Jon incident): friend hps whose pong claimed a NEWER chain tip than our stored fold — refetch after the drain (the contacts loop holds &mut self.contacts, so the &mut-self spawn defers, the knock_after idiom). The claim rides along so the pursuit map records what we acted on.
         let mut stale_fold_hps: Vec<([u8; 32], i64)> = Vec::new();
         // Snapshot of the pursuit map for the in-loop gate (the loop holds &mut self.contacts; the map lives on self).
@@ -3183,19 +3185,12 @@ impl PhotonApp {
 
                 // Sibling fork repair: a chain_reset frame arrived. Trust gates: outer signature already verified in the RX worker; here the sender must be a known SIBLING device and the sealed nonce must open under OUR fleet key (only fleet members can mint one). Application + echo are deferred past the drain (the repair rebuilds chains and sends frames — both blocked by live borrows here).
                 StatusUpdate::PongSealMissing { device } => {
-                    // Reseed the pong-seal map (rate-limited): the sender's tail will open on its next pong. Also retries the failed-open dedup by virtue of the RX worker clearing it on success.
-                    const RESEED_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10);
-                    if self
-                        .last_seal_reseed
-                        .is_none_or(|t| t.elapsed() > RESEED_COOLDOWN)
-                    {
-                        self.last_seal_reseed = Some(Instant::now());
-                        crate::logf!(
-                            "Status: reseeding pong-seal keys (tail from {} unopenable)",
-                            crate::fp(&device.key)
-                        );
-                        self.reseed_contact_pubkeys();
-                    }
+                    // EDGE, not a clock (2026-09-08, the tripwire sweep): the RX worker already sends this ONCE per device (pong_open_failed, cleared only when a tail opens), so the old 10s cooldown guarded exactly one thing — several unkeyed devices reporting in the same drain burst. A per-drain dedup covers that: mark, reseed once after the loop.
+                    crate::logf!(
+                        "Status: pong-seal reseed requested (tail from {} unopenable)",
+                        crate::fp(&device.key)
+                    );
+                    seal_reseed_requested = true;
                 }
                 // Attachment blob arrived: authorize the sender (known device), pick the wire key by relationship (sibling → fleet, friend → history), open, verify the content hash, seal to the local blob store. The pill flips from "fetching" to present on the next frame (wrap cache dropped).
                 StatusUpdate::AttachBlobReceived {
@@ -4826,6 +4821,9 @@ impl PhotonApp {
             checker.send_lan_unicast(session.handle_proof, hq.port(), target);
         }
 
+        if seal_reseed_requested {
+            self.reseed_contact_pubkeys();
+        }
         // Tripwire refetches collected on pong edges — EDGES, no wall clock (Nick 2026-09-08): the pursuit map records the claim we acted on; while a pursuit stands, only a strictly NEWER claim re-fires. The pursuit ends on the result edge (or the fetch-error sentinel) in the fold drain — if the adoption still trails, the next pong re-fires, paced by the ping cadence that delivered it. Bounded by construction: keys only ever come from matched contacts.
         if !stale_fold_hps.is_empty() {
             stale_fold_hps.sort_unstable();

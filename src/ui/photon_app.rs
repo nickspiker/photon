@@ -1642,7 +1642,6 @@ pub struct PhotonApp {
     /// One-shot per session: the settings + roster re-push once hp/keypair/fleet-key are ALL available. Saves made before the keys settled bailed silently (see spawn_settings_push), and nothing ever retried — so the fleet slot could sit stale/empty forever (the empty-profile restore, 2026-07-26).
     settings_repushed: bool,
     /// Rate limit for the pong-seal reseed triggered by unopenable tails (self-heal for ordering races on a fresh device).
-    last_seal_reseed: Option<Instant>,
     /// Last periodic fleet-history-sweep kick. The edge-triggered kicks (roster merge, sibling-online) cover the common cases, but edges get missed (presence flaps, app-in-background misses); this jittered ~5 min re-arm is the convergence backstop — cheap because a complete conversation early-stops after ONE page.
     last_fleet_sweep: Option<Instant>,
     /// Fleet chain-replication bookkeeping: per-friendship, the `mutated_osc` we last PUSHED to siblings (or last ADOPTED from one — recording the adopted stamp stops the echo). The per-tick `drive_chain_replication` sweep pushes any chain whose live stamp is newer; comparing stamps instead of hooking every mutation site coalesces bursts and covers every path (send, ACK, receive, ceremony completion, reset) for free.
@@ -2199,7 +2198,6 @@ impl PhotonApp {
             #[cfg(target_os = "android")]
             last_ime_inset: 0,
             settings_repushed: false,
-            last_seal_reseed: None,
             last_fleet_sweep: None,
             chain_pushed_osc: std::collections::HashMap::new(),
             chain_pull_sent: std::collections::HashSet::new(),
