@@ -270,6 +270,7 @@ fn run(
     );
 
     // V-CHIRP CONNECT PROBE (Nick 2026-09-07, docs/audio-paths.md §5): the call's first sound is the probe — queued before the first loop pass, played unpadded on the live route while BOTH directions hold (no mic TX, RX decoded but not rendered), so the chirp is the only thing in the room and the only render in RENDER_ENV. Both sides run the same window off their own connect edge, so the holds overlap and nobody's voice is lost. When the capture closes, audio connects immediately and the fit seeds the duck a beat later; the deadline covers a mic that never grants (Android prompts at the call).
+    let start_instant = std::time::Instant::now();
     let mut probing = true;
     let mut probe_cap: Vec<i16> = Vec::with_capacity(crate::call::vchirp::CAPTURE_SAMPLES);
     let mut probe_render_osc: Option<i64> = None;
@@ -698,6 +699,12 @@ fn run(
                 probe_cap = Vec::new();
             }
         }
+        // NLMS self-check: a canceller that measured itself making echo WORSE across its probation window disarms — the duck (unchanged, still running on the same frames) carries alone. A garbage seed (a barely-passed low-volume fit) can't keep injecting.
+        if nlms.as_ref().is_some_and(|c| c.is_net_harmful()) {
+            let erle = nlms.as_ref().and_then(|c| c.erle_db()).unwrap_or(0.0);
+            crate::logf!("CALL: nlms disarmed — net harmful ({:.1}dB), duck carries", erle);
+            nlms = None;
+        }
         // Fit verdict: a fresh measurement of THIS route outranks any stored/ringback seed; Clean keeps the duck reactive (a headset-class route barely ducks anyway) but takes the measured floor.
         if let Some(v) = crate::call::vchirp::take_verdict() {
             match v {
@@ -793,6 +800,14 @@ fn run(
             pkts_in
         );
     }
+    // CAPTURE/RENDER CADENCE (field 2026-09-08: Brittany's phone TX ran 15808 frames over a ~40s call = 2x realtime, the phone trimmed half at playout = the scratchy; a device whose fast-path delivers double must NAME itself). Frames-per-second each way against the call's wall-clock; a healthy 5ms path reads ~200.
+    let call_secs = start_instant.elapsed().as_secs_f64().max(0.001);
+    crate::logf!(
+        "CALL: cadence — tx {} fps, rx {} fps over {}s (nominal 200)",
+        format!("{:.0}", tx_frames as f64 / call_secs),
+        format!("{:.0}", rx_frames as f64 / call_secs),
+        format!("{:.1}", call_secs)
+    );
     // Mean |sample| each way (0..32767). ~0 on a side = that direction carried silence; compare tx (our mic) vs rx (what we played) to place a "one-way heard" report at capture or playback.
     let tx_level = if tx_frames > 0 { tx_energy / (tx_frames * FRAME_SAMPLES as u64) } else { 0 };
     let rx_level = if rx_frames > 0 { rx_energy / (rx_frames * FRAME_SAMPLES as u64) } else { 0 };

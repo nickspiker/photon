@@ -72,6 +72,12 @@ impl Nlms {
             .then(|| 10.0 * (self.pre_e / self.post_e).log10())
     }
 
+    /// A canceller that MADE ECHO WORSE must be shot (field 2026-09-08: a −43dB chirp barely passed the fit gate and seeded a misaligned filter → −17.8dB ERLE, i.e. +17.8dB of injected garbage = the "scratchy"). After a probation window of adapted frames, net-negative ERLE means the seed was garbage — the caller disarms and falls back to the duck. `false` until probation completes (never judge on one noisy frame).
+    pub fn is_net_harmful(&self) -> bool {
+        const PROBATION: u64 = 100; // ~1s of far-talk-alone adaptation
+        self.adapted_frames >= PROBATION && self.post_e > self.pre_e
+    }
+
     /// Cancel one mic frame in place. `frame_pos` = the frame's first sample in the REFERENCE timeline (mic count + one-time anchor offset). `adapt` = the far-talks-alone gate. `ref_gain` = vol_lin_now ÷ vol_lin_at_seed — the taps are measured at the probe's volume, and the DAC gain sits between the reference and the room, so a mid-call volume change scales the echo without touching h; folding the ratio into the reference keeps the filter honest instantly (adaptation then refines in seed-volume units). Frames whose reference window isn't fully resident pass thru untouched.
     pub fn cancel_frame(&mut self, mic: &mut [i16], ring: &RefRing, frame_pos: i64, adapt: bool, ref_gain: f32) {
         let n = self.h.len();

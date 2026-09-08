@@ -845,7 +845,8 @@ class PhotonConnectionService : Service() {
                     minBuf
                 )
                 rec.startRecording()
-                PhotonLog.i(TAG, "callAudio: capture up (VOICE_RECOGNITION raw fast-path, buf=$minBuf, granted=${rec.bufferSizeInFrames}fr)")
+                // The device's ACTUAL capture rate — if a phone silently gives 24kHz for a 48kHz VOICE_RECOGNITION ask, every 240-sample read is 10ms of audio pushed as a 5ms frame → 2x frame rate, the peer trims half at playout (field 2026-09-08: Brittany's phone TX ran 2x realtime = the scratchy). audioFormat.sampleRate is what the HAL really gave us.
+                PhotonLog.i(TAG, "callAudio: capture up (VOICE_RECOGNITION raw fast-path, buf=$minBuf, granted=${rec.bufferSizeInFrames}fr, hwRate=${rec.sampleRate} askRate=$sampleRate)")
                 val buf = ShortArray(frameSamples)
                 while (callAudioRunning) {
                     var off = 0
