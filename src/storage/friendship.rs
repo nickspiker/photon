@@ -57,6 +57,19 @@ fn chains_schema() -> SectionSchema {
         .field("lane_label", TypeConstraint::AnyHash)
         .field("lane_position", TypeConstraint::Any)
         .field("our_label", TypeConstraint::AnyHash)
+        // Era state (2026-09-08, additive): a blob without these is era 0 of the lineage derived from its own root, every lane in that era.
+        .field("era_index", TypeConstraint::Any)
+        .field("era_lineage", TypeConstraint::AnyHash)
+        .field("lane_era", TypeConstraint::Any) // one per lane, INDEX-ALIGNED with lane_label
+        .field("rows_since_ratchet", TypeConstraint::Any)
+        .field("retired_index", TypeConstraint::Any)
+        .field("retired_root", TypeConstraint::AnyHash)
+        .field("retired_history_key", TypeConstraint::AnyHash)
+        .field("retired_grace", TypeConstraint::Any)
+        .field("pending_index", TypeConstraint::Any)
+        .field("pending_root", TypeConstraint::AnyHash)
+        .field("pending_history_key", TypeConstraint::AnyHash)
+        .field("pending_resp_osc", TypeConstraint::Any)
 }
 
 /// Vault address for a friendship's chain state — `vault_key("chains", friendship_id)`. The conversation id is the scope (already `blake3` of the sorted participant seeds, so 1/2/N participants all resolve here); "chains" names the entry.
@@ -123,6 +136,11 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
             )
             .map_err(|e| StorageError::Parse(e.to_string()))?
             .append_multi("chain", vec![VsfType::v(b'C', chain.to_bytes())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi(
+                "lane_era",
+                vec![VsfType::e(vsf::types::EtType::e6(chains.lane_era(&label).unwrap_or(chains.era_index) as i64))],
+            )
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
     if let Some(l) = chains.our_label() {
@@ -258,6 +276,45 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
             VsfType::e(vsf::types::EtType::e6(chains.genesis_osc)),
         )
         .map_err(|e| StorageError::Parse(e.to_string()))?;
+    let e6 = |v: i64| VsfType::e(vsf::types::EtType::e6(v));
+    builder = builder
+        .set("era_index", e6(chains.era_index as i64))
+        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .set("era_lineage", VsfType::hb(chains.era_lineage.to_vec()))
+        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .set("rows_since_ratchet", e6(chains.rows_since_ratchet as i64))
+        .map_err(|e| StorageError::Parse(e.to_string()))?;
+    if let Some(r) = chains.retired_era() {
+        builder = builder
+            .set("retired_index", e6(r.era_index as i64))
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .set("retired_root", VsfType::hb(r.lane_root.to_vec()))
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .set("retired_grace", e6(r.grace_left as i64))
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+        if let Some(hk) = r.history_key {
+            builder = builder
+                .set("retired_history_key", VsfType::hb(hk.to_vec()))
+                .map_err(|e| StorageError::Parse(e.to_string()))?;
+        }
+    }
+    if let Some(pe) = chains.pending_era() {
+        builder = builder
+            .set("pending_index", e6(pe.era_index as i64))
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .set("pending_root", VsfType::hb(pe.lane_root.to_vec()))
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+        if let Some(hk) = pe.history_key {
+            builder = builder
+                .set("pending_history_key", VsfType::hb(hk.to_vec()))
+                .map_err(|e| StorageError::Parse(e.to_string()))?;
+        }
+        if let Some(o) = pe.resp_osc {
+            builder = builder
+                .set("pending_resp_osc", e6(o))
+                .map_err(|e| StorageError::Parse(e.to_string()))?;
+        }
+    }
 
     // A COMPLETE VSF FILE, not a bare section (AGENT.md: "VSF Transport Rule: COMPLETE FILES ONLY"). These bytes are not disk-only: `chains_to_vsf_bytes` also feeds fleet chain replication (photon_app.rs `push_chains_to_siblings`), sealed under the fleet key and pushed to every sibling, and the adopt path on the far side parses them back into live RATCHET STATE — chain keys, last plaintexts, mutation stamps. A bare section gave that path nothing to verify: the AEAD proves only "someone in the fleet wrote this", which the signed outer frame already proved. The header's BLAKE3 provenance hash is what makes the payload self-consistent.
     let section_bytes = builder
@@ -349,6 +406,15 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
         })
         .collect();
     let our_label: Option<[u8; 32]> = section.get_value::<[u8; 32]>("our_label").ok();
+    let lane_eras: Vec<u64> = section
+        .get_fields("lane_era")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .map(|v| match v {
+            VsfType::e(vsf::types::EtType::e6(osc)) => (*osc).max(0) as u64,
+            _ => 0,
+        })
+        .collect();
 
     // Chain bytes — per LANE when labels exist, ignored otherwise.
     let mut chain_bytes = Vec::new();
@@ -567,8 +633,35 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
     )
     .ok_or_else(|| StorageError::Parse("Failed to reconstruct chains".to_string()))?;
     chains.set_history_key(history_key);
-    chains.set_lane_root(section.get_value::<[u8; 32]>("lane_root").ok());
+    let lane_root = section.get_value::<[u8; 32]>("lane_root").ok();
+    chains.set_lane_root(lane_root);
     chains.genesis_osc = genesis_osc;
+    // Era state: absent = a pre-era blob — era 0 of the lineage its own root names, every lane in it.
+    chains.era_index = section.get_value::<i64>("era_index").map(|v| v.max(0) as u64).unwrap_or(0);
+    chains.era_lineage = section
+        .get_value::<[u8; 32]>("era_lineage")
+        .ok()
+        .or_else(|| lane_root.as_ref().map(crate::crypto::clutch::era_lineage))
+        .unwrap_or([0u8; 32]);
+    chains.rows_since_ratchet = section.get_value::<i64>("rows_since_ratchet").map(|v| v.max(0) as u32).unwrap_or(0);
+    if let (Ok(idx), Ok(root)) = (section.get_value::<i64>("retired_index"), section.get_value::<[u8; 32]>("retired_root")) {
+        chains.set_retired_era(crate::types::friendship::RetiredEra {
+            era_index: idx.max(0) as u64,
+            lane_root: root,
+            history_key: section.get_value::<[u8; 32]>("retired_history_key").ok(),
+            tag: crate::crypto::clutch::era_tag(&root),
+            grace_left: section.get_value::<i64>("retired_grace").map(|v| v.max(0) as u32).unwrap_or(0),
+        });
+    }
+    if let (Ok(idx), Ok(root)) = (section.get_value::<i64>("pending_index"), section.get_value::<[u8; 32]>("pending_root")) {
+        chains.install_pending(crate::types::friendship::PendingEra {
+            era_index: idx.max(0) as u64,
+            lane_root: root,
+            history_key: section.get_value::<[u8; 32]>("pending_history_key").ok(),
+            tag: crate::crypto::clutch::era_tag(&root),
+            resp_osc: section.get_value::<i64>("pending_resp_osc").ok(),
+        });
+    }
     if has_lanes {
         use crate::crypto::chain::{Chain, CHAIN_SIZE};
         if chain_bytes.len() != lane_labels.len() * CHAIN_SIZE {
@@ -603,6 +696,7 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
             lrh,
             lrt,
             our_label,
+            lane_eras,
         );
     }
     chains.mutated_osc = mutated_osc;

@@ -247,7 +247,54 @@ pub struct FriendshipChains {
 
     /// Eagle-time of the last LOCAL mutation of this chain state (send prepare, ACK advance, receive advance, plaintext update). The fleet chain-replication ordering key: a sibling's pushed copy is adopted iff its stamp is NEWER than ours — "if another device is ahead, I just catch up". Persisted (schema v7); 0 for pre-feature vaults (any replicated copy beats an unstamped one).
     pub mutated_osc: i64,
+
+    // ==================== ERA STATE (docs/lanes.md, era ratchet 2026-09-08) ====================
+    /// Monotonic within a lineage; 0 = the ceremony-born era. Agreed on the wire at every transition, never guessed locally.
+    pub era_index: u64,
+    /// One-way image of the era-0 root (clutch::era_lineage). Woven transitions inherit it; a fresh CLUTCH mints a new one.
+    pub era_lineage: [u8; 32],
+    /// Which era each lane belongs to — parallel to lane_labels. Current-era lanes carry era_index; a retired era's lanes keep their old index and are read-only.
+    lane_eras: Vec<u64>,
+    /// The previous era, kept READ-ONLY for a bounded straggler window after a cutover: its lanes still decrypt and ACK, nothing new is ever sent on them.
+    retired: Option<RetiredEra>,
+    /// The next era, derived but not yet written to — the two-phase cutover's first phase.
+    pending: Option<PendingEra>,
+    /// Rows exchanged on the current era since it began — the standing-cadence ratchet edge (never a timer).
+    pub rows_since_ratchet: u32,
 }
+
+/// A retired era: root + history key held only so straggler frames on its lanes still decrypt and ACK. Dropped (zeroized) on an observed edge — never a timer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RetiredEra {
+    pub era_index: u64,
+    pub lane_root: [u8; 32],
+    pub history_key: Option<[u8; 32]>,
+    pub tag: u32,
+    /// Current-era frames from the peer still to be seen before this era is dropped (RETIRED_ERA_GRACE_ROWS at cutover, decremented per frame).
+    pub grace_left: u32,
+}
+
+/// A derived-but-not-live era. Both sides hold it before either writes to it; the cutover edge (an observed ACK, or the first inbound frame on it) flips it to current.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingEra {
+    pub era_index: u64,
+    pub lane_root: [u8; 32],
+    pub history_key: Option<[u8; 32]>,
+    pub tag: u32,
+    /// Eagle time of the row whose ACK is the responder's cutover edge (the RatchetResp, or the completion probe); None on the initiator and on adopting siblings.
+    pub resp_osc: Option<i64>,
+}
+
+/// Which era a lane or a frame belongs to, relative to this blob.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EraSlot {
+    Current,
+    Retired,
+    Pending,
+}
+
+/// Straggler window after a cutover: current-era frames from the peer seen before the retired era is dropped. A row-count edge, not a timer.
+pub const RETIRED_ERA_GRACE_ROWS: u32 = 64;
 
 /// A message buffered due to a gap in the hash chain (out-of-order delivery). Held until its predecessor arrives and the gap fills. Buffered BEFORE decrypt, so the message's own `msg_hp` is not yet known (it needs the plaintext hash); we key purely on the `prev_msg_hp` it awaits. When a successful decrypt advances `last_received_hash` to some `H`, every buffered entry with `prev_msg_hp == H` becomes contiguous and is reprocessed (which can cascade).
 #[derive(Clone)]
@@ -431,9 +478,15 @@ impl FriendshipChains {
             last_incorporated_hp: None,
             gap_buffer: Vec::new(),
             history_key: Some(history_key),
+            era_lineage: crate::crypto::clutch::era_lineage(&lane_root),
             lane_root: Some(lane_root),
             genesis_osc: vsf::eagle_time_oscillations(),
             mutated_osc: 0,
+            era_index: 0,
+            lane_eras: Vec::new(),
+            retired: None,
+            pending: None,
+            rows_since_ratchet: 0,
         }
     }
 
@@ -508,6 +561,12 @@ impl FriendshipChains {
             lane_root: None,        // loader installs it from a v8 file
             genesis_osc: 0,
             mutated_osc: 0,
+            era_index: 0,
+            era_lineage: [0u8; 32], // loader sets it, deriving from the root when the blob predates eras
+            lane_eras: Vec::new(),
+            retired: None,
+            pending: None,
+            rows_since_ratchet: 0,
         })
     }
 
@@ -581,6 +640,12 @@ impl FriendshipChains {
             lane_root: None,        // loader installs it from a v8 file
             genesis_osc: 0,
             mutated_osc: 0,
+            era_index: 0,
+            era_lineage: [0u8; 32], // loader sets it, deriving from the root when the blob predates eras
+            lane_eras: Vec::new(),
+            retired: None,
+            pending: None,
+            rows_since_ratchet: 0,
         })
     }
 
@@ -759,10 +824,25 @@ impl FriendshipChains {
 
     /// Materialize the lane a label names, deriving it from `lane_root` if it doesn't exist yet — the receive-anywhere primitive: any device holding the root can build any lane from its label alone. `None` only when the blob predates lanes (no root) — the flag-day re-clutch case.
     pub fn ensure_lane(&mut self, label: &[u8; 32]) -> Option<usize> {
+        self.ensure_lane_era(label, EraSlot::Current)
+    }
+
+    /// Materialize the lane a label names under the era a slot names — the receive-anywhere primitive, era-aware: a retired era's lanes still decrypt stragglers, a pending era's lanes decrypt the peer's first frames on it. A lane already known keeps its era.
+    pub fn ensure_lane_era(&mut self, label: &[u8; 32], slot: EraSlot) -> Option<usize> {
         if let Some(i) = self.lane_index(label) {
             return Some(i);
         }
-        let root = self.lane_root?;
+        let (root, era) = match slot {
+            EraSlot::Current => (self.lane_root?, self.era_index),
+            EraSlot::Retired => {
+                let r = self.retired.as_ref()?;
+                (r.lane_root, r.era_index)
+            }
+            EraSlot::Pending => {
+                let p = self.pending.as_ref()?;
+                (p.lane_root, p.era_index)
+            }
+        };
         let active = crate::crypto::clutch::derive_lane_active(&root, label);
         let mut full_chain = vec![0u8; CHAIN_SIZE];
         full_chain[CHAIN_SIZE / 2..].copy_from_slice(&active);
@@ -776,7 +856,171 @@ impl FriendshipChains {
         self.first_message_anchors.push(anchor);
         self.last_received_hashes.push(None);
         self.last_received_times.push(None);
+        self.lane_eras.push(era);
         Some(self.lane_labels.len() - 1)
+    }
+
+    /// The era a known lane belongs to; None for a label this blob has never materialized.
+    pub fn era_slot_for_label(&self, label: &[u8; 32]) -> Option<EraSlot> {
+        let i = self.lane_index(label)?;
+        let e = self.lane_eras[i];
+        if e == self.era_index {
+            Some(EraSlot::Current)
+        } else if self.retired.as_ref().is_some_and(|r| r.era_index == e) {
+            Some(EraSlot::Retired)
+        } else if self.pending.as_ref().is_some_and(|p| p.era_index == e) {
+            Some(EraSlot::Pending)
+        } else {
+            None
+        }
+    }
+
+    /// Route a frame by its public era tag: None = a legacy peer (current era, garbage still to the fork detector). Some(tag) matching nothing we hold = a stale or unknown era, to be dropped without counting as fork evidence.
+    pub fn era_slot_for_tag(&self, tag: Option<u32>) -> Option<EraSlot> {
+        let Some(t) = tag else { return Some(EraSlot::Current) };
+        if Some(t) == self.era_tag() {
+            Some(EraSlot::Current)
+        } else if self.pending.as_ref().is_some_and(|p| p.tag == t) {
+            Some(EraSlot::Pending)
+        } else if self.retired.as_ref().is_some_and(|r| r.tag == t) {
+            Some(EraSlot::Retired)
+        } else {
+            None
+        }
+    }
+
+    /// The current era's public tag (None before any root exists).
+    pub fn era_tag(&self) -> Option<u32> {
+        self.lane_root.as_ref().map(crate::crypto::clutch::era_tag)
+    }
+
+    pub fn retired_era(&self) -> Option<&RetiredEra> {
+        self.retired.as_ref()
+    }
+
+    /// Loader only: reinstate a persisted retired era (its lanes are already installed with their era stamps).
+    pub fn set_retired_era(&mut self, r: RetiredEra) {
+        self.retired = Some(r);
+    }
+
+    pub fn pending_era(&self) -> Option<&PendingEra> {
+        self.pending.as_ref()
+    }
+
+    /// The era stamp of a known lane.
+    pub fn lane_era(&self, label: &[u8; 32]) -> Option<u64> {
+        self.lane_index(label).map(|i| self.lane_eras[i])
+    }
+
+    /// Is this lane one a message may still be SENT on? Only current-era lanes are writable; a retired era's lanes are read-only by construction.
+    pub fn lane_is_writable(&self, label: &[u8; 32]) -> bool {
+        self.era_slot_for_label(label) == Some(EraSlot::Current)
+    }
+
+    /// Phase 1 of a cutover: hold the next era beside the current one. Idempotent for the same root.
+    pub fn install_pending(&mut self, pending: PendingEra) {
+        if self.pending.as_ref().is_some_and(|p| p.lane_root == pending.lane_root) {
+            return;
+        }
+        self.pending = Some(pending);
+        self.mutated_osc = vsf::eagle_time_oscillations();
+    }
+
+    /// Phase 2 of a cutover: the pending era becomes current; the current era becomes retired (read-only, straggler window); our lane and pendings reset the way rotate_our_lane does, so the caller re-serves undelivered rows on a fresh lane under the new root. Returns (old tag, new tag, retired pending count).
+    pub fn cut_over_to_pending(&mut self) -> Option<(u32, u32, usize)> {
+        let next = self.pending.take()?;
+        let old_root = self.lane_root?;
+        let old_tag = crate::crypto::clutch::era_tag(&old_root);
+        self.drop_retired_era();
+        self.retired = Some(RetiredEra {
+            era_index: self.era_index,
+            lane_root: old_root,
+            history_key: self.history_key,
+            tag: old_tag,
+            grace_left: RETIRED_ERA_GRACE_ROWS,
+        });
+        self.lane_root = Some(next.lane_root);
+        self.history_key = next.history_key;
+        self.era_index = next.era_index;
+        self.genesis_osc = vsf::eagle_time_oscillations();
+        let retired = self.pending_messages.len();
+        self.pending_messages.clear();
+        self.our_label = None;
+        self.last_sent_hash = None;
+        self.rows_since_ratchet = 0;
+        self.mutated_osc = vsf::eagle_time_oscillations();
+        Some((old_tag, next.tag, retired))
+    }
+
+    /// A completed ceremony (or a sibling's replicated newer era) supersedes the current era: the incoming blob's root, keys and lanes become current, ours become RETIRED rather than destroyed — the straggler window the old wholesale replace never had. Device-local send state resets as at any cutover.
+    pub fn supersede_with(&mut self, other: &FriendshipChains) {
+        if let (Some(old_root), Some(_)) = (self.lane_root, other.lane_root) {
+            self.drop_retired_era();
+            self.retired = Some(RetiredEra {
+                era_index: self.era_index,
+                lane_root: old_root,
+                history_key: self.history_key,
+                tag: crate::crypto::clutch::era_tag(&old_root),
+                grace_left: RETIRED_ERA_GRACE_ROWS,
+            });
+        }
+        self.lane_root = other.lane_root;
+        self.history_key = other.history_key;
+        self.genesis_osc = other.genesis_osc;
+        self.era_index = other.era_index;
+        self.era_lineage = other.era_lineage;
+        self.pending = other.pending.clone();
+        // The old era's lanes stay (read-only, tagged with the old index); the new era's lanes join them.
+        for (i, label) in other.lane_labels.iter().enumerate() {
+            if self.lane_index(label).is_some() {
+                continue;
+            }
+            self.lane_labels.push(*label);
+            self.lane_positions.push(other.lane_positions[i]);
+            self.chains.push(other.chains[i].clone());
+            self.last_plaintexts.push(other.last_plaintexts[i].clone());
+            self.first_message_anchors.push(other.first_message_anchors[i]);
+            self.last_received_hashes.push(other.last_received_hashes[i]);
+            self.last_received_times.push(other.last_received_times[i]);
+            self.lane_eras.push(other.lane_eras.get(i).copied().unwrap_or(other.era_index));
+        }
+        self.our_label = None;
+        self.pending_messages.clear();
+        self.last_sent_hash = None;
+        self.gap_buffer.clear();
+        self.rows_since_ratchet = 0;
+        self.mutated_osc = vsf::eagle_time_oscillations();
+    }
+
+    /// Drop the retired era: zeroize its keys and remove its lanes. Called on the retire edge (peer heads caught up, the grace window spent, or the next cutover).
+    pub fn drop_retired_era(&mut self) -> bool {
+        use zeroize::Zeroize;
+        let Some(mut r) = self.retired.take() else { return false };
+        let dead: Vec<usize> = (0..self.lane_labels.len()).filter(|&i| self.lane_eras[i] == r.era_index).collect();
+        for i in dead.into_iter().rev() {
+            self.lane_labels.remove(i);
+            self.lane_positions.remove(i);
+            self.chains.remove(i);
+            self.last_plaintexts.remove(i);
+            self.first_message_anchors.remove(i);
+            self.last_received_hashes.remove(i);
+            self.last_received_times.remove(i);
+            self.lane_eras.remove(i);
+        }
+        r.lane_root.zeroize();
+        if let Some(hk) = r.history_key.as_mut() {
+            hk.zeroize();
+        }
+        self.mutated_osc = vsf::eagle_time_oscillations();
+        true
+    }
+
+    /// One current-era frame from the peer seen after a cutover: spend one unit of the retired era's grace; true when the window is spent and the caller should drop it.
+    pub fn note_current_era_frame(&mut self) -> bool {
+        self.rows_since_ratchet = self.rows_since_ratchet.saturating_add(1);
+        let Some(r) = self.retired.as_mut() else { return false };
+        r.grace_left = r.grace_left.saturating_sub(1);
+        r.grace_left == 0
     }
 
     /// RETIRED-LANE GC (field 2026-08-28, the 8.1MB chains blob): rotation mints a fresh lane and the dead one's 16KB chain stayed forever — the Emma wedge's rotate→re-serve→exhaust→rotate loop minted ~490 lanes and the blob's whole-put churn raced the vault fence into the recurring degraded banner. A lane with NO receipt ever and not currently ours is EXACTLY the state `ensure_lane` re-derives from `lane_root` + label on demand (position 0, empty plaintext, derivable anchor) — dropping it is lossless by construction. Keep the newest `keep_recent` such lanes (grace for an in-flight first frame); prune the rest. Peer lanes (any receipt) and our active lane are never touched.
@@ -810,6 +1054,7 @@ impl FriendshipChains {
                 self.first_message_anchors.remove(i);
                 self.last_received_hashes.remove(i);
                 self.last_received_times.remove(i);
+                self.lane_eras.remove(i);
                 dropped += 1;
             } else {
                 i += 1;
@@ -857,7 +1102,11 @@ impl FriendshipChains {
         last_received_hashes: Vec<Option<[u8; 32]>>,
         last_received_times: Vec<Option<i64>>,
         our_label: Option<[u8; 32]>,
+        lane_eras: Vec<u64>,
     ) {
+        let mut lane_eras = lane_eras;
+        lane_eras.resize(labels.len(), self.era_index);
+        self.lane_eras = lane_eras;
         self.first_message_anchors = labels
             .iter()
             .zip(chains.iter())
@@ -884,11 +1133,20 @@ impl FriendshipChains {
         self.lane_root.is_some() && other.lane_root.is_some() && self.lane_root != other.lane_root
     }
 
+    /// A sibling blob whose CURRENT root is our PENDING root has cut over ahead of us — not a supersede, a "cut over now" (merge_lanes_from handles it).
+    pub fn other_is_our_pending(&self, other: &FriendshipChains) -> bool {
+        self.pending.as_ref().is_some_and(|p| Some(p.lane_root) == other.lane_root)
+    }
+
     /// True when `other` is a DIFFERENT era that provably superseded ours — the caller replaces this blob wholesale (sanitized). The ceremony's GENESIS stamp decides, not `mutated_osc`: the dead era's clock does not actually go quiet — retransmit and gap bookkeeping keep bumping it, so the stale sibling could out-tick a freshly-woven era indefinitely (live pair, 2026-08-05). Genesis is written once at completion and never moves.
     /// EQUAL genesis (the 0==0 legacy tie in practice): the old mutated_osc fallback NEVER converged — both siblings keep out-ticking their own era with held-message commits and retransmit bookkeeping, each refusing the other forever (field-caught 2026-08-21: fid ae1311ac, `ours genesis 0 vs incoming 0`, standing refusal both directions). The lane_root's byte order is a DETERMINISTIC winner every device computes identically, so the fleet converges in one push; if it happens to settle on the era the friend can't read, the very next garbage streak fires a re-key whose fresh era carries a REAL genesis and supersedes cleanly everywhere — convergence first, correctness by the ceremony that follows.
     pub fn era_superseded_by(&self, other: &FriendshipChains) -> bool {
         if !self.differs_in_era_from(other) {
             return false;
+        }
+        // Within one lineage the ratchet index is the truth (2026-09-08); across lineages the rules below stand.
+        if self.era_lineage == other.era_lineage && self.era_index != other.era_index {
+            return other.era_index > self.era_index;
         }
         if self.genesis_osc != other.genesis_osc {
             return other.genesis_osc > self.genesis_osc;
@@ -899,30 +1157,25 @@ impl FriendshipChains {
     /// Merge a sibling's replicated copy, LANE-WISE (docs/lanes.md checkpoints): a lane we lack is taken whole; a lane we hold is replaced iff the incoming position is STRICTLY greater — a fast-forward of the same deterministic replay, always safe. Device-local state (our label, pendings, send tip, weave view) stays OURS untouched; the root and history key adopt only where we lack them. Replaces whole-blob newest-wins, whose fork window was both devices overwriting each other's live lanes. Returns whether anything changed. SAME-ERA ONLY: the caller must judge `differs_in_era_from` first — a re-keyed root never merges, it supersedes wholesale.
     pub fn merge_lanes_from(&mut self, other: &FriendshipChains) -> bool {
         // ERA SUPERSEDE: different lane_roots are different CEREMONIES over one friendship — a re-key happened, and lane-merging across eras is meaningless (labels derive under different roots). Keeping an existing root forever left a parked sibling on yesterday's era pushing stale frames the friend's gap repair read as a fork — it discarded a freshly-woven chain 15 seconds after completion (live pair, 2026-08-05). The newer genesis adopts WHOLESALE and the superseded era's lanes, pendings, and send state die with it; the older side keeps ours and converges when our push reaches it.
-        if self.differs_in_era_from(other) {
+        if self.other_is_our_pending(other) {
+            // The sibling cut over to the era we were holding as pending: follow it, then take its lanes like any same-era merge.
+            self.cut_over_to_pending();
+        } else if self.differs_in_era_from(other) {
             if !self.era_superseded_by(other) {
                 return false;
             }
-            self.zeroize_history_key();
-            self.zeroize_lane_root();
-            self.lane_root = other.lane_root;
-            self.history_key = other.history_key;
-            self.genesis_osc = other.genesis_osc;
-            self.lane_labels = other.lane_labels.clone();
-            self.lane_positions = other.lane_positions.clone();
-            self.chains = other.chains.clone();
-            self.last_plaintexts = other.last_plaintexts.clone();
-            self.first_message_anchors = other.first_message_anchors.clone();
-            self.last_received_hashes = other.last_received_hashes.clone();
-            self.last_received_times = other.last_received_times.clone();
-            self.our_label = None;
-            self.pending_messages.clear();
-            self.last_sent_hash = None;
-            self.gap_buffer.clear();
-            self.mutated_osc = vsf::eagle_time_oscillations();
+            // Newer era wins WHOLESALE — but the one we held becomes RETIRED (its lanes still decrypt stragglers) instead of dying on the spot (2026-09-08).
+            self.supersede_with(other);
             return true;
         }
         let mut changed = false;
+        // A pending era the sibling holds and we don't (the owner minted it; siblings hold it so the peer's first frame on it decrypts anywhere).
+        if let Some(p) = other.pending.as_ref() {
+            if p.era_index > self.era_index && self.pending.as_ref().map_or(true, |mine| mine.era_index < p.era_index) {
+                self.pending = Some(p.clone());
+                changed = true;
+            }
+        }
         if self.lane_root.is_none() && other.lane_root.is_some() {
             self.lane_root = other.lane_root;
             changed = true;
@@ -943,6 +1196,7 @@ impl FriendshipChains {
                     self.last_received_hashes
                         .push(other.last_received_hashes[i]);
                     self.last_received_times.push(other.last_received_times[i]);
+                    self.lane_eras.push(other.lane_eras.get(i).copied().unwrap_or(other.era_index));
                     changed = true;
                 }
                 Some(mine) => {
@@ -1026,6 +1280,12 @@ impl FriendshipChains {
             lane_root: self.lane_root,
             genesis_osc: self.genesis_osc,
             mutated_osc: self.mutated_osc,
+            era_index: self.era_index,
+            era_lineage: self.era_lineage,
+            lane_eras: keep.iter().map(|&i| self.lane_eras[i]).collect(),
+            retired: self.retired.clone(),
+            pending: self.pending.clone(),
+            rows_since_ratchet: self.rows_since_ratchet,
         }
     }
 
@@ -2126,6 +2386,115 @@ mod tests {
         assert_eq!(ready_b.len(), 1);
         assert_eq!(ready_b[0].eagle_time, 1001);
         assert_eq!(chains.gap_buffer_count(), 0);
+    }
+
+    /// Two blobs run a cutover from one shared pending era: both land on the same root/index/tag, the old era is RETIRED (still decrypts), our lane and pendings reset, and dropping the retired era zeroizes it and removes its lanes.
+    #[test]
+    fn cutover_retires_the_old_era_readable_then_drops_it() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut x = FriendshipChains::from_clutch(&[a, b], &eggs);
+        let mut y = FriendshipChains::from_clutch(&[a, b], &eggs);
+        assert_eq!(x.era_index, 0);
+        assert_eq!(x.era_lineage, y.era_lineage, "same eggs ⇒ same lineage");
+        let old_root = *x.lane_root().unwrap();
+        let old_label = x.mint_our_lane().unwrap();
+        assert_eq!(x.era_slot_for_label(&old_label), Some(EraSlot::Current));
+        let next_root = [7u8; 32];
+        let pending = PendingEra {
+            era_index: 1,
+            lane_root: next_root,
+            history_key: Some([8u8; 32]),
+            tag: crate::crypto::clutch::era_tag(&next_root),
+            resp_osc: None,
+        };
+        x.install_pending(pending.clone());
+        y.install_pending(pending.clone());
+        assert_eq!(x.era_slot_for_tag(Some(pending.tag)), Some(EraSlot::Pending));
+        // A peer lane on the pending era materializes from the pending root, tagged with the pending index.
+        let peer_label = [9u8; 32];
+        assert!(y.ensure_lane_era(&peer_label, EraSlot::Pending).is_some());
+        assert_eq!(y.lane_era(&peer_label), Some(1));
+        let (old_tag, new_tag, _) = x.cut_over_to_pending().expect("cut over");
+        assert_eq!(old_tag, crate::crypto::clutch::era_tag(&old_root));
+        assert_eq!(new_tag, pending.tag);
+        assert_eq!(x.era_index, 1);
+        assert_eq!(x.lane_root(), Some(&next_root));
+        assert_eq!(x.era_slot_for_label(&old_label), Some(EraSlot::Retired), "the old lane is still known, read-only");
+        assert!(!x.lane_is_writable(&old_label));
+        assert_eq!(x.our_label(), None, "our label never outlives its era");
+        assert_eq!(x.era_slot_for_tag(Some(old_tag)), Some(EraSlot::Retired));
+        assert_eq!(x.era_slot_for_tag(Some(0xDEAD_BEEF)), None, "an unknown tag routes nowhere");
+        assert_eq!(x.era_slot_for_tag(None), Some(EraSlot::Current), "a legacy frame is current");
+        y.cut_over_to_pending().expect("cut over");
+        assert_eq!(x.lane_root(), y.lane_root(), "both sides land on one root");
+        assert_eq!(x.era_index, y.era_index);
+        // The grace window is a row-count edge: spend it and the retired era drops, zeroized, lanes gone.
+        for _ in 0..(RETIRED_ERA_GRACE_ROWS - 1) {
+            assert!(!x.note_current_era_frame());
+        }
+        assert!(x.note_current_era_frame(), "the last grace row says drop");
+        assert!(x.drop_retired_era());
+        assert!(x.retired_era().is_none());
+        assert_eq!(x.era_slot_for_label(&old_label), None, "the retired era's lanes are gone");
+        assert!(!x.drop_retired_era(), "nothing left to drop");
+    }
+
+    /// Era order: within a lineage the index rules (even against an older genesis); across lineages the newer genesis rules; a sibling whose current root is our pending root is "cut over now", not a supersede.
+    #[test]
+    fn era_order_is_index_within_lineage_and_genesis_across() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let other_eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8 + 50; 32]).collect();
+        let base = FriendshipChains::from_clutch(&[a, b], &eggs);
+        let mut ratcheted = base.clone();
+        ratcheted.install_pending(PendingEra { era_index: 1, lane_root: [3u8; 32], history_key: None, tag: crate::crypto::clutch::era_tag(&[3u8; 32]), resp_osc: None });
+        ratcheted.cut_over_to_pending().unwrap();
+        // Make the ratcheted era LOOK older by genesis: the index must still win inside the lineage.
+        ratcheted.genesis_osc = 1;
+        let mut older = base.clone();
+        older.genesis_osc = 1_000;
+        assert!(older.era_superseded_by(&ratcheted), "index 1 beats index 0 in one lineage regardless of genesis");
+        assert!(!ratcheted.era_superseded_by(&older));
+        let mut fresh = FriendshipChains::from_clutch(&[a, b], &other_eggs);
+        fresh.genesis_osc = 2_000;
+        assert_ne!(fresh.era_lineage, ratcheted.era_lineage);
+        assert!(ratcheted.era_superseded_by(&fresh), "across lineages the newer genesis wins");
+        let mut holder = base.clone();
+        holder.install_pending(PendingEra { era_index: 1, lane_root: [3u8; 32], history_key: None, tag: crate::crypto::clutch::era_tag(&[3u8; 32]), resp_osc: None });
+        assert!(holder.other_is_our_pending(&ratcheted));
+        assert!(holder.merge_lanes_from(&ratcheted) || holder.era_index == 1, "merge follows the sibling's cutover");
+        assert_eq!(holder.era_index, 1);
+        assert_eq!(holder.lane_root(), ratcheted.lane_root());
+        assert!(holder.retired_era().is_some(), "the era it held is retired, not destroyed");
+    }
+
+    /// A sibling that supersedes by replication keeps the old era retired (stragglers decrypt) and adopts a pending era the owner minted.
+    #[test]
+    fn replication_supersede_retires_and_carries_pending() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut owner = FriendshipChains::from_clutch(&[a, b], &eggs);
+        let mut sibling = owner.clone();
+        let sib_label = sibling.mint_our_lane().unwrap();
+        owner.install_pending(PendingEra { era_index: 1, lane_root: [4u8; 32], history_key: Some([5u8; 32]), tag: crate::crypto::clutch::era_tag(&[4u8; 32]), resp_osc: Some(42) });
+        // Same era, pending only: the sibling adopts the pending without cutting over.
+        assert!(sibling.merge_lanes_from(&owner.replication_subset(&[])));
+        assert_eq!(sibling.pending_era().map(|p| p.era_index), Some(1));
+        assert_eq!(sibling.era_index, 0);
+        assert_eq!(sibling.our_label(), Some(&sib_label), "a pending adopt never touches our lane");
+        owner.cut_over_to_pending().unwrap();
+        let owner_label = owner.mint_our_lane().unwrap();
+        let subset = owner.replication_subset(&[owner_label]);
+        assert_eq!(subset.lane_era(&owner_label), Some(1));
+        assert!(sibling.merge_lanes_from(&subset));
+        assert_eq!(sibling.era_index, 1);
+        assert_eq!(sibling.era_slot_for_label(&sib_label), Some(EraSlot::Retired));
+        assert_eq!(sibling.era_slot_for_label(&owner_label), Some(EraSlot::Current));
+        assert_eq!(sibling.our_label(), None);
     }
 
     #[test]

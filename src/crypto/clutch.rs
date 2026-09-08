@@ -101,6 +101,29 @@ pub fn derive_lane_root(friendship_id: &[u8; 32], active_chains_sorted: &[&[u8]]
 }
 
 /// Derive a LANE's 8KB active portion (docs/lanes.md): blake3 XOF over lane_root ‖ label, domain-separated with a binary version numeral. Device identity is deliberately NOT an input — the label alone names the lane, which is what buys receive-anywhere and wire pseudonymity. blake3 is bit-portable, the cross-device requirement every chain derivation carries.
+const ERA_TAG_DOMAIN: &[u8] = b"PHOTON_ERA_TAG_v\x01";
+const ERA_LINEAGE_DOMAIN: &[u8] = b"PHOTON_ERA_LINEAGE_v\x01";
+
+/// The 4-byte PUBLIC fingerprint of an era — the s_id pattern (blind.rs): a lossy one-way tag of the root, safe on the wire and in logs, never invertible to the root. Two eras of one friendship collide with probability 2^-32, which the era_index disambiguates.
+pub fn era_tag(lane_root: &[u8; 32]) -> u32 {
+    let mut input = Vec::with_capacity(ERA_TAG_DOMAIN.len() + 32);
+    input.extend_from_slice(ERA_TAG_DOMAIN);
+    input.extend_from_slice(lane_root);
+    let h = spaghettify(&input);
+    input.zeroize();
+    u32::from_le_bytes([h[0], h[1], h[2], h[3]])
+}
+
+/// The lineage a friendship's eras descend from: a one-way image of the era-0 root. A woven transition (light ratchet or full CLUTCH with the prior woven in) inherits it; a fresh CLUTCH mints a new one. Lets sibling replication order eras WITHIN a lineage by index while two unrelated ceremonies still fall to the genesis tiebreak.
+pub fn era_lineage(birth_root: &[u8; 32]) -> [u8; 32] {
+    let mut input = Vec::with_capacity(ERA_LINEAGE_DOMAIN.len() + 32);
+    input.extend_from_slice(ERA_LINEAGE_DOMAIN);
+    input.extend_from_slice(birth_root);
+    let out = spaghettify(&input);
+    input.zeroize();
+    out
+}
+
 pub fn derive_lane_active(lane_root: &[u8; 32], label: &[u8; 32]) -> Vec<u8> {
     let mut h = Hasher::new();
     h.update(b"PHOTON_LANE_v\x01");
