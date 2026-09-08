@@ -1610,7 +1610,7 @@ impl PhotonApp {
     #[allow(clippy::type_complexity)]
     pub(super) fn fleet_device_rows(
         &mut self,
-    ) -> Vec<([u8; 32], bool, bool, bool, String, String, Option<u32>, String)> {
+    ) -> Vec<([u8; 32], bool, bool, bool, String, String, super::ShownTier, String)> {
 
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return Vec::new();
@@ -1626,7 +1626,8 @@ impl PhotonApp {
                 false,
                 super::machine_name(&me, &seed, self.fleet_settings.as_ref()),
                 String::new(),
-                None,
+                // This device is the vantage point — there is no path to itself to colour or name.
+                super::ShownTier::Offline,
                 crate::about_string(),
             ));
         }
@@ -1656,7 +1657,7 @@ impl PhotonApp {
                 super::machine_name(&pk, &seed, self.fleet_settings.as_ref()),
                 link,
                 // A sibling is another physical device — always a remote participant.
-                path_tier_colour(c, true),
+                super::path_tier_shown(c, true),
                 c.device_about.clone().unwrap_or_default(),
             ));
         }
@@ -1669,7 +1670,8 @@ impl PhotonApp {
                 true,
                 super::machine_name(pk, &seed, self.fleet_settings.as_ref()),
                 String::new(),
-                None,
+                // Retired: gone from the fleet, so no live path to colour or name.
+                super::ShownTier::Offline,
                 String::new(),
             ));
         }

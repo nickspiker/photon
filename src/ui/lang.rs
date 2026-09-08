@@ -1,7 +1,7 @@
 // The language catalog: every user-facing string is a Msg variant, every language is one exhaustive match, and the compiler is the completeness checker.
 // Doctrine (docs/languages.md): keys are WHOLE messages with holes (never concatenate translated fragments); variants carry semantic values (counts, names) and each language renders its own word order, plurals, and gender.
 // Never translated: handles (byte-precise), voca pairing words (protocol material), log lines (photonlog grep-ability), dozenal digit names (Zil/Ter/Lun/Stel — invented photon vocabulary, universal like the glyphs), VSF field names and storage keys, the brand word "Photon".
-// Numbers inside translated strings render at this edge per the number doctrine where the site already does (dozenal glyphs); sites that carried raw arabic keep it byte-identical for now — languages own the fix later.
+// Numbers inside translated strings render at this edge per the number doctrine: EVERY numeral goes thru crate::fmt_num (or fmt_i when signed). The one deliberate exception is Msg::FileBubble, whose size draws in a face that can't resolve the dozenal glyph bytes — see the comment there; it is a font problem, not a licence for raw arabic anywhere else.
 // Multi-line passages (About prose, join instructions, the riddle) are ONE variant joined with '\n'; call sites iterate .lines() so translators see whole passages.
 // Adding a string = add a Msg variant; every language file then fails to build until its arm exists, so no English can silently leak into a translated UI.
 
@@ -263,8 +263,6 @@ pub enum Msg<'a> {
     SelfNoChain,
     ChainWoven,
     AlwaysReachableSelf,
-    ConnectedRelay,
-    ConnectedDirect,
     MessagesSentReceived { total: usize, sent: usize, recv: usize },
     RowsShouldMatch,
     OwnNotesCantBoot,
@@ -305,6 +303,13 @@ pub enum Msg<'a> {
     RetiredStillYours,
     RevokedBadge,
     Online,
+    /// Path-tier words — the same resolution that picks the dot's colour, spoken (see ShownTier).
+    TierLan,
+    TierWan,
+    TierDirect,
+    TierRelay,
+    /// One-line legend under a presence dot, so the colour scheme explains itself.
+    TierLegend,
     Offline,
     OnlineVia(&'a str),
     NotEggedYet(&'a str),
@@ -359,7 +364,7 @@ pub enum Msg<'a> {
     UnattendedArmedToast,
     UnattendedDisarmedToast,
     CouldntChangeLoginItem(&'a str),
-    CustodiansVersion(&'a str),
+    Custodians,
     CustodianCheckbox,
     CustodianExplainer,
     SecurityIntro,

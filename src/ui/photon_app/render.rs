@@ -2197,13 +2197,13 @@ impl PhotonApp {
                             .replace('\n', " \u{00b7} ")
                             .into()
                         };
+                        // NAME the path, don't just colour the avatar ring with it (Nick 2026-09-08). Same resolution the ring uses, so the word and the colour are one fact — and the legend line below turns the whole scheme from folklore into something the screen explains.
                         let connection_line = if is_self {
                             tr(Msg::AlwaysReachableSelf)
                         } else if contact.is_online {
-                            if contact.reached_via_relay {
-                                tr(Msg::ConnectedRelay)
-                            } else {
-                                tr(Msg::ConnectedDirect)
+                            match super::tier_label(super::path_tier_shown(contact, true)).as_deref() {
+                                Some(w) => tr(Msg::OnlineVia(w)),
+                                None => tr(Msg::Online),
                             }
                         } else {
                             tr(Msg::Offline)
@@ -2272,6 +2272,17 @@ impl PhotonApp {
                             *theme::LABEL_COLOUR,
                             400,
                         );
+                        if !is_self && contact.is_online {
+                            settings_line(
+                                &mut canvas,
+                                ctx.text,
+                                rows[7],
+                                &tr(Msg::TierLegend),
+                                hspan2 * 0.8,
+                                *theme::LABEL_COLOUR,
+                                400,
+                            );
+                        }
                         settings_line(
                             &mut canvas,
                             ctx.text,
@@ -4335,9 +4346,11 @@ impl PhotonApp {
                         devices.iter().take(6).enumerate()
                     {
                         let row_locked = locked_set.contains(pk);
+                        let tier_colour = super::shown_tier_colour(*tier);
+                        let tier_word = super::tier_label(*tier);
                         // NAME band — tap-to-copy stamped over it; transport dot leads.
                         let name_band = flow.band(hspan2 * 1.7);
-                        if let Some(colour) = tier {
+                        if let Some(colour) = tier_colour.as_ref() {
                             let r = hspan2 * 0.26;
                             paint::circle_filled(
                                 &mut canvas,
@@ -4353,7 +4366,10 @@ impl PhotonApp {
                         let renaming_here = self.fleet_rename.as_ref().is_some_and(|(rpk, _)| rpk == pk);
                         if renaming_here {
                             if let Some((_, tb)) = self.fleet_rename.as_mut() {
-                                tb.set_rect(name_band.x + hspan2 * 1.1, name_band.center_y(), name_band.w - hspan2 * 1.6, name_band.h * 0.9);
+                                // set_rect takes CENTER x — passing the text's LEFT edge (as this did) centred the box there and threw half its width back across the nav rail, which is why renaming looked like it spanned the whole window. Span exactly the column the name and pills occupy: from the name's left edge to the card's right margin.
+                                let tb_left = name_band.x + hspan2 * 1.1;
+                                let tb_w = (name_band.right() - hspan2 * 0.5 - tb_left).max(hspan2 * 6.0);
+                                tb.set_rect(tb_left + tb_w * 0.5, name_band.center_y(), tb_w, name_band.h * 0.9);
                                 tb.set_font_size(hspan2, ctx.text);
                                 let id = tb.hit_id();
                                 tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
@@ -4381,7 +4397,9 @@ impl PhotonApp {
                                 btn_base.wrapping_add(16 + i as HitId),
                             );
                         }
-                        // STATUS line: state + link path in one sentence.
+                        // The name is the card's headline — let it breathe before the status beneath it (Nick 2026-09-08).
+                        flow.gap(hspan2 * 0.35);
+                        // STATUS line: state + the PATH NAMED, not merely coloured — the dot's colour and this word come from the same resolution (path_tier_shown), so they can't drift apart.
                         let (status, status_colour) = if *is_self {
                             (tr(Msg::ThisDevice), *theme::LABEL_COLOUR)
                         } else if *retired {
@@ -4390,71 +4408,58 @@ impl PhotonApp {
                             (tr(Msg::RevokedBadge), theme::PILL_RED.1)
                         } else if *online {
                             (
-                                if link.is_empty() { tr(Msg::Online) } else { tr(Msg::OnlineVia(link)) },
+                                match tier_word.as_deref() {
+                                    Some(w) => tr(Msg::OnlineVia(w)),
+                                    None => tr(Msg::Online),
+                                },
                                 *theme::SEARCH_FOUND_COLOUR,
                             )
                         } else {
                             (tr(Msg::Offline), *theme::LABEL_COLOUR)
                         };
                         flow.line(&mut canvas, ctx.text, &status, hspan2 * 0.85, status_colour, 400);
+                        // The CLUTCH ladder detail is its own sentence — it used to be smuggled into the status line, which is why the transport never had room to be named.
+                        if !link.is_empty() && !*is_self {
+                            flow.line(&mut canvas, ctx.text, link, hspan2 * 0.75, *theme::LABEL_COLOUR, 400);
+                        }
                         // BUILD line — version · commit · os arch off the sealed pong tail (self shows its own build). A stale version here IS the not-updated indicator.
                         if !about.is_empty() {
-                            flow.line(&mut canvas, ctx.text, about, hspan2 * 0.7, *theme::LABEL_COLOUR, 400);
+                            flow.line(&mut canvas, ctx.text, &super::about_line_display(about), hspan2 * 0.7, *theme::LABEL_COLOUR, 400);
                         }
                         // ACTION pills on their own band — flow_pills sizes to labels and wraps if the pane clamps.
                         let departing = self
                             .pending_depart_req
                             .as_ref()
                             .is_some_and(|(d, _, _, _, _)| d == pk);
+                        // ACTION pills — flow_pills sizes each to its label and WRAPS to the next band when the column runs out (Nick 2026-09-08: "if the user scales it such that Bridge / Rename / Revoke are too wide, revoke should wrap to the next line"). Same helper everywhere, so no page hand-rolls a row that can overflow.
                         if *retired {
                             let armed = self.fleet_release_armed.as_ref() == Some(pk);
-                            let label = tr(Msg::ReleasePill { armed });
-                            let band = flow.band(hspan2 * 2.4);
-                            draw_stub_pill_filled(
-                                &mut canvas,
-                                ctx.text,
-                                &mut chrome.hit_test_map,
-                                buf_w,
-                                buf_h,
-                                fluor::region::Region::new(band.x + hspan2 * 0.3, band.y + band.h * 0.1, (band.w * 0.4).max(hspan2 * 6.0), band.h * 0.8),
-                                &label,
-                                btn_base.wrapping_add(24 + i as HitId),
-                                ctx.pressed_hit,
-                                true,
-                                if armed { Some(*theme::PILL_RED) } else { None },
-                                "Oxanium",
-                            );
+                            flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
+                                (&tr(Msg::ReleasePill { armed }), btn_base.wrapping_add(24 + i as HitId), true, Some(*theme::PILL_RED)),
+                            ], "Oxanium");
                         } else if *is_self {
                             // The self card's one action: Rename — this machine's name is the one most worth setting.
-                            let band = flow.band(hspan2 * 2.4);
-                            let pill_h = band.h * 0.8;
-                            let rect = fluor::region::Region::new(band.x + hspan2 * 0.3, band.y + (band.h - pill_h) * 0.5, ctx.text.measure_text(&tr(Msg::RenamePill), &TextStyle::new(pill_h * 0.5, 0).font("Oxanium")) + pill_h * 0.8 + hspan2 * 0.4, pill_h);
-                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, &tr(Msg::RenamePill), btn_base.wrapping_add(56 + i as HitId), ctx.pressed_hit, true, None, "Oxanium");
+                            flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
+                                (&tr(Msg::RenamePill), btn_base.wrapping_add(56 + i as HitId), true, None),
+                            ], "Oxanium");
                         } else {
-                            // Bridge + Rename + the row's state pill (Revoke / Reinstate / Approve departure), each sized to its label.
-                            let band = flow.band(hspan2 * 2.4);
-                            let pill_h = band.h * 0.8;
-                            let pill_y = band.y + (band.h - pill_h) * 0.5;
-                            let mut x = band.x + hspan2 * 0.3;
-                            let mut place = |canvas: &mut Canvas, text: &mut fluor::text::TextRenderer, hit_map: &mut [HitId], label: &str, hit: HitId, fill: Option<(u32, u32)>| {
-                                let w = text.measure_text(label, &TextStyle::new(pill_h * 0.5, 0).font("Oxanium")) + pill_h * 0.8 + hspan2 * 0.4;
-                                let rect = fluor::region::Region::new(x, pill_y, w, pill_h);
-                                draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, label, hit, ctx.pressed_hit, true, fill, "Oxanium");
-                                x += w + hspan2 * 0.6;
-                            };
+                            // Bridge + Rename + the row's state pill (Revoke / Reinstate / Approve departure). Revoke wears PILL_RED unarmed as well as armed — it is the hostile verb on this page and shouldn't have to be tapped once to look like it.
+                            let mut pills: Vec<(std::borrow::Cow<'static, str>, HitId, bool, Option<(u32, u32)>)> = Vec::with_capacity(3);
                             let bridge_fill = if *online { Some(*theme::PILL_GREEN) } else { Some(*theme::PILL_GREY) };
-                            place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::BridgePill), btn_base.wrapping_add(8 + i as HitId), bridge_fill);
-                            place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::RenamePill), btn_base.wrapping_add(56 + i as HitId), None);
+                            pills.push((tr(Msg::BridgePill), btn_base.wrapping_add(8 + i as HitId), true, bridge_fill));
+                            pills.push((tr(Msg::RenamePill), btn_base.wrapping_add(56 + i as HitId), true, None));
                             if departing {
                                 let armed = self.fleet_approve_armed.as_ref() == Some(pk);
-                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::ApproveSignOutPill { armed }), btn_base.wrapping_add(48 + i as HitId), Some(if armed { *theme::PILL_RED } else { *theme::PILL_YELLOW }));
+                                pills.push((tr(Msg::ApproveSignOutPill { armed }), btn_base.wrapping_add(48 + i as HitId), true, Some(if armed { *theme::PILL_RED } else { *theme::PILL_YELLOW })));
                             } else if row_locked {
                                 let armed = self.fleet_unlock_armed.as_ref() == Some(pk);
-                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::ReinstatePill { armed }), btn_base.wrapping_add(40 + i as HitId), if armed { Some(*theme::PILL_RED) } else { None });
+                                pills.push((tr(Msg::ReinstatePill { armed }), btn_base.wrapping_add(40 + i as HitId), true, if armed { Some(*theme::PILL_RED) } else { None }));
                             } else {
                                 let armed = self.fleet_lock_armed.as_ref() == Some(pk);
-                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::RevokePill { armed }), btn_base.wrapping_add(32 + i as HitId), if armed { Some(*theme::PILL_RED) } else { None });
+                                pills.push((tr(Msg::RevokePill { armed }), btn_base.wrapping_add(32 + i as HitId), true, Some(*theme::PILL_RED)));
                             }
+                            let refs: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = pills.iter().map(|(l, h, e, f)| (l.as_ref(), *h, *e, *f)).collect();
+                            flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &refs, "Oxanium");
                         }
                         // DEPARTURE ceremony bands (2026-09-04): the declared intent under the pills, and — once Approve is tapped on a words-carrying request — the words-entry box that gates the countersign (type what the departing device's screen shows).
                         let departing_here = self.pending_depart_req.as_ref().is_some_and(|(d, _, _, _, _)| d == pk);
@@ -4520,7 +4525,8 @@ impl PhotonApp {
                         buf_h,
                         ctx.pressed_hit,
                         hspan2,
-                        &[(add_device_label.as_ref(), btn_base, true)],
+                        &[(add_device_label.as_ref(), btn_base, true, None)],
+                        "Open Sans",
                     );
                     flow.gap(hspan2);
                     measured_extent = Some((flow.used(), inset.h));
@@ -4698,21 +4704,10 @@ impl PhotonApp {
                         if self.unattended_confirm_failed {
                             flow.line(&mut canvas, ctx.text, &tr(Msg::UnattendedMismatch), hspan2, *theme::ERROR_TEXT_COLOUR, 600);
                         }
-                        let band = flow.band(hspan2 * 2.4);
-                        let pill_h = band.h * 0.8;
-                        let py = band.y + (band.h - pill_h) * 0.5;
-                        draw_stub_pill_filled(
-                            &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h,
-                            fluor::region::Region::new(band.x + hspan2 * 0.3, py, band.w * 0.38, pill_h),
-                            &tr(if target_on { Msg::Arm } else { Msg::Disarm }),
-                            self.unattended_confirm_base, ctx.pressed_hit, true, Some(*theme::PILL_RED), "Open Sans",
-                        );
-                        draw_stub_pill(
-                            &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h,
-                            fluor::region::Region::new(band.x + band.w * 0.45, py, band.w * 0.3, pill_h),
-                            &tr(Msg::Cancel),
-                            self.unattended_confirm_base.wrapping_add(1), ctx.pressed_hit,
-                        );
+                        flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
+                            (&tr(if target_on { Msg::Arm } else { Msg::Disarm }), self.unattended_confirm_base, true, Some(*theme::PILL_RED)),
+                            (&tr(Msg::Cancel), self.unattended_confirm_base.wrapping_add(1), true, None),
+                        ], "Open Sans");
                     } else {
                         let armed = self
                             .settings_unattended_check
@@ -4741,7 +4736,7 @@ impl PhotonApp {
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
                     flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::CustodiansVersion(&crate::dozenal_glyphs(1))), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::Custodians), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.gap(hspan2 * 0.4);
                     if let Some(cb) = self.settings_custodian_check.as_mut() {
                         let band = flow.band(hspan2 * 2.0);
@@ -5209,68 +5204,17 @@ impl PhotonApp {
                         *theme::LABEL_COLOUR,
                         400,
                     );
-                    let pr = rows[3].split_h([1.0, 1.0, 1.0, 1.0]);
-                    draw_stub_pill(
-                        &mut canvas,
-                        ctx.text,
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        pr[0].center_h(0.85),
-                        &tr(Msg::DiagClear),
-                        btn_base.wrapping_add(0),
-                        ctx.pressed_hit,
-                    );
-                    draw_stub_pill(
-                        &mut canvas,
-                        ctx.text,
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        pr[1].center_h(0.85),
-                        &tr(Msg::DiagSnapshot),
-                        btn_base.wrapping_add(1),
-                        ctx.pressed_hit,
-                    );
-                    // Submit greys while an upload is in flight or the log hasn't grown past the last successful submit — a resend then would be a byte-identical duplicate. Any new record (or Clear) moves the size and re-arms it.
+                    // Four actions on a WRAPPING flow instead of forced quarters (Nick 2026-09-08: buttons should wrap like text): at a narrow width or a large zoom they stack instead of squashing their labels. rows[4] and rows[5] are empty on this page, so a wrapped row has somewhere to go without colliding with the note below.
                     let submit_disabled = self.log_submit_inflight
                         || self.log_submitted_len == Some(crate::log_size_bytes());
-                    if submit_disabled {
-                        draw_stub_pill_disabled(
-                            &mut canvas,
-                            ctx.text,
-                            &mut chrome.hit_test_map,
-                            buf_w,
-                            buf_h,
-                            pr[2].center_h(0.85),
-                            &tr(Msg::DiagSubmit),
-                            btn_base.wrapping_add(2),
-                            ctx.pressed_hit,
-                        );
-                    } else {
-                        draw_stub_pill(
-                            &mut canvas,
-                            ctx.text,
-                            &mut chrome.hit_test_map,
-                            buf_w,
-                            buf_h,
-                            pr[2].center_h(0.85),
-                            &tr(Msg::DiagSubmit),
-                            btn_base.wrapping_add(2),
-                            ctx.pressed_hit,
-                        );
-                    }
-                    draw_stub_pill(
-                        &mut canvas,
-                        ctx.text,
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        pr[3].center_h(0.85),
-                        &tr(Msg::DiagView),
-                        btn_base.wrapping_add(3),
-                        ctx.pressed_hit,
-                    );
+                    let mut log_flow = Flow::new(rows[3], 0.0);
+                    flow_pills(&mut log_flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
+                        (&tr(Msg::DiagClear), btn_base.wrapping_add(0), true, None),
+                        (&tr(Msg::DiagSnapshot), btn_base.wrapping_add(1), true, None),
+                        // Submit greys while an upload is in flight or the log hasn't grown past the last successful submit — a resend then would be a byte-identical duplicate. Any new record (or Clear) moves the size and re-arms it.
+                        (&tr(Msg::DiagSubmit), btn_base.wrapping_add(2), !submit_disabled, None),
+                        (&tr(Msg::DiagView), btn_base.wrapping_add(3), true, None),
+                    ], "Open Sans");
                     settings_line(
                         &mut canvas,
                         ctx.text,
@@ -5575,7 +5519,7 @@ impl PhotonApp {
                             y += line_h * 0.4;
                             ctx.text.draw_text_center(
                                 &mut canvas,
-                                &crate::dozenal_glyphs(42),
+                                &crate::fmt_num(42),
                                 cx,
                                 y + line_h * 0.5,
                                 &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)

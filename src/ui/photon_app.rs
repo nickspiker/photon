@@ -73,6 +73,26 @@ fn dev_patch() -> u32 {
 }
 
 /// A manifest version tuple, BASE-AWARE (fmt_num honours the dozenal/decimal toggle — Nick 2026-09-02: version numbers respect the selected units): major omitted while 0, `.patch` only when ≥1 — the same omissions the wire uses.
+/// Re-render a device's `about_string()` at THIS screen's base (Nick 2026-09-08: numerals honour the user's choice, everywhere). The version rides the pong tail as a minted string — always arabic, since `about_string` formats `env!` constants — so the render edge parses its leading `v<maj>.<min>.<pat>` back to numbers and re-renders them through `fmt_num`. The commit hex and `os arch` are identifiers, not numerals, and pass thru untouched. Anything that doesn't parse (a future format, a truncated tail) is shown verbatim rather than mangled.
+pub(crate) fn about_line_display(about: &str) -> String {
+    let Some((ver, rest)) = about.split_once(' ') else {
+        return about.to_string();
+    };
+    let Some(digits) = ver.strip_prefix('v') else {
+        return about.to_string();
+    };
+    let parts: Vec<&str> = digits.split('.').collect();
+    let [maj, min, pat] = parts[..] else {
+        return about.to_string();
+    };
+    match (maj.parse::<usize>(), min.parse::<usize>(), pat.parse::<usize>()) {
+        (Ok(maj), Ok(min), Ok(pat)) => {
+            format!("v{} {}", dozenal_version_tuple((maj, min, pat)), rest)
+        }
+        _ => about.to_string(),
+    }
+}
+
 fn dozenal_version_tuple(v: (usize, usize, usize)) -> String {
     let (maj, min, pat) = v;
     let mut s = String::new();
@@ -3251,26 +3271,56 @@ pub(crate) fn ring_colour_of(tier: ConnTier) -> u32 {
 
 /// The transport tier of a live path as a DOT colour: LAN green (same subnet — no NAT, nothing in the middle), WAN cyan (a punched or routable direct path across the internet), relay orange (no direct path — frames ride the seed's pipe). `None` for a device that isn't reachable at all, which renders no dot.
 /// Same held-state rule the avatar ring uses: a live `validated_path` is authoritative and outranks `reached_via_relay`, because that flag tracks how the LAST frame happened to arrive and flaps every cycle for a peer reachable both ways.
-fn path_tier_colour(c: &crate::types::Contact, has_remote: bool) -> Option<u32> {
+/// The path tier AS DISPLAYED — the one resolution both the colour dot and the word read, so a green dot can never sit beside "Relay". Distinct from the raw `ConnTier` only in the WAN case, where an unvalidated path is honestly demoted to Relay rather than promising a direct route we haven't proven.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShownTier {
+    Lan,
+    Wfd,
+    Wan,
+    Relay,
+    Offline,
+}
+
+pub(crate) fn path_tier_shown(c: &crate::types::Contact, has_remote: bool) -> ShownTier {
     let tier = if has_remote {
         contact_conn_tier(c)
     } else {
         ConnTier::Lan
     };
     match tier {
-        ConnTier::Lan => Some(*theme::PATH_LAN_COLOUR),
+        ConnTier::Lan => ShownTier::Lan,
+        ConnTier::Wfd => ShownTier::Wfd,
+        // A validated path earns WAN; online with no proven direct path yet rides the relay — say so rather than promising a direct path we don't have.
+        ConnTier::Wan if c.validated_path.is_some() => ShownTier::Wan,
+        ConnTier::Wan => ShownTier::Relay,
+        ConnTier::Relay => ShownTier::Relay,
+        ConnTier::Offline => ShownTier::Offline,
+    }
+}
+
+/// The tier's word, for screens that name the path instead of only colouring it (Nick 2026-09-08: "the online status should also say WAN/LAN/Direct/Relay rather than just the colour"). None when offline — there is no path to name.
+pub(crate) fn tier_label(t: ShownTier) -> Option<std::borrow::Cow<'static, str>> {
+    match t {
+        ShownTier::Lan => Some(tr(Msg::TierLan)),
+        ShownTier::Wfd => Some(tr(Msg::TierDirect)),
+        ShownTier::Wan => Some(tr(Msg::TierWan)),
+        ShownTier::Relay => Some(tr(Msg::TierRelay)),
+        ShownTier::Offline => None,
+    }
+}
+
+fn path_tier_colour(c: &crate::types::Contact, has_remote: bool) -> Option<u32> {
+    shown_tier_colour(path_tier_shown(c, has_remote))
+}
+
+pub(crate) fn shown_tier_colour(t: ShownTier) -> Option<u32> {
+    match t {
+        ShownTier::Lan => Some(*theme::PATH_LAN_COLOUR),
         // One display language, ring and dot alike: WFD = the VSF primary blue.
-        ConnTier::Wfd => Some(*theme::RING_WFD_COLOUR),
-        ConnTier::Wan => {
-            // A validated path earns WAN; online with no proven direct path yet rides the relay — say so rather than promising a direct path we don't have.
-            if c.validated_path.is_some() {
-                Some(*theme::PATH_WAN_COLOUR)
-            } else {
-                Some(*theme::PATH_RELAY_COLOUR)
-            }
-        }
-        ConnTier::Relay => Some(*theme::PATH_RELAY_COLOUR),
-        ConnTier::Offline => None,
+        ShownTier::Wfd => Some(*theme::RING_WFD_COLOUR),
+        ShownTier::Wan => Some(*theme::PATH_WAN_COLOUR),
+        ShownTier::Relay => Some(*theme::PATH_RELAY_COLOUR),
+        ShownTier::Offline => None,
     }
 }
 
@@ -3443,19 +3493,20 @@ pub(super) fn flow_pills(
     buf_h: usize,
     pressed_hit: HitId,
     size: Coord,
-    pills: &[(&str, HitId, bool)],
+    pills: &[(&str, HitId, bool, Option<(u32, u32)>)],
+    font: &'static str,
 ) {
     let pill_h = size * 2.0;
     let band_h = pill_h + size * 0.5;
     let gap = size * 0.8;
     let margin = size * 0.3;
-    let font = size; // draw_pill_immediate uses rect.h × 0.5 = size — measure at the same size so widths agree
+    let font_size = size; // draw_pill_immediate uses rect.h × 0.5 = size — measure at the same size so widths agree
     let mut x = flow.x + margin;
     let right = flow.x + flow.w - margin;
     let mut band: Option<fluor::region::Region> = None;
-    for (label, hit_id, enabled) in pills {
-        let style = TextStyle::new(font, 0).weight(500).font("Open Sans");
-        let w = (text.measure_text(label, &style) + font * 1.6 + size * 0.4).min(right - flow.x - margin);
+    for (label, hit_id, enabled, fill) in pills {
+        let style = TextStyle::new(font_size, 0).weight(500).font(font);
+        let w = (text.measure_text(label, &style) + font_size * 1.6 + size * 0.4).min(right - flow.x - margin);
         if band.is_none() || x + w > right {
             let b = flow.band(band_h);
             x = flow.x + margin;
@@ -3463,11 +3514,7 @@ pub(super) fn flow_pills(
         }
         let b = band.unwrap();
         let rect = fluor::region::Region::new(x, b.y + (b.h - pill_h) * 0.5, w, pill_h);
-        if *enabled {
-            draw_stub_pill(canvas, text, hit_map, buf_w, buf_h, rect, label, *hit_id, pressed_hit);
-        } else {
-            draw_stub_pill_disabled(canvas, text, hit_map, buf_w, buf_h, rect, label, *hit_id, pressed_hit);
-        }
+        draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, label, *hit_id, pressed_hit, *enabled, *fill, font);
         x += w + gap;
     }
 }
@@ -3678,5 +3725,19 @@ mod link_tests {
         let broken: Vec<String> = vec!["abcd".into(), "efgh".into()];
         assert_eq!(super::line_source_starts("abcdefgh", &broken), Some(vec![0, 4]));
         assert_eq!(super::line_source_starts("mismatch entirely", &lines), None);
+    }
+}
+
+#[cfg(test)]
+mod about_line_tests {
+    /// The fleet build line re-renders its version at the reader's base, and refuses to mangle anything it doesn't recognise.
+    #[test]
+    fn about_line_reformats_only_the_version() {
+        let out = super::about_line_display("v0.69.1 \u{00b7} 61040fe53ad8 \u{00b7} linux x86_64");
+        assert!(out.ends_with("\u{00b7} 61040fe53ad8 \u{00b7} linux x86_64"), "{out}");
+        assert!(out.starts_with('v'), "{out}");
+        for raw in ["", "no-version-here", "v1.2 \u{00b7} short", "vX.Y.Z \u{00b7} a \u{00b7} b c"] {
+            assert_eq!(super::about_line_display(raw), raw);
+        }
     }
 }
