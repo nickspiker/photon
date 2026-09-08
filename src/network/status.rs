@@ -2936,7 +2936,8 @@ async fn run_checker(
                                                     StatusUpdate::Online {
                                                         peer_pubkey: responder_pubkey,
                                                         is_online: true,
-                                                        peer_addr: None,
+                                                        // No addr ADOPTION — but the relay SENTINEL must survive, or the UI reads this positive report as direct and clears reached_via_relay: a relay-alive contact then rings green "direct via WAN" (field 2026-09-08, Jon on Leviathan). RELAY_ADDR is already the UI's skip-learning sentinel, so passing it adopts nothing.
+                                                        peer_addr: (src_addr == RELAY_ADDR).then_some(RELAY_ADDR),
                                                         sync_records: salvaged,
                                                         display_name: None,
                                                         avatar_pin: None,
@@ -2990,7 +2991,8 @@ async fn run_checker(
                                                 StatusUpdate::Online {
                                                     peer_pubkey: responder_pubkey,
                                                     is_online: true,
-                                                    peer_addr: None,
+                                                    // Same relay-sentinel passthrough as the unmatched-pong arm (see above): adoption stays off, the tier stays honest.
+                                                    peer_addr: (src_addr == RELAY_ADDR).then_some(RELAY_ADDR),
                                                     sync_records: salvaged,
                                                     display_name: None,
                                                     avatar_pin: None,
