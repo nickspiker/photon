@@ -46,7 +46,6 @@ impl PhotonApp {
             crate::logf!("CALL: action button clicked (phase {})", format!("{:?}", phase));
             match phase {
                 Some(CallPhase::Ringing) => self.answer_call(),
-                Some(CallPhase::Ended) => self.keep_recording(),
                 Some(_) => self.hangup_call(),
                 None => {}
             }
@@ -60,7 +59,6 @@ impl PhotonApp {
         {
             match phase {
                 Some(CallPhase::Ringing) => self.decline_call(),
-                Some(CallPhase::Ended) => self.delete_recording(),
                 _ => {}
             }
             any = true;
@@ -980,37 +978,56 @@ impl PhotonApp {
         }
         crate::platform::audio::stop();
         Self::stop_ring_alert_platform();
+        self.call_minimized = false;
         let peer = self.active_call.as_ref().map(|c| c.peer_handle_hash);
         let was_caller = self.active_call.as_ref().map(|c| c.we_are_caller).unwrap_or(false);
-        let keep_pending = self
-            .active_call
-            .as_ref()
-            .map(|c| c.phase == CallPhase::Active && c.spool.is_some())
-            .unwrap_or(false);
-        if keep_pending {
-            if let Some(call) = self.active_call.as_mut() {
-                call.phase = CallPhase::Ended;
-                call.final_osc = Some(vsf::eagle_time_oscillations()); // freeze the duration for the end-screen summary
-                call.engine = None;
-                call.secret = None;
-            }
-        } else {
-            self.active_call = None;
-        }
+        // RECORDED BY DEFAULT (Nick 2026-09-08: "these are waves, not wireline calls" — a wave spools to disk like an email/attachment and you delete it LATER if you don't want it; NO keep/delete decision, NO ended screen). A completed wave with a spool auto-keeps: transcode off-thread → the call.audio row lands in the conversation. A missed/declined wave (no spool) mints the text summary instead.
+        let ticket = self.active_call.as_mut().and_then(|c| {
+            (c.phase == CallPhase::Active).then(|| c.spool.take()).flatten()
+        });
+        self.active_call = None;
+        let seed = self.session.as_ref().map(|s| s.identity_seed).unwrap_or([0u8; 32]);
         if let Some(peer) = peer {
             if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
-                let mut row =
-                    ChatMessage::new_with_timestamp(summary.to_string(), was_caller, offer_osc + 1);
-                row.notified = true;
-                row.delivered = true;
-                if let Some(conv) = self.conv_mut_of(ci) {
-                    conv.insert_message_sorted(row.clone());
+                match ticket {
+                    Some(ticket) => {
+                        // Auto-keep: the recording IS the record — no duplicate text summary. Land the user in the conversation so the wave shows up where it lives.
+                        self.spawn_keep_transcode(ticket, peer, offer_osc, seed);
+                        self.open_conversation_with(ci);
+                    }
+                    None => {
+                        let mut row = ChatMessage::new_with_timestamp(summary.to_string(), was_caller, offer_osc + 1);
+                        row.notified = true;
+                        row.delivered = true;
+                        if let Some(conv) = self.conv_mut_of(ci) {
+                            conv.insert_message_sorted(row.clone());
+                        }
+                        self.persist_messages_async(ci);
+                        self.push_rows_to_siblings(ci, std::slice::from_ref(&row), None);
+                    }
                 }
-                self.persist_messages_async(ci);
-                self.push_rows_to_siblings(ci, std::slice::from_ref(&row), None);
             }
         }
         self.scene_dirty = true;
+    }
+
+    /// Transcode a kept spool to the durable N-channel blob OFF the UI thread (decode+re-encode is O(call length)); the worker posts (hash,size) back to `drain_call_keep`, which mints the fleet-internal call.audio row. A failed transcode drops the ticket → the spool key zeroizes → safe degrade to nothing kept.
+    fn spawn_keep_transcode(&mut self, ticket: crate::call::spool::SpoolTicket, peer: [u8; 32], offer_osc: i64, seed: [u8; 32]) {
+        let tx = self.call_keep_sender();
+        let wake = self.event_proxy.clone();
+        let spawned = std::thread::Builder::new()
+            .name("call-keep".into())
+            .spawn(move || {
+                let result = crate::call::record::finalize_nchannel(ticket, &seed);
+                let _ = tx.send(CallKeepResult { peer, offer_osc, result });
+                if let Some(w) = wake {
+                    let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                }
+            })
+            .is_ok();
+        if !spawned {
+            crate::log("CALL: keep-transcode thread failed to spawn — recording shredded");
+        }
     }
 
     /// The ring alert: platform notification + the relationship RING — the identity chirp's instrument conjugated into a call phrase (`chirp::Chirp::ring_from_hash`: the ding's chord HELD flat under a sin³ 0→9π arc, doubletted), so ears know who's calling before eyes do. Deliberately BYPASSES the will_ding gates: a call is the one always-ring event (design decision 2026-08-18).
@@ -1091,49 +1108,6 @@ impl PhotonApp {
     }
 
     /// KEEP the recording: finalize the spool into the call container, store it as a content-addressed blob, and mint a FLEET-INTERNAL attachment row (local insert + sibling push — never chain-transmitted; the friend's fleet keeps its own recording). v1 gap, tracked in docs/calls.md: the blob itself lives on THIS device until sibling blob-fetch lands.
-    pub(super) fn keep_recording(&mut self) {
-        self.call_playback.take(); // stop any preview — the decision is made
-        self.call_minimized = false;
-        let Some(call) = self.active_call.as_mut() else {
-            return;
-        };
-        if call.phase != CallPhase::Ended {
-            return;
-        }
-        let Some(ticket) = call.spool.take() else {
-            self.active_call = None;
-            return;
-        };
-        let (peer, offer_osc) = (call.peer_handle_hash, call.offer_osc);
-        let seed = self
-            .session
-            .as_ref()
-            .map(|s| s.identity_seed)
-            .unwrap_or([0u8; 32]);
-        self.active_call = None;
-        // Transcode to the N-channel keep file OFF the UI thread — decode+re-encode is O(call length) and would freeze the frame for seconds on a long call. The worker posts the (hash, size) back over `call_keep_rx`, drained in `tick` → `drain_call_keep`, where the fleet-internal row is minted. Dropping the ticket on any failure still crypto-shreds the spool key (its Drop zeroizes), so a failed transcode degrades safely to delete.
-        let tx = self.call_keep_sender();
-        let wake = self.event_proxy.clone();
-        let spawned = std::thread::Builder::new()
-            .name("call-keep".into())
-            .spawn(move || {
-                let result = crate::call::record::finalize_nchannel(ticket, &seed);
-                let _ = tx.send(CallKeepResult {
-                    peer,
-                    offer_osc,
-                    result,
-                });
-                if let Some(w) = wake {
-                    let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
-                }
-            })
-            .is_ok();
-        if !spawned {
-            crate::log("CALL: keep-transcode thread failed to spawn — recording shredded");
-        }
-        self.scene_dirty = true;
-    }
-
     /// Lazily mint the keep-transcode result channel (worker → UI), mirroring `update_sender`.
     fn call_keep_sender(&mut self) -> std::sync::mpsc::Sender<CallKeepResult> {
         if self.call_keep_tx.is_none() {
@@ -1185,24 +1159,6 @@ impl PhotonApp {
         }
         self.scene_dirty = true;
         true
-    }
-
-    /// DELETE the recording: the ticket drops, the key zeroizes, the spool file is ciphertext-garbage — true crypto-shred, instant.
-    pub(super) fn delete_recording(&mut self) {
-        self.call_playback.take(); // stop any preview — the decision is made
-        self.call_minimized = false;
-        let Some(call) = self.active_call.as_mut() else {
-            return;
-        };
-        if call.phase != CallPhase::Ended {
-            return;
-        }
-        if let Some(ticket) = call.spool.take() {
-            crate::call::spool::shred(ticket);
-        }
-        self.active_call = None;
-        crate::log("CALL: recording shredded");
-        self.scene_dirty = true;
     }
 
     /// Spin up the media engine for an Active call. None (call stays signaling-only + silent) when the basket never completed or the contact has no direct address — media-over-the-relay-pipe is explicitly deferred (docs/calls.md), and the transport dot already tells the human they're on relay.
