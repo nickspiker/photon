@@ -72,6 +72,17 @@ pub fn now_osc() -> i64 {
     }
 }
 
+/// Raise the stamp floor to at least `osc` — called at vault load for every OUTGOING row, because [`LAST_ISSUED`] is runtime-only and starts over each boot. Without this, a nunc correction on an ahead-running clock (the phone's steady +1.87 s) pulls the FIRST post-restart stamp behind rows sent minutes earlier in the previous session — and rows never restamp, so the inversion is permanent (field 2026-09-07: Nick's out-of-order messages). The floor only ever rises; inbound rows are excluded on purpose (their stamps are the sender's clock — clamping ours to theirs would let one fast friend clock drag our whole timeline forward).
+pub fn raise_floor(osc: i64) {
+    let mut cur = LAST_ISSUED.load(Ordering::Relaxed);
+    while osc > cur {
+        match LAST_ISSUED.compare_exchange_weak(cur, osc, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(seen) => cur = seen,
+        }
+    }
+}
+
 /// [`now_osc`] for anything that becomes a ROW STAMP — additionally guaranteed never to go backward or repeat, so a correction can't re-issue a timestamp behind one already written (row identity is `(timestamp, content)`; a duplicate would read as the same row).
 pub fn stamp_osc() -> i64 {
     let mut candidate = now_osc();
@@ -111,6 +122,17 @@ mod tests {
         adopt(-crate::OSC_PER_SEC * 10, crate::OSC_PER_SEC / 1000, vsf::eagle_time_oscillations());
         let c = stamp_osc();
         assert!(c > b, "a backward correction must not re-issue a stamp behind one already used");
+    }
+
+    /// The restart hole: a floor raised from stored rows keeps a post-restart corrected stamp from landing behind them.
+    #[test]
+    fn floor_from_storage_prevents_post_restart_inversion() {
+        let high = vsf::eagle_time_oscillations() + crate::OSC_PER_SEC * 30;
+        raise_floor(high);
+        // A correction pulling "now" well behind the stored row (the ahead-clock case after restart).
+        adopt(-crate::OSC_PER_SEC * 60, crate::OSC_PER_SEC / 1000, vsf::eagle_time_oscillations());
+        let s = stamp_osc();
+        assert!(s > high, "a corrected stamp must never land behind a stored outgoing row");
     }
 
     /// A looser reading never displaces a tighter fresh one; the anchor keeps the best measurement it has.

@@ -1051,13 +1051,14 @@ pub fn load_messages(
     keys.sort_unstable_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
 
     conv.messages.clear();
-    for (_, _, pk) in keys {
+    for (ts, _, pk) in keys {
         let Some(rec) = db
             .get_row_in(&table, pk)
             .map_err(|e| StorageError::Vault(e.to_string()))?
         else {
             continue;
         };
+        let _ = ts;
         let Some(content) = rec.text("content") else {
             continue;
         };
@@ -1065,10 +1066,16 @@ pub fn load_messages(
             .bytes("ack_hash")
             .filter(|b| b.len() == 32)
             .map(|b| b.try_into().unwrap());
+        let msg_ts = rec.time("timestamp").unwrap_or(0);
+        let outgoing = rec.uint("is_outgoing").unwrap_or(0) != 0;
+        // Stamp floor: LAST_ISSUED is runtime-only, so every load re-teaches it our newest stored stamp — a post-restart nunc correction must never stamp behind a row already written (time_base::raise_floor; outgoing only — inbound stamps are the sender's clock).
+        if outgoing {
+            crate::network::time_base::raise_floor(msg_ts);
+        }
         conv.messages.push(ChatMessage {
             content: content.to_string(),
-            timestamp: rec.time("timestamp").unwrap_or(0),
-            is_outgoing: rec.uint("is_outgoing").unwrap_or(0) != 0,
+            timestamp: msg_ts,
+            is_outgoing: outgoing,
             delivered: rec.uint("delivered").unwrap_or(0) != 0,
             ack_hash,
             recovered: rec.uint("recovered").unwrap_or(0) != 0,
