@@ -15,6 +15,7 @@ pub fn load_bundled(text: &mut fluor::text::TextRenderer) {
     db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-Bold.ttf").to_vec());
     db.load_font_data(include_bytes!("../../assets/Oxanium/Oxanium-ExtraBold.ttf").to_vec());
     // Monochrome symbol coverage beyond fluor's Symbols 2 (Nick 2026-09-08, measured from the cmaps — the package blurbs lie): Symbols carries ☮ ☯ ♻ and the misc/dingbat ranges; Math carries the arrows (U+2190-21FF) and operators (U+2200-22FF) in full; Mono is the only one with all of box drawing (U+2500-257F) and the currency block (U+20A0-20CF).
+    // Mono and Math are CUT to exactly those blocks by scripts/fonts/build.sh (tools/font-trim.rs, sources under assets/Noto/sources): no Latin alphabet Open Sans already draws, no kerning/shaping tables a symbol never needs, minus everything Symbols 2 owns — so every codepoint has one monochrome home. 582+967 KB → 30+358 KB. The variable script fonts ship whole: their bulk is shaping, not spare Latin.
     db.load_font_data(include_bytes!("../../assets/Noto/NotoSansSymbols[wght].ttf").to_vec());
     db.load_font_data(include_bytes!("../../assets/Noto/NotoSansMath-Regular.ttf").to_vec());
     db.load_font_data(include_bytes!("../../assets/Noto/NotoSansMono-Regular.ttf").to_vec());

@@ -71,3 +71,5 @@ node_modules/
 tools/arch-gate
 android/build/
 Claude memories/local/
+# rustc-built bitty-executables (source committed, binary rebuilt by the scripts that use it)
+tools/font-trim

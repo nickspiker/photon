@@ -61,6 +61,7 @@ fn bundled_coverage_resolves_and_unbundled_is_tofu() {
     ];
     for (name, s) in symbols {
         let w = width(&mut tr, s, "Open Sans");
+        assert!(w > 0.0, "{name} ({s:?}) laid out as nothing — a glyph id out of range reads as resolved-but-empty, which is worse than tofu");
         assert_ne!(w, tofu, "{name} ({s:?}) measured as tofu: not resolved by the bundle");
     }
 }
@@ -78,4 +79,29 @@ fn variation_selectors_choose_the_face() {
     assert!((mono - mono_direct).abs() < 0.01, "FE0E must route to the mono symbol face ({mono} vs {mono_direct})");
     assert!((colour - colour_direct).abs() < 0.01, "FE0F must route to the colour emoji face ({colour} vs {colour_direct})");
     assert!((bare - colour_direct).abs() < 0.01, "a bare symbol follows the colour-first chain ({bare} vs {colour_direct})");
+}
+
+/// The trimmed static fonts (tools/font-trim, --compact) must render EXACTLY like their untrimmed sources: same advances for box drawing, currency, arrows and operators. A wrong hmtx, a mis-renumbered composite, or a broken cmap segment all show up here as a width delta.
+#[test]
+fn trimmed_statics_match_their_sources() {
+    let mut trimmed = renderer(true);
+    let mut source = TextRenderer::new();
+    {
+        let db = source.font_system_mut().db_mut();
+        db.load_font_data(std::fs::read("assets/Noto/sources/NotoSansMono-Regular.ttf").expect("mono source"));
+        db.load_font_data(std::fs::read("assets/Noto/sources/NotoSansMath-Regular.ttf").expect("math source"));
+    }
+    let probes = [
+        ("box", "\u{250C}\u{2500}\u{2510}\u{2554}\u{2550}\u{2557}\u{2591}", "Noto Sans Mono"),
+        ("currency", "\u{20B9}\u{20A9}\u{20B4}\u{20A6}\u{20AC}", "Noto Sans Mono"),
+        ("arrows", "\u{2190}\u{2192}\u{21D4}\u{27F3}\u{2B06}", "Noto Sans Math"),
+        ("operators", "\u{2200}\u{2203}\u{2205}\u{2207}\u{2208}\u{2261}\u{2282}\u{2295}\u{2297}", "Noto Sans Math"),
+        ("alphanumerics", "\u{1D400}\u{1D49C}\u{1D538}", "Noto Sans Math"),
+    ];
+    for (name, s, family) in probes {
+        let a = width(&mut trimmed, s, family);
+        let b = width(&mut source, s, family);
+        assert!(a > 0.0, "{name}: trimmed font produced nothing");
+        assert_eq!(a, b, "{name} ({family}): trimmed {a} vs source {b}");
+    }
 }
