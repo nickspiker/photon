@@ -611,6 +611,7 @@ impl PhotonApp {
                                                             && !m.deleted
                                                             && m.timestamp > tip
                                                             && !pending_times.contains(&m.timestamp)
+                                                            && !self.lane_reserved_rows.contains(&(fid, m.timestamp))
                                                     })
                                                     .map(|m| {
                                                         (
@@ -623,8 +624,15 @@ impl PhotonApp {
                                                 rows.sort_by_key(|(t, _, _)| *t);
                                                 rows.truncate(RESERVE_ROWS_PER_BURST);
                                                 if !rows.is_empty() {
-                                                    crate::logf!("CHAT: peer {} row(s) behind with our lane tip {} — re-serving {} row(s) from the durable store (the pending list called them delivered)", n_rows - record.row_count, tip, rows.len());
+                                                    crate::logf!("CHAT: peer device {} {} row(s) behind with our lane tip {} — re-serving {} row(s) from the durable store (the pending list called them delivered)", crate::fp(&peer_pubkey.key), n_rows - record.row_count, tip, rows.len());
+                                                    // Tip 0 means their record names none of our lanes — print what we looked ourselves up by against what they listed, so the next field log convicts a label mismatch (or a stale twin blob) instead of a theory.
+                                                    if tip == 0 {
+                                                        let theirs: Vec<String> = record.lane_heads.iter().map(|(l, t)| format!("{}@{}", hex::encode(&l[..4]), t)).collect();
+                                                        crate::logf!("CHAT: tip 0 from {} — our label {} vs their {} lane head(s) [{}] (record last_received_osc {}, {} rows)", crate::fp(&peer_pubkey.key), chains.our_label().map(|l| hex::encode(&l[..4])).unwrap_or_else(|| "NONE".into()), theirs.len(), theirs.join(" "), record.last_received_osc, record.row_count);
+                                                    }
                                                     reserve_jobs.push((ci, (fid, peer_pubkey.key), rows));
+                                                } else if n_rows > record.row_count && self.lane_reserved_rows.iter().any(|(f, _)| *f == fid) {
+                                                    crate::logf!("CHAT: peer device {} still {} row(s) behind at tip {} but every candidate row was already re-served once — a counting divergence, not a delivery hole; not re-serving", crate::fp(&peer_pubkey.key), n_rows - record.row_count, tip);
                                                 }
                                             }
                                         }
@@ -1232,8 +1240,32 @@ impl PhotonApp {
                                     });
                                     crate::logf!("CHAT: Re-ACKed duplicate from {} (eagle_time {}) — our earlier ACK was likely lost", crate::fp(&from_handle_hash), timestamp);
                                 }
+                            } else if let Some((content_hash, recipient_pubkey)) = self.conversations[conv_pos]
+                                .messages
+                                .iter()
+                                .find(|m| !m.is_outgoing && m.timestamp == timestamp)
+                                .map(|m| *blake3::hash(m.content.as_bytes()).as_bytes())
+                                .and_then(|h| self.contacts.get(contact_idx).and_then(|c| c.device_key().map(|k| (h, k))))
+                            {
+                                // We HOLD the row but never decrypted this braid frame ourselves — it came in by a history page or a sibling's chain adopt, neither of which stores the braid plaintext hash (that hash covers the woven strand references, unrecoverable from the row). The sender clears its pending on eagle_time and only LOGS a hash mismatch (process_ack), so refusing to ACK here just left them retransmitting forever: the 2026-09-08 "Emma never saw an ack". ACK with the content hash as the stand-in and say so.
+                                if let Some(ref checker) = self.status_checker {
+                                    let relay_to = self
+                                        .contacts
+                                        .get(contact_idx)
+                                        .map(|c| c.relay_device_list())
+                                        .unwrap_or_default();
+                                    checker.send_ack(AckRequest {
+                                        peer_addr: sender_addr,
+                                        recipient_pubkey,
+                                        conversation_token,
+                                        acked_eagle_time: timestamp,
+                                        plaintext_hash: content_hash,
+                                        relay_to,
+                                    });
+                                    crate::logf!("CHAT: Re-ACKed duplicate from {} (eagle_time {}) with a content-hash stand-in — the row reached us by history page or sibling adopt, not this braid frame", crate::fp(&from_handle_hash), timestamp);
+                                }
                             } else {
-                                crate::logf!("CHAT: Skipping duplicate from {} (eagle_time {}) — no stored ack_hash (pre-fix message or outgoing)", crate::fp(&from_handle_hash), timestamp);
+                                crate::logf!("CHAT: Skipping duplicate from {} (eagle_time {}) — row not held here and no stored ack_hash", crate::fp(&from_handle_hash), timestamp);
                             }
                             continue;
                         }
@@ -4629,10 +4661,22 @@ impl PhotonApp {
         // Sender-side re-serve execution (checker borrow released): rebuild each missing row's wire frame at its ORIGINAL eagle_time. chain_transmit's already-in-flight guard keeps this idempotent, and its in-flight window paces the burst — a refused row just waits for the next tip observation.
         for (ci, cap_key, rows) in reserve_jobs {
             let mut served = 0usize;
+            let fid = cap_key.0;
             for (ts, content, reference) in rows {
+                // A re-serve never takes the LAST in-flight slot: that one belongs to whatever the human types next. Four re-served rows parked in the window made a fresh message wait a full ACK round-trip (~1s, field 2026-09-08) before it could even encrypt.
+                let in_flight = self
+                    .friendship_chains
+                    .iter()
+                    .find(|(id, _)| *id == fid)
+                    .map_or(0, |(_, c)| c.pending_messages.len());
+                if in_flight + 1 >= crate::types::friendship::IN_FLIGHT_WINDOW {
+                    crate::logf!("CHAT: re-serve stops at {} in flight — leaving the last window slot for a live send", in_flight);
+                    break;
+                }
                 let bw = self.bridge_wire_for_row(ci, ts);
                 if self.chain_transmit(ci, &content, ts, reference, bw.as_ref()) {
                     served += 1;
+                    self.lane_reserved_rows.insert((fid, ts));
                 }
             }
             // Charge the cap for what actually LEFT — attempts the serial-send gate swallowed cost nothing, so the deficit keeps draining across pongs instead of parking two rows in. A ZERO-served burst still charges 1: chain_transmit refusing every row (no chain / no address / stale-era token lane) repeated forever otherwise — the tip-0 're-serving 8' spam every ~45s, 2026-09-01 — and a lane that cannot transmit at all is exactly what the park exists for.
