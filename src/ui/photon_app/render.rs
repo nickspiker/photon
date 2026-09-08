@@ -58,7 +58,6 @@ impl PhotonApp {
                 AppState::Settings(SettingsPage::Diagnostics) => "Settings:Diagnostics",
                 AppState::Settings(SettingsPage::Language) => "Settings:Language",
                 AppState::Settings(SettingsPage::About) => "Settings:About",
-                AppState::Settings(SettingsPage::Wave) => "Settings:Audio",
                 AppState::ContactPanel(_) => "ContactPanel",
             },
         );
@@ -241,17 +240,13 @@ impl PhotonApp {
             .active_contact()
             .and_then(|ci| self.contacts.get(ci))
             .map_or(false, |c| !c.is_sibling && c.friendship_id.is_some());
-        // PLACING a call gates on the current route being calibrated (Settings→Audio) — an uncalibrated speakerphone call is the bad-echo experience the calibration exists to end. Answering an INCOMING call never gates: answering with the fallback duck beats missing a call. Hoisted local: the Audio page arm reads it too, deep inside the chrome borrow where &self is unavailable.
-        let route_calibrated = self.route_calibrated_now();
-        let echo_calibrated = self.echo_calibrated_now();
-        let voice_calibrated = self.voice_calibrated_now();
+        // No calibration gate on placing a call (the doctrine retired 2026-09-07): every call opens with the v-chirp probe, so the route is measured before any voice connects.
         let call_pill_enabled = self
             .active_contact()
             .and_then(|ci| self.contacts.get(ci))
             .map_or(false, |c| {
                 !c.is_sibling && c.is_online && (c.chain_woven || c.friendship_id.is_some())
-            })
-            && route_calibrated;
+            });
         // Live call-duration seconds, computed here (a per-frame recompute from the frozen osc stamps — no stored timer): Active counts up from `phase_osc` (re-stamped at answer); Ended freezes at `final_osc - phase_osc`; other phases show 0. Carried in the overlay tuple so the panel + strip render it via the base-aware `fmt_duration`.
         let call_overlay: Option<(crate::call::CallPhase, String, bool, Option<usize>, i64)> =
             self.active_call.as_ref().map(|c| {
@@ -611,8 +606,7 @@ impl PhotonApp {
                 let bfont = unit * 0.75;
                 match phase {
                     crate::call::CallPhase::Ringing => {
-                        // Decline LEFT, Answer RIGHT — the incoming-call decision. UNCALIBRATED ROUTE = NO ANSWER (Nick 2026-09-02: "a single dropped call sucks but a lifetime of shit calls is worse — it literally tells me I'm shit out of luck until I calibrate"): the Answer button disables with the reason on screen; Decline stays live to silence the ring. One ~15s calibration per route, ever.
-                        let cal_ok = route_calibrated;
+                        // Decline LEFT, Answer RIGHT — the incoming-call decision.
                         if let Some(b) = self.call_decline_btn.as_mut() {
                             b.set_rect(w * 0.5 - bw * 0.5 - unit * 0.75, by, bw, bh);
                             b.set_font_size(bfont);
@@ -624,29 +618,9 @@ impl PhotonApp {
                             b.set_rect(w * 0.5 + bw * 0.5 + unit * 0.75, by, bw, bh);
                             b.set_font_size(bfont);
                             b.set_label(tr(Msg::Answer));
-                            b.set_enabled(cal_ok);
+                            b.set_enabled(true);
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                        }
-                        if !cal_ok {
-                            ctx.text.draw_text_center(
-                                &mut canvas,
-                                &tr(Msg::CallUncalibratedNoAnswer),
-                                w * 0.5,
-                                by - bh * 0.9,
-                                &TextStyle::new(bfont * 0.85, *theme::SEARCH_FAIL_COLOUR).weight(600).font("Oxanium"),
-                                None,
-                                None,
-                            );
-                            ctx.text.draw_text_center(
-                                &mut canvas,
-                                &tr(Msg::CallUncalibratedHint),
-                                w * 0.5,
-                                by - bh * 0.4,
-                                &TextStyle::new(bfont * 0.7, *theme::LABEL_COLOUR).weight(400).font("Oxanium"),
-                                None,
-                                None,
-                            );
                         }
                     }
                     crate::call::CallPhase::Ended => {
@@ -669,7 +643,7 @@ impl PhotonApp {
                             b.set_rect(w * 0.5 + bw * 0.5 + unit * 0.75, by, bw, bh);
                             b.set_font_size(bfont);
                             b.set_label(tr(Msg::Keep));
-                            b.set_enabled(true); // the Ringing arm may have disabled it (uncalibrated-route gate)
+                            b.set_enabled(true);
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
@@ -706,7 +680,7 @@ impl PhotonApp {
                             b.set_rect(w * 0.5, by, w * 0.5, bh);
                             b.set_font_size(bfont);
                             b.set_label(tr(Msg::EndCall));
-                            b.set_enabled(true); // Ringing may have disabled it (uncalibrated-route gate)
+                            b.set_enabled(true);
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
@@ -765,8 +739,7 @@ impl PhotonApp {
                     b.set_rect(ax + action_w * 0.5, cy, action_w, pill_h);
                     b.set_font_size(call_font);
                     b.set_label(a_label);
-                    // The compact bar's Answer honors the same uncalibrated-route gate as the panel; other phases re-enable.
-                    b.set_enabled(!matches!(phase, crate::call::CallPhase::Ringing) || route_calibrated);
+                    b.set_enabled(true);
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                 }
@@ -5257,97 +5230,6 @@ impl PhotonApp {
                             Some(&mut chrome.hit_test_map),
                         );
                     }
-                }
-                SettingsPage::Wave => {
-                    // WAVE — two NAMED measurements (Nick 2026-09-02: the combined flow was vague), each with purpose, setup, live phase, and a measured RESULT so the page reads like an instrument. Slots: 0 echo · 1 voice · 2 headset-skip.
-                    use crate::call::calibrate::CalPhase;
-                    let inset = layout.content_inset();
-                    let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                    // The 1960 epigraph (docs/lexicon.md, captured off the physical page by the Lumis rig): the page is named for the proper sense, from before the debotcherization. A doubled-escape bug used to render a literal "\u{2014}" here; the catalog arm carries the real em dash.
-                    flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveEpigraph), hspan2 * 0.8, *theme::LABEL_COLOUR, 400);
-                    flow.gap(hspan2 * 0.5);
-                    flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveIntroHow), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
-                    flow.gap(hspan2 * 0.4);
-                    flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveIntroSetup), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
-                    flow.gap(hspan2 * 0.4);
-                    // The reassurance humans won't infer (Nick 2026-09-02: obvious, but people don't read — say it anyway): the mic is live during calibration, so state plainly that nothing recorded here goes anywhere. "No servers" is an architecture claim; "never leaves this device" is the sentence a person actually needs while a microphone is hot.
-                    flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveIntroPrivacy), hspan2 * 0.9, *theme::SEARCH_FOUND_COLOUR, 400);
-                    flow.gap(hspan2 * 0.8);
-                    let phase = crate::call::calibrate::phase();
-                    let running = !matches!(phase, CalPhase::Idle | CalPhase::Done | CalPhase::Failed);
-                    let route = crate::platform::audio::route_id();
-                    let mic = crate::platform::audio::mic_id();
-                    let echo_done = echo_calibrated;
-                    let voice_done = voice_calibrated;
-
-                    // ── STEP 1: ECHO ─────────────────────────────────────────
-                    let route_disp = if route.is_empty() { tr(Msg::WaveNoOutputYet).into_owned() } else { route.clone() };
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::WaveStep1Title(&route_disp)), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
-                    flow.line(
-                        &mut canvas,
-                        ctx.text,
-                        &tr(if echo_done { Msg::WaveMeasuredTick } else { Msg::WaveNotMeasured }),
-                        hspan2 * 0.85,
-                        if echo_done { *theme::SEARCH_FOUND_COLOUR } else { *theme::SEARCH_FAIL_COLOUR },
-                        500,
-                    );
-                    if phase == CalPhase::EchoListen {
-                        flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveEchoListenInstruction), hspan2 * 0.9, *theme::CONTACT_NAME_COLOUR, 500);
-                    } else {
-                        flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveEchoSetupInstruction), hspan2 * 0.85, *theme::LABEL_COLOUR, 400);
-                    }
-                    flow.gap(hspan2 * 0.3);
-                    // NO SKIP (Nick 2026-09-02: "every device leaks, it's just how much — helium inside a stainless capsule will not stay there forever"): a headset's coupling isn't zero, it's small, and the instrument measures small just fine. Every route runs the echo check for real.
-                    let echo_pill = tr(if phase == CalPhase::EchoListen { Msg::WaveMeasuring } else if echo_done { Msg::RemeasureEcho } else { Msg::MeasureEcho });
-                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2, &[(
-                        &*echo_pill,
-                        btn_base,
-                        !running,
-                    )]);
-                    flow.gap(hspan2 * 0.9);
-
-                    // ── STEP 2: VOICE ────────────────────────────────────────
-                    let mic_disp = if mic.is_empty() { tr(Msg::WaveNoMicYet).into_owned() } else { mic.clone() };
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::WaveStep2Title(&mic_disp)), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
-                    flow.line(
-                        &mut canvas,
-                        ctx.text,
-                        &tr(if voice_done { Msg::WaveMeasuredTick } else { Msg::WaveNotMeasured }),
-                        hspan2 * 0.85,
-                        if voice_done { *theme::SEARCH_FOUND_COLOUR } else { *theme::SEARCH_FAIL_COLOUR },
-                        500,
-                    );
-                    match phase {
-                        CalPhase::VoiceExample => {
-                            flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveVoiceExampleListen), hspan2 * 0.9, *theme::CONTACT_NAME_COLOUR, 500);
-                            flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveVoiceSentence), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
-                        }
-                        CalPhase::VoiceRepeat => {
-                            flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveVoiceRepeatInstruction), hspan2 * 0.9, *theme::CONTACT_NAME_COLOUR, 500);
-                            flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveVoiceSentence), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
-                        }
-                        _ => {
-                            flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveVoiceDefaultInstruction), hspan2 * 0.85, *theme::LABEL_COLOUR, 400);
-                        }
-                    }
-                    flow.gap(hspan2 * 0.3);
-                    let voice_pill = tr(if matches!(phase, CalPhase::VoiceExample | CalPhase::VoiceRepeat) { Msg::WaveMeasuring } else if voice_done { Msg::RemeasureVoice } else { Msg::MeasureVoice });
-                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2, &[(
-                        &*voice_pill,
-                        btn_base.wrapping_add(1),
-                        !running,
-                    )]);
-                    flow.gap(hspan2 * 0.6);
-                    if phase == CalPhase::Failed {
-                        flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveFailedHint), hspan2 * 0.9, *theme::SEARCH_FAIL_COLOUR, 600);
-                        flow.gap(hspan2 * 0.4);
-                    }
-                    if echo_done && voice_done {
-                        flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveComplete), hspan2 * 0.9, *theme::SEARCH_FOUND_COLOUR, 500);
-                    }
-                    flow.gap(hspan2);
-                    measured_extent = Some((flow.used(), inset.h));
                 }
                 SettingsPage::About => {
                     // An About CARD, not a settings list: the Photon wordmark over its chromatic wave up top, then the two headline properties (killswitch-ready, passless), then the version — tap it to reveal both the spelled-out form AND the dozenal cheat sheet. No feedback line — photon is owned by everyone. All centred under the logo; a manual vertical cursor (elements are variable-height, not equal rows).

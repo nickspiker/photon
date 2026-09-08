@@ -63,11 +63,15 @@ The ring deliberately **bypasses the `will_ding` gates**: a call is the one alwa
 - **Android**: `postMessageNotification` → one-shot `playChirp` on `USAGE_NOTIFICATION` + one-shot haptic. Survives Doze — FCM wakes the app, Rust renders the WAV + haptic envelope, Kotlin plays them, so the OS default tone never fires and the sound is per-contact even from deep sleep. The pubkey never crosses JNI; only rendered audio does.
 - **Redox**: none.
 
-## 5. Wave ritual (calibration ceremony) — [`call/calibrate.rs`](../src/call/calibrate.rs)
+## 5. V-chirp connect probe — [`call/vchirp.rs`](../src/call/vchirp.rs)
 
-Plays a prompt directly via `queue_playback` (**unpadded** — it is measuring the path, so it must not be attenuated by the wave's pad), records the mic, and cross-correlates envelopes to fit coupling `g` and delay. Stability-gated: a volume change or route swap mid-run invalidates the measurement and asks for a redo. Stores per-route profiles device-locally, volume-normalized. Same on desktop and Android.
+Every call opens with the SAME quarter-second sound on both ends (2026-09-07): a 200Hz→20kHz log sweep and its exact time-reversal overlaid, played **unpadded** thru `queue_playback` on the live route while BOTH directions hold — no mic TX, RX decoded but not rendered — so the chirp is the only thing in the room. When the capture window (~850ms, or a 4s deadline if the mic never grants) closes, audio connects immediately; the fit runs off-thread and seeds the duck a beat later.
 
-Now demoted in importance by the ringback probe and the in-call learner, but still the bootstrap for first-call-zero-echo and the controlled diagnostic.
+The fit: matched-filter each sweep leg separately (sample-precise delay, polarity-blind), then take g as the median per-bin envelope ratio at the matched delay — the learner/duck's unit, total leak not just direct path. The V shape is load-bearing three ways: the legs' lag **mean** is the true delay with clock skew cancelled, their **difference** measures render-vs-capture clock skew directly (the thing splice counters only see indirectly), and leg agreement is the corruption gate (speech/movement → legs disagree → rejected, never stored). ~33dB of processing gain means a simultaneous "hello" barely dents it. No fade shaping — the sweep starts at a zero crossing on the 200Hz end and the device's own taper rounds the rest, which also leaves the raw sweep usable as a loop frequency-response probe later.
+
+Results persist thru the learned-profile drain (solid tier) and seed the engine's predictive duck live, outranking any stored/ringback seed — a measurement of THIS route THIS second. A no-coupling verdict (headset-class route) is legal: the duck stays reactive, the floor is still taken.
+
+This probe replaced the Wave calibration ritual AND its doctrine: the Settings→Wave page is gone, and the three gates (place-call, answer, mid-call mic-mute on uncalibrated routes) are retired — "uncalibrated" is no longer a state a call can be in, because the probe runs before any voice does. Voice profiles (mic gain, floor) still accumulate from the in-call learner's evidence.
 
 ## 6. Recording preview
 

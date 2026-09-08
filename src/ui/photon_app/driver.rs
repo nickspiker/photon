@@ -1130,27 +1130,6 @@ impl FluorApp for PhotonApp {
                         // A tap anywhere within the revealed dozenal index → the custodian riddle appears beneath it. One tap; session-permanent once found.
                         self.about_riddle_revealed = true;
                     }
-                } else if page == SettingsPage::Wave {
-                    use crate::call::calibrate::{self, CalPhase};
-                    let running = !matches!(calibrate::phase(), CalPhase::Idle | CalPhase::Done | CalPhase::Failed);
-                    if slot == 0 && !running {
-                        // Echo check for the current output route.
-                        calibrate::ack_phase();
-                        self.audio_cal_handle = calibrate::start_echo();
-                        if self.audio_cal_handle.is_none() {
-                            self.ready_toast = Some(tr(Msg::CantMeasureNow).into_owned());
-                            self.ready_toast_screen = None;
-                        }
-                    } else if slot == 1 && !running {
-                        // Voice check for the current mic.
-                        calibrate::ack_phase();
-                        self.audio_cal_handle = calibrate::start_voice();
-                        if self.audio_cal_handle.is_none() {
-                            self.ready_toast = Some(tr(Msg::CantMeasureNow).into_owned());
-                            self.ready_toast_screen = None;
-                        }
-                    }
-                    // NO slot 2: the headset skip is gone (every device leaks — it's just how much; the echo check measures small couplings fine).
                 } else {
                     crate::logf!(
                         "settings-stub: pill {} on {} (no behaviour wired)",

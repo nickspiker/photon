@@ -574,33 +574,6 @@ impl PhotonApp {
         }
     }
 
-    /// Echo profile present for the CURRENT output route?
-    pub(super) fn echo_calibrated_now(&self) -> bool {
-        let route = crate::platform::audio::route_id();
-        !route.is_empty()
-            && self
-                .fleet_settings
-                .as_ref()
-                .and_then(|fs| fs.device_local(&format!("audio.cal.echo.{route}.g")))
-                .is_some()
-    }
-
-    /// Voice profile present for the CURRENT mic?
-    pub(super) fn voice_calibrated_now(&self) -> bool {
-        let mic = crate::platform::audio::mic_id();
-        !mic.is_empty()
-            && self
-                .fleet_settings
-                .as_ref()
-                .and_then(|fs| fs.device_local(&format!("audio.cal.voice.{mic}.gain")))
-                .is_some()
-    }
-
-    /// The call gate: BOTH measurements for the current hardware pair (echo per output route ∧ voice per mic). Split keys mean speaker→earpiece keeps the voice profile (same mic); a BT headset needs both (its own mic).
-    pub(super) fn route_calibrated_now(&self) -> bool {
-        self.echo_calibrated_now() && self.voice_calibrated_now()
-    }
-
     /// The stored calibration for the CURRENT route/mic as an engine snapshot — read here on the UI thread at call start (the engine can't touch settings). None when no echo profile exists (the engine then runs reactive + learner).
     pub(super) fn cal_snapshot(&self) -> Option<crate::call::engine::CalSnapshot> {
         let fs = self.fleet_settings.as_ref()?;
@@ -627,46 +600,7 @@ impl PhotonApp {
         Some(crate::call::engine::CalSnapshot { g_norm, delay_bins, mic_gain, floor })
     }
 
-    /// Store one profile as device-local typed settings (coupling and voice are this hardware's physics, never fleet-linked).
-    pub(super) fn store_cal_result(&mut self, r: &crate::call::calibrate::CalResult) {
-        if !self.ensure_fleet_settings() {
-            return;
-        }
-        let now = vsf::eagle_time_oscillations();
-        let fs = self.fleet_settings.as_mut().unwrap();
-        let fields: Vec<(String, vsf::VsfType)> = match r {
-            crate::call::calibrate::CalResult::Echo(p) => {
-                let base = format!("audio.cal.echo.{}", p.route_id);
-                let mut f = vec![
-                    (format!("{base}.g"), vsf::VsfType::f5(p.g_norm)),
-                    (format!("{base}.delay"), vsf::VsfType::u(p.delay_ms as usize, false)),
-                    // RITUAL OUTRANKS: a fresh controlled measurement resets the learner's accumulated sample count — the blend restarts from this value.
-                    (format!("{base}.n"), vsf::VsfType::u(0, false)),
-                ];
-                if let Some(db) = p.cal_vol_db {
-                    f.push((format!("{base}.vol"), vsf::VsfType::f5(db)));
-                }
-                f
-            }
-            crate::call::calibrate::CalResult::Voice(p) => {
-                let base = format!("audio.cal.voice.{}", p.mic_id);
-                vec![
-                    (format!("{base}.gain"), vsf::VsfType::f5(p.mic_gain)),
-                    (format!("{base}.floor"), vsf::VsfType::f5(p.floor)),
-                    (format!("{base}.n"), vsf::VsfType::u(0, false)),
-                ]
-            }
-        };
-        for (k, v) in fields {
-            if fs.linked(&k) {
-                fs.set_link(&k, false, now);
-            }
-            fs.set(&k, v, now);
-        }
-        self.persist_and_push_settings();
-    }
-
-    /// Blend one LEARNED (in-call) profile into the stored one — toast-free, phase-free (the ritual's drain arm owns those). Echo g rides learn::blend_g (asymmetric: duck-more fast, duck-less slow + solid-only); voice gain/floor ride a symmetric EMA with the same sample weighting. `<base>.n` carries the accumulated sample count; the ritual resets it to 0 (ritual outranks).
+    /// Blend one LEARNED profile into the stored one (the v-chirp probe and the in-call learner both post thru this). Echo g rides learn::blend_g (asymmetric: duck-more fast, duck-less slow + solid-only); voice gain/floor ride a symmetric EMA with the same sample weighting. `<base>.n` carries the accumulated sample count.
     pub(super) fn store_learned_result(&mut self, lr: &crate::call::calibrate::LearnedResult) {
         if !self.ensure_fleet_settings() {
             return;
@@ -750,27 +684,10 @@ impl PhotonApp {
         self.persist_and_push_settings();
     }
 
-    /// Drain a finished measurement: store, drop the handle, toast, reset the phase.
+    /// Drain measured profiles (v-chirp probe mid-call, learner at teardown/route-swap) into stored settings — toast-free, silent bookkeeping.
     pub(super) fn drain_audio_cal(&mut self) {
-        // Learned (in-call) results first — every hangup can post these; NO toast, NO phase ack (they belong to the ritual below).
         for lr in crate::call::calibrate::take_learned() {
             self.store_learned_result(&lr);
-        }
-        if let Some(r) = crate::call::calibrate::take_result() {
-            self.store_cal_result(&r);
-            self.audio_cal_handle = None;
-            crate::call::calibrate::ack_phase();
-            self.ready_toast = Some(match &r {
-                crate::call::calibrate::CalResult::Echo(p) => tr(Msg::EchoMeasuredToast(&p.route_id)).into_owned(),
-                crate::call::calibrate::CalResult::Voice(p) => tr(Msg::VoiceMeasuredToast(&p.mic_id)).into_owned(),
-            });
-            self.ready_toast_screen = None;
-            self.scene_dirty = true;
-        } else if crate::call::calibrate::phase() == crate::call::calibrate::CalPhase::Failed
-            && self.audio_cal_handle.is_some()
-        {
-            self.audio_cal_handle = None;
-            self.scene_dirty = true;
         }
     }
 

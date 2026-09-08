@@ -254,24 +254,44 @@ fn run(
             .unwrap_or_else(|| "?".into())
     );
 
+    // V-CHIRP CONNECT PROBE (Nick 2026-09-07, docs/audio-paths.md §5): the call's first sound is the probe — queued before the first loop pass, played unpadded on the live route while BOTH directions hold (no mic TX, RX decoded but not rendered), so the chirp is the only thing in the room and the only render in RENDER_ENV. Both sides run the same window off their own connect edge, so the holds overlap and nobody's voice is lost. When the capture closes, audio connects immediately and the fit seeds the duck a beat later; the deadline covers a mic that never grants (Android prompts at the call).
+    let mut probing = true;
+    let mut probe_cap: Vec<i16> = Vec::with_capacity(crate::call::vchirp::CAPTURE_SAMPLES);
+    let mut probe_render_osc: Option<i64> = None;
+    let mut probe_anchor_osc: Option<i64> = None;
+    let probe_deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+    let _ = crate::call::vchirp::take_verdict(); // a prior call's late fit must never seed this one
+    for f in crate::call::vchirp::frames() {
+        crate::platform::audio::queue_playback(f);
+    }
+
     while !stop.load(Ordering::Relaxed) {
         // Learner far feed: drain the render-envelope tap (post-jitter post-splice, osc-stamped at DAC-enqueue).
         {
             let (entries, cur) = crate::platform::audio::render_env_since(renv_cursor);
             renv_cursor = cur;
             for (osc, env) in entries {
+                // Probe render anchor: RX is held while probing, so the first audible render IS the chirp's first frame at DAC-enqueue.
+                if probing && probe_render_osc.is_none() && env > 100.0 {
+                    probe_render_osc = Some(osc);
+                }
                 learner.push_far(osc, env);
             }
         }
         // ---- TX: mic → opus → window → fountain → sealed packets ----
         for frame in crate::platform::audio::captured_frames() {
-            // Learner mic feed FIRST — raw pre-gain pre-duck envelope (the separation invariant), stamped at drain, unconditionally (muted/uncalibrated frames are the cleanest echo windows).
+            // Learner mic feed FIRST — raw pre-gain pre-duck envelope (the separation invariant), stamped at drain, unconditionally (muted frames are the cleanest echo windows).
             learner.push_mic(vsf::eagle_time_oscillations(), crate::call::calibrate::env(&frame));
-            // Uncalibrated route mid-call = mic-gated (the calibration doctrine): the harm of an uncalibrated path is the echo WE inflict on the peer, so the mic goes silent while the route stays uncalibrated; hearing continues. The app tick mirrors the flag on every route change.
-            if muted.load(Ordering::Relaxed)
-                || !crate::call::ROUTE_CALIBRATED.load(Ordering::Relaxed)
-                || frame.len() != FRAME_SAMPLES
-            {
+            // Probe capture: raw samples into the fit buffer, and NO voice TX until the window closes. The anchor marks the first frame's start (drain stamp minus one bin); later frames extend the lattice by index — drain wobble is ±ms against a 10ms-bin consumer.
+            if probing {
+                if probe_anchor_osc.is_none() {
+                    probe_anchor_osc =
+                        Some(vsf::eagle_time_oscillations() - crate::call::learn::BIN_OSC);
+                }
+                probe_cap.extend_from_slice(&frame);
+                continue;
+            }
+            if muted.load(Ordering::Relaxed) || frame.len() != FRAME_SAMPLES {
                 continue;
             }
             // Rung switches land only between windows — a window's slot geometry is fixed at its first frame.
@@ -503,6 +523,10 @@ fn run(
             loop {
                 if let Some(frames) = rx_done.remove(&np) {
                     for mut f in frames {
+                        // Probe hold: the far end's early frames (their own probe window — silence) are dropped, not rendered, so the chirp stays the only sound in the room.
+                        if probing {
+                            continue;
+                        }
                         // Output pad: 4 stops down on live wave playback (Nick 2026-09-03) — the headset default now that the speaker toggle is parked; the loudspeaker at max media volume ran ~2.5 stops hot in the field and near-unity echo coupling came with it. The duck drops further from here when the physics demand it. Ritual prompts and recording preview enqueue directly and stay unpadded; the RENDER_ENV/RENDER_REF taps sit downstream, so the learner still measures the true emitted level.
                         for s in &mut f {
                             *s >>= OUTPUT_PAD_STOPS;
@@ -532,6 +556,50 @@ fn run(
             next_play = Some(np);
             // Prune stale fountain state behind the play head.
             rx_decoders.retain(|w, _| *w >= np);
+        }
+
+        // Probe close: capture full → audio connects NOW, the fit runs off-thread and seeds a beat later. Deadline = mic never granted / device never spun up — connect anyway, the duck runs on its prior seed.
+        if probing {
+            if probe_cap.len() >= crate::call::vchirp::CAPTURE_SAMPLES {
+                probing = false;
+                let cap = std::mem::take(&mut probe_cap);
+                match (probe_render_osc, probe_anchor_osc) {
+                    (Some(r), Some(a)) => {
+                        crate::logf!(
+                            "CALL: v-chirp played + sampled ({} samples) — audio connected, fit running",
+                            cap.len()
+                        );
+                        crate::call::vchirp::finish(cap, vol_lin_now, r, a, live_route.clone());
+                    }
+                    _ => crate::log("CALL: v-chirp probe had no render anchor — abandoned, audio connected"),
+                }
+            } else if std::time::Instant::now() >= probe_deadline {
+                probing = false;
+                crate::logf!(
+                    "CALL: v-chirp probe abandoned at deadline ({} of {} samples) — audio connected",
+                    probe_cap.len(),
+                    crate::call::vchirp::CAPTURE_SAMPLES
+                );
+                probe_cap = Vec::new();
+            }
+        }
+        // Fit verdict: a fresh measurement of THIS route outranks any stored/ringback seed; Clean keeps the duck reactive (a headset-class route barely ducks anyway) but takes the measured floor.
+        if let Some(v) = crate::call::vchirp::take_verdict() {
+            match v {
+                crate::call::vchirp::Verdict::Coupled { g_norm, delay_bins, floor } => {
+                    crate::logf!(
+                        "CALL: v-chirp seeded the predictive duck — g {} delay {}ms{}",
+                        format!("{g_norm:.4}"),
+                        delay_bins * 10,
+                        if applied.is_some() { " (overrode prior seed)" } else { "" }
+                    );
+                    applied = Some((g_norm, delay_bins));
+                    live_floor = floor.max(1.0);
+                }
+                crate::call::vchirp::Verdict::Clean { floor } => {
+                    live_floor = floor.max(1.0);
+                }
+            }
         }
 
         // Learner estimator + the 1s control plane (estimate refresh, live floor, route tracking). The tick itself is internally cadence-gated; the Instant is a measurement cadence on the engine thread (like PT's RTO), not UI timing.

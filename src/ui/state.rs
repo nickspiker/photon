@@ -59,19 +59,16 @@ pub enum SettingsPage {
     Language,
     /// Explainer / philosophy / version / feedback / credits.
     About,
-    /// WAVE — everything sound (Nick 2026-09-02): per-route calibration now; ringing/notification audio later. Its sibling BEAM (camera/video) lands with video calls. Calls gate on the current route being calibrated.
-    Wave,
 }
 
 impl SettingsPage {
-    /// All pages in rail order — the nav rail and the tab-cycle iterate this. Appearance is COMMENTED OUT of the rail (Nick 2026-09-01) — the variant + its render arm stay compiled so restoring it is a one-line uncomment; the dozenal (base-twelve) toggle lives on About.
-    pub const ALL: [SettingsPage; 10] = [
+    /// All pages in rail order — the nav rail and the tab-cycle iterate this. Appearance is COMMENTED OUT of the rail (Nick 2026-09-01) — the variant + its render arm stay compiled so restoring it is a one-line uncomment; the dozenal (base-twelve) toggle lives on About. The Wave calibration page is GONE (2026-09-07): the v-chirp connect probe measures every route at every call start, so there is no ritual for a page to hold.
+    pub const ALL: [SettingsPage; 9] = [
         SettingsPage::You,
         SettingsPage::Fleet,
         SettingsPage::Security,
         SettingsPage::Recovery,
         // SettingsPage::Appearance,
-        SettingsPage::Wave,
         SettingsPage::Notifications,
         SettingsPage::Updates,
         SettingsPage::Diagnostics,
@@ -92,7 +89,6 @@ impl SettingsPage {
             SettingsPage::Diagnostics => "Diagnostics",
             SettingsPage::Language => "Language",
             SettingsPage::About => "About",
-            SettingsPage::Wave => "Wave",
         }
     }
 }

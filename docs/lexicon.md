@@ -6,7 +6,7 @@ Photon names its surfaces with old words carrying exact meanings. This file hold
 
 > **wave** … [ME *waven*, fr. OE *wafian* to wave with the hands; akin to OE *wæfan* to clothe] **1 a**: to flutter in a breeze (*waving* battle streamers) **b**: to float, play, or shake in an air current; to move up and down or to and fro: FLAP **2 b**: to motion with the hands, or with something held in them, in signal, greeting, or salute … **7**: to move before the wind with a wavelike motion and appearance (field of *waving* grain) — **n** … a signal made by waving (a *wave* of the hand) … a waving of the arms, or an up-and-down motion of an extended flag.
 
-The senses that carry the page: a wave is a *signal made with what you hold* and a *motion the medium itself makes*. Sound is both at once. The Wave page — everything the device emits and hears — wears it honestly.
+The senses that carry the word: a wave is a *signal made with what you hold* and a *motion the medium itself makes*. Sound is both at once. Photon's waves — voice calls, everything the device emits and hears — wear it honestly. (The Wave settings page that carried this epigraph retired 2026-09-07 with the calibration ritual; the v-chirp probe measures at every connect instead.)
 
 ## beam
 
