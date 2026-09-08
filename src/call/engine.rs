@@ -209,6 +209,15 @@ fn run(
         params.cal.as_ref().map(|c| c.floor),
     );
     let mut renv_cursor = 0usize;
+    // NLMS canceller (Nick 2026-09-08: "go for the NLMS" — subtract first, duck the residual). Armed ONLY by a chirp Coupled verdict (the profile IS the license); a route swap disarms (new physics, next call's chirp re-seeds). Alignment: mic and reference advance by pure sample count from one-time osc anchors — stamp wobble never smears the taps (it folds into the PRE-roll window once).
+    let mut nlms: Option<crate::call::nlms::Nlms> = None;
+    let mut ref_ring = crate::call::nlms::RefRing::new(96_000); // 2s of rendered reference
+    let mut ref_cursor = 0usize;
+    let mut ref_anchor_osc: Option<i64> = None;
+    let mut mic_abs: u64 = 0;
+    let mut mic_anchor_osc: Option<i64> = None;
+    let frame_osc: i64 = vsf::OSCILLATIONS_PER_SECOND as i64 * FRAME_SAMPLES as i64
+        / crate::call::vchirp::SAMPLE_RATE as i64;
     // LEARNER CADENCE ADAPTER (flag day 2026-09-08): the learner's KAT-locked contract is ONE envelope per 10ms bin (its stamp regularizer advances a bin per push — two 5ms pushes would run its lattice at 2× time and re-anchor forever). The engine pairs adjacent 5ms envelopes: (osc of the first half, mean env) per 10ms.
     let mut far_pair: Option<(i64, f32)> = None;
     let mut mic_pair: Option<(i64, f32)> = None;
@@ -292,6 +301,17 @@ fn run(
                 }
             }
         }
+        // NLMS reference feed: every frame the DAC pulled, flattened into the absolute-indexed ring.
+        {
+            let (frames, cur) = crate::platform::audio::render_ref_since(ref_cursor);
+            ref_cursor = cur;
+            for (osc, f) in frames {
+                if ref_anchor_osc.is_none() {
+                    ref_anchor_osc = Some(osc - frame_osc);
+                }
+                ref_ring.push(&f);
+            }
+        }
         // ---- TX: mic → opus → window → fountain → sealed packets ----
         for frame in crate::platform::audio::captured_frames() {
             // Learner mic feed FIRST — raw pre-gain pre-duck envelope (the separation invariant), stamped at drain, unconditionally (muted frames are the cleanest echo windows). Paired to the learner's 10ms cadence (see far_pair).
@@ -319,6 +339,28 @@ fn run(
             let mut frame = frame;
             if muted.load(Ordering::Relaxed) {
                 frame.fill(0);
+            }
+            // NLMS SUBTRACT — before the tally and the duck, so both see the residual (the duck is the RESIDUAL suppressor once a filter is armed). Mic timeline: pure frame count from a one-time anchor.
+            if mic_anchor_osc.is_none() {
+                mic_anchor_osc = Some(vsf::eagle_time_oscillations() - frame_osc);
+            }
+            let this_mic_abs = mic_abs;
+            mic_abs += frame.len() as u64;
+            if let Some(c) = nlms.as_mut() {
+                if let (Some(m0), Some(r0)) = (mic_anchor_osc, ref_anchor_osc) {
+                    // One-time anchor offset maps the mic count onto the reference timeline; the chirp's ir_start carries the same osc-anchored convention, and the PRE-roll absorbs the wobble.
+                    let off_samples = (m0 - r0) * crate::call::vchirp::SAMPLE_RATE as i64
+                        / vsf::OSCILLATIONS_PER_SECOND as i64;
+                    let pos = this_mic_abs as i64 + off_samples;
+                    // Adapt only in far-talks-alone (the side-aware law): far active AND the raw mic no louder than a plausible echo. Double-talk freezes the taps.
+                    let raw_mean = frame.iter().map(|s| s.unsigned_abs() as u32).sum::<u32>() as f32
+                        / frame.len().max(1) as f32;
+                    let far_now = crate::platform::audio::far_level() as f32;
+                    let adapt = route_ducks
+                        && far_now > DUCK_FAR_HALF
+                        && raw_mean < far_now * ECHO_GATE_RATIO;
+                    c.cancel_frame(&mut frame, &ref_ring, pos, adapt);
+                }
             }
             // Rung switches land only between windows — a window's slot geometry is fixed at its first frame.
             if frames_in_window == 0 && pending_tier != tier {
@@ -349,7 +391,12 @@ fn run(
                         crate::call::learn::GateVerdict::Full => 1.0,
                         crate::call::learn::GateVerdict::Gate => {
                             gated_frames += 1;
-                            ECHO_GATE_GAIN
+                            if nlms.is_some() {
+                                // A filter is armed: the frame already had the echo SUBTRACTED — the hard near-mute demotes to the soft residual duck, and double-talk survives (full duplex).
+                                (1.0 / (1.0 + far_del / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
+                            } else {
+                                ECHO_GATE_GAIN
+                            }
                         }
                         crate::call::learn::GateVerdict::Duck => {
                             (1.0 / (1.0 + far_del / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
@@ -630,15 +677,18 @@ fn run(
         // Fit verdict: a fresh measurement of THIS route outranks any stored/ringback seed; Clean keeps the duck reactive (a headset-class route barely ducks anyway) but takes the measured floor.
         if let Some(v) = crate::call::vchirp::take_verdict() {
             match v {
-                crate::call::vchirp::Verdict::Coupled { g_norm, delay_bins, floor } => {
+                crate::call::vchirp::Verdict::Coupled { g_norm, delay_bins, floor, ir } => {
                     crate::logf!(
-                        "CALL: v-chirp seeded the predictive duck — g {} delay {}ms{}",
+                        "CALL: v-chirp seeded the predictive duck — g {} delay {}ms{}; nlms armed ({} taps @ {})",
                         format!("{g_norm:.4}"),
                         delay_bins * 10,
-                        if applied.is_some() { " (overrode prior seed)" } else { "" }
+                        if applied.is_some() { " (overrode prior seed)" } else { "" },
+                        ir.1.len(),
+                        ir.0
                     );
                     applied = Some((g_norm, delay_bins));
                     live_floor = floor.max(1.0);
+                    nlms = Some(crate::call::nlms::Nlms::new(ir.0, ir.1));
                 }
                 crate::call::vchirp::Verdict::Clean { floor } => {
                     live_floor = floor.max(1.0);
@@ -687,6 +737,7 @@ fn run(
                 crate::call::calibrate::post_learned(learned_results(&learner.estimate(), &live_route));
                 learner = crate::call::learn::Learner::new(rid.starts_with("bt:"), None, None);
                 applied = None;
+                nlms = None; // the taps are the OLD route's physics — duck-only until the next call's chirp
                 pred_gate = crate::call::learn::PredGate::new();
                 route_ducks = !matches!(
                     crate::platform::audio::route(),
@@ -754,6 +805,14 @@ fn run(
             format!("{:?}", e.rejects),
             crate::platform::audio::route_id()
         );
+        // The canceller's report card: honest ERLE measured only over far-talks-alone frames (where echo dominates the mic).
+        if let Some(c) = &nlms {
+            crate::logf!(
+                "CALL: nlms — erle {} over {} adapted frame(s)",
+                c.erle_db().map_or("?".into(), |d| format!("{d:.1}dB")),
+                c.adapted_frames
+            );
+        }
         // Which duck ran (field forensics): pred = the calibrated prediction gated the mic; reactive = the peak-hold fallback (uncalibrated, or a mid-call route swap reset it).
         crate::logf!(
             "CALL: duck mode at teardown — {}{}",

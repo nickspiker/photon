@@ -63,7 +63,7 @@ Nick: recording by default, each party chooses keep-or-delete after. The wire st
 
 - **Mid-call handoff UX** — the keys are handoff-ready (any sibling derives the basket + joins the ratchet at the current step; address-follows-auth re-points the peer). The container is segment-ready. The UI + segment-reassembly + sibling blob-fetch of a kept call are the follow-up.
 - **FCM doorbell cold-wake ring** — v1 rings presence-online devices only; a killed-service phone misses the call (the missed-call row still lands). Doorbell wake is the fast-follow.
-- **Relay-pipe media**, **group calls**, **video track** (same container, another track), **local-only transcription**, **macOS VoiceProcessingIO**, **an in-house echo canceller** (echo layers 0-2 ship: headset-route bypass, platform AEC via VOICE_COMMUNICATION on Android, suppression duck fallback; layer 3 only if field logs demand it).
+- **Relay-pipe media**, **group calls**, **video track** (same container, another track), **local-only transcription**, **macOS VoiceProcessingIO**, **an in-house echo canceller** — SHIPPED 2026-09-08: chirp-seeded NLMS (call/nlms.rs), born converged from the connect probe's measured impulse response, adaptation gated on far-talks-alone, duck demoted to residual suppressor while armed. RLS rejected on purpose (O(L²), numerically fragile, and its convergence advantage is void when the probe pre-converges the filter).
 
 ## Echo (the hard part — physics, not architecture)
 

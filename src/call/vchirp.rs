@@ -79,7 +79,7 @@ pub fn frames() -> Vec<Vec<i16>> {
 }
 
 /// A finished probe fit. `delay_samples` is the echo's offset WITHIN the capture buffer (the caller anchors it to the render timeline); `skew_samples` = up-leg lag − down-leg lag, the clock-skew diagnostic.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Fit {
     /// Envelope-domain coupling (NOT volume-normalized — the caller divides by its live vol_lin).
     pub g: f32,
@@ -92,6 +92,9 @@ pub struct Fit {
     pub floor: f32,
     /// False = no peak stood above the correlation noise: a clean route (headset), g meaningless, floor still real.
     pub coupled: bool,
+    /// The measured impulse response: taps[k] = IR at lag (ir_start + k), fitted against the SUM template — the NLMS canceller's seed (born converged; see call/nlms.rs).
+    pub ir_start: usize,
+    pub taps: Vec<f32>,
 }
 
 /// Matched-filter one leg over the capture: (best lag, least-squares gain at the peak, peak-to-median-|corr| ratio). Polarity-blind (|dot| — speaker/mic chains can invert), integer MACs so the 2 × ~24k-lag × 12k-sample scan stays a fraction of a second off-thread.
@@ -136,7 +139,7 @@ pub fn fit(cap: &[i16], max_lag: usize) -> Option<Fit> {
     let (lag_down, g_down, psr_down) = leg_corr(cap, &ref_down, max_lag);
     // No peak above the noise on either leg = clean route: legal (headset), floor is still a measurement.
     if psr_up < PSR_MIN || psr_down < PSR_MIN {
-        return Some(Fit { g: 0.0, delay_samples: 0, skew_samples: 0, g_up, g_down, floor, coupled: false });
+        return Some(Fit { g: 0.0, delay_samples: 0, skew_samples: 0, g_up, g_down, floor, coupled: false, ir_start: 0, taps: Vec::new() });
     }
     // Corruption gates: the two legs measured the same physics or the run is garbage. Reject details logged — two field calls said only "legs disagreed" and left nothing to diagnose which gate or by how much.
     let skew = lag_up as i64 - lag_down as i64;
@@ -187,13 +190,27 @@ pub fn fit(cap: &[i16], max_lag: usize) -> Option<Fit> {
     }
     ratios.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let g = ratios[ratios.len() / 2];
-    Some(Fit { g, delay_samples: delay, skew_samples: skew, g_up, g_down, floor, coupled: true })
+    // IR export for the NLMS seed: cross-correlate the capture against the SUM template (what actually played) over the tap window around the matched delay. h[k] = <cap(lag), tpl>/|tpl|² — the least-squares IR at each lag, band-limited to the sweep (which is the whole audible path; fine, that's the band echo lives in).
+    let tpl = template();
+    let tpl_energy: f64 = tpl.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>().max(1e-9);
+    let ir_start = delay.saturating_sub(crate::call::nlms::PRE);
+    let mut taps: Vec<f32> = Vec::with_capacity(crate::call::nlms::TAPS);
+    for k in 0..crate::call::nlms::TAPS {
+        let lag = ir_start + k;
+        let dot: i64 = if lag + tpl.len() <= cap.len() {
+            cap[lag..lag + tpl.len()].iter().zip(tpl).map(|(&c, &t)| c as i64 * t as i64).sum()
+        } else {
+            0
+        };
+        taps.push((dot as f64 / tpl_energy) as f32);
+    }
+    Some(Fit { g, delay_samples: delay, skew_samples: skew, g_up, g_down, floor, coupled: true, ir_start, taps })
 }
 
 /// The fit's answer for the LIVE engine, posted from the fit thread and drained by the engine loop (the persisted profile rides `calibrate::post_learned` separately).
 pub enum Verdict {
-    /// Real coupling: seed the predictive duck. g volume-normalized to unit volume (the duck re-scales by live vol_lin), delay on the duck's 10ms grid.
-    Coupled { g_norm: f32, delay_bins: usize, floor: f32 },
+    /// Real coupling: seed the predictive duck AND the NLMS canceller. g volume-normalized to unit volume (the duck re-scales by live vol_lin), delay on the duck's 10ms grid; `ir` = (ir_start, taps) in raw render↔mic units for the subtractor.
+    Coupled { g_norm: f32, delay_bins: usize, floor: f32, ir: (usize, Vec<f32>) },
     /// No coupling above the correlation noise (headset-class route): stay reactive, but the floor is a real measurement.
     Clean { floor: f32 },
 }
@@ -251,7 +268,7 @@ pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc
             windows: 25,
             solid: true,
         }]);
-        *VERDICT.lock().unwrap() = Some(Verdict::Coupled { g_norm, delay_bins, floor: f.floor });
+        *VERDICT.lock().unwrap() = Some(Verdict::Coupled { g_norm, delay_bins, floor: f.floor, ir: (f.ir_start, f.taps.clone()) });
     });
 }
 

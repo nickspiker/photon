@@ -7,6 +7,7 @@
 pub mod calibrate;
 pub mod learn;
 pub mod vchirp;
+pub mod nlms;
 pub mod ringback;
 pub mod engine;
 pub mod spool;

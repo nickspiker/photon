@@ -23,6 +23,7 @@ static CAPTURE_Q: Mutex<VecDeque<Vec<i16>>> = Mutex::new(VecDeque::new());
 static PLAYBACK_Q: Mutex<VecDeque<Vec<i16>>> = Mutex::new(VecDeque::new());
 /// The AEC far-end reference: (eagle osc at enqueue-to-device, samples) per frame, last ~500ms. The canceller/duck reads this; nothing else does.
 static RENDER_REF: Mutex<VecDeque<(i64, Vec<i16>)>> = Mutex::new(VecDeque::new());
+static RENDER_REF_TOTAL: AtomicUsize = AtomicUsize::new(0);
 /// Audio session live? Device loops run only while true.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -323,6 +324,7 @@ fn next_render_frame() -> Vec<i16> {
             r.pop_front();
         }
         r.push_back((vsf::eagle_time_oscillations(), frame.clone()));
+        RENDER_REF_TOTAL.fetch_add(1, Ordering::Relaxed);
     }
     // The learner's envelope tap — reuses `lvl` computed above (zero new arithmetic).
     {
@@ -334,6 +336,16 @@ fn next_render_frame() -> Vec<i16> {
         RENDER_ENV_TOTAL.fetch_add(1, Ordering::Relaxed);
     }
     frame
+}
+
+/// Drain the render-REFERENCE frames newer than `cursor` — the NLMS canceller's far-end sample feed (same cursor law as render_env_since). Frames that aged past the ring before a poll are gone; the consumer's resident-window check skips those stretches.
+pub fn render_ref_since(cursor: usize) -> (Vec<(i64, Vec<i16>)>, usize) {
+    let r = RENDER_REF.lock().unwrap();
+    let total = RENDER_REF_TOTAL.load(Ordering::Relaxed);
+    let missed = total.saturating_sub(cursor);
+    let take = missed.min(r.len());
+    let out: Vec<(i64, Vec<i16>)> = r.iter().skip(r.len() - take).cloned().collect();
+    (out, total)
 }
 
 /// Drain the render-envelope entries newer than `cursor` (a count of entries ever pushed; start at 0). Returns (new entries oldest-first, next cursor). The single learner consumer polls this each engine iteration; entries that aged past the ring before a poll are simply gone (the learner's window logic tolerates gaps — a stalled consumer loses history, never correctness).
