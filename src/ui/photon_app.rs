@@ -1822,6 +1822,8 @@ pub struct PhotonApp {
     settings_removeshred_armed: bool,
     /// call_ids THIS device dialed this session — the license for the stray-answer loud-kill (call_ui Answer arm): a device that never dialed must never hang up the friend. RAM-only on purpose; a few entries per session, never pruned.
     dialed_call_ids: std::collections::HashSet<[u8; 16]>,
+    /// Fleet call-presence chip: a wave is running on ANOTHER of our devices — `(call_id, that device's pubkey if the row named it, the friend's handle hash)`. Lit by our fleet's replicated offer/answer rows, cleared by the terminal rows (hangup/decline/busy — the tombstones). Purely informational v1; join/switch reads this state later.
+    fleet_call_elsewhere: Option<([u8; 16], Option<[u8; 32]>, [u8; 32])>,
     /// About page: false = show the version as dozenal GLYPHS (the default — proper rendered dozenal, never arabic); true = the version tapped, spell it out in voca words. Toggles on each tap of the version row.
     about_version_spelled: bool,
     /// One tap on the version reveals the dozenal index; ONE tap within the index reveals the custodian riddle easter egg beneath it (session-permanent once found, hidden with the index when the version collapses).
@@ -2265,6 +2267,7 @@ impl PhotonApp {
             fleet_approve_armed: None,
             settings_removeshred_armed: false,
             dialed_call_ids: Default::default(),
+            fleet_call_elsewhere: None,
             about_version_spelled: false,
             about_riddle_revealed: false,
         }

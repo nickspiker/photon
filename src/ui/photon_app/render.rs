@@ -289,6 +289,29 @@ impl PhotonApp {
             .as_ref()
             .map(|t| self.fmt_duration(t.4))
             .unwrap_or_default();
+        // Receive-drought state for the Active status line (call_drought_tick owns the flag).
+        let call_reconnecting = self.active_call.as_ref().is_some_and(|c| c.reconnecting);
+        // Fleet call-presence chip text, hoisted like the duration (machine_name reads &self): shown only in the chip's own conversation, only while THIS device has no call UI of its own.
+        let fleet_chip_text: Option<String> = self.fleet_call_elsewhere.and_then(|(_, dev, chip_peer)| {
+            if self.active_call.is_some() || !matches!(self.state, AppState::Conversation) {
+                return None;
+            }
+            let viewing = self
+                .active_contact()
+                .and_then(|ci| self.contacts.get(ci))
+                .is_some_and(|c| c.handle_hash == chip_peer);
+            if !viewing {
+                return None;
+            }
+            match dev {
+                Some(pk) => {
+                    let seed = self.session.as_ref()?.identity_seed;
+                    let name = super::machine_name(&pk, &seed, self.fleet_settings.as_ref());
+                    Some(tr(Msg::CallChipElsewhere(&name)).into_owned())
+                }
+                None => Some(tr(Msg::CallChipElsewhereUnknown).into_owned()),
+            }
+        });
         // Ring-panel avatar: pre-scale the caller's avatar (or the identity gradient) to the panel diameter — done HERE (before the canvas borrows) because it needs &mut self. Cache keyed by diameter; dropped when nothing rings.
         if call_fullscreen {
             let unit_now = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
@@ -580,7 +603,9 @@ impl PhotonApp {
                         }
                     }
                     crate::call::CallPhase::Active => {
-                        if direct {
+                        if call_reconnecting {
+                            tr(Msg::CallReconnecting).into_owned()
+                        } else if direct {
                             // Glyph + duration only (no words) — nothing to translate, stays a raw format.
                             format!("\u{260E} {}", call_dur_str)
                         } else {
@@ -780,6 +805,18 @@ impl PhotonApp {
                     b.set_enabled(false);
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                }
+                // Fleet call-presence chip: a wave is live on another of our devices — informational v1, the join/switch affordance lands with handoff.
+                if let Some(txt) = &fleet_chip_text {
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        txt,
+                        buf_w as f32 * 0.5,
+                        call_cy,
+                        &TextStyle::new(call_font * 0.8, *theme::SEARCH_FOUND_COLOUR).font("Oxanium"),
+                        None,
+                        None,
+                    );
                 }
             }
         }

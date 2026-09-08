@@ -27,6 +27,8 @@ impl PhotonApp {
         // Peer avatars: install any completed downloads, then kick a fetch (once/session/handle) for any contact still without one. Cache-first + dedup'd by avatar_dl_started, so this is cheap to run every tick — it spawns at most one thread per peer per session.
         // Express call signals FIRST — a doorbell outranks every other drain on the tick (rare + tiny; empty = one mutex).
         timed_drain!("call_express", self.drain_express_signals());
+        // Media-liveness measurement on the live call (two atomic loads when idle).
+        timed_drain!("call_drought", self.call_drought_tick());
         // A finished audio calibration posts its profile here (rare; empty = one mutex).
         timed_drain!("audio_cal", self.drain_audio_cal());
         timed_drain!("avatar", self.drain_avatar_downloads());

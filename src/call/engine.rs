@@ -263,6 +263,10 @@ fn run(
     let mut probe_anchor_osc: Option<i64> = None;
     let probe_deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
     let _ = crate::call::vchirp::take_verdict(); // a prior call's late fit must never seed this one
+    // Drought baseline + stale-state drain: the UI measures receive drought against max(start, last rx), and a previous call's redirect must never re-point this one.
+    super::MEDIA_START_OSC.store(vsf::eagle_time_oscillations(), Ordering::Relaxed);
+    super::LAST_MEDIA_RX_OSC.store(0, Ordering::Relaxed);
+    let _ = super::take_peer_redirect();
     for f in crate::call::vchirp::frames() {
         crate::platform::audio::queue_playback(f);
     }
@@ -293,8 +297,13 @@ fn run(
                 probe_cap.extend_from_slice(&frame);
                 continue;
             }
-            if muted.load(Ordering::Relaxed) || frame.len() != FRAME_SAMPLES {
+            if frame.len() != FRAME_SAMPLES {
                 continue;
+            }
+            // MUTE TRANSMITS ZEROS, NOT ABSENCE (2026-09-08, the drought tick's contract): the CBR cadence never breaks — a muted stretch is invisible to a traffic observer, NAT pinholes stay held open, and the peer's receive-drought measurement can't mistake a long mute for a dead path. Zeroed BEFORE the energy tally so tx(mic) honestly reads what was transmitted.
+            let mut frame = frame;
+            if muted.load(Ordering::Relaxed) {
+                frame.fill(0);
             }
             // Rung switches land only between windows — a window's slot geometry is fixed at its first frame.
             if frames_in_window == 0 && pending_tier != tier {
@@ -434,6 +443,7 @@ fn run(
                 continue; // wrong key/step/tamper — silence, never a guess
             };
             pkts_in += 1;
+            super::LAST_MEDIA_RX_OSC.store(vsf::eagle_time_oscillations(), Ordering::Relaxed);
             // Authenticated source: the peer's address follows its packets (NAT rebind / future handoff, no signaling needed).
             // FORWARD-PROGRESS GATE (2026-09-07, the address-trust doctrine): the step ratchet already kills cross-step replays, but a CURRENT-step packet replayed from an attacker's address would open fine and re-point our TX — so only a strictly-newer seq may steer. An off-path attacker never has a newer authentic packet; an on-path one could already drop the stream, gaining nothing.
             let newer = rx_max_seq.map_or(true, |m| header.seq > m);
@@ -563,6 +573,14 @@ fn run(
             next_play = Some(np);
             // Prune stale fountain state behind the play head.
             rx_decoders.retain(|w, _| *w >= np);
+        }
+
+        // Signal-plane re-anchor: an authenticated express Anchor named a fresh peer address (both-sides-moved heal) — re-point TX there. The media plane's own follow rule keeps refining from packet sources as usual.
+        if let Some(a) = super::take_peer_redirect() {
+            if a != peer {
+                crate::logf!("CALL: peer re-anchored via express → {} (was {})", a, peer);
+                peer = a;
+            }
         }
 
         // Probe close: capture full → audio connects NOW, the fit runs off-thread and seeds a beat later. Deadline = mic never granted / device never spun up — connect anyway, the duck runs on its prior seed.

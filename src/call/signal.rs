@@ -89,8 +89,10 @@ pub fn open_express(key: &[u8; 32], bytes: &[u8]) -> Option<(i64, Option<[u8; 32
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallSignal {
-    Offer { call_id: [u8; 16], nonce: [u8; 32] },
-    Answer { call_id: [u8; 16], nonce: [u8; 32] },
+    /// `device` = the ORIGINATING device's pubkey (fleet lifecycle, 2026-09-08): the callee routes its reply to THAT device's freshest address instead of the offer's possibly-stale source, and the caller's siblings get a name for the presence chip. Optional on the wire — a pre-device-id peer's offer parses with `None` and everything falls back to source-address routing.
+    Offer { call_id: [u8; 16], nonce: [u8; 32], device: Option<[u8; 32]> },
+    /// `device` = the ANSWERING device: the caller pins media routing to it, and the callee's own siblings read it off the replicated row for "wave in progress on <name>".
+    Answer { call_id: [u8; 16], nonce: [u8; 32], device: Option<[u8; 32]> },
     /// Callee refused. Ring stops fleet-wide (the decline fans to the callee's siblings as a row like any other).
     Decline { call_id: [u8; 16] },
     /// Callee is already in a call — automatic, not a human edge.
@@ -99,6 +101,8 @@ pub enum CallSignal {
     Hangup { call_id: [u8; 16] },
     /// Caller → a losing answerer: another device won the race.
     Taken { call_id: [u8; 16] },
+    /// Media re-anchor (EXPRESS-ONLY, never a lane row — transport plumbing, not conversation history): fired into a receive drought so the far end re-points its media at this frame's SOURCE address. Heals the both-sides-moved case where "address follows authenticated packets" deadlocks on two dead addresses.
+    Anchor { call_id: [u8; 16] },
 }
 
 impl CallSignal {
@@ -109,7 +113,8 @@ impl CallSignal {
             | CallSignal::Decline { call_id }
             | CallSignal::Busy { call_id }
             | CallSignal::Hangup { call_id }
-            | CallSignal::Taken { call_id } => call_id,
+            | CallSignal::Taken { call_id }
+            | CallSignal::Anchor { call_id } => call_id,
         }
     }
 
@@ -121,21 +126,26 @@ impl CallSignal {
             CallSignal::Busy { .. } => "busy",
             CallSignal::Hangup { .. } => "hangup",
             CallSignal::Taken { .. } => "taken",
+            CallSignal::Anchor { .. } => "anchor",
         }
     }
 
-    /// The row content string this signal rides as.
+    /// The row content string this signal rides as. The device pubkey is the OPTIONAL 4th field on offer/answer — appended only when present, so a device-id build emits rows an old build parses fine (old parse reads the fields it knows and ignores the rest).
     pub fn to_content(&self) -> String {
         let base = format!("{}{}\u{2}{}", CALL_PREFIX, self.kind(), hex::encode(self.call_id()));
         match self {
-            CallSignal::Offer { nonce, .. } | CallSignal::Answer { nonce, .. } => {
-                format!("{}\u{2}{}", base, hex::encode(nonce))
+            CallSignal::Offer { nonce, device, .. } | CallSignal::Answer { nonce, device, .. } => {
+                let with_nonce = format!("{}\u{2}{}", base, hex::encode(nonce));
+                match device {
+                    Some(d) => format!("{}\u{2}{}", with_nonce, hex::encode(d)),
+                    None => with_nonce,
+                }
             }
             _ => base,
         }
     }
 
-    /// Parse a row's content. None for non-call content or a malformed record (malformed = dropped, never guessed).
+    /// Parse a row's content. None for non-call content or a malformed record (malformed = dropped, never guessed). A missing/malformed device field is `None`, never a parse failure — it's advisory routing info, not authentication (the express AEAD / lane chain authenticate the IDENTITY; the receiver gates the claimed device with `knows_device` before trusting it for routing).
     pub fn parse(content: &str) -> Option<CallSignal> {
         let rest = content.strip_prefix(CALL_PREFIX)?;
         let mut parts = rest.split('\u{2}');
@@ -145,13 +155,18 @@ impl CallSignal {
             .next()
             .and_then(|h| hex::decode(h).ok())
             .and_then(|b| b.try_into().ok());
+        let device: Option<[u8; 32]> = parts
+            .next()
+            .and_then(|h| hex::decode(h).ok())
+            .and_then(|b| b.try_into().ok());
         match (kind, nonce) {
-            ("offer", Some(nonce)) => Some(CallSignal::Offer { call_id, nonce }),
-            ("answer", Some(nonce)) => Some(CallSignal::Answer { call_id, nonce }),
+            ("offer", Some(nonce)) => Some(CallSignal::Offer { call_id, nonce, device }),
+            ("answer", Some(nonce)) => Some(CallSignal::Answer { call_id, nonce, device }),
             ("decline", None) => Some(CallSignal::Decline { call_id }),
             ("busy", None) => Some(CallSignal::Busy { call_id }),
             ("hangup", None) => Some(CallSignal::Hangup { call_id }),
             ("taken", None) => Some(CallSignal::Taken { call_id }),
+            ("anchor", None) => Some(CallSignal::Anchor { call_id }),
             _ => None,
         }
     }
@@ -166,12 +181,15 @@ mod tests {
         let id = [0xAB; 16];
         let n = [0xCD; 32];
         for sig in [
-            CallSignal::Offer { call_id: id, nonce: n },
-            CallSignal::Answer { call_id: id, nonce: n },
+            CallSignal::Offer { call_id: id, nonce: n, device: Some([0xEE; 32]) },
+            CallSignal::Offer { call_id: id, nonce: n, device: None },
+            CallSignal::Answer { call_id: id, nonce: n, device: Some([0xEF; 32]) },
+            CallSignal::Answer { call_id: id, nonce: n, device: None },
             CallSignal::Decline { call_id: id },
             CallSignal::Busy { call_id: id },
             CallSignal::Hangup { call_id: id },
             CallSignal::Taken { call_id: id },
+            CallSignal::Anchor { call_id: id },
         ] {
             let content = sig.to_content();
             assert_eq!(CallSignal::parse(&content), Some(sig));
@@ -187,9 +205,30 @@ mod tests {
     }
 
     #[test]
+    fn device_field_is_wire_compatible_both_ways() {
+        // OLD-BUILD row (3 fields, no device) parses on a NEW build with device None — history replays and mixed-version fleets keep working.
+        let legacy = format!(
+            "{}answer\u{2}{}\u{2}{}",
+            CALL_PREFIX,
+            hex::encode([5u8; 16]),
+            hex::encode([6u8; 32])
+        );
+        assert_eq!(
+            CallSignal::parse(&legacy),
+            Some(CallSignal::Answer { call_id: [5; 16], nonce: [6; 32], device: None })
+        );
+        // A garbled device field degrades to None (advisory routing info), never a dropped signal — the answer itself must still land.
+        let garbled = format!("{legacy}\u{2}nothex");
+        assert_eq!(
+            CallSignal::parse(&garbled),
+            Some(CallSignal::Answer { call_id: [5; 16], nonce: [6; 32], device: None })
+        );
+    }
+
+    #[test]
     fn express_round_trip() {
         let key = [7u8; 32];
-        let sig = CallSignal::Offer { call_id: [1; 16], nonce: [2; 32] };
+        let sig = CallSignal::Offer { call_id: [1; 16], nonce: [2; 32], device: Some([4; 32]) };
         let wire = seal_express(&key, 42, Some(&[9u8; 32]), &sig).unwrap();
         assert!(is_express_frame(&wire));
         assert!(!crate::call::packet::is_media_packet(&wire), "express and media magics must not collide");
@@ -198,7 +237,7 @@ mod tests {
         // A wrong friendship key fails the AEAD tag — trial-open across friendships is safe.
         assert!(open_express(&[8u8; 32], &wire).is_none());
         // Non-offer signals carry no lane key.
-        let ans = CallSignal::Answer { call_id: [1; 16], nonce: [3; 32] };
+        let ans = CallSignal::Answer { call_id: [1; 16], nonce: [3; 32], device: None };
         let wire2 = seal_express(&key, 7, None, &ans).unwrap();
         assert_eq!(open_express(&key, &wire2).unwrap(), (7, None, ans));
     }

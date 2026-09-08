@@ -64,6 +64,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::IncomingCall => "\u{260E} onda entrante".into(),
         Msg::IncomingCallNoPath => "\u{260E} onda entrante \u{2014} \u{26A0} sin ruta directa".into(),
         Msg::CallActiveNoPath(dur) => format!("\u{260E} {dur} \u{2014} \u{26A0} sin ruta directa").into(),
+        Msg::CallReconnecting => "\u{26A0} reconectando\u{2026}".into(),
+        Msg::CallDroppedRow => "\u{260E} onda \u{2014} cortada".into(),
+        Msg::CallChipElsewhere(dev) => format!("\u{260E} onda en curso en {dev}").into(),
+        Msg::CallChipElsewhereUnknown => "\u{260E} onda en curso en otro dispositivo".into(),
         Msg::CallEndedDur(dur) => format!("\u{260E} onda \u{2014} {dur}").into(),
         // The `a` STAYS: Spanish marks a human direct object with the personal a ("llamando a Steve"), so this already reads "waving Steve", not "waving at Steve" — dropping it would be ungrammatical.
         Msg::CallingName(name) => format!("\u{260E} saludando a {name}\u{2026}").into(),

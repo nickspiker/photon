@@ -134,6 +134,28 @@ pub struct ActiveCall {
     pub ring: Option<RingGuard>,
     /// Outgoing-wave ringback stopper (Outgoing phase only): the callee's own ring cadence playing in OUR earpiece, plus the room-coupling probe it measures. Dropped on every teardown edge — answered, declined, hung up, glare-folded — so the ringback stops without a timer.
     pub ringback: Option<ringback::RingbackGuard>,
-    /// The source address the peer's most recent EXPRESS signal arrived from — the freshest known direct path to the device actually driving this call. Express replies target it first (answer rides back the offer's path), beside the contact's validated path.
+    /// The source address the peer's most recent EXPRESS signal arrived from — the freshest known direct path to the device actually driving this call. Express replies target it first (answer rides back the offer's path); the contact's validated path is only the fallback when this is unknown.
     pub express_addr: Option<SocketAddr>,
+    /// The peer DEVICE driving this call (offer's device for the callee, answer's device for the caller), gated thru `knows_device` before storage. Reply routing resolves this device's freshest endpoint addresses; `None` (pre-device-id peer) falls back to source-address routing.
+    pub peer_device: Option<[u8; 32]>,
+    /// Receive drought crossed the reconnect threshold (call_drought_tick) — the panel shows "reconnecting", anchors are firing. Cleared the moment media resumes.
+    pub reconnecting: bool,
+    /// Eagle osc of the last anchor this side fired into a drought — the re-fire spacing check (a measurement cadence, not a UI timer).
+    pub last_anchor_osc: i64,
+}
+
+/// Eagle osc of the last AUTHENTICATED media packet the engine opened; 0 = none this call. Written by the engine thread, read by the UI's drought measurement.
+pub static LAST_MEDIA_RX_OSC: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+/// Eagle osc at engine start — the drought baseline before the first packet ever arrives (0 = no engine).
+pub static MEDIA_START_OSC: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// A fresh peer address for the LIVE engine's TX, set by an authenticated express Anchor's source (drain_express_signals) and drained by the engine loop. The media-plane "address follows authenticated packets" rule can't heal a both-sides-moved deadlock — this is the signal-plane override that can.
+static PEER_REDIRECT: Mutex<Option<SocketAddr>> = Mutex::new(None);
+
+pub fn set_peer_redirect(addr: SocketAddr) {
+    *PEER_REDIRECT.lock().unwrap() = Some(addr);
+}
+
+pub fn take_peer_redirect() -> Option<SocketAddr> {
+    PEER_REDIRECT.lock().unwrap().take()
 }

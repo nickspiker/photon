@@ -184,6 +184,8 @@ impl PhotonApp {
         let sig = CallSignal::Offer {
             call_id,
             nonce: caller_nonce,
+            // Name the originating device: the callee routes its answer at THIS device's freshest address (not the offer's possibly-stale source), and our siblings get a name for the wave-in-progress chip.
+            device: self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()),
         };
         if !self.send_call_signal(ci, sig) {
             crate::log("CALL: offer send failed (no lane) — not dialing");
@@ -229,6 +231,9 @@ impl PhotonApp {
                 None
             },
             express_addr: None,
+            peer_device: None,
+            reconnecting: false,
+            last_anchor_osc: 0,
         });
         if contact_validated {
             crate::logf!("CALL: dialing {} (id {})", crate::fp(&peer), hex::encode(&call_id[..4]));
@@ -262,7 +267,8 @@ impl PhotonApp {
             return;
         };
         let callee_nonce: [u8; 32] = rand::random();
-        if !self.send_call_signal(ci, CallSignal::Answer { call_id, nonce: callee_nonce }) {
+        let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+        if !self.send_call_signal(ci, CallSignal::Answer { call_id, nonce: callee_nonce, device: our_device }) {
             crate::log("CALL: answer send failed");
             return;
         }
@@ -335,6 +341,73 @@ impl PhotonApp {
         self.end_call(&summary, offer_osc);
     }
 
+    /// Media-liveness measurement (edges-not-timers: packet arrival IS the event stream; this is a measurement cadence on it, like the learner tick or PT's RTO — never UI timing). Receive drought past the reconnect line → panel shows reconnecting + anchors fire at the peer's freshest paths; past the drop line → honest teardown with a dropped summary, because a silently-dead Active call the human must notice and kill is the worse experience. The engine's mute-transmits-zeros contract keeps a muted peer from ever reading as a drought.
+    pub(super) fn call_drought_tick(&mut self) {
+        const OSC: i64 = vsf::OSCILLATIONS_PER_SECOND as i64;
+        let (reconnect_after, anchor_every, drop_after) = (5 * OSC, 2 * OSC, 30 * OSC);
+        let Some(call) = self.active_call.as_ref() else {
+            return;
+        };
+        if call.phase != CallPhase::Active || call.engine.is_none() {
+            return;
+        }
+        let (call_id, peer, offer_osc, was_reconnecting, last_anchor) = (
+            call.call_id,
+            call.peer_handle_hash,
+            call.offer_osc,
+            call.reconnecting,
+            call.last_anchor_osc,
+        );
+        use std::sync::atomic::Ordering::Relaxed;
+        let start = crate::call::MEDIA_START_OSC.load(Relaxed);
+        if start == 0 {
+            return;
+        }
+        let last_rx = crate::call::LAST_MEDIA_RX_OSC.load(Relaxed).max(start);
+        let now = vsf::eagle_time_oscillations();
+        let drought = now - last_rx;
+        if drought >= drop_after {
+            crate::logf!(
+                "CALL: dropped — no authenticated media for {}s (id {})",
+                drought / OSC,
+                hex::encode(&call_id[..4])
+            );
+            // The Hangup rides the durable lane row: a far end alive behind a dead path converges the moment any path heals, and the row tombstones the chip fleet-wide.
+            if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
+                let _ = self.send_call_signal(ci, CallSignal::Hangup { call_id });
+            }
+            self.end_call(&tr(Msg::CallDroppedRow), offer_osc);
+            return;
+        }
+        if drought >= reconnect_after {
+            if !was_reconnecting {
+                crate::logf!(
+                    "CALL: receive drought {}s — reconnecting, anchors firing (id {})",
+                    drought / OSC,
+                    hex::encode(&call_id[..4])
+                );
+                if let Some(c) = self.active_call.as_mut() {
+                    c.reconnecting = true;
+                }
+                self.scene_dirty = true;
+            }
+            if now - last_anchor >= anchor_every {
+                if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
+                    self.send_express_signal(ci, &CallSignal::Anchor { call_id }, now, None);
+                }
+                if let Some(c) = self.active_call.as_mut() {
+                    c.last_anchor_osc = now;
+                }
+            }
+        } else if was_reconnecting {
+            crate::log("CALL: media resumed — reconnected");
+            if let Some(c) = self.active_call.as_mut() {
+                c.reconnecting = false;
+            }
+            self.scene_dirty = true;
+        }
+    }
+
     /// One inbound signal — from the friend's lane directly (`rx_lane_key` present, this device decrypted it) or from a sibling's row push (merge; stop-edges only).
     pub(super) fn on_call_signal(
         &mut self,
@@ -349,8 +422,17 @@ impl PhotonApp {
             Some(c) if !c.is_sibling => c.handle_hash,
             _ => return,
         };
+        // Presence-chip tombstone: any terminal signal for the chip's call clears it, whichever direction it rode in (my sibling hung up, the friend hung up, decline, busy) — the summary/terminal rows replicate everywhere, so every device converges. Taken is deliberately NOT terminal (the call continues on the winner).
+        if matches!(sig, CallSignal::Hangup { .. } | CallSignal::Decline { .. } | CallSignal::Busy { .. }) {
+            if let Some((chip_id, _, _)) = self.fleet_call_elsewhere {
+                if chip_id == *sig.call_id() {
+                    self.fleet_call_elsewhere = None;
+                    self.scene_dirty = true;
+                }
+            }
+        }
         match sig {
-            CallSignal::Offer { call_id, nonce } if !row_is_outgoing => {
+            CallSignal::Offer { call_id, nonce, device } if !row_is_outgoing => {
                 match &self.active_call {
                     Some(c) if c.call_id == call_id => {} // duplicate/retransmit
                     // GLARE (field 2026-09-02, Emma+Nick dialing each other in the same second → mutual auto-BUSY, no ring, no notification, two "missed call" rows and no call): an offer from the peer we are currently CALLING means both humans pressed the button — both consent, so CONNECT, never refuse. Deterministic fold from symmetric information: the smaller call_id is THE call; the larger-id side quietly drops its own outgoing (no hangup spray, no missed-call row — the peer is ignoring that offer by the same rule) and answers the winner. Both sides compute the same rule on the same two ids, so exactly one call survives.
@@ -370,6 +452,8 @@ impl PhotonApp {
                                 hex::encode(&c.call_id[..4]),
                                 hex::encode(&call_id[..4])
                             );
+                            let peer_device = device
+                                .filter(|d| self.contacts.get(ci).is_some_and(|c| c.knows_device(d)));
                             self.active_call = Some(ActiveCall {
                                 call_id,
                                 peer_handle_hash: peer,
@@ -387,6 +471,9 @@ impl PhotonApp {
                                 ring: None,
                                 ringback: None, // glare fold: we become the CALLEE, so the ring plays — and dropping the old ActiveCall already stopped our ringback
                                 express_addr: None,
+                                peer_device,
+                                reconnecting: false,
+                                last_anchor_osc: 0,
                             });
                             // Both users already pressed call — consent is mutual, connect NOW (a fold that merely rings would ask one of them to press the button twice). If the answer guard refuses (uncalibrated route), the call stays Ringing and the panel says why — still strictly better than BUSY.
                             self.answer_call();
@@ -424,6 +511,9 @@ impl PhotonApp {
                             );
                             return;
                         }
+                        // The offer's claimed origin device, honoured only if the friend's fold vouches for it (routing info, not authentication).
+                        let peer_device = device
+                            .filter(|d| self.contacts.get(ci).is_some_and(|c| c.knows_device(d)));
                         self.active_call = Some(ActiveCall {
                             call_id,
                             peer_handle_hash: peer,
@@ -441,6 +531,9 @@ impl PhotonApp {
                             ring: None,
                             ringback: None, // inbound: we're the one being waved, the RING plays not the ringback
                             express_addr: None,
+                            peer_device,
+                            reconnecting: false,
+                            last_anchor_osc: 0,
                         });
                         self.ring_alert(ci);
                         crate::logf!(
@@ -452,9 +545,25 @@ impl PhotonApp {
                     }
                 }
             }
-            CallSignal::Offer { .. } => {} // our own fleet's outgoing offer echoed via merge — bookkeeping only
-            CallSignal::Answer { call_id, nonce } => {
+            CallSignal::Offer { call_id, device, .. } => {
+                // OUR fleet's outgoing offer, seen on a device that didn't dial it: a sibling is waving someone — light the presence chip ("wave on <device>"). The dialer itself skips (its own call UI is the display); the chip clears on the terminal rows above.
+                if !self.dialed_call_ids.contains(&call_id)
+                    && self.active_call.as_ref().is_none_or(|c| c.call_id != call_id)
+                {
+                    self.fleet_call_elsewhere = Some((call_id, device, peer));
+                    self.scene_dirty = true;
+                }
+            }
+            CallSignal::Answer { call_id, nonce, device } => {
+                // The claimed answering device, fold-gated BEFORE any active_call borrow (routing + chip info, not authentication).
+                let peer_dev = device.filter(|d| self.contacts.get(ci).is_some_and(|c| c.knows_device(d)));
                 let Some(call) = self.active_call.as_mut() else {
+                    // A sibling with no ring in progress (came online mid-call, or its ring row hasn't landed): the fleet's outgoing answer row still lights the chip.
+                    if row_is_outgoing {
+                        self.fleet_call_elsewhere = Some((call_id, device, peer));
+                        self.scene_dirty = true;
+                        return;
+                    }
                     // An answer with no active call. Loud-kill ONLY if THIS device dialed that call this session (the caller dismissed/lost it and the answer strayed in late — without the hangup the friend sits Active on a dead call). Any other device is a fleet SIBLING hearing the friend's answer fan-out, and it must stay SILENT: the express key is per-friendship so its hangup authenticates as the whole identity, and on 2026-09-08 the non-calling sibling's "kill it loudly" tore down Brittany's engine 107ms after answer — 17s of nobody hearing anybody. Siblings observe, never destroy (fleetwide wave presence — join/switch mid-call — rides on exactly that). Trade accepted: a caller that CRASHED (RAM set gone) no longer kills its own stray answer; the friend hangs up a one-way call by hand, which beats every multi-device call dying at answer.
                     if !from_merge && !row_is_outgoing {
                         if self.dialed_call_ids.contains(&call_id) {
@@ -472,10 +581,11 @@ impl PhotonApp {
                     return;
                 }
                 if row_is_outgoing {
-                    // OUR FLEET answered somewhere. If that somewhere isn't here, stop this device's ring — the call lives on the answering device.
+                    // OUR FLEET answered somewhere. If that somewhere isn't here, stop this device's ring and light the chip — the call lives on the answering device.
                     if call.phase == CallPhase::Ringing && call.callee_nonce != Some(nonce) {
                         crate::log("CALL: a sibling answered — ring stops here");
                         self.active_call = None;
+                        self.fleet_call_elsewhere = Some((call_id, device, peer));
                         Self::stop_ring_alert_platform();
                         self.scene_dirty = true;
                     }
@@ -487,6 +597,10 @@ impl PhotonApp {
                         let offer_key = call.offer_lane_key;
                         let caller_nonce = call.caller_nonce;
                         call.callee_nonce = Some(nonce);
+                        // Media routing pins to the ANSWERING device from here on (its endpoints outrank the pre-answer guesses).
+                        if peer_dev.is_some() {
+                            call.peer_device = peer_dev;
+                        }
                         call.phase = CallPhase::Active;
                         call.phase_osc = vsf::eagle_time_oscillations();
                         // Answered: the ringback stops HERE, before the engine spawns — it must not still be queueing cadence frames into the live wave. Its probe (measured on this route, seconds ago) survives in the module and seeds the engine below.
@@ -588,9 +702,13 @@ impl PhotonApp {
                     }
                     crate::platform::audio::stop();
                     self.active_call = None;
+                    // The call continues on the winning sibling — chip it (device unknown from Taken; the answer row's merge fills the name when it lands).
+                    self.fleet_call_elsewhere = Some((call_id, None, peer));
                     self.scene_dirty = true;
                 }
             }
+            // Anchor is transport plumbing: the re-point happens in drain_express_signals where the frame's SOURCE address is in hand; the row path never carries one.
+            CallSignal::Anchor { .. } => {}
         }
     }
 
@@ -641,18 +759,50 @@ impl PhotonApp {
         else {
             return;
         };
+        // RING WANTS BREADTH, REPLIES WANT PRECISION (fleet lifecycle, 2026-09-08). An OFFER is the ding — it fans to every known endpoint of every fold-trusted device, so all the callee's devices ring at express speed instead of waiting on replication. Every other signal is a reply about one specific call: it targets the ONE peer device driving it — the call's freshest express source plus that device's own endpoint addresses (multiple addresses of one device is a race, not a misfire; multiple DEVICES was the 2026-09-08 sibling-hangup bug). validated_path is only the no-better-knowledge fallback: it's per-CONTACT (whichever device punch-validated last), not per-call.
         let mut targets: Vec<std::net::SocketAddr> = Vec::new();
-        if let Some(call) = self.active_call.as_ref() {
-            if call.peer_handle_hash == contact.handle_hash {
-                if let Some(a) = call.express_addr {
-                    targets.push(a);
+        let push = |t: &mut Vec<std::net::SocketAddr>, a: std::net::SocketAddr| {
+            if !t.contains(&a) {
+                t.push(a);
+            }
+        };
+        if matches!(sig, CallSignal::Offer { .. }) {
+            for ep in &contact.device_endpoints {
+                if !contact.knows_device(&ep.pubkey) {
+                    continue;
+                }
+                if let Some(a) = ep.lan {
+                    push(&mut targets, a);
+                }
+                if let Some(a) = ep.public {
+                    push(&mut targets, a);
                 }
             }
-        }
-        // validated_path is a FALLBACK, never a beside-target: it's per-CONTACT (whichever of the friend's devices punch-validated last), so firing it alongside the call's own express_addr delivered Brittany's answer to Nick's non-calling sibling too (field 2026-09-08). When the call has a known source, that source alone is the device running it; the lane row remains the durable copy for everyone else.
-        if targets.is_empty() {
             if let Some((a, _)) = contact.validated_path {
-                targets.push(a);
+                push(&mut targets, a);
+            }
+        } else {
+            if let Some(call) = self.active_call.as_ref() {
+                if call.peer_handle_hash == contact.handle_hash && call.call_id == *sig.call_id() {
+                    if let Some(a) = call.express_addr {
+                        push(&mut targets, a);
+                    }
+                    if let Some(dev) = call.peer_device {
+                        if let Some(ep) = contact.device_endpoints.iter().find(|e| e.pubkey == dev) {
+                            if let Some(a) = ep.lan {
+                                push(&mut targets, a);
+                            }
+                            if let Some(a) = ep.public {
+                                push(&mut targets, a);
+                            }
+                        }
+                    }
+                }
+            }
+            if targets.is_empty() {
+                if let Some((a, _)) = contact.validated_path {
+                    push(&mut targets, a);
+                }
             }
         }
         if targets.is_empty() {
@@ -705,6 +855,20 @@ impl PhotonApp {
                 if let Some(call) = self.active_call.as_mut() {
                     if call.call_id == *sig.call_id() {
                         call.express_addr = Some(src);
+                    }
+                }
+                // ANCHOR: the authenticated frame's source IS the peer's fresh address — re-point the live engine's TX there (the both-sides-moved heal). If we're droughted too, answer with our own anchor at that fresh address so the peer heals symmetrically.
+                if matches!(sig, CallSignal::Anchor { .. }) {
+                    let echo = self.active_call.as_ref().is_some_and(|call| {
+                        call.call_id == *sig.call_id() && matches!(call.phase, CallPhase::Active)
+                    });
+                    if echo {
+                        crate::call::set_peer_redirect(src);
+                        crate::logf!("CALL: anchor received — media re-pointed at {}", src);
+                        if self.active_call.as_ref().is_some_and(|c| c.reconnecting) {
+                            let back = CallSignal::Anchor { call_id: *sig.call_id() };
+                            self.send_express_signal(ci, &back, vsf::eagle_time_oscillations(), None);
+                        }
                     }
                 }
             }
