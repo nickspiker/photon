@@ -629,8 +629,22 @@ impl PhotonApp {
                 return false;
             };
             // Claim on pickup (unclaimed legacy contact, or takeover from a probed-absent owner): the claim rides the next roster push so siblings park + discard. LWW settles simultaneous claims; the loser adopts the winner's entry, discards its round, and parks.
+            // LEGACY-ROW CLAIM DEFERS while any fold sibling is online-or-unprobed (Emma's ghost, 2026-09-08: a fresh sibling probed its fleet BEFORE chain replication landed, so a None-owner woven-elsewhere friendship read as unclaimed-Pending and got claimed by a device that held it for an hour — the claim then LWW-beat the real weaver's None and outlived the device by two weeks). The fleet-first gate covers probing, not replication; when we are NOT alone, an unclaimed row's truth lives somewhere in the fleet — replication or the true owner's own claim resolves it, and the departed-owner sweep voids the rest. We claim None-owner rows only when effectively alone.
             if !self.contacts[i].is_sibling {
                 if let Some(ours) = our_device {
+                    if self.contacts[i].ceremony_owner.is_none() {
+                        let any_sibling_alive = self
+                            .contacts
+                            .iter()
+                            .any(|s| s.is_sibling && s.any_device_online());
+                        if any_sibling_alive {
+                            crate::logf!(
+                                "CLUTCH §4.2: {} is unclaimed but a fold sibling is alive — not claiming (replication or its own claim carries it)",
+                                crate::fp(&self.contacts[i].handle_proof)
+                            );
+                            return false;
+                        }
+                    }
                     if self.contacts[i].ceremony_owner != Some(ours) {
                         // Belt-and-braces: never take over a WOVEN friendship even if a caller reaches here with one (ceremony_parked_by already excludes them) — the chain lives on the owner and a re-clutch clobbers the friend's side.
                         if self.contacts[i].ceremony_owner.is_some() && self.contacts[i].owner_woven
