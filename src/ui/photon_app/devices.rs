@@ -1801,17 +1801,22 @@ impl PhotonApp {
         }
     }
 
+    /// Is there ANOTHER device in this fleet that could reinstate us or countersign our departure? The same population `fleet_device_rows` draws (siblings holding a device key, minus retired and minus revoked), read-only and allocation-light so the Security page can ask it every frame. False = a fleet of one, where Revoke and Release are structurally impossible rather than merely unwise.
+    pub(super) fn has_usable_sibling(&self) -> bool {
+        let revoked = self.locked_devices();
+        self.contacts.iter().any(|c| {
+            c.is_sibling
+                && !c.locked_out
+                && c.device_key().is_some_and(|k| !self.fleet_retired.contains(&k) && !revoked.contains(&k))
+        })
+    }
+
     /// SELF-REVOKE (Nick 2026-09-08, the desk case): this device revokes ITSELF — you're shelving it, or handing the room to someone, and you'd rather do it here than dig out another device. Same mechanism as revoking a sibling; the difference is the brick gate, because REINSTATE can only come from another device (a revoked device self-locks at every boot, so it can never forgive itself). With no other live device this would be a one-way trip, so it is refused rather than offered.
     pub(super) fn revoke_this_device(&mut self) {
         let Some(ours) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else {
             return;
         };
-        let others = self
-            .fleet_device_rows()
-            .into_iter()
-            .filter(|(pk, is_self, _, retired, _, _, _, _)| !*is_self && !*retired && !self.is_locked_device(pk))
-            .count();
-        if others == 0 {
+        if !self.has_usable_sibling() {
             crate::log("SECURITY: self-revoke refused — no other device could ever reinstate this one");
             self.ready_toast = Some(tr(Msg::RevokeNeedsAnotherDevice).into_owned());
             return;

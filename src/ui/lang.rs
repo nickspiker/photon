@@ -337,6 +337,10 @@ pub enum Msg<'a> {
     SecurityLock,
     SecurityRevoke { armed: bool },
     SecurityRevokeHint,
+    /// Why Revoke is dead on a fleet of one — shown IN PLACE of the normal hint, so the greying always carries its reason.
+    SecurityRevokeAloneHint,
+    /// Why Release is dead on a fleet of one.
+    SecurityReleaseAloneHint,
     RevokeNeedsAnotherDevice,
     SecurityShred { armed: bool },
     SecurityRemoveShred { armed: bool },

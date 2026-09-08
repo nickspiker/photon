@@ -341,6 +341,8 @@ impl PhotonApp {
                 .map_or(0, |v| v.scroll_offset.round() as isize),
             _ => 0,
         };
+        // Security page's fleet-of-one gate — hoisted here for the same reason as the scroll above: the pills draw inside the chrome borrow, and asking `self` a question there is a second borrow. Cheap (a filtered pass over sibling rows), and ONE definition shared with the action that would otherwise refuse the tap.
+        let has_sibling_device = self.has_usable_sibling();
         let Some(chrome) = self.chrome.as_mut() else {
             return;
         };
@@ -4567,7 +4569,8 @@ impl PhotonApp {
                                       hint: &str,
                                       slot: HitId,
                                       fill: (u32, u32),
-                                      armed: bool| {
+                                      armed: bool,
+                                      enabled: bool| {
                         let band = flow.band(hspan2 * 2.4);
                         let pill_h = band.h * 0.8;
                         let w = text
@@ -4580,28 +4583,31 @@ impl PhotonApp {
                             w.min(band.w - hspan2 * 0.6),
                             pill_h,
                         );
-                        draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, label, btn_base.wrapping_add(slot), ctx.pressed_hit, true, Some(fill), "Open Sans");
+                        // A disabled pill stamps NO hit id (draw_stub_pill_filled's contract), so a fleet-of-one can't arm what it could never complete — the greying is the gate, not decoration.
+                        draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, label, btn_base.wrapping_add(slot), ctx.pressed_hit, enabled, Some(if enabled { fill } else { *theme::PILL_GREY }), "Open Sans");
                         let (hc, hw) = if armed { (*theme::ERROR_TEXT_COLOUR, 600) } else { (*theme::LABEL_COLOUR, 400) };
                         let region = fluor::region::Region::new(flow.x, flow.y, flow.w, hspan2 * 1.6);
                         let n = settings_prose(canvas, text, region, hint, hspan2 * 0.85, hc, hw);
                         flow.y += (n.max(1) as Coord) * hspan2 * 0.85 * 1.25 + hspan2 * 0.9;
                     };
+                    // Lock and Wipe are this device's own business and always available, even to a fleet of one. Revoke and Release both REQUIRE another device — one to reinstate us, one to countersign the departure — so on a lone device they render dead with the reason in place of the hint, rather than arming into a refusal toast.
+                    let fleet_verbs = has_sibling_device;
                     action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
                         &tr(Msg::SecurityLock),
                         &tr(Msg::SecurityLockHint),
-                        0, *theme::PILL_GREEN, false);
+                        0, *theme::PILL_GREEN, false, true);
                     action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
                         &tr(Msg::SecurityRevoke { armed: self.settings_revoke_armed }),
-                        &tr(Msg::SecurityRevokeHint),
-                        1, if self.settings_revoke_armed { *theme::PILL_RED } else { *theme::PILL_YELLOW }, self.settings_revoke_armed);
+                        &tr(if fleet_verbs { Msg::SecurityRevokeHint } else { Msg::SecurityRevokeAloneHint }),
+                        1, if self.settings_revoke_armed { *theme::PILL_RED } else { *theme::PILL_YELLOW }, self.settings_revoke_armed, fleet_verbs);
                     action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
                         &tr(Msg::SecurityShred { armed: self.settings_shred_armed }),
                         &tr(Msg::SecurityShredHint),
-                        2, *theme::PILL_ORANGE, self.settings_shred_armed);
+                        2, *theme::PILL_ORANGE, self.settings_shred_armed, true);
                     action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
                         &tr(Msg::SecurityRemoveShred { armed: self.settings_removeshred_armed }),
-                        &tr(Msg::SecurityRemoveShredHint),
-                        3, *theme::PILL_RED, self.settings_removeshred_armed);
+                        &tr(if fleet_verbs { Msg::SecurityRemoveShredHint } else { Msg::SecurityReleaseAloneHint }),
+                        3, *theme::PILL_RED, self.settings_removeshred_armed, fleet_verbs);
                     flow.gap(hspan2 * 0.4);
                     // LEAVER's pending departure: the approval words, big and Oxanium, plus the waiting line — this screen IS the ceremony's display half until the de-fold completes (or relaunch clears it).
                     if self.depart_request_t.is_some() {

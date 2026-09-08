@@ -297,6 +297,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SecurityRevoke { armed } => if armed { "Revocar \u{2014} ¿seguro?" } else { "Revocar" }.into(),
         Msg::SecurityRevokeHint => "Impide que este dispositivo act\u{00FA}e como t\u{00FA}: tu flota lo rechaza, la clave de flota rota y se apaga \u{2014} ni borrarlo y volver a atestarlo lo devuelve. Aqu\u{00ED} no se borra nada, y sigue en la cadena de tu flota. Restit\u{00FA}yelo desde otro de tus dispositivos. \u{00DA}salo para el caj\u{00F3}n, o cuando el hardware ya no est\u{00E1} en tus manos.".into(),
         Msg::RevokeNeedsAnotherDevice => "Agrega otro dispositivo primero \u{2014} solo otro de tus dispositivos puede restituir este.".into(),
+        Msg::SecurityRevokeAloneHint => "Necesita otro de tus dispositivos. La revocaci\u{00F3}n se deshace desde OTRO dispositivo \u{2014} uno revocado nunca puede restituirse solo \u{2014} as\u{00ED} que en una flota de uno acabar\u{00ED}a con tu identidad. Agrega un dispositivo y esto se activa.".into(),
+        Msg::SecurityReleaseAloneHint => "Necesita otro de tus dispositivos. Salir de tu flota requiere que un segundo dispositivo lo apruebe, y tu identidad debe vivir en alg\u{00FA}n lado \u{2014} el \u{00FA}ltimo dispositivo no puede darse de baja. Usa Borrar todo para limpiar este dispositivo, o agrega uno antes de entregar este.".into(),
         Msg::SecurityShred { armed } => if armed { "Borrar todo — ¿seguro?" } else { "Borrar todo" }.into(),
         Msg::SecurityRemoveShred { armed } => if armed { "Liberar — ¿seguro?" } else { "Liberar" }.into(),
         Msg::SecurityStatusLine => "Seguridad: fuerte   \u{00b7}   Recuperación: sin configurar".into(),

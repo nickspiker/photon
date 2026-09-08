@@ -277,6 +277,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SecurityRevoke { armed } => if armed { "Revoke \u{2014} sure?" } else { "Revoke" }.into(),
         Msg::SecurityRevokeHint => "Stops this device acting as you: your fleet refuses it, the fleet key rotates away, and it goes dark \u{2014} even a wipe and re-attest won\u{2019}t bring it back. Nothing here is deleted, and it stays in your fleet\u{2019}s chain. Reinstate it from another of your devices. Use this for the drawer, or when the hardware is out of your hands.".into(),
         Msg::RevokeNeedsAnotherDevice => "Add another device first \u{2014} only another of your devices can reinstate this one.".into(),
+        Msg::SecurityRevokeAloneHint => "Needs another of your devices. Revoking is undone from a DIFFERENT device \u{2014} a revoked device can never reinstate itself \u{2014} so on a fleet of one it would end your identity. Add a device and this comes alive.".into(),
+        Msg::SecurityReleaseAloneHint => "Needs another of your devices. Leaving your fleet takes a second device to approve it, and your identity must live somewhere \u{2014} so the last device can\u{2019}t sign itself out. Use Wipe to clear this device, or add a device first to hand this one on.".into(),
         Msg::SecurityShred { armed } => if armed { "Wipe — sure?" } else { "Wipe" }.into(),
         Msg::SecurityRemoveShred { armed } => if armed { "Release — sure?" } else { "Release" }.into(),
         Msg::SecurityStatusLine => "Security: strong   \u{00b7}   Recovery: not set up".into(),
