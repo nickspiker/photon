@@ -107,6 +107,9 @@ fn run(digest: [u8; 32], stop: Arc<AtomicBool>) {
     let route = audio::route_id();
     let mut learner = Learner::new(route.starts_with("bt:"), None, None);
     let mut env_cursor = 0usize;
+    // 5ms→10ms cadence pairing, same law as the engine's adapter: the learner's stamp lattice advances one 10ms bin per push.
+    let mut far_pair: Option<(i64, f32)> = None;
+    let mut mic_pair: Option<(i64, f32)> = None;
 
     // Feed the queue a couple of frames ahead of the drain and sleep a frame at a time: the jitter buffer is built for a network source, so handing it the whole cadence at once would just make it trim.
     let mut queued: usize = 0;
@@ -127,7 +130,10 @@ fn run(digest: [u8; 32], stop: Arc<AtomicBool>) {
         let (env, cur) = audio::render_env_since(env_cursor);
         env_cursor = cur;
         for (osc, e) in env {
-            learner.push_far(osc, e);
+            match far_pair.take() {
+                None => far_pair = Some((osc, e)),
+                Some((o, e0)) => learner.push_far(o, (e0 + e) * 0.5),
+            }
         }
         for frame in audio::captured_frames() {
             let mean = if frame.is_empty() {
@@ -135,7 +141,10 @@ fn run(digest: [u8; 32], stop: Arc<AtomicBool>) {
             } else {
                 frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>() as f32 / frame.len() as f32
             };
-            learner.push_mic(vsf::eagle_time_oscillations(), mean);
+            match mic_pair.take() {
+                None => mic_pair = Some((vsf::eagle_time_oscillations(), mean)),
+                Some((o, e0)) => learner.push_mic(o, (e0 + mean) * 0.5),
+            }
         }
         // Volume-normalize exactly as the engine does (engine.rs's vol_lin_now): the probe's g is published as a UNIT-VOLUME figure and the predictive duck re-scales it by the live vol_lin. Ticking 1.0 here would hand the engine a g measured at whatever the media slider happened to be, which it would then scale AGAIN — under-ducking by the volume factor, the direction that inflicts echo on the peer. On Android the mirrored stream is STREAM_MUSIC, which IS the knob governing our USAGE_MEDIA render; desktop has no volume API and stays 1.0.
         let vol_lin = crate::platform::audio::current_volume_db().map_or(1.0, |db| 10f32.powf(db / 20.0));

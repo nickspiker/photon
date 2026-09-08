@@ -8,12 +8,14 @@
 //!
 //! Transcode is a second lossy Opus generation over the spooled frames (decode-then-re-encode) — the accepted cost of "cheap live spool, rich keep". It is O(call length); run it OFF the UI thread (see `keep_recording`).
 
-use crate::call::spool::{drain_records, SpoolTicket, CONTAINER_MAGIC};
+use crate::call::spool::{drain_records, SpoolTicket};
 
-/// 10 ms at 48 kHz — the frame the codec + the whole audio path speak.
+/// 10 ms at 48 kHz — the ARCHIVE frame (PHCALL2 slot + KeptStream playback unit). Deliberately unchanged by the 5ms flag day: every previously-kept recording plays without migration.
 const FRAME: usize = 480;
-/// Frames per second (10 ms frames) — the recording grid's slot rate.
-const SLOTS_PER_SEC: i64 = 100;
+/// The LIVE spool frame — 5ms CELT packets since the 2026-09-08 flag day (platform FRAME_SAMPLES). Two input slots fold into one archive slot at transcode.
+const FRAME_IN: usize = crate::platform::audio::FRAME_SAMPLES;
+/// Input-grid slots per second (5 ms spool packets).
+const SLOTS_PER_SEC: i64 = 200;
 pub const CONTAINER_MAGIC_V2: &[u8; 8] = b"PHCALL2\0";
 
 fn osc_to_slot(osc: i64, base: i64) -> i64 {
@@ -50,17 +52,17 @@ fn mono_decoder() -> Option<opus::Decoder> {
     opus::Decoder::new(48_000, opus::Channels::Mono).ok()
 }
 
-/// Decode one channel's slot (or silence) with its running decoder — placed here so the two grid consumers (transcode + PHCALL1 playback) share the exact decode discipline. Silence slots do NOT touch the decoder (no frame was ever encoded there — the gap is genuine), so the next real frame decodes in step.
-fn decode_slot(dec: &mut opus::Decoder, cell: &Option<Vec<u8>>) -> Vec<i16> {
+/// Decode one channel's slot (or silence) with its running decoder, at the caller's frame size — `FRAME_IN` for live-spool input (transcode + preview), `FRAME` for PHCALL2 archive playback. Silence slots do NOT touch the decoder (no frame was ever encoded there — the gap is genuine), so the next real frame decodes in step.
+fn decode_slot_n(dec: &mut opus::Decoder, cell: &Option<Vec<u8>>, frame: usize) -> Vec<i16> {
     match cell {
         Some(opus) => {
-            let mut pcm = vec![0i16; FRAME];
+            let mut pcm = vec![0i16; frame];
             match dec.decode(opus, &mut pcm, false) {
-                Ok(n) if n == FRAME => pcm,
-                _ => vec![0i16; FRAME],
+                Ok(n) if n == frame => pcm,
+                _ => vec![0i16; frame],
             }
         }
-        None => vec![0i16; FRAME],
+        None => vec![0i16; frame],
     }
 }
 
@@ -82,6 +84,7 @@ pub fn finalize_nchannel(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Optio
 pub(crate) fn build_container(records: &[(u8, i64, Vec<u8>)]) -> Option<Vec<u8>> {
     let (nchan, grid) = grid_from_records(records)?;
     let slots = grid[0].len();
+    let slots_out = slots.div_ceil(2);
     let base = records.iter().map(|(_, osc, _)| *osc).min().unwrap_or(0);
 
     let mut container = Vec::with_capacity(CONTAINER_MAGIC_V2.len() + 17 + slots * 48);
@@ -89,7 +92,7 @@ pub(crate) fn build_container(records: &[(u8, i64, Vec<u8>)]) -> Option<Vec<u8>>
     container.push(nchan as u8);
     container.extend_from_slice(&48_000u32.to_le_bytes());
     container.extend_from_slice(&base.to_le_bytes());
-    container.extend_from_slice(&(slots as u32).to_le_bytes());
+    container.extend_from_slice(&(slots_out as u32).to_le_bytes());
 
     let mut decs: Vec<opus::Decoder> = (0..nchan).map(|_| mono_decoder()).collect::<Option<_>>()?;
     let mut pkt = vec![0u8; 4000];
@@ -108,12 +111,20 @@ pub(crate) fn build_container(records: &[(u8, i64, Vec<u8>)]) -> Option<Vec<u8>>
         let mut enc = opus::Encoder::new(48_000, chans, opus::Application::Audio).ok()?;
         let _ = enc.set_vbr(true);
         let _ = enc.set_bitrate(opus::Bitrate::Bits(if nchan == 2 { 96_000 } else { 48_000 }));
-        for slot in 0..slots {
+        for slot_out in 0..slots_out {
+            // Two 5ms input slots fold into one 10ms archive slot — the archive format (and every old kept blob) stays 10ms.
             let mut interleaved = vec![0i16; FRAME * nchan];
             for ch in 0..nchan {
-                let pcm = decode_slot(&mut decs[ch], &grid[ch][slot]);
-                for (i, &s) in pcm.iter().enumerate() {
-                    interleaved[i * nchan + ch] = s;
+                for half in 0..2 {
+                    let slot_in = slot_out * 2 + half;
+                    let pcm = if slot_in < slots {
+                        decode_slot_n(&mut decs[ch], &grid[ch][slot_in], FRAME_IN)
+                    } else {
+                        vec![0i16; FRAME_IN]
+                    };
+                    for (i, &s) in pcm.iter().enumerate() {
+                        interleaved[(half * FRAME_IN + i) * nchan + ch] = s;
+                    }
                 }
             }
             let n = enc.encode(&interleaved, &mut pkt).ok()?;
@@ -129,9 +140,18 @@ pub(crate) fn build_container(records: &[(u8, i64, Vec<u8>)]) -> Option<Vec<u8>>
                 Some(e)
             })
             .collect::<Option<_>>()?;
-        for slot in 0..slots {
+        for slot_out in 0..slots_out {
             for ch in 0..nchan {
-                let pcm = decode_slot(&mut decs[ch], &grid[ch][slot]);
+                let mut pcm = vec![0i16; FRAME];
+                for half in 0..2 {
+                    let slot_in = slot_out * 2 + half;
+                    let p = if slot_in < slots {
+                        decode_slot_n(&mut decs[ch], &grid[ch][slot_in], FRAME_IN)
+                    } else {
+                        vec![0i16; FRAME_IN]
+                    };
+                    pcm[half * FRAME_IN..half * FRAME_IN + FRAME_IN].copy_from_slice(&p);
+                }
                 let n = encs[ch].encode(&pcm, &mut pkt).ok()?;
                 write_pkt(&mut container, &pkt[..n]);
             }
@@ -163,7 +183,7 @@ enum Inner {
         cur: usize,
         decs: Vec<opus::Decoder>,
     },
-    /// PHCALL1 (legacy raw spool): gridded, slot-iterated + interleaved on the fly.
+    /// Live-spool grid (the Ended-screen PREVIEW path): 5ms input slots, slot-iterated + interleaved on the fly.
     Grid {
         grid: Vec<Vec<Option<Vec<u8>>>>,
         decs: Vec<opus::Decoder>,
@@ -171,7 +191,7 @@ enum Inner {
     },
 }
 
-/// Open a kept-call blob for playback — magic-sniffs `PHCALL2` (the current format) and the legacy `PHCALL1` raw spool, so recordings kept before the transcode landed still play thru the identical downmix path (no migration, no re-store — the content hash is immutable). `None` on unknown magic or codec init failure.
+/// Open a kept-call blob for playback — `PHCALL2` only (PHCALL1 read support deleted with the 5ms flag day). `None` on unknown magic or codec init failure.
 pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
     if bytes.len() >= 8 && &bytes[..8] == CONTAINER_MAGIC_V2 {
         if bytes.len() < 8 + 17 {
@@ -202,36 +222,13 @@ pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
             }
         };
         Some(KeptStream { nchan, inner })
-    } else if bytes.len() >= 8 && &bytes[..8] == CONTAINER_MAGIC {
-        // Legacy PHCALL1: [dir u8][osc i64][len u16][opus] records, plaintext (already decrypted at keep).
-        let mut recs: Vec<(u8, i64, Vec<u8>)> = Vec::new();
-        let mut off = 8usize;
-        while off + 11 <= bytes.len() {
-            let dir = bytes[off];
-            let osc = i64::from_le_bytes(bytes[off + 1..off + 9].try_into().ok()?);
-            let len = u16::from_le_bytes(bytes[off + 9..off + 11].try_into().ok()?) as usize;
-            off += 11;
-            if off + len > bytes.len() {
-                break;
-            }
-            recs.push((dir, osc, bytes[off..off + len].to_vec()));
-            off += len;
-        }
-        let (nchan, grid) = grid_from_records(&recs)?;
-        Some(KeptStream {
-            nchan,
-            inner: Inner::Grid {
-                grid,
-                decs: (0..nchan).map(|_| mono_decoder()).collect::<Option<_>>()?,
-                slot: 0,
-            },
-        })
     } else {
+        // PHCALL1 read support deleted with the 5ms flag day (Nick 2026-09-08: nobody waving yet, no backwards compat) — unknown magic is unknown magic.
         None
     }
 }
 
-/// Build a playable stream directly from drained spool records — the Ended-screen PREVIEW path, so Play works before Keep finalizes a blob. Same grid/decode as legacy PHCALL1 playback.
+/// Build a playable stream directly from drained spool records — the Ended-screen PREVIEW path, so Play works before Keep finalizes a blob.
 pub(crate) fn stream_from_records(records: &[(u8, i64, Vec<u8>)]) -> Option<KeptStream> {
     let (nchan, grid) = grid_from_records(records)?;
     Some(KeptStream {
@@ -276,9 +273,10 @@ impl KeptStream {
                 if *slot >= grid[0].len() {
                     return None;
                 }
-                let mut out = vec![0i16; FRAME * nchan];
+                let mut out = vec![0i16; FRAME_IN * nchan];
                 for ch in 0..nchan {
-                    let pcm = decode_slot(&mut decs[ch], &grid[ch][*slot]);
+                    // The grid is live spool (preview) — 5ms packets.
+                    let pcm = decode_slot_n(&mut decs[ch], &grid[ch][*slot], FRAME_IN);
                     for (i, &s) in pcm.iter().enumerate() {
                         out[i * nchan + ch] = s;
                     }
@@ -317,13 +315,13 @@ mod tests {
         let mut buf = vec![0u8; 4000];
         let ops = vsf::OSCILLATIONS_PER_SECOND as i64;
         let mut records: Vec<(u8, i64, Vec<u8>)> = Vec::new();
-        for i in 0..10i64 {
-            // A tone so decode is non-zero; both directions, 10 ms apart.
-            let tone: Vec<i16> = (0..FRAME)
+        for i in 0..20i64 {
+            // A tone so decode is non-zero; both directions, 5 ms apart (the live spool cadence) — 20 input slots fold to 10 archive slots.
+            let tone: Vec<i16> = (0..FRAME_IN)
                 .map(|s| ((s as f32 * 0.1).sin() * 4000.0) as i16)
                 .collect();
             let n = enc.encode(&tone, &mut buf).unwrap();
-            let osc = i * (ops / 100);
+            let osc = i * (ops / 200);
             records.push((0, osc, buf[..n].to_vec()));
             records.push((1, osc, buf[..n].to_vec()));
         }

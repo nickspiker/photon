@@ -636,6 +636,9 @@ impl PhotonApp {
                             b.set_rect(w * 0.5 - bw * 0.5 - unit * 0.75, by, bw, bh);
                             b.set_font_size(bfont);
                             b.set_label(tr(Msg::Decline));
+                            b.set_fill(Some(*theme::CALL_DANGER_FILL));
+                            b.set_hover_fill(Some(*theme::CALL_DANGER_HOVER));
+                            b.set_held_fill(Some(*theme::CALL_DANGER_HOVER));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
@@ -644,6 +647,9 @@ impl PhotonApp {
                             b.set_font_size(bfont);
                             b.set_label(tr(Msg::Answer));
                             b.set_enabled(true);
+                            b.set_fill(Some(*theme::CALL_ACCEPT_FILL));
+                            b.set_hover_fill(Some(*theme::CALL_ACCEPT_HOVER));
+                            b.set_held_fill(Some(*theme::CALL_ACCEPT_HOVER));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
@@ -661,6 +667,9 @@ impl PhotonApp {
                             b.set_rect(w * 0.5 - bw * 0.5 - unit * 0.75, by, bw, bh);
                             b.set_font_size(bfont);
                             b.set_label(tr(Msg::Delete));
+                            b.set_fill(Some(*theme::CALL_DANGER_FILL));
+                            b.set_hover_fill(Some(*theme::CALL_DANGER_HOVER));
+                            b.set_held_fill(Some(*theme::CALL_DANGER_HOVER));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
@@ -669,6 +678,9 @@ impl PhotonApp {
                             b.set_font_size(bfont);
                             b.set_label(tr(Msg::Keep));
                             b.set_enabled(true);
+                            b.set_fill(Some(*theme::CALL_ACCEPT_FILL));
+                            b.set_hover_fill(Some(*theme::CALL_ACCEPT_HOVER));
+                            b.set_held_fill(Some(*theme::CALL_ACCEPT_HOVER));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
@@ -706,6 +718,9 @@ impl PhotonApp {
                             b.set_font_size(bfont);
                             b.set_label(tr(Msg::EndCall));
                             b.set_enabled(true);
+                            b.set_fill(Some(*theme::CALL_DANGER_FILL));
+                            b.set_hover_fill(Some(*theme::CALL_DANGER_HOVER));
+                            b.set_held_fill(Some(*theme::CALL_DANGER_HOVER));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
@@ -765,6 +780,11 @@ impl PhotonApp {
                     b.set_font_size(call_font);
                     b.set_label(a_label);
                     b.set_enabled(true);
+                    // Traffic light by semantics: Answer/Keep green, HangUp red — same law as the full panel.
+                    let accept = matches!(phase, crate::call::CallPhase::Ringing | crate::call::CallPhase::Ended);
+                    b.set_fill(Some(if accept { *theme::CALL_ACCEPT_FILL } else { *theme::CALL_DANGER_FILL }));
+                    b.set_hover_fill(Some(if accept { *theme::CALL_ACCEPT_HOVER } else { *theme::CALL_DANGER_HOVER }));
+                    b.set_held_fill(Some(if accept { *theme::CALL_ACCEPT_HOVER } else { *theme::CALL_DANGER_HOVER }));
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                 }
@@ -779,6 +799,9 @@ impl PhotonApp {
                         b.set_rect(dx + action_w * 0.5, cy, action_w, pill_h);
                         b.set_font_size(call_font);
                         b.set_label(d_label);
+                        b.set_fill(Some(*theme::CALL_DANGER_FILL));
+                        b.set_hover_fill(Some(*theme::CALL_DANGER_HOVER));
+                        b.set_held_fill(Some(*theme::CALL_DANGER_HOVER));
                         let id = b.hit_id();
                         b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                     }

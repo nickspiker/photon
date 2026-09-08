@@ -108,6 +108,11 @@ pub static PROGRESS_TRACK: LazyLock<u32> = LazyLock::new(|| c(0x00_00_00_00));
 pub static SEND_ARROW_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_D0_D0_D0));
 /// Hover fill for the send / plus action buttons — a SUBTLE neutral brightening of BUTTON_FILL (0x1A224E), reproducing the pre-fluor QUERY_BUTTON_HOVER feel rather than the shared BUTTON_HOVER's saturated-blue shift. A small delta also keeps the overlay from cooking the near-white arrowhead.
 pub static SEND_BUTTON_HOVER: LazyLock<u32> = LazyLock::new(|| c(0x00_25_2D_59));
+/// Call buttons wear the traffic light (Nick 2026-09-08): answer/keep = green pill, decline/delete/end = red pill. Dark-pill fills + hover/held ramps mirroring SEND_BUTTON's structure, not the bright text greens/reds.
+pub static CALL_ACCEPT_FILL: LazyLock<u32> = LazyLock::new(|| c(0x00_1A_4E_22));
+pub static CALL_ACCEPT_HOVER: LazyLock<u32> = LazyLock::new(|| c(0x00_25_59_2D));
+pub static CALL_DANGER_FILL: LazyLock<u32> = LazyLock::new(|| c(0x00_4E_1A_1A));
+pub static CALL_DANGER_HOVER: LazyLock<u32> = LazyLock::new(|| c(0x00_59_25_25));
 /// Noise-background base tint when the dual-ring vault flagged this session degraded — warning orange.
 /// This is a NOISE-MATH colour (visible-RGB space, like fluor's `BG_BASE`), so `fmt` not `dark`; passed to `background_noise` in place of its default base.
 pub static BG_BASE_WARNING: LazyLock<u32> =

@@ -800,7 +800,7 @@ class PhotonConnectionService : Service() {
     // Voice-call audio (docs/calls.md): Kotlin owns the device loops, Rust owns the queues.
     // AudioRecord uses VOICE_COMMUNICATION — that source selection is what engages the vendor
     // acoustic echo canceller (echo layer 1); AudioTrack mirrors it with USAGE_VOICE_COMMUNICATION.
-    // 48kHz mono PCM16 in 480-sample (10ms) frames both directions, matching Rust's FRAME_SAMPLES.
+    // 48kHz mono PCM16 in 240-sample (5ms) frames both directions, matching Rust's FRAME_SAMPLES (the 2026-09-08 latency flag day).
     // ------------------------------------------------------------------
 
     private external fun nativeAudioCaptured(samples: ShortArray)
@@ -819,7 +819,7 @@ class PhotonConnectionService : Service() {
         if (!callAudioRunning) return
         if (captureThread?.isAlive == true) return
         val sampleRate = 48000
-        val frameSamples = 480
+        val frameSamples = 240
         val hasMic = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
         if (!hasMic) {
@@ -871,7 +871,7 @@ class PhotonConnectionService : Service() {
         if (callAudioRunning) return
         callAudioRunning = true
         val sampleRate = 48000
-        val frameSamples = 480
+        val frameSamples = 240
 
         startCapture()
 
@@ -884,7 +884,8 @@ class PhotonConnectionService : Service() {
                 val am = applicationContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
                 val nativeBurst = am.getProperty(android.media.AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER)?.toIntOrNull() ?: frameSamples
                 val nativeRate = am.getProperty(android.media.AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: sampleRate
-                val bufFrames = maxOf(nativeBurst * 4, frameSamples * 2)
+                // 3 native bursts (was 4, flag day 2026-09-08): ~12ms on a 192-frame burst device — the per-call underruns= log is the safety monitor; a device that can't hold it will say so in the first field pull.
+                val bufFrames = maxOf(nativeBurst * 3, frameSamples * 2)
                 val track = AudioTrack.Builder()
                     .setAudioAttributes(
                         AudioAttributes.Builder()

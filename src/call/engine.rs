@@ -1,8 +1,8 @@
-//! The media engine (docs/calls.md) — one thread per call: mic frames → Opus → RaptorQ window → sealed packets out; packets in → window decode → Opus → speaker.
+//! The media engine (docs/calls.md) — one thread per call: mic frames (5ms CELT, the 2026-09-08 latency flag day) → Opus → RaptorQ window → sealed packets out; packets in → window decode → Opus → speaker.
 //!
 //! Shape choices, and why:
 //! - **Opus RESTRICTED_LOWDELAY (CELT), CBR, on a channel-aware ladder.** No SILK prediction, no in-band FEC, 2.5ms lookahead — loss repair belongs to the fountain code, not psychoacoustic guesswork. Within a rung the wire is constant-size CBR (traffic-shape privacy); the rung climbs/drops only on channel evidence (see the TIER_RATES block).
-//! - **RaptorQ over a tier-sized window (4×10ms at the floor, 2×10ms above), one datagram per window.** Frames length-prefix into that rung's fixed slots; the sealed payload is [ctrl][source(N)][repair(N−1)] — the repair PIGGYBACKS on the next window's datagram, so the two copies ride 20-40ms apart (burst-loss immunity) at half the packet rate, and seq IS the window id. The ctrl byte names both rungs; steady-state latency is untouched (only loss RECOVERY waits one window).
+//! - **RaptorQ over a tier-sized window (8×5ms at the floor, down to 2×5ms at the top rungs), one datagram per window.** Frames length-prefix into that rung's fixed slots; the sealed payload is [ctrl][source(N)][repair(N−1)] — the repair PIGGYBACKS on the next window's datagram, so the two copies ride 10-40ms apart (burst-loss immunity), and seq IS the window id. The ctrl byte names both rungs; steady-state latency is untouched (only loss RECOVERY waits one window).
 //! - **No PLC.** A window that can't decode is silence (the playback queue runs dry and renders zeros) — never synthesized guesswork.
 //! - **The peer's address FOLLOWS its authenticated packets**: a media packet that opens under the call key re-points our TX at its source address. NAT rebinds and (later) device handoff work without any signaling — the AEAD is the authorization.
 //! - Teardown zeroizes both step chains ([`keys::StepChain`] Drop) — the call becomes undecryptable everywhere, forever.
@@ -13,10 +13,10 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// 10ms @ 48kHz mono — must match platform::audio::FRAME_SAMPLES.
+/// 5ms @ 48kHz mono — must match platform::audio::FRAME_SAMPLES.
 const FRAME_SAMPLES: usize = crate::platform::audio::FRAME_SAMPLES;
-// Frames per window is PER-RUNG: 4 at the floor (40ms batching amortizes the fixed per-packet cost where bandwidth is scarcest — the floor is for links where +20ms is noise and slow-start's first second, where the jitter buffer is priming anyway), 2 everywhere above (~10ms batching for latency). Packets per window stays invariantly 2, so the seq derivations hold at every rung.
-const TIER_FRAMES: [usize; 4] = [4, 2, 2, 2];
+// Frames per window is PER-RUNG, in 5ms frames (flag day 2026-09-08, Nick: "batching nuke"): 8 at the floor (the same 40ms batching where bandwidth is scarcest), 4 at 32k (20ms), 2 at the top rungs — 10ms windows, one datagram per 10ms = double the old packet rate, and the jitter floor rides down with it. Packets per window stays invariantly 2, so the seq derivations hold at every rung.
+const TIER_FRAMES: [usize; 4] = [8, 4, 2, 2];
 // Repair symbols per window — with the symbol spanning the WHOLE window (see `oti`), 1 repair = 2 packets per window and the window survives EITHER packet lost. This beats the old 3-source+2-repair spread on both axes: fewer bytes (2 packets not 5) AND better loss odds (window dies only when BOTH packets drop, p² vs the old ≥3-of-5 tail).
 const REPAIR_PACKETS: u32 = 1;
 
@@ -29,9 +29,9 @@ const REPAIR_PACKETS: u32 = 1;
 // Opus bandwidth follows bitrate automatically (NB at 16k thru fullband at 128k), so this ladder IS the 8kHz→48kHz ramp with the PCM interface pinned at 48k.
 // FLAG-DAY: pre-ladder builds cannot parse this wire at all; the whole fleet updates together.
 const TIER_RATES: [i32; 4] = [16_000, 32_000, 64_000, 128_000];
-/// Max encoded bytes per 10ms frame at each rung: hard CBR emits exactly rate/800 bytes, +2 headroom — sized so every rung's WINDOW is a multiple of 8, which makes the RaptorQ symbol exactly the window (its alignment rounds max_packet_size down to a multiple of 8; an unaligned window would split into two padded symbols and re-grow the wire). Trimmed from +6 in the piggyback flag day: at the floor the slot padding was 21% of the wire.
-const TIER_MAX_ENC: [usize; 4] = [22, 42, 82, 162];
-/// Completed-window streak that earns one rung up (~0.5s at 20ms windows, ~1s at the floor's 40ms) — the fast first climb keeps the POTS-ish floor a blink on a clean link.
+/// Max encoded bytes per 5ms frame at each rung: hard CBR emits exactly rate/1600 bytes, +2 headroom — sized so every rung's WINDOW is a multiple of 8, which makes the RaptorQ symbol exactly the window (its alignment rounds max_packet_size down to a multiple of 8; an unaligned window would split into two padded symbols and re-grow the wire).
+const TIER_MAX_ENC: [usize; 4] = [12, 22, 42, 82];
+/// Completed-window streak that earns one rung up (~0.25s at 10ms windows, ~1s at the floor's 40ms) — the fast first climb keeps the POTS-ish floor a blink on a clean link.
 const CLIMB_CLEAN_WINDOWS: u32 = 25;
 /// Rungs dropped on a lost window.
 const DROP_RUNGS_ON_LOSS: usize = 2;
@@ -57,12 +57,12 @@ const DUCK_FAR_HALF: f32 = 400.0;
 const DUCK_GAIN_FLOOR: f32 = 0.15;
 /// SIDE-AWARE ECHO GATE (Nick's call 2026-09-01: "a block when the other is talking, PID reduction for the silence"). When the far end is talking and the near mic is quieter than a plausible ECHO of it — i.e. the near human is NOT talking, the mic is carrying only speaker bleed — hard-gate the mic toward silence instead of the 0.15 soft floor. Real near speech on a close mic runs comparable to or above the far render level, so `near < far × ratio` cleanly separates echo-only from double-talk. Below the ratio = pure echo = gate; above = double-talk = keep the soft floor so an interruption survives.
 const ECHO_GATE_RATIO: f32 = 0.5;
-/// The hard-gate target gain for echo-only frames — near-mute (~-34 dB). The existing slew (0.35/frame) eases in/out over ~60ms so the gate never clicks, and the applied-gain clamp already reaches this low (GAIN_MIN×DUCK_GAIN_FLOOR ≈ 0.019); the old code just never asked for it.
+/// The hard-gate target gain for echo-only frames — near-mute (~-34 dB). The existing slew (0.19/frame at 5ms) eases in/out over ~60ms so the gate never clicks, and the applied-gain clamp already reaches this low (GAIN_MIN×DUCK_GAIN_FLOOR ≈ 0.019); the old code just never asked for it.
 const ECHO_GATE_GAIN: f32 = 0.02;
-/// PID gains on the log2-domain level error, per 20ms tick. Conservative: proportional carries the loop, integral trims steady-state (clamped ±2 octaves), derivative damps onset pump.
+/// PID gains on the log2-domain level error, evaluated per 5ms frame (the 2026-09-08 flag day doubled the eval rate; KI halved and KD doubled to keep the same time-domain response — integral accumulates per eval, derivative reads a half-sized per-eval delta).
 const PID_KP: f32 = 0.20;
-const PID_KI: f32 = 0.02;
-const PID_KD: f32 = 0.08;
+const PID_KI: f32 = 0.01;
+const PID_KD: f32 = 0.16;
 const PID_I_CLAMP: f32 = 2.0;
 /// Applied-gain bounds: ±3 octaves of AGC authority.
 const GAIN_MIN: f32 = 0.125;
@@ -209,6 +209,9 @@ fn run(
         params.cal.as_ref().map(|c| c.floor),
     );
     let mut renv_cursor = 0usize;
+    // LEARNER CADENCE ADAPTER (flag day 2026-09-08): the learner's KAT-locked contract is ONE envelope per 10ms bin (its stamp regularizer advances a bin per push — two 5ms pushes would run its lattice at 2× time and re-anchor forever). The engine pairs adjacent 5ms envelopes: (osc of the first half, mean env) per 10ms.
+    let mut far_pair: Option<(i64, f32)> = None;
+    let mut mic_pair: Option<(i64, f32)> = None;
     // The APPLIED calibration the duck predicts from: (g_norm, delay_bins). Seeded by the stored profile; the live learner slews it (τ≈2s at the 1s update cadence) once Usable — so an uncalibrated route arms itself mid-call. Live floor rides the learner's minimum-statistics tracker.
     let mut applied: Option<(f32, usize)> = params.cal.as_ref().map(|c| (c.g_norm, c.delay_bins));
     let fixed_mic_gain: Option<f32> = params.cal.as_ref().and_then(|c| c.mic_gain);
@@ -281,18 +284,28 @@ fn run(
                 if probing && probe_render_osc.is_none() && env > 100.0 {
                     probe_render_osc = Some(osc);
                 }
-                learner.push_far(osc, env);
+                match far_pair.take() {
+                    None => far_pair = Some((osc, env)),
+                    Some((o, e)) => learner.push_far(o, (e + env) * 0.5),
+                }
             }
         }
         // ---- TX: mic → opus → window → fountain → sealed packets ----
         for frame in crate::platform::audio::captured_frames() {
-            // Learner mic feed FIRST — raw pre-gain pre-duck envelope (the separation invariant), stamped at drain, unconditionally (muted frames are the cleanest echo windows).
-            learner.push_mic(vsf::eagle_time_oscillations(), crate::call::calibrate::env(&frame));
-            // Probe capture: raw samples into the fit buffer, and NO voice TX until the window closes. The anchor marks the first frame's start (drain stamp minus one bin); later frames extend the lattice by index — drain wobble is ±ms against a 10ms-bin consumer.
+            // Learner mic feed FIRST — raw pre-gain pre-duck envelope (the separation invariant), stamped at drain, unconditionally (muted frames are the cleanest echo windows). Paired to the learner's 10ms cadence (see far_pair).
+            {
+                let e = crate::call::calibrate::env(&frame);
+                match mic_pair.take() {
+                    None => mic_pair = Some((vsf::eagle_time_oscillations(), e)),
+                    Some((o, e0)) => learner.push_mic(o, (e0 + e) * 0.5),
+                }
+            }
+            // Probe capture: raw samples into the fit buffer, and NO voice TX until the window closes. The anchor marks the first frame's start (drain stamp minus one frame); later frames extend the lattice by index — drain wobble is ±ms against a 10ms-bin consumer.
             if probing {
                 if probe_anchor_osc.is_none() {
-                    probe_anchor_osc =
-                        Some(vsf::eagle_time_oscillations() - crate::call::learn::BIN_OSC);
+                    let frame_osc = vsf::OSCILLATIONS_PER_SECOND as i64 * FRAME_SAMPLES as i64
+                        / crate::call::vchirp::SAMPLE_RATE as i64;
+                    probe_anchor_osc = Some(vsf::eagle_time_oscillations() - frame_osc);
                 }
                 probe_cap.extend_from_slice(&frame);
                 continue;
@@ -355,7 +368,7 @@ fn run(
                 if let Some(fg) = fixed_mic_gain {
                     // Cal 4: the voice profile's FIXED gain replaces the chasing PID — the AGC fighting the duck was the field's "tx(mic) 279 against a 4000 target". The duck term still scales it; the same slew keeps onsets pump-free.
                     let target = (fg * duck_term).clamp(GAIN_MIN * DUCK_GAIN_FLOOR, GAIN_MAX);
-                    duck_gain += (target - duck_gain) * 0.35;
+                    duck_gain += (target - duck_gain) * 0.19;
                 } else if mean > 40.0 {
                     // Log2-domain level error toward the setpoint, PID'd, then the duck term scales the RESULT — level management and echo duck in the one inline loop (+~µs per 20ms frame).
                     let e = (TX_TARGET_LEVEL / (mean / duck_gain).max(1.0)).log2().clamp(-4.0, 4.0);
@@ -364,12 +377,12 @@ fn run(
                     pid_last_e = e;
                     let target = (PID_KP * e + pid_i + PID_KD * d).exp2().clamp(GAIN_MIN, GAIN_MAX)
                         * duck_term;
-                    // Slew toward the PID target (one step per frame keeps onsets pump-free).
-                    duck_gain += (target - duck_gain) * 0.35;
+                    // Slew toward the PID target (one step per 5ms frame keeps onsets pump-free; 0.19 at 5ms = the old 0.35 at 10ms).
+                    duck_gain += (target - duck_gain) * 0.19;
                 } else {
                     // Silence: hold gain, bleed the derivative memory, still honour the duck squash.
                     pid_last_e = 0.0;
-                    duck_gain += (duck_gain.min(duck_gain * duck_term) - duck_gain) * 0.35;
+                    duck_gain += (duck_gain.min(duck_gain * duck_term) - duck_gain) * 0.19;
                 }
                 duck_gain = duck_gain.clamp(GAIN_MIN * DUCK_GAIN_FLOOR, GAIN_MAX);
                 if (duck_gain - 1.0).abs() > 0.005 {
@@ -800,10 +813,10 @@ mod tests {
 
     #[test]
     fn tier_slots_fit_cbr_frames() {
-        // CBR emits exactly rate/800 bytes per 10ms frame; every rung's slot must hold that with margin, every window must be 8-aligned so raptorq's symbol is EXACTLY the window (unaligned would split + pad — the trap this design kills), and both rung indices must fit the ctrl byte's 3-bit fields.
+        // CBR emits exactly rate/1600 bytes per 5ms frame; every rung's slot must hold that with margin, every window must be 8-aligned so raptorq's symbol is EXACTLY the window (unaligned would split + pad — the trap this design kills), and both rung indices must fit the ctrl byte's 3-bit fields.
         assert!(TIER_RATES.len() <= 8, "tiers ride 3-bit ctrl fields");
         for t in 0..TIER_RATES.len() {
-            assert!(TIER_RATES[t] as usize / 800 + 2 <= TIER_MAX_ENC[t], "rung {} slot too tight", t);
+            assert!(TIER_RATES[t] as usize / 1600 + 2 <= TIER_MAX_ENC[t], "rung {} slot too tight", t);
             assert_eq!(tier_window_bytes(t) % 8, 0, "rung {} window must be 8-aligned", t);
         }
     }

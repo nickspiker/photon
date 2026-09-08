@@ -1,12 +1,12 @@
 //! Call audio I/O — the ONE capture/playback surface for voice calls (docs/calls.md), platform-split under a shared queue core.
 //!
-//! The call engine speaks 48kHz mono i16 in 10ms frames (480 samples) and never touches a device API: it drains `captured_frames()` and feeds `queue_playback()`. Under that:
+//! The call engine speaks 48kHz mono i16 in 5ms frames (240 samples — the 2026-09-08 latency flag day; was 10ms/480) and never touches a device API: it drains `captured_frames()` and feeds `queue_playback()`. Under that:
 //! - **Desktop**: a dedicated audio thread owns the cpal input+output streams (cpal streams are !Send — built and parked on their own thread, torn down when `stop()` clears the active flag). Device-rate/channel conversion happens at the callback edge via a naive linear resampler — correctness first; a better resampler is a drop-in.
 //! - **Android**: Kotlin owns AudioRecord/AudioTrack and crosses JNI into the same queues: `nativeAudioCaptured` pushes mic frames, `nativeAudioNextFrame` pulls render frames. Both ends ride the LOW-LATENCY paths (capture: VOICE_RECOGNITION raw fast-track; render: USAGE_MEDIA fast mixer) — vendor voice-pipeline processing is deliberately OFF both ways (Nick, latency-first 2026-08-20), so echo control belongs to OUR canceller over RENDER_REF. Start/stop ride the MESSAGE_NOTIFIER service ref like notifications do.
 //!
 //! **AEC plumbing from day one** (the retrofit-misery lesson): every rendered sample lands in an eagle-stamped reference ring BEFORE it reaches the device, whether or not any canceller exists yet. When a canceller (or the suppression duck) arrives, its far-end reference is already exact — the decoded signal we handed the DAC, not a guess at what some stack played.
 //!
-//! Queues are bounded drop-oldest: realtime audio must never block and never balloon — a stalled consumer costs the oldest 10ms, not memory or latency.
+//! Queues are bounded drop-oldest: realtime audio must never block and never balloon — a stalled consumer costs the oldest 5ms, not memory or latency.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -14,8 +14,8 @@ use std::sync::Mutex;
 
 /// The call engine's sample rate — everything above the device edge is 48kHz mono.
 pub const SAMPLE_RATE: u32 = 48_000;
-/// 10ms @ 48kHz mono — the Opus frame the engine encodes.
-pub const FRAME_SAMPLES: usize = 480;
+/// 5ms @ 48kHz mono — the CELT frame the engine encodes (the 2026-09-08 flag day: halving the frame halves the fill wait, the window batch, AND the jitter quantum in one move).
+pub const FRAME_SAMPLES: usize = 240;
 
 /// Mic frames waiting for the engine (drop-oldest past ~500ms).
 static CAPTURE_Q: Mutex<VecDeque<Vec<i16>>> = Mutex::new(VecDeque::new());
@@ -28,11 +28,11 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 
 const CAPTURE_Q_MAX: usize = 50; // 500ms
 const PLAYBACK_Q_MAX: usize = 100; // 1s
-const RENDER_REF_MAX: usize = 50; // 500ms
+const RENDER_REF_MAX: usize = 100; // 500ms of 5ms frames
 
 /// The in-call learner's far-end reference: (eagle osc at DAC-enqueue, mean |sample| envelope) per rendered frame — the envelope-only sibling of RENDER_REF, deep enough (~10s) for the learner's sliding correlation windows without cloning 48KB frame snapshots per tick. Silence/priming frames land as env 0.0, which is the CORRECT reference (that is what actually hit the DAC). Post-jitter post-splice, so the render→capture delay measured against it is route-constant.
 static RENDER_ENV: Mutex<VecDeque<(i64, f32)>> = Mutex::new(VecDeque::new());
-const RENDER_ENV_MAX: usize = 1024; // ~10s of 10ms frames
+const RENDER_ENV_MAX: usize = 2048; // ~10s of 5ms frames
 /// Monotonic count of entries ever pushed — the cursor base for `render_env_since`.
 static RENDER_ENV_TOTAL: AtomicUsize = AtomicUsize::new(0);
 
@@ -41,9 +41,9 @@ static RENDER_ENV_TOTAL: AtomicUsize = AtomicUsize::new(0);
 // So a clean call rests at ~20ms of software buffer and only a jittery path pays more — exactly where the latency should go.
 // This sits BEFORE the device buffer, which is kept shallow (low-latency AudioTrack), so this is the ONE place jitter is absorbed.
 const JITTER_FLOOR: usize = 1; // 10ms — playback starts the instant the first frame exists; one frame of wobble tolerance. Zero is mechanically possible but useless: the queue is frame-quantized, so floor 0 saves at most one frame while making EVERY timing wobble an audible gap + re-prime stumble — and the adaptive growth would lift it right back. Below one frame the lever is smaller Opus frames (5ms CELT), not this constant.
-const JITTER_CAP: usize = 12; // 120ms — the most we'll ever buffer, even on a bad relay
+const JITTER_CAP: usize = 24; // 120ms — the most we'll ever buffer, even on a bad relay
 const JITTER_GROW: usize = 2; // frames added on each underrun
-const JITTER_DECAY_FRAMES: usize = 150; // ~1.5s of clean playback per shrink step. 500 was the latency ratchet (field 2026-09-08, both ends of a clean LAN call at target 11-12 = 110-120ms standing): growth is +2 per underrun but decay was 1 per 5s, so a handful of slow-start underruns taxed the whole call — a 10-frame overshoot took 50s to shed against a ~40s call. At 1.5s/step a clean path sheds 100ms in ~15s; a genuinely jittery path just re-grows (honest).
+const JITTER_DECAY_FRAMES: usize = 300; // ~1.5s of clean playback per shrink step. 500 was the latency ratchet (field 2026-09-08, both ends of a clean LAN call at target 11-12 = 110-120ms standing): growth is +2 per underrun but decay was 1 per 5s, so a handful of slow-start underruns taxed the whole call — a 10-frame overshoot took 50s to shed against a ~40s call. At 1.5s/step a clean path sheds 100ms in ~15s; a genuinely jittery path just re-grows (honest).
 static JITTER_TARGET: AtomicUsize = AtomicUsize::new(JITTER_FLOOR);
 /// Tier-aware floor: the sender batches TIER_FRAMES per datagram, so audio ARRIVES in bursts of this size and a target below it structurally underruns between windows (every call start at the 4-frame floor rung ratcheted the target thru false "jitter"). The engine stores the current rx window size here; decay stops at max(JITTER_FLOOR, this).
 static JITTER_MIN: AtomicUsize = AtomicUsize::new(JITTER_FLOOR);
@@ -63,11 +63,11 @@ static JITTER_CLEAN_STREAK: AtomicUsize = AtomicUsize::new(0);
 //   1. Gentle: depth a hair over target for a clean second → drop one frame. Sheds slow-start overshoot inaudibly.
 //   2. Hard CEILING: the queue is NEVER allowed to stand more than target+ceiling. Above it, drop down NOW (bounded per render so a big spike sheds over a few frames, not one audible skip). Under pure drift the excess is ~1 frame per render, so this is smooth and bounds mouth-to-ear latency to (target+ceiling)×10ms instead of letting drift fill to the 1s cap.
 const TRIM_OVER_SLACK: usize = 1; // frames above target that count as "standing over" (gentle path)
-const TRIM_OBSERVE_FRAMES: usize = 100; // 1s of consecutive over-depth before each single-frame gentle drop
-const TRIM_CEILING_SLACK: usize = 4; // hard ceiling above target: 4 frames = one FEC-window burst of jitter headroom, never standing latency beyond it
+const TRIM_OBSERVE_FRAMES: usize = 200; // 1s of consecutive over-depth before each single-frame gentle drop
+const TRIM_CEILING_SLACK: usize = 8; // hard ceiling above target: 8 frames = 40ms = one floor-rung FEC-window burst of jitter headroom, never standing latency beyond it
 const TRIM_MAX_DROP_PER_RENDER: usize = 4; // cap the hard drop so a pathological backlog sheds over a few frames rather than one large skip
 static TRIM_OVER_STREAK: AtomicUsize = AtomicUsize::new(0);
-// SAMPLE-SPLICE CLOCK CONTROL (Nick's spec 2026-09-02: "at most one dropped sample per adjustment or 1 duplicated — minimize the DSP catchup framing"): the FINE actuator that nulls sample-clock drift so the coarse frame trims above become last-resort safeties instead of the steady-state. Bang-bang on queue depth: standing over target → DELETE one sample from the outgoing frame; standing under → DUPLICATE one. The splice lands where the waveform is flattest — a first-difference of exactly 0 (two identical adjacent samples: an error-FREE edit) short-circuits the scan, else the minimum-|diff| point (the local extremum, where the slope crosses zero — NOT an amplitude zero-crossing, which is the steepest-slope WORST place). One sample per 480 = ±0.21% rate authority, far beyond any real crystal drift; a splice at a flat point is unrepresentable-to-inaudible. Consumers are length-agnostic (desktop stages thru a VecDeque, Kotlin writes frame.size), so a 479/481-sample frame just paces the DAC pull.
+// SAMPLE-SPLICE CLOCK CONTROL (Nick's spec 2026-09-02: "at most one dropped sample per adjustment or 1 duplicated — minimize the DSP catchup framing"): the FINE actuator that nulls sample-clock drift so the coarse frame trims above become last-resort safeties instead of the steady-state. Bang-bang on queue depth: standing over target → DELETE one sample from the outgoing frame; standing under → DUPLICATE one. The splice lands where the waveform is flattest — a first-difference of exactly 0 (two identical adjacent samples: an error-FREE edit) short-circuits the scan, else the minimum-|diff| point (the local extremum, where the slope crosses zero — NOT an amplitude zero-crossing, which is the steepest-slope WORST place). One sample per 240 = ±0.42% rate authority, far beyond any real crystal drift; a splice at a flat point is unrepresentable-to-inaudible. Consumers are length-agnostic (desktop stages thru a VecDeque, Kotlin writes frame.size), so a 479/481-sample frame just paces the DAC pull.
 const SPLICE_UNDER_MARGIN: usize = 2; // duplicate only when depth sits ≥2 under target (priming/underrun own the empty case; hysteresis keeps delete/duplicate from chattering)
 static SPLICE_DROPPED: AtomicUsize = AtomicUsize::new(0);
 static SPLICE_DUPED: AtomicUsize = AtomicUsize::new(0);
@@ -182,7 +182,7 @@ pub(crate) fn set_volume_db(db: Option<f32>) {
     *VOLUME_DB.lock().unwrap() = db;
 }
 
-/// Drain every captured frame since the last call (10ms 48kHz mono each). Engine-side, any thread.
+/// Drain every captured frame since the last call (5ms 48kHz mono each). Engine-side, any thread.
 pub fn captured_frames() -> Vec<Vec<i16>> {
     let mut q = CAPTURE_Q.lock().unwrap();
     q.drain(..).collect()
@@ -302,11 +302,11 @@ fn next_render_frame() -> Vec<i16> {
             }
         }
     };
-    // Far-end level for the duck: peak-hold with a per-frame decay (~80ms fall from full), so the mic stays attenuated across the device-buffer + acoustic lag rather than only the exact rendered instant.
+    // Far-end level for the duck: peak-hold with a per-frame decay (~80ms fall from full at 5ms frames — old/8 per frame; was old/4 at 10ms), so the mic stays attenuated across the device-buffer + acoustic lag rather than only the exact rendered instant.
     // frame.len(), not FRAME_SAMPLES: the sample splice can hand back 479/481-sample frames.
     let lvl = (frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>() / frame.len().max(1) as u64) as usize;
     let old = FAR_LEVEL.load(Ordering::Relaxed);
-    FAR_LEVEL.store(lvl.max(old - old / 4), Ordering::Relaxed);
+    FAR_LEVEL.store(lvl.max(old - old / 8), Ordering::Relaxed);
     {
         let mut r = RENDER_REF.lock().unwrap();
         if r.len() >= RENDER_REF_MAX {
@@ -342,7 +342,7 @@ fn clear_queues() {
     let (target, depth, underruns, peak, trims, dropped, duped) = jitter_stats();
     if underruns > 0 || peak > 0 || trims > 0 || dropped > 0 || duped > 0 {
         crate::logf!(
-            "CALL: jitter — target {} depth {} peak {} underruns {} trims {} (frames, 10ms each); splice -{}/+{} samples",
+            "CALL: jitter — target {} depth {} peak {} underruns {} trims {} (frames, 5ms each); splice -{}/+{} samples",
             target,
             depth,
             peak,
