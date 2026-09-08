@@ -289,7 +289,12 @@ impl PhotonApp {
                             crate::storage::contacts::save_messages(&v, &st)
                         }));
                         let err = match r {
-                            Ok(Ok(_)) => None,
+                            Ok(Ok(_)) => {
+                                if crate::storage::clear_vault_sick() {
+                                    crate::log("STORAGE: recovered — a message persist succeeded after an earlier failure");
+                                }
+                                None
+                            }
                             Ok(Err(e)) => {
                                 let m = format!("{e}");
                                 crate::logf!("STORAGE: async message persist failed: {}", m);
@@ -445,6 +450,9 @@ impl PhotonApp {
                     for (c, st, acts) in latest {
                         match crate::storage::friendship::save_friendship_chains(&c, &st) {
                             Ok(()) => {
+                                if crate::storage::clear_vault_sick() {
+                                    crate::log("STORAGE: recovered — a chains persist succeeded after an earlier failure");
+                                }
                                 for a in acts {
                                     a.fire();
                                 }
@@ -498,6 +506,8 @@ impl PhotonApp {
                         if let Err(e) = st.write_addr(&a, &b) {
                             crate::logf!("STORAGE: async conv-state persist failed: {}", e);
                             crate::storage::flag_vault_sick();
+                        } else if crate::storage::clear_vault_sick() {
+                            crate::log("STORAGE: recovered — a conv-state persist succeeded after an earlier failure");
                         }
                     }
                 }

@@ -103,6 +103,10 @@ static VAULT_LOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 pub fn flag_vault_sick() {
     VAULT_SICK.store(true, std::sync::atomic::Ordering::Relaxed);
 }
+/// The recovery edge (2026-09-08): a persist that SUCCEEDS after an earlier failure clears the latch. Returns whether it was set — the caller logs "recovered" exactly once per episode. Before this the amber banner outlived every self-healed hiccup until a restart (Nick's phone: three refused stores in six seconds, then a clean session, banner for the day).
+pub fn clear_vault_sick() -> bool {
+    VAULT_SICK.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
 
 pub fn vault_sick() -> bool {
     VAULT_SICK.load(std::sync::atomic::Ordering::Relaxed)

@@ -2401,6 +2401,15 @@ impl FluorApp for PhotonApp {
         // Storage-failure latch → the amber banner. Writer threads and open paths can only set a static (no &mut self there); this mirror is how a fence error or a dead vault open reaches the screen — 1,276 of them once ran for hours as log lines while the UI claimed all was well (2026-08-24).
         if crate::storage::vault_sick() && !self.vault_degraded {
             self.vault_degraded = true;
+            self.vault_degraded_latched = true;
+            self.scene_dirty = true;
+            needs_redraw = true;
+        }
+        // The recovery edge, mirrored back: a writer cleared the latch (a persist succeeded after a failure). Only a LATCH-raised amber clears — a mirror healed at open or a dead open is not undone by a later write. Interaction-free and timer-free: the write itself is the edge.
+        if self.vault_degraded_latched && !crate::storage::vault_sick() {
+            self.vault_degraded = false;
+            self.vault_degraded_latched = false;
+            self.ready_toast = Some(tr(Msg::StorageRecovered).into_owned());
             self.scene_dirty = true;
             needs_redraw = true;
         }

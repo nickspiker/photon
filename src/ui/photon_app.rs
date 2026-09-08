@@ -1250,6 +1250,8 @@ pub struct PhotonApp {
     private_s: crate::crypto::blind::PrivateS,
     /// True when the dual-ring vault flagged a damaged ring on open this session. Drives the persistent amber banner on the Ready screen. Sticky for the session.
     vault_degraded: bool,
+    /// The amber banner was raised by the writer latch (not by a heal-at-open or a dead open) — only that kind may clear itself when a later persist succeeds.
+    vault_degraded_latched: bool,
     /// The severity above degraded (split 2026-09-03): values were pruned/lost, or no vault opened at all. Drives the RED banner — degraded says "distrust", this says "something is gone". Sticky for the session.
     vault_data_lost: bool,
     /// Green confirmation band on the Ready screen ("Device added \u{221a}"). Event-shown, interaction-cleared (clear_hints), NEVER time-based. Stacks above the amber warning bands.
@@ -2051,6 +2053,7 @@ impl PhotonApp {
             session: None,
             private_s: crate::crypto::blind::PrivateS::None,
             vault_degraded: false,
+            vault_degraded_latched: false,
             vault_data_lost: false,
             ready_toast: None,
             ready_toast_screen: None,

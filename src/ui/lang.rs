@@ -163,6 +163,8 @@ pub enum Msg<'a> {
     AvatarDropHint,
     SearchPlaceholder,
     StorageDegraded,
+    /// The amber banner clearing itself: a persist succeeded after the failure that raised it.
+    StorageRecovered,
     StorageDataLost,
     AutoAttestBadge,
     ClockOff { pretty: &'a str, ahead: bool },

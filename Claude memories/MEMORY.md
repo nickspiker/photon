@@ -28,7 +28,7 @@
 
 - [project_braid_working_baseline.md](project_braid_working_baseline.md) — HISTORIC 2026-06-28: braid+CLUTCH+delivery green E2E on 2 devices @ 6325cd9
 
-- [project_manifestus_plow_reloc_refusal.md](project_manifestus_plow_reloc_refusal.md) — OPEN 2026-09-08: amber 'storage degraded' = plow relocation guard refusing block 2078 ×3 on a FRESH phone vault mid history-restore; guard correct, latch sticky, live-set/index disagreement in manifestus
+- [project_manifestus_plow_reloc_refusal.md](project_manifestus_plow_reloc_refusal.md) — CLOSED 2026-09-08: amber 'storage degraded' = LiveSet::apply removed-before-added left a same-key-twice-per-commit leaf live+unrouted → plow guard refused forever; fixed manifestus f28e851 (+KATs), photon clears the latch on the next clean persist
 - [project_manifestus_tombstone_bug.md](project_manifestus_tombstone_bug.md) — vault corruption = fast-delete left committed pointer; FIXED @ manifestus 56bde9a, desktop vault repaired zero-loss; publish to all devices PENDING
 - [project_storage_layering.md](project_storage_layering.md) — 3 storage layers (vault/chain-state/rārangi conversation DB); file-tree paths half-assed into flat vault, de-stringing to blake3(domain,scope) + wiring rārangi
 - [project_reserve_delivery.md](project_reserve_delivery.md) — RE-SERVE SHIPPED 97e2bcc 2026-08-20: durable store outranks pending list (sealed tip + row deficit → re-serve non-pending rows, 8/burst ×2/tip)

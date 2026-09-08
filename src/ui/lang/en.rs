@@ -94,6 +94,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AvatarDropHint => "drag/drop to update avatar".into(),
         Msg::SearchPlaceholder => "search | add".into(),
         Msg::StorageDegraded => "storage degraded".into(),
+        Msg::StorageRecovered => "storage recovered".into(),
         Msg::StorageDataLost => "storage lost data".into(),
         Msg::AutoAttestBadge => "auto-attest on reboot".into(),
         Msg::ClockOff { pretty, ahead } => format!("clock off — {pretty} {}", if ahead { "ahead" } else { "behind" }).into(),
