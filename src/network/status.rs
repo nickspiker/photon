@@ -2842,13 +2842,15 @@ async fn run_checker(
                                         let about = is_sibling_device(sender_pubkey.as_bytes())
                                             .then(crate::about_string);
                                         match crate::network::fgtw::protocol::seal_pong_sensitive(
-                                            &records,
-                                            profile_name().as_deref(),
-                                            avatar_pin().as_ref(),
-                                            &locked_report(),
-                                            about.as_deref(),
-                                            // Sent unconditionally: the membership chain is public, the tip discloses nothing; the RECEIVER gates the compare (friend-only, folded-once, not superseded).
-                                            own_fleet_tip(),
+                                            &crate::network::fgtw::protocol::PongTail {
+                                                sync_records: records,
+                                                display_name: profile_name(),
+                                                avatar_pin: avatar_pin(),
+                                                locked: locked_report(),
+                                                about,
+                                                // Sent unconditionally: the membership chain is public, the tip discloses nothing; the RECEIVER gates the compare (friend-only, folded-once, not superseded).
+                                                fleet_tip: own_fleet_tip(),
+                                            },
                                             &key,
                                         ) {
                                             Ok(blob) => Some(blob),
@@ -2954,7 +2956,7 @@ async fn run_checker(
                                                             crate::network::fgtw::protocol::open_pong_sensitive(blob, &k).ok()
                                                         })
                                                     })
-                                                    .map(|(recs, _, _, _, about, ftip)| (recs, about, ftip))
+                                                    .map(|t| (t.sync_records, t.about, t.fleet_tip))
                                                     .unwrap_or_default();
                                                 let (salvaged, about, fleet_tip) = salvaged;
                                                 crate::logf!("Status: unmatched pong from {} ({}) — liveness + {} sync record(s) (late/twin/announce; no addr adoption)", crate::fp(responder_pubkey.as_bytes()), src_addr, salvaged.len());
@@ -3011,7 +3013,7 @@ async fn run_checker(
                                                         crate::network::fgtw::protocol::open_pong_sensitive(blob, &k).ok()
                                                     })
                                                 })
-                                                .map(|(recs, _, _, _, about, ftip)| (recs, about, ftip))
+                                                .map(|t| (t.sync_records, t.about, t.fleet_tip))
                                                 .unwrap_or_default();
                                             let (salvaged, about, fleet_tip) = salvaged;
                                             crate::logf!("Status: pong answered by {} but we pinged {} — responder counted alive + {} sync record(s), ping re-armed for its recipient", crate::fp(responder_pubkey.as_bytes()), crate::fp(pending_ping.recipient_pubkey.as_bytes()), salvaged.len());
@@ -3098,7 +3100,7 @@ async fn run_checker(
                                     }
 
                                     // Sensitive tail: an updated peer sends it ONLY sealed — open with the RESPONDING device's pairwise key (the signer, verified just above). A failed open (key not seeded yet, or a stale key across their re-attest) degrades to a tail-less pong: presence still lands, name/pin/sync simply wait for keys — and it logs once per device, not per pong. A legacy peer still sends the plaintext fields; keep honouring them until it updates.
-                                    let (sync_records, display_name, avatar_pin, locked_reports, about, fleet_tip) =
+                                    let tail =
                                         match sealed {
                                             Some(blob) => {
                                                 let key = {
@@ -3135,14 +3137,17 @@ async fn run_checker(
                                                                 &event_proxy_recv,
                                                             );
                                                         }
-                                                        (Vec::new(), None, None, Vec::new(), None, None)
+                                                        crate::network::fgtw::protocol::PongTail::default()
                                                     }
                                                 }
                                             }
                                             // Legacy plaintext pong: no sealed tail, so no reported-stolen signal either — the report is trusted only under the pairwise seal.
-                                            None => {
-                                                (sync_records, display_name, avatar_pin, Vec::new(), None, None)
-                                            }
+                                            None => crate::network::fgtw::protocol::PongTail {
+                                                sync_records,
+                                                display_name,
+                                                avatar_pin,
+                                                ..Default::default()
+                                            },
                                         };
 
                                     // Send status update with sync_records for retransmit handling
@@ -3153,12 +3158,12 @@ async fn run_checker(
                                             is_online: true,
                                             // The app-layer adopter sees only the PROVEN aim (fresh match, real address) — never the arrival source, never late matches.
                                             peer_addr: proven_addr,
-                                            sync_records,
-                                            display_name,
-                                            avatar_pin,
-                                            locked_reports,
-                                            about,
-                                            fleet_tip,
+                                            sync_records: tail.sync_records,
+                                            display_name: tail.display_name,
+                                            avatar_pin: tail.avatar_pin,
+                                            locked_reports: tail.locked,
+                                            about: tail.about,
+                                            fleet_tip: tail.fleet_tip,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -3729,12 +3734,14 @@ async fn run_checker(
                         let about = is_sibling_device(request.peer_pubkey.as_bytes())
                             .then(crate::about_string);
                         crate::network::fgtw::protocol::seal_pong_sensitive(
-                            &records,
-                            profile_name().as_deref(),
-                            avatar_pin().as_ref(),
-                            &locked_report(),
-                            about.as_deref(),
-                            own_fleet_tip(),
+                            &crate::network::fgtw::protocol::PongTail {
+                                sync_records: records,
+                                display_name: profile_name(),
+                                avatar_pin: avatar_pin(),
+                                locked: locked_report(),
+                                about,
+                                fleet_tip: own_fleet_tip(),
+                            },
                             &key,
                         )
                         .ok()

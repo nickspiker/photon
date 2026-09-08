@@ -1170,15 +1170,22 @@ fn extract_pong_apin(fields: &[(String, VsfType)]) -> Option<[u8; 64]> {
 }
 
 /// Add the sensitive pong fields — sync multi-rows + name + apin — to `section`, in exactly the shape the pong body used to carry them openly. The sole writer is now the sealed `pongsec` inner section, but keeping the row shape means the legacy plaintext parse path and the sealed path share [`extract_sync_records`] / [`extract_pong_name`] / [`extract_pong_apin`] unchanged.
-fn add_pong_sensitive_fields(
-    section: &mut vsf::VsfSection,
-    sync_records: &[SyncRecord],
-    display_name: Option<&str>,
-    avatar_pin: Option<&[u8; 64]>,
-    locked_devices: &[[u8; 32]],
-    about: Option<&str>,
-    fleet_tip: Option<i64>,
-) {
+/// The sealed pong tail as ONE named struct (2026-09-08, the tuple-churn fix): adding a field here + one encode line + one decode line is the WHOLE cost of the next `ftip` — no positional arity to chase thru call sites. `Default` + struct-update syntax is the construction idiom; readers use field access or `..` rest patterns, so new fields never break them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PongTail {
+    pub sync_records: Vec<SyncRecord>,
+    pub display_name: Option<String>,
+    pub avatar_pin: Option<[u8; 64]>,
+    /// The sender fleet's locked/reported-stolen devices.
+    pub locked: Vec<[u8; 32]>,
+    /// Build self-description — fleet-internal disclosure (sibling recipients only).
+    pub about: Option<String>,
+    /// Fold-freshness tip: the sender's membership-chain tip eagle time.
+    pub fleet_tip: Option<i64>,
+}
+
+fn add_pong_sensitive_fields(section: &mut vsf::VsfSection, tail: &PongTail) {
+    let PongTail { sync_records, display_name, avatar_pin, locked, about, fleet_tip } = tail;
     // One native multi-value `sync` row per conversation record — (hb token, e6 last_received). No counts, no numbered names.
     for record in sync_records {
         section.add_field_multi(
@@ -1214,7 +1221,7 @@ fn add_pong_sensitive_fields(
         section.add_field_multi("apin", vec![VsfType::hR(pin.to_vec())]);
     }
     // REPORTED-STOLEN signal (device-trust-and-recovery.md): our fleet's locked-out devices, so a friend can refuse them too. Sealed like the rest of the tail; the receiver applies its own threshold (two distinct reporters) before refusing anything — one compromised member must not be able to strand its siblings.
-    for dev in locked_devices {
+    for dev in locked {
         section.add_field_multi("lockd", vec![VsfType::hb(dev.to_vec())]);
     }
     // Per-device About — this build's version · commit · os arch, so the fleet page can answer "what is that device running?" without a bridge session. FLEET-INTERNAL by disclosure policy (Nick 2026-08-31): the caller passes Some only when the recipient is a chain-verified sibling — a build fingerprint is targeting information, and an authenticated FRIEND is still outside its audience. Sealing already bounds who can read; this bounds what we say.
@@ -1223,30 +1230,14 @@ fn add_pong_sensitive_fields(
     }
     // FOLD-FRESHNESS TRIPWIRE (the Jon incident, 2026-09-08): our own membership-chain TIP eagle time. A receiver whose stored fleet_members_ts for us is older knows its device-set copy has rotted and refetches the fold — the heal for a friend's silently-stale view of our fleet. e6 (signed), NEVER a u-width — the ek parse-death trap.
     if let Some(t) = fleet_tip {
-        section.add_field_multi("ftip", vec![VsfType::e(vsf::types::EtType::e6(t))]);
+        section.add_field_multi("ftip", vec![VsfType::e(vsf::types::EtType::e6(*t))]);
     }
 }
 
 /// Build + AEAD-seal a pong's sensitive tail under the PAIRWISE pong key: the per-conversation sync rows (who-talks-to-whom metadata), the display name, and the 64-byte avatar pin (a bearer capability). Plaintext is an inner `pongsec` VSF section (encode_encrypted — the headerless form made for exactly this), sealed with kete ChaCha20-Poly1305 like history pages and the log seal. The key comes from the caller's PongSealKeys map, derived on the UI thread — this codec never sees an identity seed.
-pub fn seal_pong_sensitive(
-    sync_records: &[SyncRecord],
-    display_name: Option<&str>,
-    avatar_pin: Option<&[u8; 64]>,
-    locked_devices: &[[u8; 32]],
-    about: Option<&str>,
-    fleet_tip: Option<i64>,
-    key: &[u8; 32],
-) -> Result<Vec<u8>, String> {
+pub fn seal_pong_sensitive(tail: &PongTail, key: &[u8; 32]) -> Result<Vec<u8>, String> {
     let mut inner = vsf::VsfSection::new("pongsec");
-    add_pong_sensitive_fields(
-        &mut inner,
-        sync_records,
-        display_name,
-        avatar_pin,
-        locked_devices,
-        about,
-        fleet_tip,
-    );
+    add_pong_sensitive_fields(&mut inner, tail);
     kete::encrypt_bytes(&inner.encode_encrypted(), key)
 }
 
@@ -1254,17 +1245,7 @@ pub fn seal_pong_sensitive(
 pub fn open_pong_sensitive(
     sealed: &[u8],
     key: &[u8; 32],
-) -> Result<
-    (
-        Vec<SyncRecord>,
-        Option<String>,
-        Option<[u8; 64]>,
-        Vec<[u8; 32]>,
-        Option<String>,
-        Option<i64>,
-    ),
-    String,
-> {
+) -> Result<PongTail, String> {
     let plain = kete::decrypt_bytes(sealed, key)?;
     let mut ptr = 0;
     let section =
@@ -1287,32 +1268,17 @@ pub fn open_pong_sensitive(
             _ => None,
         })
         .collect();
-    // Per-device About (new optional field — absent from legacy tails).
-    let about = section
-        .get_fields("abt")
-        .first()
-        .and_then(|f| f.values.first())
-        .and_then(|v| match v {
-            VsfType::x(s) => Some(s.clone()),
-            _ => None,
-        });
-    // Fold-freshness tip (new optional field — absent from legacy tails ⇒ no verdict).
-    let fleet_tip = section
-        .get_fields("ftip")
-        .first()
-        .and_then(|f| f.values.first())
-        .and_then(|v| match v {
-            VsfType::e(vsf::types::EtType::e6(t)) => Some(*t),
-            _ => None,
-        });
-    Ok((
+    // Per-device About — the stage-1 accessor (absent from legacy tails ⇒ None).
+    let about = section.text("abt").map(str::to_string);
+    Ok(PongTail {
         sync_records,
-        extract_pong_name(&fields),
-        extract_pong_apin(&fields),
+        display_name: extract_pong_name(&fields),
+        avatar_pin: extract_pong_apin(&fields),
         locked,
         about,
-        fleet_tip,
-    ))
+        // Fold-freshness tip — the stage-1 accessor: width-agnostic across the e-family, absent ⇒ None (legacy tail, no verdict).
+        fleet_tip: section.eagle("ftip"),
+    })
 }
 
 // Helper functions to extract from VsfHeader for simplified ping/pong format
@@ -2240,6 +2206,24 @@ pub fn parse_chain_pull_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32]), St
 }
 
 /// Build a `depart_req` — the LEAVING device's sibling-to-sibling removal request (bilateral removal, the mirror of the add ceremony). Carries the departure stamp `t` and the device's signature over `fgtw::fleet::departreq_signing_bytes(hp, device, t)`; the frame itself is signed by the same device key, so the receiver's sibling gate + the consent verify both pin the same identity. A surviving member's user approves on their screen; that device countersigns and publishes the consented Remove chain op.
+/// The departure request's section, as a `#[derive(Vsf)]` declaration — the derive's photon flagship (2026-09-08): one struct IS both codec halves, byte-identical to the retired hand codec (pinned by test). Field order here IS the wire order the signature covers.
+#[derive(vsf::Vsf, Debug, Clone, Default, PartialEq)]
+#[vsf(section = "depart_req")]
+pub struct DepartReqBody {
+    /// Consent stamp — the eagle time the leaver's signature covers.
+    #[vsf(eagle, name = "t")]
+    pub t: i64,
+    /// The leaver's signature over departreq_signing_bytes(hp, device, t).
+    #[vsf(kind = "ge", name = "cs")]
+    pub cs: Vec<u8>,
+    /// Departure INTENT (2026-09-04, the retire/Release incident): 1 = new owner (approve countersigns AND releases the brand), 2 = desk (brand kept, retired row = inventory). None/absent = a pre-intent build; the approver treats it as desk. Authenticated by the file signature like every field.
+    #[vsf(name = "it")]
+    pub intent: Option<u64>,
+    /// The approval-words COMMITMENT (blake3 of the lowercased words): the leaver's screen shows the words; the approver must type them — proof of live contact with the departing device's screen (the mirror of add's words ceremony). The words themselves never ride the wire.
+    #[vsf(kind = "hp", name = "wc")]
+    pub words_commit: Option<[u8; 32]>,
+}
+
 pub fn build_depart_req_vsf(
     t_osc: i64,
     consent_sig: &[u8],
@@ -2248,19 +2232,14 @@ pub fn build_depart_req_vsf(
     intent: u8,
     words_commit: Option<&[u8; 32]>,
 ) -> Result<Vec<u8>, String> {
-    use vsf::file_format::VsfSection;
     use vsf::VsfBuilder;
-    let mut section = VsfSection::new("depart_req");
-    section.add_field("t", VsfType::e(vsf::types::EtType::e6(t_osc)));
-    section.add_field("cs", VsfType::ge(consent_sig.to_vec()));
-    // Departure INTENT (2026-09-04, the retire/Release incident): 1 = new owner (approve countersigns AND releases the brand), 2 = desk (brand kept, retired row = inventory). 0/absent = a pre-intent build; the approver treats it as desk. Authenticated by the file signature like every field.
-    if intent != 0 {
-        section.add_field("it", VsfType::u(intent as usize, false));
+    let section = DepartReqBody {
+        t: t_osc,
+        cs: consent_sig.to_vec(),
+        intent: (intent != 0).then_some(intent as u64),
+        words_commit: words_commit.copied(),
     }
-    // The approval-words COMMITMENT (blake3 of the lowercased words): the leaver's screen shows the words; the approver must type them — proof of live contact with the departing device's screen (the mirror of add's words ceremony). The words themselves never ride the wire.
-    if let Some(wc) = words_commit {
-        section.add_field("wc", VsfType::hp(wc.to_vec()));
-    }
+    .to_section();
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .signature_ed25519(*device_pubkey, [0u8; 64])
@@ -2279,44 +2258,10 @@ pub fn parse_depart_req_vsf(vsf_bytes: &[u8]) -> Result<(i64, Vec<u8>, [u8; 32],
     if section_name != "depart_req" {
         return Err(format!("Expected 'depart_req' section, got '{}'", section_name));
     }
-    let t = section
-        .fields
-        .iter()
-        .find(|f| f.name == "t")
-        .and_then(|f| f.values.first())
-        .and_then(|v| match v {
-            VsfType::e(vsf::types::EtType::e6(t)) => Some(*t),
-            _ => None,
-        })
-        .ok_or("depart_req missing t")?;
-    let cs = section
-        .fields
-        .iter()
-        .find(|f| f.name == "cs")
-        .and_then(|f| f.values.first())
-        .and_then(|v| match v {
-            VsfType::ge(s) => Some(s.clone()),
-            _ => None,
-        })
-        .ok_or("depart_req missing cs")?;
-    let intent = section
-        .fields
-        .iter()
-        .find(|f| f.name == "it")
-        .and_then(|f| f.values.first())
-        .and_then(|v| v.as_u64())
-        .and_then(|n| u8::try_from(n).ok())
-        .unwrap_or(0);
-    let words_commit: Option<[u8; 32]> = section
-        .fields
-        .iter()
-        .find(|f| f.name == "wc")
-        .and_then(|f| f.values.first())
-        .and_then(|v| match v {
-            VsfType::hp(h) if h.len() == 32 => <[u8; 32]>::try_from(h.as_slice()).ok(),
-            _ => None,
-        });
-    Ok((t, cs, sender_pubkey, intent, words_commit))
+    // The derive's decode half replaces ~40 lines of field walks; intent defaults 0 (pre-intent build ⇒ desk) at this seam so callers keep their u8 shape.
+    let body = DepartReqBody::from_section(&section)?;
+    let intent = body.intent.and_then(|n| u8::try_from(n).ok()).unwrap_or(0);
+    Ok((body.t, body.cs, sender_pubkey, intent, body.words_commit))
 }
 
 /// Build a `chain_pull_miss` — the negative answer to a `chain_pull`: this sibling holds NO chains for the token. The requester re-keys only when EVERY live sibling has answered miss; a sibling that has the chains never sends this (it re-pushes instead).
@@ -3724,11 +3669,11 @@ mod pong_seal_tests {
         // The disclosure policy (Nick 2026-08-31): About is fleet-internal. The builder writes `abt` iff the caller passed Some — a friend-bound tail (None) carries NO about field at all, and the sealed blob must not even contain the string.
         let key = [0x24u8; 32];
         let about = "v0.70.12 \u{b7} deadbeef1234 \u{b7} linux x86_64";
-        let with = seal_pong_sensitive(&sample_records(), None, None, &[], Some(about), None, &key).unwrap();
-        let without = seal_pong_sensitive(&sample_records(), None, None, &[], None, None, &key).unwrap();
-        let (_, _, _, _, got, _) = open_pong_sensitive(&with, &key).unwrap();
+        let with = seal_pong_sensitive(&PongTail { sync_records: sample_records(), about: Some(about.into()), ..Default::default() }, &key).unwrap();
+        let without = seal_pong_sensitive(&PongTail { sync_records: sample_records(), ..Default::default() }, &key).unwrap();
+        let got = open_pong_sensitive(&with, &key).unwrap().about;
         assert_eq!(got.as_deref(), Some(about), "granted about must round-trip");
-        let (_, _, _, _, none, _) = open_pong_sensitive(&without, &key).unwrap();
+        let none = open_pong_sensitive(&without, &key).unwrap().about;
         assert!(none.is_none(), "ungranted about must be ABSENT, not empty");
         assert!(
             !without.windows(about.len()).any(|w| w == about.as_bytes()),
@@ -3736,18 +3681,39 @@ mod pong_seal_tests {
         );
     }
 
+    /// The derive flagship's migration guarantee: DepartReqBody's section is BYTE-IDENTICAL to the retired hand codec (same fields, same order, same variants), and the full signed build/parse round-trips thru the derive with intent/commitment surviving and pre-intent absence defaulting.
+    #[test]
+    fn depart_req_derive_is_byte_identical_and_round_trips() {
+        let body = DepartReqBody { t: 9_999, cs: vec![7u8; 64], intent: Some(1), words_commit: Some([3u8; 32]) };
+        let mut hand = vsf::VsfSection::new("depart_req");
+        hand.add_field("t", VsfType::e(vsf::types::EtType::e6(9_999)));
+        hand.add_field("cs", VsfType::ge(vec![7u8; 64]));
+        hand.add_field("it", VsfType::u(1, false));
+        hand.add_field("wc", VsfType::hp(vec![3u8; 32]));
+        assert_eq!(body.to_section().encode(), hand.encode(), "derive bytes must match the hand codec exactly");
+
+        let kp = fgtw::keys::Keypair::from_seed(&[0x5Au8; 32]);
+        let frame = build_depart_req_vsf(9_999, &[7u8; 64], &kp.public.to_bytes(), kp.secret.as_bytes(), 1, Some(&[3u8; 32])).unwrap();
+        let (t, cs, pk, it, wc) = parse_depart_req_vsf(&frame).unwrap();
+        assert_eq!((t, cs.len(), pk, it, wc), (9_999, 64, kp.public.to_bytes(), 1, Some([3u8; 32])));
+        // Pre-intent shape: no intent, no commitment — parses as desk with no words gate.
+        let legacy = build_depart_req_vsf(5, &[1u8; 64], &kp.public.to_bytes(), kp.secret.as_bytes(), 0, None).unwrap();
+        let (_, _, _, it, wc) = parse_depart_req_vsf(&legacy).unwrap();
+        assert_eq!((it, wc), (0, None));
+    }
+
     /// The fold-freshness tip: e6 signed round-trip (a negative osc survives — eagle times are signed, and the ek trap taught us width-typed reads die), and absence reads None (legacy sender = no verdict, never a zero sentinel).
     #[test]
     fn ftip_round_trips_and_absent_reads_none() {
         let key = [0x51u8; 32];
-        let with = seal_pong_sensitive(&sample_records(), None, None, &[], None, Some(-42), &key).unwrap();
-        let (_, _, _, _, _, t) = open_pong_sensitive(&with, &key).unwrap();
+        let with = seal_pong_sensitive(&PongTail { sync_records: sample_records(), fleet_tip: Some(-42), ..Default::default() }, &key).unwrap();
+        let t = open_pong_sensitive(&with, &key).unwrap().fleet_tip;
         assert_eq!(t, Some(-42), "negative e6 must survive");
-        let big = seal_pong_sensitive(&sample_records(), None, None, &[], None, Some(i64::MAX / 2), &key).unwrap();
-        let (_, _, _, _, _, t) = open_pong_sensitive(&big, &key).unwrap();
+        let big = seal_pong_sensitive(&PongTail { sync_records: sample_records(), fleet_tip: Some(i64::MAX / 2), ..Default::default() }, &key).unwrap();
+        let t = open_pong_sensitive(&big, &key).unwrap().fleet_tip;
         assert_eq!(t, Some(i64::MAX / 2));
-        let without = seal_pong_sensitive(&sample_records(), None, None, &[], None, None, &key).unwrap();
-        let (_, _, _, _, _, none) = open_pong_sensitive(&without, &key).unwrap();
+        let without = seal_pong_sensitive(&PongTail { sync_records: sample_records(), ..Default::default() }, &key).unwrap();
+        let none = open_pong_sensitive(&without, &key).unwrap().fleet_tip;
         assert!(none.is_none(), "absent ftip must read None — no verdict from a legacy tail");
     }
 
@@ -3757,7 +3723,7 @@ mod pong_seal_tests {
         let records = sample_records();
         let name = "Ada Lovelace";
         let pin = [0x77u8; 64];
-        let blob = seal_pong_sensitive(&records, Some(name), Some(&pin), &[], Some("v0.0.0 \u{b7} test \u{b7} os arch"), Some(2_555_000_000_000_000_000), &key).unwrap();
+        let blob = seal_pong_sensitive(&PongTail { sync_records: records.clone(), display_name: Some(name.into()), avatar_pin: Some(pin), about: Some("v0.0.0 \u{b7} test \u{b7} os arch".into()), fleet_tip: Some(2_555_000_000_000_000_000), ..Default::default() }, &key).unwrap();
         let bytes = sealed_pong(Some(blob)).to_vsf_bytes();
         assert!(!bytes.is_empty());
 
@@ -3792,13 +3758,12 @@ mod pong_seal_tests {
                 assert!(avatar_pin.is_none());
                 assert_eq!(observed_addr, Some("203.0.113.9:4383".parse().unwrap()));
                 // The right pairwise key recovers everything.
-                let (rec, dn, ap, _lockd, _about, ftip) =
-                    open_pong_sensitive(&sealed.expect("sealed tail present"), &key)
-                        .expect("open with right key");
-                assert_eq!(rec, records);
-                assert_eq!(dn.as_deref(), Some(name));
-                assert_eq!(ap, Some(pin));
-                assert_eq!(ftip, Some(2_555_000_000_000_000_000), "fleet tip must round-trip thru the sealed tail");
+                let tail = open_pong_sensitive(&sealed.expect("sealed tail present"), &key)
+                    .expect("open with right key");
+                assert_eq!(tail.sync_records, records);
+                assert_eq!(tail.display_name.as_deref(), Some(name));
+                assert_eq!(tail.avatar_pin, Some(pin));
+                assert_eq!(tail.fleet_tip, Some(2_555_000_000_000_000_000), "fleet tip must round-trip thru the sealed tail");
             }
             other => panic!("expected StatusPong, got {:?}", other),
         }
@@ -3807,12 +3772,12 @@ mod pong_seal_tests {
     #[test]
     fn sealed_pong_wrong_key_yields_absent_fields_not_error() {
         let blob = seal_pong_sensitive(
-            &sample_records(),
-            Some("Ada"),
-            Some(&[0x77u8; 64]),
-            &[],
-            None,
-            None,
+            &PongTail {
+                sync_records: sample_records(),
+                display_name: Some("Ada".into()),
+                avatar_pin: Some([0x77u8; 64]),
+                ..Default::default()
+            },
             &[0x42u8; 32],
         )
         .unwrap();
@@ -3859,7 +3824,7 @@ mod pong_seal_tests {
         let records = sample_records();
         let pin = [0x66u8; 64];
         let mut section = vsf::VsfSection::new("pong");
-        add_pong_sensitive_fields(&mut section, &records, Some("Grace"), Some(&pin), &[], None, None);
+        add_pong_sensitive_fields(&mut section, &PongTail { sync_records: records.clone(), display_name: Some("Grace".into()), avatar_pin: Some(pin), ..Default::default() });
         let bytes = vsf::VsfBuilder::new()
             .creation_time_oscillations(44_444)
             .provenance_hash([0xCCu8; 32])

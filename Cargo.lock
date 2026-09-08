@@ -6533,7 +6533,17 @@ dependencies = [
  "rand 0.8.5",
  "spin",
  "unicode-normalization",
+ "vsf-derive",
  "x25519-dalek",
+]
+
+[[package]]
+name = "vsf-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
