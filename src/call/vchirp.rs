@@ -222,7 +222,7 @@ pub fn take_verdict() -> Option<Verdict> {
 }
 
 /// Run the fit off-thread (the 2-leg × ~24k-lag scan is ~100-500ms of CPU — never on the engine loop, which is pacing 10ms frames). `render_start_osc` = DAC-enqueue stamp of the chirp's first audible frame; `cap_anchor_osc` = osc of the capture buffer's first sample; their difference anchors the in-buffer lag to the true render→capture delay, so device spin-up before the chirp never inflates it.
-pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc: i64, route: String) {
+pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc: i64, route: String, emit_scale: f32) {
     let _ = std::thread::Builder::new().name("vchirp-fit".into()).spawn(move || {
         let t0 = std::time::Instant::now();
         let Some(f) = fit(&cap, MAX_LAG_SAMPLES) else {
@@ -245,7 +245,10 @@ pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc
         let lag_osc = cap_anchor_osc as f64 + f.delay_samples as f64 * ops / SAMPLE_RATE as f64
             - render_start_osc as f64;
         let delay_bins = ((lag_osc / ops * 100.0).round().max(0.0) as usize).min(150);
-        let g_norm = if vol_lin > 0.0 { f.g / vol_lin } else { f.g };
+        // Divide out the digital probe boost (the fit correlates against the unscaled template) and the stream volume — g publishes at unit volume, unit scale.
+        let scale = emit_scale.max(1e-6);
+        let g_norm = if vol_lin > 0.0 { f.g / scale / vol_lin } else { f.g / scale };
+        let taps: Vec<f32> = f.taps.iter().map(|&t| t / scale).collect();
         crate::logf!(
             "CALL: v-chirp — g {} delay {}ms skew {} sample(s) (legs g {} / {}), floor {}, route \"{}\", fit {}ms",
             format!("{g_norm:.4}"),
@@ -268,7 +271,7 @@ pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc
             windows: 25,
             solid: true,
         }]);
-        *VERDICT.lock().unwrap() = Some(Verdict::Coupled { g_norm, delay_bins, floor: f.floor, ir: (f.ir_start, f.taps.clone()) });
+        *VERDICT.lock().unwrap() = Some(Verdict::Coupled { g_norm, delay_bins, floor: f.floor, ir: (f.ir_start, taps) });
     });
 }
 

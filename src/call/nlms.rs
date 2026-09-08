@@ -72,8 +72,8 @@ impl Nlms {
             .then(|| 10.0 * (self.pre_e / self.post_e).log10())
     }
 
-    /// Cancel one mic frame in place. `frame_pos` = the frame's first sample in the REFERENCE timeline (mic count + one-time anchor offset). `adapt` = the far-talks-alone gate. Frames whose reference window isn't fully resident pass thru untouched.
-    pub fn cancel_frame(&mut self, mic: &mut [i16], ring: &RefRing, frame_pos: i64, adapt: bool) {
+    /// Cancel one mic frame in place. `frame_pos` = the frame's first sample in the REFERENCE timeline (mic count + one-time anchor offset). `adapt` = the far-talks-alone gate. `ref_gain` = vol_lin_now ÷ vol_lin_at_seed — the taps are measured at the probe's volume, and the DAC gain sits between the reference and the room, so a mid-call volume change scales the echo without touching h; folding the ratio into the reference keeps the filter honest instantly (adaptation then refines in seed-volume units). Frames whose reference window isn't fully resident pass thru untouched.
+    pub fn cancel_frame(&mut self, mic: &mut [i16], ring: &RefRing, frame_pos: i64, adapt: bool, ref_gain: f32) {
         let n = self.h.len();
         // The whole frame's reference span: oldest sample needed is (frame_pos − ir_start − n + 1), newest is (frame_pos + mic.len() − 1 − ir_start).
         let from = frame_pos - self.ir_start - n as i64 + 1;
@@ -85,15 +85,16 @@ impl Nlms {
         for (j, m) in mic.iter_mut().enumerate() {
             // ref[frame_pos + j − ir_start − k] = win[j + n − 1 − k]: h ascending pairs with the window reversed.
             let x = &win[j..j + n];
-            let est: f32 = self.h.iter().rev().zip(x).map(|(&h, &r)| h * r).sum();
+            let est: f32 = self.h.iter().rev().zip(x).map(|(&h, &r)| h * r).sum::<f32>() * ref_gain;
             let raw = *m as f32;
             let e = raw - est;
             pre += (raw * raw) as f64;
             post += (e * e) as f64;
             *m = e.clamp(-32768.0, 32767.0) as i16;
             if adapt {
-                let norm: f32 = x.iter().map(|&r| r * r).sum::<f32>() + EPS;
-                let g = MU * e / norm;
+                let g2 = ref_gain * ref_gain;
+                let norm: f32 = x.iter().map(|&r| r * r).sum::<f32>() * g2 + EPS;
+                let g = MU * e * ref_gain / norm;
                 for (h, &r) in self.h.iter_mut().rev().zip(x) {
                     *h += g * r;
                 }
@@ -169,7 +170,7 @@ mod tests {
         let mut nlms = Nlms::new(ir_start, h);
         for (fi, mut m) in mics.into_iter().enumerate() {
             let pos = (TAPS + 4096 + fi * 240) as i64;
-            nlms.cancel_frame(&mut m, &ring, pos, true);
+            nlms.cancel_frame(&mut m, &ring, pos, true, 1.0);
         }
         let erle = nlms.erle_db().expect("adapted");
         assert!(erle > 30.0, "seeded ERLE {erle:.1}dB — the chirp profile must cancel on frame one");
@@ -188,7 +189,7 @@ mod tests {
         for (fi, mut m) in mics.into_iter().enumerate() {
             let pos = (TAPS + 4096 + fi * 240) as i64;
             let (p0, q0) = (nlms.pre_e, nlms.post_e);
-            nlms.cancel_frame(&mut m, &ring, pos, true);
+            nlms.cancel_frame(&mut m, &ring, pos, true, 1.0);
             if fi >= total - 50 {
                 late_pre += nlms.pre_e - p0;
                 late_post += nlms.post_e - q0;
@@ -199,6 +200,27 @@ mod tests {
     }
 
     #[test]
+    fn ref_gain_tracks_a_volume_step_instantly() {
+        // Echo doubles (user cranked the knob) — the exact-seeded filter with ref_gain 2.0 must still cancel deep, adaptation frozen.
+        let (ring, mics, ir_start) = synth(20, 19);
+        let (_, h) = true_h(ir_start);
+        let mut nlms = Nlms::new(ir_start, h);
+        let mut pre = 0f64;
+        let mut post = 0f64;
+        for (fi, m) in mics.into_iter().enumerate() {
+            let mut loud: Vec<i16> = m.iter().map(|&s| (s as i32 * 2).clamp(-32768, 32767) as i16).collect();
+            let pos = (TAPS + 4096 + fi * 240) as i64;
+            let p: f64 = loud.iter().map(|&s| (s as f64) * (s as f64)).sum();
+            nlms.cancel_frame(&mut loud, &ring, pos, false, 2.0);
+            let q: f64 = loud.iter().map(|&s| (s as f64) * (s as f64)).sum();
+            pre += p;
+            post += q;
+        }
+        let erle = 10.0 * (pre / post.max(1e-9)).log10();
+        assert!(erle > 25.0, "volume-stepped ERLE {erle:.1}dB");
+    }
+
+    #[test]
     fn frozen_filter_never_drifts_and_missing_reference_passes_thru() {
         let (ring, mics, ir_start) = synth(5, 11);
         let (_, h) = true_h(ir_start);
@@ -206,14 +228,14 @@ mod tests {
         let mut nlms = Nlms::new(ir_start, h);
         for (fi, mut m) in mics.into_iter().enumerate() {
             let pos = (TAPS + 4096 + fi * 240) as i64;
-            nlms.cancel_frame(&mut m, &ring, pos, false); // double-talk: frozen
+            nlms.cancel_frame(&mut m, &ring, pos, false, 1.0); // double-talk: frozen
         }
         assert_eq!(nlms.h, before, "frozen adaptation must not touch taps");
         assert_eq!(nlms.adapted_frames, 0);
         // A frame whose reference has aged out passes thru untouched.
         let mut m = vec![123i16; 240];
         let keep = m.clone();
-        nlms.cancel_frame(&mut m, &ring, -100_000, true);
+        nlms.cancel_frame(&mut m, &ring, -100_000, true, 1.0);
         assert_eq!(m, keep);
     }
 }

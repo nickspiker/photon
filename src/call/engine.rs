@@ -211,6 +211,7 @@ fn run(
     let mut renv_cursor = 0usize;
     // NLMS canceller (Nick 2026-09-08: "go for the NLMS" — subtract first, duck the residual). Armed ONLY by a chirp Coupled verdict (the profile IS the license); a route swap disarms (new physics, next call's chirp re-seeds). Alignment: mic and reference advance by pure sample count from one-time osc anchors — stamp wobble never smears the taps (it folds into the PRE-roll window once).
     let mut nlms: Option<crate::call::nlms::Nlms> = None;
+    let mut nlms_seed_vol: f32 = 1.0;
     let mut ref_ring = crate::call::nlms::RefRing::new(96_000); // 2s of rendered reference
     let mut ref_cursor = 0usize;
     let mut ref_anchor_osc: Option<i64> = None;
@@ -281,8 +282,24 @@ fn run(
     let _ = super::take_peer_redirect();
     // LOCAL SOURCE while the probe owns the queue, and the chirp FEEDS PACED from the loop (never dumped): every bounded stage ahead of the DAC (queue drop-oldest, ceiling trims) beheads a bulk dump — both field beheadings. Top-up keeps ≤200ms queued; the 1ms loop never starves the drain.
     crate::platform::audio::set_local_source(true);
-    let chirp_frames = crate::call::vchirp::frames();
+    let mut chirp_frames = crate::call::vchirp::frames();
     let mut chirp_idx = 0usize;
+    // LOW-VOLUME PROBE BOOST (field 2026-09-08, Nick at 1/3 media = −43dB device curve: the chirp emitted at whisper level, psr scraping the gate): below −20dB the digital level rises toward full scale (+9dB of SNR headroom above the −9dBFS default). The fit correlates against the UNSCALED template, so g/taps inflate by the boost — finish() divides it back out.
+    let chirp_scale: f32 = {
+        let vol_db = crate::platform::audio::current_volume_db().unwrap_or(0.0);
+        if vol_db <= -20.0 { 32_760.0 / 11_585.0 } else { 1.0 }
+    };
+    if chirp_scale > 1.0 {
+        for f in &mut chirp_frames {
+            for s in f.iter_mut() {
+                *s = (*s as f32 * chirp_scale).clamp(-32768.0, 32767.0) as i16;
+            }
+        }
+        crate::logf!(
+            "CALL: v-chirp digital boost x{} (low media volume)",
+            format!("{chirp_scale:.2}")
+        );
+    }
 
     while !stop.load(Ordering::Relaxed) {
         // Paced chirp feed (probe phase): top the queue up to 40 frames (200ms) per pass.
@@ -365,7 +382,8 @@ fn run(
                     let adapt = route_ducks
                         && far_now > DUCK_FAR_HALF
                         && raw_mean < far_now * ECHO_GATE_RATIO;
-                    c.cancel_frame(&mut frame, &ref_ring, pos, adapt);
+                    let ref_gain = (vol_lin_now / nlms_seed_vol.max(1e-6)).clamp(0.05, 20.0);
+                    c.cancel_frame(&mut frame, &ref_ring, pos, adapt, ref_gain);
                 }
             }
             // Rung switches land only between windows — a window's slot geometry is fixed at its first frame.
@@ -665,7 +683,7 @@ fn run(
                             "CALL: v-chirp played + sampled ({} samples) — audio connected, fit running",
                             cap.len()
                         );
-                        crate::call::vchirp::finish(cap, vol_lin_now, r, a, live_route.clone());
+                        crate::call::vchirp::finish(cap, vol_lin_now, r, a, live_route.clone(), chirp_scale);
                     }
                     _ => crate::log("CALL: v-chirp probe had no render anchor — abandoned, audio connected"),
                 }
@@ -695,6 +713,7 @@ fn run(
                     applied = Some((g_norm, delay_bins));
                     live_floor = floor.max(1.0);
                     nlms = Some(crate::call::nlms::Nlms::new(ir.0, ir.1));
+                    nlms_seed_vol = vol_lin_now.max(1e-6);
                 }
                 crate::call::vchirp::Verdict::Clean { floor } => {
                     live_floor = floor.max(1.0);
