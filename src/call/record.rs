@@ -34,16 +34,26 @@ fn grid_from_records(records: &[(u8, i64, Vec<u8>)]) -> Option<(usize, Vec<Vec<O
     }
     let base = records.iter().map(|(_, osc, _)| *osc).min()?;
     let nchan = (records.iter().map(|(c, _, _)| *c).max()? as usize) + 1;
-    let max_slot = records
-        .iter()
-        .map(|(_, osc, _)| osc_to_slot(*osc, base))
-        .max()
-        .unwrap_or(0)
-        .max(0) as usize;
-    let mut grid: Vec<Vec<Option<Vec<u8>>>> = vec![vec![None; max_slot + 1]; nchan];
+    // LATTICE SLOTTING (field 2026-09-08, "super garbled" preview): frames are stamped at DRAIN, in 1ms engine-loop bursts — adjacent 5ms frames carry near-identical stamps, and slotting each by its own stamp collided them ("collision keeps the last" ate half the audio). Per channel the spool IS contiguous (appended in codec order), so slots advance on a LATTICE from the last anchor, and the stamp only re-anchors when it deviates past REANCHOR (a real gap: lost windows, an engine stall) — the learner's stamp-regularizer law, applied to the recording grid.
+    let ops = vsf::OSCILLATIONS_PER_SECOND as i64;
+    let reanchor = ops / 20; // 50ms — ten slots; burst jitter is ±ms, real gaps are bigger
+    let mut lat: Vec<Option<(i64, i64)>> = vec![None; nchan]; // per channel: (next_slot, expected_osc)
+    let mut slotted: Vec<(usize, usize, &Vec<u8>)> = Vec::with_capacity(records.len());
+    let mut max_slot = 0usize;
     for (chan, osc, opus) in records {
-        let slot = osc_to_slot(*osc, base) as usize;
-        grid[*chan as usize][slot] = Some(opus.clone());
+        let c = *chan as usize;
+        let slot = match lat[c] {
+            Some((next, expected)) if (osc - expected).abs() < reanchor => next,
+            _ => osc_to_slot(*osc, base),
+        };
+        let slot_u = slot.max(0) as usize;
+        lat[c] = Some((slot + 1, base + (slot + 1) * ops / SLOTS_PER_SEC));
+        max_slot = max_slot.max(slot_u);
+        slotted.push((c, slot_u, opus));
+    }
+    let mut grid: Vec<Vec<Option<Vec<u8>>>> = vec![vec![None; max_slot + 1]; nchan];
+    for (c, slot, opus) in slotted {
+        grid[c][slot] = Some(opus.clone());
     }
     Some((nchan, grid))
 }
@@ -167,6 +177,8 @@ pub(crate) fn build_container(records: &[(u8, i64, Vec<u8>)]) -> Option<Vec<u8>>
 /// A decoded recording as a stream of interleaved `FRAME × nchan` i16 frames. Bounded memory: the compressed container stays in RAM (~tens of MB/hour) and each 10 ms frame decodes on demand via [`Self::next_frame`] — never the whole PCM at once (a stereo hour is ~700 MB decoded).
 pub struct KeptStream {
     pub nchan: usize,
+    /// Total playable frames (archive slots for PHCALL2, grid slots for a live-spool preview) — the scrub bar's denominator.
+    pub total: usize,
     inner: Inner,
 }
 
@@ -199,6 +211,7 @@ pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
         }
         let nchan = bytes[8] as usize;
         // header: [nchan u8][rate u32][base i64][slots u32] = 1+4+8+4 = 17 bytes after magic; packets follow.
+        let total = u32::from_le_bytes(bytes[8 + 13..8 + 17].try_into().ok()?) as usize;
         let body = bytes[8 + 17..].to_vec();
         if nchan == 0 {
             return None;
@@ -221,7 +234,7 @@ pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
                 decs: (0..nchan).map(|_| mono_decoder()).collect::<Option<_>>()?,
             }
         };
-        Some(KeptStream { nchan, inner })
+        Some(KeptStream { nchan, total, inner })
     } else {
         // PHCALL1 read support deleted with the 5ms flag day (Nick 2026-09-08: nobody waving yet, no backwards compat) — unknown magic is unknown magic.
         None
@@ -233,6 +246,7 @@ pub(crate) fn stream_from_records(records: &[(u8, i64, Vec<u8>)]) -> Option<Kept
     let (nchan, grid) = grid_from_records(records)?;
     Some(KeptStream {
         nchan,
+        total: grid[0].len(),
         inner: Inner::Grid {
             grid,
             decs: (0..nchan).map(|_| mono_decoder()).collect::<Option<_>>()?,

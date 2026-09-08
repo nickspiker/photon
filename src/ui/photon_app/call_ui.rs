@@ -152,12 +152,50 @@ impl PhotonApp {
         self.scene_dirty = true;
     }
 
-    /// Ended-screen preview finished on its own → drop the handle so the pill flips back to Play. Polled from the status tick (an edge poll on the worker's done flag, not a timer).
+    /// Ended-screen preview finished on its own → drop the handle so the pill flips back to Play. Also the busy-retry: a Play pressed while the dying engine still held the audio session was silently refused (field 2026-09-08, "press play, nothing") — the pending flag re-fires the moment the session frees. Polled from the status tick (edge polls on worker flags, not timers).
     pub(super) fn tick_playback_done(&mut self) {
         if self.call_playback.as_ref().is_some_and(|p| p.is_finished()) {
             self.call_playback = None;
             self.scene_dirty = true;
         }
+        if self.preview_pending {
+            let ended = self.active_call.as_ref().is_some_and(|c| c.phase == CallPhase::Ended);
+            if !ended {
+                self.preview_pending = false;
+            } else if !crate::platform::audio::is_active() {
+                self.preview_pending = false;
+                self.preview_recording();
+                self.scene_dirty = true;
+            }
+        }
+    }
+
+    /// Scrub-bar seek: restart the preview at `frac` of the recording (decode-and-discard to the mark).
+    pub(super) fn seek_preview(&mut self, frac: f32) {
+        let Some(call) = self.active_call.as_ref() else {
+            return;
+        };
+        if call.phase != CallPhase::Ended {
+            return;
+        }
+        let Some(ticket) = call.spool.as_ref() else {
+            return;
+        };
+        let total = self
+            .call_playback
+            .as_ref()
+            .map(|p| p.total)
+            .or_else(|| crate::call::playback::spool_total_frames(ticket));
+        let Some(total) = total else {
+            return;
+        };
+        let skip = (frac.clamp(0.0, 1.0) * total as f32) as usize;
+        self.call_playback.take(); // release the session first (one owner)
+        self.call_playback = crate::call::playback::play_spool_at(ticket, skip);
+        if self.call_playback.is_none() {
+            self.preview_pending = true; // session still winding down — the tick re-fires
+        }
+        self.scene_dirty = true;
     }
 
     /// Preview the in-flight recording on the Ended screen (before Keep/Delete finalizes a blob) — plays the live spool thru the mono downmix. Holds the handle so the worker keeps running.
@@ -167,6 +205,10 @@ impl PhotonApp {
         if let Some(call) = self.active_call.as_ref() {
             if let Some(ticket) = call.spool.as_ref() {
                 self.call_playback = crate::call::playback::play_spool(ticket);
+                if self.call_playback.is_none() {
+                    // The dying engine still holds the session — retry on the tick instead of eating the tap.
+                    self.preview_pending = true;
+                }
             }
         }
     }

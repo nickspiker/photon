@@ -279,13 +279,19 @@ fn run(
     super::MEDIA_START_OSC.store(vsf::eagle_time_oscillations(), Ordering::Relaxed);
     super::LAST_MEDIA_RX_OSC.store(0, Ordering::Relaxed);
     let _ = super::take_peer_redirect();
-    // LOCAL SOURCE while the probe owns the queue: the chirp is queued whole and must reach the DAC verbatim — the jitter machinery's front-trims were beheading it (field 2026-09-08: both legs' rejects were the trim, not the room).
+    // LOCAL SOURCE while the probe owns the queue, and the chirp FEEDS PACED from the loop (never dumped): every bounded stage ahead of the DAC (queue drop-oldest, ceiling trims) beheads a bulk dump — both field beheadings. Top-up keeps ≤200ms queued; the 1ms loop never starves the drain.
     crate::platform::audio::set_local_source(true);
-    for f in crate::call::vchirp::frames() {
-        crate::platform::audio::queue_playback(f);
-    }
+    let chirp_frames = crate::call::vchirp::frames();
+    let mut chirp_idx = 0usize;
 
     while !stop.load(Ordering::Relaxed) {
+        // Paced chirp feed (probe phase): top the queue up to 40 frames (200ms) per pass.
+        if probing {
+            while chirp_idx < chirp_frames.len() && crate::platform::audio::playback_depth() < 40 {
+                crate::platform::audio::queue_playback(chirp_frames[chirp_idx].clone());
+                chirp_idx += 1;
+            }
+        }
         // Learner far feed: drain the render-envelope tap (post-jitter post-splice, osc-stamped at DAC-enqueue).
         {
             let (entries, cur) = crate::platform::audio::render_env_since(renv_cursor);

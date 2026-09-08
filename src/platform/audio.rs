@@ -28,7 +28,7 @@ static RENDER_REF_TOTAL: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
 const CAPTURE_Q_MAX: usize = 50; // 500ms
-const PLAYBACK_Q_MAX: usize = 100; // 1s
+const PLAYBACK_Q_MAX: usize = 240; // 1.2s of 5ms frames — must EXCEED the 200-frame v-chirp (drop-oldest at push beheaded the 1s chirp against the old 100, field 2026-09-08: the second beheading mechanism after the ceiling trims)
 const RENDER_REF_MAX: usize = 100; // 500ms of 5ms frames
 
 /// The in-call learner's far-end reference: (eagle osc at DAC-enqueue, mean |sample| envelope) per rendered frame — the envelope-only sibling of RENDER_REF, deep enough (~10s) for the learner's sliding correlation windows without cloning 48KB frame snapshots per tick. Silence/priming frames land as env 0.0, which is the CORRECT reference (that is what actually hit the DAC). Post-jitter post-splice, so the render→capture delay measured against it is route-constant.

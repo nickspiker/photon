@@ -69,6 +69,16 @@ pub fn log_received(data: &[u8], addr: &SocketAddr) {
 }
 
 /// Get local LAN IP address by connecting to external address This finds which interface the OS would use to reach the internet
+/// Our v4 address on the interface the kernel would use to REACH `peer` — the LAN judgment for a specific peer. `get_local_ip` routes toward 1.1.1.1, which on a phone with live cellular picks the CELL interface and returns None (its address isn't usable-LAN) — so a same-subnet wifi peer read as FOREIGN and badged WAN while the media happily rode the LAN (field 2026-09-08, Nick WAN / Brittany LAN on one call). Routing toward the peer itself asks the actual question.
+pub fn get_local_ip_toward(peer: std::net::Ipv4Addr) -> Option<std::net::Ipv4Addr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect((peer, 9)).ok()?; // no packets — routing lookup only
+    match socket.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(ip) if is_usable_lan_ipv4(ip) => Some(ip),
+        _ => None,
+    }
+}
+
 pub fn get_local_ip() -> Option<std::net::Ipv4Addr> {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     // Connect to Cloudflare DNS - doesn't actually send packets, just sets up routing

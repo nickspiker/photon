@@ -19,6 +19,10 @@ pub struct PlaybackHandle {
     stop: Arc<AtomicBool>,
     /// Set by the worker on exit (end of recording or stop) — the UI polls it to flip the Play/Stop pill back without any timer.
     done: Arc<AtomicBool>,
+    /// Frames queued so far (skip included) — the scrub bar's numerator.
+    pos: Arc<std::sync::atomic::AtomicUsize>,
+    /// Total frames in the stream — the denominator.
+    pub total: usize,
 }
 
 impl PlaybackHandle {
@@ -28,6 +32,10 @@ impl PlaybackHandle {
 
     pub fn is_finished(&self) -> bool {
         self.done.load(Ordering::Relaxed)
+    }
+
+    pub fn position(&self) -> usize {
+        self.pos.load(Ordering::Relaxed)
     }
 }
 
@@ -46,7 +54,7 @@ pub fn play_blob(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Pl
     }
     let bytes = crate::storage::blob_load(identity_seed, content_hash)?;
     let stream = crate::call::record::open_blob(&bytes)?;
-    spawn(stream)
+    spawn(stream, 0)
 }
 
 /// Preview the LIVE spool thru the same downmix, before the Keep/Delete decision has finalized a blob (the end-screen Play). Borrows the ticket — never consumes or shreds it.
@@ -57,14 +65,34 @@ pub fn play_spool(ticket: &SpoolTicket) -> Option<PlaybackHandle> {
     }
     let records = crate::call::spool::drain_records(ticket)?;
     let stream = crate::call::record::stream_from_records(&records)?;
-    spawn(stream)
+    spawn(stream, 0)
 }
 
-fn spawn(stream: KeptStream) -> Option<PlaybackHandle> {
+/// [`play_spool`] starting at `skip` frames in — the scrub-bar seek (the worker decode-and-discards to the mark; Opus is stateful, so a seek is a fast re-decode, never a blind jump).
+pub fn play_spool_at(ticket: &SpoolTicket, skip: usize) -> Option<PlaybackHandle> {
+    if crate::platform::audio::is_active() {
+        crate::log("CALL playback: audio busy (call active) — refused");
+        return None;
+    }
+    let records = crate::call::spool::drain_records(ticket)?;
+    let stream = crate::call::record::stream_from_records(&records)?;
+    spawn(stream, skip)
+}
+
+/// Total playable frames of the spool (the scrub bar's denominator before playback starts).
+pub fn spool_total_frames(ticket: &SpoolTicket) -> Option<usize> {
+    let records = crate::call::spool::drain_records(ticket)?;
+    Some(crate::call::record::stream_from_records(&records)?.total)
+}
+
+fn spawn(stream: KeptStream, skip: usize) -> Option<PlaybackHandle> {
     let stop = Arc::new(AtomicBool::new(false));
     let done = Arc::new(AtomicBool::new(false));
+    let pos = Arc::new(std::sync::atomic::AtomicUsize::new(skip.min(stream.total)));
+    let total = stream.total;
     let flag = stop.clone();
     let done_flag = done.clone();
+    let pos_w = pos.clone();
     // We are the owner (checked !is_active() above): start flips ACTIVE false→true.
     if !crate::platform::audio::start() {
         crate::platform::audio::stop();
@@ -75,7 +103,7 @@ fn spawn(stream: KeptStream) -> Option<PlaybackHandle> {
     let spawned = std::thread::Builder::new()
         .name("call-playback".into())
         .spawn(move || {
-            run(stream, &flag);
+            run(stream, &flag, skip, &pos_w);
             done_flag.store(true, Ordering::SeqCst);
             crate::platform::audio::stop(); // only we flipped ACTIVE true — safe to release
         })
@@ -84,11 +112,17 @@ fn spawn(stream: KeptStream) -> Option<PlaybackHandle> {
         crate::platform::audio::stop();
         return None;
     }
-    Some(PlaybackHandle { stop, done })
+    Some(PlaybackHandle { stop, done, pos, total })
 }
 
-fn run(mut stream: KeptStream, stop: &AtomicBool) {
+fn run(mut stream: KeptStream, stop: &AtomicBool, skip: usize, pos: &std::sync::atomic::AtomicUsize) {
     let nchan = stream.nchan.max(1);
+    // Seek = decode-and-discard to the mark (stateful codec; ~thousands of tiny decodes, far under a second).
+    for _ in 0..skip {
+        if stop.load(Ordering::Relaxed) || stream.next_frame().is_none() {
+            break;
+        }
+    }
     while !stop.load(Ordering::Relaxed) {
         // Backpressure = the pacing clock: wait until the DAC has drained below the target, then decode+queue the next frame. The output callback pops one frame per 10 ms of hardware time; we poll depth on a 1 ms granularity, never sleeping to a wall time.
         while !stop.load(Ordering::Relaxed) && crate::platform::audio::playback_depth() >= PACE_TARGET {
@@ -103,6 +137,7 @@ fn run(mut stream: KeptStream, stop: &AtomicBool) {
             .map(|c| (c.iter().map(|&s| s as i32).sum::<i32>() / nchan as i32) as i16)
             .collect();
         crate::platform::audio::queue_playback(mono);
+        pos.fetch_add(1, Ordering::Relaxed);
     }
     // Let the DAC finish rendering the tail before the caller's stop() releases the session.
     while !stop.load(Ordering::Relaxed) && crate::platform::audio::playback_depth() > 0 {

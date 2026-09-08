@@ -4412,11 +4412,13 @@ impl PhotonApp {
                         contact.last_heard = Some(now);
                         // The same-LAN judgment, made ONCE here at the edge (get_local_ip binds a socket — never per frame): private address on OUR subnet (or WFD group) = LAN; private-but-foreign (carrier CGNAT 10.x, colliding home /24s) = a real direct path that is NOT "same room" (the 2026-08-30 cyan lie: a Verizon-CGNAT path to a peer hundreds of miles away rang LAN). Canonical form first — punch acks arrive v4-mapped (::ffff:a.b.c.d).
                         let canon = crate::network::udp::canon_socketaddr(remote);
+                        // Our LAN identity is judged TOWARD this peer: the default-route probe picks cellular on a dual-radio phone and voids the same-subnet check (WAN badge on a pure-LAN call, field 2026-09-08).
+                        let our_v4 = crate::network::udp::get_local_ip().or_else(|| match canon.ip() {
+                            std::net::IpAddr::V4(p) => crate::network::udp::get_local_ip_toward(p),
+                            _ => None,
+                        });
                         let remote_is_lan = crate::ui::photon_app::is_private_addr(&canon.ip())
-                            && !crate::network::traverse::gather::is_foreign_peer_lan(
-                                &canon,
-                                crate::network::udp::get_local_ip(),
-                            );
+                            && !crate::network::traverse::gather::is_foreign_peer_lan(&canon, our_v4);
                         match contact.validated_path {
                             None => {
                                 crate::logf!(
