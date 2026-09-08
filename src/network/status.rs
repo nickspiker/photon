@@ -624,12 +624,20 @@ impl StatusUpdate {
     }
 }
 
-/// Pending ping waiting for pong
+/// Pending ping waiting for pong.
+/// TWO-TIER WINDOW (2026-09-07, the MacBook↔Pixel presence flap): a relay round-trip thru a dozing phone reliably exceeds 5s, so with a single 5s window virtually every pong that DID arrive was demoted to unmatched-salvage — liveness only, no pending purge, no sync tail, and the strike counter marched the device offline between salvages (both sides of a healthy pipe showing each other offline, the 11/12 park). The entry now STRIKES at PING_STRIKE_AFTER (unchanged behavior for dead devices) but stays MATCHABLE by nonce until PING_MATCH_WINDOW — a late matched pong restores full presence semantics; only the address-flavored actions (adoption, PT retarget, reflexive echo) stay gated to fresh matches, holding today's replay posture.
 struct PendingPing {
     recipient_pubkey: DevicePubkey,
     provenance_hash: [u8; 32],
     sent_at: Instant,
+    /// This entry already cost its device a strike (crossed PING_STRIKE_AFTER unanswered) — one strike per entry, ever; the entry itself lives on for late matching.
+    struck: bool,
 }
+
+/// Unanswered-past-this = one strike toward offline (the historical 5s timeout, unchanged).
+const PING_STRIKE_AFTER: Duration = Duration::from_secs(5);
+/// Nonce stays matchable this long — covers relay round-trips and doze-delayed replies. A match in (STRIKE_AFTER, MATCH_WINDOW] is LATE: full presence semantics, no address trust.
+const PING_MATCH_WINDOW: Duration = Duration::from_secs(90);
 
 /// Contact status checker
 ///
@@ -2987,7 +2995,18 @@ async fn run_checker(
                                     }
 
                                     // Peer-echoed reflexive address, from a pong we just signature-verified: OUR public address as this contact saw our ping arrive on the data socket. The pong is contact-gated, so the echo is from a friend → trusted, adopt immediately. On an adoption change, push it to the app as `our_reflexive` (feeds candidate gathering + the announce).
-                                    if let Some(obs) = observed_addr {
+                                    // Freshness: matched within the strike window = the historical fast path, full address trust. A LATE match (relay round-trip, doze) keeps every presence/sync/name semantic below but must not steer addresses — same replay posture as before the two-tier window.
+                                    let fresh_match =
+                                        pending_ping.sent_at.elapsed() < PING_STRIKE_AFTER;
+                                    if !fresh_match {
+                                        crate::logf!(
+                                            "Status: late pong matched from {} ({}) after {}s — presence honored, address held",
+                                            crate::fp(responder_pubkey.as_bytes()),
+                                            src_addr,
+                                            pending_ping.sent_at.elapsed().as_secs()
+                                        );
+                                    }
+                                    if let Some(obs) = observed_addr.filter(|_| fresh_match) {
                                         if let Some(addr) = reflexive.record(
                                             udp::canon_socketaddr(obs),
                                             *responder_pubkey.as_bytes(),
@@ -3011,7 +3030,7 @@ async fn run_checker(
                                     }
 
                                     // THE FROZEN-ADDRESS FIX (2026-09-02): this pong is signature-verified AND nonce-matched, so src_addr is the freshest PROVEN path to this device — re-aim every queued PT item (small packets + un-locked transfers) still burning retry ladders at stale addresses for it. Without this, addresses froze at enqueue and a same-LAN message sat 60s-to-minutes behind sprays at a wrong-subnet v4 and a dead cellular v6 while the proven path idled.
-                                    {
+                                    if fresh_match {
                                         let mut pt_mgr = pt_recv.lock().unwrap();
                                         pt_mgr.retarget_peer(
                                             responder_pubkey.as_bytes(),
@@ -3074,7 +3093,8 @@ async fn run_checker(
                                         StatusUpdate::Online {
                                             peer_pubkey: responder_pubkey,
                                             is_online: true,
-                                            peer_addr: Some(src_addr),
+                                            // Late match: presence + tail land, the address does not (the app-layer adopter must only see fresh-proven paths).
+                                            peer_addr: fresh_match.then_some(src_addr),
                                             sync_records,
                                             display_name,
                                             avatar_pin,
@@ -3611,6 +3631,7 @@ async fn run_checker(
                         recipient_pubkey: request.peer_pubkey.clone(),
                         provenance_hash,
                         sent_at: Instant::now(),
+                        struck: false,
                     });
                 }
 
@@ -3752,17 +3773,17 @@ async fn run_checker(
             pending_probes.lock().unwrap().expire(Instant::now());
         }
 
-        // Cleanup stale pending pings (older than 5 seconds) Use hysteresis: only mark offline after OFFLINE_THRESHOLD consecutive failures
+        // Strike pings unanswered past PING_STRIKE_AFTER, but keep them MATCHABLE until PING_MATCH_WINDOW (two-tier window — see PendingPing). Hysteresis unchanged: offline only after OFFLINE_THRESHOLD consecutive failures.
         {
             let mut list = pending.lock().unwrap();
             let mut failures = failed_pings.lock().unwrap();
             let now = Instant::now();
-            let timeout = Duration::from_secs(5);
+            let timeout = PING_STRIKE_AFTER;
 
-            // Find expired pings and increment failure counters — ONE strike per device per sweep, however many of its pings expired. The multi-address fan-out (validated + LAN + public) parks several pings per device per cycle; counting each expiry burned the 3-strike "consecutive failures" budget in a single cycle (the field log's same-millisecond 2/3→3/3 pairs), turning one round of dead addresses into an instant offline.
+            // Find newly-struck pings and increment failure counters — ONE strike per device per sweep, however many of its pings expired. The multi-address fan-out (validated + LAN + public) parks several pings per device per cycle; counting each expiry burned the 3-strike "consecutive failures" budget in a single cycle (the field log's same-millisecond 2/3→3/3 pairs), turning one round of dead addresses into an instant offline. Each entry strikes at most ONCE (struck flag), so the longer matchable tail never re-strikes.
             let mut expired: Vec<_> = list
                 .iter()
-                .filter(|ping| now.duration_since(ping.sent_at) >= timeout)
+                .filter(|ping| !ping.struck && now.duration_since(ping.sent_at) >= timeout)
                 .map(|ping| ping.recipient_pubkey.clone())
                 .collect();
             expired.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
@@ -3813,7 +3834,12 @@ async fn run_checker(
                 }
             }
 
-            list.retain(|ping| now.duration_since(ping.sent_at) < timeout);
+            for ping in list.iter_mut() {
+                if now.duration_since(ping.sent_at) >= timeout {
+                    ping.struck = true;
+                }
+            }
+            list.retain(|ping| now.duration_since(ping.sent_at) < PING_MATCH_WINDOW);
         }
 
         // NOTE: "Process CLUTCH requests" block REMOVED Full 8-primitive CLUTCH uses ClutchOfferRequest and ClutchKemResponseRequest which are processed below using TCP/PT transport.
