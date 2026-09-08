@@ -433,9 +433,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- secured-elsewhere status ----
         Msg::DifferentIdentity => "kāore e taea te whakaoti\nhe tuakiri kē tā rātou whakautu; tangohia, ka tāpiri anō".into(),
         Msg::AnotherDevice => "tētahi atu pūrere".into(),
-        Msg::SecuredOn(name) => format!("kua whakaūngia ki {name}\nka kitea ngā whakautu i konei; tukua mai i reira (mō tēnei wā)").into(),
+        Msg::SecuredOn(name) => format!("kua whakaūngia ki {name}\ne tukutahi ana ki tēnei pūrere\u{2026}").into(),
         Msg::SecuringOn(name) => format!("e whakaū ana ki {name}\u{2026}").into(),
-        Msg::SecuredElsewhere => "kua whakaūngia ki tētahi atu o ō pūrere\nka kitea ngā whakautu i konei; tukua mai i reira (mō tēnei wā)".into(),
+        Msg::SecuredElsewhere => "kua whakaūngia ki tētahi atu o ō pūrere\ne tukutahi ana ki tēnei\u{2026}".into(),
         // ---- bridge ----
         Msg::BridgeElided { bytes, output } => format!("\u{2026} ({} ngā paita o mua kei te kaihautū)\n{output}", fmt_num(bytes as u32)).into(),
         Msg::BridgeShellStartFailed(e) => format!("(i rahua te tīmata o te anga arawhata: {e})").into(),

@@ -409,9 +409,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- secured-elsewhere status ----
         Msg::DifferentIdentity => "can\u{2019}t complete\nthey answer as a different identity; remove & re-add".into(),
         Msg::AnotherDevice => "another device".into(),
-        Msg::SecuredOn(name) => format!("secured on {name}\nreplies visible here; send from there (for now)").into(),
+        Msg::SecuredOn(name) => format!("secured on {name}\nsyncing to this device\u{2026}").into(),
         Msg::SecuringOn(name) => format!("securing on {name}\u{2026}").into(),
-        Msg::SecuredElsewhere => "secured on another of your devices\nreplies visible here; send from there (for now)".into(),
+        Msg::SecuredElsewhere => "secured on another of your devices\nsyncing to this one\u{2026}".into(),
         // ---- bridge ----
         Msg::BridgeElided { bytes, output } => format!("\u{2026} ({} earlier bytes on the host)\n{output}", fmt_num(bytes as u32)).into(),
         Msg::BridgeShellStartFailed(e) => format!("(bridge shell failed to start: {e})").into(),
