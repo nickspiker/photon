@@ -119,7 +119,7 @@
 ## MacBook corpus (kebab-case)
 
 - [Push after landing](push-after-landing.md) — memories LIVE HERE ('Claude memories/' in the public photon repo, every machine): commit+push memory writes WITH photon; the private photon-claude-memory repo is DELETED (2026-08-23, its history carried handles) — never resurrect it
-- [MacBook trails remote](macbook-trails-remote.md) — clones there can trail the other machine with REWRITTEN history: verify local-only subjects against origin, reset --hard, and fast-forward ALL sibling path deps together (stale fluor/fgtw = 64 phantom compile errors); winit-patched is detached-vanilla, skip + don't commit its Cargo.lock drift
+- [MacBook trails remote](macbook-trails-remote.md) — clones there can trail the other machine with REWRITTEN history: verify local-only subjects against origin, reset --hard, and fast-forward ALL sibling path deps together (stale fluor/fgtw = 64 phantom compile errors); winit-patched tracks nickspiker/winit photon-patched (= the [patch] git dep); never commit its Cargo.lock drift
 - [photon not fmt-clean](photon-not-fmt-clean.md) — bare `cargo fmt` churns ~40 unrelated files; checkout-restore untouched files, separate style commit for the rest
 
 - [Per-device lanes](per-device-lanes.md) — SHIPPED 53ad8f9 2026-08-13 (unpublished): any replicated-chain device transmits on its own lane; CRDT lane merge converges
