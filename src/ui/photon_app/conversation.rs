@@ -630,52 +630,7 @@ impl PhotonApp {
             let Some(our_pid) = self.our_party_id(&self.contacts[i]) else {
                 return false;
             };
-            // Claim on pickup (unclaimed legacy contact, or takeover from a probed-absent owner): the claim rides the next roster push so siblings park + discard. LWW settles simultaneous claims; the loser adopts the winner's entry, discards its round, and parks.
-            // LEGACY-ROW CLAIM DEFERS while any fold sibling is online-or-unprobed (Emma's ghost, 2026-09-08: a fresh sibling probed its fleet BEFORE chain replication landed, so a None-owner woven-elsewhere friendship read as unclaimed-Pending and got claimed by a device that held it for an hour — the claim then LWW-beat the real weaver's None and outlived the device by two weeks). The fleet-first gate covers probing, not replication; when we are NOT alone, an unclaimed row's truth lives somewhere in the fleet — replication or the true owner's own claim resolves it, and the departed-owner sweep voids the rest. We claim None-owner rows only when effectively alone.
-            if !self.contacts[i].is_sibling {
-                if let Some(ours) = our_device {
-                    if self.contacts[i].ceremony_owner.is_none() {
-                        let any_sibling_alive = self
-                            .contacts
-                            .iter()
-                            .any(|s| s.is_sibling && s.any_device_online());
-                        if any_sibling_alive {
-                            crate::logf!(
-                                "CLUTCH §4.2: {} is unclaimed but a fold sibling is alive — not claiming (replication or its own claim carries it)",
-                                crate::fp(&self.contacts[i].handle_proof)
-                            );
-                            return false;
-                        }
-                    }
-                    if self.contacts[i].ceremony_owner != Some(ours) {
-                        // Belt-and-braces: never take over a WOVEN friendship even if a caller reaches here with one (ceremony_parked_by already excludes them) — the chain lives on the owner and a re-clutch clobbers the friend's side.
-                        if self.contacts[i].ceremony_owner.is_some() && self.contacts[i].owner_woven
-                        {
-                            return false;
-                        }
-                        let old_owner = self.contacts[i].ceremony_owner;
-                        let c = &mut self.contacts[i];
-                        c.ceremony_owner = Some(ours);
-                        c.roster_updated = now;
-                        match old_owner {
-                            Some(prev) => crate::logf!(
-                                "CLUTCH: taking over this friendship's ceremony from absent owner {} ({})",
-                                hex::encode(&prev[..4]),
-                                crate::fp(&c.handle_proof).as_str()
-                            ),
-                            None => crate::logf!(
-                                "CLUTCH: claiming this friendship's ceremony ({})",
-                                crate::fp(&c.handle_proof).as_str()
-                            ),
-                        }
-                        if let Some(storage) = self.storage.as_ref() {
-                            let _ =
-                                crate::storage::contacts::save_contact(&self.contacts[i], storage);
-                        }
-                        self.spawn_roster_push();
-                    }
-                }
-            }
+            // Ownership is COMPUTED (era.rs recompute_ceremony_owners, on the presence/fold edges): a friend reaches this pickup only when this device is its owner (ceremony_parked_by above), so there is nothing to claim and nothing to push — the claim-on-pickup and its roster LWW race retired 2026-09-08.
             let c = &mut self.contacts[i];
             c.clutch_keygen_in_progress = true;
             let (cid, their_hh) = (c.id.clone(), c.handle_hash);
@@ -998,6 +953,10 @@ impl PhotonApp {
         let mut sibling_push: Option<(usize, ChatMessage)> = None;
         // Call signal deferred past the `chains` borrow — the state machine takes &mut self (docs/calls.md).
         let mut call_signal_evt: Option<(usize, crate::call::signal::CallSignal, Option<[u8; 32]>, i64)> = None;
+        // Era-ratchet row landed: (contact idx, signal, the package's KEM material, row eagle time) — dispatched after the borrow ends.
+        let mut era_signal_evt: Option<(usize, crate::crypto::era::EraSignal, Option<crate::crypto::era::EraKemWire>, i64)> = None;
+        // The 256-row cadence edge (crypto/era.rs): the contact whose peer-row count just crossed a multiple of the cadence.
+        let mut cadence_ci: Option<usize> = None;
         let mut recv_seal_idx: Option<usize> = None;
         let mut persist_ci: Option<usize> = None;
         // BRIDGE host: a TYPED command arrived as an ordinary sibling message — run it + reply AFTER the chains borrow ends (needs &mut self). Deferred like sibling_push; the i64 is the command row's eagle_time (what the streamed output frames target). A Stop press defers likewise.
@@ -1166,6 +1125,7 @@ impl PhotonApp {
                 .reference
                 .and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t)));
             let bridge_wire = pkg.bridge;
+            let mut pkg_era_kem = pkg.era_kem;
 
             // Hidden chain-weave probe: a reserved-marker message that proves the ratchet works but must show NO chat bubble. Everything else on the receive path (chain advance, set_last_plaintext, mark_received, ACK send) still runs so the sender's chain advances and dedup works — only the UI is suppressed.
             let is_chain_probe = message_text == crate::types::CHAIN_PROBE_MARKER;
@@ -1273,6 +1233,10 @@ impl PhotonApp {
                         crate::logf!("ERA: retired era #{} dropped — {} current-era frames seen, keys zeroized, lanes removed", r, crate::types::friendship::RETIRED_ERA_GRACE_ROWS);
                     }
                 }
+                // CADENCE EDGE (decision 5): every LIGHT_RATCHET_CADENCE_ROWS peer rows on one era, the owner proposes a light ratchet. A multiple (not ==) so a held edge (not owner, peer not capable) fires again a window later instead of never.
+                if chains.lane_is_writable(&lane) && chains.rows_since_ratchet > 0 && chains.rows_since_ratchet % crate::crypto::era::LIGHT_RATCHET_CADENCE_ROWS == 0 && chains.pending_era().is_none() {
+                    cadence_ci = Some(contact_idx);
+                }
             }
 
             // Update hash chain state for next message verification
@@ -1347,7 +1311,15 @@ impl PhotonApp {
 
             // Add message to contact's message list and persist — UNLESS this is the hidden chain-weave probe, which advances/ACKs the chain but must never surface a bubble or chime. For the probe we flip `their_probe_seen` (their TX / our RX proven), PERSIST a hidden row, and try to seal the chain.
             // CALL SIGNALING (docs/calls.md): an offer/answer/hangup rides the lane as a hidden control row — persist it (re-ACK durable, the probe pattern), push it to our siblings (ring/stop fan-out), and hand it to the state machine WITH the pre-advance lane key (the basket's doomed egg, meaningful for offers).
-            if let Some(sig) = crate::call::signal::CallSignal::parse(&message_text) {
+            // ERA RATCHET ROW (crypto/era.rs, plan §3): Init / Resp / Nudge — persist a HIDDEN row with its ack_hash (re-ACK durability, the probe pattern), NEVER push it to siblings (the era itself replicates by chain-sync), and hand it to on_era_signal after the borrow ends with the package's typed KEM material.
+            if let Some(sig) = crate::crypto::era::EraSignal::parse(&message_text) {
+                let era_row =
+                    ChatMessage::new_with_timestamp(message_text.clone(), false, timestamp)
+                        .with_ack_hash(plaintext_hash);
+                self.conversations[conv_pos].insert_message_sorted(era_row);
+                persist_ci = Some(contact_idx);
+                era_signal_evt = Some((contact_idx, sig, pkg_era_kem.take(), timestamp));
+            } else if let Some(sig) = crate::call::signal::CallSignal::parse(&message_text) {
                 let sig_row =
                     ChatMessage::new_with_timestamp(message_text.clone(), false, timestamp)
                         .with_ack_hash(plaintext_hash);
@@ -1719,6 +1691,12 @@ impl PhotonApp {
         // The tail — everything the arm ran after the `chains` borrow ended or after the loop, direct calls now.
         if let Some((ci, sig, rx_key, ts)) = call_signal_evt {
             self.on_call_signal(ci, sig, rx_key, ts, false, false);
+        }
+        if let Some((ci, sig, kem, ts)) = era_signal_evt {
+            self.on_era_signal(ci, sig, kem, ts);
+        }
+        if let Some(ci) = cadence_ci {
+            self.repair_dispatch(ci, super::era::RepairTrigger::CadenceReached);
         }
         if let Some((snapshot, req)) = ack_enqueue {
             let dispatch = self.status_checker.as_ref().map(|c| c.ack_dispatch());

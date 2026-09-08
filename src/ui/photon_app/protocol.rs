@@ -790,6 +790,8 @@ impl PhotonApp {
                         self.registry_converged_fold = members.clone();
                         self.spawn_registry_converge(hp, members.clone());
                     }
+                    // The fold is stored: the computed ceremony owner follows it (era.rs).
+                    self.recompute_ceremony_owners("fold adopt");
                     needs_redraw = true;
                     continue;
                 }

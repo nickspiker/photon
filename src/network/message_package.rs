@@ -25,6 +25,8 @@ pub struct MessagePackage {
     pub bridge: Option<BridgeWire>,
     /// Typed content marks: (kind, byte_start, byte_len, dest) per entry — the link elements layered beside the body (Nick 2026-09-04). Parallel multi-value fields on the wire, zipped at parse; a count mismatch drops ALL marks (fail-safe to plain text). Old parsers discard the unknown names — no flag day.
     pub marks: Vec<(u8, usize, usize, String)>,
+    /// Era-ratchet KEM material (crypto/era.rs): present only on an Init/Resp control row. Typed fields beside the text, never inside it.
+    pub era_kem: Option<crate::crypto::era::EraKemWire>,
 }
 
 /// The bridge's typed wire extras, riding the inner package as named optional fields: the locus that ends blind-cwd operation (field 2026-08-23), the snapshot sequence + final exit that make streamed output loss-proof (every partial is the FULL accumulated text; newest seq wins), and the interrupt signal. An old peer's parser discards the names it doesn't know; a new peer reading an old frame sees all-None — no flag day.
@@ -74,6 +76,9 @@ fn msg_schema() -> SectionSchema {
         .field("ml", TypeConstraint::AnyUnsigned) // mark byte len per entry
         .field("md", TypeConstraint::Utf8Text) // mark dest per entry (link destination URL)
         .field("pad", TypeConstraint::Any) // hR random jitter; length is the only meaning
+        .field("ekn", TypeConstraint::Any) // hR era-ratchet ML-KEM-1024 material (public key on Init, ciphertext on Resp)
+        .field("ekx", TypeConstraint::Any) // hR era-ratchet X25519 ephemeral public key
+        .field("ekh", TypeConstraint::Any) // hR era-ratchet HQC-256 material (public key on Init, ciphertext on Resp)
 }
 
 /// Encode a message package as a complete VSF document. The caller supplies the pad (already random) so this layer stays deterministic-in, deterministic-out.
@@ -85,6 +90,21 @@ pub fn build_message_package(
     bridge: Option<&BridgeWire>,
     marks: &[(u8, usize, usize, String)],
     pad: &[u8],
+) -> Result<Vec<u8>, String> {
+    build_message_package_era(body, incorporated_hp, woven_times, reference, bridge, marks, pad, None)
+}
+
+/// The full builder: an era-ratchet row also carries its KEM material as typed fields.
+#[allow(clippy::too_many_arguments)]
+pub fn build_message_package_era(
+    body: &str,
+    incorporated_hp: &[u8; 32],
+    woven_times: &[i64],
+    reference: Option<(u8, i64)>,
+    bridge: Option<&BridgeWire>,
+    marks: &[(u8, usize, usize, String)],
+    pad: &[u8],
+    era_kem: Option<&crate::crypto::era::EraKemWire>,
 ) -> Result<Vec<u8>, String> {
     let mut builder = msg_schema()
         .build()
@@ -153,6 +173,13 @@ pub fn build_message_package(
         builder = builder
             .set("pad", VsfType::hR(pad.to_vec()))
             .map_err(|e| e.to_string())?;
+    }
+    if let Some(k) = era_kem {
+        for (name, bytes) in [("ekn", &k.mlkem), ("ekx", &k.x25519), ("ekh", &k.hqc)] {
+            if !bytes.is_empty() {
+                builder = builder.set(name, VsfType::hR(bytes.clone())).map_err(|e| e.to_string())?;
+            }
+        }
     }
     let section_bytes = builder.encode().map_err(|e| e.to_string())?;
 
@@ -269,6 +296,22 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
             _ => None,
         })
         .collect();
+    // Era-ratchet KEM material: any of the three present = an era row; absent on every ordinary message.
+    let bytes_field = |name: &str| -> Vec<u8> {
+        section
+            .get_fields(name)
+            .first()
+            .and_then(|f| f.values.first())
+            .and_then(|v| match v {
+                VsfType::hR(b) => Some(b.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    };
+    let era_kem = {
+        let k = crate::crypto::era::EraKemWire { mlkem: bytes_field("ekn"), x25519: bytes_field("ekx"), hqc: bytes_field("ekh") };
+        (!k.mlkem.is_empty() || !k.x25519.is_empty() || !k.hqc.is_empty()).then_some(k)
+    };
     let marks = if mk.len() == ms.len() && mk.len() == ml.len() && mk.len() == md.len() {
         mk.iter()
             .zip(&ms)
@@ -291,12 +334,24 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
         },
         bridge: (!bridge.is_empty()).then_some(bridge),
         marks,
+        era_kem,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The era-ratchet KEM material rides as typed fields: present iff any of the three is non-empty, absent on an ordinary message, and a set that excludes an algorithm leaves its field off the wire.
+    #[test]
+    fn era_kem_fields_round_trip_and_are_absent_on_plain_rows() {
+        let wire = crate::crypto::era::EraKemWire { mlkem: vec![1u8; 1568], x25519: vec![2u8; 32], hqc: Vec::new() };
+        let built = build_message_package_era("\u{1}\u{2}photon-era\u{2}\u{1}init\u{2}1\u{2}00\u{2}0000000a\u{2}3", &[0u8; 32], &[], None, None, &[], &[], Some(&wire)).unwrap();
+        let pkg = parse_message_package(&built).unwrap();
+        assert_eq!(pkg.era_kem, Some(wire));
+        let plain = build_message_package("hi", &[0u8; 32], &[], None, None, &[], &[]).unwrap();
+        assert_eq!(parse_message_package(&plain).unwrap().era_kem, None);
+    }
 
     /// Round-trip: every field survives, the reference travels typed, empty body and zero wovens are legal, and garbage is ONE clean error (fork-detector food, never a panic).
     #[test]

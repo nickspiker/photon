@@ -701,6 +701,8 @@ impl PhotonApp {
                     m.is_outgoing
                         && !m.delivered
                         && (!m.content.is_empty() || m.reference.is_some())
+                        // An era-ratchet row is never re-served: its KEM material lived only in the original package, and a dead Init on the NEW era would be nonsense (the sender stores none anyway; belt and braces).
+                        && !m.content.starts_with(crate::types::ERA_PREFIX)
                 })
                 .map(|m| (m.content.clone(), m.timestamp, m.reference))
                 .collect(),
@@ -731,6 +733,19 @@ impl PhotonApp {
         eagle_time: i64,
         reference: Option<(crate::types::RefKind, i64)>,
         bridge: Option<&crate::network::message_package::BridgeWire>,
+    ) -> bool {
+        self.chain_transmit_with(ci, text, eagle_time, reference, bridge, None)
+    }
+
+    /// The full transmit: an era-ratchet row (crypto/era.rs) also carries its KEM material as typed package fields.
+    pub(super) fn chain_transmit_with(
+        &mut self,
+        ci: usize,
+        text: &str,
+        eagle_time: i64,
+        reference: Option<(crate::types::RefKind, i64)>,
+        bridge: Option<&crate::network::message_package::BridgeWire>,
+        era_kem: Option<&crate::crypto::era::EraKemWire>,
     ) -> bool {
         // Contact must be CLUTCH-Complete with a friendship chain — OR hold the sibling-replicated chains with a live lane root. Local Complete is only the ceremony OWNER's shape (§4.2 parks every other device at Pending forever), and gating on it made the owner the single writer: every other device fleet-forwarded thru it, which parks messages behind a dead battery an ocean away (Nick, 2026-08-13). Per-device lanes end that: `prepare_send` mints THIS device's own lane, the friend materializes it from the wire label (`ensure_lane`), and the lane-wise CRDT merge converges every copy — so holding the root is the whole capability.
         let (friendship_id, recipient_pubkey, addr_pair, _our_handle_hash, msg_relay_to) = {
@@ -890,7 +905,7 @@ impl PhotonApp {
                 .into_iter()
                 .map(|m| (m.kind, m.start, m.len, m.dest))
                 .collect();
-            let payload = match crate::network::message_package::build_message_package(
+            let payload = match crate::network::message_package::build_message_package_era(
                 text,
                 &incorporated_hp,
                 &woven_times,
@@ -898,6 +913,7 @@ impl PhotonApp {
                 bridge,
                 &wire_marks,
                 &pad,
+                era_kem,
             ) {
                 Ok(p) => p,
                 Err(e) => {

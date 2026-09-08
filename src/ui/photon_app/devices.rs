@@ -958,33 +958,7 @@ impl PhotonApp {
                 true
             }
         });
-        // DEPARTED-OWNER SWEEP (Emma's ghost, 2026-09-08: a device on her fleet for ONE HOUR stamped ceremony_owner on BOTH friendships and the claim outlived its removal by two weeks — invisible behind chain_woven on one contact, rendered "secured on <phantom>" on the other the moment a vault repair killed those chains). The fold is the authority on membership: an owner claim by a device that is neither us nor a current member is VOID. If this device holds the chains, it IS the de-facto owner — claim honestly; otherwise the friendship is unclaimed and the next weave/re-clutch claims it.
-        for c in self.contacts.iter_mut().filter(|c| !c.is_sibling) {
-            let Some(owner) = c.ceremony_owner else {
-                continue;
-            };
-            if owner == our_device || members.contains(&owner) {
-                continue;
-            }
-            crate::logf!(
-                "FLEET: void ceremony-owner claim on {} — device {} is not in the fold ({})",
-                crate::fp(&c.handle_proof),
-                hex::encode(&owner[..4]),
-                if c.chain_woven { "we hold the chains — claiming" } else { "unclaimed — the next weave claims" }
-            );
-            if c.chain_woven {
-                c.ceremony_owner = Some(our_device);
-            } else {
-                c.ceremony_owner = None;
-                c.owner_woven = false;
-            }
-            c.roster_updated = vsf::eagle_time_oscillations();
-            if let Some(storage) = self.storage.as_ref() {
-                let _ = crate::storage::contacts::save_contact(c, storage);
-            }
-            changed = true;
-        }
-
+        // Ownership is COMPUTED from the fold + presence (era.rs recompute_ceremony_owners, run by the fold-adopt caller once the new fold is stored) — the departed-owner sweep this replaced (Emma's ghost, 2026-09-08: a one-hour device's claim outlived its removal by two weeks) is subsumed: a device not in the fold is never the owner.
         for c in &removed {
             crate::logf!(
                 "SIBLING: reconciled -1 (device {} left the fold)",
@@ -1468,6 +1442,8 @@ impl PhotonApp {
                 "FLEET: adopted {} newer roster entr(ies) from siblings",
                 adopted
             );
+            // A replicated entry may carry another build's owner view; ours is computed, and this edge restores it.
+            self.recompute_ceremony_owners("roster adopt");
         }
         if added == 0 {
             return;
@@ -1717,6 +1693,8 @@ impl PhotonApp {
     /// Sweep the fleet-synced locked set onto sibling contact rows (persisted, so refusal survives a relaunch before settings sync). Monotonic: locks only, never unlocks — an unlock is a deliberate future flow, not a merge artifact.
     pub(super) fn apply_locked_set(&mut self) {
         let mut locked = self.locked_devices();
+        // A locked device is never the ceremony owner (era.rs): re-point on this edge before the self-lock teardown below.
+        self.recompute_ceremony_owners("locked set");
         // SELF-LOCK: if OUR OWN device is in the fleet-locked set, this device has been locked out by the fleet (an honest owner locking a machine they no longer control).
         // Go dark — tear down the session so presence stops (it's state-gated to Ready/Conversation) and land on the launch screen.
         // Resume is handle-gated: the owner can re-attest, a thief without the handle cannot.

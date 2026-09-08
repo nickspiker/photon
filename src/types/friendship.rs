@@ -931,6 +931,11 @@ impl FriendshipChains {
         self.era_slot_for_label(label) == Some(EraSlot::Current)
     }
 
+    /// Drop a pending era that can never complete (the initiator minted new ephemerals, or ours are gone): the next Init installs afresh.
+    pub fn clear_pending(&mut self) {
+        self.pending = None;
+    }
+
     /// Phase 1 of a cutover: hold the next era beside the current one. Idempotent for the same root.
     pub fn install_pending(&mut self, pending: PendingEra) {
         if self.pending.as_ref().is_some_and(|p| p.lane_root == pending.lane_root) {
@@ -2531,6 +2536,52 @@ mod tests {
         assert!(x.retired_era().is_none());
     }
 
+
+    /// The light ratchet end to end on two blobs (crypto/era.rs): the responder installs the derived era PENDING and keeps its lane; the initiator cuts over on the Resp; the responder cuts over on the ACK edge; both land on one root with the old era retired, and a departed-device snapshot of the old era cannot derive the new one.
+    #[test]
+    fn light_ratchet_lands_both_sides_on_one_root() {
+        use crate::crypto::era::{derive_era_keys, derive_era_transcript, era_decapsulate, era_encapsulate, era_keygen, KEM_SET_DEFAULT};
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut init = FriendshipChains::from_clutch(&[a, b], &eggs);
+        let mut resp = init.clone();
+        let init_label = init.mint_our_lane().unwrap();
+        let resp_label = resp.mint_our_lane().unwrap();
+        let old_root = *init.lane_root().unwrap();
+        let old_tag = init.era_tag().unwrap();
+        let fid = *init.friendship_id.as_bytes();
+        let token = init.conversation_token;
+        // Initiator mints; responder encapsulates and installs pending.
+        let eph = era_keygen(init.era_index + 1, old_tag, KEM_SET_DEFAULT);
+        let (resp_wire, f_r) = era_encapsulate(&eph.init_wire, KEM_SET_DEFAULT).unwrap();
+        let t = derive_era_transcript(&token, 1, &eph.nonce, KEM_SET_DEFAULT, &eph.init_wire, &resp_wire);
+        let (root_r, hk_r) = derive_era_keys(&fid, 1, &old_root, resp.history_key(), &f_r, &t);
+        resp.install_pending(PendingEra { era_index: 1, lane_root: root_r, history_key: Some(hk_r), tag: crate::crypto::clutch::era_tag(&root_r), resp_osc: Some(4242) });
+        assert_eq!(resp.lane_root(), Some(&old_root), "the responder keeps chatting on the old era");
+        assert_eq!(resp.our_label(), Some(&resp_label));
+        // Initiator decapsulates, derives the same keys, cuts over at once.
+        let f_i = era_decapsulate(&eph, &resp_wire).unwrap();
+        let (root_i, hk_i) = derive_era_keys(&fid, 1, &old_root, init.history_key(), &f_i, &t);
+        assert_eq!((root_i, hk_i), (root_r, hk_r));
+        init.install_pending(PendingEra { era_index: 1, lane_root: root_i, history_key: Some(hk_i), tag: crate::crypto::clutch::era_tag(&root_i), resp_osc: None });
+        let (from, to, _) = init.cut_over_to_pending().unwrap();
+        assert_eq!(from, old_tag);
+        assert_eq!(init.lane_root(), Some(&root_i));
+        assert_eq!(init.era_index, 1);
+        assert_eq!(init.era_slot_for_label(&init_label), Some(EraSlot::Retired), "our old lane is read-only now");
+        assert_eq!(init.our_label(), None);
+        // Responder cuts over on the ACK edge (resp_osc match) and lands on the same root.
+        assert_eq!(resp.pending_era().and_then(|p| p.resp_osc), Some(4242));
+        resp.cut_over_to_pending().unwrap();
+        assert_eq!(resp.lane_root(), init.lane_root());
+        assert_eq!(resp.era_tag(), Some(to));
+        assert_eq!(resp.era_lineage, init.era_lineage, "a woven transition keeps the lineage");
+        assert!(resp.retired_era().is_some() && init.retired_era().is_some());
+        // Post-compromise: the old root alone (a revoked sibling's snapshot) does not reach the new era without the fresh secret.
+        let (wrong, _) = derive_era_keys(&fid, 1, &old_root, resp.history_key(), &[0u8; 32], &t);
+        assert_ne!(wrong, root_r);
+    }
 
     /// A sibling that supersedes by replication keeps the old era retired (stragglers decrypt) and adopts a pending era the owner minted.
     #[test]

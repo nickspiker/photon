@@ -319,6 +319,8 @@ pub const DELETE_MARKER_PREFIX: &str = "\u{1}\u{2}photon-delete\u{2}\u{1}";
 
 /// Prefix for call-signaling rows (docs/calls.md): offer/answer/decline/busy/hangup/taken ride the lanes as ordinary encrypted messages — a call is indistinguishable from a text on the wire. Grammar + parsing live in `crate::call::signal`; the type layer only owns the marker so `is_control_content` can hide them.
 pub const CALL_PREFIX: &str = "\u{1}\u{2}photon-call\u{2}\u{1}";
+/// Era-ratchet control row (crypto/era.rs EraSignal): Init / Resp / Nudge ride the lane as hidden rows — window bypass and every hide-filter come free with is_control_content. The sender stores NO row (a dead Init must never re-serve on the new era); the receiver persists a hidden row with its ack_hash for re-ACK durability and never pushes it to siblings (the era itself replicates by chain-sync).
+pub const ERA_PREFIX: &str = "\u{1}\u{2}photon-era\u{2}\u{1}";
 
 
 /// True for any CONTROL message content (chain probe, delete marker, call signaling) — machinery rows that no UI, digest, weave window, or history page may surface.
@@ -326,6 +328,7 @@ pub fn is_control_content(content: &str) -> bool {
     content == CHAIN_PROBE_MARKER
         || content.starts_with(DELETE_MARKER_PREFIX)
         || content.starts_with(CALL_PREFIX)
+        || content.starts_with(ERA_PREFIX)
 }
 
 /// Attachment row marker. NOT control content — attachment rows are VISIBLE messages (bubble = pill), they ACK, sync fleet-wide, tombstone, and weave like any row; only their DISPLAY differs. The content string is the whole record: `PREFIX + blake3_hex(64) + \u{2} + filename + \u{2} + size_bytes` — riding the ordinary content field means zero codec changes anywhere (vault, history pages, fleet sync all carry it as text). The blob itself travels separately over PT (attach_blob frames) and lives as a sealed file beside the vault, NEVER in a row.
@@ -485,6 +488,10 @@ pub struct Contact {
     pub clutch_keygen_in_progress: bool,
     /// Which keygen family the worker is grinding (0 curves / 1 lattices / 2 HQC / 3 McEliece) — the ladder's steps 0-3. Runtime-only, minted per spawn; stale once keypairs land.
     pub clutch_keygen_progress: Option<std::sync::Arc<std::sync::atomic::AtomicU8>>,
+    /// The light era ratchet we INITIATED and are waiting on (crypto/era.rs): ephemeral decapsulation keys + the nonce a Resp must echo. Runtime only — a restart aborts the ratchet.
+    pub era_ephemeral: Option<crate::crypto::era::EraEphemeral>,
+    /// The Resp we already sent for an Init nonce: a duplicate Init (retransmit) gets the SAME ciphertexts back — re-encapsulating would derive a second, different era for one nonce. Runtime only.
+    pub era_resp_cache: Option<([u8; 32], crate::crypto::era::EraKemWire)>,
     /// Flag to prevent multiple concurrent KEM encapsulations
     pub clutch_kem_encap_in_progress: bool,
     /// Flag to serialize KEM decapsulation jobs — a queued KEM re-arrival mid-flight waits in clutch_pending_kem until the running decap drains.
@@ -674,6 +681,8 @@ impl Contact {
             clutch_claim_deferred: None,
             clutch_keygen_in_progress: false, // No keygen running yet
             clutch_keygen_progress: None,
+            era_ephemeral: None,
+            era_resp_cache: None,
             clutch_kem_encap_in_progress: false, // No KEM encap running yet
             clutch_kem_decap_in_progress: false,
             clutch_ceremony_in_progress: false, // No ceremony completion running yet

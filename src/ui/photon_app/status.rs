@@ -383,6 +383,8 @@ impl PhotonApp {
         let mut chain_pull_reqs_after: Vec<([u8; 32], [u8; 32], Option<u64>)> = Vec::new();
         // Era observations from the pong loop (which holds the chains borrow) — dispatched after it (era ratchet stage 2).
         let mut era_triggers_after: Vec<(crate::types::friendship::FriendshipId, super::era::RepairTrigger)> = Vec::new();
+        // A sibling's presence VERDICT changed (first probe, or online↔offline): the computed ceremony owner may have moved — recomputed after the drain (era.rs).
+        let mut owner_edge = false;
         let mut chain_pull_misses_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
         // Sibling departure requests (bilateral removal), deferred past the checker borrow.
         let mut depart_reqs_after: Vec<(i64, Vec<u8>, [u8; 32], u8, Option<[u8; 32]>)> = Vec::new();
@@ -867,6 +869,9 @@ impl PhotonApp {
                                 ep.online = is_online;
                             }
                             // §4.2 takeover boot-race fix: a VERDICT landed for this contact — pong (is_online=true) or 3-consecutive-timeout (false, same arm). Until this is set, "owner absent" means nothing and takeover stays parked.
+                            if contact.is_sibling && (!contact.presence_probed || contact.is_online != is_online) {
+                                owner_edge = true;
+                            }
                             contact.presence_probed = true;
                             // Reachability clock: only the POSITIVE report counts (a TIMEOUT arrives thru this same arm with is_online=false — silence is exactly what the clock measures).
                             if is_online {
@@ -1540,6 +1545,13 @@ impl PhotonApp {
                                 "CHAT: Chain advanced for {} (ACK verified)",
                                 crate::fp(&from_handle_hash)
                             );
+                            // RESPONDER CUTOVER EDGE (era.rs, plan §2 step 4): the ACK for our RatchetResp proves the initiator decapsulated and cut over — the pending era becomes current here; undelivered rows re-serve on the fresh lane via rotated_flush.
+                            if chains.pending_era().and_then(|p| p.resp_osc) == Some(acked_eagle_time) {
+                                if let Some((old_tag, new_tag, retired)) = chains.cut_over_to_pending() {
+                                    crate::logf!("ERA: cut over {:08x} → {:08x} (era#{}) on the Resp's ACK — {} pending(s) re-serve on the fresh lane; old era retired for the straggler window", old_tag, new_tag, chains.era_index, retired);
+                                    rotated_flush.push(ack_fid);
+                                }
+                            }
 
                             // Our TX chain just advanced on a matching ACK — their RX is proven. Record it so the chain-weave can seal (sealing itself happens after the `chains` borrow ends, below). This is the "our TX / their RX" half of woven.
                             if let Some(contact) = self.contacts.get_mut(contact_idx) {
@@ -1758,6 +1770,20 @@ impl PhotonApp {
                             hex::encode(&self.contacts[matched_ci].device_key().unwrap_or_default()[..4])
                         );
                         continue;
+                    }
+
+                    // §4.2 AT THE WIRE (computed owner, 2026-09-08): a friend's offer reaches EVERY device of ours by fan-out, and every device answering minted its own ceremony instance — the friend saw three ceremony ids, matched none, and sat Pending forever (Emma, waves log). Only the fleet's owner answers; the others say so and take the result by chain-sync.
+                    if !self.contacts[matched_ci].is_sibling {
+                        let siblings = sibling_presence_snapshot(&self.contacts);
+                        let our_pk = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+                        if ceremony_parked_by(&self.contacts[matched_ci], our_pk, &siblings) {
+                            crate::logf!(
+                                "CLUTCH §4.2: offer from {} parked — the fleet's ceremony owner {} answers; this device takes the result by chain-sync",
+                                crate::fp(&self.contacts[matched_ci].handle_proof),
+                                hex::encode(&self.contacts[matched_ci].ceremony_owner.unwrap_or_default()[..4])
+                            );
+                            continue;
+                        }
                     }
 
                     // OFFER AS MUTUALITY EVIDENCE (consent gate, 2026-08-25): an old client never knocks — its opening move is still the full offer. A token-matched, trust-gated offer proves the sender holds both party ids, exactly what the knock proves, so it flips a WeAsked row Mutual (persist + roster ride) before normal processing arms the ceremony.
@@ -4788,6 +4814,9 @@ impl PhotonApp {
         }
         // chain_pull miss verdicts (deferred): re-key ONLY when every live sibling contact has answered miss AND the evidence still stands. Offline siblings never answer, so the hold persists until one wakes — correct, its chains would have been clobbered by a premature re-key.
         // Era observations, decided outside the chains borrow.
+        if owner_edge {
+            self.recompute_ceremony_owners("presence verdict");
+        }
         for (fid, trigger) in era_triggers_after {
             if let Some(ci) = self.contacts.iter().position(|c| c.friendship_id == Some(fid) && !c.is_sibling) {
                 self.repair_dispatch(ci, trigger);

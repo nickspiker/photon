@@ -1,6 +1,7 @@
 pub mod blind;
 pub mod chain;
 pub mod clutch;
+pub mod era;
 pub mod handle_proof;
 pub mod keys;
 pub mod self_verify;
