@@ -902,14 +902,22 @@ impl PhotonApp {
         for (bytes, src) in frames {
             let mut opened: Option<(usize, i64, Option<[u8; 32]>, CallSignal)> = None;
             for (fid, chains) in &self.friendship_chains {
-                let (Some(lane_root), Some(history_key)) =
-                    (chains.lane_root(), chains.history_key())
-                else {
+                // Current era first, then the retired one: a call offer minted on the old era that lands after our cutover must still open (it used to read as "opened by no friendship").
+                let mut keys: Vec<[u8; 32]> = Vec::with_capacity(2);
+                if let (Some(lane_root), Some(history_key)) = (chains.lane_root(), chains.history_key()) {
+                    keys.push(crate::call::signal::express_key(lane_root, history_key));
+                }
+                if let Some(r) = chains.retired_era() {
+                    if let Some(hk) = r.history_key.as_ref() {
+                        keys.push(crate::call::signal::express_key(&r.lane_root, hk));
+                    }
+                }
+                if keys.is_empty() {
                     continue;
-                };
-                let key = crate::call::signal::express_key(lane_root, history_key);
-                if let Some((ts, lane_key, sig)) =
-                    crate::call::signal::open_express(&key, &bytes)
+                }
+                if let Some((ts, lane_key, sig)) = keys
+                    .iter()
+                    .find_map(|key| crate::call::signal::open_express(key, &bytes))
                 {
                     if let Some(ci) = self
                         .contacts

@@ -1737,7 +1737,6 @@ impl PhotonApp {
 
                     // Find contact by handle_hash
                     let mut rekey_request: Option<(ContactId, [u8; 32])> = None;
-                    let mut chains_to_remove: Vec<FriendshipId> = Vec::new();
                     // Deferred KEM encapsulation spawn (to avoid borrow conflict)
                     let mut kem_encap_spawn: Option<(
                         ContactId,
@@ -1830,8 +1829,8 @@ impl PhotonApp {
                                             crate::logf!("CLUTCH: Ignoring different-keyed offer from {} — completed {}ms ago (post-completion re-key cooldown)", crate::fp(&contact.handle_proof), contact.clutch_completed_at.map(|t| t.elapsed().as_millis()).unwrap_or(0));
                                             continue;
                                         }
-                                        crate::logf!("CLUTCH: Re-key from {} - we're Complete, they have new keys, nuking for fresh ceremony", crate::fp(&contact.handle_proof));
-                                        // Full re-key: nuke everything
+                                        crate::logf!("CLUTCH: Re-key from {} — we're Complete, they have new keys; running a fresh ceremony while the CURRENT chain keeps carrying traffic (era ratchet stage 1: nothing is destroyed until the new era completes)", crate::fp(&contact.handle_proof));
+                                        // Only the ceremony ROUND resets. friendship_id and the chains entry stay: sends, express signals and the compose bar ride the current era until completion supersedes it (2026-09-08 — Emma's "cannot send — no friendship chain" mid-ceremony).
                                         contact.clutch_our_keypairs = None;
                                         contact.clutch_round_started = None;
                                         contact.clutch_slots.clear();
@@ -1841,15 +1840,6 @@ impl PhotonApp {
                                         contact.clutch_offer_sent = false;
                                         contact.clutch_state = ClutchState::Pending;
                                         contact.completed_their_hqc_prefix = None;
-                                        if let Some(old_friendship_id) =
-                                            contact.friendship_id.take()
-                                        {
-                                            crate::logf!(
-                                                "CLUTCH: Invalidating old chains for {}",
-                                                crate::fp(&contact.handle_proof)
-                                            );
-                                            chains_to_remove.push(old_friendship_id);
-                                        }
                                         rekey_request =
                                             Some((contact.id.clone(), contact.handle_hash));
                                     } else {
@@ -2183,14 +2173,9 @@ impl PhotonApp {
                                         // Since we have NO keypairs here (we're in the is_none branch), we can't re-respond even to the same offer. Accept as re-key.
                                         //
                                         // Note: If peer keeps re-sending same offer, both sides will eventually converge on a fresh ceremony (peer will regenerate keys after timeout).
-                                        crate::logf!("CLUTCH: Received offer from {} while Complete - peer lost chains, accepting re-key", crate::fp(&contact.handle_proof));
-                                        // Delete our old chains - they're useless now
-                                        if let Some(fid) = contact.friendship_id {
-                                            chains_to_remove.push(fid);
-                                        }
-                                        // Reset ALL CLUTCH state for new ceremony (canonical discard + the Complete-rekey-only friendship clear)
+                                        crate::logf!("CLUTCH: Received offer from {} while Complete — peer lost chains, accepting re-key; the current chain keeps carrying traffic until the new era completes", crate::fp(&contact.handle_proof));
+                                        // The ceremony ROUND resets; friendship_id and the chains stay live until completion supersedes them (era ratchet stage 1).
                                         contact.discard_clutch_round();
-                                        contact.friendship_id = None;
                                         // Re-initialize slots and store their offer (was stored earlier but we just cleared)
                                         contact.init_clutch_slots(our_handle_hash);
                                         if let Some(slot) = contact.get_slot_mut(&their_handle_hash)
@@ -2263,26 +2248,6 @@ impl PhotonApp {
                                 }
                             }
                             break;
-                        }
-                    }
-
-                    // Remove invalidated chains from memory and disk
-                    for old_id in chains_to_remove {
-                        // Scrub the doomed chains' history key before dropping them (re-key path — the fresh ceremony derives its own).
-                        for (id, chains) in self.friendship_chains.iter_mut() {
-                            if *id == old_id {
-                                chains.zeroize_history_key();
-                                chains.zeroize_lane_root();
-                            }
-                        }
-                        self.friendship_chains.retain(|(id, _)| *id != old_id);
-                        // Delete from disk
-                        if let Some(storage) = self.storage.as_ref() {
-                            if let Err(e) = crate::storage::friendship::delete_friendship_chains(
-                                &old_id, storage,
-                            ) {
-                                crate::logf!("CLUTCH: Failed to delete old chains: {}", e);
-                            }
                         }
                     }
 

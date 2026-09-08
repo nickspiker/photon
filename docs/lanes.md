@@ -74,6 +74,28 @@ Chains schema **v8**: lanes + `lane_root`. v≤7 blobs read as **absent** → th
 - Unit: lane derivation is label-deterministic (two sides, same `lane_root` + label → identical lane); writer discipline (advancing a non-minted lane is a panic in debug, an error in release); checkpoint adopt-iff-greater; replay convergence (two simulated devices fed the same frame stream converge to identical lane state); flag-day (v7 blob reads absent, re-clutch fires).
 - Live (two-device fleet): message from a friend renders on BOTH devices and whichever is awake ACKs; kill the phone mid-conversation → desktop continues alone; wake the phone → checkpoint fast-forward, no fork detector, no re-key. Pull logs and read the `LANE:` lines.
 
+## Eras — a re-key never blanks the friendship (2026-09-08, stage 1 of the era ratchet)
+
+An **era** is one generation of a friendship's keys: one `lane_root`, one `history_key`, every lane derived from them.
+Eras carry an `era_index` (monotonic within a lineage) and an `era_lineage` (a one-way image of the era-0 root: a woven transition inherits it, a fresh CLUTCH mints a new one), and each lane is stamped with the era it belongs to.
+`clutch::era_tag` gives an era a 4-byte public fingerprint (the `s_id` pattern) for the wire and the logs.
+
+Two neighbours of the current era may exist on a blob at once.
+**Retired** is the previous era, kept read-only: its lanes still decrypt and ACK the peer's stragglers (frames they sent before their own completion), nothing is ever sent on them, and it is dropped — keys zeroized, lanes removed — on an observed edge: `RETIRED_ERA_GRACE_ROWS` current-era frames from the peer, or the next cutover. Never a timer.
+**Pending** is the next era, derived but not yet written to: phase one of a two-phase cutover, used by the in-band ratchet (a later stage); `cut_over_to_pending` flips it to current with the `rotate_our_lane` shape (our lane and pendings reset, undelivered rows re-serve on a fresh lane under the new root).
+
+A completed ceremony **supersedes** (`supersede_with`): the fresh era becomes current and the one we held becomes retired.
+Nothing is destroyed at ceremony START any more — the offer that used to `friendship_id.take()` and delete the chains now only resets the ceremony round, so sends, express call signals and the compose bar ride the current era until completion.
+This is what Emma's 2026-09-08 log paid for: `cannot send — no friendship chain`, `express frame opened by no friendship`, and a compose bar replaced by the ceremony ladder, all because a re-CLUTCH wiped the live chain the moment it decided to run.
+
+Era order (`era_superseded_by`): within one lineage the index is the truth; across lineages the newer genesis wins; the equal-genesis legacy tie falls to root byte-order, as before.
+A sibling whose current root is our pending root has cut over ahead of us — we follow it (`other_is_our_pending`), a "cut over now" rather than a supersede.
+Sibling replication carries all of it (`replication_subset`), so a fleet converges on eras the same way it converges on lanes.
+
+Storage is additive in schema v8 (`era_index`, `era_lineage`, per-lane `lane_era`, `retired_*`, `pending_*`); a blob without them loads as era 0 of the lineage its own root names, every lane in it.
+
+Not yet (later stages): the era tag on the chat frame and the pong sync record (today a frame on an unknown label materializes under the current root and a straggler of an era we no longer hold is still caught only by the fork detector); the in-band light ratchet; the woven full CLUTCH on fleet shrink; the consent-gated fresh channel; the single repair decision function replacing the remaining ad-hoc triggers.
+
 ## Out of scope here
 
 Groups (Phase C — same lanes off a group root), the reservoir/epoch FS machinery of §14.10 (lanes are compatible with it; it layers on later), UI (no UI work in this phase — rendering still shows one conversation, lanes are transport plumbing).

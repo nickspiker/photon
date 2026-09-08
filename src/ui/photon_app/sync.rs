@@ -1434,21 +1434,9 @@ impl PhotonApp {
         }
         self.contacts[idx].last_chain_reset_sent = Some(std::time::Instant::now());
         crate::logf!(
-            "CHAIN-REKEY: {} — forked woven chain; discarding for a fresh ceremony",
+            "CHAIN-REKEY: {} — forked woven chain; running a fresh ceremony while the current chain keeps carrying traffic (nothing is destroyed until the new era completes)",
             crate::fp(&self.contacts[idx].handle_proof)
         );
-        if let Some(fid) = self.contacts[idx].friendship_id.take() {
-            for (id, chains) in self.friendship_chains.iter_mut() {
-                if *id == fid {
-                    chains.zeroize_history_key();
-                    chains.zeroize_lane_root();
-                }
-            }
-            self.friendship_chains.retain(|(id, _)| *id != fid);
-            if let Some(storage) = self.storage.as_ref() {
-                let _ = crate::storage::friendship::delete_friendship_chains(&fid, storage);
-            }
-        }
         let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
         let c = &mut self.contacts[idx];
         c.discard_clutch_round();

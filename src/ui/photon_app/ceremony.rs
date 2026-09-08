@@ -1051,10 +1051,18 @@ impl PhotonApp {
                 .iter_mut()
                 .find(|(id, _)| *id == friendship_id)
             {
-                // Supersede: scrub the OLD chains' history key + lane root before the re-keyed chains replace them (the fresh chains carry their own newly derived pair).
-                entry.1.zeroize_history_key();
-                entry.1.zeroize_lane_root();
-                entry.1 = result.friendship_chains;
+                // Supersede: the fresh era becomes current and the one we held becomes RETIRED — its lanes keep decrypting the peer's stragglers (frames they sent before their own completion) until the window is spent. Nothing is zeroized here; the retire edge does that.
+                let old_tag = entry.1.era_tag();
+                entry.1.supersede_with(&result.friendship_chains);
+                let old_s = old_tag.map(|t| format!("{t:08x}")).unwrap_or_else(|| "none".into());
+                let new_s = entry.1.era_tag().map(|t| format!("{t:08x}")).unwrap_or_else(|| "none".into());
+                crate::logf!(
+                    "ERA: ceremony superseded era {} → {} (index {}) — old era retired, still readable for {} straggler frame(s)",
+                    old_s,
+                    new_s,
+                    entry.1.era_index,
+                    crate::types::friendship::RETIRED_ERA_GRACE_ROWS
+                );
             } else {
                 self.friendship_chains
                     .push((friendship_id, result.friendship_chains));

@@ -1264,6 +1264,13 @@ impl PhotonApp {
             // Mark as received for deduplication (protects against UDP duplicates). NOT for a duplicate-stamp re-encrypt: the tip already covers its eagle_time, and writing the older stamp would REGRESS the contiguous tip — falsely advertising the rows above it as un-received (pong sync records), inviting pointless re-serves.
             if !is_dup_frame {
                 chains.mark_received(&lane, timestamp);
+                // A current-era frame from the peer spends one row of the retired era's straggler window; the window's end is the retire edge (never a timer).
+                if chains.lane_is_writable(&lane) && chains.note_current_era_frame() {
+                    let r = chains.retired_era().map_or(0, |r| r.era_index);
+                    if chains.drop_retired_era() {
+                        crate::logf!("ERA: retired era #{} dropped — {} current-era frames seen, keys zeroized, lanes removed", r, crate::types::friendship::RETIRED_ERA_GRACE_ROWS);
+                    }
+                }
             }
 
             // Update hash chain state for next message verification
