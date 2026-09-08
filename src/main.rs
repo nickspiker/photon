@@ -99,10 +99,13 @@ fn main() {
     // Losing the lock is no longer an error by default: the resident-mode handoff — clicking the icon while a (possibly hidden) instance runs — asks that instance to surface itself and exits quietly; if the holder is a LIFELINE it yields the lock instead and this launch takes over. The old already-running error remains the fallback when nobody answers the control channel.
     let dir = photon_messenger::storage::photon_config_dir()
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let install_listener = |_lock: &photon_messenger::storage::InstanceLock| {
-        // We ARE the instance: park the control listener for the app to serve once its event proxy exists. Unix gets a dedicated socket (safe to create only now, under the flock); Windows reuses the lock's own TcpListener.
+    let install_listener = |lock: &photon_messenger::storage::InstanceLock| {
+        // We ARE the instance: park the control listener for the app to serve once its event proxy exists. Unix gets a dedicated socket (safe to create only now, under the flock); Windows reuses the lock's own TcpListener — so `lock` is genuinely used only under cfg(not(unix)): the unix arm consumes it explicitly or the per-target unused lint whipsaws (the 2026-09-08 deploy tear: a Linux-side `_lock` rename broke the Windows leg).
         #[cfg(unix)]
-        photon_messenger::platform::control::install_unix_listener(&dir);
+        {
+            let _ = lock;
+            photon_messenger::platform::control::install_unix_listener(&dir);
+        }
         #[cfg(not(unix))]
         if let Some(l) = lock.control_listener() {
             photon_messenger::platform::control::install_tcp_listener(l);
