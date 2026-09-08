@@ -1602,6 +1602,10 @@ pub struct PhotonApp {
     link_consent: Option<String>,
     /// Hit base for the consent pills: +0 Open, +1 Copy, +2 Cancel.
     link_consent_base: HitId,
+    /// Fold-freshness tripwire cooldown: hp → last tripwire-driven fold refetch. 60s floor bounds the R2-lag refetch loop; keys only ever come from matched contacts, so cardinality ≤ roster size.
+    fleet_tip_refetch: std::collections::HashMap<[u8; 32], std::time::Instant>,
+    /// Session dedup for the no-contact presence-verdict breadcrumb (cleared wholesale at 64 — a diagnostic, not a ledger).
+    unknown_verdict_logged: std::collections::HashSet<[u8; 32]>,
     /// Hit id for the selected message's "copy" pill inside the details strip.
     msg_copy_id: HitId,
     /// Base hit id for the rest of the details-strip action pills (span 8): 0=reply, 1=edit, 2=resend, 3=delete. Copy keeps its own id above.
@@ -2175,6 +2179,8 @@ impl PhotonApp {
             msg_link_hits: Vec::new(),
             link_consent: None,
             link_consent_base: HIT_NONE,
+            fleet_tip_refetch: std::collections::HashMap::new(),
+            unknown_verdict_logged: std::collections::HashSet::new(),
             msg_copy_id: HIT_NONE,
             msg_action_base: HIT_NONE,
             msg_hit_rows: Vec::new(),

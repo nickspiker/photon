@@ -369,6 +369,8 @@ impl PhotonApp {
         )> = Vec::new();
         // Consent gate (2026-08-25): knocks to fire and the roster ride for a Mutual flip — both need &mut self, so they wait out the drain like the jobs above.
         let mut knock_after: Vec<crate::types::ContactId> = Vec::new();
+        // Fold-freshness tripwire (the Jon incident): friend hps whose pong claimed a NEWER chain tip than our stored fold — refetch after the drain (the contacts loop holds &mut self.contacts, so the &mut-self spawn defers, the knock_after idiom).
+        let mut stale_fold_hps: Vec<[u8; 32]> = Vec::new();
         // chain_pull request/miss events, deferred past the checker borrow (their handling mutates watermarks / re-keys).
         let mut chain_pull_reqs_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
         let mut chain_pull_misses_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
@@ -417,6 +419,7 @@ impl PhotonApp {
                     avatar_pin,
                     locked_reports,
                     about,
+                    fleet_tip,
                 } => {
                     // Stall recovery (runs EVERY ping that carries sync records, not just the offline→online edge): each record advertises the peer's contiguous head. Re-arm any pending of ours newer than the head for OUR lane AND already given up (exhausted attempts) — so a gap-filler the sender abandoned gets resent and a receiver stuck behind a permanently-lost message un-sticks. The staleness gate stays (a fresh send is left to normal backoff; only a given-up one is revived), which keeps a pong that merely raced ahead of the ACK from double-sending. collect_due_retransmits (the tick path) then actually sends the revived messages.
                     let now_osc = vsf::eagle_time_oscillations();
@@ -636,8 +639,10 @@ impl PhotonApp {
                     let our_device_pk = Some(our_device_pubkey);
                     let siblings = sibling_presence_snapshot(&self.contacts);
                     // Find matching contact and update status
+                    let mut verdict_matched = false;
                     for contact in &mut self.contacts {
                         if contact.knows_device(&peer_pubkey.key) {
+                            verdict_matched = true;
                             // REPORTED-STOLEN intake (device-trust-and-recovery.md): the pong's sealed tail names the peer fleet's locked devices, and ONE report from a trusted fold member suffices. The authorization lives at lock CREATION, not here: writing fleet.locked demands the handle at a fresh attest, so a stock-client thief can't mint a false report — and a locked device's stale fleet key can't even read current fstate, so its reportable set is frozen at empty. The key-extraction tier defeats any threshold anyway (it can plant a fresh fold member as a second voucher — the trust doc's own observation), so requiring two only stranded the commonest fleet: two devices, one stolen, one survivor. A reporter still never counts toward refusing itself. Monotonic and persisted.
                             if !contact.is_sibling {
                                 for reported in &locked_reports {
@@ -762,6 +767,25 @@ impl PhotonApp {
                                 }
                             }
 
+                            // FOLD-FRESHNESS TRIPWIRE: the sealed tail's ftip is the friend fleet's own chain-tip claim. Newer than our adopted fold ⇒ our device-set copy has rotted (their fresh sibling is invisible to us — the Jon incident) ⇒ throttled authoritative refetch, which adopts the new set and heals every knows_device gate in the same tick. Gates: friends only (sibling/self rows never carry an adopted fold — ungated this fires forever), folded-once (bootstrap belongs to the normal first fold), not superseded/ended (their ts never advances — an ungated compare would refetch every cooldown forever). Quiesces because adoption always lands fleet_members_ts = fetched tip, even when the member set is unchanged.
+                            if let Some(ftip) = fleet_tip {
+                                if is_online
+                                    && !contact.is_sibling
+                                    && contact.fleet_folded_once
+                                    && !contact.identity_superseded
+                                    && !contact.identity_ended
+                                    && ftip > contact.fleet_members_ts
+                                {
+                                    crate::logf!(
+                                        "FLEET: {} pong claims chain tip {} > our adopted fold {} (via device {}) — fold stale, refetching",
+                                        crate::fp(&contact.handle_proof),
+                                        ftip,
+                                        contact.fleet_members_ts,
+                                        crate::fp(&peer_pubkey.key)
+                                    );
+                                    stale_fold_hps.push(contact.handle_proof);
+                                }
+                            }
                             // Per-device About off the sealed tail — SIBLINGS ONLY, both directions (Nick's disclosure ruling 2026-08-31): we don't say it to friends, and we don't ADOPT it from a non-sibling either — a modified friend client volunteering an abt field changes nothing here.
                             if let Some(a) = about.as_ref().filter(|_| contact.is_sibling) {
                                 if contact.device_about.as_deref() != Some(a.as_str()) {
@@ -1028,6 +1052,14 @@ impl PhotonApp {
 
                             break;
                         }
+                    }
+                    // BREADCRUMB (the other silent drop): a signature-verified presence verdict whose device matches NO contact — today this fell off the loop with zero trace. Session-deduped; bounded because only sig-verified devices reach this arm.
+                    if !verdict_matched && !self.unknown_verdict_logged.contains(&peer_pubkey.key) {
+                        if self.unknown_verdict_logged.len() >= 64 {
+                            self.unknown_verdict_logged.clear();
+                        }
+                        self.unknown_verdict_logged.insert(peer_pubkey.key);
+                        crate::logf!("Status: presence verdict from device {} matched no contact (their fold ahead of ours, or a departed device) — dropped", crate::fp(&peer_pubkey.key));
                     }
                 }
                 // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete handlers REMOVED Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived which are handled above (via TCP/PT transport).
@@ -4787,6 +4819,27 @@ impl PhotonApp {
             self.status_checker.as_ref(),
         ) {
             checker.send_lan_unicast(session.handle_proof, hq.port(), target);
+        }
+
+        // Tripwire refetches collected on pong edges — per-hp 60s cooldown (a stale claim keeps arriving until R2 convergence lands the adoption; one refetch a minute bounds that), then the authoritative fold fetch. The cooldown map is bounded by construction: only hps that matched a known contact ever enter it.
+        if !stale_fold_hps.is_empty() {
+            let now = std::time::Instant::now();
+            stale_fold_hps.sort_unstable();
+            stale_fold_hps.dedup();
+            let due: Vec<[u8; 32]> = stale_fold_hps
+                .into_iter()
+                .filter(|hp| {
+                    self.fleet_tip_refetch
+                        .get(hp)
+                        .map_or(true, |t| now.duration_since(*t).as_secs() >= 60)
+                })
+                .collect();
+            if !due.is_empty() {
+                for hp in &due {
+                    self.fleet_tip_refetch.insert(*hp, now);
+                }
+                self.spawn_contact_fleet_refresh(due);
+            }
         }
 
         // Consent knocks collected on pong edges (after releasing the checker borrow), plus the roster ride for any Mutual flip this drain confirmed — siblings learn the flip so whichever device is in hand completes the handshake.

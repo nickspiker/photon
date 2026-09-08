@@ -1177,6 +1177,7 @@ fn add_pong_sensitive_fields(
     avatar_pin: Option<&[u8; 64]>,
     locked_devices: &[[u8; 32]],
     about: Option<&str>,
+    fleet_tip: Option<i64>,
 ) {
     // One native multi-value `sync` row per conversation record — (hb token, e6 last_received). No counts, no numbered names.
     for record in sync_records {
@@ -1220,6 +1221,10 @@ fn add_pong_sensitive_fields(
     if let Some(a) = about {
         section.add_field_multi("abt", vec![VsfType::x(a.to_string())]);
     }
+    // FOLD-FRESHNESS TRIPWIRE (the Jon incident, 2026-09-08): our own membership-chain TIP eagle time. A receiver whose stored fleet_members_ts for us is older knows its device-set copy has rotted and refetches the fold — the heal for a friend's silently-stale view of our fleet. e6 (signed), NEVER a u-width — the ek parse-death trap.
+    if let Some(t) = fleet_tip {
+        section.add_field_multi("ftip", vec![VsfType::e(vsf::types::EtType::e6(t))]);
+    }
 }
 
 /// Build + AEAD-seal a pong's sensitive tail under the PAIRWISE pong key: the per-conversation sync rows (who-talks-to-whom metadata), the display name, and the 64-byte avatar pin (a bearer capability). Plaintext is an inner `pongsec` VSF section (encode_encrypted — the headerless form made for exactly this), sealed with kete ChaCha20-Poly1305 like history pages and the log seal. The key comes from the caller's PongSealKeys map, derived on the UI thread — this codec never sees an identity seed.
@@ -1229,6 +1234,7 @@ pub fn seal_pong_sensitive(
     avatar_pin: Option<&[u8; 64]>,
     locked_devices: &[[u8; 32]],
     about: Option<&str>,
+    fleet_tip: Option<i64>,
     key: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
     let mut inner = vsf::VsfSection::new("pongsec");
@@ -1239,6 +1245,7 @@ pub fn seal_pong_sensitive(
         avatar_pin,
         locked_devices,
         about,
+        fleet_tip,
     );
     kete::encrypt_bytes(&inner.encode_encrypted(), key)
 }
@@ -1254,6 +1261,7 @@ pub fn open_pong_sensitive(
         Option<[u8; 64]>,
         Vec<[u8; 32]>,
         Option<String>,
+        Option<i64>,
     ),
     String,
 > {
@@ -1288,12 +1296,22 @@ pub fn open_pong_sensitive(
             VsfType::x(s) => Some(s.clone()),
             _ => None,
         });
+    // Fold-freshness tip (new optional field — absent from legacy tails ⇒ no verdict).
+    let fleet_tip = section
+        .get_fields("ftip")
+        .first()
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::e(vsf::types::EtType::e6(t)) => Some(*t),
+            _ => None,
+        });
     Ok((
         sync_records,
         extract_pong_name(&fields),
         extract_pong_apin(&fields),
         locked,
         about,
+        fleet_tip,
     ))
 }
 
@@ -3706,16 +3724,31 @@ mod pong_seal_tests {
         // The disclosure policy (Nick 2026-08-31): About is fleet-internal. The builder writes `abt` iff the caller passed Some — a friend-bound tail (None) carries NO about field at all, and the sealed blob must not even contain the string.
         let key = [0x24u8; 32];
         let about = "v0.70.12 \u{b7} deadbeef1234 \u{b7} linux x86_64";
-        let with = seal_pong_sensitive(&sample_records(), None, None, &[], Some(about), &key).unwrap();
-        let without = seal_pong_sensitive(&sample_records(), None, None, &[], None, &key).unwrap();
-        let (_, _, _, _, got) = open_pong_sensitive(&with, &key).unwrap();
+        let with = seal_pong_sensitive(&sample_records(), None, None, &[], Some(about), None, &key).unwrap();
+        let without = seal_pong_sensitive(&sample_records(), None, None, &[], None, None, &key).unwrap();
+        let (_, _, _, _, got, _) = open_pong_sensitive(&with, &key).unwrap();
         assert_eq!(got.as_deref(), Some(about), "granted about must round-trip");
-        let (_, _, _, _, none) = open_pong_sensitive(&without, &key).unwrap();
+        let (_, _, _, _, none, _) = open_pong_sensitive(&without, &key).unwrap();
         assert!(none.is_none(), "ungranted about must be ABSENT, not empty");
         assert!(
             !without.windows(about.len()).any(|w| w == about.as_bytes()),
             "ungranted blob must not contain the fingerprint even sealed"
         );
+    }
+
+    /// The fold-freshness tip: e6 signed round-trip (a negative osc survives — eagle times are signed, and the ek trap taught us width-typed reads die), and absence reads None (legacy sender = no verdict, never a zero sentinel).
+    #[test]
+    fn ftip_round_trips_and_absent_reads_none() {
+        let key = [0x51u8; 32];
+        let with = seal_pong_sensitive(&sample_records(), None, None, &[], None, Some(-42), &key).unwrap();
+        let (_, _, _, _, _, t) = open_pong_sensitive(&with, &key).unwrap();
+        assert_eq!(t, Some(-42), "negative e6 must survive");
+        let big = seal_pong_sensitive(&sample_records(), None, None, &[], None, Some(i64::MAX / 2), &key).unwrap();
+        let (_, _, _, _, _, t) = open_pong_sensitive(&big, &key).unwrap();
+        assert_eq!(t, Some(i64::MAX / 2));
+        let without = seal_pong_sensitive(&sample_records(), None, None, &[], None, None, &key).unwrap();
+        let (_, _, _, _, _, none) = open_pong_sensitive(&without, &key).unwrap();
+        assert!(none.is_none(), "absent ftip must read None — no verdict from a legacy tail");
     }
 
     #[test]
@@ -3724,7 +3757,7 @@ mod pong_seal_tests {
         let records = sample_records();
         let name = "Ada Lovelace";
         let pin = [0x77u8; 64];
-        let blob = seal_pong_sensitive(&records, Some(name), Some(&pin), &[], Some("v0.0.0 \u{b7} test \u{b7} os arch"), &key).unwrap();
+        let blob = seal_pong_sensitive(&records, Some(name), Some(&pin), &[], Some("v0.0.0 \u{b7} test \u{b7} os arch"), Some(2_555_000_000_000_000_000), &key).unwrap();
         let bytes = sealed_pong(Some(blob)).to_vsf_bytes();
         assert!(!bytes.is_empty());
 
@@ -3759,12 +3792,13 @@ mod pong_seal_tests {
                 assert!(avatar_pin.is_none());
                 assert_eq!(observed_addr, Some("203.0.113.9:4383".parse().unwrap()));
                 // The right pairwise key recovers everything.
-                let (rec, dn, ap, _lockd, _about) =
+                let (rec, dn, ap, _lockd, _about, ftip) =
                     open_pong_sensitive(&sealed.expect("sealed tail present"), &key)
                         .expect("open with right key");
                 assert_eq!(rec, records);
                 assert_eq!(dn.as_deref(), Some(name));
                 assert_eq!(ap, Some(pin));
+                assert_eq!(ftip, Some(2_555_000_000_000_000_000), "fleet tip must round-trip thru the sealed tail");
             }
             other => panic!("expected StatusPong, got {:?}", other),
         }
@@ -3777,6 +3811,7 @@ mod pong_seal_tests {
             Some("Ada"),
             Some(&[0x77u8; 64]),
             &[],
+            None,
             None,
             &[0x42u8; 32],
         )
@@ -3824,7 +3859,7 @@ mod pong_seal_tests {
         let records = sample_records();
         let pin = [0x66u8; 64];
         let mut section = vsf::VsfSection::new("pong");
-        add_pong_sensitive_fields(&mut section, &records, Some("Grace"), Some(&pin), &[], None);
+        add_pong_sensitive_fields(&mut section, &records, Some("Grace"), Some(&pin), &[], None, None);
         let bytes = vsf::VsfBuilder::new()
             .creation_time_oscillations(44_444)
             .provenance_hash([0xCCu8; 32])

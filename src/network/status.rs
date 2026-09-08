@@ -139,6 +139,18 @@ fn locked_report() -> Vec<[u8; 32]> {
     LOCKED_REPORT.lock().map(|l| l.clone()).unwrap_or_default()
 }
 
+/// Our OWN membership-chain tip eagle time — the fold-freshness tip every sealed pong tail carries (the Jon-incident tripwire). Written by the UI thread's fold drain (the our-hp arm, the one funnel every chain-changing path drains thru); read by the status thread at pong-seal time. 0 = not yet folded ⇒ the field is omitted (a receiver gets no verdict), the correct boot posture. fetch_max: monotonic, so a stale R2 self-read can never regress the claim.
+static OWN_FLEET_TIP: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+pub fn set_own_fleet_tip(ts: i64) {
+    OWN_FLEET_TIP.fetch_max(ts, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn own_fleet_tip() -> Option<i64> {
+    let t = OWN_FLEET_TIP.load(std::sync::atomic::Ordering::Relaxed);
+    (t > 0).then_some(t)
+}
+
 /// Our fleet's SIBLING device pubkeys — the audience the per-device About is disclosed to (Nick's ruling 2026-08-31: a build fingerprint is fleet-internal; an authenticated friend is outside it). Written by the UI thread's reseed walk (the one place that reads chain-built is_sibling), read by the status thread when it decides whether a pong tail says `abt`. Empty until the first reseed = About withheld, the safe direction.
 static SIBLING_DEVICES: std::sync::Mutex<Vec<[u8; 32]>> = std::sync::Mutex::new(Vec::new());
 
@@ -330,6 +342,8 @@ pub enum StatusUpdate {
         locked_reports: Vec<[u8; 32]>,
         /// The responding DEVICE's build self-description ("v0.69.1 · abc · linux x86_64") from the sealed tail — the fleet page's per-device About. None on legacy/tail-less pongs.
         about: Option<String>,
+        /// The sender fleet's membership-chain tip eagle time from the sealed tail — the fold-freshness tripwire's claim. None = legacy/tail-less/no-tail arms (no verdict).
+        fleet_tip: Option<i64>,
     },
     // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived See docs/clutch.md Section 4.2 for the slot-based ceremony protocol.
     /// Encrypted chat message received (CHAIN format)
@@ -1704,6 +1718,8 @@ async fn run_checker(
         let mut recent_chat_frames: Vec<(([u8; 8], i64, [u8; 8]), std::time::Instant)> = Vec::new();
         // Devices whose sealed pong tail we could not open (no key seeded yet, or a stale key across their re-attest) — logged ONCE per device, not per pong: pongs arrive every cycle and a still-loading key map would otherwise spam a line every few seconds. An entry clears on the first successful open, so a key change that breaks again re-logs.
         let mut pong_open_failed: Vec<[u8; 32]> = Vec::new();
+        // The unknown-device ping BREADCRUMB's dedup (the Jon-incident diagnosability fix): this drop used to be a bare `continue` — permanently invisible on both sides. Once per device, CAPPED drop-oldest because it fires pre-signature-verify on attacker-choosable pubkeys (unlike pong_open_failed, which only grows for keyed contacts).
+        let mut unknown_ping_logged: Vec<[u8; 32]> = Vec::new();
         // Probe-REFLECTION rate cap: at most one reverse probe per device per minute. Reflection is how the side with NO working candidates ever validates its own direction (see the PunchProbe arm); the cap keeps two reflecting peers from probe ping-pong, and validation quiets both sides naturally (a validated side probes only its validated remote as keepalive).
         let mut reverse_probed: Vec<([u8; 32], std::time::Instant)> = Vec::new();
         loop {
@@ -2722,6 +2738,14 @@ async fn run_checker(
                                         list.iter().any(|p| *p == sender_pubkey)
                                     };
                                     if !is_contact {
+                                        // BREADCRUMB, once per device (capped): the silent-forever drop that made the Jon incident undiagnosable from the deaf side. A legit-but-unknown device (a friend's fresh sibling our fold hasn't caught up to) dies HERE — the ftip tripwire on our next pong to their KNOWN devices is the heal; this line is the evidence.
+                                        if !unknown_ping_logged.contains(sender_pubkey.as_bytes()) {
+                                            if unknown_ping_logged.len() >= 64 {
+                                                unknown_ping_logged.remove(0);
+                                            }
+                                            unknown_ping_logged.push(*sender_pubkey.as_bytes());
+                                            crate::logf!("Status: ping from unknown device {} dropped — no contact's fold contains it (stale fold on OUR side, a stranger, or a revoked device)", crate::fp(sender_pubkey.as_bytes()));
+                                        }
                                         continue;
                                     }
 
@@ -2794,6 +2818,7 @@ async fn run_checker(
                                             avatar_pin: None,
                                             locked_reports: Vec::new(),
                                             about: None,
+                                            fleet_tip: None,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -2822,6 +2847,8 @@ async fn run_checker(
                                             avatar_pin().as_ref(),
                                             &locked_report(),
                                             about.as_deref(),
+                                            // Sent unconditionally: the membership chain is public, the tip discloses nothing; the RECEIVER gates the compare (friend-only, folded-once, not superseded).
+                                            own_fleet_tip(),
                                             &key,
                                         ) {
                                             Ok(blob) => Some(blob),
@@ -2927,9 +2954,9 @@ async fn run_checker(
                                                             crate::network::fgtw::protocol::open_pong_sensitive(blob, &k).ok()
                                                         })
                                                     })
-                                                    .map(|(recs, _, _, _, about)| (recs, about))
+                                                    .map(|(recs, _, _, _, about, ftip)| (recs, about, ftip))
                                                     .unwrap_or_default();
-                                                let (salvaged, about) = salvaged;
+                                                let (salvaged, about, fleet_tip) = salvaged;
                                                 crate::logf!("Status: unmatched pong from {} ({}) — liveness + {} sync record(s) (late/twin/announce; no addr adoption)", crate::fp(responder_pubkey.as_bytes()), src_addr, salvaged.len());
                                                 send_status_update(
                                                     &status_tx_recv,
@@ -2944,6 +2971,8 @@ async fn run_checker(
                                                         locked_reports: Vec::new(),
                                                         // The About IS adopted here (unlike name/pin/locked, which wait for a matched pong): it's the responder's own sealed self-description, and the boot ANNOUNCE (an unsolicited pong) is exactly how a fresh build reaches the fleet page without waiting out ping backoff (2026-08-31).
                                                         about,
+                                                        // The boot ANNOUNCE lands in THIS arm (zero provenance never matches a pending ping) — the highest-value tripwire carrier: a fleet that just grew announces on the new sibling's first cycle.
+                                                        fleet_tip,
                                                     },
                                                     &event_proxy_recv,
                                                 );
@@ -2982,9 +3011,9 @@ async fn run_checker(
                                                         crate::network::fgtw::protocol::open_pong_sensitive(blob, &k).ok()
                                                     })
                                                 })
-                                                .map(|(recs, _, _, _, about)| (recs, about))
+                                                .map(|(recs, _, _, _, about, ftip)| (recs, about, ftip))
                                                 .unwrap_or_default();
-                                            let (salvaged, about) = salvaged;
+                                            let (salvaged, about, fleet_tip) = salvaged;
                                             crate::logf!("Status: pong answered by {} but we pinged {} — responder counted alive + {} sync record(s), ping re-armed for its recipient", crate::fp(responder_pubkey.as_bytes()), crate::fp(pending_ping.recipient_pubkey.as_bytes()), salvaged.len());
                                             send_status_update(
                                                 &status_tx_recv,
@@ -2998,6 +3027,7 @@ async fn run_checker(
                                                     avatar_pin: None,
                                                     locked_reports: Vec::new(),
                                                     about,
+                                                    fleet_tip,
                                                 },
                                                 &event_proxy_recv,
                                             );
@@ -3068,7 +3098,7 @@ async fn run_checker(
                                     }
 
                                     // Sensitive tail: an updated peer sends it ONLY sealed — open with the RESPONDING device's pairwise key (the signer, verified just above). A failed open (key not seeded yet, or a stale key across their re-attest) degrades to a tail-less pong: presence still lands, name/pin/sync simply wait for keys — and it logs once per device, not per pong. A legacy peer still sends the plaintext fields; keep honouring them until it updates.
-                                    let (sync_records, display_name, avatar_pin, locked_reports, about) =
+                                    let (sync_records, display_name, avatar_pin, locked_reports, about, fleet_tip) =
                                         match sealed {
                                             Some(blob) => {
                                                 let key = {
@@ -3105,13 +3135,13 @@ async fn run_checker(
                                                                 &event_proxy_recv,
                                                             );
                                                         }
-                                                        (Vec::new(), None, None, Vec::new(), None)
+                                                        (Vec::new(), None, None, Vec::new(), None, None)
                                                     }
                                                 }
                                             }
                                             // Legacy plaintext pong: no sealed tail, so no reported-stolen signal either — the report is trusted only under the pairwise seal.
                                             None => {
-                                                (sync_records, display_name, avatar_pin, Vec::new(), None)
+                                                (sync_records, display_name, avatar_pin, Vec::new(), None, None)
                                             }
                                         };
 
@@ -3128,6 +3158,7 @@ async fn run_checker(
                                             avatar_pin,
                                             locked_reports,
                                             about,
+                                            fleet_tip,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -3199,6 +3230,7 @@ async fn run_checker(
                                             avatar_pin: None,
                                             locked_reports: Vec::new(),
                                             about: None,
+                                            fleet_tip: None,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -3702,6 +3734,7 @@ async fn run_checker(
                             avatar_pin().as_ref(),
                             &locked_report(),
                             about.as_deref(),
+                            own_fleet_tip(),
                             &key,
                         )
                         .ok()
@@ -3848,6 +3881,7 @@ async fn run_checker(
                             avatar_pin: None,
                             locked_reports: Vec::new(),
                             about: None,
+                            fleet_tip: None,
                         },
                         &event_proxy,
                     );

@@ -777,6 +777,8 @@ impl PhotonApp {
             let mut successor_checks: Vec<([u8; 32], [u8; 32])> = Vec::new();
             for (hp, members, tip_ts, genesis, existed) in member_updates {
                 if Some(hp) == our_hp {
+                    // The fold-freshness tripwire's SENDER half: publish our own chain-tip eagle time to the RX worker, which stamps it into every sealed pong tail (ftip). Every chain-changing path funnels thru this drain, so one line covers attest, device add/remove, roster merge, and the 45s refold. fetch_max inside — a stale R2 self-read can't regress the claim.
+                    crate::network::status::set_own_fleet_tip(tip_ts);
                     self.reconcile_fleet_siblings(&members);
                     // Cutover: OUR fold is the primary registry's truth — converge on the fold-change edge (any member may; writes are idempotent and epoch-guarded, so racing siblings settle).
                     if self.registry_converged_fold != members {
