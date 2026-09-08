@@ -7,7 +7,7 @@
 //! - Encryption key: BLAKE3(identity_seed || fleet_key || "contacts_v1")
 //!
 //! v0 bound `device_secret` (the device's Ed25519 secret) into BOTH, which meant a blob was readable only by the device that wrote it. That is not a backup: the case people mean by backup is a lost or replaced device, and that is exactly the case where the key is gone.
-//! It was also silently orphaned on every Android reinstall, because the Android fingerprint oracle is ANDROID_ID and that rotates. Binding the FLEET key instead makes the blob what the module always claimed to be, and gives it a natural purge path (any device can delete it, and `clean_device_for_reuse` does).
+//! It was also orphaned on a factory reset (the one event that rotates ANDROID_ID — the SSAID is stable across reinstalls, Nick 2026-09-08; an earlier version of this comment claimed reinstalls rotate it, which is wrong). Binding the FLEET key instead makes the blob what the module always claimed to be, and gives it a natural purge path (any device can delete it, and `clean_device_for_reuse` does).
 //!
 //! This is a BACKUP, not the sync channel. Live cross-device contact state travels on the fleet roster (`fleet::push_roster`/`pull_roster`), which is a proper CRDT with a logical clock and tombstones. This blob is the cold copy for a fleet that has lost every device's vault but still holds the fleet key.
 //!

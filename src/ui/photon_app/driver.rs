@@ -3341,12 +3341,18 @@ impl PhotonApp {
                                 let fp = crate::fp(&c.handle_proof);
                                 // The row's full identity beside its table: handle_hash names the party id the tokens/tables derive from, first-met names the pinned device, state names the ceremony posture. The 2026-08-12 evening round proved fp+table alone can't distinguish a stale-keyed self row / debris row / sibling from the outside — this makes the next round ground truth without another guessing session.
                                 let detail = format!(
-                                    " [id {} hash {} first-met {} {:?}{}]",
+                                    " [id {} hash {} first-met {} {:?}{}{}]",
                                     hex::encode(&c.id.as_bytes()[..4]),
                                     hex::encode(&c.handle_hash[..4]),
                                     hex::encode(&c.device_key().unwrap_or_default()[..4]),
                                     c.clutch_state,
-                                    if c.is_sibling { " sibling" } else { "" }
+                                    if c.is_sibling { " sibling" } else { "" },
+                                    // The §4.2 owner claim, named (Emma's ghost, 2026-09-08: a one-device fleet rendered "secured on <phantom>" — a foreign/zero owner pubkey nobody could identify remotely because no log ever printed it). fp+woven makes the next ghost self-identifying.
+                                    c.ceremony_owner.map_or(String::new(), |o| format!(
+                                        " owner {}{}",
+                                        hex::encode(&o[..4]),
+                                        if c.owner_woven { " woven" } else { "" }
+                                    ))
                                 );
                                 let Some(conv) = self.conv_of(ci) else {
                                     continue;

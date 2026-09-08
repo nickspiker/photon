@@ -2190,6 +2190,7 @@ impl PhotonApp {
                                 contact,
                                 self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()),
                                 self.session.as_ref().map(|se| &se.identity_seed),
+                                self.contacts.iter().any(|s| s.is_sibling),
                             )
                             .replace('\n', " \u{00b7} ")
                             .into()
@@ -2600,6 +2601,7 @@ impl PhotonApp {
                                         .as_ref()
                                         .map(|kp| *kp.public.as_bytes()),
                                     self.session.as_ref().map(|se| &se.identity_seed),
+                                    self.contacts.iter().any(|s| s.is_sibling),
                                 )))
                                 .into_owned(),
                                 if contact.clutch_state == crate::types::ClutchState::Complete {

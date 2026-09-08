@@ -3090,11 +3090,13 @@ fn contact_status_line(
     c: &crate::types::Contact,
     our_device: Option<[u8; 32]>,
     identity_seed: Option<&[u8; 32]>,
+    has_siblings: bool,
 ) -> String {
     if c.clutch_proof_gave_up {
         return tr(Msg::DifferentIdentity).into_owned();
     }
-    if !c.is_sibling && !c.chain_woven {
+    if !c.is_sibling && !c.chain_woven && has_siblings {
+        // has_siblings gates the whole elsewhere-branch: a fleet of ONE can never truthfully be "secured on another of your devices" — Emma's ghost (2026-09-08) was a stale/foreign owner claim rendering a phantom voca name on a single-device fleet. With no siblings the claim is impossible by construction, so fall thru to the contact's own honest step detail (the census owner-fp line names the ghost bytes for diagnosis).
         match c.ceremony_owner {
             Some(owner) if Some(owner) != our_device => {
                 let name = identity_seed
