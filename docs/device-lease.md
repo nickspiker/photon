@@ -34,10 +34,12 @@ Borrow a stranger's device; tap approve on your watch; your conversations appear
 4. The fleet streams history to the session (fleet-holds-history makes the fleet the source; the borrowed device is a disposable viewport).
 5. Walk-away = recall from any owned device, or the hardware owner's own recall. The session key stops routing; the sealed session residue opens for nobody.
 
-## Staging
+## Staging (REVISED 2026-09-04 — the typed-handle stage is DEAD)
 
-- **Stage 1 — household lease**: grant + recall + the worker attest rule. Guest types their OWN handle on the owner's hardware — acceptable inside family trust (every shared computer works this way), never for strangers. Small: two Fleet-page verbs on the existing lock/recall routing machinery.
-- **Stage 2 — delegated guest session**: the airport flow. Builds on the designed-not-built cluster it belongs to: pairing v2 (binding-request registry + consent words), fleet inbox (the approve prompt IS a bind-attempt alert), session-capsule work. Weave in WITH that cluster, after voice calls.
+A "household lease" where the guest types their own handle on the owner's hardware was staged first and CUT the same day (Nick: typing a handle on a loaned device "makes me nervous" — correctly). A handle is seed-grade; entering it on foreign hardware hands that hardware's owner the guest's identity. Family trust changes who received the seed, not whether it was given. docs/key-custody.md's invariant — the borrowed keyboard never sees the handle — is universal, so there is exactly ONE lease flow:
+
+- **The delegated guest session**: grant + recall at the worker, session request from the loaned device, approval + handle entry on the GUEST'S OWN hardware, killable session key delivered. Builds with the pairing-v2 + fleet-inbox + session-capsule cluster, after voice calls.
+- Until it exists, the departure-intent menu ships with TWO options (new owner / desk) — a loaner option that could not complete would be the dangling-flow sin this rework exists to kill.
 
 ## Interactions with standing doctrine
 

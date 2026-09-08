@@ -222,6 +222,8 @@ fn run(
     // RX reassembly: per-window (tier, fountain decoder) + decoded-PCM stash, played strictly in window order (a hole is skipped, not synthesized — the dry playback queue renders the silence).
     let mut rx_decoders: std::collections::BTreeMap<u32, (usize, raptorq::Decoder)> =
         Default::default();
+    // Highest authenticated seq seen — the media re-point's forward-progress gate (see the RX loop).
+    let mut rx_max_seq: Option<u32> = None;
     let mut rx_done: std::collections::BTreeMap<u32, Vec<Vec<i16>>> = Default::default();
     let mut next_play: Option<u32> = None;
 
@@ -433,9 +435,14 @@ fn run(
             };
             pkts_in += 1;
             // Authenticated source: the peer's address follows its packets (NAT rebind / future handoff, no signaling needed).
-            if src != peer && src != crate::network::status::RELAY_ADDR {
-                crate::logf!("CALL: peer media now from {} (was {})", src, peer);
-                peer = src;
+            // FORWARD-PROGRESS GATE (2026-09-07, the address-trust doctrine): the step ratchet already kills cross-step replays, but a CURRENT-step packet replayed from an attacker's address would open fine and re-point our TX — so only a strictly-newer seq may steer. An off-path attacker never has a newer authentic packet; an on-path one could already drop the stream, gaining nothing.
+            let newer = rx_max_seq.map_or(true, |m| header.seq > m);
+            if newer {
+                rx_max_seq = Some(header.seq);
+                if src != peer && src != crate::network::status::RELAY_ADDR {
+                    crate::logf!("CALL: peer media now from {} (was {})", src, peer);
+                    peer = src;
+                }
             }
             // Bundle payload: [ctrl:1][source(seq)][repair(seq−1) if flagged]. seq IS the window id; the ctrl byte names both rungs (a rung switch between windows makes the two symbols different sizes, so length alone is ambiguous). The EXACT-length check is LOAD-BEARING: raptorq panics on mis-sized symbols, so nothing unchecked may reach a decoder.
             if payload.is_empty() {

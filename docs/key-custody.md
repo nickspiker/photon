@@ -10,7 +10,7 @@ Every wake answers one question — who vouches for this device right now?
 |---|---|---|---|
 | **wairua** (per-boot secret) | owned hardware, same boot | until power interruption | same boot, same session — nothing left the rail |
 | **handle typed ON the device** | owned hardware — THE PRIMARY FLOW | the root itself | the human knows the name that IS the key (seed = BLAKE3(handle)) |
-| **delegated session** (lease, stage 2) | BORROWED hardware only | until recall | an owned device approved — the handle NEVER touches the borrowed keyboard |
+| **delegated session** (the lease's ONLY flow) | BORROWED hardware only | until recall | an owned device approved — the handle NEVER touches the borrowed keyboard (the typed-handle "household lease" was cut 2026-09-04: foreign hardware must never receive a handle, family included) |
 
 **Two revisions, both Nick's, same day — kept as testimony:**
 1. A tap-only fleet vouch was rejected: possession must never suffice (a stolen backpack — rebooted laptop + still-attested watch — would have authenticated).

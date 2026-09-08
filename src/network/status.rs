@@ -632,6 +632,8 @@ struct PendingPing {
     sent_at: Instant,
     /// This entry already cost its device a strike (crossed PING_STRIKE_AFTER unanswered) — one strike per entry, ever; the entry itself lives on for late matching.
     struck: bool,
+    /// The address this ping was AIMED at. A fresh nonce-matched pong proves THIS address delivered — so adoption/retarget steer here, never at the pong's arrival source (which an on-path replayer chooses and asymmetric NATs rewrite). Provenance is per-send, so the match identifies exactly one aim.
+    target_addr: SocketAddr,
 }
 
 /// Unanswered-past-this = one strike toward offline (the historical 5s timeout, unchanged).
@@ -2998,6 +3000,10 @@ async fn run_checker(
                                     // Freshness: matched within the strike window = the historical fast path, full address trust. A LATE match (relay round-trip, doze) keeps every presence/sync/name semantic below but must not steer addresses — same replay posture as before the two-tier window.
                                     let fresh_match =
                                         pending_ping.sent_at.elapsed() < PING_STRIKE_AFTER;
+                                    // The PROVEN address is the one we aimed at (see PendingPing::target_addr) — a real address only; a relay-aimed ping proves reachability, not a path.
+                                    let proven_addr = (fresh_match
+                                        && pending_ping.target_addr != RELAY_ADDR)
+                                        .then_some(pending_ping.target_addr);
                                     if !fresh_match {
                                         crate::logf!(
                                             "Status: late pong matched from {} ({}) after {}s — presence honored, address held",
@@ -3030,11 +3036,11 @@ async fn run_checker(
                                     }
 
                                     // THE FROZEN-ADDRESS FIX (2026-09-02): this pong is signature-verified AND nonce-matched, so src_addr is the freshest PROVEN path to this device — re-aim every queued PT item (small packets + un-locked transfers) still burning retry ladders at stale addresses for it. Without this, addresses froze at enqueue and a same-LAN message sat 60s-to-minutes behind sprays at a wrong-subnet v4 and a dead cellular v6 while the proven path idled.
-                                    if fresh_match {
+                                    if let Some(addr) = proven_addr {
                                         let mut pt_mgr = pt_recv.lock().unwrap();
                                         pt_mgr.retarget_peer(
                                             responder_pubkey.as_bytes(),
-                                            src_addr,
+                                            addr,
                                             None,
                                         );
                                     }
@@ -3093,8 +3099,8 @@ async fn run_checker(
                                         StatusUpdate::Online {
                                             peer_pubkey: responder_pubkey,
                                             is_online: true,
-                                            // Late match: presence + tail land, the address does not (the app-layer adopter must only see fresh-proven paths).
-                                            peer_addr: fresh_match.then_some(src_addr),
+                                            // The app-layer adopter sees only the PROVEN aim (fresh match, real address) — never the arrival source, never late matches.
+                                            peer_addr: proven_addr,
                                             sync_records,
                                             display_name,
                                             avatar_pin,
@@ -3632,6 +3638,7 @@ async fn run_checker(
                         provenance_hash,
                         sent_at: Instant::now(),
                         struck: false,
+                        target_addr: request.peer_addr,
                     });
                 }
 
