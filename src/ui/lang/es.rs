@@ -301,7 +301,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LoadOnStartup => "Cargar al inicio".into(),
         Msg::LoadOnStartupExplainer => "Inicia photon en segundo plano al entrar al sistema y lo mantiene corriendo cuando la ventana se cierra (visible en la lista de inicio de tu propio sistema). Combínalo con el auto-atestado de abajo y tras un reinicio vuelve alcanzable sin escribir nada.".into(),
         Msg::LifelineCheckbox => "Puente a prueba de balas (línea de vida sin pantalla)".into(),
-        Msg::LifelineExplainer => "Mantiene un photon sin pantalla vigilando desde la sombra: si la app o la sesión gráfica entera muere, el puente vuelve en segundos — atestado de nuevo sin escribir nada, como el modo desatendido. Una ventana que abras siempre toma el control sin fricción.".into(),
+        Msg::LifelineExplainer => "Mantiene un photon sin pantalla corriendo en esta máquina en todo momento: tus mensajes siguen llegando y replicándose aquí, el historial sigue servido a tu flota y amigos, y el puente sigue alcanzable — un respaldo permanente de tu identidad si pierdes otro dispositivo. Si la app o la sesión gráfica entera muere, vuelve en segundos, atestado de nuevo sin escribir nada (como el modo desatendido). Una ventana que abras siempre toma el control sin fricción.".into(),
         Msg::LifelineChangeFailed(e) => format!("No se pudo cambiar el servicio de línea de vida: {e}").into(),
         Msg::UnattendedTitle => "\u{26A0} Auto-atestar al reiniciar (desatendido)".into(),
         Msg::UnattendedCheckbox => "Auto-atestar al reiniciar (desatendido)".into(),

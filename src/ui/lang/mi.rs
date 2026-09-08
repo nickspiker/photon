@@ -305,7 +305,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LoadOnStartup => "Tīmata i te whakaohonga".into(),
         Msg::LoadOnStartupExplainer => "Ka tīmata a photon i muri i te takiuru, ā, ka haere tonu ina katia te matapihi (ka kitea i te rārangi tīmatanga a tō pūnaha). Honoa ki te whakaū aunoa i raro nei, ā, ka hoki mai te pouaka i te whakaohonga me te kore tāuru kupu.".into(),
         Msg::LifelineCheckbox => "Arawhata pūmau (taura whakaora mata-kore)".into(),
-        Msg::LifelineExplainer => "Ka noho tētahi photon mata-kore hei kaitiaki i te taha pōuri: ki te mate te taupānga, te wātū whakairoiro katoa rānei, ka hoki mai te arawhata i roto i ngā hēkona torutoru — kua whakaūngia anō me te kore tāuru, pēnei i te aratau kore tangata. Ko te matapihi ka huakina e koe ka riro māna te mana i ngā wā katoa.".into(),
+        Msg::LifelineExplainer => "Ka noho tētahi photon mata-kore e rere tonu ana i tēnei mīhini: ka tau tonu mai ō karere ki konei me te tārua, ka tukuna tonutia te hītori ki tō tira me ō hoa, ā, ka taea tonutia te arawhata — he pūrua pūmau mō tō tuakiri ki te ngaro tētahi atu pūrere. Ki te mate te taupānga, te wātū whakairoiro katoa rānei, ka hoki mai i roto i ngā hēkona torutoru, kua whakaūngia anō me te kore tāuru (pēnei i te aratau kore tangata). Ko te matapihi ka huakina e koe ka riro māna te mana i ngā wā katoa.".into(),
         Msg::LifelineChangeFailed(e) => format!("Kāore i taea te whakarerekē i te ratonga taura whakaora: {e}").into(),
         Msg::UnattendedTitle => "\u{26A0} Whakaū aunoa i te whakaohonga (kore tangata)".into(),
         Msg::UnattendedCheckbox => "Whakaū aunoa i te whakaohonga (kore tangata)".into(),

@@ -281,7 +281,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LoadOnStartup => "Load on startup".into(),
         Msg::LoadOnStartupExplainer => "Starts photon in the background at login and keeps it running when the window closes (visible in your OS's own startup list). Pair it with auto-attest below and a reboot comes back reachable with nothing typed.".into(),
         Msg::LifelineCheckbox => "Bulletproof bridge (headless lifeline)".into(),
-        Msg::LifelineExplainer => "Keeps a headless photon watching from the shadows: if the app or the whole desktop session dies, the bridge is back within seconds — re-attested with nothing typed, like unattended mode. A window you open always takes over seamlessly.".into(),
+        Msg::LifelineExplainer => "Keeps a headless photon running on this machine at all times: your messages keep landing and replicating here, history stays served to your fleet and friends, and the bridge stays reachable — a standing backup of your identity if another device is lost. If the app or the whole desktop session dies, it's back within seconds, re-attested with nothing typed (like unattended mode). A window you open always takes over seamlessly.".into(),
         Msg::LifelineChangeFailed(e) => format!("Couldn't change the lifeline service: {e}").into(),
         Msg::UnattendedTitle => "\u{26A0} Auto-attest on reboot (unattended)".into(),
         Msg::UnattendedCheckbox => "Auto-attest on reboot (unattended)".into(),
