@@ -205,6 +205,8 @@ impl PhotonApp {
         self.call_speaker_on = false;
         self.call_playback.take();
         let now = vsf::eagle_time_oscillations();
+        // THIS device placed this call — the only license to loud-kill a strayed answer for it later (see the Answer arm's sibling law).
+        self.dialed_call_ids.insert(call_id);
         self.active_call = Some(ActiveCall {
             call_id,
             peer_handle_hash: peer,
@@ -453,9 +455,16 @@ impl PhotonApp {
             CallSignal::Offer { .. } => {} // our own fleet's outgoing offer echoed via merge — bookkeeping only
             CallSignal::Answer { call_id, nonce } => {
                 let Some(call) = self.active_call.as_mut() else {
-                    // An answer for a call we don't know (stale offer retransmit rang them after our crash): kill it loudly.
+                    // An answer with no active call. Loud-kill ONLY if THIS device dialed that call this session (the caller dismissed/lost it and the answer strayed in late — without the hangup the friend sits Active on a dead call). Any other device is a fleet SIBLING hearing the friend's answer fan-out, and it must stay SILENT: the express key is per-friendship so its hangup authenticates as the whole identity, and on 2026-09-08 the non-calling sibling's "kill it loudly" tore down Brittany's engine 107ms after answer — 17s of nobody hearing anybody. Siblings observe, never destroy (fleetwide wave presence — join/switch mid-call — rides on exactly that). Trade accepted: a caller that CRASHED (RAM set gone) no longer kills its own stray answer; the friend hangs up a one-way call by hand, which beats every multi-device call dying at answer.
                     if !from_merge && !row_is_outgoing {
-                        let _ = self.send_call_signal(ci, CallSignal::Hangup { call_id });
+                        if self.dialed_call_ids.contains(&call_id) {
+                            let _ = self.send_call_signal(ci, CallSignal::Hangup { call_id });
+                        } else {
+                            crate::logf!(
+                                "CALL: answer for a call this device didn't place (id {}) — ignored (sibling's copy)",
+                                hex::encode(&call_id[..4])
+                            );
+                        }
                     }
                     return;
                 };
@@ -640,8 +649,9 @@ impl PhotonApp {
                 }
             }
         }
-        if let Some((a, _)) = contact.validated_path {
-            if !targets.contains(&a) {
+        // validated_path is a FALLBACK, never a beside-target: it's per-CONTACT (whichever of the friend's devices punch-validated last), so firing it alongside the call's own express_addr delivered Brittany's answer to Nick's non-calling sibling too (field 2026-09-08). When the call has a known source, that source alone is the device running it; the lane row remains the durable copy for everyone else.
+        if targets.is_empty() {
+            if let Some((a, _)) = contact.validated_path {
                 targets.push(a);
             }
         }

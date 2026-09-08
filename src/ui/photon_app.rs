@@ -1820,6 +1820,8 @@ pub struct PhotonApp {
     fleet_approve_armed: Option<[u8; 32]>,
     /// Two-tap confirm armed for the Security page's "Remove & shred" (self-departure from the fleet chain, then crypto-wipe). Mutually exclusive with `settings_shred_armed`; cleared on any page switch, like every destructive arm.
     settings_removeshred_armed: bool,
+    /// call_ids THIS device dialed this session — the license for the stray-answer loud-kill (call_ui Answer arm): a device that never dialed must never hang up the friend. RAM-only on purpose; a few entries per session, never pruned.
+    dialed_call_ids: std::collections::HashSet<[u8; 16]>,
     /// About page: false = show the version as dozenal GLYPHS (the default — proper rendered dozenal, never arabic); true = the version tapped, spell it out in voca words. Toggles on each tap of the version row.
     about_version_spelled: bool,
     /// One tap on the version reveals the dozenal index; ONE tap within the index reveals the custodian riddle easter egg beneath it (session-permanent once found, hidden with the index when the version collapses).
@@ -2262,6 +2264,7 @@ impl PhotonApp {
             pending_depart_req: None,
             fleet_approve_armed: None,
             settings_removeshred_armed: false,
+            dialed_call_ids: Default::default(),
             about_version_spelled: false,
             about_riddle_revealed: false,
         }
