@@ -359,8 +359,6 @@ impl FluorApp for PhotonApp {
         self.call_play_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::Play)));
         // Beam (video) — a STUB: rendered disabled beside the Wave button until video lands; constructed LAST so the status/start/action/decline contiguous-id contract holds.
         self.call_beam_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BeamStart)));
-        // The preview scrub bar's raw hit id (not a Button — a painted rect + tap→fraction dispatch).
-        self.call_seek_hit = fluor::host::widget::next_id(&mut self.hit_counter);
         for b in [
             self.call_status_btn.as_mut(),
             self.call_start_btn.as_mut(),
@@ -1352,19 +1350,8 @@ impl FluorApp for PhotonApp {
                                     self.attach_fetch(sci, &hash);
                                     self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
                                 } else if name == "call.audio" {
-                                    // A kept call recording plays thru the mono downmix (call/playback.rs). Holds the handle in call_playback so the worker keeps running (drop = stop); a fresh tap replaces + stops the prior. Refuses (None) if a call owns the audio session.
-                                    let seed = self.session.as_ref().map(|s| s.identity_seed);
-                                    if let Some(seed) = seed {
-                                        self.call_playback =
-                                            crate::call::playback::play_blob(&seed, &hash);
-                                        self.ready_toast = Some(
-                                            if self.call_playback.is_some() {
-                                                tr(Msg::PlayingRecording).into_owned()
-                                            } else {
-                                                tr(Msg::CantPlayNow).into_owned()
-                                            },
-                                        );
-                                    }
+                                    // A kept call recording — tap toggles play/stop on this very bubble (call/playback.rs); the bubble label shows ■ progress while it plays. No more force-close to stop (field 2026-09-08).
+                                    self.toggle_recording_playback(hash);
                                 } else {
                                     match self.attach_save(&name, &hash) {
                                         Some(dest) => {
@@ -1806,17 +1793,6 @@ impl FluorApp for PhotonApp {
                     .as_ref()
                     .map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y))
                     .unwrap_or(HIT_NONE);
-
-                // Preview scrub bar: tap position → fraction → seek (phase-gated inside).
-                if hit_id != HIT_NONE && hit_id == self.call_seek_hit {
-                    if let Some((bx, _by, bw, _bh)) = self.call_seek_bar {
-                        if bw > 1.0 {
-                            let frac = ((ctx.cursor_x - bx) / bw).clamp(0.0, 1.0);
-                            self.seek_preview(frac);
-                            ctx.window.request_redraw();
-                        }
-                    }
-                }
 
                 // Permanence interstitial ("Yes — forever"): a press ANYWHERE other than the attest button cancels back to the pre-proof Fresh state. Editing the handle already cancels; this makes a tap on empty space, the field, the orb — anything else — cancel too, so a stray tap can never corner the user into the forever-claim (on Android "click elsewhere" was otherwise swipe-up → home → long-press → switch away). The attest button press itself is the deliberate confirm, so it's excluded; we fall thru afterwards so the tap still does its normal thing (focus the field, start a drag, open settings, …).
                 if matches!(self.state, AppState::Launch(LaunchState::Confirm)) {

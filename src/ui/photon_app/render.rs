@@ -291,16 +291,6 @@ impl PhotonApp {
             .unwrap_or_default();
         // Receive-drought state for the Active status line (call_drought_tick owns the flag).
         let call_reconnecting = self.active_call.as_ref().is_some_and(|c| c.reconnecting);
-        // Preview scrub state, hoisted like the duration (reads &self before the canvas work below).
-        let preview_frac = self
-            .call_playback
-            .as_ref()
-            .map(|p| (p.position() as f32 / p.total.max(1) as f32).min(1.0));
-        let ended_has_spool = self
-            .active_call
-            .as_ref()
-            .is_some_and(|c| c.phase == crate::call::CallPhase::Ended && c.spool.is_some());
-        self.call_seek_bar = None;
         // Fleet call-presence chip text, hoisted like the duration (machine_name reads &self): shown only in the chip's own conversation, only while THIS device has no call UI of its own.
         let fleet_chip_text: Option<String> = self.fleet_call_elsewhere.and_then(|(_, dev, chip_peer)| {
             if self.active_call.is_some() || !matches!(self.state, AppState::Conversation) {
@@ -665,45 +655,7 @@ impl PhotonApp {
                         }
                     }
                     crate::call::CallPhase::Ended => {
-                        // The save/discard decision reuses this full-screen panel: Play (preview) centred above, Delete LEFT, Keep RIGHT.
-                        if let Some(b) = self.call_play_btn.as_mut() {
-                            b.set_rect(w * 0.5, by - bh - unit * 0.6, w * 0.4, bh * 0.85);
-                            b.set_font_size(bfont);
-                            b.set_label(tr(if self.call_playback.is_some() { Msg::StopPlayback } else { Msg::Play }));
-                            let id = b.hit_id();
-                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                        }
-                        // Preview scrub bar above the Play pill: track + played fill; tap anywhere on it to seek (hit re-stamped in the late pass with fat-finger padding).
-                        if ended_has_spool {
-                            let bar_w = w * 0.5;
-                            let bar_h = (unit * 0.3).max(2.0);
-                            let bar_x = w * 0.5 - bar_w * 0.5;
-                            let bar_y = by - bh - unit * 0.6 - bh * 0.85 * 0.5 - unit * 1.0;
-                            paint::fill_rect(
-                                &mut canvas,
-                                bar_x as isize,
-                                bar_y as isize,
-                                bar_w as isize,
-                                bar_h as isize,
-                                *theme::SEND_BUTTON_HOVER,
-                                None,
-                                None,
-                            );
-                            let fill_w = bar_w * preview_frac.unwrap_or(0.0);
-                            if fill_w >= 1.0 {
-                                paint::fill_rect(
-                                    &mut canvas,
-                                    bar_x as isize,
-                                    bar_y as isize,
-                                    fill_w as isize,
-                                    bar_h as isize,
-                                    *theme::CALL_ACCEPT_HOVER,
-                                    None,
-                                    None,
-                                );
-                            }
-                            self.call_seek_bar = Some((bar_x, bar_y, bar_w, bar_h));
-                        }
+                        // Keep / Discard ONLY (Nick 2026-09-08): the ended screen is the decision, nothing else. Playback lives on the kept recording's own bubble in the conversation.
                         if let Some(b) = self.call_decline_btn.as_mut() {
                             b.set_rect(w * 0.5 - bw * 0.5 - unit * 0.75, by, bw, bh);
                             b.set_font_size(bfont);
@@ -2811,10 +2763,23 @@ impl PhotonApp {
                             }
                         };
                         // Bubble DISPLAY body: attachments keep their pill line; an edited row shows its newest edit body; reply/edit markers strip to their text.
+                        // The kept recording currently playing (hash, percent) — its bubble shows ■ progress instead of ▶ size.
+                        let playing_rec: Option<([u8; 32], u32)> = self.call_playback_hash.and_then(|h| {
+                            self.call_playback.as_ref().map(|p| {
+                                (h, ((p.position() as f32 / p.total.max(1) as f32) * 100.0).min(100.0) as u32)
+                            })
+                        });
                         let body_of = |m: &crate::types::ChatMessage| -> String {
                             if crate::types::parse_attachment_content(&m.content).is_none() {
                                 if let Some((_, b)) = edit_over.get(&m.timestamp) {
                                     return b.clone();
+                                }
+                            }
+                            if let (Some((ph, pct)), Some((h, name, _))) =
+                                (playing_rec, crate::types::parse_attachment_content(&m.content))
+                            {
+                                if name == "call.audio" && h == ph {
+                                    return tr(Msg::RecordingPlaying { pct }).into_owned();
                                 }
                             }
                             display_content(&m.content)
@@ -5806,25 +5771,6 @@ impl PhotonApp {
                         .flatten()
                         {
                             b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
-                        }
-                    }
-                    Some(crate::call::CallPhase::Ended) => {
-                        if let Some(b) = self.call_play_btn.as_ref() {
-                            b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
-                        }
-                        // The scrub bar's tap target, padded a half-unit vertically past the painted strip (fat fingers on a 2px-class bar).
-                        if let Some((bx, bar_y, bw, bar_h)) = self.call_seek_bar {
-                            let pad = bar_h.max(8.0) * 2.0;
-                            restamp_hit_rect(
-                                &mut chrome.hit_test_map,
-                                buf_w,
-                                buf_h,
-                                bx as isize,
-                                (bar_y - pad) as isize,
-                                (bx + bw) as isize,
-                                (bar_y + bar_h + pad) as isize,
-                                self.call_seek_hit,
-                            );
                         }
                     }
                     _ => {}

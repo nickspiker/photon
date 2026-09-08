@@ -401,6 +401,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ProfileSensitiveTaxId => "Tax ID".into(),
         Msg::ProfileSensitiveEmergency => "Emergency contact".into(),
         // ---- attachment bubbles ----
+        Msg::RecordingPlaying { pct } => format!("\u{25A0} playing \u{00B7} {}%", fmt_num(pct)).into(),
         Msg::RecordingBubble { units, unit_label, fetching } => {
             let tail = if fetching { " \u{2014} fetching\u{2026}" } else { "" };
             format!("\u{25B6} recording \u{00B7} {}\u{202F}{unit_label}{tail}", fmt_num(units)).into()

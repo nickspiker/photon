@@ -463,6 +463,7 @@ pub enum Msg<'a> {
     ProfileSensitiveEmergency,
     // ---- attachment bubbles ----
     RecordingBubble { units: u32, unit_label: &'a str, fetching: bool },
+    RecordingPlaying { pct: u32 },
     FileBubble { name: &'a str, units: u32, unit_label: &'a str, held: bool },
     InspectFailed(&'a str),
     // ---- message persistence / attachments toasts ----

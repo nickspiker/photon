@@ -117,23 +117,6 @@ impl PhotonApp {
             }
             any = true;
         }
-        // Play (Ended) — preview the recording before the Keep/Delete decision (plays the live spool thru the same mono downmix).
-        if self
-            .call_play_btn
-            .as_mut()
-            .map(|b| b.take_click())
-            .unwrap_or(false)
-        {
-            if matches!(phase, Some(CallPhase::Ended)) {
-                // Play/Stop TOGGLE (Nick 2026-09-08: "once you press play you can't stop it"): a live preview stops on the same pill; else start one.
-                if self.call_playback.is_some() {
-                    self.call_playback.take();
-                } else {
-                    self.preview_recording();
-                }
-            }
-            any = true;
-        }
         if any {
             ctx.window.request_redraw();
         }
@@ -152,65 +135,39 @@ impl PhotonApp {
         self.scene_dirty = true;
     }
 
-    /// Ended-screen preview finished on its own → drop the handle so the pill flips back to Play. Also the busy-retry: a Play pressed while the dying engine still held the audio session was silently refused (field 2026-09-08, "press play, nothing") — the pending flag re-fires the moment the session frees. Polled from the status tick (edge polls on worker flags, not timers).
+    /// A recording finished playing on its own → drop the handle + the which-row marker so the bubble flips back to ▶ (edge poll on the worker's done flag, no timer).
     pub(super) fn tick_playback_done(&mut self) {
         if self.call_playback.as_ref().is_some_and(|p| p.is_finished()) {
             self.call_playback = None;
+            self.call_playback_hash = None;
+            self.scene_dirty = true;
+        } else if self.call_playback.is_some() {
+            // Still playing → repaint so the bubble's ■ progress % advances (a bounded, user-initiated activity; the per-tick cost is one repaint while a recording plays).
             self.scene_dirty = true;
         }
-        if self.preview_pending {
-            let ended = self.active_call.as_ref().is_some_and(|c| c.phase == CallPhase::Ended);
-            if !ended {
-                self.preview_pending = false;
-            } else if !crate::platform::audio::is_active() {
-                self.preview_pending = false;
-                self.preview_recording();
-                self.scene_dirty = true;
-            }
-        }
     }
 
-    /// Scrub-bar seek: restart the preview at `frac` of the recording (decode-and-discard to the mark).
-    pub(super) fn seek_preview(&mut self, frac: f32) {
-        let Some(call) = self.active_call.as_ref() else {
-            return;
-        };
-        if call.phase != CallPhase::Ended {
+    /// Toggle playback of a kept recording bubble: tap the playing one → stop; tap any other → play it. `blob` = the recording's content hash (the bubble's identity). No force-close to stop anymore (field 2026-09-08).
+    pub(super) fn toggle_recording_playback(&mut self, blob: [u8; 32]) {
+        if self.call_playback.is_some() && self.call_playback_hash == Some(blob) {
+            self.call_playback = None; // drop = stop
+            self.call_playback_hash = None;
+            self.scene_dirty = true;
             return;
         }
-        let Some(ticket) = call.spool.as_ref() else {
+        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return;
         };
-        let total = self
-            .call_playback
-            .as_ref()
-            .map(|p| p.total)
-            .or_else(|| crate::call::playback::spool_total_frames(ticket));
-        let Some(total) = total else {
-            return;
-        };
-        let skip = (frac.clamp(0.0, 1.0) * total as f32) as usize;
-        self.call_playback.take(); // release the session first (one owner)
-        self.call_playback = crate::call::playback::play_spool_at(ticket, skip);
-        if self.call_playback.is_none() {
-            self.preview_pending = true; // session still winding down — the tick re-fires
-        }
+        self.call_playback = crate::call::playback::play_blob(&seed, &blob); // drops any prior handle = stops it
+        self.call_playback_hash = self.call_playback.as_ref().map(|_| blob);
+        self.ready_toast = Some(
+            if self.call_playback.is_some() {
+                tr(Msg::PlayingRecording).into_owned()
+            } else {
+                tr(Msg::CantPlayNow).into_owned()
+            },
+        );
         self.scene_dirty = true;
-    }
-
-    /// Preview the in-flight recording on the Ended screen (before Keep/Delete finalizes a blob) — plays the live spool thru the mono downmix. Holds the handle so the worker keeps running.
-    fn preview_recording(&mut self) {
-        // Stop any prior preview first (one owner of the audio session).
-        self.call_playback.take();
-        if let Some(call) = self.active_call.as_ref() {
-            if let Some(ticket) = call.spool.as_ref() {
-                self.call_playback = crate::call::playback::play_spool(ticket);
-                if self.call_playback.is_none() {
-                    // The dying engine still holds the session — retry on the tick instead of eating the tap.
-                    self.preview_pending = true;
-                }
-            }
-        }
     }
 
     /// Place a call to the open (or named) contact. One live call at a time — v1 is singular by design.
