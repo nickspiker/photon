@@ -225,12 +225,22 @@ fn push_captured(frame: Vec<i16>) {
     q.push_back(frame);
 }
 
+/// LOCAL-SOURCE playback (v-chirp probe, ringback, ended-screen preview): the queue is fed by a paced LOCAL source, not the network, so the whole adaptive apparatus must stand down — no priming, no target growth on dry (the source ENDING is dry), no standing-depth trims, no clock splice (there is no second clock to null). Field 2026-09-08, the conviction that unified three bugs: the engine dumps the 200-frame chirp into the queue at once and the hard ceiling TRIMMED IT FROM THE FRONT down to ~9 frames — the up-leg's low-frequency head never left the speaker (both field rejects: down-leg strong at a plausible lag, up-leg weak and late); the same splice/trim path made the ended-screen preview choppy and pitch-warped, and rode the ringback too.
+static LOCAL_SOURCE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_local_source(on: bool) {
+    LOCAL_SOURCE.store(on, Ordering::Relaxed);
+}
+
 /// Pop the next render frame thru the adaptive jitter buffer (silence when priming or dry — the no-PLC doctrine: missing audio is silence, never guesswork) and log it into the reference ring. Single-consumer (the one render loop), so the jitter atomics need no CAS.
 fn next_render_frame() -> Vec<i16> {
     let silence = || vec![0i16; FRAME_SAMPLES];
     let frame = {
         let mut q = PLAYBACK_Q.lock().unwrap();
-        if JITTER_PRIMING.load(Ordering::Relaxed) {
+        if LOCAL_SOURCE.load(Ordering::Relaxed) {
+            // Local source: verbatim drain — every queued sample reaches the DAC in order, exactly once.
+            q.pop_front().unwrap_or_else(silence)
+        } else if JITTER_PRIMING.load(Ordering::Relaxed) {
             // Building depth: play silence until the queue reaches the target, then start draining.
             if q.len() >= JITTER_TARGET.load(Ordering::Relaxed) {
                 JITTER_PRIMING.store(false, Ordering::Relaxed);
@@ -360,6 +370,7 @@ fn clear_queues() {
     // Each call starts fresh at the jitter floor, re-priming — never inheriting the last call's grown depth or window size.
     JITTER_TARGET.store(JITTER_FLOOR, Ordering::Relaxed);
     JITTER_MIN.store(JITTER_FLOOR, Ordering::Relaxed);
+    LOCAL_SOURCE.store(false, Ordering::Relaxed);
     JITTER_PRIMING.store(true, Ordering::Relaxed);
     JITTER_CLEAN_STREAK.store(0, Ordering::Relaxed);
     TRIM_OVER_STREAK.store(0, Ordering::Relaxed);

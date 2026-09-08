@@ -17,11 +17,17 @@ const PACE_TARGET: usize = 6;
 
 pub struct PlaybackHandle {
     stop: Arc<AtomicBool>,
+    /// Set by the worker on exit (end of recording or stop) — the UI polls it to flip the Play/Stop pill back without any timer.
+    done: Arc<AtomicBool>,
 }
 
 impl PlaybackHandle {
     pub fn stop(&self) {
         self.stop.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.done.load(Ordering::Relaxed)
     }
 }
 
@@ -56,16 +62,21 @@ pub fn play_spool(ticket: &SpoolTicket) -> Option<PlaybackHandle> {
 
 fn spawn(stream: KeptStream) -> Option<PlaybackHandle> {
     let stop = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
+    let done_flag = done.clone();
     // We are the owner (checked !is_active() above): start flips ACTIVE false→true.
     if !crate::platform::audio::start() {
         crate::platform::audio::stop();
         return None;
     }
+    // Local source: preview frames must reach the DAC verbatim — the network-jitter splice/trims were the field's "choppy and distorted" playback (2026-09-08).
+    crate::platform::audio::set_local_source(true);
     let spawned = std::thread::Builder::new()
         .name("call-playback".into())
         .spawn(move || {
             run(stream, &flag);
+            done_flag.store(true, Ordering::SeqCst);
             crate::platform::audio::stop(); // only we flipped ACTIVE true — safe to release
         })
         .is_ok();
@@ -73,7 +84,7 @@ fn spawn(stream: KeptStream) -> Option<PlaybackHandle> {
         crate::platform::audio::stop();
         return None;
     }
-    Some(PlaybackHandle { stop })
+    Some(PlaybackHandle { stop, done })
 }
 
 fn run(mut stream: KeptStream, stop: &AtomicBool) {

@@ -49,6 +49,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::CallDroppedRow => "\u{260E} wave \u{2014} dropped".into(),
         Msg::CallChipElsewhere(dev) => format!("\u{260E} wave in progress on {dev}").into(),
         Msg::CallChipElsewhereUnknown => "\u{260E} wave in progress on another device".into(),
+        Msg::StopPlayback => "\u{25A0} Stop".into(),
         Msg::CallEndedDur(dur) => format!("\u{260E} wave \u{2014} {dur}").into(),
         Msg::CallingName(name) => format!("\u{260E} waving {name}\u{2026}").into(),
         Msg::CallRow => "\u{260E} wave".into(),

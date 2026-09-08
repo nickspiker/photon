@@ -125,7 +125,12 @@ impl PhotonApp {
             .unwrap_or(false)
         {
             if matches!(phase, Some(CallPhase::Ended)) {
-                self.preview_recording();
+                // Play/Stop TOGGLE (Nick 2026-09-08: "once you press play you can't stop it"): a live preview stops on the same pill; else start one.
+                if self.call_playback.is_some() {
+                    self.call_playback.take();
+                } else {
+                    self.preview_recording();
+                }
             }
             any = true;
         }
@@ -145,6 +150,14 @@ impl PhotonApp {
             }
         }
         self.scene_dirty = true;
+    }
+
+    /// Ended-screen preview finished on its own → drop the handle so the pill flips back to Play. Polled from the status tick (an edge poll on the worker's done flag, not a timer).
+    pub(super) fn tick_playback_done(&mut self) {
+        if self.call_playback.as_ref().is_some_and(|p| p.is_finished()) {
+            self.call_playback = None;
+            self.scene_dirty = true;
+        }
     }
 
     /// Preview the in-flight recording on the Ended screen (before Keep/Delete finalizes a blob) — plays the live spool thru the mono downmix. Holds the handle so the worker keeps running.

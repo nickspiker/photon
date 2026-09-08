@@ -103,6 +103,8 @@ fn run(digest: [u8; 32], stop: Arc<AtomicBool>) {
     let gap_frames =
         (chirp::RING_REPEAT_GAP_SECS * audio::SAMPLE_RATE as f64 / audio::FRAME_SAMPLES as f64) as usize;
 
+    // Local source: the ringback cadence must reach the DAC verbatim (the network-jitter splice/trims warped it and polluted the probe, field 2026-09-08).
+    crate::platform::audio::set_local_source(true);
     // The probe: the same learner the engine runs, fed the ring as its far reference. bt_route widens its scan exactly as in-call; no stored seed — this measurement IS the seed.
     let route = audio::route_id();
     let mut learner = Learner::new(route.starts_with("bt:"), None, None);
@@ -179,7 +181,7 @@ fn run(digest: [u8; 32], stop: Arc<AtomicBool>) {
         );
     }
 
-    // Hand the session over to the engine if the wave was answered; otherwise close it — an unanswered wave must not leave the mic open.
+    // Hand the session over to the engine if the wave was answered; otherwise close it — an unanswered wave must not leave the mic open. Either way local-source mode is NOT cleared here: the engine's probe phase (which takes over on answer) is itself a local source and re-asserts/clears it on its own edges; on the close path clear_queues resets the flag.
     if super::media_sink_live() {
         crate::log("CALL: ringback stopped — engine has the session");
     } else {

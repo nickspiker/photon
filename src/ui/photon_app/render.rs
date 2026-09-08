@@ -659,7 +659,7 @@ impl PhotonApp {
                         if let Some(b) = self.call_play_btn.as_mut() {
                             b.set_rect(w * 0.5, by - bh - unit * 0.6, w * 0.4, bh * 0.85);
                             b.set_font_size(bfont);
-                            b.set_label(tr(Msg::Play));
+                            b.set_label(tr(if self.call_playback.is_some() { Msg::StopPlayback } else { Msg::Play }));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }

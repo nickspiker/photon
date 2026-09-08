@@ -270,6 +270,8 @@ fn run(
     super::MEDIA_START_OSC.store(vsf::eagle_time_oscillations(), Ordering::Relaxed);
     super::LAST_MEDIA_RX_OSC.store(0, Ordering::Relaxed);
     let _ = super::take_peer_redirect();
+    // LOCAL SOURCE while the probe owns the queue: the chirp is queued whole and must reach the DAC verbatim — the jitter machinery's front-trims were beheading it (field 2026-09-08: both legs' rejects were the trim, not the room).
+    crate::platform::audio::set_local_source(true);
     for f in crate::call::vchirp::frames() {
         crate::platform::audio::queue_playback(f);
     }
@@ -602,6 +604,7 @@ fn run(
         if probing {
             if probe_cap.len() >= crate::call::vchirp::CAPTURE_SAMPLES {
                 probing = false;
+                crate::platform::audio::set_local_source(false); // network audio owns the queue from here
                 let cap = std::mem::take(&mut probe_cap);
                 match (probe_render_osc, probe_anchor_osc) {
                     (Some(r), Some(a)) => {
@@ -615,6 +618,7 @@ fn run(
                 }
             } else if std::time::Instant::now() >= probe_deadline {
                 probing = false;
+                crate::platform::audio::set_local_source(false);
                 crate::logf!(
                     "CALL: v-chirp probe abandoned at deadline ({} of {} samples) — audio connected",
                     probe_cap.len(),

@@ -115,6 +115,7 @@ pub enum Msg<'a> {
     CallDroppedRow,
     CallChipElsewhere(&'a str),
     CallChipElsewhereUnknown,
+    StopPlayback,
     CallEndedDur(&'a str),
     CallingName(&'a str),
     CallRow,
