@@ -225,6 +225,7 @@ pub enum Msg<'a> {
     /// LEAVER's pending line under the words.
     DepartWaitingLine,
     /// APPROVER's Fleet card: the leaver declared new-owner intent.
+    DepartChooseFate,
     DepartIntentNewOwner,
     /// APPROVER's Fleet card: the leaver declared desk (keeping-it) intent.
     DepartIntentDesk,
@@ -335,7 +336,6 @@ pub enum Msg<'a> {
     RenamePill,
     // ---- security page ----
     SecurityLock,
-    SecurityRemove { armed: bool },
     SecurityShred { armed: bool },
     SecurityRemoveShred { armed: bool },
     SecurityStatusLine,
@@ -358,7 +358,6 @@ pub enum Msg<'a> {
     CustodianExplainer,
     SecurityIntro,
     SecurityLockHint,
-    SecurityRemoveHint,
     SecurityShredHint,
     SecurityRemoveShredHint,
     // ---- appearance ----

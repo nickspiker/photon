@@ -791,7 +791,6 @@ impl FluorApp for PhotonApp {
                     if *p != SettingsPage::Security {
                         self.settings_removeshred_armed = false;
                         self.settings_shred_armed = false;
-                        self.settings_remove_armed = false;
                         // A stranded unattended-confirm modal must not survive navigating away.
                         self.unattended_confirm = None;
                         self.unattended_confirm_failed = false;
@@ -839,6 +838,16 @@ impl FluorApp for PhotonApp {
                             self.fleet_rename = Some((pk, tb));
                             self.change_focus(Some(id));
                         }
+                    } else if (72..80).contains(&slot) || slot >= 80 && slot < 88 {
+                        // Departure intent chosen (the approver's answer): 72+ = new owner (countersign + release the brand), 80+ = desk (countersign, brand kept). Each completes the whole path at this one tap.
+                        let new_owner = slot < 80;
+                        let idx = (if new_owner { slot - 72 } else { slot - 80 }) as usize;
+                        let devices = self.fleet_device_rows();
+                        if let Some((pk, _, _, _, name, _, _, _)) = devices.get(idx).cloned() {
+                            if self.depart_choice.as_ref().is_some_and(|(d, _)| *d == pk) {
+                                self.complete_departure_approval(pk, &name, if new_owner { 1 } else { 2 });
+                            }
+                        }
                     } else if slot >= 48 {
                         // "Approve sign-out" (two-tap): the CONSENT half of the bilateral removal — countersign the leaver's departure request and publish the consented Remove. The leaver completes its side when it observes itself de-folded.
                         let idx = (slot - 48) as usize;
@@ -865,7 +874,9 @@ impl FluorApp for PhotonApp {
                                     self.depart_words_entry = Some((pk, tb));
                                     self.change_focus(Some(id));
                                 } else {
-                                    self.complete_departure_approval(pk, &name);
+                                    // Commitment-less request (pre-words era): no words gate and no intent menu — complete on the declared intent (0 degrades to desk: brand kept is the conservative fate).
+                                    let intent = self.pending_depart_req.as_ref().map(|(_, _, _, it, _)| *it).unwrap_or(2);
+                                    self.complete_departure_approval(pk, &name, if intent == 0 { 2 } else { intent });
                                 }
                             } else {
                                 self.fleet_approve_armed = Some(pk);
@@ -988,7 +999,6 @@ impl FluorApp for PhotonApp {
                         // "Lock" → clear session only (de-attest); vault kept, re-unlock by re-typing your handle. Works on Android (the -1 broadcast drops Kotlin's sticky session).
                         self.settings_shred_armed = false;
                         self.settings_removeshred_armed = false;
-                        self.settings_remove_armed = false;
                         tohu::clear_session();
                         self.session = None;
                         self.private_s = crate::crypto::blind::PrivateS::None;
@@ -1004,28 +1014,15 @@ impl FluorApp for PhotonApp {
                         } else {
                             self.settings_shred_armed = true;
                             self.settings_removeshred_armed = false;
-                            self.settings_remove_armed = false;
                         }
                     } else if slot == 3 {
-                        // "Sign out — new owner" (intent 1): the BILATERAL departure request whose approval countersigns AND releases the brand — the whole handoff completes at the approver's one confirm (the 2026-09-04 retire/Release incident fix). Two-tap confirm; wipe is GATED on observing our own de-fold.
+                        // "Release" (Nick 2026-09-08: Lock / Wipe / Release — the whole page): the BILATERAL departure — signs out, wipes, and removes this device from the fleet. Intent 0 = the APPROVER chooses the hardware's fate (new owner vs desk) at the words screen — the 2026-09-04 intent-menu design, now where it belongs. Two-tap confirm; wipe is GATED on observing our own de-fold. Why not unilateral: whoever briefly holds one unlocked device could sign it out — forcing a key rotation and laundering the hardware into their own fleet.
                         if self.settings_removeshred_armed {
                             self.settings_removeshred_armed = false;
-                            self.request_fleet_departure(1);
+                            self.request_fleet_departure(0);
                         } else {
                             self.settings_removeshred_armed = true;
                             self.settings_shred_armed = false;
-                            self.settings_remove_armed = false;
-                        }
-                    } else {
-                        // Slot 1 "Sign out — keeping the device" (intent 2): departure with the brand KEPT — the retired row is deliberate inventory, not a to-do. Two-tap confirm; last-member gate inside request_fleet_departure. Wipes on completion like every departure now (fleet holds history; the old keep-vault flavor retired with the intent menu).
-                        if self.settings_remove_armed {
-                            self.settings_remove_armed = false;
-                            // BILATERAL: this fires the signed departure REQUEST at the siblings; a surviving member approves on their screen. Why not unilateral: whoever briefly holds one unlocked device could sign it out — forcing a key rotation and laundering the hardware into their own fleet.
-                            self.request_fleet_departure(2);
-                        } else {
-                            self.settings_remove_armed = true;
-                            self.settings_shred_armed = false;
-                            self.settings_removeshred_armed = false;
                         }
                     }
                 } else if page == SettingsPage::You {
@@ -2039,8 +2036,9 @@ impl FluorApp for PhotonApp {
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
-                        if self.depart_words_entry.is_some() {
+                        if self.depart_words_entry.is_some() || self.depart_choice.is_some() {
                             self.depart_words_entry = None;
+                            self.depart_choice = None;
                             self.change_focus(None);
                             ctx.window.request_redraw();
                             return EventResponse::Handled;

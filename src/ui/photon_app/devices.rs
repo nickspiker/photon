@@ -301,14 +301,24 @@ impl PhotonApp {
             .find(|c| c.is_sibling && c.knows_device(&pk))
             .map(|c| c.display_name())
             .unwrap_or_else(|| tr(Msg::ADevice).into_owned());
-        self.complete_departure_approval(pk, &name);
+        let intent = self.pending_depart_req.as_ref().map(|(_, _, _, it, _)| *it).unwrap_or(0);
+        if intent == 0 {
+            // Intent-0 request (the leaver's single Release pill): the words gate passed — now the APPROVER answers what's happening. The choice pills render on this device's fleet row; each completes the departure on its path.
+            crate::logf!("FLEET: {}'s departure words verified — awaiting the intent choice (new owner / desk)", name);
+            self.depart_choice = Some((pk, name));
+            self.scene_dirty = true;
+        } else {
+            // Legacy pre-declared intent (an older leaver) — complete as declared.
+            self.complete_departure_approval(pk, &name, intent);
+        }
     }
 
     /// APPROVER: run the DECLARED departure path to completion — countersign, then for a new-owner intent release the brand in the same breath (the flow-completes rule: the approve tap finishes the handoff; a release failure surfaces IMMEDIATELY as the retired row's Release pill, the visible retry).
-    pub(super) fn complete_departure_approval(&mut self, pk: [u8; 32], name: &str) {
-        let Some((_, t, sig, intent, _)) = self.pending_depart_req.clone() else {
+    pub(super) fn complete_departure_approval(&mut self, pk: [u8; 32], name: &str, intent: u8) {
+        let Some((_, t, sig, _, _)) = self.pending_depart_req.clone() else {
             return;
         };
+        self.depart_choice = None;
         let (Some(hp), Some(kp)) = (self.our_handle_proof(), self.device_keypair.clone()) else {
             return;
         };
@@ -400,7 +410,7 @@ impl PhotonApp {
                 self.depart_words = Some(words);
                 crate::logf!(
                     "SECURITY: departure requested (bilateral, intent {}) — awaiting a sibling's approval; will WIPE on completion",
-                    if intent == 1 { "new owner" } else { "desk" }
+                    match intent { 1 => "new owner", 2 => "desk", _ => "approver chooses" }
                 );
                 self.ready_toast = Some(tr(Msg::SignOutRequested).into_owned());
             }

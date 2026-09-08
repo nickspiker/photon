@@ -1817,7 +1817,8 @@ pub struct PhotonApp {
     contacts_scroll_extent: isize,
     settings_shred_armed: bool,
     /// Two-tap confirm armed for the Security page's "Remove this device from fleet" (self-departure WITHOUT the wipe — vault stays, claims dormant). Mutually exclusive with the two wipers; cleared on any page switch.
-    settings_remove_armed: bool,
+    /// APPROVER's parked intent choice for an intent-0 departure (words verified, fate unanswered): (leaver pk, display name). Cleared on completion, request replacement, or Esc.
+    depart_choice: Option<([u8; 32], String)>,
     /// Our outstanding departure request's consent stamp (bilateral removal): Some = we asked the fleet to sign us out and await a sibling's approval. Completion = observing our own key de-folded from the adopted member set. RAM-only; a relaunch just re-requests.
     depart_request_t: Option<i64>,
     /// The pending departure completes as a WIPE (Remove & shred) instead of the keep-vault de-attest. Dies with the process — a relaunch mid-ceremony safely degrades to keep-vault (the user can Shred manually).
@@ -2274,7 +2275,7 @@ impl PhotonApp {
             msg_max_scroll: 0.0,
             contacts_scroll_extent: 0,
             settings_shred_armed: false,
-            settings_remove_armed: false,
+            depart_choice: None,
             depart_request_t: None,
             depart_wipe_after: false,
             pending_depart_req: None,

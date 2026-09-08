@@ -4468,6 +4468,14 @@ impl PhotonApp {
                                     600,
                                 );
                             }
+                            // INTENT CHOICE (the 2026-09-04 design, now built): an intent-0 request passed its words gate — the APPROVER answers what's happening. Two pills; each completes the departure on its path.
+                            if self.depart_choice.as_ref().is_some_and(|(d, _)| d == pk) {
+                                flow.line(&mut canvas, ctx.text, &tr(Msg::DepartChooseFate), hspan2 * 0.85, *theme::CONTACT_NAME_COLOUR, 600);
+                                flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2, &[
+                                    (&tr(Msg::DepartIntentNewOwner), btn_base.wrapping_add(72 + i as HitId), true),
+                                    (&tr(Msg::DepartIntentDesk), btn_base.wrapping_add(80 + i as HitId), true),
+                                ]);
+                            }
                             let entry_here = self.depart_words_entry.as_ref().is_some_and(|(d, _)| d == pk);
                             if entry_here {
                                 flow.line(&mut canvas, ctx.text, &tr(Msg::DepartWordsPrompt), hspan2 * 0.85, *theme::CONTACT_NAME_COLOUR, 600);
@@ -4590,10 +4598,6 @@ impl PhotonApp {
                         &tr(Msg::SecurityLock),
                         &tr(Msg::SecurityLockHint),
                         0, *theme::PILL_GREEN, false);
-                    action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                        &tr(Msg::SecurityRemove { armed: self.settings_remove_armed }),
-                        &tr(Msg::SecurityRemoveHint),
-                        1, if self.settings_remove_armed { *theme::PILL_RED } else { *theme::PILL_YELLOW }, self.settings_remove_armed);
                     action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
                         &tr(Msg::SecurityShred { armed: self.settings_shred_armed }),
                         &tr(Msg::SecurityShredHint),
