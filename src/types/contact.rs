@@ -1006,6 +1006,20 @@ impl Contact {
         !self.clutch_slots.is_empty() && self.clutch_slots.iter().all(|s| s.is_complete())
     }
 
+    /// A round completes ONCE. The slots stay full after completion, so every re-sent offer or KEM response used to re-trigger a fresh completion — and when our own re-encap had landed in between, the second run minted different eggs: the desktop superseded its own era four times in fourteen seconds and the sibling's proof never matched (2026-09-08). None = complete now; Some(why) = the slots are full but the round holds.
+    pub fn ceremony_completion_hold(&self) -> Option<&'static str> {
+        if self.clutch_state != ClutchState::Pending {
+            return Some("this round already produced its eggs");
+        }
+        if self.clutch_kem_encap_in_progress {
+            return Some("our encap is still in flight");
+        }
+        if self.clutch_ceremony_in_progress {
+            return Some("its completion is already running");
+        }
+        None
+    }
+
     /// The twelve independent KEM "eggs" a CLUTCH braids, across four security families — a compromise of any one family still leaves the shared secret protected by the others. Named here so the status line can say WHAT is being exchanged, not just "pending". 5 elliptic-curve (x25519, P-384, secp256k1, P-256, P-521) · 3 structured-lattice (NTRU-701, NTRU Prime 761, ML-KEM-1024) · 2 unstructured-lattice (Frodo-976, Frodo-1344) · 2 code-based (McEliece-460896, HQC-256).
     pub const CLUTCH_EGGS: usize = 12;
 

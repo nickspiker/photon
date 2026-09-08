@@ -299,11 +299,16 @@ impl PhotonApp {
             }
 
             if contact.all_slots_complete() {
-                crate::logf!(
-                    "CLUTCH: All slots complete for {} after decap - triggering ceremony completion",
-                    crate::fp(&contact.handle_proof)
-                );
-                ceremony_completions.push(idx);
+                match contact.ceremony_completion_hold() {
+                    None => {
+                        crate::logf!(
+                            "CLUTCH: All slots complete for {} after decap - triggering ceremony completion",
+                            crate::fp(&contact.handle_proof)
+                        );
+                        ceremony_completions.push(idx);
+                    }
+                    Some(why) => crate::logf!("CLUTCH: slots complete for {} after decap but {} — not completing the round again", crate::fp(&contact.handle_proof), why),
+                }
             }
         }
 
@@ -781,8 +786,13 @@ impl PhotonApp {
 
                     // Check if ceremony can complete
                     if contact.all_slots_complete() {
-                        crate::logf!("CLUTCH: All slots complete for {} after keygen - triggering ceremony completion", crate::fp(&contact.handle_proof));
-                        ceremony_completions.push(idx);
+                        match contact.ceremony_completion_hold() {
+                            None => {
+                                crate::logf!("CLUTCH: All slots complete for {} after keygen - triggering ceremony completion", crate::fp(&contact.handle_proof));
+                                ceremony_completions.push(idx);
+                            }
+                            Some(why) => crate::logf!("CLUTCH: slots complete for {} after keygen but {} — not completing the round again", crate::fp(&contact.handle_proof), why),
+                        }
                     }
 
                     break;
@@ -927,8 +937,13 @@ impl PhotonApp {
 
                     // Check if all slots are complete after storing our KEM encap secrets
                     if contact.all_slots_complete() {
-                        crate::logf!("CLUTCH: All slots complete for {} after KEM encap - triggering ceremony", crate::fp(&contact.handle_proof));
-                        ceremony_completions.push(idx);
+                        match contact.ceremony_completion_hold() {
+                            None => {
+                                crate::logf!("CLUTCH: All slots complete for {} after KEM encap - triggering ceremony", crate::fp(&contact.handle_proof));
+                                ceremony_completions.push(idx);
+                            }
+                            Some(why) => crate::logf!("CLUTCH: slots complete for {} after KEM encap but {} — not completing the round again", crate::fp(&contact.handle_proof), why),
+                        }
                     }
 
                     changed = true;
@@ -1053,16 +1068,20 @@ impl PhotonApp {
             {
                 // Supersede: the fresh era becomes current and the one we held becomes RETIRED — its lanes keep decrypting the peer's stragglers (frames they sent before their own completion) until the window is spent. Nothing is zeroized here; the retire edge does that.
                 let old_tag = entry.1.era_tag();
-                entry.1.supersede_with(&result.friendship_chains);
                 let old_s = old_tag.map(|t| format!("{t:08x}")).unwrap_or_else(|| "none".into());
-                let new_s = entry.1.era_tag().map(|t| format!("{t:08x}")).unwrap_or_else(|| "none".into());
-                crate::logf!(
-                    "ERA: ceremony superseded era {} → {} (index {}) — old era retired, still readable for {} straggler frame(s)",
-                    old_s,
-                    new_s,
-                    entry.1.era_index,
-                    crate::types::friendship::RETIRED_ERA_GRACE_ROWS
-                );
+                if entry.1.lane_root().is_some() && entry.1.lane_root() == result.friendship_chains.lane_root() {
+                    crate::logf!("ERA: ceremony re-completed era {} we already hold — nothing superseded, our lane stays", old_s);
+                } else {
+                    entry.1.supersede_with(&result.friendship_chains);
+                    let new_s = entry.1.era_tag().map(|t| format!("{t:08x}")).unwrap_or_else(|| "none".into());
+                    crate::logf!(
+                        "ERA: ceremony superseded era {} → {} (index {}) — old era retired, still readable for {} straggler frame(s)",
+                        old_s,
+                        new_s,
+                        entry.1.era_index,
+                        crate::types::friendship::RETIRED_ERA_GRACE_ROWS
+                    );
+                }
             } else {
                 self.friendship_chains
                     .push((friendship_id, result.friendship_chains));

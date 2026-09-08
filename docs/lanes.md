@@ -77,7 +77,7 @@ Chains schema **v8**: lanes + `lane_root`. v≤7 blobs read as **absent** → th
 ## Eras — a re-key never blanks the friendship (2026-09-08, stage 1 of the era ratchet)
 
 An **era** is one generation of a friendship's keys: one `lane_root`, one `history_key`, every lane derived from them.
-Eras carry an `era_index` (monotonic within a lineage) and an `era_lineage` (a one-way image of the era-0 root: a woven transition inherits it, a fresh CLUTCH mints a new one), and each lane is stamped with the era it belongs to.
+Eras carry an `era_index` (monotonic within a lineage) and an `era_lineage` (a one-way image of the era-0 root: a woven transition inherits it, a fresh CLUTCH mints a new one), and each lane is stamped with the tag of the root it derives from (never the index: a fresh ceremony over an existing friendship is index 0 again).
 `clutch::era_tag` gives an era a 4-byte public fingerprint (the `s_id` pattern) for the wire and the logs.
 
 Two neighbours of the current era may exist on a blob at once.

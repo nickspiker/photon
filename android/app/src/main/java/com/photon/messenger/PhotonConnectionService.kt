@@ -837,6 +837,8 @@ class PhotonConnectionService : Service() {
     private external fun nativeAudioNextFrame(): ShortArray
 
     @Volatile private var callAudioRunning = false
+    // Generation of the live audio session. A stop followed by a start within one read (~5ms: the answer edge stops the ringback probe and starts the call engine) flipped the flag false→true before the old capture thread ever saw it, so TWO AudioRecords fed the encoder — tx at 390 fps against a nominal 200 (Nick's phone, 2026-09-08 17:22). Each thread carries the generation it was born under and exits the moment it is not the current one.
+    @Volatile private var audioGen = 0
     private var captureThread: Thread? = null
     private var renderThread: Thread? = null
 
@@ -848,6 +850,7 @@ class PhotonConnectionService : Service() {
     fun startCapture() {
         if (!callAudioRunning) return
         if (captureThread?.isAlive == true) return
+        val gen = audioGen
         val sampleRate = 48000
         val frameSamples = 240
         val hasMic = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
@@ -878,9 +881,9 @@ class PhotonConnectionService : Service() {
                 // The device's ACTUAL capture rate — if a phone silently gives 24kHz for a 48kHz VOICE_RECOGNITION ask, every 240-sample read is 10ms of audio pushed as a 5ms frame → 2x frame rate, the peer trims half at playout (field 2026-09-08: Brittany's phone TX ran 2x realtime = the scratchy). audioFormat.sampleRate is what the HAL really gave us.
                 PhotonLog.i(TAG, "callAudio: capture up (VOICE_RECOGNITION raw fast-path, buf=$minBuf, granted=${rec.bufferSizeInFrames}fr, hwRate=${rec.sampleRate} askRate=$sampleRate)")
                 val buf = ShortArray(frameSamples)
-                while (callAudioRunning) {
+                while (callAudioRunning && gen == audioGen) {
                     var off = 0
-                    while (off < frameSamples && callAudioRunning) {
+                    while (off < frameSamples && callAudioRunning && gen == audioGen) {
                         val n = rec.read(buf, off, frameSamples - off)
                         if (n <= 0) break
                         off += n
@@ -900,6 +903,8 @@ class PhotonConnectionService : Service() {
      *  re-runs capture so this very call goes hot. */
     fun startCallAudio() {
         if (callAudioRunning) return
+        audioGen += 1
+        val gen = audioGen
         callAudioRunning = true
         try { proximityLock?.acquire() } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock acquire failed", e) }
         val sampleRate = 48000
@@ -941,7 +946,7 @@ class PhotonConnectionService : Service() {
                 val gotFrames = track.bufferSizeInFrames
                 val fast = track.performanceMode == AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
                 PhotonLog.i(TAG, "callAudio: render up (MEDIA, req=${bufFrames}fr granted=${gotFrames}fr=${gotFrames * 1000 / sampleRate}ms lowLatency=$fast burst=$nativeBurst nativeRate=$nativeRate)")
-                while (callAudioRunning) {
+                while (callAudioRunning && gen == audioGen) {
                     // Rust hands back 10ms of decoded far-end (silence when the jitter buffer is dry) —
                     // the blocking write paces this loop at the device's real drain rate.
                     val frame = nativeAudioNextFrame()
@@ -959,6 +964,7 @@ class PhotonConnectionService : Service() {
     /** Called from Rust at hangup — loops observe the flag and tear their devices down. */
     fun stopCallAudio() {
         callAudioRunning = false
+        audioGen += 1
         try { proximityLock?.let { if (it.isHeld) it.release() } } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock release failed", e) }
         // The call surface no longer needs to sit over the keyguard.
         PhotonActivity.live?.let { a -> a.runOnUiThread { a.setCallLockScreenFlags(false) } }

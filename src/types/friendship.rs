@@ -832,15 +832,19 @@ impl FriendshipChains {
         if let Some(i) = self.lane_index(label) {
             return Some(i);
         }
+        // A lane belongs to a ROOT (its chain derives from it), so the stamp is the root's tag — never the era index: a fresh ceremony over an existing friendship mints index 0 again, and an index stamp made the retire edge take the new era's lanes down with the old (desktop, 2026-09-08).
         let (root, era) = match slot {
-            EraSlot::Current => (self.lane_root?, self.era_index),
+            EraSlot::Current => {
+                let root = self.lane_root?;
+                (root, u64::from(crate::crypto::clutch::era_tag(&root)))
+            }
             EraSlot::Retired => {
                 let r = self.retired.as_ref()?;
-                (r.lane_root, r.era_index)
+                (r.lane_root, u64::from(r.tag))
             }
             EraSlot::Pending => {
                 let p = self.pending.as_ref()?;
-                (p.lane_root, p.era_index)
+                (p.lane_root, u64::from(p.tag))
             }
         };
         let active = crate::crypto::clutch::derive_lane_active(&root, label);
@@ -860,18 +864,28 @@ impl FriendshipChains {
         Some(self.lane_labels.len() - 1)
     }
 
-    /// The era a known lane belongs to; None for a label this blob has never materialized.
+    /// The era a known lane belongs to (by the tag of the root it was derived from); None for a label this blob has never materialized.
     pub fn era_slot_for_label(&self, label: &[u8; 32]) -> Option<EraSlot> {
         let i = self.lane_index(label)?;
         let e = self.lane_eras[i];
-        if e == self.era_index {
+        if self.era_tag().is_some_and(|t| u64::from(t) == e) {
             Some(EraSlot::Current)
-        } else if self.retired.as_ref().is_some_and(|r| r.era_index == e) {
+        } else if self.retired.as_ref().is_some_and(|r| u64::from(r.tag) == e) {
             Some(EraSlot::Retired)
-        } else if self.pending.as_ref().is_some_and(|p| p.era_index == e) {
+        } else if self.pending.as_ref().is_some_and(|p| u64::from(p.tag) == e) {
             Some(EraSlot::Pending)
         } else {
             None
+        }
+    }
+
+    /// The stamp a sibling's replicated lane carries, normalized: a blob from a build that stamped lanes with the era INDEX (or a ceremony-born blob with no stamps) reads as that blob's current era.
+    fn lane_stamp_from(other: &FriendshipChains, i: usize) -> u64 {
+        let current = other.era_tag().map(u64::from).unwrap_or(0);
+        match other.lane_eras.get(i).copied() {
+            None => current,
+            Some(v) if v == other.era_index => current,
+            Some(v) => v,
         }
     }
 
@@ -907,7 +921,7 @@ impl FriendshipChains {
         self.pending.as_ref()
     }
 
-    /// The era stamp of a known lane.
+    /// The era stamp of a known lane: the tag of the root it derives from.
     pub fn lane_era(&self, label: &[u8; 32]) -> Option<u64> {
         self.lane_index(label).map(|i| self.lane_eras[i])
     }
@@ -954,6 +968,10 @@ impl FriendshipChains {
 
     /// A completed ceremony (or a sibling's replicated newer era) supersedes the current era: the incoming blob's root, keys and lanes become current, ours become RETIRED rather than destroyed — the straggler window the old wholesale replace never had. Device-local send state resets as at any cutover.
     pub fn supersede_with(&mut self, other: &FriendshipChains) {
+        // The era we already hold: nothing to supersede. A ceremony round that completes twice (every re-sent offer re-triggered completion — desktop 2026-09-08, "3dbe5401 → 3dbe5401") must not retire the current era against itself and reset our lane for nothing.
+        if self.lane_root.is_some() && self.lane_root == other.lane_root {
+            return;
+        }
         if let (Some(old_root), Some(_)) = (self.lane_root, other.lane_root) {
             self.drop_retired_era();
             self.retired = Some(RetiredEra {
@@ -982,7 +1000,7 @@ impl FriendshipChains {
             self.first_message_anchors.push(other.first_message_anchors[i]);
             self.last_received_hashes.push(other.last_received_hashes[i]);
             self.last_received_times.push(other.last_received_times[i]);
-            self.lane_eras.push(other.lane_eras.get(i).copied().unwrap_or(other.era_index));
+            self.lane_eras.push(Self::lane_stamp_from(other, i));
         }
         self.our_label = None;
         self.pending_messages.clear();
@@ -996,7 +1014,7 @@ impl FriendshipChains {
     pub fn drop_retired_era(&mut self) -> bool {
         use zeroize::Zeroize;
         let Some(mut r) = self.retired.take() else { return false };
-        let dead: Vec<usize> = (0..self.lane_labels.len()).filter(|&i| self.lane_eras[i] == r.era_index).collect();
+        let dead: Vec<usize> = (0..self.lane_labels.len()).filter(|&i| self.lane_eras[i] == u64::from(r.tag)).collect();
         for i in dead.into_iter().rev() {
             self.lane_labels.remove(i);
             self.lane_positions.remove(i);
@@ -1104,8 +1122,25 @@ impl FriendshipChains {
         our_label: Option<[u8; 32]>,
         lane_eras: Vec<u64>,
     ) {
-        let mut lane_eras = lane_eras;
-        lane_eras.resize(labels.len(), self.era_index);
+        // Stamps are root TAGS. A blob written by a build that stamped the era INDEX (schema v8 before 2026-09-08) is read as: the current index ⇒ the current tag, the retired index ⇒ the retired tag, the pending index ⇒ the pending tag — a legacy blob (no stamps) is every lane current. Where a fresh ceremony left current and retired both at index 0, those lanes all read as current: read-only by the label rule anyway, and the retire edge drops the root.
+        let current = self.era_tag().map(u64::from).unwrap_or(0);
+        let retired = self.retired.as_ref().map(|r| (r.era_index, u64::from(r.tag)));
+        let pending = self.pending.as_ref().map(|p| (p.era_index, u64::from(p.tag)));
+        let mut lane_eras: Vec<u64> = lane_eras
+            .into_iter()
+            .map(|v| {
+                if v == self.era_index {
+                    current
+                } else if let Some((_, tag)) = retired.filter(|(idx, _)| *idx == v) {
+                    tag
+                } else if let Some((_, tag)) = pending.filter(|(idx, _)| *idx == v) {
+                    tag
+                } else {
+                    v
+                }
+            })
+            .collect();
+        lane_eras.resize(labels.len(), current);
         self.lane_eras = lane_eras;
         self.first_message_anchors = labels
             .iter()
@@ -1196,7 +1231,7 @@ impl FriendshipChains {
                     self.last_received_hashes
                         .push(other.last_received_hashes[i]);
                     self.last_received_times.push(other.last_received_times[i]);
-                    self.lane_eras.push(other.lane_eras.get(i).copied().unwrap_or(other.era_index));
+                    self.lane_eras.push(Self::lane_stamp_from(other, i));
                     changed = true;
                 }
                 Some(mine) => {
@@ -2412,10 +2447,10 @@ mod tests {
         x.install_pending(pending.clone());
         y.install_pending(pending.clone());
         assert_eq!(x.era_slot_for_tag(Some(pending.tag)), Some(EraSlot::Pending));
-        // A peer lane on the pending era materializes from the pending root, tagged with the pending index.
+        // A peer lane on the pending era materializes from the pending root, stamped with that root's tag.
         let peer_label = [9u8; 32];
         assert!(y.ensure_lane_era(&peer_label, EraSlot::Pending).is_some());
-        assert_eq!(y.lane_era(&peer_label), Some(1));
+        assert_eq!(y.lane_era(&peer_label), Some(u64::from(pending.tag)), "stamped with the pending root's tag");
         let (old_tag, new_tag, _) = x.cut_over_to_pending().expect("cut over");
         assert_eq!(old_tag, crate::crypto::clutch::era_tag(&old_root));
         assert_eq!(new_tag, pending.tag);
@@ -2470,6 +2505,32 @@ mod tests {
         assert_eq!(holder.lane_root(), ratcheted.lane_root());
         assert!(holder.retired_era().is_some(), "the era it held is retired, not destroyed");
     }
+    #[test]
+    fn fresh_ceremony_supersede_keeps_the_new_lanes_when_both_eras_are_index_zero() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let eggs2: Vec<[u8; 32]> = (0..8).map(|i| [i as u8 + 100; 32]).collect();
+        let mut x = FriendshipChains::from_clutch(&[a, b], &eggs);
+        let old_label = x.mint_our_lane().unwrap();
+        let y = FriendshipChains::from_clutch(&[a, b], &eggs2);
+        assert_eq!(x.era_index, y.era_index, "two ceremony-born eras share index 0 — the stamp must not be the index");
+        assert_ne!(x.lane_root(), y.lane_root());
+        x.supersede_with(&y);
+        assert_eq!(x.era_slot_for_label(&old_label), Some(EraSlot::Retired));
+        let new_label = x.mint_our_lane().unwrap();
+        assert_eq!(x.era_slot_for_label(&new_label), Some(EraSlot::Current));
+        assert!(x.drop_retired_era());
+        assert_eq!(x.lane_index(&old_label), None, "the retired era's lane is gone");
+        assert!(x.lane_index(&new_label).is_some(), "the current era's lane survives the retire edge");
+        assert!(x.lane_is_writable(&new_label));
+        // Re-completing the round we already hold supersedes nothing: our lane stays and no era retires.
+        let same = x.clone();
+        x.supersede_with(&same);
+        assert_eq!(x.our_label(), Some(&new_label));
+        assert!(x.retired_era().is_none());
+    }
+
 
     /// A sibling that supersedes by replication keeps the old era retired (stragglers decrypt) and adopts a pending era the owner minted.
     #[test]
@@ -2489,7 +2550,7 @@ mod tests {
         owner.cut_over_to_pending().unwrap();
         let owner_label = owner.mint_our_lane().unwrap();
         let subset = owner.replication_subset(&[owner_label]);
-        assert_eq!(subset.lane_era(&owner_label), Some(1));
+        assert_eq!(subset.lane_era(&owner_label), owner.era_tag().map(u64::from));
         assert!(sibling.merge_lanes_from(&subset));
         assert_eq!(sibling.era_index, 1);
         assert_eq!(sibling.era_slot_for_label(&sib_label), Some(EraSlot::Retired));

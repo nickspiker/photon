@@ -60,7 +60,7 @@ fn chains_schema() -> SectionSchema {
         // Era state (2026-09-08, additive): a blob without these is era 0 of the lineage derived from its own root, every lane in that era.
         .field("era_index", TypeConstraint::Any)
         .field("era_lineage", TypeConstraint::AnyHash)
-        .field("lane_era", TypeConstraint::Any) // one per lane, INDEX-ALIGNED with lane_label
+        .field("lane_era", TypeConstraint::Any) // one per lane, INDEX-ALIGNED with lane_label: the tag of the root the lane derives from (was the era index before 2026-09-08; the loader maps those)
         .field("rows_since_ratchet", TypeConstraint::Any)
         .field("retired_index", TypeConstraint::Any)
         .field("retired_root", TypeConstraint::AnyHash)
@@ -139,7 +139,7 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
             .map_err(|e| StorageError::Parse(e.to_string()))?
             .append_multi(
                 "lane_era",
-                vec![VsfType::e(vsf::types::EtType::e6(chains.lane_era(&label).unwrap_or(chains.era_index) as i64))],
+                vec![VsfType::e(vsf::types::EtType::e6(chains.lane_era(&label).or_else(|| chains.era_tag().map(u64::from)).unwrap_or(0) as i64))],
             )
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }

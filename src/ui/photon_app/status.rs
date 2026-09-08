@@ -2190,10 +2190,15 @@ impl PhotonApp {
                                     }
                                 }
 
-                                // Check if ceremony is complete (defer to after outer loop)
+                                // Check if ceremony is complete (defer to after outer loop) — once per round: a re-sent offer must not re-complete it.
                                 if contact.all_slots_complete() {
-                                    ceremony_completions.push(idx);
-                                    changed = true;
+                                    match contact.ceremony_completion_hold() {
+                                        None => {
+                                            ceremony_completions.push(idx);
+                                            changed = true;
+                                        }
+                                        Some(why) => crate::logf!("CLUTCH: slots complete for {} on a re-sent offer but {} — not completing the round again", crate::fp(&contact.handle_proof), why),
+                                    }
                                 }
                             } else if contact.clutch_our_keypairs.is_none() {
                                 if contact.clutch_keygen_in_progress {

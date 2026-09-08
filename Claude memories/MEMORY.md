@@ -2,135 +2,135 @@
 
 ## Desktop corpus (project_* / feedback_* / reference_*)
 
-- [feedback_no_redundant_disk_ops.md](feedback_no_redundant_disk_ops.md) — 8 rolling BTRFS snapshots per 8h (+stragglers, Harbor+Chiton+MEGA); a wanted safety copy = REFLINK (cp --reflink=always), never a literal copy; batch full-repo scans, one pass
+- [feedback_no_redundant_disk_ops.md](feedback_no_redundant_disk_ops.md) — BTRFS snapshots exist; a safety copy = REFLINK (cp --reflink=always), never a literal copy; batch repo scans into one pass
 
-- [project_fleet_key_redesign.md](project_fleet_key_redesign.md) — fleet-key REDESIGN spec'd (docs/fleet-key.md @2c81c39, Nick reviewing): ira-wrapped, revision-published, shrink-only mint; DANGER: deploying current build to MacBook/Android destroys the last history copy (census deletes un-migrated rings)
+- [project_fleet_key_redesign.md](project_fleet_key_redesign.md) — fleet-key REDESIGN spec'd (docs/fleet-key.md): ira-wrapped, revision-published, shrink-only mint
 
-- [project_great_cleanup.md](project_great_cleanup.md) — GREAT CLEANUP: Phases 1-6 ALL SHIPPED 2026-08-20 (device vault+migration, self-honest rings, fleet-first rejoin, JPEG gate, LAN add); Phase 7 = Nick's publish
+- [project_great_cleanup.md](project_great_cleanup.md) — GREAT CLEANUP: Phases 1-6 ALL SHIPPED 2026-08-20 (device vault+migration, self-honest rings, fleet-first rejoin, JPEG gate, LAN add)
 
 - [project_button_one_renderer.md](project_button_one_renderer.md) — ONE pill/button renderer in fluor (draw_pill_immediate + retained Button); photon never hand-rolls squircles
 
-- [project_era_ratchet.md](project_era_ratchet.md) — ERA RATCHET plan (~/.claude/plans/logical-brewing-creek.md): stage 1 SHIPPED 2026-09-08 (re-key never blanks; old era RETIRED read-only); stages 2-6 pending
-- [project_fluor_busy_loop.md](project_fluor_busy_loop.md) — OPEN: main thread 100% CPU = wake_at returns past Instant (animating flags / add_in_flight stuck / Android presence guard mismatch); do after the era plan
-- [project_render_storm_lag.md](project_render_storm_lag.md) — ROOT-CAUSED 2026-08-15: lag = VAULT MUTEX contention (UI-tick avatar probe read vs background persist writers); photon fix @c6f65e8 (probe cached, ticks vault-free)
+- [project_era_ratchet.md](project_era_ratchet.md) — ERA RATCHET (plan: logical-brewing-creek.md): stages 1-2 SHIPPED 2026-09-08 + field fixes; NEXT stage 3 = computed era_owner (Emma 3-device stall) + light ratchet
+- [project_fluor_busy_loop.md](project_fluor_busy_loop.md) — OPEN: main thread 100% CPU = wake_at returns past Instant (animating flags / add_in_flight stuck / Android presence guard
+- [project_render_storm_lag.md](project_render_storm_lag.md) — ROOT-CAUSED 2026-08-15: lag = VAULT MUTEX contention (UI-tick avatar probe read vs background persist writers)
 
-- [project_settings_typed_values.md](project_settings_typed_values.md) — fstate v7 SHIPPED 2026-08-16: every settings value natively typed VSF + v6 compat window; window geometry = 2 typed device-local pairs, gesture-settle save
-- [project_fgtw_key_desync.md](project_fgtw_key_desync.md) — CLOSED 2026-08-14: rollback un-bricked, guard SHIPPED bcb830d, canonical key RECOVERED (MacBook deploy copy) → keys/fgtw-seed-key.rs + brick worker redeployed a51c9194
+- [project_settings_typed_values.md](project_settings_typed_values.md) — fstate v7 SHIPPED 2026-08-16: every settings value natively typed VSF + v6 compat window
+- [project_fgtw_key_desync.md](project_fgtw_key_desync.md) — CLOSED 2026-08-14: rollback un-bricked, guard SHIPPED bcb830d
 
 - [project_lifecycle_flows.md](project_lifecycle_flows.md) — identity/device lifecycle DESIGNED (docs/lifecycle.md): D1 collision=KnownHandle, D2 double-attest=binding marker; D3 LastRites SUPERSEDED
-- [project_identity_never_dies.md](project_identity_never_dies.md) — IDENTITY NEVER DIES SHIPPED 2026-07-17: no terminal op (worker refuses zero-member folds, LastRites cut), brands survive departure, two-signature retire, fleet page "retired — still yours" + Release; retirement = obscure handle + puck
+- [project_identity_never_dies.md](project_identity_never_dies.md) — IDENTITY NEVER DIES SHIPPED 2026-07-17: no terminal op, brands survive departure, two-signature retire
 - [succession-emit-side-unwired.md](succession-emit-side-unwired.md) — identity succession primitive + worker slot + contact RECEIVE path SHIPPED (05f7d27)
 
-- [feedback_self_is_a_contact.md](feedback_self_is_a_contact.md) — HARD RULE, repeatedly violated: self and bob are both people; the self/fleet conversation rides the IDENTICAL machinery (only the key material differs)
-- [feedback_handles_byte_precise.md](feedback_handles_byte_precise.md) — HARD RULE, repeatedly violated before: handles are BYTE-PRECISE full-Unicode (Kea ≠ Nick, whitespace-only valid, Zoë/李伟/김민준 first-class)
+- [feedback_self_is_a_contact.md](feedback_self_is_a_contact.md) — HARD RULE, repeatedly violated: self and bob are both people
+- [feedback_handles_byte_precise.md](feedback_handles_byte_precise.md) — HARD RULE, repeatedly violated before: handles are BYTE-PRECISE full-Unicode (Kea ≠ Nick, whitespace-only valid
 - [feedback_fgtw_deploy_freely.md](feedback_fgtw_deploy_freely.md) — deploy fgtw.org (wrangler) + toka.wasm freely, no per-deploy confirmation
-- [project_avatar_encryption_wall.md](project_avatar_encryption_wall.md) — avatars are v'e'-encrypted per-handle; admin can't decrypt; browser AV1 decode infra (rav1d-in-wasm) built + deployed, belongs in photon
+- [project_avatar_encryption_wall.md](project_avatar_encryption_wall.md) — avatars are v'e'-encrypted per-handle; admin can't decrypt
 
 - [project_braid_working_baseline.md](project_braid_working_baseline.md) — HISTORIC 2026-06-28: braid+CLUTCH+delivery green E2E on 2 devices @ 6325cd9
 
-- [project_manifestus_plow_reloc_refusal.md](project_manifestus_plow_reloc_refusal.md) — CLOSED 2026-09-08: amber 'storage degraded' = LiveSet::apply removed-before-added left a same-key-twice-per-commit leaf live+unrouted → plow guard refused forever; fixed manifestus f28e851 (+KATs), photon clears the latch on the next clean persist
-- [project_manifestus_tombstone_bug.md](project_manifestus_tombstone_bug.md) — vault corruption = fast-delete left committed pointer; FIXED @ manifestus 56bde9a, desktop vault repaired zero-loss; publish to all devices PENDING
-- [project_storage_layering.md](project_storage_layering.md) — 3 storage layers (vault/chain-state/rārangi conversation DB); file-tree paths half-assed into flat vault, de-stringing to blake3(domain,scope) + wiring rārangi
-- [project_reserve_delivery.md](project_reserve_delivery.md) — RE-SERVE SHIPPED 97e2bcc 2026-08-20: durable store outranks pending list (sealed tip + row deficit → re-serve non-pending rows, 8/burst ×2/tip)
-- [project_rarangi_messages_fleet.md](project_rarangi_messages_fleet.md) — message rows: table=friendship_id bytes, pk=monotonic u64 counter; fleet=a conversation, vaults byte-identical except device crypt key
-- [project_self_message_vanish.md](project_self_message_vanish.md) — self-msg 40s+vanish ROOT-CAUSED: ~300-commit save amplification + quit ate queued writes; delta gate + quit drain SHIPPED 68b1912; OPEN: kete commit-per-write engine, PT frozen-address spray, ghost 1be949c1 in membership chain
+- [project_manifestus_plow_reloc_refusal.md](project_manifestus_plow_reloc_refusal.md) — CLOSED 2026-09-08: 'storage degraded' = LiveSet::apply order bug (manifestus f28e851 + KATs)
+- [project_manifestus_tombstone_bug.md](project_manifestus_tombstone_bug.md) — vault corruption = fast-delete left committed pointer; FIXED @ manifestus 56bde9a
+- [project_storage_layering.md](project_storage_layering.md) — 3 storage layers (vault/chain-state/rārangi conversation DB); file-tree paths half-assed into flat vault
+- [project_reserve_delivery.md](project_reserve_delivery.md) — RE-SERVE SHIPPED 97e2bcc 2026-08-20: durable store outranks pending list (sealed tip + row deficit → re-serve non-pending rows
+- [project_rarangi_messages_fleet.md](project_rarangi_messages_fleet.md) — message rows: table=friendship_id bytes, pk=monotonic u64 counter; fleet=a conversation
+- [project_self_message_vanish.md](project_self_message_vanish.md) — self-msg vanish ROOT-CAUSED (save amplification + quit ate writes); delta gate + quit drain SHIPPED 68b1912
 - [project_fleet_routing_scale.md](project_fleet_routing_scale.md) — fleet invariants: any size (12+, no 2-device shortcuts) in eggs/braid/fan-out
-- [project_fleet_braid_plane.md](project_fleet_braid_plane.md) — §14 CUTOVER CLOSED 2026-08-18 @ 2adff1d: spine built, §14.5 slot superseded by docs/durability.md (FLEET-HOLDS-HISTORY), horizon+shred redesigned local (post-voice-calls), linearizer retired by lanes; next major = voice calls
-- [project_fleet_unification_v1.md](project_fleet_unification_v1.md) — unification v1 SHIPPED @ b231592: compose ANYWHERE (fleet-forward → chain owner transmits, original timestamps), both is_online killswitches dead, periodic sweep; §14 linearizer = next stage
+- [project_fleet_braid_plane.md](project_fleet_braid_plane.md) — §14 CUTOVER CLOSED 2026-08-18 @ 2adff1d: spine built, durability = docs/durability.md (FLEET-HOLDS-HISTORY)
+- [project_fleet_unification_v1.md](project_fleet_unification_v1.md) — unification v1 SHIPPED @ b231592: compose ANYWHERE (fleet-forward → chain owner transmits)
 - [project_attachments.md](project_attachments.md) — attachments v1+v2 SHIPPED (e8baa81+cd3aa3f): row/blob split, PT blobs no-cloud, true-shred, Android picker, resample card
-- [project_unattended_reboot.md](project_unattended_reboot.md) — auto-attest-on-reboot SHIPPED (tohu 8d66b19, FINALLY PUSHED as d26a8d8 2026-08-16 — was stranded desktop-only + photon 23e13f5): off-by-default Security toggle, device-bound reboot capsule, handle re-entry to arm AND disarm
+- [project_unattended_reboot.md](project_unattended_reboot.md) — auto-attest-on-reboot SHIPPED (tohu d26a8d8 + photon 23e13f5): off-by-default Security toggle, device-bound reboot capsule
 - [project_bridge.md](project_bridge.md) — BRIDGE = passless remote shell between fleet siblings over PT (rustdesk/SSH replacement)
 - [project_chain_replication.md](project_chain_replication.md) — chain replication SHIPPED @ 2dfe7ed: chains sync fleet-wide (mutated_osc v7, adopt-iff-newer), adopting device flips sendable
-- [project_avatar_bearer_pin_gap.md](project_avatar_bearer_pin_gap.md) — CLOSED: pin-rotate on membership shrink shipped in removal-rotates step 1 (2026-07-23); avatar = 64-byte bearer pin (key‖lookup)
+- [project_avatar_bearer_pin_gap.md](project_avatar_bearer_pin_gap.md) — CLOSED: pin-rotate on membership shrink shipped in removal-rotates step 1 (2026-07-23)
 - [project_clutch_token_asymmetry.md](project_clutch_token_asymmetry.md) — "unknown conversation_token" = §4.2 competing ceremony instances
-- [project_call_no_ring_incident.md](project_call_no_ring_incident.md) — 2026-08-29 no-ring CONVICTED (identity-era split); 2026-09-02 GLARE fixed 328bc7d: mutual dial connects (smaller call_id wins, other side folds+auto-answers), never mutual BUSY
-- [project_clutch_offer_deadlock.md](project_clutch_offer_deadlock.md) — CLUTCH offer-loss deadlock generations; FIXED @7d5e356 (retries=no-progress, path-up/stall offer re-fire, pong-drop torches); OPEN: one peer's pongs never arrive
-- [project_clutch_ui_thread_hitch.md](project_clutch_ui_thread_hitch.md) — FIXED @c48b0e1 2026-08-15: KEM decap = 4th job stage (HQC-prefix CAS drain), duplicate-KEM short-circuit, proof rides durable chains writer; phone E2E pending
+- [project_call_no_ring_incident.md](project_call_no_ring_incident.md) — 2026-08-29 no-ring CONVICTED (identity-era split); GLARE fixed 328bc7d: mutual dial connects (smaller call_id wins)
+- [project_clutch_offer_deadlock.md](project_clutch_offer_deadlock.md) — CLUTCH offer-loss deadlock FIXED @7d5e356 (retries=no-progress, path-up/stall re-fire, pong-drop torches)
+- [project_clutch_ui_thread_hitch.md](project_clutch_ui_thread_hitch.md) — FIXED @c48b0e1: KEM decap = 4th job stage (HQC-prefix CAS drain), duplicate-KEM short-circuit
 - [project_nat_traversal_relay_gap.md](project_nat_traversal_relay_gap.md) — punch tiers + LIVE relay pipe shipped 2026-07-22: per-recipient Cloudflare DO (PipeHub)
 - [project_windows_dark_theme_bug.md](project_windows_dark_theme_bug.md) — PINNED: photon install corrupted Jennifer's Windows dark-theme search text (theme-cache signature, light/dark toggle fixed)
-- [project_contacts_glow_damage.md](project_contacts_glow_damage.md) — LIKELY STALE: the invalidate_bg-on-focus-edge fix exists in code (pre-2026-08-14) naming this exact symptom; retest before re-opening
-- [project_history_recovery.md](project_history_recovery.md) — history sync: friend backfill + FLEET sync shipped; BOTH is_online gates that silently killed fleet delivery removed 2026-07-25 (push d73c223, pull 648791b)
+- [project_contacts_glow_damage.md](project_contacts_glow_damage.md) — LIKELY STALE: the invalidate_bg-on-focus-edge fix exists in code (pre-2026-08-14) naming this exact symptom
+- [project_history_recovery.md](project_history_recovery.md) — history sync: friend backfill + FLEET sync shipped; BOTH is_online gates that silently killed fleet delivery removed
 - [project_rekey_attack_surface.md](project_rekey_attack_surface.md) — re-key/history-injection threat model (docs/rekey-threat-model.md); first-met device un-revocable + revocation unwired
-- [project_token_private_identity.md](project_token_private_identity.md) — TOKEN crux SOLVED + phases 1-2 SHIPPED (fleet weave fc841f4, S lifecycle f057c5d): friend-blinded private identity S, OTP-blind, never at rest
-- [project_chain_advance_desync.md](project_chain_advance_desync.md) — RESOLVED 2026-08-18: braid-desync class closed, ten-round soak verified bidirectional messaging; four converging ACK heals shipped
+- [project_token_private_identity.md](project_token_private_identity.md) — TOKEN crux SOLVED + phases 1-2 SHIPPED (fleet weave fc841f4
+- [project_chain_advance_desync.md](project_chain_advance_desync.md) — RESOLVED 2026-08-18: braid-desync class closed, ten-round soak verified bidirectional messaging
 - [project_notifications_pinned.md](project_notifications_pinned.md) — fleet-wide notification design (unnotified flag + one-active-clearer) still PINNED
-- [project_android_ime_model.md](project_android_ime_model.md) — THE Android keyboard model: surface NEVER resizes for IME (adjustNothing + nativeImeInset mirror + ime_lift on bottom strips); span-pin DELETED from fluor, don't reintroduce
+- [project_android_ime_model.md](project_android_ime_model.md) — THE Android keyboard model: surface NEVER resizes for IME (adjustNothing + nativeImeInset mirror + ime_lift)
 - [project_multimonitor_status.md](project_multimonitor_status.md) — multi-monitor A/B/C-core+macOS-port shipped, phase D + Windows port not built; macOS drag-to-monitor VANISHES (pinned)
-- [reference_log_pull.md](reference_log_pull.md) — photonlog --pull --session (own machine) or --handle <LEFT-column map bytes>; MAP = 'handle = petname', handle LEFT petname RIGHT (column trap burned 2026-08-21); desktop log = volatile tmpfs, soft-mode RAM batch; Nick devices: 90e571bf desktop "BarkCook", 1be949c1 phone "TheoryConvertible"
-- [project_log_sweep_eats_fresh.md](project_log_sweep_eats_fresh.md) — 13:17Z ate a fresh submission, 14:17Z instrumented cron kept all bait (unconvicted); hardened key-osc sweep committed 8fe1b83, DEPLOY BLOCKED on wrangler login
-- [project_vault_op_latency.md](project_vault_op_latency.md) — CONVICTED + ALL FIXES SHIPPED 2026-08-21: ~900ms/put flat → group commit (manifestus put_batch b925230 + kete batch drain 1944ebe) + five UI-thread writes off-thread (photon b7dd871); ping-pong = correct CRDTs, wedge churn
-- [project_android_session_capsule.md](project_android_session_capsule.md) — Android de-attest-on-restart fix: boot-locked session capsule (spaghettify(boot_id) wairua, kete AEAD, multi-tier) SPEC'd in docs/, not built
+- [reference_log_pull.md](reference_log_pull.md) — photonlog --pull --session (own machine) or --handle <LEFT-column map bytes>; map = 'handle = petname' (LEFT secret); pull to a file first
+- [project_log_sweep_eats_fresh.md](project_log_sweep_eats_fresh.md) — 13:17Z ate a fresh submission, 14:17Z instrumented cron kept all bait (unconvicted)
+- [project_vault_op_latency.md](project_vault_op_latency.md) — CONVICTED + FIXED 2026-08-21: ~900ms/put → group commit (manifestus put_batch + kete batch drain) + five UI-thread writes
+- [project_android_session_capsule.md](project_android_session_capsule.md) — Android de-attest-on-restart fix: boot-locked session capsule (spaghettify(boot_id) wairua, kete AEAD
 - [project_vsf_canonical_signing.md](project_vsf_canonical_signing.md) — ONE canonical VSF signing scheme (ge over BLAKE3(file, ge zeroed)); hp-value signing retired 2026-07-06
 - [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — CLUTCH completes crypto-correct but rebroadcasts its proof forever (ceremony decoupled from data plane)
-- [project_fgtw_migration_state.md](project_fgtw_migration_state.md) — FGTW substrate extracted into the fgtw crate through M3 (keys/fleet/fanout/fstate/pair/client); photon rides it via thin re-export wrappers
-- [project_fgtw_nostd_deferred.md](project_fgtw_nostd_deferred.md) — fgtw crate stays std until ferros; move code verbatim (no alloc::/no_std refactors), fanout feature keeps crypto deps off the worker base
-- [project_peers_are_fgtw.md](project_peers_are_fgtw.md) — decentralize FGTW: fgtw.org retires, peers = the trust web; MUTUAL-CONSENT clutch SHIPPED f33ebec 2026-08-25 (knock replaces offer); OPEN phonebook still ahead
-- [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT 2026-08-30 (LAN→WAN→WFD→relay, BLE=pairing-only, never drop infra WiFi); frames ride main UDP socket, per-pair wfd_cred pre-provisioned; field test + Linux rung PENDING
+- [project_fgtw_migration_state.md](project_fgtw_migration_state.md) — FGTW substrate extracted into the fgtw crate through M3 (keys/fleet/fanout/fstate/pair/client)
+- [project_fgtw_nostd_deferred.md](project_fgtw_nostd_deferred.md) — fgtw crate stays std until ferros; move code verbatim (no alloc::/no_std refactors)
+- [project_peers_are_fgtw.md](project_peers_are_fgtw.md) — decentralize FGTW: fgtw.org retires, peers = the trust web; MUTUAL-CONSENT clutch SHIPPED f33ebec 2026-08-25 (knock replaces
+- [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT 2026-08-30 (LAN→WAN→WFD→relay, BLE=pairing-only, never drop infra WiFi); field test + Linux rung PENDING
 - [project_party_colour_perceptual.md](project_party_colour_perceptual.md) — Conversation party colours are placeholder; swap to perceptual L≈50% via vsf spectral/LMS
 - [project_presence_vs_online.md](project_presence_vs_online.md) — presence ≠ online (online = avatar ring, always); "show my presence" = busy/song/mood broadcast, DEFAULTS OFF
 - [project_theme_rec2020.md](project_theme_rec2020.md) — fluor+photon theme.rs colours = VSF RGB lazily passed thru; convert via vsf_rgb_to_bt2020 + target Rec.2020 output on ALL platforms
-- [project_incall_learner.md](project_incall_learner.md) — in-call learner S1-S5 SHIPPED; V-CHIRP connect probe SHIPPED 2026-09-07 (every call self-calibrates at open; Wave page + doctrine gates REMOVED); echo = stale seeds, S6 superseded
-- [project_languages.md](project_languages.md) — language catalog SHIPPED 2026-09-03: translations-as-code exhaustive-match enum (en+es+mi, ~330 Msg variants), every numeral thru fmt_num, You-page picker, display.lang device-local + OS seed
-- [project_dozenal_datetime.md](project_dozenal_datetime.md) — dozenal date = `year month-glyph day` space-separated; months zero-indexed single glyphs (Feb=short Zila), weekdays are WORDS never digits, week-of-year dropped
-- [project_nunc_clock_check.md](project_nunc_clock_check.md) — nunc-time = clock VALIDATOR not photon's clock source; warn-only banner + ONE load-bearing use: `now` in the update stamp window (user mandate)
+- [project_incall_learner.md](project_incall_learner.md) — in-call learner + V-CHIRP connect probe SHIPPED; field rounds 1-5 logged (2x-TX = double capture thread, FIXED 2026-09-08 via audioGen token)
+- [project_languages.md](project_languages.md) — language catalog SHIPPED 2026-09-03: exhaustive-match Msg enum (en+es+mi), every numeral thru fmt_num, You-page picker
+- [project_dozenal_datetime.md](project_dozenal_datetime.md) — dozenal date = `year month-glyph day` space-separated; months zero-indexed single glyphs (Feb=short Zila)
+- [project_nunc_clock_check.md](project_nunc_clock_check.md) — nunc-time = clock VALIDATOR not photon's clock source; warn-only banner + ONE load-bearing use: `now` in the update stamp
 - [project_update_flow.md](project_update_flow.md) — self-update BUILT @228f68c + release-notice push BUILT (deploy.sh → hub broadcast + FCM → instant poll); stamp window gates installs
-- [project_fleet_inbox.md](project_fleet_inbox.md) — fleet inbox DESIGNED in docs/fleet-inbox.md (inbox/<hp>/ + hub/FCM wake; worker events / release notices / member notices, never a control channel); v1 = bind-attempt alert; NOT built
-- [project_doorbell.md](project_doorbell.md) — doorbell v1 BUILT 2026-07-19 (clock+ring+bells+FCM v1 sender+Kotlin wake; photon f852cbb, worker f3d621f); OPEN: sibling bell overwrite, opt-in toggle, TCP tier-1, E2E
-- [project_device_sovereignty.md](project_device_sovereignty.md) — THE ownership rule for all records: subject signs, others verify-or-withhold; pending expires, completed is permanent testimony; ostracism not erasure
-- [project_identity_profile.md](project_identity_profile.md) — identity profile DESIGNED (docs/identity-profile.md): handle at rest NOWHERE (roster handle = honeypot → pin-set), grants-only disclosure, required name + petnames, epoched profile key, NFC bearer invite card; rides roster rework
-- [project_device_loaners.md](project_device_loaners.md) — loaners DECIDED 2026-09-04: LEASE (docs/device-lease.md) — brand grant/recall, title never moves; airport = delegated session (handle never on borrowed hardware), stage 2 w/ pairing-v2+inbox cluster; departures BILATERAL; locks/recalls = routing layer
-- [project_total_loss_recovery.md](project_total_loss_recovery.md) — total-loss = custodian-authorized chain SUPERSESSION not edit; quorum-not-secret-share; ALWAYS custodian-gated even with handle (else eviction backdoor)
-- [reference_braid_novelty.md](reference_braid_novelty.md) — braid prior-art/novelty: primitives are prior art (double ratchet etc.); the defensible claim is two-distinct-peer-strands CSPRNG-picked-but-explicitly-referenced
+- [project_fleet_inbox.md](project_fleet_inbox.md) — fleet inbox DESIGNED (docs/fleet-inbox.md): inbox/<hp>/ + hub/FCM wake, events/notices never a control channel; v1 = bind-attempt alert; NOT built
+- [project_doorbell.md](project_doorbell.md) — doorbell v1 BUILT 2026-07-19 (clock+ring+bells+FCM v1 sender+Kotlin wake; photon f852cbb, worker f3d621f); OPEN: sibling bell overwrite
+- [project_device_sovereignty.md](project_device_sovereignty.md) — THE ownership rule for all records: subject signs, others verify-or-withhold; pending expires
+- [project_identity_profile.md](project_identity_profile.md) — identity profile DESIGNED (docs/identity-profile.md): handle at rest NOWHERE, grants-only disclosure, petnames
+- [project_device_loaners.md](project_device_loaners.md) — loaners DECIDED 2026-09-04: LEASE (docs/device-lease.md) — brand grant/recall, title never moves; airport = delegated session
+- [project_total_loss_recovery.md](project_total_loss_recovery.md) — total-loss = custodian-authorized chain SUPERSESSION not edit; quorum-not-secret-share
+- [reference_braid_novelty.md](reference_braid_novelty.md) — braid prior-art/novelty: primitives are prior art (double ratchet etc.)
 
 - [feedback_source_map.md](feedback_source_map.md) — Keep the source map comment block at top of src/lib.rs updated when pub items or files change
 - [feedback_commit_all.md](feedback_commit_all.md) — When asked to commit, include all modified files unless explicitly told otherwise
 - [feedback_legacy_first.md](feedback_legacy_first.md) — Port Photon UI from legacy compositing.rs as visible-RGB RMW first; fluor under-blend is Phase 5 cleanup
 - [project_vault_roadmap.md](project_vault_roadmap.md) — Vault phasing: ring tooling, GC, mid-session resurrection, bulk content (avatars/attachments/calls) all wait for device-sync phase
-- [project_identity_storage_model.md](project_identity_storage_model.md) — Device identity is deterministic from fingerprint (not stored); vault lives in app-private storage only, dual ring is intra-session resilience not uninstall-survival
-- [project_font_bundle.md](project_font_bundle.md) — fonts 100% BUNDLED, no system fonts; loader src/ui/fonts.rs + KAT; colour-first chain, FE0F/FE0E pick the face; dozenal glyphs fall back to Oxanium from ANY family; CJK deliberately unbundled
-- [project_android_color_pipeline_floor.md](project_android_color_pipeline_floor.md) — Android 1:1 panel rendering floor: ~2% calibration LUT residual with BT.2020+γ=2.2 buffer tag; ColorMode::NATIVE blocked by vendor init even with root
-- [feedback_orb_settings_panel.md](feedback_orb_settings_panel.md) — orb = settings/about/help panel entry; device management is a separate page in that panel, never the orb's direct action (current direct wiring is interim)
-- [feedback_no_time_based_ui.md](feedback_no_time_based_ui.md) — never time-based UI: no auto-expiring toasts/banners/delayed transitions; event-shown, interaction-cleared (click/keystroke via clear_hints)
+- [project_identity_storage_model.md](project_identity_storage_model.md) — device identity is deterministic from fingerprint (not stored); vault in app-private storage only
+- [project_font_bundle.md](project_font_bundle.md) — fonts 100% BUNDLED (src/ui/fonts.rs + KAT); colour-first chain, FE0F/FE0E pick the face; dozenal glyphs fall back to Oxanium
+- [project_android_color_pipeline_floor.md](project_android_color_pipeline_floor.md) — Android 1:1 panel floor: ~2% LUT residual with BT.2020+γ=2.2 buffer tag
+- [feedback_orb_settings_panel.md](feedback_orb_settings_panel.md) — orb = settings/about/help panel entry; device management is a separate page in that panel
+- [feedback_no_time_based_ui.md](feedback_no_time_based_ui.md) — never time-based UI: no auto-expiring toasts/banners/delayed transitions; event-shown
 - [feedback_terminal_clipboard.md](feedback_terminal_clipboard.md) — spaces around `=` in dev-log output (double-click selects the value)
 - [feedback_script_timestamps.md](feedback_script_timestamps.md) — every build/deploy script ends with `completed $(date)` on each success exit
 - [feedback_voca_camelcase.md](feedback_voca_camelcase.md) — Default voca-encoded values to camelCase concatenation; space-separated form is opt-in for read-aloud
-- [feedback_no_comment_wraps.md](feedback_no_comment_wraps.md) — Don't hard-wrap comments/docstrings/markdown; one sentence per line, however long (RECURRING "line wrap virus" — user deletes files over it; content is fine, wrapping is not)
-- [feedback_direct_pixel_no_floaters.md](feedback_direct_pixel_no_floaters.md) — rendering is DIRECT PIXEL ACCESS ONLY; no GPU shaders/vertex triangles/float pipeline ("no floaters"); wgpu renderer is suspect
-- [project_textbox_one_registry.md](project_textbox_one_registry.md) — adding a textbox = register in TWO walks only (visit_app_widgets + textboxes_mut); hover/damage/I-beam/gestures inherit — never hand-list per concern
+- [feedback_no_comment_wraps.md](feedback_no_comment_wraps.md) — never hard-wrap comments/docstrings/markdown; one sentence per line however long (RECURRING "line wrap virus"
+- [feedback_direct_pixel_no_floaters.md](feedback_direct_pixel_no_floaters.md) — rendering is DIRECT PIXEL ACCESS ONLY; no GPU shaders/vertex triangles/float pipeline ("no floaters")
+- [project_textbox_one_registry.md](project_textbox_one_registry.md) — adding a textbox = register in TWO walks only (visit_app_widgets + textboxes_mut)
 - [project_zero_sentinel_purge.md](project_zero_sentinel_purge.md) — zero-sentinel purge SHIPPED f1d28b3 (Option device keys); RELAY_ADDR/RosterEntry/ACK-API sentinels remain — convert when touched
 - [project_arabic_indexing_fixits.md](project_arabic_indexing_fixits.md) — FIX-IT LIST: decimal-indexed VSF field names (pong sync_{i}_*, peer_{i}, profile.addrN → native multi-value fields)
 - [feedback_commit_attribution.md](feedback_commit_attribution.md) — Built-With: Claude Opus <version> trailer is wanted; never Co-Authored-By Claude (tool, not author)
 - [feedback_spelling.md](feedback_spelling.md) — thru/thruout/altho, and colour spelled British; the rest United Statesian
 - [feedback_build_dev_script.md](feedback_build_dev_script.md) — Use ./scripts/dev.sh to compile/check photon, not bare cargo build (thrashes the machine); android dev = scripts/android/dev-adb.sh
-- [project_manifestus_custodes_split.md](project_manifestus_custodes_split.md) — manifestus = storage engine (was custodes, dir renamed, package still "custodes"); custodes reclaimed for TOKEN-recovery custodians
+- [project_manifestus_custodes_split.md](project_manifestus_custodes_split.md) — manifestus = storage engine (was custodes, dir renamed, package still "custodes")
 - [project_device_identity_model.md](project_device_identity_model.md) — tohu device-identity crate (oracle + frozen v0 derivation); Security/Recovery axes; deferred handle-salt collision fix
 - [project_keyring_design.md](project_keyring_design.md) — multi-device keyring: fleet chain + device-ADD pairing v1 SHIPPED. OPEN: braid-in of fresh device
-- [project_pairing_v2.md](project_pairing_v2.md) — pairing v2 REDESIGNED 2026-07-13 words-first: binding-request registry + masked words + consent-egg bilateral Add + self-departure-only Remove + two-phase; build NOT started
+- [project_pairing_v2.md](project_pairing_v2.md) — pairing v2 REDESIGNED 2026-07-13 words-first: binding-request registry + masked words + consent-egg bilateral Add + self-departure-only
 - [reference_aarch64_cross_libs.md](reference_aarch64_cross_libs.md) — missing system lib for aarch64-linux cross-build: vendor the .so into cross-libs/aarch64 + mirror x11.pc
 - [reference_site_cv_pdfs.md](reference_site_cv_pdfs.md) — holdmyoscilloscope.com = /mnt/Chiton/MEGA/holdmyoscilloscope (wrangler pages); CV PDFs via about/make-cv-pdfs.sh after cv-*.html edits
 - [reference_backups.md](reference_backups.md) — MEGA mirror fixed (Harbor paths, loud fail, stamp) + PRIVATE github keys repo (push manually, --no-verify)
-- [reference_keyring_signing.md](reference_keyring_signing.md) — Android signing password moved to Code/keys/TOKEN.p12.pass (keyring-free build); login keyring re-keyed EMPTY to kill the autologin unlock-nag
+- [reference_keyring_signing.md](reference_keyring_signing.md) — Android signing password moved to Code/keys/TOKEN.p12.pass (keyring-free build)
 - [reference_ihi_primitives.md](reference_ihi_primitives.md) — ihi has TWO one-way primitives: lossy OWF = chaos_amp/spaghettify (32-op data-dependent lossy ALU, PIPE-silicon-exact)
 - [project_token_terminology.md](project_token_terminology.md) — whakaira (ceremony) vs ihi (perceptible mana); canonical glossary = ferros/GLOSSARY.md; ira/wairua/state codes fixed
-- [project_session_registers.md](project_session_registers.md) — tohu session store = {identity_seed, vault_seed, handle_proof} registers, never the handle string; keep vault/network roots SEPARATE (security)
-- [project_secret_memory_hygiene.md](project_secret_memory_hygiene.md) — hot-secret RAM handling: do-now = zeroize + mlock + no-core-dumps + copy discipline; hibernation/cold-boot uncloseable in userspace (= PIPE line)
+- [project_session_registers.md](project_session_registers.md) — tohu session store = {identity_seed, vault_seed, handle_proof} registers, never the handle string
+- [project_secret_memory_hygiene.md](project_secret_memory_hygiene.md) — hot-secret RAM handling: do-now = zeroize + mlock + no-core-dumps + copy discipline
 - [reference_vsf_primary_section.md](reference_vsf_primary_section.md) — VSF readers MUST use VsfHeader::primary_section (near-form names are TOC-only, header-only sections have no body)
-- [reference_claude_unguard.md](reference_claude_unguard.md) — ~/.local/bin/claude-code-unguard FORCE-opens Claude Code's Edit read guard (patches Bun binaries); RE-RUN + RELOAD after every update; file-history → /dev/shm tmpfs
-- [feedback_vsf_readers_width_agnostic.md](feedback_vsf_readers_width_agnostic.md) — VSF integers canonical BOTH ways: writers auto-size (VsfType::u/i, NEVER hand widths — truncation trap), readers widen (as_u64/as_i64, never exact-match)
-- [feedback_numbers_binary_at_rest.md](feedback_numbers_binary_at_rest.md) — THE number doctrine: binary at rest (wire/vault/log), base chosen at render edge only (dozenal glyphs UI / words read-aloud); arabic never
-- [feedback_answer_dont_act.md](feedback_answer_dont_act.md) — user asks a QUESTION → answer and stop; never take action (esp. destructive) on a verification question; do ONLY what's asked, nothing extra
+- [reference_claude_unguard.md](reference_claude_unguard.md) — ~/.local/bin/claude-code-unguard FORCE-opens Claude Code's Edit read guard (patches Bun binaries)
+- [feedback_vsf_readers_width_agnostic.md](feedback_vsf_readers_width_agnostic.md) — VSF integers: writers auto-size (VsfType::u/i, never hand widths), readers widen (as_u64/as_i64, never exact-match)
+- [feedback_numbers_binary_at_rest.md](feedback_numbers_binary_at_rest.md) — THE number doctrine: binary at rest (wire/vault/log)
+- [feedback_answer_dont_act.md](feedback_answer_dont_act.md) — user asks a QUESTION → answer and stop; never take action (esp. destructive) on a verification question; do ONLY what's asked
 - [project_two_machine_git_divergence.md](project_two_machine_git_divergence.md) — after ANY commit verify HEAD == ls-remote; "missing fgtw/fluor symbol" = stale sibling, fast-forward first
 ## MacBook corpus (kebab-case)
 
-- [Push after landing](push-after-landing.md) — memories LIVE HERE ('Claude memories/' in the public photon repo, every machine): commit+push memory writes WITH photon; the private photon-claude-memory repo is DELETED (2026-08-23, its history carried handles) — never resurrect it
-- [MacBook trails remote](macbook-trails-remote.md) — clones there can trail the other machine with REWRITTEN history: verify local-only subjects against origin, reset --hard, and fast-forward ALL sibling path deps together (stale fluor/fgtw = 64 phantom compile errors); winit-patched tracks nickspiker/winit photon-patched (= the [patch] git dep); never commit its Cargo.lock drift
+- [Push after landing](push-after-landing.md) — memories LIVE in 'Claude memories/' of the public photon repo: commit+push memory writes WITH photon
+- [MacBook trails remote](macbook-trails-remote.md) — MacBook clones trail with REWRITTEN history: verify against origin, reset --hard, fast-forward ALL sibling path deps together
 - [photon not fmt-clean](photon-not-fmt-clean.md) — bare `cargo fmt` churns ~40 unrelated files; checkout-restore untouched files, separate style commit for the rest
 
 - [Per-device lanes](per-device-lanes.md) — SHIPPED 53ad8f9 2026-08-13 (unpublished): any replicated-chain device transmits on its own lane; CRDT lane merge converges
 - [Relay asymmetry + ping reflection](relay-asymmetry-ping-reflection.md) — FIXES 271c76c + 30e81b6 2026-08-13: ping reflection + reflect-beside-pings bootstrap (send side of Reflect never existed)
 
-- [Notes-row ceremony wedge](self-pair-sibling-row.md) — 4417b90 FIELD-VERIFIED; mid-ceremony sleep+restart deadlock fixed 5f1535a 2026-08-13 (stall re-fire widened); fe46a74b=MACBOOK, 1be949c1=ANDROID
-- [Boot blindness](boot-blindness.md) — FIX SHIPPED f280fda 2026-08-12: settings+zoom at vault-open, rehydrate skips Complete, avatars local-first; resume arm phase-timed ("PERF: resume load"); goal = local paint under a frame
+- [Notes-row ceremony wedge](self-pair-sibling-row.md) — 4417b90 FIELD-VERIFIED; mid-ceremony sleep+restart deadlock fixed 5f1535a 2026-08-13 (stall re-fire widened); fe46a74b=MACBOOK
+- [Boot blindness](boot-blindness.md) — FIX SHIPPED f280fda 2026-08-12: settings+zoom at vault-open, rehydrate skips Complete, avatars local-first
 - [Fleet epoch arc design](fleet-epoch-arc-design.md) — B1-B3 shipped a8b9d48/300886d + worker deployed, field-verified; remaining: hist_page/pong re-seal, row-cadence mint
 
 - [No wrapped comments](no-wrapped-comments.md) — photon comments are one line per thought, never hard-wrapped
@@ -138,27 +138,27 @@
 - [Edges, not timers](edges-not-timers.md) — react on event edges (release/ACK/push), never timers or debounces
 - [Commit trailer](commit-trailer-built-with.md) — never "Co-Authored-By: Claude"; end commits with "Built with Claude Fable 5"
 - [Nick publishes](nick-publishes.md) — never run publish scripts; commit/push only, check only when warranted
-- [No private handles](no-private-handles.md) — everything is public EXCEPT signing keys + handles (keys/ only): handles are keys (seed = BLAKE3(handle)), never in ANY repo, private included; committed content uses the map's stable first names as prose (never neutral roles); consult keys/claude-pseudonym-map.txt every time, never copy it into a tree
+- [No private handles](no-private-handles.md) — everything is public EXCEPT signing keys + handles (keys/ only); handles are keys, never in ANY repo; prose uses the map's petnames
 - [Bilateral removal](self-only-removal.md) — SHIPPED 2026-08-31: departure = leaver's signed request + surviving member's countersign (mirror of add); expulsion never; stolen = lockout, never removal
 - [Re-clutch, never store](re-clutch-never-store.md) — recovery = fresh ceremony; secrets at rest only when absolutely required
 - [Messaging solidity Phase A](messaging-solidity-phase-a.md) — A + B4 done (2026-08-09, locks commute per-key); flag-day APPROVED for B2's chain op; next: B1→B3 fleet chain+eggs arc
-- [Persist findings early](persist-findings-early.md) — Nick undoes via message edits, which truncates context; write load-bearing findings to memory/docs as they land. A rewind erases CONTEXT not the REPO: check reflog/HEAD before re-implementing "lost" work
-- [UI thread snapshot+CAS](ui-thread-snapshot-cas.md) — SHIPPED 2026-08-08: workers get snapshots, commits CAS live state, writers fire ACK/transmit post-durability; garbage is fork evidence only past the CAS
-- [Lane rotation wedge heal](lane-rotation-wedge-heal.md) — SHIPPED 2026-08-09: peer-at-anchor + unlinkable exhausted pendings → rotate lane, re-serve rows at original stamps; relay legs detached (the 5-10s ACK latency)
-- [Split contacts incident](split-contacts-incident.md) — CLOSED 2026-08-11: SHADOW CONVERSATIONS — receive arms derived convs from chains.participants, loader/persist use the contact; fixed all three arms
-- [VSF TOC section-name trap](vsf-toc-section-name-trap.md) — section names live in the header TOC; bare VsfSection::parse gives name="" and == checks silently reject all; 3rd victim was LAN discovery (dead fleet-wide)
-- [reference_windows_arm64_toolchain.md](reference_windows_arm64_toolchain.md) — Windows-on-ARM: aarch64-pc-windows-gnullvm via llvm-mingw at /mnt/Harbor/Code/llvm-mingw; build.rs uses llvm-rc; deploy.sh + installer wired
-- [reference_mingw_features_shim.md](reference_mingw_features_shim.md) — x86_64-windows breaks on pqcrypto-mlkem #include <features.h> (MinGW lacks it); FIXED @4809917 via vendored shim + .cargo/config.toml [env]
-- [project_lockout_enforcement.md](project_lockout_enforcement.md) — lock @b75cc0e + UNLOCK @0f76044/fa9e765: handle-confirmed reversal, typed tombstone, locked-signer refusal + monotonic guard at worker, locked-rewrap hole fixed
+- [Persist findings early](persist-findings-early.md) — Nick undoes via message edits (truncates context): write load-bearing findings to memory/docs as they land
+- [UI thread snapshot+CAS](ui-thread-snapshot-cas.md) — SHIPPED 2026-08-08: workers get snapshots, commits CAS live state, writers fire ACK/transmit post-durability
+- [Lane rotation wedge heal](lane-rotation-wedge-heal.md) — SHIPPED 2026-08-09: peer-at-anchor + unlinkable exhausted pendings → rotate lane, re-serve rows at original stamps
+- [Split contacts incident](split-contacts-incident.md) — CLOSED 2026-08-11: SHADOW CONVERSATIONS — receive arms derived convs from chains.participants, loader/persist use the contact
+- [VSF TOC section-name trap](vsf-toc-section-name-trap.md) — section names live in the header TOC; bare VsfSection::parse gives name="" and == checks silently reject all
+- [reference_windows_arm64_toolchain.md](reference_windows_arm64_toolchain.md) — Windows-on-ARM: aarch64-pc-windows-gnullvm via llvm-mingw at /mnt/Harbor/Code/llvm-mingw
+- [reference_mingw_features_shim.md](reference_mingw_features_shim.md) — x86_64-windows breaks on pqcrypto-mlkem #include <features.h> (MinGW lacks it)
+- [project_lockout_enforcement.md](project_lockout_enforcement.md) — lock @b75cc0e + UNLOCK @0f76044/fa9e765: handle-confirmed reversal, typed tombstone
 - [project_fleet_epoch_arc_closed.md](project_fleet_epoch_arc_closed.md) — epoch arc CLOSED @ fa3a9c0: hist_page+pong epoch re-seal, row-cadence mint
-- [project_wiped_device_roster_clobber.md](project_wiped_device_roster_clobber.md) — 2026-08-16 wiped-mac contactless: stale oracle fleet key + aead breaker clobbered roster slot; guard SHIPPED b83834f; epoch-mint heal verified
+- [project_wiped_device_roster_clobber.md](project_wiped_device_roster_clobber.md) — 2026-08-16 wiped-mac contactless: stale oracle fleet key + aead breaker clobbered roster slot
 - [project_window_geometry_shipped.md](project_window_geometry_shipped.md) — window geometry SHIPPED 2026-08-16 thru fluor's model: apply_window_rect one placement path + once-per-gesture settle hook
 - [project_humanitys_code.md](project_humanitys_code.md) — openness doctrine: secrecy surface = handles + keys ONLY; everything else public — "this is humanity's code"
 - [settings.md](settings.md) — Nick's note: naive fixed-width unlabeled settings converted to proper VSF (the fstate v7 arc)
-- [project_voice_calls.md](project_voice_calls.md) — calls FIELD-WORKING 2026-08-19 (two-way clean): channel-aware CBR ladder 16k→128k (tier byte, AIMD, VBR permanently banned), soft duck, MEDIA fast-mixer out (vendor AEC traded), adaptive jitter; docs/calls.md
+- [project_voice_calls.md](project_voice_calls.md) — calls FIELD-WORKING 2026-08-19: channel-aware CBR ladder 16k→128k (VBR banned), soft duck, MEDIA fast-mixer out, adaptive jitter; docs/calls.md
 - [project_xchacha_migration.md](project_xchacha_migration.md) — 2026-08-18 stack-wide ChaCha20→XChaCha20-Poly1305 (96→192-bit nonce) EVERYWHERE incl. chain stream layer
 - [feedback-one-build-per-check.md](feedback-one-build-per-check.md) — NEVER run dev.sh twice to read one build: capture once to scratchpad, grep the capture (battery + heat + double relaunch)
-- [project-ferros-exec-naming.md](project-ferros-exec-naming.md) — ferros exec design: no ambient cwd (shell resolves, programs get identities), bind-dont-search (petname→blake3 + sig at spawn), VSF headers not #!, package roots not $0
+- [project-ferros-exec-naming.md](project-ferros-exec-naming.md) — ferros exec design: no ambient cwd, bind-dont-search (petname→blake3 + sig at spawn), VSF headers not #!, package roots not $0
 - [feedback_stops_not_db.md](feedback_stops_not_db.md) — Nick does STOPS not dB: 1 stop = ×2 amplitude = one bit-shift; always convert and speak stops
-- [project_vault_seal_failures.md](project_vault_seal_failures.md) — CONVICTED 2026-09-04: live-LAP (2 append bands over referenced blocks); lap guard+airlock doubling+prune logging+banner split+bounded inspector SHIPPED; watch logs for LIVE-LAP AVERTED
-- [project_sibling_presence_flap.md](project_sibling_presence_flap.md) — CONVICTED 2026-09-07: relay-only sibling pair = pongs classify late/unmatched, presence flaps, 11/12 forever; ghost 1be949c1 still rostered
+- [project_vault_seal_failures.md](project_vault_seal_failures.md) — CONVICTED 2026-09-04: live-LAP; lap guard + airlock doubling + prune logging + banner split SHIPPED
+- [project_sibling_presence_flap.md](project_sibling_presence_flap.md) — CONVICTED 2026-09-07: relay-only sibling pair = pongs classify late/unmatched, presence flaps, 11/12 forever
