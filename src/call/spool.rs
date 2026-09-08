@@ -37,6 +37,69 @@ pub fn mint(call_id8: &[u8; 8]) -> Option<([u8; 32], std::path::PathBuf, SpoolTi
     ))
 }
 
+/// DURABLE SPOOL REGISTER (record-by-default, Nick 2026-09-08): the per-call spool key used to live ONLY in RAM — "crash = delete", honest under keep/delete, a LIE under record-by-default (a dead battery at 1h59m of a 2h wave threw the recording away). The register persists {key ‖ peer ‖ offer_osc} in the device vault at call start; launch-time recovery finds orphaned spool files, reads their registers, and finishes the keep the crash interrupted. Deleting a recording later is the vault's UnlinkOnly space-reclaim — the security boundary is the boot-gated vault key, not erasure (docs/vault-delete.md).
+const REG_LEN: usize = 32 + 32 + 8;
+
+fn reg_key(call_id8: &[u8; 8]) -> String {
+    format!("call.spool.{}", hex::encode(call_id8))
+}
+
+/// Persist the spool register — called at call start, the moment the ticket exists.
+pub fn persist_register(call_id8: &[u8; 8], ticket: &SpoolTicket, peer: &[u8; 32], offer_osc: i64) {
+    let Some(v) = crate::storage::device_vault() else {
+        return;
+    };
+    let mut reg = Vec::with_capacity(REG_LEN);
+    reg.extend_from_slice(&ticket.key);
+    reg.extend_from_slice(peer);
+    reg.extend_from_slice(&offer_osc.to_le_bytes());
+    match v.write(&reg_key(call_id8), &reg) {
+        Ok(()) => crate::logf!("CALL: spool register persisted ({})", hex::encode(call_id8)),
+        Err(e) => crate::logf!("CALL: spool register persist FAILED ({e}) — a crash mid-wave loses this recording"),
+    }
+}
+
+/// Drop the register — the keep completed (blob stored) or the recording was deliberately discarded. Ordering law: the caller deletes the register BEFORE the spool file is removed, so every crash window resolves at recovery (file+register → re-finish the keep, idempotent by content hash; file-without-register → stray, deleted).
+pub fn drop_register(call_id8: &[u8; 8]) {
+    if let Some(v) = crate::storage::device_vault() {
+        let _ = v.delete(&reg_key(call_id8));
+    }
+}
+
+/// Launch-time recovery: every orphaned spool file whose register survives becomes a (ticket, peer, offer_osc, call_id8) ready for the normal keep-transcode; a file with no register is a stray (pre-durability, or its keep completed thru the crash window) and is deleted.
+pub fn recover_orphans() -> Vec<(SpoolTicket, [u8; 32], i64, [u8; 8])> {
+    let mut out = Vec::new();
+    let Some(v) = crate::storage::device_vault() else {
+        return out;
+    };
+    let dir = crate::storage::runtime_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return out;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(hexid) = name.strip_prefix("callspool-").and_then(|n| n.strip_suffix(".tmp")) else {
+            continue;
+        };
+        let Some(id8) = hex::decode(hexid).ok().and_then(|b| <[u8; 8]>::try_from(b).ok()) else {
+            continue;
+        };
+        match v.read(&reg_key(&id8)) {
+            Ok(Some(reg)) if reg.len() == REG_LEN => {
+                let key: [u8; 32] = reg[..32].try_into().unwrap();
+                let peer: [u8; 32] = reg[32..64].try_into().unwrap();
+                let offer_osc = i64::from_le_bytes(reg[64..72].try_into().unwrap());
+                out.push((SpoolTicket { key, path: e.path() }, peer, offer_osc, id8));
+            }
+            _ => {
+                let _ = std::fs::remove_file(e.path());
+                crate::logf!("CALL: stray spool file removed ({name})");
+            }
+        }
+    }
+    out
+}
+
 /// The engine-side writer. Appends sealed records; closing is just dropping (the ticket owns the fate).
 pub struct SpoolWriter {
     cipher: XChaCha20Poly1305,

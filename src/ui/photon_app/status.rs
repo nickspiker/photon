@@ -33,6 +33,8 @@ impl PhotonApp {
         timed_drain!("call_ring", self.call_ring_tick());
         // Preview worker finished → flip the Play/Stop pill back (one atomic read when idle).
         self.tick_playback_done();
+        // One-shot: recover waves a crash left mid-keep (flag-guarded; a bool check per tick after).
+        self.recover_orphan_waves();
         // A finished audio calibration posts its profile here (rare; empty = one mutex).
         timed_drain!("audio_cal", self.drain_audio_cal());
         timed_drain!("avatar", self.drain_avatar_downloads());

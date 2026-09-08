@@ -1397,6 +1397,8 @@ pub struct PhotonApp {
     call_playback: Option<crate::call::playback::PlaybackHandle>,
     /// Which kept-recording blob the live playback belongs to — so its conversation bubble renders ■ + progress and a re-tap stops IT (not restart). None when nothing plays.
     call_playback_hash: Option<[u8; 32]>,
+    /// One-shot launch sweep for waves whose keep a crash interrupted (spool.rs recover_orphans).
+    orphan_waves_swept: bool,
     /// Runtime-only stuck-tip ledger per friendship: (the peer's advertised head for OUR lane, exhaust→re-arm ladders seen at exactly that head). The anchor-wedge detector needs tip 0; a NONZERO head that never moves while our exhausted pendings re-arm and exhaust again is the same dead lane in disguise (the peer holds those rows as forwards it can never re-ACK) — two full ladders at one head trips the rotation.
     lane_rearm_cycles: std::collections::HashMap<crate::types::friendship::FriendshipId, (i64, u8)>,
     /// Runtime-only re-serve cap, keyed per (friendship, peer DEVICE): the record's evidence tuple (tip for OUR lane, peer row_count, peer row_digest) plus ROWS ACTUALLY TRANSMITTED against exactly that testimony (2026-09-01: was bursts ATTEMPTED — the serial-send gate let ~1 row out per burst, so 2 attempted bursts spent the cap having served ~2 rows and a deeper hole parked forever; counting transmitted rows keeps the anti-loop convergence while letting the whole deficit drain). Device-keyed because each peer device pongs its OWN lane view — a fid-keyed slot flip-flopped between two devices' tips and reset the cap every cycle (the hours-long 8-rows-per-pong loop, field 2026-08-21). ANY change in the peer's testimony is the new-evidence edge that re-arms the cap; a peer that holds the rows but counts them differently (deleted/edit/reaction rows) goes quiet after the cap instead of bursting forever.
@@ -2110,6 +2112,7 @@ impl PhotonApp {
             call_speaker_on: false,
             call_playback: None,
             call_playback_hash: None,
+            orphan_waves_swept: false,
             lane_rearm_cycles: std::collections::HashMap::new(),
             lane_reserve_bursts: std::collections::HashMap::new(),
             pb_resolve_cursor: 0,

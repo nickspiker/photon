@@ -13,6 +13,7 @@ use crate::call::{ActiveCall, CallPhase};
 pub(super) struct CallKeepResult {
     peer: [u8; 32],
     offer_osc: i64,
+    call_id8: [u8; 8],
     result: Option<([u8; 32], u64)>,
 }
 
@@ -350,6 +351,22 @@ impl PhotonApp {
             _ => tr(Msg::CallRow),
         };
         self.end_call(&summary, offer_osc);
+    }
+
+    /// Launch-time wave recovery (record-by-default durability): finish any keep a crash/battery-death interrupted. Once per session, after the vault + session are up — orphaned spool files with surviving registers re-enter the NORMAL keep-transcode path and the wave appears in its conversation as if the hangup had completed.
+    pub(super) fn recover_orphan_waves(&mut self) {
+        if self.orphan_waves_swept || self.session.is_none() || crate::storage::device_vault().is_none() {
+            return;
+        }
+        self.orphan_waves_swept = true;
+        let seed = self.session.as_ref().map(|s| s.identity_seed).unwrap_or([0u8; 32]);
+        for (ticket, peer, offer_osc, id8) in crate::call::spool::recover_orphans() {
+            crate::logf!(
+                "CALL: recovering orphaned wave spool ({}) — the crash interrupted its keep; transcoding now",
+                hex::encode(id8)
+            );
+            self.spawn_keep_transcode(ticket, peer, offer_osc, seed, id8);
+        }
     }
 
     /// The ring-lease heartbeat (Nick 2026-09-08). Caller: while Outgoing, re-express the offer every ~1s so every ringing callee device keeps its lease — the beat stops the instant we leave Outgoing (answered by anyone / hung up), which is the universal, loss-proof stop. Callee: a Ringing call with no offer beat for ~3s lapses SILENTLY (no row — the caller signs the missed-wave record, never the receiver). Instant stops (Hangup/Decline/sibling-answer) still fire on their edges; this is the backstop for when no edge is ever delivered (the desktop+mac forever-ring, 2026-09-08).
@@ -982,6 +999,11 @@ impl PhotonApp {
         let peer = self.active_call.as_ref().map(|c| c.peer_handle_hash);
         let was_caller = self.active_call.as_ref().map(|c| c.we_are_caller).unwrap_or(false);
         // RECORDED BY DEFAULT (Nick 2026-09-08: "these are waves, not wireline calls" — a wave spools to disk like an email/attachment and you delete it LATER if you don't want it; NO keep/delete decision, NO ended screen). A completed wave with a spool auto-keeps: transcode off-thread → the call.audio row lands in the conversation. A missed/declined wave (no spool) mints the text summary instead.
+        let call_id8: [u8; 8] = self
+            .active_call
+            .as_ref()
+            .map(|c| c.call_id[..8].try_into().unwrap())
+            .unwrap_or([0u8; 8]);
         let ticket = self.active_call.as_mut().and_then(|c| {
             (c.phase == CallPhase::Active).then(|| c.spool.take()).flatten()
         });
@@ -992,7 +1014,7 @@ impl PhotonApp {
                 match ticket {
                     Some(ticket) => {
                         // Auto-keep: the recording IS the record — no duplicate text summary. Land the user in the conversation so the wave shows up where it lives.
-                        self.spawn_keep_transcode(ticket, peer, offer_osc, seed);
+                        self.spawn_keep_transcode(ticket, peer, offer_osc, seed, call_id8);
                         self.open_conversation_with(ci);
                     }
                     None => {
@@ -1012,14 +1034,14 @@ impl PhotonApp {
     }
 
     /// Transcode a kept spool to the durable N-channel blob OFF the UI thread (decode+re-encode is O(call length)); the worker posts (hash,size) back to `drain_call_keep`, which mints the fleet-internal call.audio row. A failed transcode drops the ticket → the spool key zeroizes → safe degrade to nothing kept.
-    fn spawn_keep_transcode(&mut self, ticket: crate::call::spool::SpoolTicket, peer: [u8; 32], offer_osc: i64, seed: [u8; 32]) {
+    pub(super) fn spawn_keep_transcode(&mut self, ticket: crate::call::spool::SpoolTicket, peer: [u8; 32], offer_osc: i64, seed: [u8; 32], call_id8: [u8; 8]) {
         let tx = self.call_keep_sender();
         let wake = self.event_proxy.clone();
         let spawned = std::thread::Builder::new()
             .name("call-keep".into())
             .spawn(move || {
                 let result = crate::call::record::finalize_nchannel(ticket, &seed);
-                let _ = tx.send(CallKeepResult { peer, offer_osc, result });
+                let _ = tx.send(CallKeepResult { peer, offer_osc, call_id8, result });
                 if let Some(w) = wake {
                     let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
                 }
@@ -1135,6 +1157,8 @@ impl PhotonApp {
         for r in pending {
             match r.result {
                 Some((hash, size)) => {
+                    // Keep completed (blob stored) → the durable spool register has done its job; a crash from here on has nothing to recover.
+                    crate::call::spool::drop_register(&r.call_id8);
                     if let Some(ci) = self.contact_index_by_handle_hash(&r.peer) {
                         // "call.audio" (video calls will mint "call.video") — no POTS in Photon, so nothing here is a "phone call".
                         let content = crate::types::attachment_content(&hash, "call.audio", size);
@@ -1154,7 +1178,10 @@ impl PhotonApp {
                         );
                     }
                 }
-                None => crate::log("CALL: recording was empty — nothing kept"),
+                None => {
+                    crate::call::spool::drop_register(&r.call_id8);
+                    crate::log("CALL: recording was empty — nothing kept");
+                }
             }
         }
         self.scene_dirty = true;
@@ -1187,9 +1214,15 @@ impl PhotonApp {
                 crate::network::status::RELAY_ADDR
             });
         let call_id8: [u8; 8] = call_id[..8].try_into().unwrap();
-        // Recording by default (docs/calls.md): the spool key lives ONLY in this ticket; the engine writes sealed records; keep/delete decides at hangup.
+        // Recording by default (docs/calls.md): the engine writes sealed records as the wave runs; the register below is what makes that durable across a crash.
         let (spool_param, ticket) = match crate::call::spool::mint(&call_id8) {
-            Some((key, path, ticket)) => (Some((key, path)), Some(ticket)),
+            Some((key, path, ticket)) => {
+                // Record-by-default durability (Nick 2026-09-08): persist {key, peer, offer_osc} at call START, so a battery death at 1h59m of a 2h wave recovers at next launch instead of vanishing (spool.rs recover_orphans; the RAM-only key was the old keep/delete model's "crash = delete").
+                if let Some(c) = self.active_call.as_ref() {
+                    crate::call::spool::persist_register(&call_id8, &ticket, &c.peer_handle_hash, c.offer_osc);
+                }
+                (Some((key, path)), Some(ticket))
+            }
             None => (None, None),
         };
         // No call_id in the engine params — the media wire dropped it (the basket-derived key IS the call identity; see packet.rs); the id's only job here is naming the spool above.
