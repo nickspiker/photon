@@ -1,7 +1,7 @@
 // Español — traducción completa del catálogo; véase en.rs como referencia.
 // Nunca se traducen: handles (precisos al byte), palabras voca de emparejamiento (material de protocolo), líneas de log, nombres de dígitos duodecimales (Zil/Ter/Lun/Stel), nombres de campos VSF y llaves de almacenamiento, la palabra de marca "Photon", "TOKEN" y "passless".
 // TODO numeral pasa por crate::fmt_num (consciente de base: glifos duodecimales o decimal según el interruptor DOZENAL_UI) — el arabic crudo {} está prohibido aquí, igual que en en.rs.
-// La salida de fmt_num necesita la cara Oxanium +glyphs en el sitio de dibujo, igual que en inglés.
+// La salida de fmt_num se resuelve en la cara Oxanium +glyphs desde cualquier familia primaria (fluor la nombra primero en su cadena de reserva) — ningún sitio de dibujo tiene que optar por ella.
 use super::Msg;
 use crate::fmt_num;
 use crate::ui::state::{ContactPage, SettingsPage};
@@ -432,10 +432,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let tail = if fetching { " \u{2014} trayendo\u{2026}" } else { "" };
             format!("\u{25B6} grabación \u{00B7} {}\u{202F}{unit_label}{tail}", fmt_num(units)).into()
         }
-        // Los tamaños de archivo quedan en decimal crudo a propósito: la fuente de burbuja por defecto no puede renderizar los bytes de control de los glifos duodecimales (solo Oxanium), así que fmt_num aquí produciría tofu — convertir archivos necesita el tratamiento de fila Oxanium que recibió call.audio.
         Msg::FileBubble { name, units, unit_label, held } => {
             let state = if held { "" } else { " \u{2014} toca para acciones" };
-            format!("\u{1F4CE} {name} \u{00B7} {units}\u{202F}{unit_label}{state}").into()
+            format!("\u{1F4CE} {name} \u{00B7} {}\u{202F}{unit_label}{state}", fmt_num(units)).into()
         }
         Msg::InspectFailed(e) => format!("falló la inspección: {e}").into(),
         // ---- message persistence / attachments toasts ----

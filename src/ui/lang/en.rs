@@ -1,6 +1,6 @@
 // English — the reference catalog; other languages are exhaustive matches over the same Msg set.
 // EVERY numeral renders thru crate::fmt_num (base-aware: dozenal glyphs or decimal per the DOZENAL_UI toggle) — raw arabic {} is forbidden here, including numbers that used to sit frozen inside prose (Nick 2026-09-03: "make sure every number gets formatted either decimal or dozenal").
-// The glyph face caveat holds: fmt_num output needs the Oxanium +glyphs face at the draw site.
+// fmt_num output needs the Oxanium +glyphs face, and gets it ANYWHERE: fluor names Oxanium first in its bundled fallback chain, so a dozenal numeral resolves from any primary family (measured — tests/glyph_fallback_probe.rs). No draw site has to opt in.
 use super::Msg;
 use crate::fmt_num;
 use std::borrow::Cow;
@@ -412,10 +412,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let tail = if fetching { " \u{2014} fetching\u{2026}" } else { "" };
             format!("\u{25B6} recording \u{00B7} {}\u{202F}{unit_label}{tail}", fmt_num(units)).into()
         }
-        // File sizes stay raw decimal on purpose: the default bubble font can't render the dozenal glyph control bytes (Oxanium-only), so fmt_num here would tofu — converting files needs the Oxanium-row treatment call.audio got.
+        // The "would tofu in the bubble font" caveat here was never true — MEASURED 2026-09-08 (tests/glyph_fallback_probe.rs): the glyph block falls back to Oxanium's `+glyphs` face from any primary family, so file sizes render dozenal like every other numeral.
         Msg::FileBubble { name, units, unit_label, held } => {
             let state = if held { "" } else { " \u{2014} tap for actions" };
-            format!("\u{1F4CE} {name} \u{00B7} {units}\u{202F}{unit_label}{state}").into()
+            format!("\u{1F4CE} {name} \u{00B7} {}\u{202F}{unit_label}{state}", fmt_num(units)).into()
         }
         Msg::InspectFailed(e) => format!("inspect failed: {e}").into(),
         // ---- message persistence / attachments toasts ----

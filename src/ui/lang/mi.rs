@@ -436,10 +436,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let tail = if fetching { " \u{2014} e tiki ana\u{2026}" } else { "" };
             format!("\u{25B6} hopukanga \u{00B7} {}\u{202F}{unit_label}{tail}", fmt_num(units)).into()
         }
-        // File sizes stay raw decimal on purpose: the default bubble font can't render the dozenal glyph control bytes (Oxanium-only) — see en.rs.
         Msg::FileBubble { name, units, unit_label, held } => {
             let state = if held { "" } else { " \u{2014} pāwhiritia mō ngā mahi" };
-            format!("\u{1F4CE} {name} \u{00B7} {units}\u{202F}{unit_label}{state}").into()
+            format!("\u{1F4CE} {name} \u{00B7} {}\u{202F}{unit_label}{state}", fmt_num(units)).into()
         }
         Msg::InspectFailed(e) => format!("i rahua te tirotiro: {e}").into(),
         // ---- message persistence / attachments toasts ----

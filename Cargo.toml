@@ -114,7 +114,7 @@ fgtw = { path = "../fgtw" }
 # fluor: CPU softbuffer compositor. Hosts the desktop event loop, owns chrome / paint primitives / text rendering / widget dispatch.
 # Path dep during the migration so Photon picks up local fluor changes without a republish cycle; flip to `version = "0.0.3+"` once the migration stabilizes (note: 0.0.2 was yanked).
 # Global = algorithm/geometry core only (no windowing backend). The desktop target block below adds `host-winit` so Cargo unions to {std, text, simd, rayon, host-winit} for desktop builds; the Android target stays at the default set so its dep graph excludes softbuffer/arboard/winit. This is the first step of the `host-android` plan — Android stays on the legacy compositor for now, but the fluor algorithm code is shared by both targets going forward.
-fluor = { path = "../fluor", default-features = false, features = ["std", "text", "simd", "rayon"] }
+fluor = { path = "../fluor", default-features = false, features = ["std", "text", "simd", "rayon", "emoji"] }
 ihi = "0.0.48"
 # Device identity + frozen v0 key derivation (was passless-key; dir + package renamed → tohu). Owns the per-platform device oracle (machine fingerprint / ANDROID_ID) and the handle→seed→vault derivation.
 tohu = { path = "../tohu" }
@@ -200,7 +200,7 @@ jni = "0.21"
 ndk = { version = "0.9.0", features = ["api-level-26"] }
 ndk-sys = "0.6.0"
 # fluor's Android backend — ANativeWindow surface + JNI shims + Choreographer-driven render scheduling. Same `PhotonApp` FluorApp impl runs on Android (via AndroidShell) and desktop (via host-winit's DesktopShell). winit no longer appears in the Android dep graph — fluor's `WakeSender` trait abstracts cross-thread wake-up (which previously needed `winit::event_loop::EventLoopProxy<UserEvent>` in the trait signature), so the platform-data-types-only `winit` dep + the `android-activity` compile-glue dep + the `android_main` linker shim all retire.
-fluor = { path = "../fluor", default-features = false, features = ["host-android"] }
+fluor = { path = "../fluor", default-features = false, features = ["host-android", "emoji"] }
 # Per-contact notification chime, synthesis-only (no rodio/playback): Rust derives the sender's chirp
 # WAV + haptic envelope and hands both to Kotlin, which plays them (MediaPlayer + VibrationEffect). The
 # `playback` feature (rodio) stays off — it can't cross-compile to the NDK and the OS does the playing.
@@ -210,7 +210,7 @@ chirp = { path = "../chirp", default-features = false }
 [target.'cfg(target_os = "redox")'.dependencies]
 winit = { version = "0.30.12", default-features = false, features = ["rwh_06"] }
 softbuffer = { version = "0.4", default-features = false }
-fluor = { path = "../fluor", default-features = false, features = ["host-winit"] }
+fluor = { path = "../fluor", default-features = false, features = ["host-winit", "emoji"] }
 # Synthesis-only chirp (same form as Android): Redox has no audio backend, but the ring RIM is visual — the casting is pure math and the identity contour belongs on every platform that draws the Ringing panel.
 chirp = { path = "../chirp", default-features = false }
 
@@ -220,7 +220,7 @@ winit = "0.30.12"
 softbuffer = "0.4"
 if-watch = { version = "3.2.1", features = ["tokio"] }
 arboard = "3.4"
-fluor = { path = "../fluor", default-features = false, features = ["host-winit"] }
+fluor = { path = "../fluor", default-features = false, features = ["host-winit", "emoji"] }
 # Per-contact notification chime: deterministic modal bell from spaghettify(their_handle_hash + our_identity_seed). Desktop-only - rodio's playback stack does not belong in the Android/Redox dep graphs (Android will use platform notifications).
 chirp = { path = "../chirp" }
 # Voice-call mic capture + playback (rodio already carries cpal transitively; the explicit dep pins the same version for the call audio thread pair). Android does NOT use cpal — capture/playback cross JNI to Kotlin AudioRecord/AudioTrack with the VOICE_COMMUNICATION source, which is what engages the vendor echo canceller (docs/calls.md echo layer 1).
