@@ -43,8 +43,19 @@ static RENDER_ENV_TOTAL: AtomicUsize = AtomicUsize::new(0);
 const JITTER_FLOOR: usize = 1; // 10ms — playback starts the instant the first frame exists; one frame of wobble tolerance. Zero is mechanically possible but useless: the queue is frame-quantized, so floor 0 saves at most one frame while making EVERY timing wobble an audible gap + re-prime stumble — and the adaptive growth would lift it right back. Below one frame the lever is smaller Opus frames (5ms CELT), not this constant.
 const JITTER_CAP: usize = 12; // 120ms — the most we'll ever buffer, even on a bad relay
 const JITTER_GROW: usize = 2; // frames added on each underrun
-const JITTER_DECAY_FRAMES: usize = 500; // ~5s of clean playback before shrinking one step
+const JITTER_DECAY_FRAMES: usize = 150; // ~1.5s of clean playback per shrink step. 500 was the latency ratchet (field 2026-09-08, both ends of a clean LAN call at target 11-12 = 110-120ms standing): growth is +2 per underrun but decay was 1 per 5s, so a handful of slow-start underruns taxed the whole call — a 10-frame overshoot took 50s to shed against a ~40s call. At 1.5s/step a clean path sheds 100ms in ~15s; a genuinely jittery path just re-grows (honest).
 static JITTER_TARGET: AtomicUsize = AtomicUsize::new(JITTER_FLOOR);
+/// Tier-aware floor: the sender batches TIER_FRAMES per datagram, so audio ARRIVES in bursts of this size and a target below it structurally underruns between windows (every call start at the 4-frame floor rung ratcheted the target thru false "jitter"). The engine stores the current rx window size here; decay stops at max(JITTER_FLOOR, this).
+static JITTER_MIN: AtomicUsize = AtomicUsize::new(JITTER_FLOOR);
+
+/// Engine hook: the just-decoded window's frame count — arrival granularity, the jitter target's honest floor. Also LIFTS the target to it immediately: waiting for the structural underruns to grow it is how every floor-rung call start ratcheted +2s that never fully decayed.
+pub fn set_jitter_min(frames: usize) {
+    let min = frames.clamp(JITTER_FLOOR, JITTER_CAP);
+    JITTER_MIN.store(min, Ordering::Relaxed);
+    if JITTER_TARGET.load(Ordering::Relaxed) < min {
+        JITTER_TARGET.store(min, Ordering::Relaxed);
+    }
+}
 static JITTER_PRIMING: AtomicBool = AtomicBool::new(true);
 static JITTER_CLEAN_STREAK: AtomicUsize = AtomicUsize::new(0);
 // STANDING-DEPTH TRIM (2026-09-01 Emma/Nick field call): depth acquired during a transient (slow-start's 4-frame floor bursts, a recv-path stall) is PERMANENT without this — the DAC drains at exactly realtime, so excess queue = mouth-to-ear latency for the rest of the call. Target decay alone never sheds it (it only matters at a re-prime).
@@ -230,10 +241,11 @@ fn next_render_frame() -> Vec<i16> {
         } else {
             match q.pop_front() {
                 Some(mut f) => {
-                    // Clean drain: after a long steady stretch, shrink the target one step toward the floor.
+                    // Clean drain: after a long steady stretch, shrink the target one step toward the floor — but never below the arrival granularity (the sender's window size), which a lower target can only underrun against.
                     let streak = JITTER_CLEAN_STREAK.fetch_add(1, Ordering::Relaxed) + 1;
                     let target = JITTER_TARGET.load(Ordering::Relaxed);
-                    if streak >= JITTER_DECAY_FRAMES && target > JITTER_FLOOR {
+                    let floor = JITTER_FLOOR.max(JITTER_MIN.load(Ordering::Relaxed));
+                    if streak >= JITTER_DECAY_FRAMES && target > floor {
                         JITTER_TARGET.store(target - 1, Ordering::Relaxed);
                         JITTER_CLEAN_STREAK.store(0, Ordering::Relaxed);
                     }
@@ -345,8 +357,9 @@ fn clear_queues() {
     RENDER_REF.lock().unwrap().clear();
     // RENDER_ENV clears but its TOTAL cursor base does NOT reset — a learner holding a cursor across the hygiene edge just sees a gap, never a phantom replay.
     RENDER_ENV.lock().unwrap().clear();
-    // Each call starts fresh at the jitter floor, re-priming — never inheriting the last call's grown depth.
+    // Each call starts fresh at the jitter floor, re-priming — never inheriting the last call's grown depth or window size.
     JITTER_TARGET.store(JITTER_FLOOR, Ordering::Relaxed);
+    JITTER_MIN.store(JITTER_FLOOR, Ordering::Relaxed);
     JITTER_PRIMING.store(true, Ordering::Relaxed);
     JITTER_CLEAN_STREAK.store(0, Ordering::Relaxed);
     TRIM_OVER_STREAK.store(0, Ordering::Relaxed);

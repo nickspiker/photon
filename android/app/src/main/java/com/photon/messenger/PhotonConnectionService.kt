@@ -45,6 +45,8 @@ class PhotonConnectionService : Service() {
         const val NOTIFICATION_ID = 1001
         const val MESSAGE_NOTIFICATION_ID = 1002
         const val CALL_NOTIFICATION_ID = 1003
+        /// Dedicated call channel — see postCallNotification for why calls never share the message channel's (user-degradable) importance.
+        const val CALL_CHANNEL_ID = "photon.calls"
         const val ACTION_ANSWER_CALL = "com.photon.ANSWER_CALL"
         const val ACTION_DECLINE_CALL = "com.photon.DECLINE_CALL"
         private const val TAG = "PhotonService"
@@ -575,13 +577,14 @@ class PhotonConnectionService : Service() {
     /** Backgrounded/locked ring (called from Rust): the OS's blessed incoming-call surface — CATEGORY_CALL, fullScreenIntent (locked phone launches straight into the in-app ring panel), Answer/Decline actions ON the notification so nothing can cover them, ongoing (only a stop edge cancels it — see cancelCallNotification). */
     fun postCallNotification(wav: ByteArray, timings: LongArray, amplitudes: IntArray, sender: String, text: String, gapMs: Int) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // Calls get their OWN channel (field 2026-09-08: Brittany's ring posted silently with no heads-up and no full-screen). Reusing the message channel meant inheriting whatever importance the user (or Android's notification cooldown) had degraded it to — channel importance is CACHED from first creation and an app can never raise it back, so re-declaring IMPORTANCE_HIGH on the shared id was a no-op. A fresh call-only channel starts at HIGH, and a user silencing messages no longer silences calls.
             val channel = NotificationChannel(
-                PhotonActivity.CHANNEL_ID,
-                PhotonActivity.CHANNEL_NAME,
+                CALL_CHANNEL_ID,
+                "Photon calls",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Photon message notifications"
-                setSound(null, null)
+                description = "Incoming waves"
+                setSound(null, null) // the per-contact ring rides our own looping track, not the channel sound
                 enableVibration(false)
             }
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
@@ -604,7 +607,7 @@ class PhotonConnectionService : Service() {
             Intent(this, PhotonConnectionService::class.java).setAction(ACTION_DECLINE_CALL),
             PendingIntent.FLAG_IMMUTABLE
         )
-        val notification = NotificationCompat.Builder(this, PhotonActivity.CHANNEL_ID)
+        val notification = NotificationCompat.Builder(this, CALL_CHANNEL_ID)
             .setContentTitle(sender)
             .setContentText(text)
             .setSmallIcon(android.R.drawable.sym_action_call)
@@ -617,7 +620,11 @@ class PhotonConnectionService : Service() {
             .addAction(0, "Decline", decline)
             .addAction(0, "Answer", answer)
             .build()
-        getSystemService(NotificationManager::class.java).notify(CALL_NOTIFICATION_ID, notification)
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.notify(CALL_NOTIFICATION_ID, notification)
+        // Android 14+ gates full-screen intents behind a user-grantable special access; when it's denied the FSI is silently stripped and the call is just a shade entry. Log the truth so a field pull names it (the fix is Settings → Apps → Photon → "full-screen notifications").
+        val fsi = if (Build.VERSION.SDK_INT >= 34) nm.canUseFullScreenIntent() else true
+        PhotonLog.i(TAG, "call notification posted (channel=$CALL_CHANNEL_ID fullScreenIntent=${if (fsi) "granted" else "DENIED - shade only"})")
         startRingLoop(wav, gapMs)
         vibrateChirp(timings, amplitudes, repeat = true)
     }

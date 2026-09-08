@@ -521,6 +521,8 @@ fn run(
                             Ok(_) | Err(_) => {}
                         }
                     }
+                    // Tell the jitter buffer the arrival granularity: a target below the window size structurally underruns between datagrams (the call-start latency ratchet, field 2026-09-08).
+                    crate::platform::audio::set_jitter_min(TIER_FRAMES[dtier]);
                     rx_done.insert(wid, frames);
                     // Receive-side cleanliness is the climb evidence (channel proxy — see the ladder comment): a full streak of completed windows earns one rung up.
                     clean_rx_windows += 1;

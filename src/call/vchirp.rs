@@ -1,9 +1,9 @@
-//! The V-chirp connect probe (Nick 2026-09-07): every call opens with the SAME quarter-second sound — an up log sweep and its time-reversal overlaid — played thru the live call output path and matched-filtered against the mic, so both sides measure their own speaker→mic coupling `g` and render→capture delay BEFORE any voice connects. This replaces the Wave calibration ritual: first-call-zero-echo is now a property of every call, not a ceremony the user must remember to run per route.
+//! The V-chirp connect probe (Nick 2026-09-07, lengthened to 1s 2026-09-08): every call opens with the SAME one-second sound — an up log sweep and its time-reversal overlaid — played thru the live call output path and matched-filtered against the mic, so both sides measure their own speaker→mic coupling `g` and render→capture delay BEFORE any voice connects. This replaces the Wave calibration ritual: first-call-zero-echo is now a property of every call, not a ceremony the user must remember to run per route.
 //!
 //! Why a V (up + down overlaid), not a single sweep or noise:
 //! - **Delay-Doppler split = clock-skew meter.** A render-vs-capture sample-rate mismatch shifts a chirp's matched-filter peak, with OPPOSITE sign for opposite sweep directions (the radar V-chirp trick). Mean of the two lags = true delay with the skew cancelled; difference = the skew itself — the same physics the jitter buffer's splice counters only see indirectly.
 //! - **Self-validation.** Two independent estimates of the same path must agree on lag and gain; disagreement = corrupted measurement (speech, movement), rejected instead of stored.
-//! - **Robust to "hello".** ~250ms × ~19.8kHz of swept bandwidth ≈ 33dB of processing gain — near speech at answer is uncorrelated with the sweep and barely dents the peak, exactly where the learner's envelope statistics are weakest.
+//! - **Robust to "hello".** ~1s × ~19.8kHz of swept bandwidth ≈ 43dB of processing gain — near speech at answer is uncorrelated with the sweep and barely dents the peak, exactly where the learner's envelope statistics are weakest.
 //! - Sweeps beat a fixed-seed noise burst (≈MLS) on our two field realities: speaker nonlinearity (distortion products land away from a sweep's linear peak; they smear an MLS everywhere) and clock drift (shifts a sweep's peak; shreds MLS alignment).
 //!
 //! Template spec (Nick's calls, 2026-09-07): 200Hz → 20kHz log sweep, no fade shaping — the device's own frequency taper rounds the ends, and the raw sweep doubles as a loop frequency-response probe later. The 200Hz end starts AT a zero crossing (phase 0), and the total phase is trimmed to a whole number of cycles so BOTH ends of both legs sit on zeros. The down leg is the exact time-reversal of the up leg — one stored waveform serves as both matched-filter references.
@@ -12,8 +12,8 @@
 
 pub const SAMPLE_RATE: usize = 48_000;
 const FRAME_SAMPLES: usize = crate::platform::audio::FRAME_SAMPLES;
-/// Sweep length: 250ms = 12000 samples = 25 frames.
-pub const CHIRP_SAMPLES: usize = SAMPLE_RATE / 4;
+/// Sweep length: 1s (Nick 2026-09-08 — only the middle of the 200Hz→20kHz span is audible thru a phone transducer, so the perceived sound is well under the full second). 4× the original 250ms: +6dB processing gain (TB ≈ 19.8k ≈ 43dB), 100 envelope bins for the g median instead of 25, and far better leg-agreement statistics — both first field calls rejected on legs disagreeing at 250ms.
+pub const CHIRP_SAMPLES: usize = SAMPLE_RATE;
 const F0: f64 = 200.0;
 const F1: f64 = 20_000.0;
 /// Peak of the summed legs: -9dB FS — the same loudness law as the old ritual prompt (full scale at media volume is DEAFENING, field 2026-09-02); measurement-neutral since g is a ratio.
@@ -22,7 +22,7 @@ const PEAK_TARGET: f64 = 11_585.0;
 pub const MAX_LAG_SAMPLES: usize = SAMPLE_RATE / 2;
 /// Post-scan tail: 100ms of room after the last scannable echo position.
 const TAIL_SAMPLES: usize = SAMPLE_RATE / 10;
-/// The mic capture the fit wants: chirp + scan window + tail (~850ms).
+/// The mic capture the fit wants: chirp + scan window + tail (~1.6s).
 pub const CAPTURE_SAMPLES: usize = CHIRP_SAMPLES + MAX_LAG_SAMPLES + TAIL_SAMPLES;
 /// Envelope bin width for the g fit — the learner/duck's 10ms grid.
 const BIN: usize = FRAME_SAMPLES;
@@ -30,7 +30,7 @@ const BIN: usize = FRAME_SAMPLES;
 const TPL_ACT: f32 = 500.0;
 /// Peak-to-noise gate: the matched peak must stand this far above the correlation's median |magnitude| to count as a real coupling; below it the route is CLEAN (headset — legal, g ≈ 0).
 const PSR_MIN: f64 = 6.0;
-/// Leg agreement gates: gains within 4× (same path, generous for room modes), lags within 20ms (a real clock skew over 250ms is sub-sample; bigger = resampler bug, diagnose don't store).
+/// Leg agreement gates: gains within 4× (same path, generous for room modes), lags within 20ms (a real clock skew over 1s is a few samples; bigger = resampler bug, diagnose don't store).
 const LEG_GAIN_RATIO_MAX: f32 = 4.0;
 const LEG_LAG_SPLIT_MAX: i64 = (SAMPLE_RATE / 50) as i64;
 
@@ -138,13 +138,35 @@ pub fn fit(cap: &[i16], max_lag: usize) -> Option<Fit> {
     if psr_up < PSR_MIN || psr_down < PSR_MIN {
         return Some(Fit { g: 0.0, delay_samples: 0, skew_samples: 0, g_up, g_down, floor, coupled: false });
     }
-    // Corruption gates: the two legs measured the same physics or the run is garbage.
+    // Corruption gates: the two legs measured the same physics or the run is garbage. Reject details logged — two field calls said only "legs disagreed" and left nothing to diagnose which gate or by how much.
     let skew = lag_up as i64 - lag_down as i64;
     if skew.abs() > LEG_LAG_SPLIT_MAX {
+        crate::logf!(
+            "CALL: v-chirp reject — lag split {} samples (up {} down {}, gate {}); g {} / {}, psr {} / {}",
+            skew,
+            lag_up,
+            lag_down,
+            LEG_LAG_SPLIT_MAX,
+            format!("{g_up:.4}"),
+            format!("{g_down:.4}"),
+            format!("{psr_up:.1}"),
+            format!("{psr_down:.1}")
+        );
         return None;
     }
     let (lo, hi) = (g_up.min(g_down).max(1e-6), g_up.max(g_down));
     if hi / lo > LEG_GAIN_RATIO_MAX {
+        crate::logf!(
+            "CALL: v-chirp reject — leg gain ratio {} (up {} down {}, gate {}); lags {} / {}, psr {} / {}",
+            format!("{:.2}", hi / lo),
+            format!("{g_up:.4}"),
+            format!("{g_down:.4}"),
+            LEG_GAIN_RATIO_MAX,
+            lag_up,
+            lag_down,
+            format!("{psr_up:.1}"),
+            format!("{psr_down:.1}")
+        );
         return None;
     }
     let delay = ((lag_up + lag_down) / 2) as usize;
