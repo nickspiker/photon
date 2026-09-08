@@ -492,6 +492,8 @@ impl PhotonApp {
                 row_count,
                 row_digest,
                 lane_heads,
+                era_index: chains.era_index,
+                era_tag: chains.era_tag().unwrap_or(0),
             });
         }
 
@@ -1299,6 +1301,8 @@ impl PhotonApp {
                         ciphertext: buf.ciphertext,
                         timestamp: buf.eagle_time,
                         sender_addr: buf.sender_addr,
+                        // A buffered frame was already routed to its lane; the label resolves it, no tag needed.
+                        era: None,
                         // (buf.sender_addr is SocketAddr; matches the variant field)
                         sender_pubkey: crate::types::DevicePubkey::from_bytes(buf.sender_pubkey),
                     });

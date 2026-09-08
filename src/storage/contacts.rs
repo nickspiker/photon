@@ -149,6 +149,7 @@ fn contact_state_schema() -> SectionSchema {
         .field("clutch_state", TypeConstraint::AnyUnsigned)
         .field("trust_level", TypeConstraint::AnyUnsigned)
         .field("consent", TypeConstraint::AnyUnsigned)
+        .field("era_cap", TypeConstraint::AnyUnsigned)
         .field("pubkey", TypeConstraint::Ed25519Key)
         .field("added", TypeConstraint::Any) // Eagle Time
         .field("id", TypeConstraint::AnyHash)
@@ -196,6 +197,8 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
         .set("trust_level", trust_level_to_u8(contact.trust_level))
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set("consent", contact.consent_mutual as u8)
+        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .set("era_cap", contact.peer_era_capable as u8)
         .map_err(|e| StorageError::Parse(e.to_string()))?;
     // An absent device key is OMITTED, never zero-filled (the zero-sentinel purge): the reader treats a missing "pubkey" as None and the id keys on the party id.
     if let Some(pk) = contact.public_identity.as_ref() {
@@ -431,6 +434,7 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     contact.clutch_state = u8_to_clutch_state(clutch_u8);
     contact.trust_level = u8_to_trust_level(trust_u8);
     contact.consent_mutual = section.get_value::<u8>("consent").unwrap_or(1) != 0;
+    contact.peer_era_capable = section.get_value::<u8>("era_cap").unwrap_or(0) != 0;
     contact.added = added;
     // The roster LWW clock floors at `added`; the explicit field below (if present) then raises it.
     contact.roster_updated = added;

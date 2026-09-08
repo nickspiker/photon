@@ -43,6 +43,7 @@ mod attachments;
 mod bridge;
 mod call_ui;
 mod ceremony;
+mod era;
 mod conversation;
 mod devices;
 mod driver;
@@ -653,6 +654,8 @@ struct BraidTxWire {
     plaintext_hash: [u8; 32],
     lane: [u8; 32],
     expected_key: [u8; 32],
+    /// Public tag of the era the snapshot encrypted under — rides the frame.
+    era: Option<u32>,
 }
 
 /// A chat frame's braid decrypt finished OFF the UI thread. The arm dispatches only after its cheap gates pass (auth, dup, chain-link verify); the worker runs the pure crypto (salt → memory-hard scratch → layer peel) against a snapshot of the lane; commit_braid_rx re-gates against CURRENT state and runs everything after the decrypt. Serialization is free: until a frame commits, its successor's chain-link verify fails and gap-buffers, exactly as when the decrypt was inline.
@@ -1670,6 +1673,10 @@ pub struct PhotonApp {
     chain_pull_sent: std::collections::HashSet<[u8; 32]>,
     /// Per-token miss answers: sibling device pubkeys that replied `chain_pull_miss`. When every live sibling contact has a device in the set, the fleet truly holds nothing and the re-key runs. RAM-only.
     chain_pull_misses: std::collections::HashMap<[u8; 32], std::collections::HashSet<[u8; 32]>>,
+    /// Last era each peer DEVICE advertised per friendship (index, tag) — the change edge for the stale-era observation (era ratchet stage 2). Runtime only.
+    peer_era_seen: std::collections::HashMap<(crate::types::friendship::FriendshipId, [u8; 32]), (u64, u32)>,
+    /// era_pull asks sent this session: token → the era index we held when we asked. A miss verdict for one of these is "no sibling holds a newer era", never a reason to re-key.
+    era_pull_sent: std::collections::HashMap<[u8; 32], u64>,
     /// Per-LANE replication bookkeeping: (friendship_id ‖ lane_label) → the lane position we last pushed to siblings. `drive_chain_replication` sends ONLY the lanes whose position advanced past this, as a per-lane checkpoint subset — so a mutation on one lane no longer re-transmits every other lane's 16KB chain (the 85KB whole-blob frame that stalled the render thread every tick).
     lane_pushed_pos: std::collections::HashMap<[u8; 64], u64>,
     /// Base hit id for the settings stub action pills (immediate-mode Buttons — Add device, Lock, Shred, Snapshot, …). Each page draws its pills over a small contiguous slice of this range; clicks land here and log a stub line. Allocated in `init` with a fixed span.
@@ -2222,6 +2229,8 @@ impl PhotonApp {
             chain_pushed_osc: std::collections::HashMap::new(),
             chain_pull_sent: std::collections::HashSet::new(),
             chain_pull_misses: std::collections::HashMap::new(),
+            peer_era_seen: std::collections::HashMap::new(),
+            era_pull_sent: std::collections::HashMap::new(),
             lane_pushed_pos: std::collections::HashMap::new(),
             settings_btn_base: HIT_NONE,
             settings_theme_dropdown: None,

@@ -591,6 +591,7 @@ impl PhotonApp {
                         ciphertext: wire.ciphertext,
                         eagle_time: done.eagle_time,
                         relay_to: done.relay_to,
+                        era: wire.era,
                     };
                     self.persist_chains_then(
                         snapshot,
@@ -904,6 +905,7 @@ impl PhotonApp {
         let wake = self.event_proxy.clone();
         let text_len = text.len();
         queue_job(&self.braid_job_tx, move || {
+            let era = snapshot.era_tag();
             let result = snapshot.prepare_send_encrypt(&payload, eagle_time).map(
                 |(ciphertext, prev_msg_hp, msg_hp, plaintext_hash, lane, expected_key)| {
                     BraidTxWire {
@@ -913,6 +915,7 @@ impl PhotonApp {
                         plaintext_hash,
                         lane,
                         expected_key,
+                        era,
                     }
                 },
             );

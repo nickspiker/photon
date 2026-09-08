@@ -209,6 +209,8 @@ pub struct MessageRequest {
     pub eagle_time: i64,
     /// Peer device keys to also send this message to over the relay pipe (empty = direct only). Set to the peer's device list when no direct path is proven, so CHAT rides the relay identically to how CLUTCH already does.
     pub relay_to: Vec<[u8; 32]>,
+    /// Public tag of the era this ciphertext was encrypted under — rides the frame so the receiver routes by era before decrypting.
+    pub era: Option<u32>,
 }
 
 /// Request to send a message acknowledgment (CHAIN format)
@@ -359,6 +361,8 @@ pub enum StatusUpdate {
         /// Eagle time oscillations from VSF header (for ACK matching)
         timestamp: i64,
         sender_addr: SocketAddr,
+        /// Sender's era tag; None from a pre-era peer or a gap-buffer replay (a replayed frame already has its lane, so the label routes it).
+        era: Option<u32>,
         /// The signing device — carried so the UI thread can apply the full known∧not-refused gate (refused_devices/locked_out live there, not in the RX worker).
         sender_pubkey: DevicePubkey,
     },
@@ -413,6 +417,8 @@ pub enum StatusUpdate {
     ChainPullReceived {
         conversation_token: [u8; 32],
         sender_pubkey: DevicePubkey,
+        /// Some(index) = an era_pull (the requester holds chains and asks for a newer era); None = the legacy chainless ask.
+        held_era: Option<u64>,
     },
     /// A sibling's negative answer to our chain_pull: it holds no chains for this token either. All live siblings missing = the fleet truly has nothing, re-key is legitimate.
     ChainPullMissReceived {
@@ -2459,7 +2465,7 @@ async fn run_checker(
                                 continue;
                             }
                             // Fleet chain-pull request/miss (a fresh sibling asking before it re-keys). Same mandatory packet-ack.
-                            if let Ok((conversation_token, sender_pubkey)) =
+                            if let Ok((conversation_token, sender_pubkey, held_era)) =
                                 crate::network::fgtw::protocol::parse_chain_pull_vsf(msg_bytes)
                             {
                                 {
@@ -2474,6 +2480,7 @@ async fn run_checker(
                                     StatusUpdate::ChainPullReceived {
                                         conversation_token,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                        held_era,
                                     },
                                     &event_proxy_recv,
                                 );
@@ -3178,6 +3185,7 @@ async fn run_checker(
                                     ciphertext,
                                     sender_pubkey,
                                     signature,
+                                    era,
                                 } => {
                                     // KNOWN DEVICE ONLY, and BEFORE the presence flip. The frame is self-authenticating (the signature proves possession of the signing key, nothing about WHO), so without this gate any key could flip a peer online, register an address, and inject an unknown-lane frame that drives the receiver's fork detectors — mirror the StatusPing allowlist gate. The full known∧not-refused decision runs on the UI thread (where refused_devices/locked_out live), keyed by sender_pubkey carried below.
                                     let is_contact = {
@@ -3252,6 +3260,7 @@ async fn run_checker(
                                             ciphertext,
                                             timestamp,
                                             sender_addr: src_addr,
+                                            era,
                                             sender_pubkey,
                                         },
                                         &event_proxy_recv,
@@ -3940,6 +3949,7 @@ async fn run_checker(
                 ciphertext: request.ciphertext,
                 sender_pubkey: our_pubkey.clone(),
                 signature: sig_bytes,
+                era: request.era,
             };
 
             let msg_bytes = msg.to_vsf_bytes();

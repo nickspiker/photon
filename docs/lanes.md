@@ -94,7 +94,9 @@ Sibling replication carries all of it (`replication_subset`), so a fleet converg
 
 Storage is additive in schema v8 (`era_index`, `era_lineage`, per-lane `lane_era`, `retired_*`, `pending_*`); a blob without them loads as era 0 of the lineage its own root names, every lane in it.
 
-Not yet (later stages): the era tag on the chat frame and the pong sync record (today a frame on an unknown label materializes under the current root and a straggler of an era we no longer hold is still caught only by the fork detector); the in-band light ratchet; the woven full CLUTCH on fleet shrink; the consent-gated fresh channel; the single repair decision function replacing the remaining ad-hoc triggers.
+**On the wire (stage 2, 2026-09-08).** The chat frame's `msg` section carries the sender's era tag (`era`, a name-keyed field a legacy parser never looks for): a known label routes by label, an unknown label materializes under the era the tag names, and a tag matching nothing we hold is dropped BEFORE decrypt and never counts as fork evidence. No tag = a pre-era peer = current era, garbage still to the fork detector as before. The pong's sealed tail gains an `era` row (index + tag per conversation), so a stale era is visible on the presence edge before any frame fails; the observation runs on a change edge per peer device through `era::repair_dispatch`, and a peer that advertises OUR era after delivering a current-era frame is the retire edge for the previous one. `chain_pull` became an `era_pull` when the asker holds chains (`era` = the index it holds): siblings serve iff they hold a NEWER era, and an all-miss answer is a repair-decision input, never the wipe-debris re-key. A contact latches `peer_era_capable` on its first tagged frame; the in-band ratchet may only be initiated toward such a peer.
+
+Not yet (later stages): the in-band light ratchet (the `LightRatchet` verdict logs today); the woven full CLUTCH on fleet shrink (`HeavyWeave`, logs); the consent-gated fresh channel (`ConsentFresh`, logs); the computed era owner replacing the advisory `ceremony_owner`; the remaining ad-hoc triggers routed through `friendship_repair`.
 
 ## Out of scope here
 

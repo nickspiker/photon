@@ -92,6 +92,8 @@ pub enum FgtwMessage {
         ciphertext: Vec<u8>,
         sender_pubkey: DevicePubkey,
         signature: [u8; 64],
+        /// The sender's public era tag (clutch::era_tag of the root this frame was encrypted under). Absent = a pre-era peer: the receiver treats it as its current era, exactly as before. Additive, name-keyed; old parsers never look for it.
+        era: Option<u32>,
     },
     /// Message acknowledgment
     ///
@@ -197,6 +199,9 @@ pub struct SyncRecord {
     pub row_digest: [u8; 32],
     /// Per-lane contiguous heads: (lane_label, last_received_osc) for each of the peer's lanes WE'VE received on. A sending device looks up ITS OWN lane's head here to learn exactly what we're missing — the flat `last_received_osc` above is the max across lanes, which over-reports for a multi-device sender. Empty = a legacy peer (fall back to `last_received_osc`) or a peer who has received nothing here.
     pub lane_heads: Vec<([u8; 32], i64)>,
+    /// The sender's current era for this conversation (index + public tag) — an additive `era` row in the sealed tail; 0/0 = a pre-era peer. Makes a stale era observable on the presence edge, BEFORE any frame fails (era ratchet stage 2).
+    pub era_index: u64,
+    pub era_tag: u32,
 }
 
 /// Convert SocketAddr to binary format for VSF Format:
@@ -400,28 +405,28 @@ impl FgtwMessage {
                 ciphertext,
                 sender_pubkey,
                 signature,
+                era,
             } => {
                 // Provenance: BLAKE3(conversation_token || prev_msg_hp)
                 let provenance = compute_chat_provenance(conversation_token, prev_msg_hp);
+                let mut fields = vec![
+                    ("tok".to_string(), VsfType::hg(conversation_token.to_vec())),
+                    ("lane".to_string(), VsfType::hb(lane.to_vec())),
+                    ("prev".to_string(), VsfType::hp(prev_msg_hp.to_vec())),
+                ];
+                // The era tag is a name-keyed field a legacy parser never looks for (2026-09-08).
+                if let Some(e) = era {
+                    fields.push(("era".to_string(), VsfType::u(*e as usize, false)));
+                }
+                fields.push((
+                    "data".to_string(),
+                    VsfType::t_u3(vsf::Tensor::new(vec![ciphertext.len()], ciphertext.clone())),
+                ));
                 builder
                     .creation_time_oscillations(*timestamp)
                     .provenance_hash(provenance)
                     .signature_ed25519(*sender_pubkey.as_bytes(), *signature)
-                    .add_section(
-                        "msg",
-                        vec![
-                            ("tok".to_string(), VsfType::hg(conversation_token.to_vec())),
-                            ("lane".to_string(), VsfType::hb(lane.to_vec())),
-                            ("prev".to_string(), VsfType::hp(prev_msg_hp.to_vec())),
-                            (
-                                "data".to_string(),
-                                VsfType::t_u3(vsf::Tensor::new(
-                                    vec![ciphertext.len()],
-                                    ciphertext.clone(),
-                                )),
-                            ),
-                        ],
-                    )
+                    .add_section("msg", fields)
                     .build()
             }
             FgtwMessage::MessageAck {
@@ -730,6 +735,12 @@ impl FgtwMessage {
                 let lane = extract_hash_hb(&fields, "lane")?;
                 let prev_msg_hp = extract_hash_hp(&fields, "prev")?;
                 let ciphertext = extract_data(&fields, "data")?;
+                // Optional (2026-09-08): absent on pre-era builds. Read width-agnostic, never exact-match.
+                let era = fields
+                    .iter()
+                    .find(|(n, _)| n == "era")
+                    .and_then(|(_, v)| v.as_u64())
+                    .and_then(|n| u32::try_from(n).ok());
                 return Ok(FgtwMessage::ChatMessage {
                     timestamp,
                     conversation_token,
@@ -738,6 +749,7 @@ impl FgtwMessage {
                     ciphertext,
                     sender_pubkey,
                     signature,
+                    era,
                 });
             } else {
                 // MessageAck: tok (conversation_token), time (acked_eagle_time), hash (plaintext_hash) No sequence numbers, no weave (deferred)
@@ -1113,6 +1125,8 @@ fn extract_sync_records(section: &vsf::VsfSection) -> Result<Vec<SyncRecord>, St
                 row_count: count,
                 row_digest: digest,
                 lane_heads: Vec::new(),
+                era_index: 0,
+                era_tag: 0,
             }),
             _ => return Err("sync row missing token or timestamp".to_string()),
         }
@@ -1135,6 +1149,24 @@ fn extract_sync_records(section: &vsf::VsfSection) -> Result<Vec<SyncRecord>, St
         if let (Some(token), Some(lane), Some(tip)) = (token, lane, tip) {
             if let Some(rec) = records.iter_mut().find(|r| r.conversation_token == token) {
                 rec.lane_heads.push((lane, tip));
+            }
+        }
+    }
+    // Era rows (2026-09-08, additive): hb token, u era_index, u era_tag. A legacy tail has none and the record stays 0/0.
+    for field in section.get_fields("era") {
+        let mut token: Option<[u8; 32]> = None;
+        let mut nums: Vec<u64> = Vec::new();
+        for v in &field.values {
+            match v {
+                VsfType::hb(h) if h.len() == 32 && token.is_none() => token = h.as_slice().try_into().ok(),
+                v if v.as_u64().is_some() => nums.push(v.as_u64().unwrap_or(0)),
+                _ => {}
+            }
+        }
+        if let (Some(token), [idx, tag, ..]) = (token, nums.as_slice()) {
+            if let Some(rec) = records.iter_mut().find(|r| r.conversation_token == token) {
+                rec.era_index = *idx;
+                rec.era_tag = u32::try_from(*tag).unwrap_or(0);
             }
         }
     }
@@ -1206,6 +1238,17 @@ fn add_pong_sensitive_fields(section: &mut vsf::VsfSection, tail: &PongTail) {
                     VsfType::hb(record.conversation_token.to_vec()),
                     VsfType::hb(lane.to_vec()),
                     VsfType::e(vsf::types::EtType::e6(*tip)),
+                ],
+            );
+        }
+        // The era row (2026-09-08): another NEW field name a legacy peer skips. Only for conversations that have an era (a tag of 0 is "none").
+        if record.era_tag != 0 {
+            section.add_field_multi(
+                "era",
+                vec![
+                    VsfType::hb(record.conversation_token.to_vec()),
+                    VsfType::u(record.era_index as usize, false),
+                    VsfType::u(record.era_tag as usize, false),
                 ],
             );
         }
@@ -2177,11 +2220,16 @@ pub fn build_chain_pull_vsf(
     conversation_token: &[u8; 32],
     device_pubkey: &[u8; 32],
     device_secret: &[u8; 32],
+    held_era: Option<u64>,
 ) -> Result<Vec<u8>, String> {
     use vsf::file_format::VsfSection;
     use vsf::VsfBuilder;
     let mut section = VsfSection::new("chain_pull");
     section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    // era_pull (2026-09-08): the requester HOLDS chains at this era and asks whether a sibling holds a NEWER one. Absent = the legacy ask (no chains at all).
+    if let Some(e) = held_era {
+        section.add_field("era", VsfType::u(e as usize, false));
+    }
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .signature_ed25519(*device_pubkey, [0u8; 64])
@@ -2192,7 +2240,7 @@ pub fn build_chain_pull_vsf(
 }
 
 /// Parse + verify a `chain_pull`. Returns (conversation token, sender device pubkey). The receiver authorizes by sibling membership (knows_device), exactly like ckpt_req.
-pub fn parse_chain_pull_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32]), String> {
+pub fn parse_chain_pull_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32], Option<u64>), String> {
     let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
         .map_err(|e| format!("chain_pull verification failed: {}", e))?;
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
@@ -2202,7 +2250,8 @@ pub fn parse_chain_pull_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32]), St
     }
     let token = field_hash32(&section.fields, "tok", |v| matches!(v, VsfType::hg(_)))
         .ok_or("chain_pull missing tok")?;
-    Ok((token, sender_pubkey))
+    let held_era = field_u64(&section.fields, "era");
+    Ok((token, sender_pubkey, held_era))
 }
 
 /// Build a `depart_req` — the LEAVING device's sibling-to-sibling removal request (bilateral removal, the mirror of the add ceremony). Carries the departure stamp `t` and the device's signature over `fgtw::fleet::departreq_signing_bytes(hp, device, t)`; the frame itself is signed by the same device key, so the receiver's sibling gate + the consent verify both pin the same identity. A surviving member's user approves on their screen; that device countersigns and publishes the consented Remove chain op.
@@ -3638,6 +3687,8 @@ mod pong_seal_tests {
                 last_received_osc: 123_456_789,
                 row_count: 42,
                 row_digest: [0x5Cu8; 32],
+                era_index: 0,
+                era_tag: 0,
                 lane_heads: vec![([0x11u8; 32], 123_456_789), ([0x22u8; 32], 120_000_000)],
             },
             SyncRecord {
@@ -3646,6 +3697,8 @@ mod pong_seal_tests {
                 row_count: 0,
                 row_digest: [0u8; 32],
                 lane_heads: Vec::new(),
+                era_index: 0,
+                era_tag: 0,
             },
         ]
     }
@@ -3662,6 +3715,66 @@ mod pong_seal_tests {
             avatar_pin: None,
             sealed,
         }
+    }
+
+    /// The chat frame's era tag rides as a name-keyed field: present → parses back; None → the field is ABSENT (a pre-era peer's frame) and parses as None. A legacy parser never looks for it, and every other field is untouched either way.
+    #[test]
+    fn chat_frame_era_tag_round_trips_and_is_absent_when_none() {
+        let frame = |era: Option<u32>| FgtwMessage::ChatMessage {
+            timestamp: 123_456_789,
+            conversation_token: [7u8; 32],
+            lane: [8u8; 32],
+            prev_msg_hp: [9u8; 32],
+            ciphertext: vec![1, 2, 3, 4],
+            sender_pubkey: DevicePubkey::from_bytes([5u8; 32]),
+            signature: [0u8; 64],
+            era,
+        };
+        let tagged = frame(Some(0xDEAD_BEEF)).to_vsf_bytes();
+        let bare = frame(None).to_vsf_bytes();
+        match FgtwMessage::from_vsf_bytes(&tagged).unwrap() {
+            FgtwMessage::ChatMessage { era, lane, ciphertext, .. } => {
+                assert_eq!(era, Some(0xDEAD_BEEF));
+                assert_eq!(lane, [8u8; 32]);
+                assert_eq!(ciphertext, vec![1, 2, 3, 4]);
+            }
+            other => panic!("wrong variant {other:?}"),
+        }
+        match FgtwMessage::from_vsf_bytes(&bare).unwrap() {
+            FgtwMessage::ChatMessage { era, .. } => assert_eq!(era, None, "no tag = legacy = None"),
+            other => panic!("wrong variant {other:?}"),
+        }
+        assert!(bare.len() < tagged.len(), "the field is genuinely absent, not zero-filled");
+    }
+
+    /// The pong tail's `era` row: a record with an era round-trips index + tag; a record without (tag 0) emits no row and parses back 0/0.
+    #[test]
+    fn pong_era_row_round_trips_and_legacy_stays_zero() {
+        let key = [0x31u8; 32];
+        let mut recs = sample_records();
+        recs[0].era_index = 3;
+        recs[0].era_tag = 0xABCD_0123;
+        let sealed = seal_pong_sensitive(&PongTail { sync_records: recs.clone(), ..Default::default() }, &key).unwrap();
+        let got = open_pong_sensitive(&sealed, &key).unwrap().sync_records;
+        let r0 = got.iter().find(|r| r.conversation_token == recs[0].conversation_token).expect("record 0");
+        assert_eq!((r0.era_index, r0.era_tag), (3, 0xABCD_0123));
+        for r in got.iter().filter(|r| r.conversation_token != recs[0].conversation_token) {
+            assert_eq!((r.era_index, r.era_tag), (0, 0), "an era-less record stays 0/0");
+        }
+    }
+
+    /// era_pull: the held era rides as an additive field; the legacy chainless ask (None) parses as None.
+    #[test]
+    fn chain_pull_held_era_round_trips() {
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let (pk, sk) = (signing.verifying_key().to_bytes(), signing.to_bytes());
+        let tok = [0x42u8; 32];
+        let with = build_chain_pull_vsf(&tok, &pk, &sk, Some(5)).unwrap();
+        let without = build_chain_pull_vsf(&tok, &pk, &sk, None).unwrap();
+        let (t1, p1, e1) = parse_chain_pull_vsf(&with).unwrap();
+        assert_eq!((t1, p1, e1), (tok, pk, Some(5)));
+        let (_, _, e0) = parse_chain_pull_vsf(&without).unwrap();
+        assert_eq!(e0, None, "the legacy ask carries no era");
     }
 
     #[test]

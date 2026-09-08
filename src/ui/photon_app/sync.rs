@@ -858,6 +858,8 @@ impl PhotonApp {
                     ciphertext,
                     eagle_time,
                     relay_to: relay_to.clone(),
+                    // Pendings never outlive their era (a cutover clears them), so a retransmit is always current-era.
+                    era: chains.era_tag(),
                 });
                 if exhausted {
                     crate::logf!("CHAT: retransmit GAVE UP on msg eagle_time {} after {} attempts (undelivered)", eagle_time, attempts);
