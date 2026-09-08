@@ -929,18 +929,6 @@ impl FluorApp for PhotonApp {
                                 self.fleet_lock_armed = Some(pk);
                             }
                         }
-                    } else if (64..72).contains(&slot) {
-                        // Benign remote LOCK (two-tap): ask a sibling to de-attest. No handle confirmation — nothing is destroyed and nothing is refused; the device stays a trusted member and its own handle wakes it. (Revoke, the hostile twin below, still demands the handle.)
-                        let idx = (slot - 64) as usize;
-                        let devices = self.fleet_device_rows();
-                        if let Some((pk, false, _, false, name, _, _, _)) = devices.get(idx).cloned() {
-                            if self.fleet_dormant_armed == Some(pk) {
-                                self.fleet_dormant_armed = None;
-                                self.lock_device_remote(pk, &name);
-                            } else {
-                                self.fleet_dormant_armed = Some(pk);
-                            }
-                        }
                     } else if slot >= 24 {
                         // Retired row's "Release" pill (two-tap): the OWNER frees the departed device's hardware brand — the second signature of the two-signature retire (the first was that device signing itself out). On success the pubkey joins the fleet-synced `fleet.released` setting so the row drops off every device; the chain rows themselves are permanent testimony, untouched.
                         let idx = (slot - 24) as usize;
@@ -1001,6 +989,7 @@ impl FluorApp for PhotonApp {
                         // "Lock" → clear session only (de-attest); vault kept, re-unlock by re-typing your handle. Works on Android (the -1 broadcast drops Kotlin's sticky session).
                         self.settings_shred_armed = false;
                         self.settings_removeshred_armed = false;
+                        self.settings_revoke_armed = false;
                         tohu::clear_session();
                         self.session = None;
                         self.private_s = crate::crypto::blind::PrivateS::None;
@@ -1008,6 +997,16 @@ impl FluorApp for PhotonApp {
                         self.state = AppState::Launch(LaunchState::Fresh);
                         self.clear_handle_for_reproof();
                         crate::log("SECURITY: locked — session cleared, vault kept; re-type handle to unlock");
+                    } else if slot == 1 {
+                        // "Revoke" (the desk case, from the device being revoked): treat THIS device as no-longer-trusted — the fleet key rotates away, the worker refuses it at announce, and it goes dark. It stays a permanent member (refusal, never removal); reinstating is handle-gated from another device, which is also why revoke_this_device refuses when there is no other device.
+                        if self.settings_revoke_armed {
+                            self.settings_revoke_armed = false;
+                            self.revoke_this_device();
+                        } else {
+                            self.settings_revoke_armed = true;
+                            self.settings_shred_armed = false;
+                            self.settings_removeshred_armed = false;
+                        }
                     } else if slot == 2 {
                         // "Shred (crypto-wipe)" → full clean (nuke vault + clear session). Two-tap confirm (destructive + irreversible). Arming disarms the other destructive pill so exactly one confirm is ever live.
                         if self.settings_shred_armed {
@@ -1016,6 +1015,7 @@ impl FluorApp for PhotonApp {
                         } else {
                             self.settings_shred_armed = true;
                             self.settings_removeshred_armed = false;
+                            self.settings_revoke_armed = false;
                         }
                     } else if slot == 3 {
                         // "Release" (Nick 2026-09-08, the four verbs: Lock / Wipe / Release / Revoke): the BILATERAL departure — signs out, wipes, AND removes this device from the fleet, freeing the hardware brand. No intent question any more — the drawer case is LOCK (stays a member, nothing departs), so every departure is a real handoff. Two-tap confirm; the wipe is GATED on observing our own de-fold. Why not unilateral: whoever briefly holds one unlocked device could sign it out — forcing a key rotation and laundering the hardware into their own fleet.
@@ -1025,6 +1025,7 @@ impl FluorApp for PhotonApp {
                         } else {
                             self.settings_removeshred_armed = true;
                             self.settings_shred_armed = false;
+                            self.settings_revoke_armed = false;
                         }
                     }
                 } else if page == SettingsPage::You {
@@ -3267,8 +3268,6 @@ impl PhotonApp {
                         let t_phase = std::time::Instant::now();
                         self.contacts = crate::storage::contacts::load_all_contacts(&s);
                         self.apply_locked_set();
-                        self.apply_dormant_set();
-                    self.apply_dormant_set();
                         let ms_contacts = t_phase.elapsed().as_millis();
                         for c in self.contacts.iter_mut() {
                             if let Some((

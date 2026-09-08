@@ -329,15 +329,15 @@ pub enum Msg<'a> {
     ApproveSignOutPill { armed: bool },
     ReinstatePill { armed: bool },
     RevokePill { armed: bool },
-    /// Benign remote lock (the drawer case): the device stays a full, trusted member — it just de-attests and needs the handle to wake.
-    LockPill { armed: bool },
-    DeviceLockedToast(&'a str),
     SingleCopyWarning,
     DeviceSignsItselfOut,
     AddDevicePill,
     RenamePill,
     // ---- security page ----
     SecurityLock,
+    SecurityRevoke { armed: bool },
+    SecurityRevokeHint,
+    RevokeNeedsAnotherDevice,
     SecurityShred { armed: bool },
     SecurityRemoveShred { armed: bool },
     SecurityStatusLine,

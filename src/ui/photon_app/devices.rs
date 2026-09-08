@@ -1801,46 +1801,23 @@ impl PhotonApp {
         }
     }
 
-    /// The devices a sibling has asked to go DORMANT (the benign drawer lock): per-key `fleet.dormant.<hex pubkey>`, same union/tombstone shape as the revoked set. This is a one-shot COURTESY signal, not a state — the target consumes it and tombstones it itself.
-    pub(super) fn dormant_devices(&self) -> Vec<[u8; 32]> {
-        self.fleet_settings
-            .as_ref()
-            .map(|fs| fs.pubkey_set_union("fleet.dormant."))
-            .unwrap_or_default()
-    }
-
-    /// REMOTE LOCK (Nick 2026-09-08, the drawer case): ask a sibling to de-attest. Benign twin of revoke — the device stays a full, trusted member: no key rotation, no refusal list, no worker push, no contact-row flag. Its vault and chains are untouched; typing the handle on it wakes it. Marking is per-key so two concurrent locks can't drop each other (the B4 race), and the marker is a one-shot the target clears.
-    pub(super) fn lock_device_remote(&mut self, pk: [u8; 32], name: &str) {
-        self.settings_set(
-            &format!("fleet.dormant.{}", hex::encode(pk)),
-            vsf::VsfType::ke(pk.to_vec()),
-        );
-        crate::logf!("FLEET: asked {} to go dormant — it de-attests on its next tick (handle wakes it)", crate::fp(&pk));
-        self.ready_toast = Some(tr(Msg::DeviceLockedToast(name)).into_owned());
-    }
-
-    /// Consume a dormant request aimed at THIS device: tombstone first (so the edge fires exactly once and a later relaunch isn't re-locked by a stale marker), then do exactly what the local Lock pill does — clear the session, land on Launch, re-gate on the handle. Nothing else changes: still a member, still trusted, vault intact.
-    pub(super) fn apply_dormant_set(&mut self) {
+    /// SELF-REVOKE (Nick 2026-09-08, the desk case): this device revokes ITSELF — you're shelving it, or handing the room to someone, and you'd rather do it here than dig out another device. Same mechanism as revoking a sibling; the difference is the brick gate, because REINSTATE can only come from another device (a revoked device self-locks at every boot, so it can never forgive itself). With no other live device this would be a one-way trip, so it is refused rather than offered.
+    pub(super) fn revoke_this_device(&mut self) {
         let Some(ours) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else {
             return;
         };
-        if !self.dormant_devices().contains(&ours) {
+        let others = self
+            .fleet_device_rows()
+            .into_iter()
+            .filter(|(pk, is_self, _, retired, _, _, _, _)| !*is_self && !*retired && !self.is_locked_device(pk))
+            .count();
+        if others == 0 {
+            crate::log("SECURITY: self-revoke refused — no other device could ever reinstate this one");
+            self.ready_toast = Some(tr(Msg::RevokeNeedsAnotherDevice).into_owned());
             return;
         }
-        self.settings_set(
-            &format!("fleet.dormant.{}", hex::encode(ours)),
-            vsf::VsfType::u0(false),
-        );
-        if self.session.is_none() {
-            return;
-        }
-        crate::log("FLEET-LOCK: a sibling asked this device to go dormant — de-attesting (vault kept; re-type handle to wake)");
-        tohu::clear_session();
-        self.session = None;
-        self.private_s = crate::crypto::blind::PrivateS::None;
-        self.pending_broadcast_signal = -1;
-        self.state = AppState::Launch(LaunchState::Fresh);
-        self.clear_handle_for_reproof();
+        crate::log("SECURITY: revoking THIS device at its owner's request — rotating the fleet key away and going dark");
+        self.revoke_device(ours);
     }
 
     /// Treat-as-stolen: lock a fleet device out WITHOUT touching the membership chain (removal is self-signed only, zero exceptions). The device stays a permanent member; the fleet stops trusting it — the locked set syncs fleet-wide, every trust gate refuses it, and the fleet key rotates so its cached key goes stale.
@@ -1852,11 +1829,12 @@ impl PhotonApp {
                 vsf::VsfType::ke(pk.to_vec()),
             );
         }
-        self.apply_locked_set();
-        // Rotation NOW, not at the next sentinel pass: the locked device holds the current fleet key until an epoch it isn't wrapped into exists.
+        // ORDER IS LOAD-BEARING for a SELF-revoke (the Security page's desk case): apply_locked_set tears down our own session the moment it sees our pubkey in the set, and spawn_fleet_key_sync needs that session to mint the next epoch. Rotate and push FIRST, go dark second — otherwise a device revoking itself would leave its own key live in the current epoch and never reach the worker.
+        // Rotation NOW, not at the next sentinel pass: the revoked device holds the current fleet key until an epoch it isn't wrapped into exists.
         self.spawn_fleet_key_sync();
-        // Push the lock to the worker so the brick SURVIVES A WIPE: the local fleet.locked set above (and the fleet-key rotation) only bind devices that still hold local state, but a wiped-and-reattested stolen device lost all of that — the worker's device_lock entry is the one authority a wipe can't erase, refusing the device at announce.
+        // Push the lock to the worker so the refusal SURVIVES A WIPE: the local fleet.locked set (and the fleet-key rotation) only bind devices that still hold local state, but a wiped-and-reattested stolen device lost all of that — the worker's device_lock entry is the one authority a wipe can't erase, refusing the device at announce.
         self.spawn_worker_lock_push(pk);
+        self.apply_locked_set();
     }
 
     /// The owner's deliberate reversal of `revoke_device` — fires only inside a handle-confirmed attest (see `pending_unlock`).

@@ -1765,8 +1765,8 @@ pub struct PhotonApp {
     /// One-shot window-geometry restore — a fluor `window_rect` (x, y, w, h in GLOBAL desktop units), armed with the zoom at settings load; the host applies it thru its maximize machinery, clamped into live surfaces.
     pending_geometry_restore: Option<(i32, i32, u32, u32)>,
     fleet_lock_armed: Option<[u8; 32]>,
-    /// Two-tap arm for the BENIGN remote lock (dormant request) — separate from fleet_lock_armed, which arms the hostile Revoke.
-    fleet_dormant_armed: Option<[u8; 32]>,
+    /// Two-tap arm for the Security page's SELF-revoke (this device revoking itself — the desk case).
+    settings_revoke_armed: bool,
     /// Two-tap arm state for the Unlock pill (the lock pill's mirror).
     fleet_unlock_armed: Option<[u8; 32]>,
     /// An armed UNLOCK awaiting handle confirmation: (device to unlock, armer's handle_proof, display name). Fires in the attest-success path exactly like `pending_lock` — the owner re-proves the handle, then the reversal executes.
@@ -1818,7 +1818,7 @@ pub struct PhotonApp {
     msg_max_scroll: f32,
     contacts_scroll_extent: isize,
     settings_shred_armed: bool,
-    /// Two-tap confirm armed for the Security page's "Remove this device from fleet" (self-departure WITHOUT the wipe — vault stays, claims dormant). Mutually exclusive with the two wipers; cleared on any page switch.
+    /// Two-tap confirm armed for the Security page's SELF-revoke (this device revoking itself — the desk case). Mutually exclusive with the other destructive pills; cleared on any page switch.
     /// Our outstanding departure request's consent stamp (bilateral removal): Some = we asked the fleet to sign us out and await a sibling's approval. Completion = observing our own key de-folded from the adopted member set. RAM-only; a relaunch just re-requests.
     depart_request_t: Option<i64>,
     /// The pending departure completes as a WIPE (Remove & shred) instead of the keep-vault de-attest. Dies with the process — a relaunch mid-ceremony safely degrades to keep-vault (the user can Shred manually).
@@ -2246,7 +2246,7 @@ impl PhotonApp {
             egged_cache: std::collections::HashMap::new(),
             pending_geometry_restore: None,
             fleet_lock_armed: None,
-            fleet_dormant_armed: None,
+            settings_revoke_armed: false,
             fleet_unlock_armed: None,
             pending_unlock: None,
             locked_retry_hit: HIT_NONE,

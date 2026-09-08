@@ -4429,7 +4429,7 @@ impl PhotonApp {
                             let rect = fluor::region::Region::new(band.x + hspan2 * 0.3, band.y + (band.h - pill_h) * 0.5, ctx.text.measure_text(&tr(Msg::RenamePill), &TextStyle::new(pill_h * 0.5, 0).font("Oxanium")) + pill_h * 0.8 + hspan2 * 0.4, pill_h);
                             draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, &tr(Msg::RenamePill), btn_base.wrapping_add(56 + i as HitId), ctx.pressed_hit, true, None, "Oxanium");
                         } else {
-                            // Bridge + Rename + the row's state pills (Lock / Revoke / Reinstate / Approve departure), each sized to its label.
+                            // Bridge + Rename + the row's state pill (Revoke / Reinstate / Approve departure), each sized to its label.
                             let band = flow.band(hspan2 * 2.4);
                             let pill_h = band.h * 0.8;
                             let pill_y = band.y + (band.h - pill_h) * 0.5;
@@ -4450,9 +4450,6 @@ impl PhotonApp {
                                 let armed = self.fleet_unlock_armed.as_ref() == Some(pk);
                                 place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::ReinstatePill { armed }), btn_base.wrapping_add(40 + i as HitId), if armed { Some(*theme::PILL_RED) } else { None });
                             } else {
-                                // The two hostile-vs-benign twins side by side: Lock (yellow — de-attest a device you still trust, the drawer case) then Revoke (red — treat-as-stolen, the device stays a member but the fleet stops trusting it).
-                                let lock_armed = self.fleet_dormant_armed.as_ref() == Some(pk);
-                                place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::LockPill { armed: lock_armed }), btn_base.wrapping_add(64 + i as HitId), if lock_armed { Some(*theme::PILL_YELLOW) } else { None });
                                 let armed = self.fleet_lock_armed.as_ref() == Some(pk);
                                 place(&mut canvas, ctx.text, &mut chrome.hit_test_map, &tr(Msg::RevokePill { armed }), btn_base.wrapping_add(32 + i as HitId), if armed { Some(*theme::PILL_RED) } else { None });
                             }
@@ -4593,6 +4590,10 @@ impl PhotonApp {
                         &tr(Msg::SecurityLock),
                         &tr(Msg::SecurityLockHint),
                         0, *theme::PILL_GREEN, false);
+                    action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
+                        &tr(Msg::SecurityRevoke { armed: self.settings_revoke_armed }),
+                        &tr(Msg::SecurityRevokeHint),
+                        1, if self.settings_revoke_armed { *theme::PILL_RED } else { *theme::PILL_YELLOW }, self.settings_revoke_armed);
                     action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
                         &tr(Msg::SecurityShred { armed: self.settings_shred_armed }),
                         &tr(Msg::SecurityShredHint),

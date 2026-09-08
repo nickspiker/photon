@@ -965,7 +965,6 @@ impl PhotonApp {
                         .merge_from(state.global_settings, state.device_settings);
                     // A pulled `fleet.locked` lands here: sweep it onto the sibling rows so every trust gate refuses the locked device from this tick on.
                     self.apply_locked_set();
-                    self.apply_dormant_set();
                     if changed {
                         // Snapshot + OFF-THREAD write: this inline save was one of the ~900ms UI-thread vault writes in the 2026-08-21 field capture, and it fires on every changed fstate merge (the Mac's log showed 37 pulls in one 35-minute window).
                         if let (Some(fs), Some(storage)) =
