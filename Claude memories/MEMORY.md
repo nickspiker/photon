@@ -157,3 +157,4 @@
 - [project-ferros-exec-naming.md](project-ferros-exec-naming.md) — ferros exec design: no ambient cwd (shell resolves, programs get identities), bind-dont-search (petname→blake3 + sig at spawn), VSF headers not #!, package roots not $0
 - [feedback_stops_not_db.md](feedback_stops_not_db.md) — Nick does STOPS not dB: 1 stop = ×2 amplitude = one bit-shift; always convert and speak stops
 - [project_vault_seal_failures.md](project_vault_seal_failures.md) — CONVICTED 2026-09-04: live-LAP (2 append bands over referenced blocks); lap guard+airlock doubling+prune logging+banner split+bounded inspector SHIPPED; watch logs for LIVE-LAP AVERTED
+- [project_sibling_presence_flap.md](project_sibling_presence_flap.md) — CONVICTED 2026-09-07: relay-only sibling pair = pongs classify late/unmatched, presence flaps, 11/12 forever; ghost 1be949c1 still rostered
