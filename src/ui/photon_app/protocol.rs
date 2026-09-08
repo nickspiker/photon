@@ -776,6 +776,11 @@ impl PhotonApp {
             let mut to_persist: Vec<usize> = Vec::new();
             let mut successor_checks: Vec<([u8; 32], [u8; 32])> = Vec::new();
             for (hp, members, tip_ts, genesis, existed) in member_updates {
+                // Tripwire re-arm edge: a result (or the -1 fetch-error sentinel) for this hp ends its pursuit — if the adopted tip still trails the friend's claim, the NEXT stale-claim pong re-fires, naturally paced by ping cadence. No wall clock anywhere.
+                self.fleet_tip_pursuit.remove(&hp);
+                if tip_ts < 0 {
+                    continue; // fetch-error sentinel: pursuit cleared above, nothing to adopt
+                }
                 if Some(hp) == our_hp {
                     // The fold-freshness tripwire's SENDER half: publish our own chain-tip eagle time to the RX worker, which stamps it into every sealed pong tail (ftip). Every chain-changing path funnels thru this drain, so one line covers attest, device add/remove, roster merge, and the 45s refold. fetch_max inside — a stale R2 self-read can't regress the claim.
                     crate::network::status::set_own_fleet_tip(tip_ts);

@@ -369,8 +369,10 @@ impl PhotonApp {
         )> = Vec::new();
         // Consent gate (2026-08-25): knocks to fire and the roster ride for a Mutual flip — both need &mut self, so they wait out the drain like the jobs above.
         let mut knock_after: Vec<crate::types::ContactId> = Vec::new();
-        // Fold-freshness tripwire (the Jon incident): friend hps whose pong claimed a NEWER chain tip than our stored fold — refetch after the drain (the contacts loop holds &mut self.contacts, so the &mut-self spawn defers, the knock_after idiom).
-        let mut stale_fold_hps: Vec<[u8; 32]> = Vec::new();
+        // Fold-freshness tripwire (the Jon incident): friend hps whose pong claimed a NEWER chain tip than our stored fold — refetch after the drain (the contacts loop holds &mut self.contacts, so the &mut-self spawn defers, the knock_after idiom). The claim rides along so the pursuit map records what we acted on.
+        let mut stale_fold_hps: Vec<([u8; 32], i64)> = Vec::new();
+        // Snapshot of the pursuit map for the in-loop gate (the loop holds &mut self.contacts; the map lives on self).
+        let stale_fold_claims = self.fleet_tip_pursuit.clone();
         // chain_pull request/miss events, deferred past the checker borrow (their handling mutates watermarks / re-keys).
         let mut chain_pull_reqs_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
         let mut chain_pull_misses_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
@@ -775,6 +777,9 @@ impl PhotonApp {
                                     && !contact.identity_superseded
                                     && !contact.identity_ended
                                     && ftip > contact.fleet_members_ts
+                                    && stale_fold_claims
+                                        .get(&contact.handle_proof)
+                                        .map_or(true, |pursued| ftip > *pursued)
                                 {
                                     crate::logf!(
                                         "FLEET: {} pong claims chain tip {} > our adopted fold {} (via device {}) — fold stale, refetching",
@@ -783,7 +788,7 @@ impl PhotonApp {
                                         contact.fleet_members_ts,
                                         crate::fp(&peer_pubkey.key)
                                     );
-                                    stale_fold_hps.push(contact.handle_proof);
+                                    stale_fold_hps.push((contact.handle_proof, ftip));
                                 }
                             }
                             // Per-device About off the sealed tail — SIBLINGS ONLY, both directions (Nick's disclosure ruling 2026-08-31): we don't say it to friends, and we don't ADOPT it from a non-sibling either — a modified friend client volunteering an abt field changes nothing here.
@@ -4821,22 +4826,22 @@ impl PhotonApp {
             checker.send_lan_unicast(session.handle_proof, hq.port(), target);
         }
 
-        // Tripwire refetches collected on pong edges — per-hp 60s cooldown (a stale claim keeps arriving until R2 convergence lands the adoption; one refetch a minute bounds that), then the authoritative fold fetch. The cooldown map is bounded by construction: only hps that matched a known contact ever enter it.
+        // Tripwire refetches collected on pong edges — EDGES, no wall clock (Nick 2026-09-08): the pursuit map records the claim we acted on; while a pursuit stands, only a strictly NEWER claim re-fires. The pursuit ends on the result edge (or the fetch-error sentinel) in the fold drain — if the adoption still trails, the next pong re-fires, paced by the ping cadence that delivered it. Bounded by construction: keys only ever come from matched contacts.
         if !stale_fold_hps.is_empty() {
-            let now = std::time::Instant::now();
             stale_fold_hps.sort_unstable();
-            stale_fold_hps.dedup();
+            stale_fold_hps.dedup_by_key(|(hp, _)| *hp);
             let due: Vec<[u8; 32]> = stale_fold_hps
-                .into_iter()
-                .filter(|hp| {
-                    self.fleet_tip_refetch
-                        .get(hp)
-                        .map_or(true, |t| now.duration_since(*t).as_secs() >= 60)
+                .iter()
+                .filter(|(hp, ftip)| {
+                    self.fleet_tip_pursuit.get(hp).map_or(true, |p| ftip > p)
                 })
+                .map(|(hp, _)| *hp)
                 .collect();
             if !due.is_empty() {
-                for hp in &due {
-                    self.fleet_tip_refetch.insert(*hp, now);
+                for (hp, ftip) in &stale_fold_hps {
+                    if due.contains(hp) {
+                        self.fleet_tip_pursuit.insert(*hp, *ftip);
+                    }
                 }
                 self.spawn_contact_fleet_refresh(due);
             }

@@ -813,11 +813,17 @@ impl PhotonApp {
                             return; // app dropped the receiver
                         }
                     }
-                    Err(e) => crate::logf!(
-                        "FLEET: contact fleet refresh failed for {}: {}",
-                        crate::fp(&hp),
-                        e
-                    ),
+                    Err(e) => {
+                        crate::logf!(
+                            "FLEET: contact fleet refresh failed for {}: {}",
+                            crate::fp(&hp),
+                            e
+                        );
+                        // ERROR IS AN EDGE TOO (edges-not-timers, Nick 2026-09-08): tip_ts = -1 is the fetch-failed sentinel — the drain uses it ONLY to clear the tripwire's pursuit entry so the next stale-claim pong may re-fire (paced by ping cadence, no wall clock). existed = true so it can never read as a vanished chain; eagle times are positive, so -1 collides with nothing.
+                        if tx.send((hp, Vec::new(), -1, [0u8; 32], true)).is_err() {
+                            return;
+                        }
+                    }
                 }
             }
             if let Some(w) = wake.as_ref() {
