@@ -45,6 +45,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::IncomingCall => "\u{260E} incoming wave".into(),
         Msg::IncomingCallNoPath => "\u{260E} incoming wave \u{2014} \u{26A0} no direct path".into(),
         Msg::CallActiveNoPath(dur) => format!("\u{260E} {dur} \u{2014} \u{26A0} no direct path").into(),
+        Msg::AnswerFailedReconnecting(name) => format!("\u{26A0} can\u{2019}t answer yet \u{2014} reconnecting with {name}").into(),
         Msg::CallReconnecting => "\u{26A0} reconnecting\u{2026}".into(),
         Msg::CallDroppedRow => "\u{260E} wave \u{2014} dropped".into(),
         Msg::CallChipElsewhere(dev) => format!("\u{260E} wave in progress on {dev}").into(),

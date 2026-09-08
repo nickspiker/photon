@@ -64,6 +64,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::IncomingCall => "\u{260E} he ngaru mai".into(),
         Msg::IncomingCallNoPath => "\u{260E} he ngaru mai \u{2014} \u{26A0} kāore he ara tōtika".into(),
         Msg::CallActiveNoPath(dur) => format!("\u{260E} {dur} \u{2014} \u{26A0} kāore he ara tōtika").into(),
+        Msg::AnswerFailedReconnecting(name) => format!("\u{26A0} k\u{0101}ore an\u{014D} e taea te whakautu \u{2014} e hono an\u{014D} ana ki a {name}").into(),
         Msg::CallReconnecting => "\u{26A0} e hono anō ana\u{2026}".into(),
         Msg::CallDroppedRow => "\u{260E} ngaru \u{2014} i motu".into(),
         Msg::CallChipElsewhere(dev) => format!("\u{260E} he ngaru kei te haere i runga i a {dev}").into(),

@@ -64,6 +64,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::IncomingCall => "\u{260E} onda entrante".into(),
         Msg::IncomingCallNoPath => "\u{260E} onda entrante \u{2014} \u{26A0} sin ruta directa".into(),
         Msg::CallActiveNoPath(dur) => format!("\u{260E} {dur} \u{2014} \u{26A0} sin ruta directa").into(),
+        Msg::AnswerFailedReconnecting(name) => format!("\u{26A0} a\u{00FA}n no se puede contestar \u{2014} reconectando con {name}").into(),
         Msg::CallReconnecting => "\u{26A0} reconectando\u{2026}".into(),
         Msg::CallDroppedRow => "\u{260E} onda \u{2014} cortada".into(),
         Msg::CallChipElsewhere(dev) => format!("\u{260E} onda en curso en {dev}").into(),

@@ -112,6 +112,8 @@ pub enum Msg<'a> {
     IncomingCallNoPath,
     CallActiveNoPath(&'a str),
     CallReconnecting,
+    /// Answer tapped but no frame could go out (the friendship is mid-ceremony) — the ring keeps going, the person needs to know why nothing happened.
+    AnswerFailedReconnecting(&'a str),
     CallDroppedRow,
     CallChipElsewhere(&'a str),
     CallChipElsewhereUnknown,

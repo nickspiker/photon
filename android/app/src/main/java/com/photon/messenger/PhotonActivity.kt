@@ -67,6 +67,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     // Service binding for network stack
     private var connectionService: PhotonConnectionService? = null
     private var serviceBound = false
+    // An Answer tapped on the notification before the Service binding exists — applied the moment it does.
+    private var pendingCallAnswer = false
 
     // Surface for rendering (custom class with InputConnection)
     private lateinit var surfaceView: PhotonSurfaceView
@@ -150,6 +152,11 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             connectionService = localBinder.getService()
             serviceBound = true
             PhotonLog.d(TAG, "Bound to PhotonConnectionService")
+            if (pendingCallAnswer) {
+                pendingCallAnswer = false
+                connectionService?.callAction(true)
+                PhotonLog.i(TAG, "call: deferred notification Answer delivered on bind")
+            }
             // Try to initialize UI now that service is ready
             initializeNativeIfReady()
         }
@@ -324,6 +331,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         live = this // the Service reaches here for the call-start mic prompt
+        applyCallIntent(intent)
 
         // Pairing v2 beacon bridge: cache contexts + register the JNI upcall path before any
         // screen can ask the radio for anything (docs/pairing-v2.md).
@@ -748,6 +756,43 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             connectionService?.setActivityContextPtr(0L)
             nativeDestroy(nativePtr)
             nativePtr = 0
+        }
+    }
+
+    /** singleTask: a notification tap while we're alive arrives here, not in onCreate. */
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        applyCallIntent(intent)
+    }
+
+    /** The call surface's two intent extras (see PhotonConnectionService.postCallNotification): INCOMING_CALL = show over the keyguard + light the screen; CALL_ACTION=answer = the notification's Answer, forwarded to the Service (or parked until it binds). */
+    private fun applyCallIntent(intent: Intent?) {
+        if (intent == null) return
+        if (intent.getBooleanExtra(PhotonConnectionService.EXTRA_INCOMING_CALL, false)) {
+            setCallLockScreenFlags(true)
+        }
+        if (intent.getStringExtra(PhotonConnectionService.EXTRA_CALL_ACTION) == "answer") {
+            intent.removeExtra(PhotonConnectionService.EXTRA_CALL_ACTION) // once — a re-delivered intent must not re-answer
+            val svc = connectionService
+            if (svc != null) {
+                svc.callAction(true)
+                PhotonLog.i(TAG, "call: notification Answer forwarded to the Service")
+            } else {
+                pendingCallAnswer = true
+                PhotonLog.i(TAG, "call: notification Answer parked until the Service binds")
+            }
+        }
+    }
+
+    /** Show over the lock screen and turn the screen on while a call rings or runs; back to normal when it ends (the Service clears it from stopCallAudio). API 27+; older devices keep the window-flag path unset and simply ring behind the lock. */
+    fun setCallLockScreenFlags(on: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(on)
+            setTurnScreenOn(on)
+            if (on) {
+                (getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager)?.requestDismissKeyguard(this, null)
+            }
         }
     }
 

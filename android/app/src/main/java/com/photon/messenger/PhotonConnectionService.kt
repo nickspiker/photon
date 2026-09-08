@@ -48,6 +48,9 @@ class PhotonConnectionService : Service() {
         /// Dedicated call channel — see postCallNotification for why calls never share the message channel's (user-degradable) importance.
         const val CALL_CHANNEL_ID = "photon.calls"
         const val ACTION_ANSWER_CALL = "com.photon.ANSWER_CALL"
+        /** Activity intent extras for the call surface: the full-screen intent carries INCOMING_CALL so the Activity shows over the keyguard and lights the screen; the notification's Answer carries CALL_ACTION=answer so the Activity (which notifications MAY start — a Service on Android 10+ may not) hands the verdict to Rust and is in hand with the call screen. */
+        const val EXTRA_INCOMING_CALL = "com.photon.INCOMING_CALL"
+        const val EXTRA_CALL_ACTION = "com.photon.CALL_ACTION"
         const val ACTION_DECLINE_CALL = "com.photon.DECLINE_CALL"
         private const val TAG = "PhotonService"
         private const val POLL_INTERVAL_MS = 1000L // 1 second network polling
@@ -250,13 +253,8 @@ class PhotonConnectionService : Service() {
         // Answer/Decline pressed ON the call notification (docs/calls.md redesign 2026-08-30): hand the verdict to Rust (the app tick drains it into answer/decline on the UI thread), drop the notification, and — on answer — bring the Activity forward so the call screen is in hand.
         when (intent?.action) {
             ACTION_ANSWER_CALL, ACTION_DECLINE_CALL -> {
-                val answer = intent.action == ACTION_ANSWER_CALL
-                nativeCallAction(answer)
-                cancelCallNotification()
-                if (answer) {
-                    startActivity(Intent(this, PhotonActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                }
-                requestServiceTick()
+                // Decline still arrives here (no UI needed). Answer now rides an ACTIVITY intent (see postCallNotification) — this arm keeps handling it for any stale PendingIntent, but never tries to startActivity from a Service: Android 10+ silently drops that unless the app is already in the foreground, which is exactly "the notification went away and nothing came up" (field 2026-09-08).
+                callAction(intent.action == ACTION_ANSWER_CALL)
                 return START_STICKY
             }
         }
@@ -581,6 +579,24 @@ class PhotonConnectionService : Service() {
         vibrateChirp(timings, amplitudes, repeat = true)
     }
 
+    /** Answer/Decline verdict from either the notification action or the Activity that the Answer action launched: latch it for Rust (the app tick drains it into answer/decline on the UI thread), drop the notification, and kick a tick so a backgrounded process acts NOW. */
+    fun callAction(answer: Boolean) {
+        nativeCallAction(answer)
+        cancelCallNotification()
+        requestServiceTick()
+    }
+
+    // Proximity wake lock for an in-hand call: screen off against the ear, back on when the phone comes away — the OS handles the sensor, we only hold the lock for the call's duration. Not every device supports the level; then it stays null and the screen simply stays lit.
+    private val proximityLock: PowerManager.WakeLock? by lazy {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        if (pm.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
+            pm.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, "photon:callProximity").apply { setReferenceCounted(false) }
+        } else {
+            PhotonLog.i(TAG, "callAudio: no proximity wake lock on this device — screen stays on during calls")
+            null
+        }
+    }
+
     /** Backgrounded/locked ring (called from Rust): the OS's blessed incoming-call surface — CATEGORY_CALL, fullScreenIntent (locked phone launches straight into the in-app ring panel), Answer/Decline actions ON the notification so nothing can cover them, ongoing (only a stop edge cancels it — see cancelCallNotification). */
     fun postCallNotification(wav: ByteArray, timings: LongArray, amplitudes: IntArray, sender: String, text: String, gapMs: Int) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -596,16 +612,23 @@ class PhotonConnectionService : Service() {
             }
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
+        // The full-screen surface: flagged so PhotonActivity shows over the keyguard and turns the screen on (without those the FSI launched BEHIND the lock — vibration and ring with a dark screen, field 2026-09-08).
         val fullScreen = PendingIntent.getActivity(
             this,
             1,
-            Intent(this, PhotonActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            Intent(this, PhotonActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(EXTRA_INCOMING_CALL, true),
             PendingIntent.FLAG_IMMUTABLE
         )
-        val answer = PendingIntent.getService(
+        // Answer is an ACTIVITY intent: a notification action may start an Activity where a Service may not, so the tap both answers (the Activity forwards the verdict here) and lands on the call screen.
+        val answer = PendingIntent.getActivity(
             this,
             2,
-            Intent(this, PhotonConnectionService::class.java).setAction(ACTION_ANSWER_CALL),
+            Intent(this, PhotonActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(EXTRA_INCOMING_CALL, true)
+                .putExtra(EXTRA_CALL_ACTION, "answer"),
             PendingIntent.FLAG_IMMUTABLE
         )
         val decline = PendingIntent.getService(
@@ -878,6 +901,7 @@ class PhotonConnectionService : Service() {
     fun startCallAudio() {
         if (callAudioRunning) return
         callAudioRunning = true
+        try { proximityLock?.acquire() } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock acquire failed", e) }
         val sampleRate = 48000
         val frameSamples = 240
 
@@ -935,6 +959,9 @@ class PhotonConnectionService : Service() {
     /** Called from Rust at hangup — loops observe the flag and tear their devices down. */
     fun stopCallAudio() {
         callAudioRunning = false
+        try { proximityLock?.let { if (it.isHeld) it.release() } } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock release failed", e) }
+        // The call surface no longer needs to sit over the keyguard.
+        PhotonActivity.live?.let { a -> a.runOnUiThread { a.setCallLockScreenFlags(false) } }
         captureThread = null
         renderThread = null
         // Drop the microphone FGS type the moment the call ends — back to dataSync-only (privacy indicator off, Android 14 mic-FGS accounting closed).

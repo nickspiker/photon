@@ -281,7 +281,11 @@ impl PhotonApp {
         let callee_nonce: [u8; 32] = rand::random();
         let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
         if !self.send_call_signal(ci, CallSignal::Answer { call_id, nonce: callee_nonce, device: our_device }) {
-            crate::log("CALL: answer send failed");
+            // The reason is already logged by chain_transmit. Field 2026-09-08: a re-CLUTCH with the caller's fleet was mid-ceremony, the friendship had no chain, and the tap silently did nothing while the ring kept going — say so on screen.
+            let name = self.contacts.get(ci).map(|c| c.display_name()).unwrap_or_default();
+            crate::log("CALL: answer send failed — the friendship can't carry a frame right now (ceremony in progress?)");
+            self.ready_toast = Some(tr(Msg::AnswerFailedReconnecting(&name)).into_owned());
+            self.scene_dirty = true;
             return;
         }
         // Answering owns the audio session — stop any recording preview, and clear stale minimize/speaker state.

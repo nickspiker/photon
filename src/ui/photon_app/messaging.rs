@@ -724,6 +724,7 @@ impl PhotonApp {
         // Contact must be CLUTCH-Complete with a friendship chain — OR hold the sibling-replicated chains with a live lane root. Local Complete is only the ceremony OWNER's shape (§4.2 parks every other device at Pending forever), and gating on it made the owner the single writer: every other device fleet-forwarded thru it, which parks messages behind a dead battery an ocean away (Nick, 2026-08-13). Per-device lanes end that: `prepare_send` mints THIS device's own lane, the friend materializes it from the wire label (`ensure_lane`), and the lane-wise CRDT merge converges every copy — so holding the root is the whole capability.
         let (friendship_id, recipient_pubkey, addr_pair, _our_handle_hash, msg_relay_to) = {
             let Some(contact) = self.contacts.get(ci) else {
+                crate::logf!("CHAT: cannot send — contact index {} out of range", ci);
                 return false;
             };
             let Some(fid) = contact.friendship_id else {
@@ -741,6 +742,8 @@ impl PhotonApp {
             }
             // Party id per contact: identity seed for friends, device-derived pid for fleet siblings — the chain index in prepare_send must match what from_clutch was keyed with.
             let Some(our_pid) = self.our_party_id(contact) else {
+                // Silent falses in a send path hid a whole afternoon's diagnosis (2026-09-08) — every exit says why.
+                crate::log("CHAT: cannot send — no party id (no session, or a sibling without a fleet pid)");
                 return false;
             };
             // No direct path → also relay this message over the pipe.
