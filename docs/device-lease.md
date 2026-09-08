@@ -16,7 +16,8 @@ Existing states: active (✓✓ yours), locked-out/drawer (✓ ✗ yours), retir
 
 ## The lease
 
-- **Grant**: the owner's fleet signs an annotation on the brand naming a guest identity (or open). Worker attest rule becomes: `identity == brand owner OR a live grant names it`. Title never moves.
+- **Grant**: the owner's fleet signs an annotation on the brand naming a guest identity — a FRIEND, always (decided 2026-09-04: no durable-loan-to-stranger case survives scrutiny; the roster supplies the name, and the friendship IS the recall's delivery channel — recalling someone you can't message is a device going dark with no explanation). No open grants. Worker attest rule becomes: `identity == brand owner OR a live grant names it`. Title never moves.
+- **No genesis on leased hardware**: a lease permits an EXISTING identity to attest, never a fresh one to mint — an open-genesis lease would reopen the sybil-laundering hole the claims-dormancy rule closed. The newcomer-with-a-spare-phone case is the NEW OWNER verb (release, gift, they genesis as themselves), not a loan.
 - The guest's device joins the GUEST's fleet as an ordinary member; their vault seals under their handle on the owner's disk — unreadable to the owner, symmetrical privacy.
 - **Recall**: an owner-signed edge enforced at the ROUTING layer (the lockout machinery pointed at a guest). No timer, no expiry — the recall is the event. Recall protects title and data, not physical repossession.
 - **Sovereignty**: recall never evicts the guest from their own fleet (nobody signs away someone else's membership). Their fleet sees the device go dark; they bilaterally depart it at leisure; their claims stay theirs (de-attest keeps claims, dormant).
@@ -25,6 +26,8 @@ Existing states: active (✓✓ yours), locked-out/drawer (✓ ✗ yours), retir
 ## The airport (stage 2 — the point of all this)
 
 Borrow a stranger's device; tap approve on your watch; your conversations appear.
+
+The stranger case needs NO naming and NO friendship: the lender taps "lend", the device mints an open SINGLE-SESSION request, and the guest's own fleet approval defines who the guest is. Possession + guest-fleet consent, killable from either side. The lattice: **friend + durable → lease; stranger + ephemeral → session; newcomer → release.**
 
 **The handle NEVER touches the borrowed device** — typing it there would disclose the seed (seed = BLAKE3(handle), a keylogger away from identity theft). Instead:
 
