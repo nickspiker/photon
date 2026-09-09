@@ -101,6 +101,10 @@ if snapbuild_take; then
     echo "Source frozen (reflink snapshot) — edit away, this deploy builds from the frozen tree"
 fi
 # VERSION INJECTION (tag-authority): the ship version lands in the BUILD TREE only — the snapshot when it took, else the live files with a guaranteed restore. No commit either way; the number is earned at the tag. Cargo.lock gets the same surgical awk as release_advance_main (network-free, deterministic).
+# The release notes roll with the version: the top `## Upcoming` section becomes `## v<ship>` in the tree that builds, so the binary's compiled-in notes name the version they ship under.
+roll_release_notes() {
+    ( cd "$1" && sed -i "0,/^## Upcoming$/s//## v${SHIP_VERSION}/" RELEASE_NOTES.md )
+}
 inject_version() {
     ( cd "$1" \
         && sed -i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${FULL_VERSION}\"/" Cargo.toml \
@@ -111,10 +115,12 @@ inject_version() {
 }
 if [ "$SNAP_DIR" != "." ]; then
     inject_version "$SNAP_DIR" || { echo "ERROR: version injection into the snapshot failed"; exit 1; }
+    roll_release_notes "$SNAP_DIR" || { echo "ERROR: release-notes roll in the snapshot failed"; exit 1; }
 else
     # Live-tree fallback (snapshot didn't take): patch the two files and ALWAYS restore them at exit — success included, since main's version advances only via release_advance_main after the tag.
     inject_version "." || { echo "ERROR: version injection failed"; exit 1; }
-    trap 'rc=$?; git checkout HEAD -- Cargo.toml Cargo.lock 2>/dev/null; if [ "$DEPLOY_SHIPPED" != "1" ]; then echo ""; echo "DEPLOY DID NOT SHIP (exit $rc, last: ${BASH_COMMAND}) — injected version restored; no git residue (tag-authority)."; fi' EXIT
+    roll_release_notes "." || { echo "ERROR: release-notes roll failed"; exit 1; }
+    trap 'rc=$?; git checkout HEAD -- Cargo.toml Cargo.lock RELEASE_NOTES.md 2>/dev/null; if [ "$DEPLOY_SHIPPED" != "1" ]; then echo ""; echo "DEPLOY DID NOT SHIP (exit $rc, last: ${BASH_COMMAND}) — injected version restored; no git residue (tag-authority)."; fi' EXIT
 fi
 # Run a cargo build from the frozen source (falls back to the live tree if the snapshot didn't take).
 # Env vars set inline by the caller (cross sysroots, osxcross wrappers) pass thru the subshell unchanged.
@@ -389,6 +395,22 @@ WEBSITE_DIR="/mnt/Chiton/MEGA/holdmyoscilloscope/photon"
 DEPLOY_DATE=$(date +%Y-%m-%d)
 sed_i "s/Version: [^·]*· Updated: [^<]*/Version: $DOZENAL_VERSION · Updated: $DEPLOY_DATE/" "$WEBSITE_DIR/index.html"
 echo "Updated website: Version $DOZENAL_VERSION, Date $DEPLOY_DATE"
+# WHAT'S NEW on the page (Nick 2026-09-09): the newest three shipped sections of RELEASE_NOTES.md rendered between the RELEASE-NOTES markers — from the SNAPSHOT tree, where Upcoming already reads v${SHIP_VERSION}.
+render_release_notes_html() {
+    awk -v max=3 '
+        /^## Upcoming$/ { skip=1; next }
+        /^## v[0-9]+$/ { if (open) print "</ul>"; n++; if (n>max) { exit } skip=0; open=1; sub(/^## /, ""); print "<h3 class=\"notes-version\">" $0 "</h3>"; print "<ul class=\"notes-list\">"; next }
+        /^- / { if (!skip && open) { sub(/^- /, ""); gsub(/&/, "\\&amp;"); gsub(/</, "\\&lt;"); print "<li>" $0 "</li>" } }
+        END { if (open) print "</ul>" }
+    ' "$SNAP_DIR/RELEASE_NOTES.md"
+}
+NOTES_HTML="$(render_release_notes_html)"
+awk -v notes="$NOTES_HTML" '
+    /<!-- RELEASE-NOTES-START -->/ { print; print notes; skip=1; next }
+    /<!-- RELEASE-NOTES-END -->/ { skip=0 }
+    !skip { print }
+' "$WEBSITE_DIR/index.html" > "$WEBSITE_DIR/index.html.new" && mv "$WEBSITE_DIR/index.html.new" "$WEBSITE_DIR/index.html"
+echo "Updated website: release notes for the newest 3 versions"
 
 # Deploy website to Cloudflare Pages
 echo ""
@@ -408,7 +430,7 @@ curl -s "https://fgtw.org/admin/release-notice?auth=f6d46fc44bd35b1b7204640d8cad
 
 # OPEN THE DEV LINE (2026-07-17): main must never rest at X.Y.0 — patch 0 IS the release marker, so a dev build compiled from a .0 tree masquerades as the release ("already on latest release" on a dev build, observed live). With provenance-by-tag, main never even HOLDS the .0 commit (that lives only as the tag); it advances straight to the .1 dev line. advance_main crafts that Cargo.toml-only bump on the FRESHEST origin tip inside a throwaway worktree, so it fast-forwards no matter what moved on main during the build, and never touches the live working tree. Best-effort: the release already shipped via the tag.
 DEV_OPEN="${MAJOR}.${SHIP_VERSION}.1"
-release_advance_main main "$DEV_OPEN" "dev line open: v${DEV_OPEN} (release v${SHIP_VERSION} shipped at .0, tag ${GH_TAG})" \
+release_advance_main main "$DEV_OPEN" "dev line open: v${DEV_OPEN} (release v${SHIP_VERSION} shipped at .0, tag ${GH_TAG})" "$SHIP_VERSION" \
     || echo "WARNING: dev-line-open failed — main still at its pre-release tip; bump it manually. The release itself is LIVE (tag ${GH_TAG})."
 # The built .0 commit was LOCAL-ONLY (its provenance is the tag). Bring local onto the new origin tip so the next release's preflight sees no divergence — preserving any edits made during the build.
 release_sync_to_origin main || echo "WARNING: could not sync local to origin/main — run 'git fetch && git checkout -B main origin/main' when convenient."

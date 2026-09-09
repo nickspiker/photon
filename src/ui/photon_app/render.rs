@@ -4788,6 +4788,28 @@ impl PhotonApp {
                     let mut flow = Flow::new(inset, settings_content_scroll);
                     flow.line(&mut canvas, ctx.text, &tr(Msg::UpdatesTitle), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.line(&mut canvas, ctx.text, &tr(Msg::PhotonVersion(&version_dozenal_glyphs())), hspan2, *theme::CONTACT_NAME_COLOUR, 400);
+                    // WHAT'S NEW (Nick 2026-09-09): the running version's release notes, compiled in; a dev build also lists what is coming.
+                    {
+                        let ver = format!("v{}", deploy_version());
+                        let shipped = crate::ui::release_notes::section(&ver);
+                        if !shipped.is_empty() {
+                            flow.gap(hspan2 * 0.5);
+                            flow.line(&mut canvas, ctx.text, &tr(Msg::WhatsNew(&crate::fmt_num(deploy_version()))), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                            for item in &shipped {
+                                flow.prose(&mut canvas, ctx.text, &format!("• {item}"), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                            }
+                        }
+                        if dev_patch() > 0 {
+                            let upcoming = crate::ui::release_notes::section("Upcoming");
+                            if !upcoming.is_empty() {
+                                flow.gap(hspan2 * 0.5);
+                                flow.line(&mut canvas, ctx.text, &tr(Msg::UpcomingChanges), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                                for item in &upcoming {
+                                    flow.prose(&mut canvas, ctx.text, &format!("• {item}"), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                                }
+                            }
+                        }
+                    }
                     flow.gap(hspan2 * 0.4);
                     if let Some(cb) = self.settings_autoupdate_check.as_mut() {
                         let label = cb.label().to_string();

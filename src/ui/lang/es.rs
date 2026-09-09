@@ -345,6 +345,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::PerContactOverride => "El ajuste por contacto vive en cada conversación.".into(),
         // ---- updates ----
         Msg::UpdatesTitle => "Actualizaciones".into(),
+        Msg::WhatsNew(v) => format!("Novedades de {v}").into(),
+        Msg::UpcomingChanges => "Lo que viene en la próxima versión".into(),
         Msg::PhotonVersion(v) => format!("Photon {v}").into(),
         Msg::AutoUpdateCheck => "Buscar actualizaciones automáticamente".into(),
         Msg::AutoUpdateInstall => "Instalar actualizaciones automáticamente".into(),

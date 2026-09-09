@@ -66,7 +66,7 @@ release_publish_tag() {
 # release_advance_main <branch> <new_version> <commit_msg>
 # Move <branch>'s Cargo.toml/Cargo.lock to <new_version> with a commit that touches ONLY those two files, crafted on the freshest origin tip in a throwaway worktree so it always fast-forwards and never involves the live working tree. Bounded retry: if origin advances between the fetch and the push, rebuild on the new tip and re-push. Best-effort by contract — the caller treats failure as non-fatal (the release itself is already live via the tag).
 release_advance_main() {
-    local branch="$1" new_version="$2" msg="$3"
+    local branch="$1" new_version="$2" msg="$3" ship="${4:-}"
     local wt rc=1 try
     wt="$(mktemp -d)"
     for try in 1 2 3 4 5; do
@@ -83,6 +83,11 @@ release_advance_main() {
                 /^name = "photon-messenger"$/ { print; getline; sub(/^version = "[^"]*"/, "version = \"" v "\""); print; next }
                 { print }
             ' Cargo.lock > Cargo.lock.new && mv Cargo.lock.new Cargo.lock
+            # RELEASE NOTES roll on main (2026-09-09): the section the release just shipped takes its number and a fresh Upcoming opens above it — the same edit the snapshot build saw, now landed where the next notes get written.
+            if [ -n "$ship" ] && [ -f RELEASE_NOTES.md ] && grep -q "^## Upcoming$" RELEASE_NOTES.md; then
+                sed -i "0,/^## Upcoming$/s//## Upcoming\n\n## v${ship}/" RELEASE_NOTES.md
+                git add RELEASE_NOTES.md
+            fi
             git add Cargo.toml Cargo.lock
             git commit -q -m "$msg"
         ) || { echo "advance-main: commit build failed (try $try)"; continue; }

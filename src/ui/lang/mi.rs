@@ -349,6 +349,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::PerContactOverride => "Kei ia kōrerorero tōna ake tautuhinga mō ia hoa.".into(),
         // ---- updates ----
         Msg::UpdatesTitle => "Whakahōu".into(),
+        Msg::WhatsNew(v) => format!("He aha te hou i {v}").into(),
+        Msg::UpcomingChanges => "Kei te haere mai i te putanga e whai ake nei".into(),
         Msg::PhotonVersion(v) => format!("Photon {v}").into(),
         Msg::AutoUpdateCheck => "Tirohia aunoatia ngā whakahōutanga".into(),
         Msg::AutoUpdateInstall => "Tāutaina aunoatia ngā whakahōutanga".into(),

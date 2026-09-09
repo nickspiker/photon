@@ -40,6 +40,8 @@ pub mod theme;
 
 // The language catalog — every user-facing string is a `lang::Msg` variant, each language an exhaustive match (see lang.rs doctrine).
 pub mod lang;
+/// Release notes compiled in from RELEASE_NOTES.md (the Updates page's "what's new").
+pub mod release_notes;
 /// The bundled font set — one loader shared by the app and the font-contract KAT.
 pub mod fonts;
 

@@ -73,7 +73,7 @@
 - [project_languages.md](project_languages.md) — language catalog SHIPPED 2026-09-03: exhaustive-match Msg enum (en+es+mi), every numeral thru fmt_num, You-page picker
 - [project_dozenal_datetime.md](project_dozenal_datetime.md) — dozenal date = `year month-glyph day` space-separated; months zero-indexed single glyphs (Feb=short Zila)
 - [project_nunc_clock_check.md](project_nunc_clock_check.md) — nunc-time = clock VALIDATOR not photon's clock source; warn-only banner + ONE load-bearing use: `now` in the update stamp
-- [project_update_flow.md](project_update_flow.md) — self-update BUILT @228f68c + release-notice push BUILT (deploy.sh → hub broadcast + FCM → instant poll); stamp window gates installs
+- [project_update_flow.md](project_update_flow.md) — self-update + release-notice push BUILT; RELEASE_NOTES.md (Upcoming → vN at deploy) compiled into the Updates page and rendered onto the website
 - [project_fleet_inbox.md](project_fleet_inbox.md) — fleet inbox DESIGNED (docs/fleet-inbox.md): inbox/<hp>/ + hub/FCM wake, events/notices never a control channel; v1 = bind-attempt alert; NOT built
 - [project_doorbell.md](project_doorbell.md) — doorbell v1 BUILT 2026-07-19 (clock+ring+bells+FCM v1 sender+Kotlin wake; photon f852cbb, worker f3d621f); OPEN: sibling bell overwrite
 - [project_device_sovereignty.md](project_device_sovereignty.md) — THE ownership rule for all records: subject signs, others verify-or-withhold; pending expires

@@ -392,6 +392,10 @@ pub enum Msg<'a> {
     PerContactOverride,
     // ---- updates ----
     UpdatesTitle,
+    /// "What's new in {version}" — the release-notes heading on the Updates page.
+    WhatsNew(&'a str),
+    /// Heading for the not-yet-shipped changes a dev build carries.
+    UpcomingChanges,
     PhotonVersion(&'a str),
     AutoUpdateCheck,
     AutoUpdateInstall,
