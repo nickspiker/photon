@@ -115,11 +115,13 @@ impl PhotonApp {
             );
             self.update_release = ChannelCheck::Ready(Some(row));
             self.spawn_update_apply(crate::network::updates::Channel::Release);
-        } else if self.update_toasted != Some(row.version) {
-            self.update_toasted = Some(row.version);
-            self.ready_toast = Some(
-                tr(Msg::UpdateAvailableToast(&dozenal_version_tuple(row.version))).into_owned(),
-            );
+        } else {
+            // A standing band, not a toast (Nick 2026-09-09): it stays until the update is on, and it stacks with the other bands.
+            if self.update_toasted != Some(row.version) {
+                self.update_toasted = Some(row.version);
+                crate::logf!("UPDATE: {} available — standing band up", row.version_string());
+            }
+            self.update_available = Some(row.version);
         }
     }
 
@@ -283,6 +285,7 @@ impl PhotonApp {
                     self.update_busy = false;
                     self.update_progress = None;
                     self.update_status = Some(tr(Msg::UpdatedRestarting).into_owned());
+                    self.update_available = None;
                     self.update_reexec = Some(exe);
                 }
                 #[cfg(target_os = "android")]

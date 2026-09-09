@@ -25,6 +25,21 @@ fn wrap_to_width(text: &mut fluor::text::TextRenderer, s: &str, style: &TextStyl
     lines
 }
 
+/// Place a labelled checkbox in a Flow: its natural width when the label fits, the whole pane width with a WRAPPED label when it does not (a scaled-up font, a narrow phone — Nick 2026-09-09: "Auto-attest on reboot", "Be a custodian", "Chime", "Vibrate on incoming", "Check for updates" all ran off the pane). The band grows to the wrapped height; the box stays one square (fluor Checkbox::box_side).
+fn flow_checkbox(flow: &mut Flow, canvas: &mut Canvas, text: &mut fluor::text::TextRenderer, hit_map: &mut [HitId], cb: &mut fluor::widgets::Checkbox, label: &str, size: f32) {
+    cb.set_label(label);
+    cb.set_font_size(size);
+    let side = size * 1.3;
+    let natural = side + size * 0.5 + text.measure_text(label, &TextStyle::new(size, 0)) + size * 0.3;
+    let w = natural.min(flow.w.max(side * 2.0));
+    // Width first, so the height measurement wraps at the width the label will actually get.
+    cb.set_rect(flow.x + w * 0.5, flow.y, w, side);
+    let h = cb.needed_height(text);
+    let band = flow.band(h + size * 0.7);
+    cb.set_rect(band.x + w * 0.5, band.center_y(), w, h);
+    cb.render_content_into(canvas, text, None, Some(hit_map));
+}
+
 impl PhotonApp {
     /// The full frame paint — the body of [`FluorApp::render`], verbatim; the trait method in `driver.rs` delegates here so the paint code can live in its own file.
     pub(super) fn render_frame(&mut self, target: &mut [u32], ctx: &mut Context) {
@@ -343,6 +358,8 @@ impl PhotonApp {
         };
         // Security page's fleet-of-one gate — hoisted here for the same reason as the scroll above: the pills draw inside the chrome borrow, and asking `self` a question there is a second borrow. Cheap (a filtered pass over sibling rows), and ONE definition shared with the action that would otherwise refuse the tap.
         let has_sibling_device = self.has_usable_sibling();
+        // The standing bands are computed BEFORE the chrome borrow (they read plain state), then painted by a free fn on the two screens that show them.
+        let standing_bands = self.standing_bands();
         let Some(chrome) = self.chrome.as_mut() else {
             return;
         };
@@ -1267,6 +1284,12 @@ impl PhotonApp {
                     }
                 }
             }
+            // The standing bands ride the attest screen too (Nick 2026-09-09: contact and attest pages only). Unit = the span term the Ready layout uses, so the two screens agree.
+            {
+                let span = buf_w.min(buf_h) as f32;
+                let band_h = span / 32.0 * ctx.viewport.ru * 1.5;
+                draw_standing_bands(&standing_bands, &mut canvas, ctx.text, buf_w, buf_h, band_h);
+            }
         }
 
         // Ready screen — slice-based layout matching legacy ContactsUnifiedLayout. Today only the avatar circle is painted; the layout already carries rects for handle / hint / textbox / separator / contact rows so subsequent slices drop into named slots without re-computing geometry.
@@ -1731,82 +1754,8 @@ impl PhotonApp {
                 }
             }
 
-            // Persistent storage indicator at the bottom, two severities (split 2026-09-03 — a benign mirror hiccup and 43 lost values wore the same words): RED "storage lost data" when values are gone / no vault opened, amber "storage degraded" when the session is merely distrusted. Lost outranks degraded when both latch. The matching warm background tint already lives in the noise pass above (we swap BG_BASE → (*theme::BG_BASE_WARNING)) so we add no extra render pass here, just the text glyph. Full details live in the README.
-            if self.vault_data_lost || self.vault_degraded {
-                let (msg, colour) = if self.vault_data_lost {
-                    (Msg::StorageDataLost, *theme::ERROR_TEXT_COLOUR)
-                } else {
-                    (Msg::StorageDegraded, *theme::DEGRADED_TEXT)
-                };
-                // Band height off the span-based layout unit (zoom-aware, aspect-ratio-robust, no pixel floor) — same scaling family as the rest of the screen.
-                let band_h = ready_layout.unit_height * 1.5;
-                let cx = buf_w as f32 * 0.5;
-                let cy = buf_h as f32 - band_h * 0.5;
-                let font_size = band_h * 0.6;
-                ctx.text.draw_text_center(
-                    &mut canvas,
-                    &tr(msg),
-                    cx,
-                    cy,
-                    &TextStyle::new(font_size, colour)
-                        .weight(600)
-                        .font("Oxanium"),
-                    None,
-                    None,
-                );
-            }
-
-            // Auto-attest armed: this box will attest at boot WITHOUT a handle — a standing security posture the operator chose once and must never be allowed to forget (Nick 2026-08-25). Same persistent-band treatment as the degraded/clock indicators, stacked into the same column.
-            if self.unattended_on {
-                let band_h = ready_layout.unit_height * 1.5;
-                let cx = buf_w as f32 * 0.5;
-                let rows_below = if self.vault_data_lost || self.vault_degraded { 1.0 } else { 0.0 };
-                let cy = buf_h as f32 - band_h * (0.5 + rows_below);
-                let font_size = band_h * 0.6;
-                ctx.text.draw_text_center(
-                    &mut canvas,
-                    &tr(Msg::AutoAttestBadge),
-                    cx,
-                    cy,
-                    &TextStyle::new(font_size, *theme::CLOCK_TEXT)
-                        .weight(600)
-                        .font("Oxanium"),
-                    None,
-                    None,
-                );
-            }
-
-            // Clock-off indicator: same amber as the degraded banner (nunc-time consensus says the system clock is grossly wrong). Warn only — Photon never corrects the clock. Stacks one band above "storage degraded" when both are showing so they don't overlap.
-            if let Some(offset_secs) = self.clock_off {
-                let band_h = ready_layout.unit_height * 1.5;
-                let cx = buf_w as f32 * 0.5;
-                // Sit at the bottom, lifted past whichever standing bands are up (storage degraded, auto-attest).
-                let rows_below = (if self.vault_data_lost || self.vault_degraded { 1.0 } else { 0.0 })
-                    + (if self.unattended_on { 1.0 } else { 0.0 });
-                let cy = buf_h as f32 - band_h * (0.5 + rows_below);
-                let font_size = band_h * 0.6;
-                // Human-readable magnitude + direction. ahead = system clock reads later than truth.
-                let mag = offset_secs.unsigned_abs();
-                let pretty = tr(if mag >= 3600 {
-                    Msg::HoursShort(mag / 3600)
-                } else if mag >= 60 {
-                    Msg::MinutesShort(mag / 60)
-                } else {
-                    Msg::SecondsShort(mag)
-                });
-                let label = tr(Msg::ClockOff { pretty: &pretty, ahead: offset_secs < 0 });
-                ctx.text.draw_text_center(
-                    &mut canvas,
-                    &label,
-                    cx,
-                    cy,
-                    &TextStyle::new(font_size, *theme::CLOCK_TEXT)
-                        .weight(600)
-                        .font("Oxanium"),
-                    None,
-                    None,
-                );
-            }
+            // Standing bands (storage, auto-attest, clock, update) stacked from the bottom — one list, one painter (standing_bands / draw_standing_bands).
+            draw_standing_bands(&standing_bands, &mut canvas, ctx.text, buf_w, buf_h, ready_layout.unit_height * 1.5);
 
             // (The Security / Recovery posture meters that used to sit bottom-right were removed — the security posture belongs on a dedicated Security page, not as ambient bottom-strip dots that read as noise. identity_posture/posture_colour/POSTURE_PIPS stay defined for that page.)
         }
@@ -4650,21 +4599,8 @@ impl PhotonApp {
                     // ── Bulletproof bridge (Nick 2026-09-07): the headless-lifeline watcher (docs/headless-lifeline.md) as a checkbox — the OS artifact IS the setting (platform::lifeline); the toggle dispatch rides protocol.rs like every settings checkbox.
                     #[cfg(any(target_os = "linux", target_os = "macos"))]
                     {
-                        let cb_band = flow.band(hspan2 * 2.0);
                         if let Some(cb) = self.settings_lifeline_check.as_mut() {
-                            let label = tr(Msg::LifelineCheckbox);
-                            cb.set_label(&*label);
-                            cb.set_font_size(hspan2);
-                            let cb_h = hspan2 * 1.3;
-                            let label_w = ctx.text.measure_text(&label, &TextStyle::new(hspan2, 0));
-                            let w = cb_h + hspan2 * 0.5 + label_w + hspan2 * 0.3;
-                            cb.set_rect(cb_band.x + w * 0.5, cb_band.center_y(), w, cb_h);
-                            cb.render_content_into(
-                                &mut canvas,
-                                ctx.text,
-                                None,
-                                Some(&mut chrome.hit_test_map),
-                            );
+                            flow_checkbox(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, cb, &tr(Msg::LifelineCheckbox), hspan2);
                         }
                         flow.prose(&mut canvas, ctx.text, &tr(Msg::LifelineExplainer), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
                         flow.gap(hspan2 * 0.8);
@@ -4714,16 +4650,9 @@ impl PhotonApp {
                             .as_ref()
                             .map(|c| c.is_checked())
                             .unwrap_or(false);
-                        let cb_band = flow.band(hspan2 * 2.0);
                         if let Some(cb) = self.settings_unattended_check.as_mut() {
-                            cb.set_font_size(hspan2);
-                            cb.set_rect(cb_band.x + cb_band.w * 0.45, cb_band.center_y(), cb_band.w * 0.85, cb_band.h * 0.8);
-                            cb.render_content_into(
-                                &mut canvas,
-                                ctx.text,
-                                None,
-                                Some(&mut chrome.hit_test_map),
-                            );
+                            let label = cb.label().to_string();
+                            flow_checkbox(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, cb, &label, hspan2);
                         }
                         let (dc, dw) = if armed { (*theme::ERROR_TEXT_COLOUR, 600) } else { (*theme::LABEL_COLOUR, 400) };
                         flow.prose(&mut canvas, ctx.text, &tr(Msg::UnattendedWarning), hspan2 * 0.9, dc, dw);
@@ -4739,18 +4668,7 @@ impl PhotonApp {
                     flow.line(&mut canvas, ctx.text, &tr(Msg::Custodians), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.gap(hspan2 * 0.4);
                     if let Some(cb) = self.settings_custodian_check.as_mut() {
-                        let band = flow.band(hspan2 * 2.0);
-                        let cb_h = hspan2 * 1.3;
-                        cb.set_font_size(hspan2);
-                        let label_w = ctx.text.measure_text(&tr(Msg::CustodianCheckbox), &TextStyle::new(hspan2, 0));
-                        let w = cb_h + hspan2 * 0.5 + label_w + hspan2 * 0.3;
-                        cb.set_rect(band.x + w * 0.5, band.center_y(), w, cb_h);
-                        cb.render_content_into(
-                            &mut canvas,
-                            ctx.text,
-                            None,
-                            Some(&mut chrome.hit_test_map),
-                        );
+                        flow_checkbox(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, cb, &tr(Msg::CustodianCheckbox), hspan2);
                     }
                     flow.gap(hspan2 * 0.6);
                     // Why ONE tick box and nothing else: you volunteer as a custodian, but nobody — including you — sees WHOSE recoveries you hold a share of, and an owner never learns which friends hold theirs. Not knowing who to lean on is the anti-collusion property: shares that can't be enumerated can't be gathered.
@@ -4851,18 +4769,7 @@ impl PhotonApp {
                     ];
                     for (cb, label) in boxes {
                         let Some(cb) = cb else { continue };
-                        let band = flow.band(hspan2 * 2.0);
-                        let cb_h = hspan2 * 1.3;
-                        cb.set_font_size(hspan2);
-                        let label_w = ctx.text.measure_text(label, &TextStyle::new(hspan2, 0));
-                        let w = cb_h + hspan2 * 0.5 + label_w + hspan2 * 0.3;
-                        cb.set_rect(band.x + w * 0.5, band.center_y(), w, cb_h);
-                        cb.render_content_into(
-                            &mut canvas,
-                            ctx.text,
-                            None,
-                            Some(&mut chrome.hit_test_map),
-                        );
+                        flow_checkbox(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, cb, label, hspan2);
                     }
                     flow.gap(hspan2 * 0.6);
                     flow.prose(
@@ -4876,108 +4783,45 @@ impl PhotonApp {
                     measured_extent = Some((flow.used(), inset.h));
                 }
                 SettingsPage::Updates => {
-                    // Rows (blanks between the pills for vertical breathing room): 0 title · 1 current version · 2 blank · 3 release pill · 4 blank · 5 dev pill · 6 blank · 7 status.
-                    let rows = layout
-                        .content_scrolled(8, settings_content_scroll)
-                        .split_v([1.0; 8]);
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[0],
-                        &tr(Msg::UpdatesTitle),
-                        tspan,
-                        *theme::CONTACT_NAME_COLOUR,
-                        600,
-                    );
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[1],
-                        &tr(Msg::PhotonVersion(&version_dozenal_glyphs())),
-                        hspan2,
-                        *theme::CONTACT_NAME_COLOUR,
-                        400,
-                    );
+                    // UPDATES on the Flow (2026-09-09): everything wraps at the pane edge — title, version, the auto-check box, the two channel pills as a wrapping pill row, then the status line or the download bar.
+                    let inset = layout.content_inset();
+                    let mut flow = Flow::new(inset, settings_content_scroll);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::UpdatesTitle), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::PhotonVersion(&version_dozenal_glyphs())), hspan2, *theme::CONTACT_NAME_COLOUR, 400);
+                    flow.gap(hspan2 * 0.4);
                     if let Some(cb) = self.settings_autoupdate_check.as_mut() {
-                        cb.render_content_into(
-                            &mut canvas,
-                            ctx.text,
-                            None,
-                            Some(&mut chrome.hit_test_map),
-                        );
+                        let label = cb.label().to_string();
+                        flow_checkbox(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, cb, &label, hspan2);
                     }
-                    // One channel button: label + colour driven by the auto-check state. Release = green when an update is available, Dev = amber; either goes inert dark grey ("Already on …") when the remote version equals ours. Disabled while an install is in flight.
+                    flow.gap(hspan2 * 0.4);
+                    // One pill per channel: label + colour driven by the check state. Release = green when an update is available, Dev = amber; either goes inert dark grey ("Already on …", "Checking…", "No build").
                     let ours = crate::network::updates::our_version();
-                    let button = |canvas: &mut Canvas,
-                                  text: &mut fluor::text::TextRenderer,
-                                  hit_map: &mut [HitId],
-                                  rect: fluor::region::Region,
-                                  slot: HitId,
-                                  kind: &str,
-                                  avail_fill: (u32, u32),
-                                  state: &ChannelCheck,
-                                  busy: bool| {
-                        let (label, fill, enabled) = match state {
-                            ChannelCheck::Idle | ChannelCheck::Checking => {
-                                (tr(Msg::UpdateChecking(kind)), (*theme::PILL_GREY), false)
-                            }
-                            ChannelCheck::Failed => {
-                                (tr(Msg::UpdateUnavailable(kind)), (*theme::PILL_GREY), false)
-                            }
-                            ChannelCheck::Ready(None) => {
-                                (tr(Msg::UpdateNoBuild(kind)), (*theme::PILL_GREY), false)
-                            }
-                            // Tuple equality IS the truth: patch 0 is the release marker and the version scheme guarantees a dev build never wears it (deploy.sh opens the dev line at .1; publishes are publish-current-then-bump) — so a dev build and the release can never be tuple-equal, and "already on" needs no flavour check.
+                    let pill_state = |kind: &str, avail_fill: (u32, u32), state: &ChannelCheck, busy: bool| -> (String, (u32, u32), bool) {
+                        match state {
+                            ChannelCheck::Idle | ChannelCheck::Checking => (tr(Msg::UpdateChecking(kind)).into_owned(), *theme::PILL_GREY, false),
+                            ChannelCheck::Failed => (tr(Msg::UpdateUnavailable(kind)).into_owned(), *theme::PILL_GREY, false),
+                            ChannelCheck::Ready(None) => (tr(Msg::UpdateNoBuild(kind)).into_owned(), *theme::PILL_GREY, false),
+                            // Tuple equality IS the truth: patch 0 is the release marker and the version scheme guarantees a dev build never wears it.
                             ChannelCheck::Ready(Some(row)) if row.version == ours => {
                                 let ver = dozenal_version_tuple(row.version);
-                                (tr(Msg::UpdateAlreadyOn { kind, ver: &ver }), (*theme::PILL_GREY), false)
+                                (tr(Msg::UpdateAlreadyOn { kind, ver: &ver }).into_owned(), *theme::PILL_GREY, false)
                             }
                             ChannelCheck::Ready(Some(row)) => {
                                 let ver = dozenal_version_tuple(row.version);
-                                (tr(Msg::UpdateGet { kind, ver: &ver }), avail_fill, !busy)
+                                (tr(Msg::UpdateGet { kind, ver: &ver }).into_owned(), avail_fill, !busy)
                             }
-                        };
-                        draw_stub_pill_filled(
-                            canvas,
-                            text,
-                            hit_map,
-                            buf_w,
-                            buf_h,
-                            rect,
-                            &label,
-                            slot,
-                            ctx.pressed_hit,
-                            enabled,
-                            Some(fill),
-                            "Oxanium",
-                        );
+                        }
                     };
-                    button(
-                        &mut canvas,
-                        ctx.text,
-                        &mut chrome.hit_test_map,
-                        rows[3].center_h(pillf(0.7)),
-                        btn_base.wrapping_add(1),
-                        "release",
-                        *theme::PILL_GREEN,
-                        &self.update_release,
-                        self.update_busy,
-                    );
-                    button(
-                        &mut canvas,
-                        ctx.text,
-                        &mut chrome.hit_test_map,
-                        rows[5].center_h(pillf(0.7)),
-                        btn_base.wrapping_add(2),
-                        "dev",
-                        *theme::PILL_AMBER,
-                        &self.update_dev,
-                        self.update_busy,
-                    );
-                    // Status line: the download bar while bytes stream (label flips "Downloading" → "Updating…" at the end), else the last APPLY outcome (installing / failed / restarting).
+                    let (rl, rf, re) = pill_state("release", *theme::PILL_GREEN, &self.update_release, self.update_busy);
+                    let (dl, df, de) = pill_state("dev", *theme::PILL_AMBER, &self.update_dev, self.update_busy);
+                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
+                        (&rl, btn_base.wrapping_add(1), re, Some(rf)),
+                        (&dl, btn_base.wrapping_add(2), de, Some(df)),
+                    ], "Oxanium");
+                    flow.gap(hspan2 * 0.4);
+                    // Status: the download bar while bytes stream (label flips "Downloading" → "Updating…" at the end), else the last APPLY outcome.
                     if let Some((done, total)) = self.update_progress {
                         let finishing = total > 0 && done >= total;
-                        // Unknown length (old manifest without size + a chunked CDN stream): the label carries a live MiB counter so the bar area shows life even without a denominator.
                         let label = if finishing {
                             tr(Msg::Updating)
                         } else if total > 0 {
@@ -4985,55 +4829,21 @@ impl PhotonApp {
                         } else {
                             tr(Msg::DownloadingMiB((done >> 20) as i64))
                         };
-                        let label = &*label;
-                        let r = rows[7];
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            fluor::region::Region::new(r.x, r.y, r.w, r.h * 0.5),
-                            label,
-                            hspan2,
-                            *theme::CONTACT_NAME_COLOUR,
-                            500,
-                        );
-                        // The bar: proportional fill THEN full-width track. fluor is under-blend (FIRST paint wins), so the lime fill MUST be painted before the black track — draw the track first and it wins every pixel, burying the fill (the "permanent grey bar" bug). Fill goes down first over [0..fill_w], then the track over the whole width fills only the un-painted remainder.
-                        let bar_y = (r.y + r.h * 0.55) as isize;
-                        let bar_h = (r.h * 0.25) as isize;
-                        let bar_w = r.w as isize;
+                        flow.line(&mut canvas, ctx.text, &label, hspan2, *theme::CONTACT_NAME_COLOUR, 500);
+                        let bar = flow.band(hspan2 * 0.6);
+                        // The bar: proportional fill THEN full-width track. fluor is under-blend (FIRST paint wins), so the fill MUST be painted before the track.
+                        let bar_w = bar.w as isize;
+                        let bar_y = bar.y as isize;
+                        let bar_h = (bar.h * 0.6) as isize;
                         if total > 0 {
-                            let fill_w = (r.w as f64 * (done as f64 / total as f64)) as isize;
-                            paint::fill_rect(
-                                &mut canvas,
-                                r.x as isize,
-                                bar_y,
-                                fill_w.clamp(0, bar_w),
-                                bar_h,
-                                *theme::PROGRESS_FILL,
-                                None,
-                                None,
-                            );
+                            let fill_w = (bar.w as f64 * (done as f64 / total as f64)) as isize;
+                            paint::fill_rect(&mut canvas, bar.x as isize, bar_y, fill_w.clamp(0, bar_w), bar_h, *theme::PROGRESS_FILL, None, None);
                         }
-                        paint::fill_rect(
-                            &mut canvas,
-                            r.x as isize,
-                            bar_y,
-                            bar_w,
-                            bar_h,
-                            *theme::PROGRESS_TRACK,
-                            None,
-                            None,
-                        );
+                        paint::fill_rect(&mut canvas, bar.x as isize, bar_y, bar_w, bar_h, *theme::PROGRESS_TRACK, None, None);
                     } else if let Some(status) = &self.update_status {
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            rows[7],
-                            status,
-                            hspan2,
-                            *theme::CONTACT_NAME_COLOUR,
-                            500,
-                        );
+                        flow.line(&mut canvas, ctx.text, status, hspan2, *theme::CONTACT_NAME_COLOUR, 500);
                     }
+                    measured_extent = Some((flow.used(), inset.h));
                 }
                 SettingsPage::Diagnostics if self.diag_log_view => {
                     // The in-app log viewer: two full-height header rows PINNED (unscrolled — the Back pill must stay reachable while the view opens at the bottom of a 30k-row log), then the decoded records at HALF line height (dense), scrolling UNDER a clip that starts below the header. Culled to the visible slice — drawing ~40 rows is one frame's work. Row geometry mirrors diag_log_row_rect / the extent math exactly.
@@ -5175,76 +4985,40 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Diagnostics => {
-                    let rows = layout
-                        .content_scrolled(10, settings_content_scroll)
-                        .split_v([1.0; 10]);
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[0],
-                        &tr(Msg::PageName(page)),
-                        tspan,
-                        *theme::CONTACT_NAME_COLOUR,
-                        600,
-                    );
-                    // The live size, not just the cap: "how much have I got to send" is the question this page exists to answer, and a number you can watch grow is also how a log that is filling too fast announces itself.
+                    // DIAGNOSTICS on the Flow (2026-09-09): the log line and the note prompt wrap at the pane edge like every other page; the four actions are a wrapping pill row; the note box and the hard-logs box sit inline.
+                    let inset = layout.content_inset();
+                    let mut flow = Flow::new(inset, settings_content_scroll);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    // The live size, not just the cap: "how much have I got to send" is the question this page exists to answer.
                     let used = crate::log_size_bytes();
                     let cap = crate::LOG_CAP_BYTES;
                     let pct = if cap > 0 { used * 100 / cap } else { 0 };
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[1],
-                        &tr(Msg::DiagInfo {
-                            used: &human_bytes(used),
-                            cap: &human_bytes(cap),
-                            pct: pct as u64,
-                        }),
-                        hspan2,
-                        *theme::LABEL_COLOUR,
-                        400,
-                    );
-                    // Four actions on a WRAPPING flow instead of forced quarters (Nick 2026-09-08: buttons should wrap like text): at a narrow width or a large zoom they stack instead of squashing their labels. rows[4] and rows[5] are empty on this page, so a wrapped row has somewhere to go without colliding with the note below.
-                    let submit_disabled = self.log_submit_inflight
-                        || self.log_submitted_len == Some(crate::log_size_bytes());
-                    let mut log_flow = Flow::new(rows[3], 0.0);
-                    flow_pills(&mut log_flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
+                    flow.prose(&mut canvas, ctx.text, &tr(Msg::DiagInfo { used: &human_bytes(used), cap: &human_bytes(cap), pct: pct as u64 }), hspan2, *theme::LABEL_COLOUR, 400);
+                    flow.gap(hspan2 * 0.4);
+                    // Submit greys while an upload is in flight or the log hasn't grown past the last successful submit — a resend then would be a byte-identical dup.
+                    let submit_disabled = self.log_submit_inflight || self.log_submitted_len == Some(crate::log_size_bytes());
+                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
                         (&tr(Msg::DiagClear), btn_base.wrapping_add(0), true, None),
                         (&tr(Msg::DiagSnapshot), btn_base.wrapping_add(1), true, None),
-                        // Submit greys while an upload is in flight or the log hasn't grown past the last successful submit — a resend then would be a byte-identical duplicate. Any new record (or Clear) moves the size and re-arms it.
                         (&tr(Msg::DiagSubmit), btn_base.wrapping_add(2), !submit_disabled, None),
                         (&tr(Msg::DiagView), btn_base.wrapping_add(3), true, None),
                     ], "Open Sans");
-                    settings_line(
-                        &mut canvas,
-                        ctx.text,
-                        rows[6],
-                        &tr(Msg::OptionalNote),
-                        hspan2,
-                        *theme::LABEL_COLOUR,
-                        400,
-                    );
+                    flow.gap(hspan2 * 0.6);
+                    flow.prose(&mut canvas, ctx.text, &tr(Msg::OptionalNote), hspan2, *theme::LABEL_COLOUR, 400);
+                    let tb_band = flow.band(hspan2 * 2.2);
                     if let Some(tb) = self.settings_note_textbox.as_mut() {
+                        tb.set_font_size(hspan2, ctx.text);
+                        tb.set_rect(tb_band.center_x(), tb_band.center_y(), tb_band.w * 0.95, tb_band.h * 0.85);
                         let id = tb.hit_id();
-                        tb.render_content_into(
-                            &mut canvas,
-                            0.,
-                            0.,
-                            ctx.text,
-                            None,
-                            None,
-                            Some(&mut chrome.hit_test_map),
-                            id,
-                        );
+                        tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
                     }
+                    flow.gap(hspan2 * 0.6);
                     if let Some(cb) = self.settings_hardlogs_check.as_mut() {
-                        cb.render_content_into(
-                            &mut canvas,
-                            ctx.text,
-                            None,
-                            Some(&mut chrome.hit_test_map),
-                        );
+                        let label = cb.label().to_string();
+                        flow_checkbox(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, cb, &label, hspan2);
                     }
+                    flow.gap(hspan2);
+                    measured_extent = Some((flow.used(), inset.h));
                 }
                 SettingsPage::About => {
                     // An About CARD, not a settings list: the Photon wordmark over its chromatic wave up top, then the two headline properties (killswitch-ready, passless), then the version — tap it to reveal both the spelled-out form AND the dozenal cheat sheet. No feedback line — photon is owned by everyone. All centred under the logo; a manual vertical cursor (elements are variable-height, not equal rows).
@@ -5731,5 +5505,52 @@ impl PhotonApp {
         }
         // Everything content-flavoured is now freshly painted — the next frame can narrow to pure widget damage unless something re-dirties the scene.
         self.scene_dirty = false;
+    }
+}
+
+impl PhotonApp {
+    /// The STANDING bands along the bottom of the contact screen and the attest screen (Nick 2026-09-09: stack every alert, keep the update one persistent). Bottom-most first. Toasts are a different thing: transient, keystroke-cleared, drawn in the hint slot. These never clear on interaction — each disappears only when its condition does.
+    pub(super) fn standing_bands(&self) -> Vec<(String, u32)> {
+        let mut v: Vec<(String, u32)> = Vec::new();
+        // Storage, two severities (2026-09-03): RED lost data, amber degraded.
+        if self.vault_data_lost {
+            v.push((tr(Msg::StorageDataLost).into_owned(), *theme::ERROR_TEXT_COLOUR));
+        } else if self.vault_degraded {
+            v.push((tr(Msg::StorageDegraded).into_owned(), *theme::DEGRADED_TEXT));
+        }
+        // Auto-attest armed: a standing security posture the operator must never be allowed to forget (Nick 2026-08-25).
+        if self.unattended_on {
+            v.push((tr(Msg::AutoAttestBadge).into_owned(), *theme::CLOCK_TEXT));
+        }
+        // Clock off (nunc-time consensus): warn only, Photon never corrects the clock.
+        if let Some(offset_secs) = self.clock_off {
+            let mag = offset_secs.unsigned_abs();
+            let pretty = tr(if mag >= 3600 {
+                Msg::HoursShort(mag / 3600)
+            } else if mag >= 60 {
+                Msg::MinutesShort(mag / 60)
+            } else {
+                Msg::SecondsShort(mag)
+            });
+            v.push((tr(Msg::ClockOff { pretty: &pretty, ahead: offset_secs < 0 }).into_owned(), *theme::CLOCK_TEXT));
+        }
+        // Update available: persistent, and ONLY while automatic checking is on — a user who turned the check off asked not to be told (Nick 2026-09-09).
+        if let Some(ver) = self.update_available {
+            if self.auto_updates_enabled() && ver != crate::network::updates::our_version() {
+                v.push((tr(Msg::UpdateAvailableToast(&dozenal_version_tuple(ver))).into_owned(), *theme::SEARCH_FOUND_COLOUR));
+            }
+        }
+        v
+    }
+
+}
+
+/// Paint the standing bands stacked up from the screen bottom, `band_h` each — the span-based unit of the page that calls (zoom-aware, no pixel floor).
+fn draw_standing_bands(bands: &[(String, u32)], canvas: &mut Canvas, text: &mut fluor::text::TextRenderer, buf_w: usize, buf_h: usize, band_h: f32) {
+    let cx = buf_w as f32 * 0.5;
+    let font_size = band_h * 0.6;
+    for (i, (label, colour)) in bands.iter().enumerate() {
+        let cy = buf_h as f32 - band_h * (0.5 + i as f32);
+        text.draw_text_center(canvas, label, cx, cy, &TextStyle::new(font_size, *colour).weight(600).font("Oxanium"), None, None);
     }
 }

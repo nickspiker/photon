@@ -124,14 +124,7 @@ impl PhotonApp {
                     // Widgets are positioned INLINE by the render arm's Flow now (the About-checkbox pattern) — fixed rows here fought the flowed layout. Presence stays COMMENTED OUT (Nick 2026-09-01); field + dispatch compiled for a one-line restore.
                 }
                 SettingsPage::Updates => {
-                    let rows = layout
-                        .content_scrolled(8, settings_content_scroll)
-                        .split_v([1.0; 8]);
-                    if let Some(cb) = self.settings_autoupdate_check.as_mut() {
-                        let r = rows[2];
-                        cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
-                        cb.set_font_size(ctrl_font);
-                    }
+                    // Widgets are positioned INLINE by the render arm's Flow now (2026-09-09) — fixed rows here fought the flowed layout.
                 }
                 SettingsPage::You => {
                     // First visit (or a re-entry): build the field boxes if needed + reload each from its stored value, so the form reflects the fleet-synced state.
@@ -214,19 +207,7 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Diagnostics => {
-                    let rows = layout
-                        .content_scrolled(10, settings_content_scroll)
-                        .split_v([1.0; 10]);
-                    if let Some(tb) = self.settings_note_textbox.as_mut() {
-                        let r = rows[7].center_h(0.95);
-                        tb.set_rect(r.center_x(), r.center_y(), r.w, ctrl_h * 1.2);
-                        tb.set_font_size(ctrl_font, ctx.text);
-                    }
-                    if let Some(cb) = self.settings_hardlogs_check.as_mut() {
-                        let r = rows[9];
-                        cb.set_rect(r.x + r.w * 0.45, r.center_y(), r.w * 0.9, ctrl_h);
-                        cb.set_font_size(ctrl_font);
-                    }
+                    // Widgets are positioned INLINE by the render arm's Flow now (2026-09-09) — fixed rows here fought the flowed layout.
                 }
                 _ => {}
             }

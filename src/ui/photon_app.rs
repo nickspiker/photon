@@ -1829,6 +1829,8 @@ pub struct PhotonApp {
     next_update_check_osc: i64,
     /// Session dedup for the "update available" toast — the version already announced, so a 6-hourly re-check doesn't re-toast the same release.
     update_toasted: Option<(usize, usize, usize)>,
+    /// A newer version the check found and this build cannot apply itself (Android, dev builds): the STANDING "update available" band on the contact and attest screens, gated on updates.auto at draw. Runtime-only — a restart is a new binary.
+    update_available: Option<(usize, usize, usize)>,
     /// Devices already sent the boot ANNOUNCE (the unsolicited pong whose sealed tail carries our About — see PingRequest::announce). Runtime-only, so every launch announces once per sibling: the peers' fleet pages read the new build within seconds instead of a ping-backoff cycle later (field 2026-08-31: 71.0 shown for a host running 71.1).
     announced_devices: std::collections::HashSet<[u8; 32]>,
     /// Android: a hash-verified APK is staged — the JNI poll hands this path to Kotlin, which fires the system installer (the second click).
@@ -2299,6 +2301,7 @@ impl PhotonApp {
             update_progress: None,
             next_update_check_osc: 0,
             update_toasted: None,
+            update_available: None,
             announced_devices: std::collections::HashSet::new(),
             #[cfg(target_os = "android")]
             pending_apk_install: None,
