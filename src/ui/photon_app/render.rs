@@ -3636,6 +3636,12 @@ impl PhotonApp {
                                     btn.hit_id(),
                                 );
                             }
+                            // The link button sits inside the textbox's rect too, so it needs the same re-stamp or its hover, hand cursor and click all land on the textbox (Nick 2026-09-09: "needs button hover effects and hand").
+                            if link_btn_visible {
+                                if let Some(btn) = self.compose_link_btn.as_ref() {
+                                    btn.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, btn.hit_id());
+                                }
+                            }
                         } // end chain-woven compose gate
                     } // end CLUTCH-Complete gate (message list + compose box)
                 }
