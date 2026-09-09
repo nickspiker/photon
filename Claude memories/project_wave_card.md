@@ -18,3 +18,5 @@ Wave card BUILT 2026-09-09 (PHCALL3 container flag day, RefKind::Wave=8, ChatMes
 
 **Why:** the two-entries-per-wave symptom (text summary at +1 from a still-ringing sibling on the final hangup + the recording at +2) — a structural fold beats patching mint sites.
 **How to apply:** any new call outcome is a wave-row outcome, never a new text row; anything the card needs from the audio is computed at transcode and stored typed (binary at rest), never decoded at draw time. See [[project_voice_calls]], [[feedback_stops_not_db]], [[edges-not-timers]].
+
+**GOTCHA (2026-09-09, shipped broken in v88, fixed 52b823a):** a new history-page column must be declared in `page_schema()` in network/history_pages.rs as well as the builder/parser — the builder VALIDATES, so an undeclared field refuses every seal: sibling row pushes and history pages fail silently (the only symptom was four page tests failing). Run `cargo test --lib network::history_pages` after any page-format change.
