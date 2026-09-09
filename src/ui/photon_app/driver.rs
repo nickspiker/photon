@@ -305,7 +305,7 @@ impl FluorApp for PhotonApp {
         self.msg_copy_id = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.msg_action_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(8); // reply/edit/resend/delete + room
+        self.hit_counter = self.hit_counter.wrapping_add(12); // reply/edit/resend/delete/save/stop/wave back/beam back/save-or-fetch (wave)/replicate + room
         self.react_strip_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(10); // reaction glyph pills 0..=8 + the "+" (custom) at 9
         self.conv_filter_hit = self.hit_counter;
@@ -354,6 +354,7 @@ impl FluorApp for PhotonApp {
         // Beam (video) — a STUB: rendered disabled beside the Wave button until video lands; constructed LAST so the status/start/action/decline contiguous-id contract holds.
         self.call_beam_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BeamStart)));
         self.call_beam_back_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BeamBack)));
+        self.call_reject_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::Reject)));
         for b in [
             self.call_status_btn.as_mut(),
             self.call_start_btn.as_mut(),
@@ -364,6 +365,7 @@ impl FluorApp for PhotonApp {
             self.call_back_btn.as_mut(),
             self.call_beam_btn.as_mut(),
             self.call_beam_back_btn.as_mut(),
+            self.call_reject_btn.as_mut(),
         ]
         .into_iter()
         .flatten()
@@ -1262,7 +1264,7 @@ impl FluorApp for PhotonApp {
             // Details-strip action row: reply / edit / resend / delete on the selected message.
             if self.msg_action_base != HIT_NONE
                 && hit_id >= self.msg_action_base
-                && hit_id < self.msg_action_base.wrapping_add(8)
+                && hit_id < self.msg_action_base.wrapping_add(12)
             {
                 let slot = hit_id - self.msg_action_base;
                 // STOP (slot 5, the bridge locus strip's pill): no selected row needed — it always targets the in-flight command; each press escalates the signal.
@@ -1399,6 +1401,41 @@ impl FluorApp for PhotonApp {
                             self.start_call(sci);
                             self.scene_dirty = true;
                         }
+                        // The wave card's recording options: SAVE (blob held → Downloads) or FETCH (missing → ask the fleet), and REPLICATE (a fleet-internal fetch hint so every sibling holds the blob now, not on demand).
+                        7 | 8 => {
+                            let rec = self.conv_of(sci).and_then(|v| {
+                                v.messages
+                                    .iter()
+                                    .find(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == ts))
+                                    .and_then(|m| crate::types::parse_attachment_content(&m.content).map(|(h, n, _)| (m.timestamp, h, n)))
+                            });
+                            if let Some((rec_ts, hash, name)) = rec {
+                                if slot == 7 {
+                                    if crate::storage::blob_present(&hash) {
+                                        match self.attach_save(&name, &hash) {
+                                            Some(dest) => self.ready_toast = Some(tr(Msg::SavedTo(&dest)).into_owned()),
+                                            None => self.ready_toast = Some(tr(Msg::SaveFailed).into_owned()),
+                                        }
+                                    } else {
+                                        self.attach_fetch(sci, &hash);
+                                        self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
+                                    }
+                                } else {
+                                    let hint = ChatMessage::new(String::new(), true).with_reference(crate::types::RefKind::FetchHint, rec_ts);
+                                    let mut hint = hint;
+                                    hint.notified = true;
+                                    hint.delivered = true;
+                                    if let Some(conv) = self.conv_mut_of(sci) {
+                                        conv.insert_message_sorted(hint.clone());
+                                    }
+                                    self.persist_messages_async(sci);
+                                    self.push_rows_to_siblings(sci, std::slice::from_ref(&hint), None);
+                                    self.ready_toast = Some(tr(Msg::ReplicatingToFleet).into_owned());
+                                    crate::logf!("CALL: replicate hint pushed for recording {}…", hex::encode(&hash[..4]));
+                                }
+                            }
+                            self.scene_dirty = true;
+                        }
                         _ => {}
                     }
                     self.scene_dirty = true;
@@ -1476,10 +1513,17 @@ impl FluorApp for PhotonApp {
                         }
                     }
                     let key = (ci, ts, out);
-                    // Toggle: same message deselects; another message moves the strip. Event-shown, interaction-cleared — no timers.
-                    self.selected_msg = if self.selected_msg == Some(key) {
+                    // Toggle: same message deselects; another message moves the strip. The NEWEST row shows its strip unasked, so a tap on it while nothing is selected CLOSES it (remembered by key until a newer row arrives). Event-shown, interaction-cleared — no timers.
+                    let newest = self.conv_of(ci).and_then(|v| {
+                        let raw: &[crate::types::ChatMessage] = &v.messages;
+                        raw.iter().rev().find(|m| chat_row_visible(raw, m, self.conv_filter)).map(|m| (m.timestamp, m.is_outgoing))
+                    });
+                    let auto_open = self.selected_msg.is_none() && newest == Some((ts, out)) && self.strip_dismissed != Some(key);
+                    self.selected_msg = if self.selected_msg == Some(key) || auto_open {
+                        self.strip_dismissed = Some(key);
                         None
                     } else {
+                        self.strip_dismissed = None;
                         Some(key)
                     };
                     // A fresh selection (or a close) resets the copy pill to its ready state.

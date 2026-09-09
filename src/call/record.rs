@@ -16,8 +16,10 @@ const FRAME: usize = 480;
 const FRAME_IN: usize = crate::platform::audio::FRAME_SAMPLES;
 /// Input-grid slots per second (5 ms spool packets).
 const SLOTS_PER_SEC: i64 = 200;
-/// PHCALL3 (flag day 2026-09-09, the wave card): `PHCALL2` header ‖ `[env_per_sec u8][env_len u32 LE]` ‖ `nchan × env_len` envelope bytes (channel-major, eighth-stops below full scale, 255 = silence floor) ‖ packets. The envelope is computed at transcode — every frame is decoded here anyway — so no draw path ever decodes audio to show a shape. No PHCALL2 reader: nobody has waved for real yet.
-pub const CONTAINER_MAGIC_V3: &[u8; 8] = b"PHCALL3\0";
+/// PHCALL4 (flag day 2026-09-09, the coloured wave card): `PHCALL2` header ‖ `[env_per_sec u8][env_len u32 LE]` ‖ `nchan × env_len × ENV_COMPONENTS` envelope bytes (channel-major, bucket-major, [amp, r, g, b] each in eighth-stops below full scale, 255 = silence floor) ‖ packets. The envelope is computed at transcode — every frame is decoded here anyway — so no draw path ever decodes audio to show a shape. No PHCALL2 reader: nobody has waved for real yet.
+pub const CONTAINER_MAGIC_V4: &[u8; 8] = b"PHCALL4\0";
+/// Envelope components per bucket per channel: [amplitude, red, green, blue] — amplitude is the plain RMS; the colour bands are three HIGH-PASS energies at three scales (Nick 2026-09-09: "1:1 filter for blue, 1:4 for green, 1:8 for red, all high pass"): blue = first difference (x[n] − x[n−1]), green = the difference of successive 4-sample sums ÷ 4, red = the difference of successive 8-sample sums ÷ 8. Running sums, no FFT. All four in eighth-stops below full scale.
+pub const ENV_COMPONENTS: usize = 4;
 /// Fine-envelope buckets per second of recording (250 ms — syllable rate; two hours = 28.8k bytes per channel).
 pub const ENV_PER_SEC: usize = 4;
 /// Archive slots (10 ms) per fine-envelope bucket.
@@ -36,19 +38,55 @@ fn stops_u8(sumsq: f64, n: usize) -> u8 {
 /// Fold a fine envelope down to the row thumbnail: one gross of buckets per channel, each the LOUDEST (minimum stops) fine bucket in its span so peaks survive.
 pub fn thumbnail(fine: &[u8], nchan: usize, env_len: usize) -> Vec<u8> {
     let nb = crate::types::WAVE_THUMB_BUCKETS;
-    let mut out = vec![255u8; nchan * nb];
+    let k = ENV_COMPONENTS;
+    let mut out = vec![255u8; nchan * nb * k];
     if env_len == 0 {
         return out;
     }
     for ch in 0..nchan {
-        let src = &fine[ch * env_len..(ch + 1) * env_len];
+        let src = &fine[ch * env_len * k..(ch + 1) * env_len * k];
         for b in 0..nb {
             let s0 = b * env_len / nb;
             let s1 = ((b + 1) * env_len / nb).max(s0 + 1).min(env_len);
-            out[ch * nb + b] = src[s0..s1].iter().copied().min().unwrap_or(255);
+            for c in 0..k {
+                out[(ch * nb + b) * k + c] = (s0..s1).map(|i| src[i * k + c]).min().unwrap_or(255);
+            }
         }
     }
     out
+}
+
+/// Per-channel running state for the three high-pass bands: a 16-sample ring and the four running sums the band differences are made of.
+struct BandState {
+    hist: [i32; 16],
+    pos: usize,
+    s4: i64,
+    s4p: i64,
+    s8: i64,
+    s8p: i64,
+}
+
+impl BandState {
+    fn new() -> Self {
+        BandState { hist: [0; 16], pos: 0, s4: 0, s4p: 0, s8: 0, s8p: 0 }
+    }
+    /// Push one sample; return (d1, d4, d8) — the three high-pass outputs at this sample.
+    #[inline]
+    fn push(&mut self, x: i32) -> (i64, i64, i64) {
+        let back = |s: &Self, k: usize| s.hist[(s.pos + 16 - k) % 16] as i64;
+        let x1 = back(self, 1);
+        let x4 = back(self, 4);
+        let x8 = back(self, 8);
+        let x16 = back(self, 16);
+        let xi = x as i64;
+        self.s4 += xi - x4;
+        self.s4p += x4 - x8;
+        self.s8 += xi - x8;
+        self.s8p += x8 - x16;
+        self.hist[self.pos] = x;
+        self.pos = (self.pos + 1) % 16;
+        (xi - x1, (self.s4 - self.s4p) / 4, (self.s8 - self.s8p) / 8)
+    }
 }
 
 /// A finished transcode: the sealed container plus what the wave card needs without opening it.
@@ -146,13 +184,23 @@ pub(crate) fn build_container(records: &[(u8, i64, Vec<u8>)]) -> Option<Transcod
     let slots = grid[0].len();
     let slots_out = slots.div_ceil(2);
     let base = records.iter().map(|(_, osc, _)| *osc).min().unwrap_or(0);
-    // Envelope accumulators: per channel, per fine bucket — sum of squares + sample count, folded to stops once the packets are written.
+    // Envelope accumulators: per channel, per fine bucket, per component — sum of squares + sample count, folded to stops once the packets are written. The band states carry across slots so the filters see a continuous signal.
     let env_len = slots_out.div_ceil(SLOTS_PER_BUCKET);
-    let mut sumsq = vec![0f64; nchan * env_len];
+    let k = ENV_COMPONENTS;
+    let mut sumsq = vec![0f64; nchan * env_len * k];
     let mut counts = vec![0usize; nchan * env_len];
+    let mut bands: Vec<BandState> = (0..nchan).map(|_| BandState::new()).collect();
     let mut accumulate = |ch: usize, slot_out: usize, pcm: &[i16]| {
         let b = ch * env_len + slot_out / SLOTS_PER_BUCKET;
-        sumsq[b] += pcm.iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>();
+        let base = b * k;
+        for &s in pcm {
+            let x = s as i32;
+            let (d1, d4, d8) = bands[ch].push(x);
+            sumsq[base] += (x as f64) * (x as f64);
+            sumsq[base + 1] += (d8 as f64) * (d8 as f64);
+            sumsq[base + 2] += (d4 as f64) * (d4 as f64);
+            sumsq[base + 3] += (d1 as f64) * (d1 as f64);
+        }
         counts[b] += pcm.len();
     };
 
@@ -228,10 +276,10 @@ pub(crate) fn build_container(records: &[(u8, i64, Vec<u8>)]) -> Option<Transcod
     if container.is_empty() {
         return None;
     }
-    let fine: Vec<u8> = (0..nchan * env_len).map(|i| stops_u8(sumsq[i], counts[i])).collect();
+    let fine: Vec<u8> = (0..nchan * env_len * k).map(|i| stops_u8(sumsq[i], counts[i / k])).collect();
     let thumb = thumbnail(&fine, nchan, env_len);
-    let mut out = Vec::with_capacity(CONTAINER_MAGIC_V3.len() + 22 + fine.len() + container.len());
-    out.extend_from_slice(CONTAINER_MAGIC_V3);
+    let mut out = Vec::with_capacity(CONTAINER_MAGIC_V4.len() + 22 + fine.len() + container.len());
+    out.extend_from_slice(CONTAINER_MAGIC_V4);
     out.push(nchan as u8);
     out.extend_from_slice(&48_000u32.to_le_bytes());
     out.extend_from_slice(&base.to_le_bytes());
@@ -248,7 +296,7 @@ pub struct KeptStream {
     pub nchan: usize,
     /// Total playable frames (archive slots for PHCALL3, grid slots for a live-spool preview) — the scrub bar's denominator.
     pub total: usize,
-    /// The fine envelope from the container header (`nchan × env_len`, eighth-stops) — empty for a live-spool preview.
+    /// The fine envelope from the container header (`nchan × env_len × ENV_COMPONENTS`, eighth-stops) — empty for a live-spool preview.
     pub envelope: Vec<u8>,
     pub env_per_sec: u8,
     inner: Inner,
@@ -277,7 +325,7 @@ enum Inner {
 
 /// Open a kept-call blob for playback — `PHCALL2` only (PHCALL1 read support deleted with the 5ms flag day). `None` on unknown magic or codec init failure.
 pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
-    if bytes.len() >= 8 && &bytes[..8] == CONTAINER_MAGIC_V3 {
+    if bytes.len() >= 8 && &bytes[..8] == CONTAINER_MAGIC_V4 {
         if bytes.len() < 8 + 22 {
             return None;
         }
@@ -286,7 +334,7 @@ pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
         let total = u32::from_le_bytes(bytes[8 + 13..8 + 17].try_into().ok()?) as usize;
         let env_per_sec = bytes[8 + 17];
         let env_len = u32::from_le_bytes(bytes[8 + 18..8 + 22].try_into().ok()?) as usize;
-        let env_end = 8 + 22 + nchan * env_len;
+        let env_end = 8 + 22 + nchan * env_len * ENV_COMPONENTS;
         if bytes.len() < env_end || nchan == 0 {
             return None;
         }
@@ -312,7 +360,7 @@ pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
         };
         Some(KeptStream { nchan, total, envelope, env_per_sec, inner })
     } else {
-        // PHCALL1/2 read support deleted with their flag days (nobody waving yet, no backwards compat) — unknown magic is unknown magic.
+        // PHCALL1/2/3 read support deleted with their flag days (nobody waving yet, no backwards compat) — unknown magic is unknown magic.
         None
     }
 }
@@ -462,14 +510,14 @@ mod tests {
         }
         let t = build_container(&records).unwrap();
         let container = t.container;
-        assert_eq!(&container[..8], CONTAINER_MAGIC_V3);
-        // The row thumbnail is one gross of buckets per channel, and a tone is well above the silence floor in every bucket that has audio.
-        assert_eq!(t.thumb.len(), 2 * crate::types::WAVE_THUMB_BUCKETS);
+        assert_eq!(&container[..8], CONTAINER_MAGIC_V4);
+        // The row thumbnail is one gross of buckets per channel, four components each, and a tone is well above the silence floor in every bucket that has audio.
+        assert_eq!(t.thumb.len(), 2 * crate::types::WAVE_THUMB_BUCKETS * ENV_COMPONENTS);
         assert!(t.thumb.iter().any(|&b| b < 255), "thumbnail shows only silence");
         let mut ks = open_blob(&container).unwrap();
         assert_eq!(ks.nchan, 2);
         assert_eq!(ks.env_per_sec as usize, ENV_PER_SEC);
-        assert_eq!(ks.envelope.len() % 2, 0);
+        assert_eq!(ks.envelope.len() % (2 * ENV_COMPONENTS), 0);
         assert!(ks.envelope.iter().any(|&b| b < 255), "fine envelope shows only silence");
         let mut frames = 0;
         let mut energy = 0i64;

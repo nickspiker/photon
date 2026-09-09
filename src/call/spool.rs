@@ -110,7 +110,14 @@ pub struct SpoolWriter {
 impl SpoolWriter {
     pub fn create(key: &[u8; 32], path: &std::path::Path) -> Option<SpoolWriter> {
         let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
-        let file = std::fs::File::create(path).ok()?;
+        // Name the failure (field 2026-09-09: Emma's phone logged "no spool" on every wave, v87 and v88, while the register minted fine — the reason was swallowed here, so the log could not say whether it was the path, the permission, or the disk).
+        let file = match std::fs::File::create(path) {
+            Ok(f) => f,
+            Err(e) => {
+                crate::logf!("CALL: spool file create FAILED at {} — {}", path.display(), e);
+                return None;
+            }
+        };
         Some(SpoolWriter {
             cipher,
             file,

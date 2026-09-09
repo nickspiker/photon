@@ -121,6 +121,22 @@ class PhotonConnectionService : Service() {
     // my network is going thru a relay", 2026-07-26). Battery cost is the multicast filter staying
     // open — the price of same-room discovery actually working.
     private var multicastLock: android.net.wifi.WifiManager.MulticastLock? = null
+    // Held for the DURATION OF A WAVE only (field 2026-09-09, Emma+Nick LAN call): without it the phone's WiFi power-save bunched the sender's datagrams and dropped them in consecutive PAIRS — 65 lost FEC windows on one side of a 53s call on a 5ms LAN, the ladder flapping 16↔64 kbps, the jitter buffer peaking past a second and trimming hundreds of frames. LOW_LATENCY (API 29+) asks the driver to leave power-save; HIGH_PERF is the older equivalent.
+    private var waveWifiLock: android.net.wifi.WifiManager.WifiLock? = null
+
+    private fun acquireWaveWifiLock() {
+        try {
+            val wifi = applicationContext.getSystemService(WIFI_SERVICE) as android.net.wifi.WifiManager
+            val mode = if (android.os.Build.VERSION.SDK_INT >= 29) android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY else android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            val lock = waveWifiLock ?: wifi.createWifiLock(mode, "photon-wave").also { it.setReferenceCounted(false); waveWifiLock = it }
+            if (!lock.isHeld) lock.acquire()
+            PhotonLog.i(TAG, "wave wifi lock held (" + (if (mode == android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF) "high-perf" else "low-latency") + ")")
+        } catch (e: Exception) { PhotonLog.w(TAG, "wave wifi lock acquire failed", e) }
+    }
+
+    private fun releaseWaveWifiLock() {
+        try { waveWifiLock?.let { if (it.isHeld) it.release() } } catch (e: Exception) { PhotonLog.w(TAG, "wave wifi lock release failed", e) }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -855,6 +871,7 @@ class PhotonConnectionService : Service() {
     fun startCallAudio() {
         if (callAudioRunning) return
         callAudioRunning = true
+        acquireWaveWifiLock()
         try { proximityLock?.acquire() } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock acquire failed", e) }
         val hasMic = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -870,6 +887,7 @@ class PhotonConnectionService : Service() {
     /** Called from Rust at hangup, after its streams are closed. */
     fun stopCallAudio() {
         callAudioRunning = false
+        releaseWaveWifiLock()
         try { proximityLock?.let { if (it.isHeld) it.release() } } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock release failed", e) }
         // The call surface no longer needs to sit over the keyguard.
         PhotonActivity.live?.let { a -> a.runOnUiThread { a.setCallLockScreenFlags(false) } }

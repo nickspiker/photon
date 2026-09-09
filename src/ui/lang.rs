@@ -84,6 +84,11 @@ pub enum Msg<'a> {
     // ---- shared verbs / small buttons ----
     Answer,
     Decline,
+    /// The silent dismissal on the ring panel.
+    Reject,
+    RejectedWaveRow,
+    ReplicatePill,
+    ReplicatingToFleet,
     Delete,
     Keep,
     Play,

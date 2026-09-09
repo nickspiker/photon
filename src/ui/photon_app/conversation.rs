@@ -2193,6 +2193,21 @@ impl PhotonApp {
             }
             // CALL signals via sibling merge are STOP edges ONLY (docs/calls.md): our sibling's answer/decline row stops this device's ring; replayed catch-up signals correctly ring nothing (a ring requires the DIRECT offer decrypt — which is also what kills the stale-offer-rings-days-later class).
             if from_sibling {
+                // A sibling's REJECT (a wave row with outcome Rejected) stops this device's ring for that offer; a FETCH HINT makes this device hold the recording now.
+                let rejects: Vec<i64> = fresh.iter().filter(|m| m.wave.is_some_and(|w| w.outcome == crate::types::WaveOutcome::Rejected)).map(|m| m.timestamp).collect();
+                for ts in rejects {
+                    self.on_sibling_reject(ts);
+                }
+                let hints: Vec<i64> = fresh.iter().filter_map(|m| match m.reference { Some((crate::types::RefKind::FetchHint, t)) => Some(t), _ => None }).collect();
+                for t in hints {
+                    let hash = self.conv_of(idx).and_then(|v| v.messages.iter().find(|m| m.timestamp == t && !m.deleted).and_then(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h)));
+                    if let Some(h) = hash {
+                        if !crate::storage::blob_present(&h) {
+                            crate::logf!("CALL: fetch hint from a sibling — fetching recording {}…", hex::encode(&h[..4]));
+                            self.attach_fetch(idx, &h);
+                        }
+                    }
+                }
                 let sigs: Vec<(crate::call::signal::CallSignal, i64, bool)> = fresh
                     .iter()
                     .filter_map(|m| {

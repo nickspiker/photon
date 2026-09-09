@@ -21,6 +21,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- shared verbs / small buttons ----
         Msg::Answer => "Whakautu".into(),
         Msg::Decline => "Whakakāhore".into(),
+        Msg::Reject => "Whakarere".into(),
+        Msg::RejectedWaveRow => "\u{260E} ngaru i whakarerea".into(),
+        Msg::ReplicatePill => "tāruarua".into(),
+        Msg::ReplicatingToFleet => "e tono ana i ia pūrere kia pupuri i tēnei hopukanga".into(),
         Msg::Delete => "Muku".into(),
         Msg::Keep => "Pupuri".into(),
         Msg::Play => "\u{25B6}\u{FE0E} Whakatangi".into(),

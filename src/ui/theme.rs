@@ -149,6 +149,11 @@ pub static CLOCK_TEXT: LazyLock<u32> = LazyLock::new(|| c(0x00_FF_8C_00));
 pub const BACK_BUTTON_IDLE_FILL: u32 = 0x80_FF_FF_FF;
 
 /// Dim a stored α+darkness colour to ~half opacity — the undelivered-outgoing message treatment (delivered = the same colour at full α; the RGB never changes, only presence). The stored high byte is opacity, so halving it makes the glyph fainter against the background.
+/// A colour from three 0..=255 components (the wave card's band-coloured bars) thru the same VSF-RGB path every theme constant takes.
+pub fn rgb_colour(r: u8, g: u8, b: u8) -> u32 {
+    c(((r as u32) << 16) | ((g as u32) << 8) | b as u32)
+}
+
 pub fn dim_colour(c: u32) -> u32 {
     let a = ((c >> 24) & 0xFF) >> 2;
     (c & 0x00FF_FFFF) | (a << 24)

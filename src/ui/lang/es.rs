@@ -21,6 +21,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- shared verbs / small buttons ----
         Msg::Answer => "Contestar".into(),
         Msg::Decline => "Rechazar".into(),
+        Msg::Reject => "Ignorar".into(),
+        Msg::RejectedWaveRow => "\u{260E} onda ignorada".into(),
+        Msg::ReplicatePill => "replicar".into(),
+        Msg::ReplicatingToFleet => "pidiendo a cada dispositivo que guarde esta grabación".into(),
         Msg::Delete => "Eliminar".into(),
         Msg::Keep => "Conservar".into(),
         Msg::Play => "\u{25B6}\u{FE0E} Reproducir".into(),

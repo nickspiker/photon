@@ -662,9 +662,18 @@ impl PhotonApp {
                 let bfont = unit * 0.75;
                 match phase {
                     crate::call::CallPhase::Ringing => {
-                        // Decline LEFT, Answer RIGHT — the incoming-call decision.
+                        // Reject LEFT (silent: no signal leaves the fleet), Decline MIDDLE (tells them), Wave back RIGHT — three across, thumb-reach.
+                        let bw = w * 0.27;
+                        if let Some(b) = self.call_reject_btn.as_mut() {
+                            b.set_rect(w * 0.5 - bw - unit * 0.6, by, bw, bh);
+                            b.set_font_size(bfont * 0.9);
+                            b.set_label(tr(Msg::Reject));
+                            b.set_fill(Some(theme::PILL_GREY.0));
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
                         if let Some(b) = self.call_decline_btn.as_mut() {
-                            b.set_rect(w * 0.5 - bw * 0.5 - unit * 0.75, by, bw, bh);
+                            b.set_rect(w * 0.5, by, bw, bh);
                             b.set_font_size(bfont);
                             b.set_label(tr(Msg::Decline));
                             b.set_fill(Some(*theme::CALL_DANGER_FILL));
@@ -674,7 +683,7 @@ impl PhotonApp {
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
                         if let Some(b) = self.call_action_btn.as_mut() {
-                            b.set_rect(w * 0.5 + bw * 0.5 + unit * 0.75, by, bw, bh);
+                            b.set_rect(w * 0.5 + bw + unit * 0.6, by, bw, bh);
                             b.set_font_size(bfont);
                             // "Wave back" (Nick 2026-09-09): answering is choosing AUDIO — the beam answer sits above as its own choice, so the callee picks audio-only even when the caller beams.
                             b.set_label(tr(Msg::WaveBack));
@@ -2822,10 +2831,20 @@ impl PhotonApp {
                                 .map(|(lines, _)| unit * 0.25 + unit * 0.75 * lines.len() as f32)
                                 .unwrap_or(0.0);
                         // Details-strip selection for THIS conversation (identity-keyed): one strip line joins content_h so the stream shifts to make room rather than overdrawing a neighbour row.
+                        // The strip's row: the selection, else the NEWEST row unasked (its options stay up until tapped closed or a newer row lands).
                         let sel_key = self
                             .selected_msg
                             .filter(|(sci, _, _)| *sci == ci)
-                            .map(|(_, ts, out)| (ts, out));
+                            .map(|(_, ts, out)| (ts, out))
+                            .or_else(|| {
+                                if self.selected_msg.is_some() {
+                                    return None;
+                                }
+                                visible
+                                    .last()
+                                    .map(|m| (m.timestamp, m.is_outgoing))
+                                    .filter(|&(ts, out)| self.strip_dismissed != Some((ci, ts, out)))
+                            });
                         let detail_h = line_h * 3.0; // three strip lines: meta (sent/age/state), the action row (reply · edit · copy · resend · delete), and the reaction row (ranked glyphs + the circled "+")
                         let sel_in_stream = sel_key.is_some_and(|(ts, out)| {
                             visible
@@ -3103,10 +3122,21 @@ impl PhotonApp {
                                 // A WAVE CARD's options (Nick 2026-09-09): wave back (place a wave to this contact) and beam back (a stub, greyed until video lands), then delete — reply/edit/copy make no sense on a wave.
                                 let is_wave_row = msg.wave.is_some();
                                 let mut pills: Vec<(std::borrow::Cow<'static, str>, u32, HitId)> = if is_wave_row {
-                                    vec![
+                                    let mut v = vec![
                                         (tr(Msg::WaveBack), *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(6)),
                                         (tr(Msg::BeamBack), theme::dim_colour(*theme::LABEL_COLOUR), HIT_NONE),
-                                    ]
+                                    ];
+                                    // The recording's options, when one folds into this card: save (held) or fetch (missing), and replicate among the fleet.
+                                    if let Some(rec) = rec_over.get(&msg.timestamp) {
+                                        let held = crate::types::parse_attachment_content(&rec.content).is_some_and(|(h, _, _)| crate::storage::blob_present(&h));
+                                        if held {
+                                            v.push((tr(Msg::SavePill), *theme::SEARCH_FOUND_COLOUR, self.msg_action_base.wrapping_add(7)));
+                                        } else {
+                                            v.push((tr(Msg::FetchPill), *theme::HOURGLASS_COLOUR, self.msg_action_base.wrapping_add(7)));
+                                        }
+                                        v.push((tr(Msg::ReplicatePill), *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(8)));
+                                    }
+                                    v
                                 } else {
                                     vec![(tr(Msg::ReplyPill), *theme::COPY_PILL_COLOUR, self.msg_action_base)]
                                 };
@@ -3367,7 +3397,9 @@ impl PhotonApp {
                             if let Some(w) = msg.wave {
                                 let right_aligned = msg.is_outgoing || is_self_contact;
                                 let hy = y - react_off - wave_band_h;
-                                let head_style = TextStyle::new(msg_size, colour).weight(500).font("Oxanium");
+                                // A rejected wave reads SMALL: it is a record for you, never a fuss.
+                                let head_size = if w.outcome == crate::types::WaveOutcome::Rejected { msg_size * 0.75 } else { msg_size };
+                                let head_style = TextStyle::new(head_size, colour).weight(500).font("Oxanium");
                                 let head = lines.first().cloned().unwrap_or_default();
                                 if right_aligned {
                                     ctx.text.draw_text_right(&mut canvas, &head, buf_w as f32 - pad_x, hy, &head_style, Some(list_clip), None);
@@ -3394,35 +3426,65 @@ impl PhotonApp {
                                             let hash = crate::types::parse_attachment_content(&rec.content).map(|(h, _, _)| h).unwrap_or([0u8; 32]);
                                             let held = crate::storage::blob_present(&hash);
                                             let playing = self.call_playback.is_some() && self.call_playback_hash == Some(hash);
-                                            // Envelope source: the container's fine envelope while a handle is live, the row thumbnail otherwise. Channel-major, eighth-stops below full scale.
+                                            // Envelope source: the container's fine envelope while a handle is live, the row thumbnail otherwise. Channel-major, bucket-major, four components per bucket ([amp, r, g, b], eighth-stops below full scale).
+                                            const K: usize = crate::call::record::ENV_COMPONENTS;
                                             let (env, nchan): (&[u8], usize) = match (playing, self.call_playback.as_ref()) {
                                                 (true, Some(h)) if !h.envelope.is_empty() => (&h.envelope, h.nchan.max(1)),
-                                                _ => (&rec.envelope, if rec.envelope.is_empty() { 1 } else { (rec.envelope.len() / crate::types::WAVE_THUMB_BUCKETS).max(1) }),
+                                                _ => (&rec.envelope, if rec.envelope.is_empty() { 1 } else { (rec.envelope.len() / (crate::types::WAVE_THUMB_BUCKETS * K)).max(1) }),
                                             };
-                                            let env_len = if nchan > 0 { env.len() / nchan } else { 0 };
+                                            let env_len = env.len() / (nchan * K).max(1);
                                             let total_slots = if playing { self.call_playback.as_ref().map(|h| h.total).unwrap_or(0) } else { w.secs as usize * 100 };
                                             let scrub = self.wave_scrub.filter(|s| s.band.hash == hash).map(|s| s.frac);
                                             let frac: Option<f32> = scrub.or_else(|| {
                                                 playing.then(|| self.call_playback.as_ref().map(|h| h.position() as f32 / h.total.max(1) as f32).unwrap_or(0.0))
                                             });
-                                            // The waveform: one column per pixel, ch0 (you) up from the centreline in your colour, ch1 (them) down in theirs; played columns bright, the rest dim (all dim until the blob is held). Eight stops of range: full scale fills the half, eight stops down is the line.
+                                            // THE WAVEFORM (Nick 2026-09-09): one column per pixel, ch0 (you) up from the centreline, ch1 (them) down. Height = amplitude (eight stops of range); colour = the three high-pass bands, each brightness relative to the amplitude and the triple normalised so every bar is fully saturated — the hue says what the sound was made of. Oversampled like the lumis histogram: a column averages every bucket it spans by fractional coverage in energy space, and the bar's tip pixel takes a coverage alpha (√ of the fraction).
                                             let wx0 = glyph_x1;
                                             let cols = ((bx1 - wx0).max(1.0)) as usize;
                                             let played_cols = frac.map(|f| (f * cols as f32) as usize).unwrap_or(0);
-                                            let ch_colour = |ch: usize| -> u32 {
-                                                if ch == 0 { our_colour } else { their_colour }
-                                            };
+                                            let bright = |stops8: u8, rel: u8| -> f32 { (1.0 - (stops8 as f32 - rel as f32) / 64.0).clamp(0.1, 1.0) };
                                             if env_len > 0 {
                                                 for px in 0..cols {
-                                                    let b = px * env_len / cols;
-                                                    let bright = held && frac.is_some() && px < played_cols;
+                                                    let b0 = px as f32 * env_len as f32 / cols as f32;
+                                                    let b1 = (px + 1) as f32 * env_len as f32 / cols as f32;
+                                                    let lit = held && frac.is_some() && px < played_cols;
                                                     for ch in 0..nchan.min(2) {
-                                                        let stops = env[ch * env_len + b] as f32 / 8.0;
-                                                        let hgt = ((1.0 - stops / 8.0).clamp(0.0, 1.0) * half * 0.92).max(hair * 0.5);
-                                                        let c = if bright { ch_colour(ch) } else { theme::dim_colour(ch_colour(ch)) };
-                                                        let (ty, th) = if ch == 0 { (bcy - hgt, hgt) } else { (bcy, hgt) };
-                                                        if ty + th > list_top && ty < list_bottom {
-                                                            paint::fill_rect(&mut canvas, (wx0 + px as f32) as isize, ty.max(list_top) as isize, 1, (th.min(list_bottom - ty.max(list_top))) as isize, c, None, None);
+                                                        // Coverage-weighted energy means over the buckets this column spans.
+                                                        let (mut h2, mut r2, mut g2, mut bl2, mut cov) = (0f32, 0f32, 0f32, 0f32, 0f32);
+                                                        let mut i = b0.floor() as usize;
+                                                        while (i as f32) < b1 && i < env_len {
+                                                            let c = (b1.min(i as f32 + 1.0) - b0.max(i as f32)).max(0.0);
+                                                            let e = &env[(ch * env_len + i) * K..(ch * env_len + i) * K + K];
+                                                            let hv = (1.0 - e[0] as f32 / 64.0).clamp(0.0, 1.0);
+                                                            h2 += hv * hv * c;
+                                                            let (rv, gv, bv) = (bright(e[1], e[0]), bright(e[2], e[0]), bright(e[3], e[0]));
+                                                            r2 += rv * rv * c;
+                                                            g2 += gv * gv * c;
+                                                            bl2 += bv * bv * c;
+                                                            cov += c;
+                                                            i += 1;
+                                                        }
+                                                        if cov <= 0.0 {
+                                                            continue;
+                                                        }
+                                                        let hgt = (h2 / cov).sqrt() * half * 0.92;
+                                                        let (rv, gv, bv) = ((r2 / cov).sqrt(), (g2 / cov).sqrt(), (bl2 / cov).sqrt());
+                                                        let m = rv.max(gv).max(bv).max(0.001);
+                                                        let base_c = theme::rgb_colour((rv / m * 255.0) as u8, (gv / m * 255.0) as u8, (bv / m * 255.0) as u8);
+                                                        let c = if lit { base_c } else { theme::dim_colour(base_c) };
+                                                        let full = hgt.floor();
+                                                        let tip_a = ((hgt - full).sqrt() * (((c >> 24) & 0xFF) as f32)) as u32;
+                                                        let tip_c = (tip_a << 24) | (c & 0x00FF_FFFF);
+                                                        let x = (wx0 + px as f32) as isize;
+                                                        // Solid run from the centreline, then the fractional tip one pixel beyond it.
+                                                        let (ty, th, tip_y) = if ch == 0 { (bcy - full, full, bcy - full - 1.0) } else { (bcy, full, bcy + full) };
+                                                        let run_top = ty.max(list_top);
+                                                        let run_bot = (ty + th).min(list_bottom);
+                                                        if run_bot > run_top && th >= 1.0 {
+                                                            paint::fill_rect(&mut canvas, x, run_top as isize, 1, (run_bot - run_top) as isize, c, None, None);
+                                                        }
+                                                        if tip_a > 0 && tip_y >= list_top && tip_y < list_bottom {
+                                                            paint::fill_rect(&mut canvas, x, tip_y as isize, 1, 1, tip_c, None, None);
                                                         }
                                                     }
                                                 }

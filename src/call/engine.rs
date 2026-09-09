@@ -33,6 +33,11 @@ const TIER_RATES: [i32; 4] = [16_000, 32_000, 64_000, 128_000];
 const TIER_MAX_ENC: [usize; 4] = [12, 22, 42, 82];
 /// Completed-window streak that earns one rung up (~0.25s at 10ms windows, ~1s at the floor's 40ms) — the fast first climb keeps the POTS-ish floor a blink on a clean link.
 const CLIMB_CLEAN_WINDOWS: u32 = 25;
+/// LADDER HYSTERESIS (field 2026-09-09, the Emma+Nick LAN call: 27 ups / 13 downs in 53s — a burst of paired losses dropped two rungs per lost window and 25 clean windows climbed back in a quarter second at the top rungs, so the rate flapped 16↔64 kbps every 300ms for five seconds). Three edges-not-timers rules on top of AIMD: a climb needs CLIMB_HOLD since the last change as well as the clean streak (so the streak means the same at every rung); a drop needs LOSSES_TO_DROP lost windows inside LOSS_WINDOW (one lost pair on an otherwise clean channel is not a congestion signal); and no climb for DROP_HOLD after a drop.
+const CLIMB_HOLD: std::time::Duration = std::time::Duration::from_millis(1000);
+const LOSS_WINDOW: std::time::Duration = std::time::Duration::from_millis(2000);
+const LOSSES_TO_DROP: usize = 2;
+const DROP_HOLD: std::time::Duration = std::time::Duration::from_millis(2000);
 /// Rungs dropped on a lost window.
 const DROP_RUNGS_ON_LOSS: usize = 2;
 
@@ -123,7 +128,15 @@ pub fn start(params: EngineParams) -> EngineHandle {
     crate::platform::audio::start();
     if std::thread::Builder::new()
         .name("call-engine".into())
-        .spawn(move || run(params, stop, muted, sink_rx))
+        .spawn(move || {
+            // Android: the engine thread runs the 5ms capture→send cadence; at default priority both phones in the 2026-09-09 LAN call produced 194 of 200 frames a second (the receiver underruns, the jitter target ratchets). URGENT_AUDIO's nice (-19) is what the platform grants an app's own audio threads.
+            #[cfg(target_os = "android")]
+            {
+                let rc = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, -19) };
+                crate::logf!("CALL: engine thread priority → -19 ({})", if rc == 0 { "ok" } else { "refused" });
+            }
+            run(params, stop, muted, sink_rx)
+        })
         .is_err()
     {
         crate::log("CALL: engine thread spawn failed");
@@ -187,6 +200,10 @@ fn run(
     let mut tier: usize = 0;
     let mut pending_tier: usize = 0;
     let mut clean_rx_windows: u32 = 0;
+    // Ladder hysteresis state: when the tier last moved (either way), when it last DROPPED, and the recent loss edges inside LOSS_WINDOW.
+    let mut last_tier_change = std::time::Instant::now();
+    let mut last_tier_drop: Option<std::time::Instant> = None;
+    let mut recent_losses: std::collections::VecDeque<std::time::Instant> = std::collections::VecDeque::new();
     let (mut tier_ups, mut tier_downs) = (0u32, 0u32);
     // PID state: applied gain + (integral, last-error) on the log2 level error; route is cached at engine start (Headset = no acoustic path = never duck; Unknown ducks, the safe default).
     let mut duck_gain: f32 = 1.0;
@@ -610,10 +627,14 @@ fn run(
                     rx_done.insert(wid, frames);
                     // Receive-side cleanliness is the climb evidence (channel proxy — see the ladder comment): a full streak of completed windows earns one rung up.
                     clean_rx_windows += 1;
-                    if clean_rx_windows >= CLIMB_CLEAN_WINDOWS && pending_tier + 1 < TIER_RATES.len() {
+                    let now = std::time::Instant::now();
+                    let held = now.duration_since(last_tier_change) >= CLIMB_HOLD
+                        && last_tier_drop.map_or(true, |t| now.duration_since(t) >= DROP_HOLD);
+                    if clean_rx_windows >= CLIMB_CLEAN_WINDOWS && held && pending_tier + 1 < TIER_RATES.len() {
                         pending_tier += 1;
                         clean_rx_windows = 0;
                         tier_ups += 1;
+                        last_tier_change = now;
                         crate::logf!("CALL: tier up → {} kbps", TIER_RATES[pending_tier] / 1000);
                     }
                 }
@@ -640,14 +661,24 @@ fn run(
                 } else if rx_done.range(np..).nth(1).is_some() {
                     // Two completed windows beyond the hole — declare it lost, move on.
                     windows_lost += 1;
-                    // A lost window is the AIMD drop edge: two rungs down, evidence streak restarts.
+                    // A lost window restarts the climb evidence; it is the AIMD drop edge only when losses cluster (LOSSES_TO_DROP inside LOSS_WINDOW) — one lost pair on a clean channel is noise, not congestion.
                     clean_rx_windows = 0;
-                    if pending_tier > 0 {
+                    let now = std::time::Instant::now();
+                    recent_losses.push_back(now);
+                    while recent_losses.front().is_some_and(|t| now.duration_since(*t) > LOSS_WINDOW) {
+                        recent_losses.pop_front();
+                    }
+                    if recent_losses.len() >= LOSSES_TO_DROP && pending_tier > 0 {
                         pending_tier = pending_tier.saturating_sub(DROP_RUNGS_ON_LOSS);
                         tier_downs += 1;
+                        last_tier_change = now;
+                        last_tier_drop = Some(now);
+                        recent_losses.clear();
                         crate::logf!(
-                            "CALL: tier down → {} kbps (window lost)",
-                            TIER_RATES[pending_tier] / 1000
+                            "CALL: tier down → {} kbps ({} windows lost within {}s)",
+                            TIER_RATES[pending_tier] / 1000,
+                            LOSSES_TO_DROP,
+                            LOSS_WINDOW.as_secs()
                         );
                     }
                     rx_decoders.remove(&np);

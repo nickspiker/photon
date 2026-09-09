@@ -58,6 +58,8 @@ pub enum RefKind {
     BridgeCmd = 6,
     /// BRIDGE INTERRUPT — the operator's stop lever (Ctrl+K / the Stop pill), targeting the command row's eagle_time. The signal number rides the typed `bsig` wire field; the host signals the command's own process group, never bash. Hidden control row; late arrival after completion is a natural no-op.
     BridgeCtl = 7,
+    /// FETCH HINT (replicate among fleet, 2026-09-09): a hidden fleet-internal row targeting a recording row's eagle_time — every sibling that merges it fetches that blob now instead of on demand. Never displayed, never chain-transmitted.
+    FetchHint = 9,
     /// WAVE RECORDING → its wave row (docs/calls.md, the wave card 2026-09-09). The kept `call.audio` attachment row targets the wave row's eagle_time (offer_osc+1); the renderer FOLDS the recording into that row's card (the edit-target pattern), so a wave is ONE event in the stream however many devices minted its pieces. Fleet-internal, never chain-transmitted.
     Wave = 8,
 }
@@ -73,6 +75,7 @@ impl RefKind {
             6 => Some(RefKind::BridgeCmd),
             7 => Some(RefKind::BridgeCtl),
             8 => Some(RefKind::Wave),
+            9 => Some(RefKind::FetchHint),
             _ => None,
         }
     }
@@ -89,6 +92,8 @@ pub enum WaveOutcome {
     Answered = 4,
     /// Answered, then the media path died past the drop line — carries strictly more than Answered.
     Dropped = 5,
+    /// REJECTED (Nick 2026-09-09): the callee dismissed the ring across the fleet WITHOUT telling the caller — no signal leaves the fleet, the caller's own patience mints their missed wave. Shown small, in this conversation only.
+    Rejected = 6,
 }
 
 impl WaveOutcome {
@@ -99,7 +104,19 @@ impl WaveOutcome {
             3 => Some(WaveOutcome::Declined),
             4 => Some(WaveOutcome::Answered),
             5 => Some(WaveOutcome::Dropped),
+            6 => Some(WaveOutcome::Rejected),
             _ => None,
+        }
+    }
+    /// Merge rank — how much of the call the minting device lived / how deliberate the outcome was. Explicit rather than the wire order: Rejected was appended after Dropped on the wire but sits just above Missed in rank (a choice outranks an absence; anything that rang thru outranks a choice not to).
+    pub fn rank(self) -> u8 {
+        match self {
+            WaveOutcome::Missed => 1,
+            WaveOutcome::Rejected => 2,
+            WaveOutcome::Busy => 3,
+            WaveOutcome::Declined => 4,
+            WaveOutcome::Answered => 5,
+            WaveOutcome::Dropped => 6,
         }
     }
     /// A recording can only exist for a wave that was live.
@@ -250,7 +267,7 @@ pub struct ChatMessage {
     pub marks: Vec<MessageMark>,
     /// WAVE ROW payload (the wave card, 2026-09-09): `Some` = this row IS a wave (content empty). Persisted, fleet-synced as typed page columns, merged by outcome rank + max seconds. Never on the friend wire — each fleet keeps its own record of a wave.
     pub wave: Option<WaveInfo>,
-    /// RECORDING ROW envelope thumbnail: `nchan × WAVE_THUMB_BUCKETS` bytes, channel-major, each bucket the channel's loudness in eighth-STOPS below full scale (0 = full scale, 255 = silence floor). Empty on every other row. Persisted + fleet-synced so any sibling draws the waveform before it holds the blob.
+    /// RECORDING ROW envelope thumbnail: `nchan × WAVE_THUMB_BUCKETS × 4` bytes, channel-major then bucket-major, each bucket `[amplitude, red, green, blue]` in eighth-STOPS below full scale (0 = full scale, 255 = silence floor) — the colour bands are high-pass energies at three scales (call/record.rs). Empty on every other row. Persisted + fleet-synced so any sibling draws the waveform before it holds the blob.
     pub envelope: Vec<u8>,
     /// BRIDGE runtime only (never persisted — bridge rows are ephemeral): the newest streamed snapshot's sequence on a BridgeOut row, so an out-of-order or duplicated partial can never regress the display.
     pub bridge_seq: u64,

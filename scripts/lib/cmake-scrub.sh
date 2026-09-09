@@ -12,10 +12,12 @@ scrub_divergent_cmake_caches() {
     [ -d "$root" ] || return 0
     while IFS= read -r cache; do
         cc="$(sed -n 's/^CMAKE_C_COMPILER:[^=]*=//p' "$cache" | head -1)"
+        # CMake resolves CMAKE_C_COMPILER to the real clang binary, so the API-suffixed wrapper cmake-rs was handed survives only in CMAKE_ASM_COMPILER (2026-09-09: matching the wrapper against the C compiler alone scrubbed a healthy cache on every Android build). The expected substring matches EITHER.
+        asm="$(sed -n 's/^CMAKE_ASM_COMPILER:[^=]*=//p' "$cache" | head -1)"
         prefix="$(sed -n 's/^CMAKE_INSTALL_PREFIX:[^=]*=//p' "$cache" | head -1)"
         dir="${cache%/out/build/CMakeCache.txt}"
         # A cache whose prefix ALREADY reads /usr/local has been thru the mid-build re-configure once (2026-09-09: the compiler matched, the prefix was gone, the install step hit Permission denied) — it is poison whatever its compiler says.
-        if [ -z "$cc" ] || [ ! -e "$cc" ] || { [ -n "$expect" ] && [ "${cc#*"$expect"}" = "$cc" ]; } || [ "$prefix" = "/usr/local" ]; then
+        if [ -z "$cc" ] || [ ! -e "$cc" ] || { [ -n "$expect" ] && [ "${cc#*"$expect"}" = "$cc" ] && [ "${asm#*"$expect"}" = "$asm" ]; } || [ "$prefix" = "/usr/local" ]; then
             echo "cmake-scrub: divergent cache (compiler: ${cc:-unrecorded}, prefix: ${prefix:-unrecorded}) — scrubbing ${dir#"$PWD"/} (a re-configure mid-build loses the install prefix and aims at /usr/local)"
             rm -rf "$dir"
         fi

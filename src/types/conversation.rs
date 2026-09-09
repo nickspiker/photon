@@ -463,7 +463,7 @@ mod tests {
 pub fn merge_wave_fields(existing: &mut ChatMessage, wave: Option<crate::types::WaveInfo>, envelope: &[u8]) {
     if let Some(w) = wave {
         existing.wave = Some(match existing.wave {
-            Some(e) => crate::types::WaveInfo { outcome: e.outcome.max(w.outcome), secs: e.secs.max(w.secs) },
+            Some(e) => crate::types::WaveInfo { outcome: if w.outcome.rank() > e.outcome.rank() { w.outcome } else { e.outcome }, secs: e.secs.max(w.secs) },
             None => w,
         });
     }

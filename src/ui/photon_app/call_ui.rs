@@ -43,6 +43,7 @@ pub(super) fn wave_header(w: crate::types::WaveInfo) -> String {
         O::Answered => tr(Msg::CallEndedDur(&dur)).into_owned(),
         O::Dropped => tr(Msg::CallDroppedDur(&dur)).into_owned(),
         O::Missed => tr(Msg::MissedCallRow).into_owned(),
+        O::Rejected => tr(Msg::RejectedWaveRow).into_owned(),
         O::Declined => tr(Msg::CallDeclinedRow).into_owned(),
         O::Busy => tr(Msg::BusyRow).into_owned(),
     }
@@ -82,6 +83,17 @@ impl PhotonApp {
             match phase {
                 Some(CallPhase::Ringing) => self.decline_call(),
                 _ => {}
+            }
+            any = true;
+        }
+        if self
+            .call_reject_btn
+            .as_mut()
+            .map(|b| b.take_click())
+            .unwrap_or(false)
+        {
+            if matches!(phase, Some(CallPhase::Ringing)) {
+                self.reject_call();
             }
             any = true;
         }
@@ -352,6 +364,36 @@ impl PhotonApp {
         self.end_call(WaveOutcome::Declined, offer_osc);
     }
 
+    /// REJECT (Nick 2026-09-09): dismiss the ring across the fleet WITHOUT telling the caller. No signal leaves the fleet; the caller's own patience ends their side (they mint the missed wave). The wave row's Rejected outcome rides the ordinary sibling push and stops every sibling's ring on merge; the call id and offer stamp are remembered so a re-expressed offer never rings again.
+    pub(super) fn reject_call(&mut self) {
+        let Some(call) = self.active_call.as_ref() else {
+            return;
+        };
+        if call.phase != CallPhase::Ringing {
+            return;
+        }
+        let (call_id, offer_osc) = (call.call_id, call.offer_osc);
+        self.rejected_calls.insert(call_id);
+        self.rejected_offers.insert(offer_osc);
+        crate::logf!("CALL: rejected {} silently (fleet-wide stop, no signal)", hex::encode(&call_id[..4]));
+        self.end_call(WaveOutcome::Rejected, offer_osc);
+    }
+
+    /// A sibling's REJECT reached this device as a wave row (outcome Rejected, stamped offer_osc+1): stop our ring for that offer silently and remember it, whether our ring has started yet or not.
+    pub(super) fn on_sibling_reject(&mut self, wave_ts: i64) {
+        let offer_osc = wave_ts - 1;
+        self.rejected_offers.insert(offer_osc);
+        let ringing = self.active_call.as_ref().filter(|c| c.phase == CallPhase::Ringing && c.offer_osc == offer_osc).map(|c| c.call_id);
+        if let Some(call_id) = ringing {
+            self.rejected_calls.insert(call_id);
+            crate::logf!("CALL: sibling rejected {} — ring stops here", hex::encode(&call_id[..4]));
+            self.active_call = None;
+            Self::stop_ring_alert_platform();
+            self.call_minimized = false;
+            self.scene_dirty = true;
+        }
+    }
+
     /// Hang up — covers the caller abandoning an unanswered ring (the human timeout) AND either side ending an active call.
     pub(super) fn hangup_call(&mut self) {
         let Some(call) = self.active_call.as_ref() else {
@@ -529,6 +571,8 @@ impl PhotonApp {
             }
         }
         match sig {
+            // A rejected call never rings again: not on a re-expressed offer, not on a late-arriving one after a sibling's reject.
+            CallSignal::Offer { call_id, .. } if !row_is_outgoing && (self.rejected_calls.contains(&call_id) || self.rejected_offers.contains(&row_ts)) => {}
             CallSignal::Offer { call_id, nonce, device } if !row_is_outgoing => {
                 match &self.active_call {
                     Some(c) if c.call_id == call_id => {

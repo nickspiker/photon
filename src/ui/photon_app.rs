@@ -738,10 +738,10 @@ fn chat_row_visible(raw: &[crate::types::ChatMessage], m: &crate::types::ChatMes
     if matches!(m.reference, Some((crate::types::RefKind::React, _))) {
         return false;
     }
-    // BridgeReset (the peer opened the bridge) and BridgeCtl (a Stop press) are hidden control rows — never bubbles.
+    // BridgeReset (the peer opened the bridge), BridgeCtl (a Stop press) and FetchHint (replicate-among-fleet) are hidden control rows — never bubbles.
     if matches!(
         m.reference,
-        Some((crate::types::RefKind::BridgeReset | crate::types::RefKind::BridgeCtl, _))
+        Some((crate::types::RefKind::BridgeReset | crate::types::RefKind::BridgeCtl | crate::types::RefKind::FetchHint, _))
     ) {
         return false;
     }
@@ -1475,6 +1475,8 @@ pub struct PhotonApp {
     call_start_btn: Option<Button>,
     /// Beam (video) — a stub button, rendered disabled beside the Wave button until video lands. Never dispatches.
     call_beam_btn: Option<Button>,
+    /// Reject — the silent dismissal on the ring panel (no signal to the caller; the wave row's Rejected outcome stops every sibling's ring on merge).
+    call_reject_btn: Option<Button>,
     /// Beam back / Beam toggle — the ring panel's video answer and the active panel's video switch, both STUBS rendered disabled until video lands (Nick 2026-09-09: choose audio-only while they beam, switchable in-call). Never dispatches.
     call_beam_back_btn: Option<Button>,
     call_action_btn: Option<Button>,
@@ -1493,6 +1495,11 @@ pub struct PhotonApp {
     call_playback_hash: Option<[u8; 32]>,
     /// The conversation stream filter (top-bar pill). Session state.
     conv_filter: ChatFilter,
+    /// Calls this fleet REJECTED (silent dismissal): by call id (this device's own ring) and by offer stamp (a sibling's reject learned thru the wave row before or after this device's ring started). A re-expressed offer for either never rings. Session-local; a rejected call is over long before a relaunch.
+    rejected_calls: std::collections::HashSet<[u8; 16]>,
+    rejected_offers: std::collections::HashSet<i64>,
+    /// The NEWEST row in a conversation shows its options without a tap (Nick 2026-09-09: "on end of any comms and any new messages always show the options"); tapping it closes them, remembered here by row key until a newer row takes the slot.
+    strip_dismissed: Option<(usize, i64, bool)>,
     /// Hit id of the filter pill.
     conv_filter_hit: HitId,
     /// Wave cards' waveform bands as drawn this frame, slot-indexed like `msg_hit_rows` (`visible_index % MSG_HIT_SPAN`).
@@ -2221,6 +2228,7 @@ impl PhotonApp {
             call_start_btn: None,
             call_beam_btn: None,
             call_beam_back_btn: None,
+            call_reject_btn: None,
             call_action_btn: None,
             call_decline_btn: None,
             call_speaker_btn: None,
@@ -2231,6 +2239,9 @@ impl PhotonApp {
             call_playback: None,
             call_playback_hash: None,
             conv_filter: ChatFilter::All,
+            rejected_calls: std::collections::HashSet::new(),
+            rejected_offers: std::collections::HashSet::new(),
+            strip_dismissed: None,
             conv_filter_hit: HIT_NONE,
             msg_wave_bands: Vec::new(),
             wave_scrub: None,
@@ -2829,6 +2840,9 @@ impl PhotonApp {
             match phase {
                 CallPhase::Ringing => {
                     if let Some(b) = self.call_decline_btn.as_mut() {
+                        f(b);
+                    }
+                    if let Some(b) = self.call_reject_btn.as_mut() {
                         f(b);
                     }
                 }
