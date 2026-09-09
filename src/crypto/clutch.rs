@@ -928,6 +928,21 @@ pub fn clutch_offer_provenance(device_pubkey: &[u8; 32], send_time_osc: i64) -> 
     *hasher.finalize().as_bytes()
 }
 
+/// The provenance of a CLAIMED offer (stage 4): the era-prior claim is folded in, so a round commits to the claim — an offer re-sent with a different claim is a different round. An unclaimed offer keeps the plain provenance (old builds agree).
+pub fn clutch_offer_provenance_claimed(device_pubkey: &[u8; 32], send_time_osc: i64, prior: Option<(u32, u64)>) -> [u8; 32] {
+    let Some((tag, idx)) = prior else {
+        return clutch_offer_provenance(device_pubkey, send_time_osc);
+    };
+    let mut hasher = Hasher::new();
+    hasher.update(CLUTCH_OFFER_PROV_DOMAIN);
+    hasher.update(device_pubkey);
+    hasher.update(&send_time_osc.to_le_bytes());
+    hasher.update(b"prior");
+    hasher.update(&tag.to_le_bytes());
+    hasher.update(&idx.to_le_bytes());
+    *hasher.finalize().as_bytes()
+}
+
 /// Compute the handshake message that both parties sign.
 ///
 /// This is signed by each party with their device private key. The signatures become part of the provenance derivation.
@@ -1069,6 +1084,8 @@ pub struct ClutchAllKeypairs {
     pub mceliece_public: Vec<u8>, // 524160B (~512KB)
     pub hqc256_secret: Vec<u8>,   // 7317B
     pub hqc256_public: Vec<u8>,   // 7285B
+    /// The era-prior claim this round's offer carries (stage 4): copied from the contact when the keygen result lands, so every offer built from these keys claims the same prior.
+    pub prior: Option<(u32, u64)>,
 }
 
 impl ClutchAllKeypairs {
@@ -1109,6 +1126,8 @@ pub struct ClutchOfferPayload {
     pub mlkem1024_public: Vec<u8>,
     pub mceliece_public: Vec<u8>,
     pub hqc256_public: Vec<u8>,
+    /// ERA PRIOR CLAIM (stage 4): "I am weaving from the era tagged .0 at index .1" — additive wire fields beside the keys, NOT in to_bytes (the legacy instance input). A peer that holds that era echoes the claim; completion then weaves the old roots in (from_clutch_woven). None = a fresh channel.
+    pub prior: Option<(u32, u64)>,
 }
 
 impl ClutchOfferPayload {
@@ -1133,6 +1152,7 @@ impl ClutchOfferPayload {
             mlkem1024_public: keys.mlkem1024_public.clone(),
             mceliece_public: keys.mceliece_public.clone(), // ~512KB - PT transfer handles this
             hqc256_public: keys.hqc256_public.clone(),
+            prior: keys.prior,
         }
     }
 
@@ -1414,6 +1434,10 @@ impl ClutchKemSharedSecrets {
         self.p384.zeroize();
         self.secp256k1.zeroize();
         self.p256.zeroize();
+        // Three of the twelve were missed until 2026-09-08 (the era-ratchet plan's fix-in-passing).
+        self.frodo1344.zeroize();
+        self.sntrup.zeroize();
+        self.p521.zeroize();
     }
 }
 
@@ -1488,6 +1512,7 @@ pub fn generate_all_ephemeral_keypairs_with_progress(progress: Option<&std::sync
         mceliece_public,
         hqc256_secret,
         hqc256_public,
+        prior: None,
     }
 }
 

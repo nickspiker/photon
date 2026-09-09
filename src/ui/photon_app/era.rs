@@ -223,7 +223,9 @@ impl PhotonApp {
             RepairVerdict::LightRatchet => {
                 self.propose_light_ratchet(ci);
             }
-            RepairVerdict::HeavyWeave => crate::logf!("ERA: {} wants a woven full CLUTCH — not built yet (stage 4); nothing done", fp),
+            RepairVerdict::HeavyWeave => {
+                self.arm_heavy_weave_for(ci, "repair verdict");
+            }
             RepairVerdict::ConsentFresh => crate::logf!("ERA: {} is on a channel we cannot order against ours — the consent-gated fresh channel is not built yet (stage 5); nothing done", fp),
         }
     }
@@ -399,6 +401,38 @@ impl PhotonApp {
                 } else {
                     crate::logf!("ERA: {} nudged from {:08x} but we are on {} — ignored (its pong or our chain-sync converges it)", fp, prior_tag, ours.map(|t| format!("{t:08x}")).unwrap_or_else(|| "none".into()));
                 }
+            }
+        }
+    }
+
+    /// SHRINK EDGE (stage 4, decision 1): every friendship with a live era re-keys with the old roots woven in. Armed for the epoch AFTER the rotation the shrink just started (`spawn_fleet_key_sync`), so the keygen pickup waits until the cached fleet key is one the leaver never held — chain_sync opens k−1, so a woven era pushed under the old epoch would still reach it. Persisted per contact: a restart cannot lose a shrink's re-key.
+    pub(super) fn arm_heavy_weaves(&mut self, why: &str) {
+        let due = self.fleet_epoch.map(|(e, _)| e).unwrap_or(0) + 1;
+        let mut armed = 0usize;
+        for c in self.contacts.iter_mut().filter(|c| !c.is_sibling && c.consent_mutual && c.friendship_id.is_some() && !c.locked_out) {
+            if c.era_weave_due >= due {
+                continue;
+            }
+            c.era_weave_due = due;
+            armed += 1;
+            if let Some(storage) = self.storage.as_ref() {
+                let _ = crate::storage::contacts::save_contact(c, storage);
+            }
+        }
+        crate::logf!("ERA: heavy weave armed for {} friendship(s) at epoch ≥ {} — {}", armed, due, why);
+    }
+
+    /// One friendship, now (no rotation to wait for): a repair verdict that resolved to HeavyWeave.
+    pub(super) fn arm_heavy_weave_for(&mut self, ci: usize, why: &str) {
+        let Some(c) = self.contacts.get_mut(ci) else { return };
+        if c.is_sibling || c.friendship_id.is_none() {
+            return;
+        }
+        if c.era_weave_due == 0 {
+            c.era_weave_due = 1;
+            crate::logf!("ERA: heavy weave armed for {} — {}", crate::fp(&c.handle_proof), why);
+            if let Some(storage) = self.storage.as_ref() {
+                let _ = crate::storage::contacts::save_contact(c, storage);
             }
         }
     }

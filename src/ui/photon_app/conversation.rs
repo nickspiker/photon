@@ -583,6 +583,36 @@ impl PhotonApp {
         let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
         // §4.2 one-CLUTCH-per-friendship: a friend claimed by ANOTHER of our devices PARKS here — its ceremony is the fleet's ceremony (see ceremony_parked_by for the full rules incl. the woven guard and the probed-before-takeover boot-race fix). An owner that is PROBED-offline is presence-driven takeover: the contact re-enters the queue and the pickup below re-claims it. Sibling weaves are per-device-pair by design — never parked.
         let siblings = sibling_presence_snapshot(&self.contacts);
+        // HEAVY WEAVE PICKUP (stage 4): a friendship armed by a fleet shrink (or a repair verdict) re-keys with the old roots woven in once the cached fleet epoch has moved past the rotation — the round resets with the era-prior claim set, and the ordinary Pending scan below picks it up. Owner only; one at a time like every keygen.
+        let epoch_now = self.fleet_epoch.map(|(e, _)| e).unwrap_or(0);
+        if let Some(i) = self.contacts.iter().position(|c| {
+            !c.is_sibling
+                && c.era_weave_due > 0
+                && (epoch_now >= c.era_weave_due || c.era_weave_due == 1)
+                && c.clutch_state == crate::types::ClutchState::Complete
+                && !c.clutch_keygen_in_progress
+                && c.consent_mutual
+                && !c.locked_out
+                && !ceremony_parked_by(c, our_device, &siblings)
+        }) {
+            let claim = self.contacts[i]
+                .friendship_id
+                .and_then(|f| self.friendship_chains.iter().find(|(id, _)| *id == f))
+                .and_then(|(_, ch)| ch.era_tag().map(|t| (t, ch.era_index)));
+            let c = &mut self.contacts[i];
+            match claim {
+                Some((tag, idx)) => {
+                    c.discard_clutch_round();
+                    c.era_prior_claim = Some((tag, idx));
+                    crate::logf!("ERA: heavy weave armed for {} from era#{} ({:08x}) — a full CLUTCH with the prior woven in (due at epoch {}, now {})", crate::fp(&c.handle_proof), idx, tag, c.era_weave_due, epoch_now);
+                }
+                None => crate::logf!("ERA: heavy weave for {} has no era to weave from — dropped", crate::fp(&c.handle_proof)),
+            }
+            c.era_weave_due = 0;
+            if let Some(storage) = self.storage.as_ref() {
+                let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
+            }
+        }
         // FLEET-FIRST REJOIN (the re-clutch storm fix): while ANY fleet sibling still lacks a presence VERDICT (pong or 3-timeout — an evidence edge, never a timer), FRIEND keygens hold. A wiped device's restored contacts arrive Pending+keyless and the old code fired ceremonies at every friend within milliseconds — seconds before chain replication from an online sibling would have flipped them all Complete with no ceremony at all. Once every sibling is probed: online siblings ⇒ chains arrive and adoption drains the queue; all-offline ⇒ this is the identity's only live device and clutching is legitimately ours. Sibling PAIR-WEAVES are exempt — they are the very channel the chains replicate over.
         // Only siblings the CURRENT fold vouches for may hold the gate (2026-09-01, the ocean-phone ghost): a stale-era or keyless sibling row can never be probed — no address, no pong, no timeout verdict — and one such corpse held 8-9 friend keygens hostage on two devices. The fold is the membership authority; when we hold one, an un-folded sibling's probe status is meaningless. Empty fold (pre-first-adopt) keeps the old behaviour — fail toward holding, never toward a re-clutch storm.
         let fold = &self.registry_converged_fold;

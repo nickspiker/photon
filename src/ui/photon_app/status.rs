@@ -1786,6 +1786,35 @@ impl PhotonApp {
                         }
                     }
 
+                    // ERA-PRIOR CLAIM (stage 4): a claimed offer weaves from a named era. We hold that era ⇒ echo the claim (our keypairs carry it, completion weaves). Their claim is our RETIRED era ⇒ they are behind; unknown ⇒ we may be behind (StaleEraObserved asks the fleet). Either way the offer is not answered: answering would mint a channel the two sides could never agree on.
+                    match payload.prior {
+                        None => self.contacts[matched_ci].era_prior_claim = None,
+                        Some((tag, idx)) => {
+                            let held = self.contacts[matched_ci].friendship_id.and_then(|f| self.friendship_chains.iter().find(|(id, _)| *id == f).map(|(_, ch)| ch));
+                            let verdict: Result<(), &str> = match held {
+                                Some(ch) if ch.era_tag() == Some(tag) && ch.era_index == idx => Ok(()),
+                                Some(ch) if ch.retired_era().is_some_and(|r| r.tag == tag) => Err("behind"),
+                                Some(_) => Err("unknown"),
+                                None => Err("no era"),
+                            };
+                            match verdict {
+                                Ok(()) => {
+                                    self.contacts[matched_ci].era_prior_claim = Some((tag, idx));
+                                    crate::logf!("ERA: {} offers a weave from era#{} ({:08x}) — the era we hold; accepting the weave (AcceptWeave)", crate::fp(&self.contacts[matched_ci].handle_proof), idx, tag);
+                                }
+                                Err(why) => {
+                                    crate::logf!("ERA: {} offers a weave from era#{} ({:08x}) — {}; offer not answered", crate::fp(&self.contacts[matched_ci].handle_proof), idx, tag, match why { "behind" => "that is our RETIRED era, the peer is behind (its pong shows it)", "unknown" => "an era we do not hold — asking the fleet", _ => "we hold no era for this friendship" });
+                                    if why == "unknown" {
+                                        if let Some(f) = self.contacts[matched_ci].friendship_id {
+                                            era_triggers_after.push((f, super::era::RepairTrigger::StaleEraObserved { peer_index: idx, peer_tag: tag }));
+                                        }
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
                     // OFFER AS MUTUALITY EVIDENCE (consent gate, 2026-08-25): an old client never knocks — its opening move is still the full offer. A token-matched, trust-gated offer proves the sender holds both party ids, exactly what the knock proves, so it flips a WeAsked row Mutual (persist + roster ride) before normal processing arms the ceremony.
                     if !self.contacts[matched_ci].consent_mutual {
                         self.contacts[matched_ci].consent_mutual = true;

@@ -45,4 +45,6 @@ pub struct ClutchCeremonyResult {
     pub their_hqc_prefix: [u8; 8],
     /// The durable pair secret this ceremony minted (Phase A): the post-quantum half of a fan-out wrap between these two DEVICES. Derived in the worker before the eggs drop; stored per pair by the drain. Only meaningful for a SIBLING ceremony — a friend's device never wraps our fleet key — so the drain stores it only then.
     pub fanout_pair_secret: [u8; 32],
+    /// The tag of the era this result WOVE from (stage 4); None = a fresh channel. The drain installs a woven result only while that era is still the one we hold.
+    pub prior_tag: Option<u32>,
 }

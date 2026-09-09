@@ -341,6 +341,7 @@ impl PhotonApp {
         conversation_token: [u8; 32],
         peer_addr: std::net::SocketAddr,
         their_hqc_prefix: [u8; 8],
+        prior: Option<crate::types::friendship::EraPrior>,
     ) {
         use crate::crypto::clutch::clutch_complete_full;
 
@@ -373,10 +374,14 @@ impl PhotonApp {
             );
 
             // Phase 2: Expand to 2MB and derive chains (slow - avalanche_expand)
-            let friendship_chains = FriendshipChains::from_clutch(
+            // WEAVE (stage 4): with a prior, the fresh eggs ratchet the prior era forward instead of opening a new lineage.
+            let prior_tag = prior.as_ref().map(|p| crate::crypto::clutch::era_tag(&p.lane_root));
+            let friendship_chains = FriendshipChains::from_clutch_woven(
                 &[our_handle_hash, their_handle_hash],
                 result.eggs.as_slice(),
+                prior.as_ref(),
             );
+            drop(prior);
 
             #[cfg(feature = "development")]
             #[cfg(feature = "development")]
@@ -392,6 +397,7 @@ impl PhotonApp {
                 peer_addr,
                 their_hqc_prefix,
                 fanout_pair_secret,
+                prior_tag,
             });
 
             // Wake the event loop so it processes the result
@@ -554,8 +560,10 @@ impl PhotonApp {
                         }
                     }
 
-                    // Store keypairs (ceremony_id computed on-demand when provenances available)
-                    contact.clutch_our_keypairs = Some(result.keypairs);
+                    // Store keypairs (ceremony_id computed on-demand when provenances available) — stamped with the era-prior claim this round carries (stage 4).
+                    let mut keypairs = result.keypairs;
+                    keypairs.prior = contact.era_prior_claim;
+                    contact.clutch_our_keypairs = Some(keypairs);
                     // Stamp the round start (eagle time): this is the moment a round's keys exist. A resume that reloads contacts from disk wipes these ephemeral keys — a fresh stamp lets the resume RESTORE the round instead of the sweep minting a divergent one, and gates re-key on real staleness (see Contact::clutch_round_started).
                     contact.clutch_round_started = Some(vsf::eagle_time_oscillations());
                     // OWNER KEEPALIVE: takeover reads the roster entry's LWW clock, and nothing else bumps it while the owner grinds — after one quiet TTL every sibling read "owner silent", claimed, and the fleet re-entered dual-writer churn (live pair, 2026-08-06). A working owner re-stamps its claim at each round mint; the push after the drain carries it, and siblings' owner_stale stays honest.
@@ -1019,6 +1027,19 @@ impl PhotonApp {
                     stale.friendship_chains.zeroize_history_key();
                     continue;
                 }
+                // A WOVEN result is only valid while the era it ratcheted from is still the one we hold (a light ratchet may have moved us meanwhile): the peer's completion would disagree, so the round is stale.
+                if let Some(pt) = result.prior_tag {
+                    let held = self.friendship_chains.iter().find(|(id, _)| *id == result.friendship_chains.friendship_id).and_then(|(_, c)| c.era_tag());
+                    if held != Some(pt) {
+                        crate::logf!("ERA: woven result ratchets from {:08x} but we now hold {} — stale round, dropped", pt, held.map(|t| format!("{t:08x}")).unwrap_or_else(|| "none".into()));
+                        self.contacts[idx].clutch_ceremony_in_progress = false;
+                        let mut stale = result;
+                        use zeroize::Zeroize;
+                        stale.fanout_pair_secret.zeroize();
+                        stale.friendship_chains.zeroize_history_key();
+                        continue;
+                    }
+                }
             }
 
             let friendship_id = *result.friendship_chains.id();
@@ -1096,6 +1117,8 @@ impl PhotonApp {
                 let contact_handle = crate::fp(&contact.handle_proof);
                 contact.clutch_ceremony_in_progress = false;
                 contact.friendship_id = Some(friendship_id);
+                // The round's era-prior claim is spent with its completion.
+                contact.era_prior_claim = None;
 
                 crate::logf!(
                     "CLUTCH: Eggs computed with {}! (proof: {}...)",
@@ -1409,6 +1432,10 @@ impl PhotonApp {
 
         // Mark ceremony in progress and spawn background thread
         contact.clutch_ceremony_in_progress = true;
+        // The era-prior claims of this round (stage 4): ours rides our keypairs, theirs their stored offer. Both present and equal ⇒ weave from the era we hold under that tag; anything else ⇒ a fresh channel.
+        let our_claim = contact.clutch_our_keypairs.as_ref().and_then(|k| k.prior);
+        let their_claim = contact.get_slot(&their_handle_hash).and_then(|s| s.offer.as_ref()).and_then(|o| o.prior);
+        let claim_fid = contact.friendship_id;
 
         let our_device_pub = *self
             .device_keypair
@@ -1432,6 +1459,23 @@ impl PhotonApp {
                 }
             }
         };
+        let prior = match (our_claim, their_claim) {
+            (Some(a), Some(b)) if a == b => claim_fid
+                .and_then(|f| self.friendship_chains.iter().find(|(id, _)| *id == f))
+                .and_then(|(_, ch)| {
+                    if ch.era_tag() == Some(a.0) && ch.era_index == a.1 {
+                        Some(crate::types::friendship::EraPrior { era_index: ch.era_index, era_lineage: ch.era_lineage, lane_root: *ch.lane_root()?, history_key: ch.history_key().copied(), transcript: ceremony_id })
+                    } else {
+                        None
+                    }
+                }),
+            _ => None,
+        };
+        match (&prior, our_claim, their_claim) {
+            (Some(p), _, _) => crate::logf!("ERA: weaving era#{} ({:08x}) into this ceremony for {} — the result is era#{} of the same lineage", p.era_index, our_claim.map(|c| c.0).unwrap_or(0), contact_handle, p.era_index + 1),
+            (None, None, None) => {}
+            (None, o, t) => crate::logf!("ERA: ceremony for {} completes as a FRESH channel — claims ours {} theirs {} do not both name the era we hold", contact_handle, o.map(|c| format!("{:08x}#{}", c.0, c.1)).unwrap_or_else(|| "none".into()), t.map(|c| format!("{:08x}#{}", c.0, c.1)).unwrap_or_else(|| "none".into())),
+        }
         self.spawn_clutch_ceremony(
             contact_id,
             our_handle_hash,
@@ -1444,6 +1488,7 @@ impl PhotonApp {
             conversation_token,
             peer_addr,
             their_hqc_prefix,
+            prior,
         );
     }
 }

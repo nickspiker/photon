@@ -150,6 +150,9 @@ fn contact_state_schema() -> SectionSchema {
         .field("trust_level", TypeConstraint::AnyUnsigned)
         .field("consent", TypeConstraint::AnyUnsigned)
         .field("era_cap", TypeConstraint::AnyUnsigned)
+        .field("era_weave_due", TypeConstraint::AnyUnsigned)
+        .field("era_prior_tag", TypeConstraint::AnyUnsigned)
+        .field("era_prior_idx", TypeConstraint::AnyUnsigned)
         .field("pubkey", TypeConstraint::Ed25519Key)
         .field("added", TypeConstraint::Any) // Eagle Time
         .field("id", TypeConstraint::AnyHash)
@@ -199,6 +202,12 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
         .set("consent", contact.consent_mutual as u8)
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set("era_cap", contact.peer_era_capable as u8)
+        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .set("era_weave_due", contact.era_weave_due as usize)
+        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .set("era_prior_tag", contact.era_prior_claim.map(|(t, _)| t as usize).unwrap_or(0))
+        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .set("era_prior_idx", contact.era_prior_claim.map(|(_, i)| i as usize).unwrap_or(0))
         .map_err(|e| StorageError::Parse(e.to_string()))?;
     // An absent device key is OMITTED, never zero-filled (the zero-sentinel purge): the reader treats a missing "pubkey" as None and the id keys on the party id.
     if let Some(pk) = contact.public_identity.as_ref() {
@@ -435,6 +444,11 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     contact.trust_level = u8_to_trust_level(trust_u8);
     contact.consent_mutual = section.get_value::<u8>("consent").unwrap_or(1) != 0;
     contact.peer_era_capable = section.get_value::<u8>("era_cap").unwrap_or(0) != 0;
+    contact.era_weave_due = section.get_value::<i64>("era_weave_due").map(|v| v.max(0) as u64).unwrap_or(0);
+    contact.era_prior_claim = match (section.get_value::<i64>("era_prior_tag").ok(), section.get_value::<i64>("era_prior_idx").ok()) {
+        (Some(t), Some(i)) if t != 0 => Some((t as u32, i.max(0) as u64)),
+        _ => None,
+    };
     contact.added = added;
     // The roster LWW clock floors at `added`; the explicit field below (if present) then raises it.
     contact.roster_updated = added;

@@ -274,6 +274,26 @@ pub struct RetiredEra {
     pub grace_left: u32,
 }
 
+/// The era a heavy weave ratchets FROM (stage 4): a snapshot of the current era taken when the ceremony round completes, plus the ceremony id as the transcript. Secret material — zeroized on drop.
+#[derive(Clone)]
+pub struct EraPrior {
+    pub era_index: u64,
+    pub era_lineage: [u8; 32],
+    pub lane_root: [u8; 32],
+    pub history_key: Option<[u8; 32]>,
+    pub transcript: [u8; 32],
+}
+
+impl Drop for EraPrior {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.lane_root.zeroize();
+        if let Some(hk) = self.history_key.as_mut() {
+            hk.zeroize();
+        }
+    }
+}
+
 /// A derived-but-not-live era. Both sides hold it before either writes to it; the cutover edge (an observed ACK, or the first inbound frame on it) flips it to current.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PendingEra {
@@ -415,6 +435,11 @@ impl FriendshipChains {
     /// - Three hash algorithms in parallel (smear_hash)
     /// - No compression: full entropy preserved thru derivation
     pub fn from_clutch(participants: &[[u8; 32]], eggs: &[[u8; 32]]) -> Self {
+        Self::from_clutch_woven(participants, eggs, None)
+    }
+
+    /// A ceremony WITH THE PRIOR WOVEN IN (stage 4, plan §2 heavy path): the birth root and history key are computed exactly as for a fresh ceremony, then folded thru `derive_era_keys` with the prior era's root and history key (`fresh` = birth_root ‖ birth_hk, `transcript` = the ceremony id). The result inherits the prior's lineage at index+1, so sibling replication orders it by index and a departed device holding the old era — and even the whole ceremony transcript — cannot derive it without the fresh eggs. `None` = a fresh channel: era 0 of a new lineage.
+    pub fn from_clutch_woven(participants: &[[u8; 32]], eggs: &[[u8; 32]], prior: Option<&EraPrior>) -> Self {
         use crate::crypto::clutch::{
             avalanche_expand_eggs, derive_chain_from_avalanche, derive_conversation_token,
             ClutchEggs,
@@ -456,6 +481,24 @@ impl FriendshipChains {
             use zeroize::Zeroize;
             snap.zeroize();
         }
+        // WEAVE (stage 4): with a prior, the birth pair is only the fresh material of the next era of the prior's lineage.
+        let (history_key, lane_root, era_index, era_lineage) = match prior {
+            Some(p) => {
+                use zeroize::Zeroize;
+                let mut fresh_in = Vec::with_capacity(64);
+                fresh_in.extend_from_slice(&lane_root);
+                fresh_in.extend_from_slice(&history_key);
+                let fresh = crate::crypto::era::derive_era_fresh(&[("clutch_birth", fresh_in.clone())]);
+                let (root, hk) = crate::crypto::era::derive_era_keys(friendship_id.as_bytes(), p.era_index + 1, &p.lane_root, p.history_key.as_ref(), &fresh, &p.transcript);
+                fresh_in.zeroize();
+                let mut birth_root = lane_root;
+                let mut birth_hk = history_key;
+                birth_root.zeroize();
+                birth_hk.zeroize();
+                (hk, root, p.era_index + 1, p.era_lineage)
+            }
+            None => (history_key, lane_root, 0, crate::crypto::clutch::era_lineage(&lane_root)),
+        };
 
         // Lanes are born EMPTY: each device mints its own at first send, and every receive materializes the sender's from root ‖ label. A ceremony creates the shared root, never the ratchets (docs/lanes.md).
         Self {
@@ -478,11 +521,11 @@ impl FriendshipChains {
             last_incorporated_hp: None,
             gap_buffer: Vec::new(),
             history_key: Some(history_key),
-            era_lineage: crate::crypto::clutch::era_lineage(&lane_root),
+            era_lineage,
             lane_root: Some(lane_root),
             genesis_osc: vsf::eagle_time_oscillations(),
             mutated_osc: 0,
-            era_index: 0,
+            era_index,
             lane_eras: Vec::new(),
             retired: None,
             pending: None,
@@ -2581,6 +2624,38 @@ mod tests {
         // Post-compromise: the old root alone (a revoked sibling's snapshot) does not reach the new era without the fresh secret.
         let (wrong, _) = derive_era_keys(&fid, 1, &old_root, resp.history_key(), &[0u8; 32], &t);
         assert_ne!(wrong, root_r);
+    }
+
+    /// The woven ceremony (stage 4): same eggs + same prior ⇒ one era on both sides at index+1 of the prior's lineage; the same eggs WITHOUT the prior are a different, fresh channel; the prior's root is load-bearing; and a sibling holding the prior era adopts the woven one by index within the lineage.
+    #[test]
+    fn woven_ceremony_inherits_the_lineage_and_needs_the_prior_root() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let eggs2: Vec<[u8; 32]> = (0..8).map(|i| [i as u8 + 50; 32]).collect();
+        let prior_era = FriendshipChains::from_clutch(&[a, b], &eggs);
+        let prior = EraPrior { era_index: prior_era.era_index, era_lineage: prior_era.era_lineage, lane_root: *prior_era.lane_root().unwrap(), history_key: prior_era.history_key().copied(), transcript: [9u8; 32] };
+        let x = FriendshipChains::from_clutch_woven(&[a, b], &eggs2, Some(&prior));
+        let y = FriendshipChains::from_clutch_woven(&[a, b], &eggs2, Some(&prior));
+        assert_eq!(x.lane_root(), y.lane_root());
+        assert_eq!(x.history_key(), y.history_key());
+        assert_eq!(x.era_index, 1);
+        assert_eq!(x.era_lineage, prior_era.era_lineage, "a woven transition inherits the lineage");
+        let fresh = FriendshipChains::from_clutch(&[a, b], &eggs2);
+        assert_ne!(fresh.lane_root(), x.lane_root(), "the same eggs without the prior are a different channel");
+        assert_eq!(fresh.era_index, 0);
+        assert_ne!(fresh.era_lineage, x.era_lineage);
+        let other_prior = EraPrior { era_index: prior.era_index, era_lineage: prior.era_lineage, lane_root: [7u8; 32], history_key: prior.history_key, transcript: prior.transcript };
+        let z = FriendshipChains::from_clutch_woven(&[a, b], &eggs2, Some(&other_prior));
+        assert_ne!(z.lane_root(), x.lane_root(), "the prior root is load-bearing");
+        // A sibling still on the prior era adopts the woven era by index within the lineage, retiring its own.
+        let mut sibling = prior_era.clone();
+        let sib_label = sibling.mint_our_lane().unwrap();
+        assert!(sibling.era_superseded_by(&x));
+        assert!(sibling.merge_lanes_from(&x.replication_subset(&[])));
+        assert_eq!(sibling.era_index, 1);
+        assert_eq!(sibling.lane_root(), x.lane_root());
+        assert_eq!(sibling.era_slot_for_label(&sib_label), Some(EraSlot::Retired));
     }
 
     /// A sibling that supersedes by replication keeps the old era retired (stragglers decrypt) and adopts a pending era the owner minted.

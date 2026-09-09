@@ -10,7 +10,7 @@
 
 - [project_button_one_renderer.md](project_button_one_renderer.md) — ONE pill/button renderer in fluor (draw_pill_immediate + retained Button); photon never hand-rolls squircles
 
-- [project_era_ratchet.md](project_era_ratchet.md) — ERA RATCHET (plan: logical-brewing-creek.md): stages 1-3 SHIPPED 2026-09-08 (light hybrid-KEM ratchet + computed owner); NEXT stage 4 woven CLUTCH on shrink, 5 consent, 6 soak
+- [project_era_ratchet.md](project_era_ratchet.md) — ERA RATCHET (plan: logical-brewing-creek.md): stages 1-4 SHIPPED 2026-09-08 (light hybrid-KEM ratchet, computed owner, woven CLUTCH on shrink); NEXT stage 5 consent, 6 soak
 - [project_fluor_busy_loop.md](project_fluor_busy_loop.md) — OPEN: main thread 100% CPU = wake_at returns past Instant (animating flags / add_in_flight stuck / Android presence guard
 - [project_render_storm_lag.md](project_render_storm_lag.md) — ROOT-CAUSED 2026-08-15: lag = VAULT MUTEX contention (UI-tick avatar probe read vs background persist writers)
 

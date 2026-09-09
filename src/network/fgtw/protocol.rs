@@ -1469,6 +1469,11 @@ pub fn build_clutch_offer_vsf(
             VsfType::kh(payload.hqc256_public.clone()),
         ],
     );
+    // Era-prior claim (stage 4): additive name-keyed fields an old parser never looks for.
+    if let Some((tag, idx)) = payload.prior {
+        section.add_field("prior_tag", VsfType::u(tag as usize, false));
+        section.add_field("prior_idx", VsfType::u(idx as usize, false));
+    }
 
     // Stamp the PINNED send-time (Contact::clutch_round_started), NOT a fresh clock read — every re-send of this offer carries the identical time so the provenance is stable and the clutch never rotates.
     let unsigned = VsfBuilder::new()
@@ -1483,7 +1488,7 @@ pub fn build_clutch_offer_vsf(
 
     // TIME-based provenance (this party's device key + its pinned send-time), the shared helper the receiver mirrors from the offer's creation_time header. Restores the original design; the old key-based hash rotated the ceremony on every re-key.
     let offer_provenance =
-        crate::crypto::clutch::clutch_offer_provenance(device_pubkey, send_time_osc);
+        crate::crypto::clutch::clutch_offer_provenance_claimed(device_pubkey, send_time_osc, payload.prior);
 
     Ok((signed, offer_provenance))
 }
@@ -1530,6 +1535,13 @@ fn decode_offer_pubkeys(
         mlkem1024_public: key_bytes("mlkem1024")?,
         mceliece_public: key_bytes("mceliece")?,
         hqc256_public: key_bytes("hqc256")?,
+        prior: {
+            let u = |name: &str| fields.iter().find(|f| f.name == name).and_then(|f| f.values.first()).and_then(|v| v.as_u64());
+            match (u("prior_tag"), u("prior_idx")) {
+                (Some(t), Some(i)) => Some((t as u32, i)),
+                _ => None,
+            }
+        },
     })
 }
 
@@ -1653,7 +1665,7 @@ pub fn parse_clutch_offer_vsf(
     // TIME-based provenance: mirror the sender's build formula from the offer's creation_time header + its signer device key. Must match crate::crypto::clutch::clutch_offer_provenance exactly or the two sides derive different ceremony_ids.
     let send_time_osc = extract_header_timestamp(&header)?;
     let offer_provenance =
-        crate::crypto::clutch::clutch_offer_provenance(&sender_pubkey, send_time_osc);
+        crate::crypto::clutch::clutch_offer_provenance_claimed(&sender_pubkey, send_time_osc, payload.prior);
 
     #[cfg(feature = "development")]
     {
@@ -1915,7 +1927,7 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
     // TIME-based provenance: mirror the sender's build formula from the offer's creation_time header + its signer device key. Must match crate::crypto::clutch::clutch_offer_provenance exactly or the two sides derive different ceremony_ids.
     let send_time_osc = extract_header_timestamp(&header)?;
     let offer_provenance =
-        crate::crypto::clutch::clutch_offer_provenance(&sender_pubkey, send_time_osc);
+        crate::crypto::clutch::clutch_offer_provenance_claimed(&sender_pubkey, send_time_osc, payload.prior);
 
     #[cfg(feature = "development")]
     crate::logf!(
@@ -3764,6 +3776,28 @@ mod pong_seal_tests {
     }
 
     /// era_pull: the held era rides as an additive field; the legacy chainless ask (None) parses as None.
+    /// Stage 4: the era-prior claim rides the offer as additive fields, round-trips thru the no-recipient parser, folds into the provenance (a claimed round is a different round), and an unclaimed offer is unchanged.
+    #[test]
+    fn clutch_offer_prior_claim_round_trips_and_binds_the_provenance() {
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[11u8; 32]);
+        let (pk, sk) = (signing.verifying_key().to_bytes(), signing.to_bytes());
+        let keys = crate::crypto::clutch::generate_all_ephemeral_keypairs();
+        let tok = [0x33u8; 32];
+        let mut claimed = crate::crypto::clutch::ClutchOfferPayload::from_keypairs(&keys);
+        claimed.prior = Some((0xDEAD_BEEF, 3));
+        let plain = crate::crypto::clutch::ClutchOfferPayload::from_keypairs(&keys);
+        let (bytes_c, prov_c) = build_clutch_offer_vsf(&tok, &claimed, &pk, &sk, 777).unwrap();
+        let (bytes_p, prov_p) = build_clutch_offer_vsf(&tok, &plain, &pk, &sk, 777).unwrap();
+        assert_ne!(prov_c, prov_p, "the claim is part of the round");
+        let (got_c, _, prov_c2, _) = parse_clutch_offer_vsf_without_recipient_check(&bytes_c).unwrap();
+        assert_eq!(got_c.prior, Some((0xDEAD_BEEF, 3)));
+        assert_eq!(prov_c2, prov_c, "the receiver mirrors the claimed provenance");
+        let (got_p, _, prov_p2, _) = parse_clutch_offer_vsf_without_recipient_check(&bytes_p).unwrap();
+        assert_eq!(got_p.prior, None);
+        assert_eq!(prov_p2, prov_p);
+        assert_eq!(prov_p, crate::crypto::clutch::clutch_offer_provenance(&pk, 777), "unclaimed = the legacy provenance");
+    }
+
     #[test]
     fn chain_pull_held_era_round_trips() {
         let signing = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);

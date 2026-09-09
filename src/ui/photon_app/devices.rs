@@ -984,6 +984,8 @@ impl PhotonApp {
         if !removed.is_empty() {
             // Removal rotates (braid.md §14.2): a shrink in OUR OWN fold is the live trigger — any surviving member mints the next epoch so the leaver's cached fleet key goes stale. The sentinel inside re-checks against server state (fold + fan-out), so a stale local cache can't force a bogus rotation.
             self.spawn_fleet_key_sync();
+            // SHRINK ⇒ every friendship re-keys with the old roots woven in (stage 4, decision 1): armed for the epoch AFTER this rotation, so the woven era's chain-sync only ever seals under a key the leaver never held.
+            self.arm_heavy_weaves("a device left the fold");
         }
 
         if changed {
@@ -1766,6 +1768,8 @@ impl PhotonApp {
             }
         }
         if !changed_rows.is_empty() {
+            // REVOKE ⇒ the same weave (a revoked device keeps its lane_root; the woven era is the one thing it cannot follow).
+            self.arm_heavy_weaves("a device was revoked");
             if let Some(storage) = self.storage.as_ref() {
                 for &i in &changed_rows {
                     crate::logf!(
