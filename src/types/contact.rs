@@ -414,6 +414,15 @@ pub fn is_call_recording(content: &str) -> bool {
 }
 
 /// Human-readable byte size for attachment pills — dozenal-doctrine exempt? NO: digits render at the edge; this returns arabic-free unit steps with the NUMBER left to the renderer. Kept simple: returns (whole_units, unit_label) so the caller renders the number in dozenal glyphs.
+/// The size as the bubble shows it: the DMS doubling count in dozenal and hex (bare, like the age — the Dozenal page carries the legend), the unit'd count in arabic.
+pub fn size_label(size: u64) -> String {
+    if crate::dms_ui() {
+        return crate::dms_size(size);
+    }
+    let (units, label) = size_units(size);
+    format!("{}\u{202F}{label}", crate::fmt_num(units))
+}
+
 pub fn size_units(size: u64) -> (u32, &'static str) {
     const KI: u64 = 1024;
     if size >= KI * KI {

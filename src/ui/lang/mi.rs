@@ -465,13 +465,13 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ProfileSensitiveEmergency => "Hoa whakapā ohotata".into(),
         // ---- attachment bubbles ----
         Msg::RecordingPlaying { pct } => format!("\u{25A0} e p\u{101}whara ana \u{00B7} {}%", fmt_num(pct)).into(),
-        Msg::RecordingBubble { units, unit_label, fetching } => {
+        Msg::RecordingBubble { size, fetching } => {
             let tail = if fetching { " \u{2014} e tiki ana\u{2026}" } else { "" };
-            format!("\u{25B6}\u{FE0E} hopukanga \u{00B7} {}\u{202F}{unit_label}{tail}", fmt_num(units)).into()
+            format!("\u{25B6}\u{FE0E} hopukanga \u{00B7} {size}{tail}").into()
         }
-        Msg::FileBubble { name, units, unit_label, held } => {
+        Msg::FileBubble { name, size, held } => {
             let state = if held { "" } else { " \u{2014} pāwhiritia mō ngā mahi" };
-            format!("\u{1F4CE} {name} \u{00B7} {}\u{202F}{unit_label}{state}", fmt_num(units)).into()
+            format!("\u{1F4CE} {name} \u{00B7} {size}{state}").into()
         }
         Msg::InspectFailed(e) => format!("i rahua te tirotiro: {e}").into(),
         // ---- message persistence / attachments toasts ----

@@ -489,9 +489,9 @@ pub enum Msg<'a> {
     ProfileSensitiveTaxId,
     ProfileSensitiveEmergency,
     // ---- attachment bubbles ----
-    RecordingBubble { units: u32, unit_label: &'a str, fetching: bool },
+    RecordingBubble { size: &'a str, fetching: bool },
     RecordingPlaying { pct: u32 },
-    FileBubble { name: &'a str, units: u32, unit_label: &'a str, held: bool },
+    FileBubble { name: &'a str, size: &'a str, held: bool },
     InspectFailed(&'a str),
     // ---- message persistence / attachments toasts ----
     RewritingVault,

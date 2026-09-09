@@ -2946,7 +2946,7 @@ impl PhotonApp {
                                     .max(0);
                                 // Dozenal mode shows the DMS age (how many times a second has doubled — one number, no units; the Dozenal page carries the legend); arabic mode the unit'd count. The detail style is Oxanium, so the glyphs resolve.
                                 let dms = crate::dms_age(secs);
-                                let age = if crate::dozenal_ui() {
+                                let age = if crate::dms_ui() {
                                     tr(Msg::AgoDms(&dms))
                                 } else {
                                     tr(if secs >= 86400 {

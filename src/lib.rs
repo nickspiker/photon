@@ -1,6 +1,6 @@
 // PHOTON SOURCE MAP — one readable line per file. Keep updated when files or major pub items change.
 //
-// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/log_size_bytes/read_log_from/install_log_bridge, LogRecord + parse_log_records (shared record decode: photonlog bin + the in-app Diagnostics viewer), fp(public_id) (non-PII log label), dozenal helpers (DOZENAL_NAMES, dozenal_glyphs UI / dozenal_spell read-aloud / dozenal_words camelCase log form, deglyph_for_log), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports. main.rs  — winit event loop, window creation, tokio async runtime.
+// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/log_size_bytes/read_log_from/install_log_bridge, LogRecord + parse_log_records (shared record decode: photonlog bin + the in-app Diagnostics viewer), fp(public_id) (non-PII log label), dozenal helpers (DOZENAL_NAMES, NumBase + num_base/dms_ui, dms_bits/dms_age/dms_size DMS doubling counts, dozenal_glyphs UI / dozenal_spell read-aloud / dozenal_words camelCase log form, deglyph_for_log), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports. main.rs  — winit event loop, window creation, tokio async runtime.
 //
 // crypto/
 //   blind.rs        — friend-blinded private identity secret S (RAM-only, never persisted): PrivateS{None,Provisional,Live}, derive_blind_pad (per-device+friend OTP pad), make/open_blind_blob ((S⊕pad)‖check, fail-closed), s_check/s_id (tamper commitment + 4-byte tag epoch), seal/open_sibling_s (kete-AEAD S-transfer to a sibling).
@@ -168,9 +168,19 @@ pub fn dms_bits(secs: i64) -> u32 {
     u64::BITS - (secs.max(0) as u64).leading_zeros()
 }
 
-/// The DMS age as dozenal glyphs (Oxanium `+glyphs` face at the draw site).
+/// Do sizes and ages render as DMS? Dozenal and hex do (Nick 2026-09-09: "DMS when in dozenal and hex"); arabic keeps the unit'd counts of the ledger world.
+pub fn dms_ui() -> bool {
+    num_base() != NumBase::Arabic
+}
+
+/// DMS SIZE (Nick 2026-09-09: "I say bits"): how many times a bit has doubled — the bit length of the size in BITS, so one byte is Tera (4), a kilobyte lands at Zila Zilor (14), a megabyte at Zilor Zil (24), a gigabyte at Zilor Stela (34) — the same rule as the age, seconds swapped for bits. Rendered in the current base.
+pub fn dms_size(bytes: u64) -> String {
+    fmt_num(dms_bits(bytes.saturating_mul(8).min(i64::MAX as u64) as i64))
+}
+
+/// The DMS age in the current base (Oxanium `+glyphs` face at the draw site for the dozenal glyphs).
 pub fn dms_age(secs: i64) -> String {
-    dozenal_glyphs(dms_bits(secs))
+    fmt_num(dms_bits(secs))
 }
 
 /// Render `n` in dozenal as reserved control-code bytes 0x10+digit — the Oxanium `+glyphs` face draws them as the dozenal digits. UI-only: terminals show garbage, so LOG paths use [`dozenal_words`] instead.
@@ -301,6 +311,18 @@ pub fn log_retrieval_tag(identity_seed: &[u8; 32]) -> [u8; 32] {
 #[cfg(test)]
 mod log_seal_tests {
     use super::*;
+
+    /// DMS sizes count doublings of a BIT (Nick 2026-09-09: "I say bits"): one byte is 4, a kilobyte 14, a megabyte 24, a gigabyte 34, and nothing is 0.
+    #[test]
+    fn dms_size_counts_bit_doublings() {
+        let bits = |bytes: u64| dms_bits((bytes * 8) as i64);
+        assert_eq!(bits(0), 0);
+        assert_eq!(bits(1), 4);
+        assert_eq!(bits(1024), 14);
+        assert_eq!(bits(1 << 20), 24);
+        assert_eq!(bits(1 << 30), 34);
+        assert_eq!(dms_size(1), fmt_num(4));
+    }
 
     #[test]
     fn seal_roundtrips_no_plaintext_and_rejects_wrong_seed() {

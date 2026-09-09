@@ -436,14 +436,14 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ProfileSensitiveEmergency => "Emergency contact".into(),
         // ---- attachment bubbles ----
         Msg::RecordingPlaying { pct } => format!("\u{25A0} playing \u{00B7} {}%", fmt_num(pct)).into(),
-        Msg::RecordingBubble { units, unit_label, fetching } => {
+        Msg::RecordingBubble { size, fetching } => {
             let tail = if fetching { " \u{2014} fetching\u{2026}" } else { "" };
-            format!("\u{25B6}\u{FE0E} recording \u{00B7} {}\u{202F}{unit_label}{tail}", fmt_num(units)).into()
+            format!("\u{25B6}\u{FE0E} recording \u{00B7} {size}{tail}").into()
         }
         // The "would tofu in the bubble font" caveat here was never true — MEASURED 2026-09-08 (tests/glyph_fallback_probe.rs): the glyph block falls back to Oxanium's `+glyphs` face from any primary family, so file sizes render dozenal like every other numeral.
-        Msg::FileBubble { name, units, unit_label, held } => {
+        Msg::FileBubble { name, size, held } => {
             let state = if held { "" } else { " \u{2014} tap for actions" };
-            format!("\u{1F4CE} {name} \u{00B7} {}\u{202F}{unit_label}{state}", fmt_num(units)).into()
+            format!("\u{1F4CE} {name} \u{00B7} {size}{state}").into()
         }
         Msg::InspectFailed(e) => format!("inspect failed: {e}").into(),
         // ---- message persistence / attachments toasts ----

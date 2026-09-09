@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- In dozenal and hex, a file or recording size shows as its doubling count in bits, the same rule as the time-ago figure: one byte is four, a kilobyte fourteen, a megabyte two dozen.
 ## v88
 
 - Nothing you type becomes a link on its own: a web address stays plain text until you press the purple link button beside send.

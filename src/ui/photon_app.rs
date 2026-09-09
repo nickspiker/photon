@@ -698,16 +698,16 @@ const DEFAULT_REACTIONS: [&str; 5] = [
 
 fn display_content(content: &str) -> String {
     if let Some((hash, name, size)) = crate::types::parse_attachment_content(content) {
-        let (units, label) = crate::types::size_units(size);
+        let size_str = crate::types::size_label(size);
         let held = crate::storage::blob_present(&hash);
         if name == "call.audio" {
             // A kept call recording — a PLAY affordance, not a file. Two fixes ride here (Nick's field report):
             //  - ▶ (U+25B6) replaces the paperclip: 📎 (U+1F4CE) has no glyph in the bubble font and rendered as a tofu rectangle; ▶ IS covered (the Ended panel's Play button uses it).
             //  - the size renders in DOZENAL (fmt_num honours the fleet toggle) now that the toggle exists — the row is drawn in Oxanium (see the call.audio font switch in render.rs) so the dozenal control-byte glyphs resolve instead of tofu-ing.
-            tr(Msg::RecordingBubble { units, unit_label: label, fetching: !held }).into_owned()
+            tr(Msg::RecordingBubble { size: &size_str, fetching: !held }).into_owned()
         } else {
             // Files keep the paperclip + DECIMAL size in the default bubble font (see the FileBubble arm's comment in en.rs).
-            tr(Msg::FileBubble { name: &name, units, unit_label: label, held }).into_owned()
+            tr(Msg::FileBubble { name: &name, size: &size_str, held }).into_owned()
         }
     } else {
         // Reference rows (reply/edit/react) need no stripping: their content IS the bare body/glyph — the reference is a typed FIELD, never a string encoding.
@@ -3451,6 +3451,9 @@ fn contact_ping_due(c: &crate::types::Contact, now: std::time::Instant) -> bool 
 
 /// Bytes as something a person can read at a glance. Deliberately coarse — one decimal past a megabyte is noise on a figure that exists to answer "is there much in there?".
 fn human_bytes(n: u64) -> String {
+    if crate::dms_ui() {
+        return crate::dms_size(n);
+    }
     const KIB: u64 = 1024;
     const MIB: u64 = KIB * 1024;
     if n >= MIB {
